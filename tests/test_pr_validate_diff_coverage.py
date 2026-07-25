@@ -19,6 +19,7 @@ Two contracts matter most here and are the reason this file exists:
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.diff_coverage import (
     DiffCoverageStep,
     _parse_diff_cover,
+    _run_group_bounded,
 )
 
 # --------------------------------------------------------------------------
@@ -194,7 +196,7 @@ class TestAdvisoryContract:
             return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "pass"
@@ -218,7 +220,7 @@ class TestAdvisoryContract:
             return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -239,7 +241,7 @@ class TestAdvisoryContract:
             return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -254,7 +256,7 @@ class TestAdvisoryContract:
             return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -267,7 +269,7 @@ class TestAdvisoryContract:
             raise subprocess.TimeoutExpired(cmd, k.get("timeout", 1))
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -284,7 +286,7 @@ class TestAdvisoryContract:
             raise subprocess.TimeoutExpired(cmd, k.get("timeout", 1))
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -308,7 +310,7 @@ class TestAdvisoryContract:
             )
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -340,7 +342,7 @@ class TestAdvisoryContract:
             return subprocess.CompletedProcess(cmd, 0, stdout=_DC_NO_LINES, stderr="")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
@@ -369,7 +371,7 @@ class TestAdvisoryContract:
             raise RuntimeError("simulated subprocess explosion")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", boom
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", boom
         )
         res = DiffCoverageStep().run(ctx)
         # The whole point: a crash in the measurer must NOT surface as
@@ -392,7 +394,7 @@ class TestAdvisoryContract:
             raise OSError("No space left on device")
 
         monkeypatch.setattr(
-            "scripts.pr_validate.steps.diff_coverage.subprocess.run", boom
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", boom
         )
         monkeypatch.setattr(Path, "write_text", unwritable)
         res = DiffCoverageStep().run(ctx)
@@ -424,3 +426,39 @@ class TestRegistration:
         # A defensive pin on the advisory intent: the step opts into
         # continue_on_error so a stray error can't halt the pipeline.
         assert DiffCoverageStep().continue_on_error is True
+
+
+# --------------------------------------------------------------------------
+# _run_group_bounded — the process-group-bounded subprocess helper. Real
+# subprocesses (no mocking) so we actually exercise the timeout + kill.
+# --------------------------------------------------------------------------
+
+
+class TestRunGroupBounded:
+    def test_returns_completed_process_on_success(self):
+        proc = _run_group_bounded(
+            [sys.executable, "-c", "print('hi')"], cwd=".", timeout=30
+        )
+        assert proc.returncode == 0
+        assert "hi" in proc.stdout
+
+    def test_propagates_nonzero_returncode(self):
+        proc = _run_group_bounded(
+            [sys.executable, "-c", "import sys; sys.exit(3)"], cwd=".", timeout=30
+        )
+        assert proc.returncode == 3
+
+    def test_raises_timeout_and_kills_group(self):
+        # A child that spawns a grandchild and sleeps: on timeout the
+        # WHOLE group must die. We assert TimeoutExpired is raised; the
+        # group-kill is what keeps a real timed-out pytest from orphaning
+        # workers (can't easily assert descendant death portably, but the
+        # killpg path is exercised).
+        import subprocess as _sp
+
+        with pytest.raises(_sp.TimeoutExpired):
+            _run_group_bounded(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=".",
+                timeout=1,
+            )

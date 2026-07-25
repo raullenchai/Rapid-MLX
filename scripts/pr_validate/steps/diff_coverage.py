@@ -37,7 +37,9 @@ error while logging must not escape as a blocking ``error`` either).
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import signal
 import subprocess
 import sys
 import traceback
@@ -50,13 +52,15 @@ from ..context import Context
 # test files aren't the subject of "is this PR's new code tested".
 _COV_PACKAGE = "vllm_mlx"
 
-# diff-cover's compare point. ``origin/main`` is the merge target and is
-# always present locally after ``git fetch origin`` (which the operator
-# runs before validating, per G13). diff-cover computes the merge-base
-# internally, so this yields exactly the lines this PR adds on top of
-# main. We prefer the branch name over ``ctx.base_sha`` because the raw
-# SHA may not resolve if the local clone is shallow.
-_COMPARE_BRANCH = "origin/main"
+# Fallback diff-cover compare point when the PR's base commit is unknown.
+# The real compare ref is derived per-PR from ``ctx.base_sha`` (the PR's
+# actual base, ``baseRefOid``) so a PR targeting a release / maintenance
+# branch is scored against ITS base, not main (codex #1220). diff-cover
+# computes the merge-base internally, so either form yields exactly the
+# lines this PR adds on top of its base. If the derived ref can't be
+# resolved, diff-cover exits nonzero and we skip (see the returncode
+# guard) — an advisory measurer never blocks on a bad ref.
+_COMPARE_BRANCH_FALLBACK = "origin/main"
 
 # Bounded so a hung test or a wedged diff-cover can't block the pipeline
 # — the whole point of an advisory step is that it never blocks. On
@@ -151,17 +155,13 @@ class DiffCoverageStep(Step):
         ]
         ctx.run_log("diff_coverage: running instrumented suite (advisory)…")
         try:
-            pytest_proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-                pytest_cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(ctx.repo_root),
-                timeout=_PYTEST_TIMEOUT_S,
+            pytest_proc = _run_group_bounded(
+                pytest_cmd, str(ctx.repo_root), _PYTEST_TIMEOUT_S
             )
         except subprocess.TimeoutExpired:
             return self._skip(
                 f"advisory coverage skipped (instrumented suite exceeded "
-                f"{_PYTEST_TIMEOUT_S}s — killed)"
+                f"{_PYTEST_TIMEOUT_S}s — process group killed)"
             )
 
         # 3. Only trust coverage from a CLEAN, COMPLETE run. A nonzero
@@ -185,29 +185,30 @@ class DiffCoverageStep(Step):
                 "advisory coverage skipped (no coverage.xml produced)", log_path
             )
 
-        # 4. diff-cover: patch coverage of the changed lines vs main.
-        #    Invoke via ``-m`` so it runs in the SAME interpreter the
-        #    coverage was produced with (matches targeted_tests' policy).
+        # 4. diff-cover: patch coverage of the changed lines vs the PR's
+        #    base. Derive the compare ref from ``ctx.base_sha`` (the PR's
+        #    actual base commit) so a release/maintenance-branch PR is
+        #    scored against its own base, not main. Falls back to
+        #    ``origin/main`` when the base commit is unknown. Invoke via
+        #    ``-m`` so it runs in the SAME interpreter the coverage was
+        #    produced with (matches targeted_tests' policy).
+        compare_ref = ctx.base_sha or _COMPARE_BRANCH_FALLBACK
         dc_cmd = [
             sys.executable,
             "-m",
             "diff_cover.diff_cover_tool",
             str(xml_path),
             "--compare-branch",
-            _COMPARE_BRANCH,
+            compare_ref,
         ]
         try:
-            dc_proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-                dc_cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(ctx.repo_root),
-                timeout=_DIFF_COVER_TIMEOUT_S,
+            dc_proc = _run_group_bounded(
+                dc_cmd, str(ctx.repo_root), _DIFF_COVER_TIMEOUT_S
             )
         except subprocess.TimeoutExpired:
             return self._skip(
                 f"advisory coverage skipped (diff-cover exceeded "
-                f"{_DIFF_COVER_TIMEOUT_S}s — killed)"
+                f"{_DIFF_COVER_TIMEOUT_S}s — process group killed)"
             )
 
         _safe_write(
@@ -277,6 +278,40 @@ class DiffCoverageStep(Step):
         return StepResult(
             name=self.name, status="skip", summary=summary, artifacts=artifacts
         )
+
+
+def _run_group_bounded(
+    cmd: list[str], cwd: str, timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """Run ``cmd`` in its OWN process group with a hard timeout.
+
+    ``subprocess.run(timeout=...)`` SIGKILLs only the direct child on
+    expiry — a timed-out pytest could leave spawned servers/workers alive
+    to contaminate later validation steps (codex #1220). We start the
+    child in a new session (``start_new_session=True`` → new process
+    group) and, on timeout, kill the WHOLE group so no descendant
+    survives. Re-raises ``subprocess.TimeoutExpired`` so callers keep
+    their existing skip-on-timeout handling.
+    """
+    with subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        start_new_session=True,
+    ) as proc:
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the entire process group, not just the leader.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()  # group gone / not permitted — fall back to leader
+            proc.communicate()  # reap so we don't leak a zombie
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def _safe_write(path: Path, text: str) -> None:
