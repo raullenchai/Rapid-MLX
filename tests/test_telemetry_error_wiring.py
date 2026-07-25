@@ -185,3 +185,53 @@ def test_bench_load_failure_error_event_absent_when_opted_out(fake_home, tmp_pat
         server.server_close()
 
     assert not _all_events(captured), "opted-out run must emit no telemetry"
+
+
+async def test_serve_engine_start_failure_emits_model_load_error(monkeypatch):
+    """``serve``'s real weight load runs in the async FastAPI lifespan
+    (``_engine.start()``), NOT the CLI ``load_model()`` (which only does
+    config read + type-detection). A failure there is THE serve model-load
+    failure — it must emit ``model_load_failure`` / ``startup`` and still
+    re-raise so startup aborts exactly as before.
+
+    Driven in-process via the lifespan async-generator pattern (mirrors
+    tests/test_ready_banner_timing.py). ``emit.error`` is patched to capture
+    the call so this asserts the wiring, not the (separately-tested) redact
+    pipeline.
+    """
+    import vllm_mlx._signal_observability as _sigobs
+    import vllm_mlx.server as vllm_server
+    from vllm_mlx.config import get_config
+    from vllm_mlx.telemetry import emit as _emit
+
+    # Keep the test hermetic: don't install real SIGTERM/SIGHUP handlers on
+    # the pytest process (the failure aborts startup mid-lifespan, so the
+    # full-lifespan restore in the banner test doesn't apply here).
+    monkeypatch.setattr(_sigobs, "install_signal_observability", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(_emit, "error", lambda **kw: calls.append(kw))
+
+    class _BoomEngine:
+        _loaded = False
+
+        async def start(self):
+            raise RuntimeError("checkpoint shards missing")
+
+    cfg = get_config()
+    saved = (vllm_server._engine, cfg.bind_host, cfg.bind_port, cfg.ready)
+    vllm_server._engine = _BoomEngine()
+    try:
+        agen = vllm_server.lifespan(vllm_server.app)
+        with pytest.raises(RuntimeError, match="checkpoint shards missing"):
+            await agen.__anext__()  # startup → engine.start() raises → re-raised
+    finally:
+        vllm_server._engine, cfg.bind_host, cfg.bind_port, cfg.ready = saved
+
+    assert any(
+        c.get("category") == "model_load_failure" and c.get("phase") == "startup"
+        for c in calls
+    ), calls
+    # The raw exception is handed to emit.error for fingerprinting only;
+    # its message never reaches the payload (redact.fingerprint_traceback).
+    assert isinstance(calls[0].get("exc"), RuntimeError)

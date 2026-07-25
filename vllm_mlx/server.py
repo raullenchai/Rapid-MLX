@@ -482,7 +482,25 @@ async def lifespan(app: FastAPI):
 
     # Startup: Start engine if loaded (needed for BatchedEngine in uvicorn's event loop)
     if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
-        await _engine.start()
+        try:
+            await _engine.start()
+        except Exception as _start_exc:
+            # Opt-in telemetry (Phase 2.2 error wiring): serve's real weight
+            # load happens HERE in the async lifespan, not in the CLI's
+            # ``load_model()`` (which only does config read + MLLM/LLM
+            # type-detection). A failure here is THE ``serve`` model-load
+            # failure — the CLI-side wiring (PR #1207) cannot see it. Record
+            # a bucketed error (allowlisted category + traceback fingerprint
+            # only, never the model name / message / path), then re-raise so
+            # startup still aborts exactly as before. ``emit.error`` is
+            # ``is_enabled()``-gated and ``@_safe`` → a no-op when telemetry
+            # is off and can never mask the failure.
+            from vllm_mlx.telemetry import emit as _telemetry_emit
+
+            _telemetry_emit.error(
+                category="model_load_failure", exc=_start_exc, phase="startup"
+            )
+            raise
 
     # Warmup: generate one token to trigger Metal shader compilation.
     # Runs here (not in CLI) so all engine types are fully started first.
