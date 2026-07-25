@@ -67,6 +67,12 @@ class RequestPayload:
     ttft_ms_bucket: str
     tps_bucket: str
     status: int
+    # v2 addition. Inbound HTTP User-Agent bucketed to a fixed allowlist
+    # (redact.normalize_caller_agent) — "which agent is calling", never the
+    # raw UA. Optional (default "unknown") so v1 external callers that build
+    # RequestPayload positionally don't shift/break. request events ship
+    # dark until the call sites land, so this widens no live wire contract.
+    caller_agent: str = "unknown"
 
 
 @dataclass(frozen=True)

@@ -132,6 +132,65 @@ def normalize_model_path(path: str) -> str:
     return path
 
 
+# ------------------------------------------------------------- caller agent
+
+# Map an inbound HTTP ``User-Agent`` to a SMALL fixed allowlist of caller
+# buckets. This is the ``[NIT] no caller-controlled free-form text`` red-line
+# in action: the raw UA carries versions and sometimes custom tokens, so we
+# NEVER return it — we return one of the labels below (or ``"other"`` /
+# ``"unknown"``). Matching is substring-on-lowercase because SDKs vary the
+# surrounding version/format (``OpenAI/Python 1.2``, ``openai-python/1.2``).
+# Order matters: more specific agent markers are checked before the generic
+# HTTP-client fallbacks so e.g. an agent that rides ``python-httpx`` still
+# resolves to the agent, not ``python-httpx``.
+_CALLER_AGENT_MARKERS: tuple[tuple[str, str], ...] = (
+    ("claude-code", "claude-code"),
+    ("claudecode", "claude-code"),
+    ("claude-cli", "claude-code"),
+    ("cursor", "cursor"),
+    ("aider", "aider"),
+    ("cline", "cline"),
+    ("continue", "continue"),
+    ("openai-python", "openai-python"),
+    ("openai/python", "openai-python"),
+    ("openai-node", "openai-node"),
+    ("anthropic", "anthropic-sdk"),
+    ("litellm", "litellm"),
+    ("langchain", "langchain"),
+    ("llama-index", "llamaindex"),
+    ("llamaindex", "llamaindex"),
+    ("ollama", "ollama"),
+    # Generic HTTP clients — last, so a named agent above wins.
+    ("python-httpx", "python-httpx"),
+    ("httpx", "python-httpx"),
+    ("python-requests", "python-requests"),
+    ("requests", "python-requests"),
+    ("node-fetch", "node-fetch"),
+    ("undici", "node-fetch"),
+    ("axios", "axios"),
+    ("curl", "curl"),
+    ("wget", "curl"),
+    ("okhttp", "okhttp"),
+    ("go-http-client", "go-http"),
+)
+
+
+def normalize_caller_agent(user_agent: str | None) -> str:
+    """Bucket an inbound ``User-Agent`` to a fixed allowlist label.
+
+    Returns ``"unknown"`` for a missing/empty UA and ``"other"`` for a UA
+    that matches no marker. The raw string is never returned, so no
+    caller-controlled free-form text lands on a payload.
+    """
+    if not user_agent or not isinstance(user_agent, str):
+        return "unknown"
+    ua = user_agent.lower()
+    for marker, label in _CALLER_AGENT_MARKERS:
+        if marker in ua:
+            return label
+    return "other"
+
+
 # ---------------------------------------------------------------- argv flags
 
 # Captures ``--flag``, ``--flag-name``, and short ``-x`` (single letter

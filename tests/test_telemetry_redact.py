@@ -17,6 +17,7 @@ from vllm_mlx.telemetry.redact import (
     bucket_ttft_ms,
     fingerprint_traceback,
     hash_flag_names,
+    normalize_caller_agent,
     normalize_model_path,
     platform_info,
 )
@@ -319,3 +320,51 @@ def test_platform_info_no_unbounded_strings():
     for key in ("os", "os_version", "arch", "chip", "python_version"):
         assert isinstance(info[key], str)
         assert len(info[key]) < 200, f"{key} suspiciously long: {info[key]!r}"
+
+
+# --------------------------------------------------------- caller agent
+
+
+@pytest.mark.parametrize(
+    "ua,expected",
+    [
+        ("claude-cli/1.4.2", "claude-code"),
+        ("Claude-Code/2.0 (macOS)", "claude-code"),
+        ("cursor/0.42.1", "cursor"),
+        ("aider/0.50.0", "aider"),
+        ("OpenAI/Python 1.30.1", "openai-python"),
+        ("openai-python/1.30", "openai-python"),
+        ("anthropic-sdk-python/0.34", "anthropic-sdk"),
+        ("litellm/1.40", "litellm"),
+        ("python-httpx/0.27.0", "python-httpx"),
+        ("python-requests/2.32", "python-requests"),
+        ("node-fetch/2.6", "node-fetch"),
+        ("curl/8.4.0", "curl"),
+    ],
+)
+def test_normalize_caller_agent_buckets_known(ua, expected):
+    assert normalize_caller_agent(ua) == expected
+
+
+def test_normalize_caller_agent_named_agent_beats_generic_client():
+    """An agent that rides a generic HTTP client still resolves to the
+    agent, not the transport."""
+    assert normalize_caller_agent("aider python-httpx/0.27") == "aider"
+
+
+@pytest.mark.parametrize("ua", [None, "", 123, "   "])
+def test_normalize_caller_agent_missing_is_unknown(ua):
+    # whitespace-only still matches no marker -> "other"; empty/None -> "unknown"
+    result = normalize_caller_agent(ua)
+    assert result in ("unknown", "other")
+    if ua in (None, ""):
+        assert result == "unknown"
+
+
+def test_normalize_caller_agent_unmatched_is_other_never_raw():
+    ua = "SomeCustomBot/9.9 (token=leak-me)"
+    out = normalize_caller_agent(ua)
+    assert out == "other"
+    # The raw UA (with its embedded token) must never be the return value.
+    assert "leak-me" not in out
+    assert "9.9" not in out

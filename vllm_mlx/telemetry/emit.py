@@ -26,6 +26,8 @@ helpers own the four things every call site needs to get right:
 from __future__ import annotations
 
 import itertools
+import os
+import random
 import threading
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -39,11 +41,45 @@ from vllm_mlx.telemetry.redact import (
     bucket_tps,
     bucket_ttft_ms,
     fingerprint_traceback,
+    normalize_caller_agent,
     normalize_model_path,
     platform_info,
 )
 from vllm_mlx.telemetry.schema import SCHEMA_VERSION
 from vllm_mlx.telemetry.state import get_or_create_client_id, is_enabled
+
+# ``request`` events are per-API-call — orders of magnitude higher volume
+# than the once-per-process session events (one automated eval client can
+# emit ~1M/day). This gate samples them so turning the call sites on does
+# not flood R2. Rate is read from ``RAPID_MLX_TELEMETRY_REQUEST_SAMPLE``
+# (0.0–1.0) each call so ops can retune live; the default is conservative.
+# Session / error events are NOT sampled — they are already low-volume and
+# load-bearing for DAU / triage.
+_REQUEST_SAMPLE_ENV = "RAPID_MLX_TELEMETRY_REQUEST_SAMPLE"
+_REQUEST_SAMPLE_DEFAULT = 0.1
+
+
+def _request_sample_rate() -> float:
+    raw = os.environ.get(_REQUEST_SAMPLE_ENV)
+    if raw is None or raw == "":
+        return _REQUEST_SAMPLE_DEFAULT
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        return _REQUEST_SAMPLE_DEFAULT
+    # Clamp — a bad env value should degrade to a sane bound, not disable
+    # or over-emit unexpectedly.
+    return max(0.0, min(1.0, rate))
+
+
+def _should_sample_request() -> bool:
+    rate = _request_sample_rate()
+    if rate >= 1.0:
+        return True
+    if rate <= 0.0:
+        return False
+    return random.random() < rate
+
 
 # ---------------------------------------------------------------- singleton
 
@@ -439,13 +475,19 @@ def request(
     ttft_ms: float,
     tps: float,
     status: int,
+    caller_agent: str | None = None,
 ) -> None:
-    """Emit a ``request`` payload (Phase 2.2 sites use this).
+    """Emit a ``request`` payload (call sites land in a follow-up PR).
 
-    Defined now so call sites can land without touching this module
-    later. The Phase 2.0/2.1 PR does not call this — it ships dark.
+    ``caller_agent`` is the inbound HTTP ``User-Agent``; it is bucketed to a
+    fixed allowlist here (never stored raw). Sampled by
+    ``RAPID_MLX_TELEMETRY_REQUEST_SAMPLE`` because request volume dwarfs the
+    session events. Consent is still checked first — sampling never turns a
+    disabled client on.
     """
     if not is_enabled():
+        return
+    if not _should_sample_request():
         return
     payload = _envelope("request")
     payload["request"] = {
@@ -458,6 +500,7 @@ def request(
         "ttft_ms_bucket": bucket_ttft_ms(ttft_ms),
         "tps_bucket": bucket_tps(tps),
         "status": int(status),
+        "caller_agent": normalize_caller_agent(caller_agent),
     }
     get_queue().enqueue(payload)
 

@@ -35,11 +35,17 @@ def fake_home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def opted_in(fake_home):
-    """Persist a yes-consent so is_enabled() returns True."""
+def opted_in(fake_home, monkeypatch):
+    """Persist a yes-consent so is_enabled() returns True.
+
+    Also pins request sampling to 1.0 so payload-shape assertions on
+    ``emit.request`` are deterministic — the probabilistic sampling gate is
+    exercised separately in ``test_request_sampling_gate``.
+    """
     from vllm_mlx.telemetry.state import record_consent
 
     record_consent(True, rapid_mlx_version="0.0.0+test")
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "1")
     return fake_home
 
 
@@ -775,3 +781,70 @@ def test_error_fingerprint_does_not_echo_exception_message(opted_in, stub_queue)
     blob = repr(stub_queue[0])
     assert prompt_in_exc not in blob
     assert "parser failed" not in blob
+
+
+def _emit_one_request(caller_agent=None):
+    from vllm_mlx.telemetry import emit
+
+    emit.request(
+        endpoint="/v1/chat/completions",
+        model_alias="org/model",
+        stream=False,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=20,
+        ttft_ms=120.0,
+        tps=42.0,
+        status=200,
+        caller_agent=caller_agent,
+    )
+
+
+def test_request_caller_agent_bucketed_never_raw(opted_in, stub_queue):
+    """The inbound UA is bucketed to the allowlist; the raw string (with its
+    version + any custom tokens) never reaches the payload."""
+    _emit_one_request(caller_agent="Claude-Code/1.4.2 (buildX; secret-token=abc)")
+    assert len(stub_queue) == 1
+    req = stub_queue[0]["request"]
+    assert req["caller_agent"] == "claude-code"
+    blob = repr(stub_queue[0])
+    for raw in ("1.4.2", "buildX", "secret-token", "abc"):
+        assert raw not in blob
+
+
+def test_request_caller_agent_defaults_to_unknown(opted_in, stub_queue):
+    """Omitted / missing UA → ``unknown`` (not an empty or raw value)."""
+    _emit_one_request(caller_agent=None)
+    assert stub_queue[0]["request"]["caller_agent"] == "unknown"
+
+
+def test_request_sampling_gate(opted_in, stub_queue, monkeypatch):
+    """The sample rate gates emission AFTER the consent check. rate=0 drops
+    everything; a mid rate follows ``random.random()``."""
+    from vllm_mlx.telemetry import emit
+
+    # rate 0 → never emit (even though consent is on).
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "0")
+    _emit_one_request()
+    assert stub_queue == []
+
+    # rate 0.5: draw below the rate emits, at/above skips.
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "0.5")
+    monkeypatch.setattr(emit.random, "random", lambda: 0.4)
+    _emit_one_request()
+    assert len(stub_queue) == 1
+    monkeypatch.setattr(emit.random, "random", lambda: 0.9)
+    _emit_one_request()
+    assert len(stub_queue) == 1  # skipped, still one
+
+    # A garbage rate falls back to the default (not a crash, not disabled).
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "not-a-number")
+    assert 0.0 <= emit._request_sample_rate() <= 1.0
+
+
+def test_request_sampling_never_overrides_consent(fake_home, stub_queue, monkeypatch):
+    """Sampling is a second gate, not a bypass: a disabled client emits
+    nothing even at rate 1.0."""
+    monkeypatch.setenv("RAPID_MLX_TELEMETRY_REQUEST_SAMPLE", "1")
+    _emit_one_request()  # consent never granted in this fixture
+    assert stub_queue == []
