@@ -1103,7 +1103,16 @@ def _gather_kv_cache_dtype_inputs(model_name: str) -> tuple[dict | None, dict | 
         from huggingface_hub import try_to_load_from_cache as _cache_lookup
 
         hf_path = (alias_meta or {}).get("hf_path") or model_name
-        if hf_path:
+        # Local model directory (e.g. a freshly ``mlx_lm convert``-ed
+        # ``-rapid`` build served by path): read its ``config.json``
+        # directly. ``try_to_load_from_cache`` only resolves HF repo ids,
+        # so without this a local path yields ``hf_cfg=None`` and the MTP
+        # eligibility gate wrongly rejects an otherwise-eligible checkpoint.
+        _local_cfg = _os.path.join(model_name, "config.json") if model_name else None
+        if _local_cfg and _os.path.isfile(_local_cfg):
+            with open(_local_cfg) as fh:
+                hf_cfg = _json.load(fh)
+        elif hf_path:
             cached = _cache_lookup(repo_id=hf_path, filename="config.json")
             if cached and _os.path.exists(cached):
                 with open(cached) as fh:

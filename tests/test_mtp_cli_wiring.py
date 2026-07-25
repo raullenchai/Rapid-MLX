@@ -2922,3 +2922,31 @@ def test_install_mtp_vendored_uid_reuse_clears_stale_state(monkeypatch):
         f"(got {tokens!r}, expected [2000]). This suggests the "
         "wrapper resumed the OLD generator's queue / iteration state."
     )
+
+
+def test_gather_kv_cache_dtype_inputs_reads_local_dir_config(tmp_path):
+    """MTP eligibility must work for a LOCAL model directory served by path.
+
+    Regression for the eligibility gate: ``_gather_kv_cache_dtype_inputs`` only
+    resolved HF repo ids via ``try_to_load_from_cache``, so a local
+    ``mlx_lm``-converted build (e.g. a freshly quantized ``-rapid`` model) came
+    back with ``hf_cfg=None`` and MTP ``--speculative-config`` was rejected with
+    "does not qualify". Fails on ``main`` (returns ``None``); passes once the
+    local directory's ``config.json`` is read directly.
+    """
+    import json as _json
+
+    from vllm_mlx.cli import _gather_kv_cache_dtype_inputs
+    from vllm_mlx.spec_decode.mtp import MTPEligibility, detect_mtp_eligibility
+
+    (tmp_path / "config.json").write_text(
+        _json.dumps(
+            {"model_type": "qwen3_5_moe", "text_config": {"mtp_num_hidden_layers": 1}}
+        )
+    )
+
+    hf_cfg, _alias_meta = _gather_kv_cache_dtype_inputs(str(tmp_path))
+    assert hf_cfg is not None, "local model dir config.json should be read directly"
+    assert hf_cfg["text_config"]["mtp_num_hidden_layers"] == 1
+    # And the resolved config must clear the MTP eligibility gate.
+    assert detect_mtp_eligibility(hf_cfg) is not MTPEligibility.NONE
