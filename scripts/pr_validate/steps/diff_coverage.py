@@ -45,6 +45,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -507,7 +508,7 @@ def _run_group_bounded(
         the pipe can't wedge the pipeline. The stuck reader is a harmless daemon
         thread reaped at interpreter exit.
 
-    Deliberately NOT done, after a long convergence (codex #1220 r8–r19):
+    Deliberately NOT done, after a long convergence (codex #1220 r8–r20):
 
       * No ``RLIMIT_FSIZE`` file-size cap (inherited by the whole pytest tree,
         it would truncate/corrupt legitimate large writes — e.g. a >256 MiB
@@ -517,15 +518,29 @@ def _run_group_bounded(
         descendant can ``setsid()`` into its OWN group while still holding the
         pipe, so the original PGID can be empty-and-recycled even though a reader
         is still blocked — the kill would then land on an UNRELATED group
-        (potentially an operator service). This is a genuine dilemma with no
-        race-free resolution on macOS (no cgroups / job objects, no non-reaping
-        group wait): sweeping risks a wrong-group SIGKILL, not-sweeping may leak
-        an escaped descendant. We take the strictly-safer horn — never
-        wrong-kill — and accept the leak, which is anyway at PARITY with the
-        gating ``full_unit`` (its bare ``subprocess.run`` leaks escaped
-        descendants too, and additionally has no timeout so it would simply hang
-        here). ``killpg`` therefore fires ONLY from ``_kill_group`` on the
-        timeout / exception paths, where the leader is still unreaped.
+        (potentially an operator service). ``killpg`` therefore fires ONLY from
+        ``_kill_group`` on the timeout / exception paths, where the leader is
+        still unreaped.
+      * **No platform-enforced containment of a detached descendant that
+        survives a CLEAN leader exit** (codex #1220 r18/r20). This is the one
+        residual leak, and it is accepted deliberately, not overlooked:
+          - It is a genuine dilemma with no race-free resolution on macOS. The
+            two horns are: sweep the group (risks the r19 wrong-group SIGKILL
+            above) or don't (may leak an escaped descendant). codex has flagged
+            BOTH horns as blocking across rounds; there is no third option here
+            — cgroups / job objects don't exist on Darwin, and there is no
+            non-reaping group wait to enumerate survivors race-free.
+          - It is at PARITY with the merge-GATING ``full_unit`` step, which runs
+            the SAME suite via a bare ``subprocess.run`` with NO session, NO
+            group-kill and NO timeout — so it leaks a daemonized descendant TODAY
+            on every gating run, and would additionally HANG on a pipe-holder
+            where this step returns. An advisory measurer cannot reasonably be
+            held to a stricter containment bar than the gate it mirrors.
+          - The exposure is a misbehaving TEST that daemonizes a server; the fix
+            for that belongs in the test, and the same leak already reaches the
+            gate. We take the strictly-safer, never-wedge, never-wrong-kill
+            behavior and document the residue rather than add unsafe or
+            unavailable machinery.
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it leads a
     # brand-new process group whose PGID EQUALS its PID. Capture that id NOW,
@@ -566,8 +581,15 @@ def _run_group_bounded(
         # setsid-escaped descendant still holds a write end — we then return the
         # partial tail rather than block the pipeline (codex #1220 r19). We do
         # NOT ``killpg`` here: post-reap the PGID may be recycled (see docstring).
-        r_out.join(_REAP_TIMEOUT_S)
-        r_err.join(_REAP_TIMEOUT_S)
+        #
+        # ONE shared deadline across both joins so the total drain bound is
+        # ~``_REAP_TIMEOUT_S``, not 2× it — a per-stream bound would let the two
+        # joins compound to 20 s (codex #1220 r20 nit). The second join gets only
+        # the remaining budget; ``max(0.0, …)`` keeps it a non-blocking poll once
+        # the deadline has passed.
+        deadline = time.monotonic() + _REAP_TIMEOUT_S
+        r_out.join(max(0.0, deadline - time.monotonic()))
+        r_err.join(max(0.0, deadline - time.monotonic()))
 
     try:
         proc.wait(timeout=timeout)
