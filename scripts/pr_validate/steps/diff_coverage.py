@@ -91,16 +91,27 @@ _LOG_TAIL_CHARS = 4000
 # #1220 r8).
 _STDOUT_CAP_BYTES = 1_048_576
 
-# Disk quota: the largest file the child — or anything in its session — may
-# create, enforced by the KERNEL via ``RLIMIT_FSIZE`` (set by an exec-based
-# wrapper, ``_rlimit_wrap``). The output goes to disk (not RAM), but disk is finite on
-# an auto-deploy host, so a runaway / hung test that streams without bound
-# must not exhaust it (codex #1220 r10). A kernel limit closes the gap a
-# userspace size-poll leaves — a child that dumps gigabytes and exits BETWEEN
-# polls, or in the very first sub-poll window, can't overshoot because the
-# write past the limit is refused (EFBIG) / SIGXFSZ-killed at the syscall,
-# regardless of timing, and the cap is INHERITED so even a descendant that
-# ``setsid()``s out of the group still can't exhaust disk (codex #1220 r11).
+# Per-file disk cap: the largest size any SINGLE file the child writes may
+# reach, enforced by the KERNEL via ``RLIMIT_FSIZE`` (set by an exec-based
+# wrapper, ``_rlimit_wrap``). Its specific job is to bound the two capture
+# streams — we redirect the child's stdout/stderr to temp FILES (not RAM), and
+# a runaway / hung test that streams without bound would otherwise fill the
+# auto-deploy host's disk through them (codex #1220 r10). A kernel per-file cap
+# closes the gap a userspace size-poll leaves: a child that dumps gigabytes and
+# exits BETWEEN polls, or in the first sub-poll window, can't overshoot because
+# the write past the cap is refused (EFBIG) / SIGXFSZ-killed at the syscall,
+# regardless of timing (codex #1220 r11).
+#
+# SCOPE (deliberately not overclaimed — codex #1220 r13): this bounds each file
+# INDIVIDUALLY, which fully contains the streaming vector above. It is NOT an
+# aggregate-bytes quota — a suite could in principle create many sub-cap files,
+# and a descendant that ``setsid()``s out of the group escapes the group-kill
+# below. Both are out of scope for an ADVISORY step that runs the repo's OWN
+# test suite (not untrusted code): portable aggregate/tree containment needs
+# cgroups / job-objects unavailable on macOS, and the merge-GATING sibling
+# steps (``full_unit``/``targeted_tests``) run the same suite with NO cap,
+# timeout, or group-kill at all — this step is already strictly more contained.
+#
 # 256 MiB is orders of magnitude above any real ``-q`` suite / diff-cover run
 # or coverage artifact, so it only ever trips on genuinely pathological output.
 _OUTPUT_QUOTA_BYTES = 256 * 1024 * 1024
@@ -389,14 +400,16 @@ def _run_group_bounded(
     surviving descendant to hold open, it removes the reap-wedge class
     entirely. The tail keeps the bytes every caller needs — diff-cover's
     footer and pytest's ``-q`` failure summary both sit at the END of their
-    streams. Disk is bounded too, but by the KERNEL not a userspace poll: the
-    child is spawned under an ``RLIMIT_FSIZE`` of ``_OUTPUT_QUOTA_BYTES``, so a
-    write past the cap is refused at the syscall the instant it happens — no
-    matter how fast the child writes or whether it exits between two userspace
-    polls, and even if a descendant ``setsid()``s out of the group (the limit
-    is inherited). A child killed by ``SIGXFSZ`` (or exiting nonzero on
-    ``EFBIG``) then fails the exit-code gate and the run is skipped (codex
-    #1220 r11). The limit is applied by a tiny exec-based WRAPPER (see
+    streams. The two capture files are bounded by the KERNEL, not a userspace
+    poll: the child is spawned under a per-file ``RLIMIT_FSIZE`` of
+    ``_OUTPUT_QUOTA_BYTES``, so a write past the cap is refused at the syscall
+    the instant it happens — no matter how fast the child writes or whether it
+    exits between two userspace polls. A child killed by ``SIGXFSZ`` (or
+    exiting nonzero on ``EFBIG``) then fails the exit-code gate and the run is
+    skipped (codex #1220 r11). The cap is PER-FILE and does not attempt
+    aggregate-bytes or full-descendant-tree containment — see the scope note on
+    ``_OUTPUT_QUOTA_BYTES`` for why that is out of scope for this advisory step
+    (codex #1220 r13). The limit is applied by a tiny exec-based WRAPPER (see
     ``_rlimit_wrap``) rather than a ``preexec_fn`` callback: ``preexec_fn``
     runs between fork and exec in a copy of the (possibly multi-threaded)
     parent's address space, where grabbing an internal lock another thread

@@ -766,30 +766,51 @@ class TestRunGroupBounded:
         assert proc.returncode == 0, proc.stderr
         assert "threaded-ok" in proc.stdout
 
-    def test_output_size_is_capped_by_kernel_rlimit(self, monkeypatch):
-        # F1 (codex #1220 r11): disk is bounded by a KERNEL RLIMIT_FSIZE set on
-        # the child (via preexec_fn), NOT a userspace size-poll. So a child that
-        # dumps far past the quota — even faster than, or entirely between, any
-        # poll would run — is refused at the write(2) syscall (SIGXFSZ, or EFBIG
-        # if caught) instead of being allowed to exhaust the host. Shrink the
-        # quota so the test is fast and cheap.
+    def test_output_size_is_capped_by_kernel_rlimit(self, tmp_path, monkeypatch):
+        # codex #1220 r11: any single file the child writes is bounded by a
+        # KERNEL RLIMIT_FSIZE (set by the exec-based wrapper), NOT a userspace
+        # size-poll — so a write past the cap is refused at write(2) (SIGXFSZ,
+        # or EFBIG if caught) regardless of timing. Shrink the quota so the
+        # test is fast.
+        #
+        # The child writes to a REAL FILE the test owns and then we stat() it,
+        # rather than inspecting _read_capped(stdout): the read-back is itself
+        # capped at _STDOUT_CAP_BYTES, which would mask a kernel cap that leaked
+        # far more than the configured quota to disk (codex #1220 r13). The
+        # on-disk size is the honest, un-truncated evidence.
+        import signal as _signal
+
         import scripts.pr_validate.steps.diff_coverage as dc
 
-        monkeypatch.setattr(dc, "_OUTPUT_QUOTA_BYTES", 64 * 1024)  # 64 KiB
-        # One-shot write of 4 MiB (>> quota) to the temp file. The kernel
-        # refuses the write past 64 KiB: the child dies on SIGXFSZ (negative rc)
-        # or exits nonzero on EFBIG — either way it exits on its own (no
-        # timeout), so we get a CompletedProcess, not a TimeoutExpired.
+        quota = 64 * 1024  # 64 KiB
+        monkeypatch.setattr(dc, "_OUTPUT_QUOTA_BYTES", quota)
+        victim = tmp_path / "victim.bin"
+        # Attempt 8 MiB (>> quota) in 1 MiB raw os.write chunks. The kernel
+        # short-writes the first chunk up to the cap and returns; the NEXT
+        # os.write, with the file already at the limit, attempts to extend past
+        # it and delivers SIGXFSZ (default-fatal), killing the child. So the
+        # child exits on its own (no timeout) → CompletedProcess.
         code = (
-            "import sys\nsys.stdout.write('X' * (4 * 1024 * 1024))\nsys.stdout.flush()"
+            f"import os\n"
+            f"fd = os.open({str(victim)!r}, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
+            "buf = b'X' * (1024 * 1024)\n"
+            "for _ in range(8):\n"
+            "    os.write(fd, buf)\n"
         )
         proc = _run_group_bounded([sys.executable, "-c", code], cwd=".", timeout=30)
 
+        # rc != 0 proves the cap ENGAGED: a clean rc of 0 is only reachable if
+        # all 8 writes succeeded (cap never fired). SIGXFSZ → negative rc; a
+        # platform delivering EFBIG instead → nonzero exit from the OSError.
         assert proc.returncode != 0, (
             "child writing past the RLIMIT_FSIZE quota should have died "
             f"(SIGXFSZ) or errored (EFBIG); got rc={proc.returncode}"
         )
-        # Disk stayed bounded — the child never landed the 4 MiB it attempted
-        # (kernel stopped it at the ~64 KiB cap; read-back is also capped).
-        assert len(proc.stdout) <= dc._STDOUT_CAP_BYTES
-        assert len(proc.stdout) < 4 * 1024 * 1024
+        assert proc.returncode == -_signal.SIGXFSZ or proc.returncode > 0
+        # The ACTUAL on-disk file never approached the 8 MiB attempted — the
+        # kernel held it at ~the quota (small slack for filesystem block
+        # rounding). This is the un-truncated proof the cap really bounds disk,
+        # NOT the _read_capped(stdout) tail which is itself size-limited (codex
+        # #1220 r13).
+        assert victim.exists()
+        assert victim.stat().st_size <= quota + 4096, victim.stat().st_size
