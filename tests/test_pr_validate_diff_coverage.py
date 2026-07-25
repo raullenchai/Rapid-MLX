@@ -765,6 +765,57 @@ class TestRunGroupBounded:
         assert proc.returncode == 0, proc.stderr
         assert "threaded-ok" in proc.stdout
 
+    def test_clean_exit_sweeps_a_lingering_pipe_holding_descendant(
+        self, tmp_path, monkeypatch
+    ):
+        # codex #1220 r18 (B1): the leader can exit CLEANLY (rc 0) while a
+        # background descendant it spawned stays alive in the same group,
+        # holding the inherited stdout pipe open. ``proc.wait()`` reaps only the
+        # leader, so a naive clean path would both block the reader forever AND
+        # leak the descendant into later steps. The teardown must sweep it: a
+        # still-blocked reader proves a group member is alive, so the PGID is
+        # still reserved and ``killpg`` is race-free even after the leader was
+        # reaped. This test fails if the sweep regresses (heartbeat keeps
+        # growing) or if the call hangs (never returns).
+        import time as _time
+
+        from scripts.pr_validate.steps import diff_coverage as _dc
+
+        # Keep the test fast: the first (doomed) reader join waits
+        # _REAP_TIMEOUT_S before the sweep fires.
+        monkeypatch.setattr(_dc, "_REAP_TIMEOUT_S", 0.5)
+
+        heartbeat = tmp_path / "hb"
+        # Leader backgrounds a grandchild that holds the inherited stdout pipe
+        # (the subshell keeps fd 1 open) and ticks a heartbeat every 50 ms, then
+        # EXITS 0. The grandchild stays in the leader's process group. Path is a
+        # positional ($1), never interpolated — an apostrophe in tmp_path would
+        # otherwise break the single-quoted script (codex #1220 r9).
+        cmd = [
+            "sh",
+            "-c",
+            '(while true; do printf . >> "$1"; sleep 0.05; done) & exit 0',
+            "sh",  # $0
+            str(heartbeat),  # $1
+        ]
+        proc = _dc._run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
+        assert proc.returncode == 0  # clean exit — did NOT hang or time out
+
+        # Grandchild must have started (so "stopped" is meaningful), then been
+        # swept by the clean-exit teardown: the heartbeat stops growing.
+        deadline = _time.time() + 5.0
+        while not heartbeat.exists() and _time.time() < deadline:
+            _time.sleep(0.02)
+        assert heartbeat.exists(), "grandchild never started — test inconclusive"
+        size1 = heartbeat.stat().st_size
+        _time.sleep(1.0)
+        size2 = heartbeat.stat().st_size
+        assert size1 == size2, (
+            f"heartbeat kept growing after a clean exit ({size1} → {size2} "
+            "bytes) — the teardown leaked a lingering pipe-holding descendant "
+            "instead of sweeping the group"
+        )
+
     def test_capture_is_bounded_to_a_tail_on_a_runaway_child(self):
         # codex #1220 r17 (B2): a plain communicate() buffers the ENTIRE child
         # output in memory, so a runaway test streaming gigabytes could OOM the

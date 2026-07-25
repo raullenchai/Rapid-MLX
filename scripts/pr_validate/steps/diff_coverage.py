@@ -342,9 +342,21 @@ class DiffCoverageStep(Step):
             )
 
         pct, covered, total = parsed
+        # Exit-1 caveat. We deliberately don't try to CLASSIFY exit 1 into
+        # "isolated flaky failures" vs "a session-scoped fixture error that
+        # wiped out every test" (codex #1220 r18 nit) — that would mean parsing
+        # pytest's summary text, which is exactly the brittle heuristic this
+        # step avoids. Instead we tag EVERY exit-1 measurement as caveated so
+        # the human building the baseline distribution can exclude it: a
+        # widespread setup failure that drives the % near zero is the extreme
+        # end of the same "a failing test left changed lines uncovered" signal,
+        # and caveated runs are precisely the ones to drop before deciding a
+        # threshold. The raw pytest tail is in the log for that judgement.
         caveat = (
-            " NOTE: some unit tests failed this run (see full_unit) — the % "
-            "may under-count lines a failing test would otherwise have covered."
+            " NOTE: some unit tests failed this run (see full_unit) — the % may "
+            "under-count lines a failing test would otherwise have covered; a "
+            "widespread setup/session-fixture failure can drive it near zero, so "
+            "EXCLUDE caveated runs from the baseline distribution."
             if suite_had_failures
             else ""
         )
@@ -387,43 +399,64 @@ class DiffCoverageStep(Step):
         )
 
 
-def _drain_tail(pipe, chunks: collections.deque) -> None:
-    """Reader thread: stream ``pipe`` in fixed blocks, retaining only the last
-    ~``_CAPTURE_TAIL_BYTES`` in ``chunks``. The MIDDLE of a runaway stream is
-    dropped so validator memory stays bounded regardless of total volume (codex
-    #1220 r17), while the END — where diff-cover's footer / pytest's ``-q``
-    summary live — is always kept.
+class _TailReader:
+    """Drains one pipe on a daemon thread, retaining only the last
+    ~``_CAPTURE_TAIL_BYTES``. The MIDDLE of a runaway stream is discarded so
+    validator memory stays bounded regardless of total volume (codex #1220 r17),
+    while the END — where diff-cover's footer / pytest's ``-q`` summary live — is
+    always kept.
 
     Draining concurrently (rather than after the process exits) is also what
-    keeps a chatty child from deadlocking on a full 64 KiB kernel pipe buffer.
-    Runs to EOF, which the child's exit — or the group SIGKILL closing every
-    write end — delivers; a stuck reader (a setsid-escapee still holding the
-    write end) is a harmless daemon thread the caller stops ``join``-ing after a
-    bound, never a hang."""
-    try:
-        for block in iter(lambda: pipe.read(_CAPTURE_BLOCK_BYTES), b""):
-            chunks.append(block)
-            # Drop whole oldest blocks while the retained tail (excluding the
-            # newest block) still exceeds the cap. Keep >=1 block so a stream we
-            # actually read is never emptied.
-            retained = sum(len(c) for c in chunks)
-            while len(chunks) > 1 and retained - len(chunks[0]) >= _CAPTURE_TAIL_BYTES:
-                retained -= len(chunks.popleft())
-    except (OSError, ValueError):
-        # Pipe closed under us / read on a closed fd — nothing left to drain.
-        pass
-    finally:
+    stops a chatty child deadlocking on a full 64 KiB kernel pipe buffer. All
+    access to the retained chunks is under ``_lock`` so ``text()`` can snapshot
+    the tail race-free even if the reader thread is still running — otherwise a
+    concurrent ``append``/``popleft`` would raise ``RuntimeError: deque mutated
+    during iteration`` mid-``b"".join`` (codex #1220 r18)."""
+
+    def __init__(self, pipe) -> None:
+        self._pipe = pipe
+        self._lock = threading.Lock()
+        self._chunks: collections.deque = collections.deque()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
         try:
-            pipe.close()
-        except OSError:
+            for block in iter(lambda: self._pipe.read(_CAPTURE_BLOCK_BYTES), b""):
+                with self._lock:
+                    self._chunks.append(block)
+                    # Drop whole oldest blocks while the tail (excluding the
+                    # newest block) still exceeds the cap. Keep >=1 block so a
+                    # stream we actually read is never emptied.
+                    retained = sum(len(c) for c in self._chunks)
+                    while (
+                        len(self._chunks) > 1
+                        and retained - len(self._chunks[0]) >= _CAPTURE_TAIL_BYTES
+                    ):
+                        retained -= len(self._chunks.popleft())
+        except (OSError, ValueError):
+            # Pipe closed under us / read on a closed fd — nothing left to drain.
             pass
+        finally:
+            try:
+                self._pipe.close()
+            except OSError:
+                pass
 
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
 
-def _joined(chunks: collections.deque) -> str:
-    """Decode the retained byte tail. ``errors='replace'`` because child output
-    isn't guaranteed valid UTF-8 and a block boundary may split a multibyte
-    sequence — a torn edge byte becomes U+FFFD, never an exception."""
-    return b"".join(chunks).decode("utf-8", "replace")
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def text(self) -> str:
+        """Decode the retained byte tail under the lock. ``errors='replace'``
+        because child output isn't guaranteed valid UTF-8 and a block boundary
+        may split a multibyte sequence — a torn edge byte becomes U+FFFD."""
+        with self._lock:
+            return b"".join(self._chunks).decode("utf-8", "replace")
 
 
 def _run_group_bounded(
@@ -433,7 +466,7 @@ def _run_group_bounded(
     expiry, capturing a BOUNDED tail of each stream.
 
     Like the merge-GATING ``full_unit`` step this runs the SAME pytest suite and
-    returns a ``CompletedProcess`` with text stdout/stderr. It adds the two
+    returns a ``CompletedProcess`` with text stdout/stderr. It adds the
     properties an ADVISORY step in an auto-deploy pipeline needs and the gate
     does not:
 
@@ -444,24 +477,32 @@ def _run_group_bounded(
         expiry we SIGKILL the WHOLE group (``_kill_group``). The
         ``TimeoutExpired`` is re-raised (with the captured tail attached) for the
         caller's skip-on-timeout handling.
-      * **bounded capture + bounded drain.** Two reader threads keep only the
-        last ~``_CAPTURE_TAIL_BYTES`` per stream instead of ``communicate()``
+      * **bounded capture.** Two ``_TailReader`` threads keep only the last
+        ~``_CAPTURE_TAIL_BYTES`` per stream instead of ``communicate()``
         buffering the entire (up-to-30-min) suite output in memory, which a
         runaway test could grow until it OOM-kills the validator before its
-        advisory handler runs (codex #1220 r17). The threads also make the
-        post-kill drain BOUNDED: we ``join`` them under ``_REAP_TIMEOUT_S`` and
-        proceed with whatever tail we have, so a setsid-escaped descendant still
-        holding a pipe write-end cannot wedge the never-block contract — the
-        unbounded second ``communicate()`` of the prior design could (codex
-        #1220 r17). A stuck reader is a daemon thread reaped at interpreter exit.
+        advisory handler runs (codex #1220 r17).
+      * **bounded, leak-free teardown (codex #1220 r18).** After the leader
+        exits — cleanly or on timeout — we ``join`` the readers under
+        ``_REAP_TIMEOUT_S``. If a reader is still alive afterwards, that PROVES a
+        descendant is still holding the pipe write-end open, i.e. a group member
+        is alive; POSIX keeps the PGID reserved while any member lives, so
+        ``killpg(pgid)`` then targets exactly this group even though the leader
+        was already reaped — race-free, no PID-reuse hazard. That kill both
+        reaps the leaked descendant (fixing the clean-path leak the prior
+        ``proc.wait``-only design left) and unblocks the reader so its buffer is
+        safe to read. We never block indefinitely: a second bounded join and a
+        lock-guarded ``text()`` snapshot follow.
 
-    Deliberately NOT done, after a long convergence (codex #1220 r8–r17): no
+    Deliberately NOT done, after a long convergence (codex #1220 r8–r18): no
     ``RLIMIT_FSIZE`` file-size cap (inherited by the whole pytest tree, it would
     truncate/corrupt legitimate large writes — e.g. a >256 MiB model shard —
-    codex r16), no temp-file/quota/exec-wrapper machinery. A setsid-escaping
-    descendant can still SURVIVE the group-kill — a fundamental POSIX limitation
-    the gating siblings don't guard against either (codex r11/r13/r16); portable
-    containment would need cgroups / job-objects unavailable here.
+    codex r16), no temp-file/quota/exec-wrapper machinery. The one residual gap
+    is fundamental and shared with the gating siblings: a descendant that BOTH
+    ``setsid()``-escapes the group AND closes the inherited pipes leaves no
+    race-free signal to find it on macOS (no cgroups / job objects, no
+    non-reaping group wait), so — like ``full_unit``'s bare ``subprocess.run`` —
+    it can outlive the run.
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it leads a
     # brand-new process group whose PGID EQUALS its PID. Capture that id NOW,
@@ -477,48 +518,53 @@ def _run_group_bounded(
         start_new_session=True,
     )
     pgid = proc.pid  # == PGID under start_new_session (setsid)
-    out_chunks: collections.deque = collections.deque()
-    err_chunks: collections.deque = collections.deque()
-    t_out = threading.Thread(
-        target=_drain_tail, args=(proc.stdout, out_chunks), daemon=True
-    )
-    t_err = threading.Thread(
-        target=_drain_tail, args=(proc.stderr, err_chunks), daemon=True
-    )
-    t_out.start()
-    t_err.start()
+    r_out = _TailReader(proc.stdout)
+    r_err = _TailReader(proc.stderr)
+    r_out.start()
+    r_err.start()
 
-    def _join_readers() -> None:
-        # Bounded on purpose. On clean exit the pipes hit EOF the moment the
-        # child dies, so both joins return at once; after a group SIGKILL EOF
-        # arrives when the last writer dies. The bound only bites when a
-        # setsid-escapee still holds a write end — we then proceed with the
-        # partial tail rather than block the pipeline (codex #1220 r17).
-        t_out.join(_REAP_TIMEOUT_S)
-        t_err.join(_REAP_TIMEOUT_S)
+    def _settle_readers() -> None:
+        # Bounded drain, then a race-free group sweep IFF a reader is still
+        # blocked. A live reader ⇒ a descendant still holds the pipe write-end
+        # ⇒ a group member is alive ⇒ the PGID is still reserved (POSIX), so the
+        # ``killpg`` cannot hit a recycled group even though the leader may be
+        # reaped. The kill reaps the leaked descendant AND unblocks the reader;
+        # the final bounded join then returns promptly. If the reader is STILL
+        # alive (uninterruptible read — near-impossible post-SIGKILL) we give up
+        # and return the partial tail rather than block the pipeline; ``text()``
+        # is lock-guarded so reading it is safe regardless.
+        r_out.join(_REAP_TIMEOUT_S)
+        r_err.join(_REAP_TIMEOUT_S)
+        if r_out.alive() or r_err.alive():
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:
+                pass
+            r_out.join(_REAP_TIMEOUT_S)
+            r_err.join(_REAP_TIMEOUT_S)
 
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         # Time budget blown: SIGKILL the whole group BEFORE reaping the leader
-        # (race-free — ``pgid`` can't be recycled while a member is alive), let
-        # the readers drain the now-EOF pipes under a bound, and re-raise with
-        # the captured tail so the caller can log WHAT hung.
+        # (race-free — ``pgid`` can't be recycled while the unreaped leader is a
+        # member), settle the readers, and re-raise with the captured tail so
+        # the caller can log WHAT hung.
         _kill_group(proc, pgid)
-        _join_readers()
+        _settle_readers()
         raise subprocess.TimeoutExpired(
-            cmd, timeout, output=_joined(out_chunks), stderr=_joined(err_chunks)
+            cmd, timeout, output=r_out.text(), stderr=r_err.text()
         ) from None
     except BaseException:
         # Any other escape (e.g. KeyboardInterrupt): tear the group down so
-        # nothing is orphaned, drain under a bound, then re-raise unchanged.
+        # nothing is orphaned, settle, then re-raise unchanged.
         _kill_group(proc, pgid)
-        _join_readers()
+        _settle_readers()
         raise
-    _join_readers()
-    return subprocess.CompletedProcess(
-        cmd, proc.returncode, _joined(out_chunks), _joined(err_chunks)
-    )
+    # Clean exit: leader already reaped by ``proc.wait``. ``_settle_readers``
+    # still sweeps any lingering pipe-holding descendant race-free (see above).
+    _settle_readers()
+    return subprocess.CompletedProcess(cmd, proc.returncode, r_out.text(), r_err.text())
 
 
 def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
