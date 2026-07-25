@@ -18,7 +18,6 @@ Two contracts matter most here and are the reason this file exists:
 
 from __future__ import annotations
 
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -500,39 +499,48 @@ class TestRunGroupBounded:
         # would wedge the reap. This test distinguishes the two: it fails if
         # group-kill ever regresses to a leader-only kill.
         #
-        # Leader = ``sh``; it backgrounds a long-lived grandchild in the SAME
-        # process group (non-interactive sh has no job control, so ``&`` jobs
-        # stay in the shell's group), records the grandchild PID, then blocks
-        # so the leader is alive when the timeout fires. The grandchild
-        # inherits the subprocess pipes, so a leader-only kill would also
-        # reproduce the reap-wedge from codex #1220.
-        import os as _os
+        # Liveness is detected via a HEARTBEAT the grandchild grows, NOT an
+        # ``os.kill(pid, 0)`` probe: signal 0 succeeds for a not-yet-reaped
+        # zombie (and, after PID reuse, for an unrelated process), so a
+        # PID-based probe is racy (codex #1220 r5). Instead the grandchild
+        # appends a byte to a file every 50 ms; after the group kill the file
+        # STOPS growing. A monotonically-growing size can't false-negative and
+        # is immune to zombie/PID-reuse — if group-kill regressed to
+        # leader-only, the orphaned grandchild (reparented to init) would keep
+        # appending and the size would still advance.
+        #
+        # Leader = ``sh``; it backgrounds the grandchild in the SAME process
+        # group (non-interactive sh has no job control, so ``&`` jobs stay in
+        # the shell's group), then blocks so the leader is alive when the
+        # timeout fires. The grandchild inherits the subprocess pipes, so a
+        # leader-only kill would also reproduce the reap-wedge from codex #1220.
         import time as _time
 
-        pidfile = tmp_path / "grandchild.pid"
-        cmd = ["sh", "-c", f"sleep 120 & echo $! > '{pidfile}'; sleep 120"]
+        heartbeat = tmp_path / "heartbeat"
+        cmd = [
+            "sh",
+            "-c",
+            f"(while true; do printf . >> '{heartbeat}'; sleep 0.05; done) & sleep 120",
+        ]
 
         with pytest.raises(subprocess.TimeoutExpired):
             _run_group_bounded(cmd, cwd=str(tmp_path), timeout=1)
 
-        gc_pid = int(pidfile.read_text().strip())
-        # Poll briefly for SIGKILL delivery, then assert the grandchild is gone.
+        # Grandchild must have started (heartbeat exists) before we can judge
+        # whether it STOPPED. It ticks every 50 ms and the leader ran for the
+        # full 1 s timeout, so the file exists well before we get here.
         deadline = _time.time() + 5.0
-        alive = True
-        while _time.time() < deadline:
-            try:
-                _os.kill(gc_pid, 0)  # signal 0 = liveness probe
-            except ProcessLookupError:
-                alive = False
-                break
-            _time.sleep(0.05)
-        if alive:
-            # Don't strand the leaked process if the assertion is about to fail.
-            try:
-                _os.kill(gc_pid, signal.SIGKILL)
-            except OSError:
-                pass
-            pytest.fail(
-                f"grandchild {gc_pid} survived the timeout — group kill "
-                "regressed to a leader-only kill"
-            )
+        while not heartbeat.exists() and _time.time() < deadline:
+            _time.sleep(0.02)
+        assert heartbeat.exists(), "grandchild never started — test is inconclusive"
+
+        # Sample size, wait several heartbeat intervals, sample again. A dead
+        # grandchild leaves the size fixed; a survivor grows it by ~20 bytes/s.
+        size1 = heartbeat.stat().st_size
+        _time.sleep(1.0)
+        size2 = heartbeat.stat().st_size
+        assert size1 == size2, (
+            f"heartbeat kept growing after the timeout ({size1} → {size2} "
+            "bytes) — the grandchild survived, so group-kill regressed to a "
+            "leader-only kill"
+        )

@@ -52,16 +52,6 @@ from ..context import Context
 # test files aren't the subject of "is this PR's new code tested".
 _COV_PACKAGE = "vllm_mlx"
 
-# Fallback diff-cover compare point when the PR's base commit is unknown.
-# The real compare ref is derived per-PR from ``ctx.base_sha`` (the PR's
-# actual base, ``baseRefOid``) so a PR targeting a release / maintenance
-# branch is scored against ITS base, not main (codex #1220). diff-cover
-# computes the merge-base internally, so either form yields exactly the
-# lines this PR adds on top of its base. If the derived ref can't be
-# resolved, diff-cover exits nonzero and we skip (see the returncode
-# guard) — an advisory measurer never blocks on a bad ref.
-_COMPARE_BRANCH_FALLBACK = "origin/main"
-
 # Bounded so a hung test or a wedged diff-cover can't block the pipeline
 # — the whole point of an advisory step is that it never blocks. On
 # expiry ``subprocess.run`` SIGKILLs the child; we catch and skip. The
@@ -88,6 +78,10 @@ _PYTEST_COVERAGE_VALID_EXITS = (0, 1)
 # descendant that inherited the pipes is wedged in an uninterruptible
 # syscall — we must never block the (auto-deploy) pipeline waiting on it.
 _REAP_TIMEOUT_S = 10
+
+# Keep the diagnostic log readable — we tail (not head) subprocess output so
+# the most recent lines (pytest's failure summary) always survive truncation.
+_LOG_TAIL_CHARS = 4000
 
 
 class DiffCoverageStep(Step):
@@ -207,13 +201,17 @@ class DiffCoverageStep(Step):
             )
 
         # 4. diff-cover: patch coverage of the changed lines vs the PR's
-        #    base. Derive the compare ref from ``ctx.base_sha`` (the PR's
-        #    actual base commit) so a release/maintenance-branch PR is
-        #    scored against its own base, not main. Falls back to
-        #    ``origin/main`` when the base commit is unknown. Invoke via
-        #    ``-m`` so it runs in the SAME interpreter the coverage was
-        #    produced with (matches targeted_tests' policy).
-        compare_ref = ctx.base_sha or _COMPARE_BRANCH_FALLBACK
+        #    base. The compare ref is the PR's ACTUAL base — ``ctx.base_sha``
+        #    (its ``baseRefOid``) — so a PR targeting a release/maintenance
+        #    branch is scored against ITS base, never a hardcoded ``main``
+        #    (codex #1220). We fall back to ``ctx.base_branch`` (the PR's
+        #    target branch, default ``main``) exactly as the sibling
+        #    base-aware steps do (``targeted_tests``, ``stress_e2e_bench``),
+        #    so an unknown base commit still resolves to the right branch
+        #    rather than a hardcoded remote ref. Invoke via ``-m`` so it runs
+        #    in the SAME interpreter the coverage was produced with (matches
+        #    targeted_tests' policy).
+        compare_ref = ctx.base_sha or ctx.base_branch
         dc_cmd = [
             sys.executable,
             "-m",
@@ -232,12 +230,19 @@ class DiffCoverageStep(Step):
                 f"{_DIFF_COVER_TIMEOUT_S}s — process group killed)"
             )
 
+        # Record pytest's own output too (tail-truncated) — on an accepted
+        # exit-1 measurement the reader needs to see WHICH tests failed and
+        # why, not just the bare exit code (codex #1220 r5 nit).
         _safe_write(
             log_path,
             "# diff_coverage advisory run\n\n"
             f"## pytest cmd\n`{' '.join(pytest_cmd)}`\n\n"
             f"## pytest exit: {pytest_proc.returncode}\n\n"
-            f"## diff-cover cmd\n`{' '.join(dc_cmd)}`\n\n"
+            "## pytest stdout (tail)\n"
+            + _tail(pytest_proc.stdout)
+            + "\n## pytest stderr (tail)\n"
+            + _tail(pytest_proc.stderr)
+            + f"\n## diff-cover cmd\n`{' '.join(dc_cmd)}`\n\n"
             f"## diff-cover exit: {dc_proc.returncode}\n\n"
             "## diff-cover stdout\n"
             + (dc_proc.stdout or "")
@@ -368,13 +373,25 @@ def _kill_group_and_reap(proc: subprocess.Popen[str], pgid: int) -> None:
             pass
     try:
         proc.communicate(timeout=_REAP_TIMEOUT_S)
+        return
     except subprocess.TimeoutExpired:
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
+        pass
+    # A descendant is wedged holding the inherited pipes, so ``communicate``
+    # (which reads to EOF before waiting) can't return. Abandon the pipes so
+    # we stop blocking on them — but the SIGKILLed direct child is now a
+    # zombie that ``communicate`` never got to reap, so still ``wait()`` for
+    # it under a bound. Without this the leader leaks as a zombie until the
+    # validator process exits (codex #1220 r5).
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=_REAP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        pass  # truly wedged leader (near-impossible post-SIGKILL) — give up
 
 
 def _safe_write(path: Path, text: str) -> None:
@@ -388,11 +405,20 @@ def _safe_write(path: Path, text: str) -> None:
         pass
 
 
+def _tail(text: str | None, limit: int = _LOG_TAIL_CHARS) -> str:
+    """Last ``limit`` chars of ``text`` (pytest's failure summary lives at the
+    end), with an elision marker when truncated. Never raises."""
+    s = text or ""
+    if len(s) <= limit:
+        return s
+    return f"…[{len(s) - limit} chars elided]…\n" + s[-limit:]
+
+
 def _pytest_dump(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
     return (
         f"# instrumented pytest (exit {proc.returncode})\n\n"
         f"## cmd\n`{' '.join(cmd)}`\n\n"
-        "## stdout\n" + (proc.stdout or "") + "\n## stderr\n" + (proc.stderr or "")
+        "## stdout\n" + _tail(proc.stdout) + "\n## stderr\n" + _tail(proc.stderr)
     )
 
 
