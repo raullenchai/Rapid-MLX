@@ -91,16 +91,19 @@ _LOG_TAIL_CHARS = 4000
 # #1220 r8).
 _STDOUT_CAP_BYTES = 1_048_576
 
-# Disk quota: hard cap on how many bytes a single child may write to its temp
-# files before we kill its group and treat the run as timed out. The output
-# goes to disk (not RAM), but disk is still finite on an auto-deploy host, so
-# a runaway / hung test that streams without bound must not exhaust it (codex
-# #1220 r10). 256 MiB is orders of magnitude above any real ``-q`` suite or
-# diff-cover run, so it only ever trips on genuinely pathological output.
+# Disk quota: the largest file the child — or anything in its session — may
+# create, enforced by the KERNEL via ``RLIMIT_FSIZE`` (set in a preexec_fn on
+# the child). The output goes to disk (not RAM), but disk is still finite on
+# an auto-deploy host, so a runaway / hung test that streams without bound
+# must not exhaust it (codex #1220 r10). A kernel limit closes the gap a
+# userspace size-poll leaves — a child that dumps gigabytes and exits BETWEEN
+# polls, or in the very first sub-poll window, can't overshoot because the
+# write past the limit is refused (EFBIG) / SIGXFSZ-killed at the syscall,
+# regardless of timing, and the cap is INHERITED so even a descendant that
+# ``setsid()``s out of the group still can't exhaust disk (codex #1220 r11).
+# 256 MiB is orders of magnitude above any real ``-q`` suite / diff-cover run
+# or coverage artifact, so it only ever trips on genuinely pathological output.
 _OUTPUT_QUOTA_BYTES = 256 * 1024 * 1024
-
-# How often, while waiting, we re-check the child against the output quota.
-_POLL_INTERVAL_S = 5
 
 
 class DiffCoverageStep(Step):
@@ -375,13 +378,18 @@ def _run_group_bounded(
     surviving descendant to hold open, it removes the reap-wedge class
     entirely. The tail keeps the bytes every caller needs — diff-cover's
     footer and pytest's ``-q`` failure summary both sit at the END of their
-    streams. Disk is bounded too: we poll the temp-file size and, if a child
-    blows past ``_OUTPUT_QUOTA_BYTES``, kill it exactly like a timeout so a
-    runaway producer can't exhaust the auto-deploy host (codex #1220 r10).
+    streams. Disk is bounded too, but by the KERNEL not a userspace poll: the
+    child is spawned under an ``RLIMIT_FSIZE`` of ``_OUTPUT_QUOTA_BYTES`` (see
+    ``_limit_child_fsize``), so a write past the cap is refused at the
+    syscall the instant it happens — no matter how fast the child writes or
+    whether it exits between two userspace polls, and even if a descendant
+    ``setsid()``s out of the group (the limit is inherited). A child killed
+    by ``SIGXFSZ`` (or exiting nonzero on ``EFBIG``) then fails the
+    exit-code gate and the run is skipped (codex #1220 r11).
 
-    On timeout / quota breach the raised ``TimeoutExpired`` carries the
-    captured (capped) stdout/stderr so the caller can log WHAT hung before
-    the temp files are deleted (codex #1220 r10).
+    On timeout the raised ``TimeoutExpired`` carries the captured (capped)
+    stdout/stderr so the caller can log WHAT hung before the temp files are
+    deleted (codex #1220 r10).
 
     The isolated group is swept on EVERY exit path, not just timeout: a
     pytest that exits cleanly can still leak a background server/worker into
@@ -400,14 +408,25 @@ def _run_group_bounded(
             stderr=err_f,
             cwd=cwd,
             start_new_session=True,
+            preexec_fn=_limit_child_fsize,  # noqa: PLC2801 — kernel disk cap
         )
         pgid = proc.pid  # == PGID under start_new_session (setsid)
         try:
-            _wait_within_quota(proc, cmd, timeout, out_f, err_f)
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Time budget blown: tear the whole group down and re-raise with
+            # the captured tail so the caller can log WHAT hung. Disk is
+            # handled separately by the kernel RLIMIT (no userspace poll).
+            _kill_group(proc, pgid)
+            raise subprocess.TimeoutExpired(
+                cmd,
+                timeout,
+                output=_read_capped(out_f),
+                stderr=_read_capped(err_f),
+            ) from None
         except BaseException:
-            # Timeout / quota breach OR any other escape (e.g.
-            # KeyboardInterrupt): tear the whole group down so nothing is
-            # orphaned, then re-raise unchanged.
+            # Any other escape (e.g. KeyboardInterrupt): tear the group down
+            # so nothing is orphaned, then re-raise unchanged.
             _kill_group(proc, pgid)
             raise
         # Clean leader exit — but SWEEP the group anyway: a cleanly-exited
@@ -419,35 +438,23 @@ def _run_group_bounded(
         )
 
 
-def _wait_within_quota(proc, cmd: list[str], timeout: int, out_f, err_f) -> None:
-    """Wait for ``proc`` up to ``timeout`` seconds, re-checking every
-    ``_POLL_INTERVAL_S`` that its temp-file output has not exceeded
-    ``_OUTPUT_QUOTA_BYTES``. Raises ``subprocess.TimeoutExpired`` (with the
-    captured tail attached for diagnostics) on either the time or the byte
-    budget; returns normally when the child exits within both."""
-    remaining = timeout
-    while True:
-        step = min(_POLL_INTERVAL_S, remaining) if remaining > 0 else 0
-        try:
-            proc.wait(timeout=step)
-            return  # exited within both budgets
-        except subprocess.TimeoutExpired:
-            remaining -= step
-            over_quota = _file_size(out_f) + _file_size(err_f) > _OUTPUT_QUOTA_BYTES
-            if over_quota or remaining <= 0:
-                raise subprocess.TimeoutExpired(
-                    cmd,
-                    timeout,
-                    output=_read_capped(out_f),
-                    stderr=_read_capped(err_f),
-                ) from None
+def _limit_child_fsize() -> None:  # pragma: no cover — runs post-fork in child
+    """preexec_fn: cap the max file size the child (and everything in its new
+    session) may create, at the KERNEL, via ``RLIMIT_FSIZE``. A write past the
+    cap is refused at the write(2) syscall — ``SIGXFSZ`` (default-fatal) or
+    ``EFBIG`` — so the child cannot exhaust the auto-deploy host's disk no
+    matter how fast it writes, whether it exits between userspace polls, or
+    whether a descendant ``setsid()``s out of the process group (the limit is
+    inherited across fork). This is the kernel backstop that lets the waiter
+    stay a plain bounded ``wait`` instead of a size-polling loop (codex #1220
+    r11). Runs in the forked child before ``exec``; keep it minimal and
+    async-signal-safe. ``resource`` is imported here (Unix-only, child side)
+    so the module stays importable even where ``resource`` is absent."""
+    import resource
 
-
-def _file_size(f) -> int:
-    """Current size of an open file object (the child writes via the inherited
-    fd, so the parent object's own position never moves — seek to end)."""
-    f.seek(0, os.SEEK_END)
-    return f.tell()
+    resource.setrlimit(
+        resource.RLIMIT_FSIZE, (_OUTPUT_QUOTA_BYTES, _OUTPUT_QUOTA_BYTES)
+    )
 
 
 def _sweep_group(pgid: int) -> None:

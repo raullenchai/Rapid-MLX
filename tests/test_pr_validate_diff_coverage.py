@@ -718,24 +718,30 @@ class TestRunGroupBounded:
             "leader-only kill"
         )
 
-    def test_output_quota_breach_kills_like_a_timeout(self, monkeypatch):
-        # F1 (codex #1220 r10): a child that streams past the disk quota is
-        # killed exactly like a timeout — long before the time budget — and
-        # the raised TimeoutExpired carries the captured tail for diagnostics
-        # (r10 F3). Shrink the quota + poll so the test is fast.
+    def test_output_size_is_capped_by_kernel_rlimit(self, monkeypatch):
+        # F1 (codex #1220 r11): disk is bounded by a KERNEL RLIMIT_FSIZE set on
+        # the child (via preexec_fn), NOT a userspace size-poll. So a child that
+        # dumps far past the quota — even faster than, or entirely between, any
+        # poll would run — is refused at the write(2) syscall (SIGXFSZ, or EFBIG
+        # if caught) instead of being allowed to exhaust the host. Shrink the
+        # quota so the test is fast and cheap.
         import scripts.pr_validate.steps.diff_coverage as dc
 
-        monkeypatch.setattr(dc, "_OUTPUT_QUOTA_BYTES", 1024)  # 1 KiB
-        monkeypatch.setattr(dc, "_POLL_INTERVAL_S", 1)
-        # Write 200 KiB (>> quota), flush to the temp file, then block so the
-        # child is still alive at the first poll.
+        monkeypatch.setattr(dc, "_OUTPUT_QUOTA_BYTES", 64 * 1024)  # 64 KiB
+        # One-shot write of 4 MiB (>> quota) to the temp file. The kernel
+        # refuses the write past 64 KiB: the child dies on SIGXFSZ (negative rc)
+        # or exits nonzero on EFBIG — either way it exits on its own (no
+        # timeout), so we get a CompletedProcess, not a TimeoutExpired.
         code = (
-            "import sys, time; "
-            "sys.stdout.write('X' * 200000); sys.stdout.flush(); "
-            "time.sleep(60)"
+            "import sys\nsys.stdout.write('X' * (4 * 1024 * 1024))\nsys.stdout.flush()"
         )
-        with pytest.raises(subprocess.TimeoutExpired) as ei:
-            # timeout=30 >> the ~1s it takes to trip the quota, so a raise here
-            # proves the QUOTA fired, not the clock.
-            _run_group_bounded([sys.executable, "-c", code], cwd=".", timeout=30)
-        assert ei.value.stdout and "X" in ei.value.stdout  # tail attached
+        proc = _run_group_bounded([sys.executable, "-c", code], cwd=".", timeout=30)
+
+        assert proc.returncode != 0, (
+            "child writing past the RLIMIT_FSIZE quota should have died "
+            f"(SIGXFSZ) or errored (EFBIG); got rc={proc.returncode}"
+        )
+        # Disk stayed bounded — the child never landed the 4 MiB it attempted
+        # (kernel stopped it at the ~64 KiB cap; read-back is also capped).
+        assert len(proc.stdout) <= dc._STDOUT_CAP_BYTES
+        assert len(proc.stdout) < 4 * 1024 * 1024
