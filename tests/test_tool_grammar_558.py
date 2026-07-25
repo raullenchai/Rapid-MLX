@@ -402,6 +402,31 @@ def _offline_skip_exc_types():
     return tuple(types) or (OSError,)
 
 
+def _is_offline_cache_miss(exc: BaseException) -> bool:
+    """True iff ``exc`` — or anything in its ``__cause__`` / ``__context__``
+    chain — is a genuine HF offline / cache-miss signal.
+
+    ``transformers`` re-wraps ``huggingface_hub``'s ``LocalEntryNotFoundError``
+    into a generic ``OSError`` ("We couldn't connect to 'https://huggingface.co'
+    …"), so a type-only ``except _offline_skip_exc_types()`` misses the wrapped
+    cache-miss and the enforcement test FAILS instead of skipping. We walk the
+    exception chain and treat it as a sanctioned skip ONLY when an offline /
+    cache-miss link is present. A corrupt-file ``OSError``, an invalid revision
+    (RepositoryNotFound / RevisionNotFound), or a tokenizer incompatibility has
+    no such link, so it still propagates as a real failure — preserving the
+    codex round-5 intent that only genuine network/cache misses skip.
+    """
+    offline_types = _offline_skip_exc_types()
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, offline_types):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 @pytest.fixture(scope="module")
 def tok():
     transformers = pytest.importorskip("transformers")
@@ -409,8 +434,10 @@ def tok():
         return transformers.AutoTokenizer.from_pretrained(
             _TOKENIZER_MODEL, revision=_TOKENIZER_REVISION
         )
-    except _offline_skip_exc_types():  # pragma: no cover - offline & uncached
-        pytest.skip(
+    except Exception as exc:  # noqa: BLE001 — re-raised unless offline cache-miss
+        if not _is_offline_cache_miss(exc):
+            raise
+        pytest.skip(  # pragma: no cover - offline & uncached
             f"tokenizer {_TOKENIZER_MODEL}@{_TOKENIZER_REVISION[:8]} not "
             "cached and no network — enforcement tests require it"
         )
@@ -1419,8 +1446,10 @@ def test_deepseek_r1_prefilled_think_template_is_tolerated(lltok):
             revision=_DEEPSEEK_REVISION,
             local_files_only=True,
         )
-    except _offline_skip_exc_types():  # pragma: no cover - uncached revision
-        pytest.skip(
+    except Exception as exc:  # noqa: BLE001 — re-raised unless offline cache-miss
+        if not _is_offline_cache_miss(exc):
+            raise
+        pytest.skip(  # pragma: no cover - uncached revision
             f"{_DEEPSEEK_MODEL}@{_DEEPSEEK_REVISION[:8]} not in local cache — "
             "prefill proof requires the pinned revision cached locally"
         )

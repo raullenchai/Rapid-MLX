@@ -56,8 +56,13 @@ def test_non_thinking_request_does_not_get_implicit_headroom():
 
 
 class _RawRequest:
-    def __init__(self, body: dict | None = None):
+    def __init__(self, body: dict | None = None, headers: dict | None = None):
         self._body = body or {}
+        # Mirror Starlette's Request.headers (a .get()-able Mapping). The
+        # chat route reads ``raw_request.headers.get("user-agent")`` for
+        # the telemetry caller_agent field (routes/chat.py); without this
+        # the double raised AttributeError before the resolver ran.
+        self.headers = headers or {}
 
     async def json(self):
         return self._body

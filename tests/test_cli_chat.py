@@ -822,6 +822,10 @@ def test_chat_command_owns_mcp_runtime_without_configuring_serve(monkeypatch, ca
         tools = _FakeMCPRuntime.tools
         server_count = 2
         connection_errors = {}
+        # Mirror ChatMCPRuntime (chat_mcp.py) — chat_command reads this in
+        # the "MCP ready" banner (cli.py). Added when #1191 introduced
+        # server_log_path; the hand-rolled double must carry it too.
+        server_log_path = None
 
         def __init__(self, path):
             assert path == "/tmp/chat-mcp.json"
@@ -882,6 +886,7 @@ def test_chat_command_closes_mcp_runtime_on_unexpected_error(monkeypatch):
         tools = _FakeMCPRuntime.tools
         server_count = 1
         connection_errors = {}
+        server_log_path = None  # mirror ChatMCPRuntime (#1191); banner reads it
 
         def __init__(self, _path):
             self.closed = False
@@ -914,6 +919,11 @@ def test_chat_command_surfaces_and_retries_mcp_close_failure(monkeypatch):
         tools = _FakeMCPRuntime.tools
         server_count = 1
         connection_errors = {}
+        # mirror ChatMCPRuntime (#1191) — without this the banner's
+        # server_log_path read raised AttributeError, which was masked by
+        # the close-failure RuntimeError this test asserts (right assert,
+        # wrong reason). Now the close-failure is the ONLY failure path.
+        server_log_path = None
 
         def __init__(self, _path):
             self.close_calls = 0
