@@ -6,7 +6,7 @@ Shows how to use rapid-mlx with the OpenAI Python SDK for video understanding.
 
 Usage:
     1. Start the server with a VLM model:
-       rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+       rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     2. Run this script:
        python examples/demo_openai_video.py

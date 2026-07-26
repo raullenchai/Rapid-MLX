@@ -7,7 +7,7 @@ It tests both the direct HTTP API and the official OpenAI Python client.
 
 Usage:
     # First start the server:
-    rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Then run this script:
     python examples/test_openai_compatibility.py
@@ -807,7 +807,7 @@ Examples:
     if not test_health_endpoint(args.server_url):
         print(f"{RED}ERROR: Cannot connect to server at {args.server_url}{RESET}")
         print("Make sure the rapid-mlx server is running:")
-        print("  rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000")
+        print("  rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000")
         sys.exit(1)
 
     print(f"{GREEN}Server is reachable!{RESET}")

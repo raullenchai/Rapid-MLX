@@ -5,7 +5,7 @@
 #
 # Usage:
 #   1. Start the server:
-#      rapid-mlx --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+#      rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
 #
 #   2. Run this script:
 #      bash examples/demo_curl_text.sh
