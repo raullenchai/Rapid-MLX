@@ -4,7 +4,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 
 > Historical note: these March 2026 evals were run on **Apple M3 Ultra (256GB)** using the then-default **SimpleEngine**.
 >
-> mlx-lm version: **0.30.7** | rapid-mlx: **main branch (2026-03-04)**
+> mlx-lm version: **0.30.7** | vllm-mlx (now rapid-mlx): **main branch (2026-03-04)**
 
 ## Model Configs
 
