@@ -4823,15 +4823,6 @@ async def _create_chat_completion_impl(
         # the GPU once the client TCP-RST'd.
         request_id_holder: list[str | None] = [None]
         chat_kwargs["request_id_holder"] = request_id_holder
-        # Opt-in telemetry (Phase 2.2): the inbound User-Agent for the
-        # streaming ``request`` event's ``caller_agent``. Passed RAW (not
-        # bucketed) — ``emit.request`` funnels it through
-        # ``normalize_caller_agent`` exactly like the non-streaming path.
-        # Threaded as an explicit keyword so it never leaks into the
-        # ``**chat_kwargs`` the engine's ``stream_chat`` receives.
-        _caller_ua = (
-            raw_request.headers.get("user-agent") if raw_request is not None else None
-        )
         if use_guided and json_schema:
             # Constrained streaming: run guided generation buffered, then
             # synthesize an SSE stream from the buffered output. Falls
@@ -4845,7 +4836,6 @@ async def _create_chat_completion_impl(
                         request,
                         json_schema,
                         strict_mode=strict_mode,
-                        caller_agent=_caller_ua,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -4880,7 +4870,6 @@ async def _create_chat_completion_impl(
                         messages,
                         request,
                         json_schema,
-                        caller_agent=_caller_ua,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -4892,13 +4881,7 @@ async def _create_chat_completion_impl(
             )
         return StreamingResponse(
             _disconnect_guard(
-                stream_chat_completion(
-                    engine,
-                    messages,
-                    request,
-                    caller_agent=_caller_ua,
-                    **chat_kwargs,
-                ),
+                stream_chat_completion(engine, messages, request, **chat_kwargs),
                 raw_request,
                 engine=engine,
                 request_id_holder=request_id_holder,
@@ -5922,7 +5905,6 @@ async def stream_chat_completion(
     *,
     response_id: str | None = None,
     created: int | None = None,
-    caller_agent: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
@@ -5938,11 +5920,6 @@ async def stream_chat_completion(
             stream stays self-consistent across the guided→unconstrained
             handoff (DeepSeek pr_validate round 5 finding).
         created: Optional pre-computed Unix timestamp. Same rationale.
-        caller_agent: Raw inbound HTTP ``User-Agent`` for the opt-in
-            streaming ``request`` telemetry event. Passed through
-            unbucketed — ``emit.request`` funnels it through
-            ``normalize_caller_agent`` (never stored raw). ``None`` when
-            the header is absent or telemetry is off.
     """
     from ..service.postprocessor import StreamingPostProcessor
 
@@ -5955,14 +5932,6 @@ async def stream_chat_completion(
         if response_id is None:
             response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         start_time = time.perf_counter()
-        # Opt-in telemetry (Phase 2.2): wall-clock of the FIRST real output
-        # token (content / reasoning / tool_call). This is the meaningful
-        # TTFT for a streaming response — unlike non-streaming, where TTFT
-        # collapses to total latency. Stays ``None`` until the first token
-        # is emitted so an empty / immediately-aborted stream reports no
-        # first-token time. Captured inside the loop, read in the terminal
-        # block below.
-        first_token_ts: float | None = None
 
         # Check if we should include usage in the final chunk
         include_usage = request.stream_options and request.stream_options.include_usage
@@ -6182,15 +6151,6 @@ async def stream_chat_completion(
                 stream_matched_stop = _chunk_matched_stop
 
             for event in processor.process_chunk(output):
-                # Telemetry: stamp TTFT on the first real output token
-                # (content / reasoning / tool_call). Cheap monotonic read
-                # gated to fire once; never touches the wire.
-                if first_token_ts is None and event.type in (
-                    "content",
-                    "reasoning",
-                    "tool_call",
-                ):
-                    first_token_ts = time.perf_counter()
                 if event.type == "content":
                     if not want_logprobs:
                         _sse = _fast_sse_chunk(event.content, "content")
@@ -6841,60 +6801,6 @@ async def stream_chat_completion(
             yield f"data: {usage_chunk.model_dump_json(exclude_none=True)}\n\n"
 
         yield "data: [DONE]\n\n"
-
-        # Opt-in telemetry (Phase 2.2): record a bucketed ``request`` event
-        # for this completed STREAMING chat completion. This is the path
-        # real agent traffic (Cursor / Claude Code / Aider) takes, so it is
-        # where ``caller_agent`` + a MEANINGFUL ``ttft_ms`` actually come
-        # from — the non-streaming emit only ever sees one-shot self-tests.
-        #
-        # Emitted AFTER ``[DONE]`` (and any usage chunk) has been yielded so
-        # the terminal wire markers always reach the client first — the
-        # consent check / lazy queue-thread start can never delay stream
-        # completion, and it never touches first-token latency. On the
-        # SUCCESS path only: a client disconnect / early abort raises out of
-        # the loop above and unwinds through ``finally`` below, skipping
-        # this — matching the non-streaming (success-only) emit and how
-        # ``_disconnect_guard`` treats aborts.
-        #
-        # ``ttft_ms`` is wall-clock to the FIRST emitted token (captured in
-        # the loop), not total latency. ``tps`` is the DECODE throughput —
-        # completion tokens over the post-first-token window (total − ttft),
-        # the streaming analogue of the non-streaming ``completion / total``
-        # (where ttft == total collapses the window). Both fall back to the
-        # total-latency numbers when no token was emitted / the decode
-        # window is non-positive. ``emit.request`` is sampled +
-        # ``is_enabled()``-gated + ``@_safe``, so this is a cheap no-op when
-        # telemetry is off / not sampled and can never raise into the
-        # stream. ``caller_agent`` is passed RAW; the helper buckets it via
-        # ``normalize_caller_agent``.
-        if first_token_ts is not None:
-            _ttft_seconds = max(0.0, first_token_ts - start_time)
-        else:
-            _ttft_seconds = elapsed
-        _decode_seconds = elapsed - _ttft_seconds
-        _decode_tps = (
-            completion_tokens / _decode_seconds
-            if _decode_seconds > 0
-            else tokens_per_sec
-        )
-        _tool_call_used = bool(fallback_tool_calls) or (
-            getattr(processor, "_tool_calls_emitted_to_wire", 0) > 0
-        )
-        from vllm_mlx.telemetry import emit as _telemetry_emit
-
-        _telemetry_emit.request(
-            endpoint="/v1/chat/completions",
-            model_alias=request.model,
-            stream=True,
-            tool_call_used=_tool_call_used,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            ttft_ms=_ttft_seconds * 1000.0,
-            tps=_decode_tps,
-            status=200,
-            caller_agent=caller_agent,
-        )
     finally:
         if cfg.gc_control and gc_was_enabled:
             gc.enable()
@@ -6908,7 +6814,6 @@ async def stream_chat_completion_guided(
     json_schema: dict,
     *,
     strict_mode: bool = False,
-    caller_agent: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion with json_schema constrained decoding.
@@ -7057,7 +6962,6 @@ async def stream_chat_completion_guided(
                 request,
                 response_id=response_id,
                 created=_sse_created,
-                caller_agent=caller_agent,
                 **kwargs,
             ):
                 yield chunk
@@ -7207,8 +7111,6 @@ async def stream_chat_completion_strict_postgen(
     messages: list,
     request: ChatCompletionRequest,
     json_schema: dict,
-    *,
-    caller_agent: str | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """R12-4 — streaming variant of post-generate strict enforcement.
@@ -7360,7 +7262,6 @@ async def stream_chat_completion_strict_postgen(
         request,
         response_id=response_id,
         created=created,
-        caller_agent=caller_agent,
         **kwargs,
     )
     try:
