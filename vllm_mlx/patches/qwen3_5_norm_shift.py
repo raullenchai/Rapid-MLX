@@ -126,10 +126,16 @@ def _would_spuriously_shift(weights: dict) -> bool:
     )
     if not (has_mtp or has_unsanitized_conv1d):
         return False
+    # Judge the convention off the LANGUAGE-MODEL norms only. ``mtp.*`` head
+    # norms are stripped by the original sanitize (they never reach the served
+    # model) and can carry a different convention; counting zero-centered MTP
+    # norms here would drag a standard-form language model's aggregate below
+    # the threshold, misclassify it as "already correct", and leave the
+    # corrupting +1.0 shift on the real norms (codex #1234).
     means = [
         m
         for k, v in weights.items()
-        if _is_norm_key(k) and (m := _norm_gain_mean(v)) is not None
+        if _is_norm_key(k) and "mtp." not in k and (m := _norm_gain_mean(v)) is not None
     ]
     if not means:
         return False

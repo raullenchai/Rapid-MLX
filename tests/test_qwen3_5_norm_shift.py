@@ -92,6 +92,25 @@ def test_standard_form_plus_mtp_is_spurious():
     assert nsf._would_spuriously_shift(w) is True
 
 
+def test_zero_centered_mtp_norms_do_not_mask_standard_form_language_model():
+    # codex #1234: ``mtp.*`` norm gains (stripped by sanitize, and possibly a
+    # different convention) must NOT be averaged into the language-model
+    # convention check. A standard-form language model bundled with enough
+    # zero-centered MTP head norms would, under a naive aggregate, fall below
+    # the threshold and be misclassified as "already correct" — leaving the
+    # corrupting +1.0 shift on the real norms. The check must still flag it.
+    w = _add_mtp_trigger(_norm_weights(mean=1.05))
+    for layer in range(8):
+        base = f"language_model.mtp.layers.{layer}"
+        w[f"{base}.input_layernorm.weight"] = mx.full((8,), 0.0, dtype=mx.float32)
+        w[f"{base}.post_attention_layernorm.weight"] = mx.full(
+            (8,), 0.0, dtype=mx.float32
+        )
+    # A naive aggregate over all norm keys here is ~0.47 (< 0.5) and would
+    # misfire; excluding the mtp.* norms keeps it at ~1.05 and flags correctly.
+    assert nsf._would_spuriously_shift(w) is True
+
+
 def test_zero_centered_plus_mtp_is_not_spurious():
     w = _add_mtp_trigger(_norm_weights(mean=0.02))
     assert nsf._would_spuriously_shift(w) is False
