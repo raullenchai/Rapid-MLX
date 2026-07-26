@@ -20,6 +20,9 @@ import mlx.core as mx
 from vllm_mlx.patches.deepseek_v32_indexer_gate import (
     install_deepseek_v32_indexer_gate as _install_dsv32_indexer_gate,
 )
+from vllm_mlx.patches.qwen3_5_norm_shift import (
+    install_qwen3_5_norm_shift_fix as _install_qwen3_5_norm_shift_fix,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -31,6 +34,12 @@ logger = logging.getLogger(__name__)
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit) load via mlx_lm.
 # Idempotent + no-op on configs that don't publish ``indexer_types``.
 _install_dsv32_indexer_gate()
+
+# Correct mlx-lm's spurious +1.0 RMSNorm-weight shift on mtp-bundled Qwen3.5/3.6
+# VLM checkpoints (e.g. mlx-community/Qwen3.6-35B-A3B-*), which otherwise load
+# with doubled norm scale → garbage output (ml-explore/mlx-lm#1197). Idempotent
+# + no-op on checkpoints whose norm gains are already zero-centered.
+_install_qwen3_5_norm_shift_fix()
 
 
 @dataclass
