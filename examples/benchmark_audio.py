@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Audio benchmarks for vllm-mlx.
+Audio benchmarks for rapid-mlx.
 
 Benchmarks STT (Speech-to-Text), TTS (Text-to-Speech), and audio processing.
 """
@@ -298,7 +298,7 @@ def run_stt_benchmarks(audio_path: str):
 def main():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Audio benchmarks for vllm-mlx")
+    parser = argparse.ArgumentParser(description="Audio benchmarks for rapid-mlx")
     parser.add_argument("--tts", action="store_true", help="Run TTS benchmarks")
     parser.add_argument("--stt", action="store_true", help="Run STT benchmarks")
     parser.add_argument("--audio", type=str, help="Audio file for STT benchmark")

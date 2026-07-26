@@ -2,11 +2,11 @@
 """
 Demo: OpenAI API - Video Analysis
 
-Shows how to use vllm-mlx with the OpenAI Python SDK for video understanding.
+Shows how to use rapid-mlx with the OpenAI Python SDK for video understanding.
 
 Usage:
     1. Start the server with a VLM model:
-       vllm-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+       rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     2. Run this script:
        python examples/demo_openai_video.py
@@ -16,7 +16,7 @@ import base64
 
 from openai import OpenAI
 
-# Connect to vllm-mlx server
+# Connect to rapid-mlx server
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 print("=" * 60)

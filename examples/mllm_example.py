@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-Multimodal Language Model (MLLM) example using vllm-mlx.
+Multimodal Language Model (MLLM) example using rapid-mlx.
 
 This example demonstrates multimodal inference on Apple Silicon,
 including image understanding and visual question answering.

@@ -1,4 +1,4 @@
-# vllm-mlx Model Scorecard
+# rapid-mlx Model Scorecard
 
 *Auto-generated on 2026-03-05 00:32 UTC*
 
@@ -289,7 +289,7 @@
 
 ## How to Add Your Results
 
-1. Start vllm-mlx with your model: `vllm-mlx serve <model> --port 8000`
+1. Start rapid-mlx with your model: `rapid-mlx serve <model> --port 8000`
 2. Run the eval: `python evals/run_eval.py --model "<model-name>" --quantization <quant>`
 3. Your results are saved to `evals/results/<model>.json`
 4. Regenerate this table: `python evals/generate_scorecard.py`

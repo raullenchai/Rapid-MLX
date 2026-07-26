@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Real-Time Microphone Transcription with Whisper - vllm-mlx
+Real-Time Microphone Transcription with Whisper - rapid-mlx
 
 Transcribes speech in real-time as you speak using your Mac's microphone.
 
@@ -207,7 +207,7 @@ Examples:
 
     print()
     print("=" * 60)
-    print(" Real-Time Microphone Transcription - vllm-mlx")
+    print(" Real-Time Microphone Transcription - rapid-mlx")
     print("=" * 60)
     print()
 

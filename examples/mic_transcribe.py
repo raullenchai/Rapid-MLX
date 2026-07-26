@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Live Microphone Transcription with Whisper - vllm-mlx
+Live Microphone Transcription with Whisper - rapid-mlx
 
 Records audio from your Mac's microphone and transcribes it using Whisper.
 
@@ -146,7 +146,7 @@ Examples:
     args = parser.parse_args()
 
     print("=" * 60)
-    print(" Microphone Transcription - vllm-mlx")
+    print(" Microphone Transcription - rapid-mlx")
     print("=" * 60)
     print()
 

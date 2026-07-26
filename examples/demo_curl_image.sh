@@ -1,11 +1,11 @@
 #!/bin/bash
 # Demo: curl API - Image Analysis
 #
-# Shows how to use vllm-mlx with curl for image understanding.
+# Shows how to use rapid-mlx with curl for image understanding.
 #
 # Usage:
 #   1. Start the server with a VLM model:
-#      vllm-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+#      rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 #
 #   2. Run this script:
 #      bash examples/demo_curl_image.sh

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-Example: MCP Tool Use with vllm-mlx
+Example: MCP Tool Use with rapid-mlx
 
 This example demonstrates how to use MCP (Model Context Protocol) tools
-with the vllm-mlx server.
+with the rapid-mlx server.
 
 Prerequisites:
 1. Install MCP support: pip install rapid-mlx[mcp]
 2. Create mcp.json config (see example below)
-3. Start server with MCP: vllm-mlx serve <model> --mcp-config mcp.json
+3. Start server with MCP: rapid-mlx serve <model> --mcp-config mcp.json
 
 Example mcp.json:
 {
@@ -52,7 +52,7 @@ def main():
 
     if not health.get("mcp"):
         print("\n   Warning: MCP not configured. Start server with --mcp-config")
-        print("   Example: vllm-mlx serve <model> --mcp-config mcp.json")
+        print("   Example: rapid-mlx serve <model> --mcp-config mcp.json")
         return
 
     # 2. List available MCP tools

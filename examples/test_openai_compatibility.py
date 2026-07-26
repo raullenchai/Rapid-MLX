@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-OpenAI API Compatibility Test Script for vllm-mlx.
+OpenAI API Compatibility Test Script for rapid-mlx.
 
-This script tests the OpenAI API compatibility of the vllm-mlx server.
+This script tests the OpenAI API compatibility of the rapid-mlx server.
 It tests both the direct HTTP API and the official OpenAI Python client.
 
 Usage:
     # First start the server:
-    vllm-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Then run this script:
     python examples/test_openai_compatibility.py
@@ -244,7 +244,7 @@ def test_chat_completions_openai(server_url: str) -> tuple[bool, str]:
     try:
         client = OpenAI(
             base_url=f"{server_url}/v1",
-            api_key="not-needed",  # vllm-mlx doesn't require API key
+            api_key="not-needed",  # rapid-mlx doesn't require API key
         )
 
         response = client.chat.completions.create(
@@ -681,7 +681,7 @@ def run_all_tests(server_url: str, test_image: bool = True, test_video: bool = T
         else:
             results["failed"] += 1
 
-    print_header("vllm-mlx OpenAI API Compatibility Tests")
+    print_header("rapid-mlx OpenAI API Compatibility Tests")
     print(f"Server URL: {server_url}\n")
 
     # Basic endpoint tests
@@ -770,7 +770,7 @@ def run_all_tests(server_url: str, test_image: bool = True, test_video: bool = T
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test OpenAI API compatibility of vllm-mlx server",
+        description="Test OpenAI API compatibility of rapid-mlx server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -788,7 +788,7 @@ Examples:
         "--server-url",
         type=str,
         default="http://localhost:8000",
-        help="URL of the vllm-mlx server (default: http://localhost:8000)",
+        help="URL of the rapid-mlx server (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--no-image",
@@ -806,8 +806,8 @@ Examples:
     print(f"Checking server at {args.server_url}...")
     if not test_health_endpoint(args.server_url):
         print(f"{RED}ERROR: Cannot connect to server at {args.server_url}{RESET}")
-        print("Make sure the vllm-mlx server is running:")
-        print("  vllm-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000")
+        print("Make sure the rapid-mlx server is running:")
+        print("  rapid-mlx --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000")
         sys.exit(1)
 
     print(f"{GREEN}Server is reachable!{RESET}")

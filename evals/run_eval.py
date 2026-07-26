@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-Unified Model Evaluation Runner for vllm-mlx.
+Unified Model Evaluation Runner for rapid-mlx.
 
-Runs 4 test suites against a running vllm-mlx server and produces a
+Runs 4 test suites against a running rapid-mlx server and produces a
 standardized JSON result file for model comparison.
 
 Suites:
@@ -15,7 +15,7 @@ Suites:
 
 Usage:
     # Start server first:
-    vllm-mlx serve <model> --port 8000
+    rapid-mlx serve <model> --port 8000
 
     # Run all suites:
     python evals/run_eval.py --model <display-name> --port 8000
@@ -1564,7 +1564,7 @@ ALL_SUITES = ["speed", "tool_calling", "coding", "reasoning", "general"]
 
 def main():
     parser = argparse.ArgumentParser(
-        description="vllm-mlx Model Evaluation Runner",
+        description="rapid-mlx Model Evaluation Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1628,8 +1628,8 @@ Examples:
 
     # Check server
     if not server_available(args.host, args.port):
-        print(f"ERROR: No vllm-mlx server at http://{args.host}:{args.port}")
-        print("Start one with: vllm-mlx serve <model> --port 8000")
+        print(f"ERROR: No rapid-mlx server at http://{args.host}:{args.port}")
+        print("Start one with: rapid-mlx serve <model> --port 8000")
         sys.exit(1)
 
     # Detect hardware
@@ -1637,7 +1637,7 @@ Examples:
     hw_label = args.hardware or f"{hw['chip']} ({hw['memory_gb']}GB)"
 
     print("=" * 60)
-    print("vllm-mlx Model Evaluation")
+    print("rapid-mlx Model Evaluation")
     print("=" * 60)
     print(f"  Model:    {args.model}")
     print(f"  Hardware: {hw_label}")

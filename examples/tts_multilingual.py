@@ -345,7 +345,7 @@ Examples:
     args = parser.parse_args()
 
     print("=" * 60)
-    print(" Multilingual TTS - vllm-mlx")
+    print(" Multilingual TTS - rapid-mlx")
     print("=" * 60)
 
     if args.list_models:

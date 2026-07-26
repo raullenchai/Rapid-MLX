@@ -4,7 +4,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 
 > Historical note: these March 2026 evals were run on **Apple M3 Ultra (256GB)** using the then-default **SimpleEngine**.
 >
-> mlx-lm version: **0.30.7** | vllm-mlx: **main branch (2026-03-04)**
+> mlx-lm version: **0.30.7** | rapid-mlx: **main branch (2026-03-04)**
 
 ## Model Configs
 
@@ -17,7 +17,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly, no fallback needed |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3-0.6b-4bit.json` |
@@ -31,7 +31,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | VLM-packaged (`Qwen3_5ForConditionalGeneration`). Falls back to `strict=False` to skip 297 vision tower params. Config `model_type: qwen3_5` maps to `mlx_lm.models.qwen3_5`. |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-4b-4bit.json` |
@@ -45,7 +45,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | VLM-packaged. Falls back to `strict=False` to skip 333 vision tower params. Previously failed with "Missing 424 parameters" before `load_model_with_fallback` was patched to also catch `Missing` errors (not just `Received ... not in model`). |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-9b-4bit.json` |
@@ -59,7 +59,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly (text-only MoE, no VLM wrapper) |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-35b-a3b-4bit.json` |
@@ -73,7 +73,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 8bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-35b-a3b-8bit.json` |
@@ -87,7 +87,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | mxfp4 (microscaling FP4) |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly. Text-only variant (no VLM). |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-122b-a10b-mxfp4.json` |
@@ -101,7 +101,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 8bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-122b-a10b-8bit.json` |
@@ -115,7 +115,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly. Large model (~45GB RAM). |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3-coder-next-4bit.json` |
@@ -129,7 +129,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 6bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3-coder-next-6bit.json` |
@@ -143,7 +143,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | Loads directly |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `hermes-3-llama-3.1-8b-4bit.json` |
@@ -157,7 +157,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 8bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `glm47` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
 | **Load notes** | Loads directly. Uses GLM-4.7 specific tool parser. |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `glm-4.7-flash-8bit.json` |
@@ -171,7 +171,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | mxfp4-q8 (mixed MXFP4 + Q8) |
 | **Engine** | SimpleEngine |
 | **Parser** | `harmony` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
 | **Load notes** | Loads directly. Uses Harmony format (OpenAI's custom control tokens). `SUPPORTS_NATIVE_TOOL_FORMAT=True` is critical — without it, multi-turn tool history is converted to plain text which the model cannot understand (caused 3% → 80% tool calling jump). Parallel tool calls not supported (harmony format limitation). |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `gpt-oss-20b-mxfp4-q8.json` |
@@ -185,7 +185,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `minimax` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
 | **Load notes** | Loads directly. Slow TTFT (1.3s cold) due to large model. |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `minimax-m2.5-4bit.json` |
@@ -200,7 +200,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Engine** | SimpleEngine |
 | **Parser (as tested)** | `hermes` |
 | **Recommended parser** | `mistral` (#1071) — the historical run used `hermes` and scored only 17% tool calling. See load notes. |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser mistral` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser mistral` |
 | **Load notes** | Loads directly (model_type=`mistral3`). Emits Mistral-native `[TOOL_CALLS]name[ARGS]{json}` tool calls, so it MUST use the `mistral` parser (#1071). The 2026-03-04 run used `hermes` (see result file) and scored 17% tool calling because `hermes` only understands `<tool_call>` XML and left the raw envelope in content. Coding 90% — one of the best coding models. |
 | **Last tested** | 2026-03-04 (with `hermes`; pre-#1071) |
 | **Result file** | `devstral-small-2-4bit.json` |
@@ -214,7 +214,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
 | **Load notes** | VLM-packaged. Falls back to `strict=False` to skip vision tower params. Previously failed due to incomplete download (missing weight shards). |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `qwen3.5-27b-4bit.json` |
@@ -228,7 +228,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
 | **Parser** | `glm47` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
 | **Load notes** | Loads directly. Previously reported as `glm4_moe` architecture incompatibility (508 missing params), but was actually an incomplete download (3 `.part` files). Uses GLM-4 tool parser. |
 | **Last tested** | 2026-03-04 |
 | **Result file** | `glm-4.5-air-4bit.json` |
@@ -243,7 +243,7 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Engine** | SimpleEngine |
 | **Parser (as tested)** | `hermes` |
 | **Recommended parser** | `mistral` (#1071) — the historical run used `hermes` and scored only 17% tool calling. See load notes. |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser mistral` |
+| **Server command** | `rapid-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser mistral` |
 | **Load notes** | Loads via `strict=False` fallback (VLM packaging). The model emits Mistral-native `[TOOL_CALLS]name[ARGS]{json}` tool calls, so it MUST use the `mistral` parser (#1071). The 2026-03-04 run used `hermes` (see result file) and scored 17% tool calling because `hermes` only understands `<tool_call>` XML and left the raw envelope in content. Tokenizer regex warning: `fix_mistral_regex=True` recommended. |
 | **Last tested** | 2026-03-04 (with `hermes`; pre-#1071) |
 | **Result file** | `mistral-small-3.2-4bit.json` |

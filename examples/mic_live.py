@@ -225,7 +225,7 @@ def main():
 
     print()
     print("╔════════════════════════════════════════════════════════╗")
-    print("║     🎙️  Live Speech Transcription - vllm-mlx          ║")
+    print("║     🎙️  Live Speech Transcription - rapid-mlx          ║")
     print("╚════════════════════════════════════════════════════════╝")
     print()
 

@@ -1,6 +1,6 @@
-# vllm-mlx Model Evaluations
+# rapid-mlx Model Evaluations
 
-Standardized evaluation framework for comparing LLM performance on Apple Silicon via vllm-mlx.
+Standardized evaluation framework for comparing LLM performance on Apple Silicon via rapid-mlx.
 
 **Results**: See [SCORECARD.md](SCORECARD.md) for the comparison table.
 
@@ -8,7 +8,7 @@ Standardized evaluation framework for comparing LLM performance on Apple Silicon
 
 ```bash
 # 1. Start your model (see Server Flags below for model-specific flags)
-vllm-mlx serve <model-path> --port 8000
+rapid-mlx serve <model-path> --port 8000
 
 # 2. Run all eval suites (~5 min)
 python evals/run_eval.py --model "My-Model-Name" --quantization 4bit
@@ -24,13 +24,13 @@ Different models require different server flags for tool calling. Use the correc
 
 | Model Family | Server Flags |
 |-------------|-------------|
-| **Qwen / Hermes** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
-| **GPT-OSS (Harmony)** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
-| **MiniMax** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
-| **DeepSeek V3.1 / R1-0528** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser deepseek_v31` |
-| **GLM-4** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
-| **Qwen3-Coder (XML)** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser qwen3_coder_xml` |
-| **Other / No tools** | `vllm-mlx serve <model> --port 8000` |
+| **Qwen / Hermes** | `rapid-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
+| **GPT-OSS (Harmony)** | `rapid-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
+| **MiniMax** | `rapid-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
+| **DeepSeek V3.1 / R1-0528** | `rapid-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser deepseek_v31` |
+| **GLM-4** | `rapid-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
+| **Qwen3-Coder (XML)** | `rapid-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser qwen3_coder_xml` |
+| **Other / No tools** | `rapid-mlx serve <model> --port 8000` |
 
 Then pass the matching `--parser` to the eval script:
 ```bash

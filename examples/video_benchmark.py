@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Benchmark Script for vllm-mlx
+Video Benchmark Script for rapid-mlx
 
 Tests Vision-Language Models with video at different configurations
 (FPS, frame count, resolution) and measures performance metrics.
@@ -499,7 +499,7 @@ def save_results(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Video Benchmark for vllm-mlx VLM models",
+        description="Video Benchmark for rapid-mlx VLM models",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

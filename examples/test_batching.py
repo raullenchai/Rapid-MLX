@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-Example: Test continuous batching with vllm-mlx.
+Example: Test continuous batching with rapid-mlx.
 
 This script demonstrates the continuous batching capability by sending
 multiple concurrent requests and measuring throughput.

@@ -2,11 +2,11 @@
 """
 Demo: OpenAI API - Text Chat
 
-Shows how to use vllm-mlx with the OpenAI Python SDK for text-only chat.
+Shows how to use rapid-mlx with the OpenAI Python SDK for text-only chat.
 
 Usage:
     1. Start the server with any model:
-       vllm-mlx --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+       rapid-mlx --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
 
     2. Run this script:
        python examples/demo_openai_text.py
@@ -14,7 +14,7 @@ Usage:
 
 from openai import OpenAI
 
-# Connect to vllm-mlx server
+# Connect to rapid-mlx server
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 print("=" * 60)

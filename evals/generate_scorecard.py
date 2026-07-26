@@ -83,7 +83,7 @@ def calc_avg(*scores) -> str:
 
 def generate_scorecard(results: list[dict]) -> str:
     lines = []
-    lines.append("# vllm-mlx Model Scorecard")
+    lines.append("# rapid-mlx Model Scorecard")
     lines.append("")
     lines.append(
         f"*Auto-generated on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}*"
@@ -196,7 +196,7 @@ def generate_scorecard(results: list[dict]) -> str:
     lines.append("## How to Add Your Results")
     lines.append("")
     lines.append(
-        "1. Start vllm-mlx with your model: `vllm-mlx serve <model> --port 8000`"
+        "1. Start rapid-mlx with your model: `rapid-mlx serve <model> --port 8000`"
     )
     lines.append(
         '2. Run the eval: `python evals/run_eval.py --model "<model-name>" --quantization <quant>`'

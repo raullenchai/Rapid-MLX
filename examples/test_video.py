@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for VLM video support in vllm-mlx.
+Test script for VLM video support in rapid-mlx.
 
 This script tests video understanding capabilities by:
 1. Downloading a sample video (or using a local one)

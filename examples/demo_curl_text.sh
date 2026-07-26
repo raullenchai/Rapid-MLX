@@ -1,11 +1,11 @@
 #!/bin/bash
 # Demo: curl API - Text Chat
 #
-# Shows how to use vllm-mlx with curl for text-only chat.
+# Shows how to use rapid-mlx with curl for text-only chat.
 #
 # Usage:
 #   1. Start the server:
-#      vllm-mlx --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+#      rapid-mlx --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
 #
 #   2. Run this script:
 #      bash examples/demo_curl_text.sh

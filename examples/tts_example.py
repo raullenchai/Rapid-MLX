@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TTS Example - Text to Speech with vllm-mlx
+TTS Example - Text to Speech with rapid-mlx
 
 Usage:
     python examples/tts_example.py "Hello, how are you?"
@@ -89,7 +89,7 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60)
-    print(" TTS Example - vllm-mlx")
+    print(" TTS Example - rapid-mlx")
     print("=" * 60)
     print()
 
