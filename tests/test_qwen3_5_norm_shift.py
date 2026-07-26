@@ -125,7 +125,29 @@ def test_sanitize_applied_shift_detects_delta():
 
 
 @pytest.fixture
-def patched_textmodel(monkeypatch):
+def _restore_install_state():
+    """Snapshot the process-wide install state and restore it on teardown.
+
+    The install patches ``mlx_lm.models.qwen3_5.TextModel`` — process-global
+    state the production serve path may have installed at import. Tests here
+    uninstall/reinstall it over a monkeypatched stub; without restoring the
+    prior state, a later test (or the real serve wiring) would silently run
+    with the fix removed, making the suite order-dependent (codex #1234).
+
+    Requested BEFORE ``monkeypatch`` so it sets up first and therefore tears
+    down LAST — after monkeypatch has reverted ``TextModel`` to the real
+    class, so a re-install lands on the real class, not the stub.
+    """
+    was_installed = nsf.is_installed()
+    yield
+    if was_installed and not nsf.is_installed():
+        nsf.install_qwen3_5_norm_shift_fix()
+    elif not was_installed and nsf.is_installed():
+        nsf.uninstall_qwen3_5_norm_shift_fix()
+
+
+@pytest.fixture
+def patched_textmodel(_restore_install_state, monkeypatch):
     """Install the fix over a stub TextModel whose original sanitize mimics
     mlx-lm. Yields a callable ``run(weights)`` invoking the patched method."""
     from mlx_lm.models import qwen3_5 as q
@@ -192,7 +214,7 @@ def test_wrapper_noop_without_proxy(patched_textmodel):
 # ----------------------------------------------------------------------
 
 
-def test_install_uninstall_roundtrip(monkeypatch):
+def test_install_uninstall_roundtrip(_restore_install_state, monkeypatch):
     from mlx_lm.models import qwen3_5 as q
 
     nsf.uninstall_qwen3_5_norm_shift_fix()
