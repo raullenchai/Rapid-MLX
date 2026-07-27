@@ -9,10 +9,11 @@ numbers.
 
 Model selection: ``golden_models.yaml`` defines families; for each
 family we pick the highest-quality candidate that fits machine RAM.
-Bench regression threshold is 5% on cold TTFT and decode TPS vs the
-last saved baseline at ``harness/baselines/<model>.json`` (when
-present) — missing baselines mean "first time, record it" and we don't
-fail.
+Bench regression thresholds are recorded per metric in the schema-v1
+baseline at ``harness/baselines/<model>.json``. Stable autoregressive paths
+use 5%; noisier paths document their measured floor. Missing baselines mean
+"first time, record it" here, while the release baseline audit blocks an
+incomplete committed inventory.
 
 Implementation notes:
 * Server boot uses an unusual port (``8451``) to avoid colliding with
@@ -994,7 +995,34 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
             "executed": True,
         }
 
-    baseline = json.loads(baseline_path.read_text())
+    baseline, thresholds, baseline_revision, baseline_chip = _load_benchmark_baseline(
+        baseline_path, choice.model_id
+    )
+    actual_revision = (
+        _cached_model_revision(choice.model_id) if baseline_revision else None
+    )
+    current_chip = _current_chip() if baseline_chip else None
+    if baseline_revision != actual_revision:
+        return {
+            "status": "fail",
+            "summary": (
+                f"cold={cold:.0f}ms warm={warm:.0f}ms ({speedup:.2f}x) "
+                "— baseline model revision mismatch; refresh required"
+            ),
+            "artifact": str(bench_path),
+            "executed": True,
+        }
+    if baseline_chip != current_chip:
+        return {
+            "status": "skip",
+            "summary": (
+                f"cold={cold:.0f}ms warm={warm:.0f}ms ({speedup:.2f}x) "
+                f"— baseline is for {baseline_chip}, not "
+                f"{current_chip or 'unknown hardware'}; recorded only"
+            ),
+            "artifact": str(bench_path),
+            "executed": True,
+        }
     # Accept both old (ttft) and new key names for backward compat. Treat
     # an explicit ``None`` (JSON ``null``) the same as a missing key so we
     # don't end up with ``base_cold=None`` flowing into the division below.
@@ -1008,15 +1036,23 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
     if base_warm is None:
         base_warm = baseline.get("warm_ttft_ms_median", warm)
 
-    # Slowdown = current / baseline. >5% slower on cold OR warm = fail.
+    # Slowdown = current / baseline. Exceeding this model's reviewed noise
+    # threshold on cold OR warm fails.
     cold_slow = (cold / base_cold - 1) * 100 if base_cold else 0
     warm_slow = (warm / base_warm - 1) * 100 if base_warm else 0
-    if cold_slow > BENCH_THRESHOLD_PCT or warm_slow > BENCH_THRESHOLD_PCT:
+    cold_threshold = thresholds["cold_request_ms_median"]
+    warm_threshold = thresholds["warm_request_ms_median"]
+    threshold_text = (
+        f"cold {cold_threshold:g}%, warm {warm_threshold:g}%"
+        if cold_threshold != warm_threshold
+        else f"{cold_threshold:g}%"
+    )
+    if cold_slow > cold_threshold or warm_slow > warm_threshold:
         return {
             "status": "fail",
             "summary": (
                 f"perf regression: cold {cold_slow:+.1f}%, warm {warm_slow:+.1f}% "
-                f"vs baseline (threshold {BENCH_THRESHOLD_PCT}%)"
+                f"vs baseline (threshold {threshold_text})"
             ),
             "artifact": str(bench_path),
             "executed": True,
@@ -1025,11 +1061,93 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         "status": "pass",
         "summary": (
             f"cold {cold_slow:+.1f}%, warm {warm_slow:+.1f}% "
-            f"vs baseline (within {BENCH_THRESHOLD_PCT}%)"
+            f"vs baseline (within {threshold_text})"
         ),
         "artifact": str(bench_path),
         "executed": True,
     }
+
+
+def _load_benchmark_baseline(
+    path: Path, expected_model: str
+) -> tuple[dict[str, Any], dict[str, float], str | None, str | None]:
+    """Load schema-v1 baselines while retaining legacy compatibility."""
+
+    baseline = json.loads(path.read_text())
+    if "schema" not in baseline:
+        has_cold = any(
+            key in baseline for key in ("cold_request_ms_median", "cold_ttft_ms_median")
+        )
+        has_warm = any(
+            key in baseline for key in ("warm_request_ms_median", "warm_ttft_ms_median")
+        )
+        if not has_cold or not has_warm:
+            raise ValueError(f"{path.name}: unrecognized legacy baseline shape")
+        return (
+            baseline,
+            {
+                "cold_request_ms_median": BENCH_THRESHOLD_PCT,
+                "warm_request_ms_median": BENCH_THRESHOLD_PCT,
+            },
+            None,
+            None,
+        )
+    if baseline["schema"] != 1:
+        raise ValueError(
+            f"{path.name}: unsupported baseline schema {baseline['schema']!r}"
+        )
+    model = baseline.get("model")
+    if not isinstance(model, dict) or model.get("id") != expected_model:
+        raise ValueError(f"{path.name}: baseline model does not match {expected_model}")
+    metrics = baseline.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ValueError(f"{path.name}: baseline metrics must be an object")
+    thresholds = baseline["regression_threshold_pct"]
+    return (
+        metrics,
+        {
+            "cold_request_ms_median": float(thresholds["cold_request_ms_median"]),
+            "warm_request_ms_median": float(thresholds["warm_request_ms_median"]),
+        },
+        model["revision"],
+        baseline["environment"]["hardware"]["chip"],
+    )
+
+
+def _cached_model_revision(model_id: str, *, cache_dir: Path | None = None) -> str:
+    """Return the revision resolved by Hugging Face for the loaded model."""
+
+    if cache_dir is None:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        cache_dir = Path(HF_HUB_CACHE)
+    ref = cache_dir / f"models--{_safe_name(model_id)}" / "refs" / "main"
+    try:
+        revision = ref.read_text().strip()
+    except OSError as exc:
+        raise ValueError(
+            f"cannot verify loaded revision for {model_id}: {ref} is unavailable"
+        ) from exc
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError(
+            f"cannot verify loaded revision for {model_id}: "
+            f"{ref} does not contain a commit SHA"
+        )
+    return revision
+
+
+def _current_chip() -> str | None:
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() or None
 
 
 def _safe_name(model_id: str) -> str:

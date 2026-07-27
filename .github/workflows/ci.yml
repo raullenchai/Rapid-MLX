@@ -95,7 +95,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests
+          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests pyyaml
 
       - name: Run unit tests (no MLX required)
         # NOTE: tests in this list MUST not import mlx / mlx_lm at module
@@ -123,6 +123,7 @@ jobs:
             tests/test_minimax_reasoning_parser.py \
             tests/test_pr_validate_runner.py \
             tests/test_pr_validate_codex.py \
+            tests/test_release_baselines.py \
             tests/test_validate_release_subject.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \

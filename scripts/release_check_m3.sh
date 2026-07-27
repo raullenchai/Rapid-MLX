@@ -78,6 +78,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# Fail before downloading/booting models if a benchmark candidate has no
+# committed comparison point. Staleness is surfaced as a warning; refreshing a
+# baseline remains a reviewed human decision, never an automatic overwrite.
+"$PY" scripts/release_baselines.py
+
 #-------------------- G0a fleet output coherence ------------------
 # Before spending time on the full single-model gauntlet, prove that every
 # release-family representative can still answer deterministic golden

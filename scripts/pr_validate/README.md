@@ -323,9 +323,14 @@ per family):
 1. Boot a server on port 8451.
 2. Run `scripts/stress_test.py` (8 stress scenarios).
 3. Run each agent integration in the registry (matrix: m × n).
-4. Run an inline bench (cold TTFT + warm TTFT + speedup).
+4. Run an inline bench (cold/warm end-to-end request latency + ratio).
 5. Compare bench to `harness/baselines/bench-<model>.json` —
-   regression > 5% = fail.
+   regression beyond that model metric's reviewed threshold = fail.
+
+Every selectable candidate, including RAM-constrained fallbacks, has a
+schema-v1 baseline with exact model, hardware, and toolchain metadata.
+`python3.12 scripts/release_baselines.py` audits that inventory; see
+`harness/README.md` for the reviewed refresh workflow.
 
 Skip with `PR_VALIDATE_NO_STRESS=1`.
 

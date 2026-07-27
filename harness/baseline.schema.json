@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rapidmlx.com/schemas/benchmark-baseline-v1.json",
+  "title": "Rapid-MLX benchmark baseline",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "captured_at",
+    "family",
+    "sample_runs",
+    "regression_threshold_pct",
+    "model",
+    "environment",
+    "metrics"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "captured_at": {"type": "string", "format": "date-time"},
+    "family": {"type": "string", "minLength": 1},
+    "sample_runs": {"type": "integer", "minimum": 2},
+    "regression_threshold_pct": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cold_request_ms_median",
+        "warm_request_ms_median"
+      ],
+      "properties": {
+        "cold_request_ms_median": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "warm_request_ms_median": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "quantization", "engine"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "quantization": {"type": "string", "minLength": 1},
+        "engine": {"type": "string", "minLength": 1}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hardware", "software"],
+      "properties": {
+        "hardware": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["chip", "memory_gb"],
+          "properties": {
+            "chip": {"type": "string", "minLength": 1},
+            "memory_gb": {"type": "integer", "minimum": 1}
+          }
+        },
+        "software": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "rapid_mlx_version",
+            "rapid_mlx_commit",
+            "python",
+            "macos",
+            "mlx",
+            "mlx_lm",
+            "mlx_vlm",
+            "mlx_audio"
+          ],
+          "properties": {
+            "rapid_mlx_version": {"type": "string", "minLength": 1},
+            "rapid_mlx_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "python": {"type": "string", "minLength": 1},
+            "macos": {"type": "string", "minLength": 1},
+            "mlx": {"type": "string", "minLength": 1},
+            "mlx_lm": {"type": "string", "minLength": 1},
+            "mlx_vlm": {"type": "string", "minLength": 1},
+            "mlx_audio": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cold_request_ms_median",
+        "warm_request_ms_median",
+        "speedup_x"
+      ],
+      "properties": {
+        "cold_request_ms_median": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "warm_request_ms_median": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "speedup_x": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}

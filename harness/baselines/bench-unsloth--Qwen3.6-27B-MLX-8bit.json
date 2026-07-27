@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "captured_at": "2026-07-27T23:32:13Z",
+  "family": "qwen3.6",
+  "sample_runs": 3,
+  "regression_threshold_pct": {
+    "cold_request_ms_median": 5,
+    "warm_request_ms_median": 5
+  },
+  "model": {
+    "id": "unsloth/Qwen3.6-27B-MLX-8bit",
+    "revision": "78067073d2bf9795e5aabcfcd647bd36cf43c0b5",
+    "quantization": "8bit",
+    "engine": "batched"
+  },
+  "environment": {
+    "hardware": {"chip": "Apple M3 Ultra", "memory_gb": 256},
+    "software": {
+      "rapid_mlx_version": "0.11.0",
+      "rapid_mlx_commit": "6a445517007ffd14fcefdf58cbfca2008da1c5f0",
+      "python": "3.12.13",
+      "macos": "26.5.2 (25F84)",
+      "mlx": "0.31.2",
+      "mlx_lm": "0.31.3",
+      "mlx_vlm": "0.6.3",
+      "mlx_audio": "0.4.3"
+    }
+  },
+  "metrics": {
+    "cold_request_ms_median": 545.6991195678711,
+    "warm_request_ms_median": 1098.9551544189453,
+    "speedup_x": 0.4965617726743369
+  }
+}
