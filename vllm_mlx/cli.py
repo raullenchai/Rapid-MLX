@@ -2233,7 +2233,7 @@ def serve_command(args):
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
     # so the operator saw five INFO lines and a banner before the
-    # actionable ``Install with: pip install 'rapid-mlx[dflash]'`` line,
+    # actionable optional-extra install instructions,
     # matching Diego's earlier ``[embeddings]`` regression shape exactly.
     # Hoist the cheap ``have_runtime()`` probe to the same boot-guard tier
     # as the other extras so the error lands FIRST. ``importlib.util.
@@ -2246,9 +2246,14 @@ def serve_command(args):
         if not have_runtime():
             print(
                 "\n  Error: DFlash speculative decoding "
-                '(``--speculative-config \'{"method":"dflash"}\'``) requires '
-                "mlx-vlm 0.5.0+ for the DFlash drafter hooks. Install with: "
-                "``pip install 'rapid-mlx[dflash]'``.\n"
+                '(--speculative-config \'{"method":"dflash"}\') requires '
+                "mlx-vlm 0.5.0+ for the DFlash drafter hooks.\n"
+                "\n  Install in a Python environment with:\n"
+                "    pip install 'rapid-mlx[dflash]'\n"
+                "\n  Homebrew installs the text-only package. Homebrew users "
+                "can switch to the isolated full install with:\n"
+                "    brew uninstall rapid-mlx\n"
+                "    uv tool install 'rapid-mlx[dflash]'\n"
             )
             sys.exit(1)
 
@@ -2414,24 +2419,25 @@ def serve_command(args):
     # the effective lane, NOT the raw multimodal classification: a hybrid VLM
     # that auto-downgrades to the text-only lane is PFlash-capable there,
     # exactly as an explicit ``--text-only`` run would be (#352 dogfood P1-②).
-    _serve_is_mllm, _ = resolve_serving_lane(
-        args.model,
-        force_mllm=getattr(args, "mllm", False),
-        force_text=getattr(args, "no_mllm", False),
-    )
-    args.pflash = resolve_pflash_mode_default(
-        args, model_name=args.model, is_multimodal=_serve_is_mllm
-    )
-    try:
-        pflash_config = config_from_args(args)
-        validate_model_support(
-            pflash_config,
-            model_name=args.model,
-            is_mllm=_serve_is_mllm,
+    if not args.enable_dflash:
+        _serve_is_mllm, _ = resolve_serving_lane(
+            args.model,
+            force_mllm=getattr(args, "mllm", False),
+            force_text=getattr(args, "no_mllm", False),
         )
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+        args.pflash = resolve_pflash_mode_default(
+            args, model_name=args.model, is_multimodal=_serve_is_mllm
+        )
+        try:
+            pflash_config = config_from_args(args)
+            validate_model_support(
+                pflash_config,
+                model_name=args.model,
+                is_mllm=_serve_is_mllm,
+            )
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
     # Auto-detect parser config from model name when not explicitly set.
     # --no-tool-call-parser / --no-reasoning-parser are escape hatches
@@ -2786,10 +2792,16 @@ def serve_command(args):
         # the user explicitly set away from their default.
         _GPU_MEM_DEFAULT = 0.90  # keep in sync with the serve_parser default
         _dflash_ignored: list[str] = []
-        if getattr(args, "enable_prefix_cache", False):
-            _dflash_ignored.append("--enable-prefix-cache")
+        # Prefix caching is enabled by default in the shared serve parser,
+        # so it is not evidence that the user explicitly requested it.
+        # DFlash already documents its no-prefix-cache limitation; avoid a
+        # warning on every normal DFlash startup.
         if getattr(args, "kv_cache_quantization", None):
             _dflash_ignored.append("--kv-cache-quantization")
+        if getattr(args, "kv_cache_turboquant", None):
+            _dflash_ignored.append("--kv-cache-turboquant")
+        if getattr(args, "pflash", None) not in (None, "auto"):
+            _dflash_ignored.append("--pflash")
         # gpu-memory-utilization defaults to 0.90 (not None) in the serve
         # parser, so an ``is not None`` check would fire on every invocation.
         # Compare to the real default — only warn when the user explicitly
@@ -2797,12 +2809,8 @@ def serve_command(args):
         _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
         if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
             _dflash_ignored.append("--gpu-memory-utilization")
-        if getattr(args, "enable_auto_tool_choice", False):
-            _dflash_ignored.append("--enable-auto-tool-choice")
-        if getattr(args, "tool_call_parser", None):
-            _dflash_ignored.append("--tool-call-parser")
-        if getattr(args, "reasoning_parser", None):
-            _dflash_ignored.append("--reasoning-parser")
+        if getattr(args, "enable_tool_logits_bias", False):
+            _dflash_ignored.append("--enable-tool-logits-bias")
         if getattr(args, "embedding_model", None):
             _dflash_ignored.append("--embedding-model")
         if getattr(args, "mcp_config", None):
@@ -2872,11 +2880,11 @@ def serve_command(args):
         features.append(auth_feature)
     if args.rate_limit > 0:
         features.append(f"rate-limit: {args.rate_limit}/min")
-    if args.cloud_model:
+    if args.cloud_model and not args.enable_dflash:
         features.append(f"cloud: {args.cloud_model}")
-    if gc_control:
+    if gc_control and not args.enable_dflash:
         features.append("gc-control")
-    if args.pin_system_prompt:
+    if args.pin_system_prompt and not args.enable_dflash:
         features.append("pin-system-prompt")
     # Show CORS in the startup banner when CLI flag or env-var-driven
     # config produced an origin list (``configure_cors_from_env`` is what
@@ -2891,9 +2899,57 @@ def serve_command(args):
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
     # Store MCP config path for FastAPI startup
-    if args.mcp_config:
+    if args.mcp_config and not args.enable_dflash:
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
+
+    # DFlash owns a dedicated single-user runtime. Fork before constructing
+    # BatchedEngine-only cache/TurboQuant/PFlash state so startup output and
+    # initialization describe capabilities that actually apply.
+    if args.enable_dflash:
+        if getattr(args, "no_spec_decode", False):
+            print(
+                "error: DFlash and --no-spec-decode are mutually "
+                "exclusive — DFlash is a speculative-decode mode.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        from .model_aliases import resolve_profile
+        from .speculative.dflash.server import run_dflash_server
+
+        _alias_name = getattr(args, "_original_alias", None) or args.model
+        _profile = resolve_profile(_alias_name)
+        assert _profile is not None and _profile.supports_dflash, (
+            f"DFlash profile invariant violated for {_alias_name!r}"
+        )
+
+        _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
+        _check_memory_capacity(args.model)
+        server._sync_config()
+        run_dflash_server(
+            main_model_repo=_profile.hf_path,
+            drafter_repo=_resolve_dflash_drafter_repo(args, _profile),
+            host=args.host,
+            port=args.port,
+            served_model_name=args.served_model_name or _alias_name,
+            default_max_tokens=effective_max_tokens,
+            cors_origins=cors_origins,
+            uvicorn_log_level=uvicorn_log_level,
+            no_thinking=args.no_thinking,
+            api_key=server._api_key,
+            rate_limit=args.rate_limit,
+            max_request_bytes=server._max_request_bytes,
+            body_receive_timeout_seconds=server._body_receive_timeout_seconds,
+            default_timeout=server._default_timeout,
+            max_concurrent_requests=args.max_concurrent_requests,
+            cors_policy=server.get_resolved_cors_policy(),
+            tool_call_parser=(
+                args.tool_call_parser if args.enable_auto_tool_choice else None
+            ),
+            reasoning_parser_name=args.reasoning_parser,
+        )
+        return
 
     # Pre-load embedding model if specified.
     #
@@ -3323,52 +3379,6 @@ def serve_command(args):
     # Pre-flight memory check — warn (don't abort) if model + working set
     # would push unified memory past the kernel-panic threshold (issue #324).
     _check_memory_capacity(args.model)
-
-    # DFlash fork: when method=dflash is set, skip BatchedEngine entirely
-    # and run the dedicated DFlash server. The eligibility check above has
-    # already validated the alias, so by here we have a known-good profile.
-    if args.enable_dflash:
-        # DFlash IS a speculative-decode path. The --no-spec-decode escape
-        # hatch (SOP §10) must reject it here — otherwise the user thinks
-        # they've disabled spec-decode but DFlash silently proceeds via
-        # its dedicated server, never touching EngineCore / ModelConfig.
-        if getattr(args, "no_spec_decode", False):
-            print(
-                "error: DFlash and --no-spec-decode are mutually "
-                "exclusive — DFlash is a speculative-decode mode.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        from .model_aliases import resolve_profile
-        from .speculative.dflash.server import run_dflash_server
-
-        _alias_name = getattr(args, "_original_alias", None) or args.model
-        _profile = resolve_profile(_alias_name)
-        # The eligibility check at top of serve_command guarantees this
-        # passes — assert to be defensive against future refactors.
-        assert _profile is not None and _profile.supports_dflash, (
-            f"DFlash profile invariant violated for {_alias_name!r}"
-        )
-        # The vLLM-style surface uses ``model`` for the drafter override.
-        run_dflash_server(
-            main_model_repo=_profile.hf_path,
-            drafter_repo=_resolve_dflash_drafter_repo(args, _profile),
-            host=args.host,
-            port=args.port,
-            served_model_name=args.served_model_name or _alias_name,
-            default_max_tokens=effective_max_tokens,
-            cors_origins=cors_origins,
-            uvicorn_log_level=uvicorn_log_level,
-            no_thinking=args.no_thinking,
-            api_key=server._api_key,
-            rate_limit=args.rate_limit,
-            max_request_bytes=server._max_request_bytes,
-            body_receive_timeout_seconds=server._body_receive_timeout_seconds,
-            default_timeout=server._default_timeout,
-            max_concurrent_requests=args.max_concurrent_requests,
-            cors_policy=server.get_resolved_cors_policy(),
-        )
-        return
 
     # DDTree fork: same blast-radius boundary as DFlash. It is a
     # speculative-decode mode, but the MVP runs through the external

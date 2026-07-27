@@ -105,7 +105,8 @@ rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 # Tool calling with Mistral/Devstral (parser auto-detected; pin shown for clarity)
 rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser mistral
 
-# DFlash speculative decoding (single-user, single supported alias)
+# DFlash speculative decoding (single-user, single supported alias).
+# Requires rapid-mlx[dflash]; OpenAI tools and opt-in thinking are supported.
 rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000
 
 # DDTree speculative decoding (experimental, single-user)

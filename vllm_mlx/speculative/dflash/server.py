@@ -18,10 +18,10 @@ Why a separate server (not a fork of the standard route)?
   - A separate, opt-in server is a clean blast-radius boundary: turning
     on DFlash can never break a request that doesn't use it.
 
-v1 limitations (documented in README + ``rapid-mlx info``):
+Current limitations (documented in README + ``rapid-mlx info``):
   - Single-user serial. Concurrent requests queue on an ``asyncio.Lock``.
-  - No tool calling, MCP, embeddings, or audio in this server (the
-    standard server handles those).
+  - No MCP, embeddings, or audio in this server (the standard server
+    handles those).
   - No prefix cache (per-request KV cache built fresh each call).
 
 These limitations are deliberate for v1 — the target user is someone
@@ -57,6 +57,12 @@ from vllm_mlx.api.models import (
     Usage,
 )
 from vllm_mlx.config import get_config
+from vllm_mlx.engine import GenerationOutput
+from vllm_mlx.service.helpers import (
+    _parse_tool_calls_with_parser,
+    _validate_tool_call_params,
+)
+from vllm_mlx.service.postprocessor import StreamingPostProcessor
 
 from .eligibility import have_runtime
 from .runtime import DFlashRuntime, load_runtime
@@ -617,6 +623,8 @@ def _build_app(
     default_timeout: float = 1800.0,
     max_concurrent_requests: int = 256,
     cors_policy: Any | None = None,
+    tool_call_parser: str | None = None,
+    reasoning_parser_name: str | None = None,
 ) -> FastAPI:
     """Create the FastAPI application for DFlash mode.
 
@@ -644,6 +652,9 @@ def _build_app(
     cfg.max_request_bytes = max(0, int(max_request_bytes))
     cfg.body_receive_timeout_seconds = max(0.0, float(body_receive_timeout_seconds))
     cfg.default_timeout = max(0.0, float(default_timeout))
+    cfg.enable_auto_tool_choice = bool(tool_call_parser)
+    cfg.tool_call_parser = tool_call_parser
+    cfg.reasoning_parser_name = reasoning_parser_name
 
     from ...middleware.auth import (
         configure_rate_limiter,
@@ -791,15 +802,20 @@ def _build_app(
             raise HTTPException(status_code=400, detail="messages must not be empty")
         if request.n is not None and request.n > 1:
             raise HTTPException(status_code=400, detail="n > 1 is not supported")
-        if request.tools:
-            # DFlash server doesn't run a tool-call parser. Surface this so
-            # users don't think their tools "silently worked" when in fact
-            # the model just emitted free-form text.
+        if request.tools and not cfg.tool_call_parser:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Tool calling is not supported in DFlash mode (v1 "
-                    "limitation). Restart without DFlash to use tools."
+                    "DFlash tool calling requires an enabled tool-call parser. "
+                    "Remove --no-tool-call-parser or configure one explicitly."
+                ),
+            )
+        if request.tools and request.tool_choice not in (None, "auto"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "DFlash currently supports tool_choice='auto' only. "
+                    "Restart without DFlash for forced or disabled tool choice."
                 ),
             )
         # Surface unsupported params explicitly rather than silently
@@ -895,6 +911,15 @@ def _build_app(
                 enable_thinking: bool | None = False
             else:
                 enable_thinking = _extract_thinking_from_request(request)
+            effective_thinking = False if enable_thinking is None else enable_thinking
+            if effective_thinking and not cfg.reasoning_parser_name:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "DFlash thinking output requires a reasoning parser. "
+                        "Remove --no-reasoning-parser or configure one explicitly."
+                    ),
+                )
 
             # codex round-4 #4 → round-5 #1/#2: OFFLOAD rendering so a heavy
             # chat template cannot block the event loop (starving other
@@ -916,7 +941,10 @@ def _build_app(
             # behind it, unlike a timed-out generation worker.
             def _render() -> str:
                 return _render_prompt(
-                    processor, model, request, enable_thinking=enable_thinking
+                    processor,
+                    model,
+                    request,
+                    enable_thinking=effective_thinking,
                 )
 
             # codex round-8 #1: validate the remaining budget BEFORE submitting
@@ -1048,6 +1076,7 @@ def _build_app(
                         timeout_label=request_timeout_for_diagnostics,
                         deadline=request_deadline,
                         admission_reservation=reservation,
+                        enable_thinking=effective_thinking,
                     ),
                     reservation,
                 ),
@@ -1074,6 +1103,7 @@ def _build_app(
                 timeout_label=request_timeout_for_diagnostics,
                 deadline=request_deadline,
                 admission_reservation=reservation,
+                enable_thinking=effective_thinking,
             )
         finally:
             reservation.release()
@@ -1104,6 +1134,7 @@ def _render_prompt(
 
     messages = []
     for m in request.messages:
+        message = m.model_dump(exclude_none=True)
         content = m.content
         if isinstance(content, list):
             # Multimodal payload — DFlash server is text-only. Collapse
@@ -1132,19 +1163,27 @@ def _render_prompt(
                     sorted(set(dropped_kinds)),
                 )
             content = "".join(text_pieces)
-        messages.append({"role": m.role, "content": content})
+        message["content"] = content
+        messages.append(message)
 
-    # DFlash bypasses the normal reasoning parser, so thinking tokens would
-    # otherwise be exposed directly in ``content`` and commonly exhaust the
-    # response budget. Keep thinking available as an explicit request opt-in.
+    # Default to final-answer mode. Explicit thinking opt-in is post-processed
+    # by the same reasoning pipeline as the standard server.
     effective_thinking = False if enable_thinking is None else enable_thinking
+    template_kwargs: dict[str, Any] = {
+        "num_images": 0,
+        "num_audios": 0,
+        "enable_thinking": effective_thinking,
+    }
+    if request.tools:
+        from ...api.tool_calling import convert_tools_for_template
+
+        template_kwargs["tools"] = convert_tools_for_template(request.tools)
+
     return apply_chat_template(
         processor,
         model.config,
         messages,
-        num_images=0,
-        num_audios=0,
-        enable_thinking=effective_thinking,
+        **template_kwargs,
     )
 
 
@@ -1204,6 +1243,7 @@ async def _stream_completion(
     timeout_label: float | None = None,
     deadline: float | None = None,
     admission_reservation: _DFlashAdmissionReservation | None = None,
+    enable_thinking: bool = False,
 ) -> AsyncIterator[bytes]:
     """Stream OpenAI-format chunks. Generation happens under the serial
     lock; chunks are forwarded as ``data: ...\\n\\n`` SSE events.
@@ -1228,6 +1268,15 @@ async def _stream_completion(
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
+    postprocessor: StreamingPostProcessor | None = None
+    if request.tools or enable_thinking:
+        postprocessor = StreamingPostProcessor(
+            get_config(),
+            tools_requested=bool(request.tools),
+            enable_thinking=enable_thinking,
+            request=request.model_dump(),
+        )
+        postprocessor.reset()
 
     # First chunk — role marker. Emitted by the consumer loop below,
     # before the producer task is started, so the client sees the role
@@ -1315,6 +1364,7 @@ async def _stream_completion(
         # budget. None means "no token observed yet".
         last_token_id: int | None = None
         error_message: str | None = None
+        postprocess_spilled = False
 
         async def _emit(item: bytes, *, terminal: bool = False) -> None:
             """Put one SSE frame on the bounded queue.
@@ -1361,6 +1411,48 @@ async def _stream_completion(
                 if deadline_left is not None and deadline_left <= backpressure:
                     raise _DFlashStreamDeadlineError from exc
                 raise _DFlashClientGoneError from exc
+
+        async def _emit_postprocessed_event(
+            event: Any, *, terminal: bool = False
+        ) -> None:
+            """Translate one shared postprocessor event to OpenAI SSE."""
+            nonlocal finish_reason, postprocess_spilled
+
+            if event.finish_reason is not None:
+                finish_reason = event.finish_reason
+            delta: dict[str, Any] = {}
+            if event.content:
+                delta["content"] = event.content
+            if event.reasoning:
+                delta["reasoning_content"] = event.reasoning
+            if event.tool_calls:
+                delta["tool_calls"] = event.tool_calls
+            if not delta:
+                return
+            piece = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": served_model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            frame = f"data: {json.dumps(piece)}\n\n".encode()
+            if terminal and postprocess_spilled:
+                pending_terminal.append(frame)
+                return
+            try:
+                await _emit(frame, terminal=terminal)
+            except _DFlashClientGoneError:
+                if not terminal:
+                    raise
+                postprocess_spilled = True
+                pending_terminal.append(frame)
 
         async def _await_worker(func: Any, *, makes_generator: bool = False) -> Any:
             """Wait without cancelling an mlx operation on deadline expiry."""
@@ -1522,19 +1614,6 @@ async def _stream_completion(
                     last_token_id = _ct
                 if not chunk.text:
                     continue
-                piece = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": served_model_name,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": chunk.text},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
                 # F2: push to the bounded queue instead of yielding to the
                 # socket directly, so the lease (and its lock) is never held
                 # across a suspended socket write. ``_emit`` on a content frame
@@ -1555,7 +1634,32 @@ async def _stream_completion(
                 #     cap and be swallowed in ``_drive_producer`` — no hang
                 #     either way.
                 try:
-                    await _emit(f"data: {json.dumps(piece)}\n\n".encode())
+                    if postprocessor is None:
+                        piece = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": served_model_name,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": chunk.text},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        await _emit(f"data: {json.dumps(piece)}\n\n".encode())
+                    else:
+                        output = GenerationOutput(
+                            text=chunk.text,
+                            new_text=chunk.text,
+                            prompt_tokens=chunk.prompt_tokens,
+                            completion_tokens=chunk.generation_tokens,
+                            finished=False,
+                            finish_reason=None,
+                        )
+                        for event in postprocessor.process_chunk(output):
+                            await _emit_postprocessed_event(event)
                 except _DFlashStreamDeadlineError:
                     error_message = f"DFlash stream timed out after {_format_timeout_seconds(timeout_label)}."
                     finish_reason = "length"
@@ -1588,6 +1692,20 @@ async def _stream_completion(
             and last_token_id not in _eos_ids
         ):
             finish_reason = "length"
+
+        if postprocessor is not None and error_message is None:
+            finished_output = GenerationOutput(
+                text="",
+                new_text="",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                finished=True,
+                finish_reason=finish_reason,
+            )
+            terminal_events = postprocessor.process_chunk(finished_output)
+            terminal_events.extend(postprocessor.finalize())
+            for event in terminal_events:
+                await _emit_postprocessed_event(event, terminal=True)
 
         # Final chunk — finish_reason + usage. If we broke out of the loop
         # because the underlying generator raised, attach an OpenAI-style
@@ -1626,7 +1744,7 @@ async def _stream_completion(
         # subsequent frame MUST go there too, even if the queue drains in
         # between; otherwise a later ``[DONE]`` could be enqueued and delivered
         # ahead of the still-pending final frame. ``spilled`` latches that.
-        spilled = False
+        spilled = postprocess_spilled
         for frame in (final_frame, done_frame):
             if spilled:
                 pending_terminal.append(frame)
@@ -1738,6 +1856,7 @@ async def _non_stream_completion(
     timeout_label: float | None = None,
     deadline: float | None = None,
     admission_reservation: _DFlashAdmissionReservation | None = None,
+    enable_thinking: bool = False,
 ) -> ChatCompletionResponse:
     """Run generation under the serial lock and enforce a safe deadline.
 
@@ -1886,6 +2005,30 @@ async def _non_stream_completion(
         else "stop"
     )
 
+    content: str | None = result.text
+    reasoning_content: str | None = None
+    cfg = get_config()
+    if cfg.reasoning_parser_name:
+        from ...reasoning import get_parser
+
+        parser_cls = get_parser(cfg.reasoning_parser_name)
+        reasoning_parser = parser_cls()
+        reasoning_content, parsed_content = reasoning_parser.extract_reasoning(
+            result.text,
+            enable_thinking=enable_thinking,
+        )
+        if parsed_content is not None:
+            content = parsed_content
+        elif reasoning_content is not None:
+            content = None
+
+    tool_calls = None
+    if request.tools:
+        content, tool_calls = _parse_tool_calls_with_parser(content or "", request)
+        if tool_calls:
+            _validate_tool_call_params(tool_calls, request.tools)
+            finish_reason = "tool_calls"
+
     return ChatCompletionResponse(
         id=completion_id,
         object="chat.completion",
@@ -1894,7 +2037,12 @@ async def _non_stream_completion(
         choices=[
             ChatCompletionChoice(
                 index=0,
-                message=AssistantMessage(role="assistant", content=result.text),
+                message=AssistantMessage(
+                    role="assistant",
+                    content=content,
+                    reasoning_content=reasoning_content,
+                    tool_calls=tool_calls,
+                ),
                 finish_reason=finish_reason,
             )
         ],
@@ -1924,6 +2072,8 @@ def run_dflash_server(
     default_timeout: float = 1800.0,
     max_concurrent_requests: int = 256,
     cors_policy: Any | None = None,
+    tool_call_parser: str | None = "hermes",
+    reasoning_parser_name: str | None = "qwen3",
 ) -> None:
     """Load the model + DFlash drafter via mlx-vlm and start uvicorn.
 
@@ -1948,7 +2098,9 @@ def run_dflash_server(
     if not have_runtime():
         raise RuntimeError(
             "DFlash server requires mlx-vlm 0.5.0+ — install with "
-            "``pip install 'rapid-mlx[dflash]'``."
+            "pip install 'rapid-mlx[dflash]'. Homebrew installs the "
+            "text-only package; switch to an isolated uv tool install "
+            "for optional extras."
         )
 
     # Belt-and-suspenders eligibility re-check for programmatic callers
@@ -2007,6 +2159,8 @@ def run_dflash_server(
         default_timeout=default_timeout,
         max_concurrent_requests=max_concurrent_requests,
         cors_policy=cors_policy,
+        tool_call_parser=tool_call_parser,
+        reasoning_parser_name=reasoning_parser_name,
     )
 
     print()

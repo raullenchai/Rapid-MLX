@@ -58,11 +58,20 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 | Extra | Install | Adds |
 |---|---|---|
 | `vision` | `pip install 'rapid-mlx[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
+| `dflash` | `pip install 'rapid-mlx[dflash]'` | mlx-vlm for DFlash speculative decoding on supported 8-bit aliases |
 | `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
 | `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
 | `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
 | `guided` | `pip install 'rapid-mlx[guided]'` | outlines (~80 MB) for schema-constrained JSON |
 | `all` | `pip install 'rapid-mlx[all]'` | Everything above (~1.1 GB) |
+
+Homebrew installs the text-only package and does not provide Python extras.
+To switch a Homebrew installation to DFlash, use an isolated tool install:
+
+```bash
+brew uninstall rapid-mlx
+uv tool install 'rapid-mlx[dflash]'
+```
 
 ## Verify Installation
 

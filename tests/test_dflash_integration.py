@@ -68,6 +68,9 @@ def _reset_dflash_shared_globals():
             "max_request_bytes",
             "body_receive_timeout_seconds",
             "default_timeout",
+            "enable_auto_tool_choice",
+            "tool_call_parser",
+            "reasoning_parser_name",
         )
     }
     # codex round-8 #3: the CORS tests here call ``configure_cors_from_env``,
@@ -503,8 +506,24 @@ def test_dflash_cli_forwards_security_and_resource_limits() -> None:
         "default_timeout": "server._default_timeout",
         "max_concurrent_requests": "args.max_concurrent_requests",
         "cors_policy": "server.get_resolved_cors_policy()",
+        "tool_call_parser": (
+            "args.tool_call_parser if args.enable_auto_tool_choice else None"
+        ),
+        "reasoning_parser_name": "args.reasoning_parser",
     }
     assert {name: ast.unparse(keywords[name]) for name in expected} == expected
+
+
+def test_dflash_cli_forks_before_batched_engine_startup() -> None:
+    """DFlash startup must not advertise BatchedEngine-only features."""
+    import inspect
+
+    from vllm_mlx import cli
+
+    source = inspect.getsource(cli.serve_command)
+    dflash_call = source.index("run_dflash_server(")
+    assert dflash_call < source.index("Mode: Continuous batching")
+    assert dflash_call < source.index("Resolve per-alias TurboQuant default")
 
 
 def test_dflash_admission_cap_rejects_before_prompt_rendering() -> None:
@@ -1248,14 +1267,131 @@ def test_dflash_cors_wildcard_forces_credentials_off(monkeypatch) -> None:
     assert "Access-Control-Allow-Credentials" not in response.headers
 
 
-def test_chat_completions_rejects_tools() -> None:
-    """DFlash v1 doesn't run a tool-call parser. The route must reject
-    tool requests with a clear 400 — silent passthrough would surprise
-    users (model emits free-form text instead of structured tool calls)."""
+@pytest.mark.parametrize(
+    ("request_fields", "expected"),
+    [
+        (
+            {
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "get_weather", "parameters": {}},
+                    }
+                ]
+            },
+            "tool-call parser",
+        ),
+        ({"enable_thinking": True}, "reasoning parser"),
+    ],
+)
+def test_chat_completions_rejects_unparsed_structured_output(
+    request_fields, expected
+) -> None:
+    """Explicit parser opt-outs must not turn structured output into raw text."""
     from fastapi.testclient import TestClient
 
     from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
     from vllm_mlx.speculative.dflash.server import _build_app
+
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(),
+            kind="dflash",
+            drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+        ),
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            **request_fields,
+        },
+    )
+    assert response.status_code == 400
+    assert expected in response.json()["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    "tool_choice",
+    [
+        "required",
+        "none",
+        {"type": "function", "function": {"name": "get_weather"}},
+    ],
+)
+def test_chat_completions_rejects_unsupported_tool_choice(tool_choice) -> None:
+    """DFlash must not silently claim forced-tool semantics it cannot enforce."""
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(),
+            kind="dflash",
+            drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+        ),
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+        tool_call_parser="hermes",
+    )
+    response = TestClient(app).post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "parameters": {}},
+                }
+            ],
+            "tool_choice": tool_choice,
+        },
+    )
+    assert response.status_code == 400
+    assert "tool_choice='auto' only" in response.json()["error"]["message"]
+
+
+@_skip_without_mlx_vlm
+def test_chat_completions_parses_tool_calls(monkeypatch) -> None:
+    """DFlash reuses the standard Hermes parser for OpenAI tool calls."""
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    captured_template: dict = {}
+
+    def _render(*args, **kwargs):
+        captured_template.update(kwargs)
+        return "rendered prompt"
+
+    monkeypatch.setattr(mlx_vlm.prompt_utils, "apply_chat_template", _render)
+    monkeypatch.setattr(
+        mlx_vlm,
+        "generate",
+        lambda *args, **kwargs: SimpleNamespace(
+            text=(
+                '<tool_call>{"name":"get_weather",'
+                '"arguments":{"city":"Paris"}}</tool_call>'
+            ),
+            prompt_tokens=8,
+            generation_tokens=6,
+        ),
+    )
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -1269,6 +1405,8 @@ def test_chat_completions_rejects_tools() -> None:
         served_model_name="qwen3.5-27b-8bit",
         default_max_tokens=512,
         cors_origins=["*"],
+        tool_call_parser="hermes",
+        reasoning_parser_name="qwen3",
     )
     client = TestClient(app)
 
@@ -1280,17 +1418,115 @@ def test_chat_completions_rejects_tools() -> None:
             "tools": [
                 {
                     "type": "function",
-                    "function": {"name": "get_weather", "parameters": {}},
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
                 }
             ],
         },
     )
-    assert r.status_code == 400
-    # D-ANTHRO-VALIDATION F11: the dflash app now installs the shared
-    # exception handlers so HTTPException responses go through the
-    # canonical envelope ``{"error":{"message":...}}`` instead of the
-    # bare FastAPI ``{"detail":...}`` shape.
-    assert "tool calling" in r.json()["error"]["message"].lower()
+    assert r.status_code == 200, r.text
+    choice = r.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] == ""
+    call = choice["message"]["tool_calls"][0]
+    assert call["function"]["name"] == "get_weather"
+    assert call["function"]["arguments"] == '{"city": "Paris"}'
+    assert captured_template["tools"][0]["function"]["name"] == "get_weather"
+
+
+@_skip_without_mlx_vlm
+def test_chat_completions_streams_tool_calls(monkeypatch) -> None:
+    """DFlash streaming emits structured deltas, not raw tool markup."""
+    import json
+
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    monkeypatch.setattr(
+        mlx_vlm.prompt_utils,
+        "apply_chat_template",
+        lambda *args, **kwargs: "rendered prompt",
+    )
+
+    chunks = (
+        "<tool_call>",
+        '{"name":"get_weather","arguments":{"city":"Paris"}}',
+        "</tool_call>",
+    )
+
+    def _stream(*args, **kwargs):
+        for index, text in enumerate(chunks, start=1):
+            yield SimpleNamespace(
+                text=text,
+                token=index,
+                prompt_tokens=8,
+                generation_tokens=index,
+            )
+
+    monkeypatch.setattr(mlx_vlm, "stream_generate", _stream)
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(),
+            kind="dflash",
+            drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+        ),
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=512,
+        cors_origins=["*"],
+        tool_call_parser="hermes",
+        reasoning_parser_name="qwen3",
+    )
+
+    with TestClient(app).stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-27b-8bit",
+            "messages": [{"role": "user", "content": "weather in Paris?"}],
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+    ) as response:
+        assert response.status_code == 200
+        body = b"".join(response.iter_bytes()).decode()
+
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: {")
+    ]
+    tool_deltas = [
+        choice["delta"]["tool_calls"]
+        for payload in payloads
+        for choice in payload.get("choices", [])
+        if choice.get("delta", {}).get("tool_calls")
+    ]
+    assert tool_deltas[0][0]["function"]["name"] == "get_weather"
+    assert '"city": "Paris"' in tool_deltas[0][0]["function"]["arguments"]
+    assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
+    assert "<tool_call>" not in body
 
 
 def test_chat_completions_rejects_empty_messages() -> None:
@@ -1440,6 +1676,7 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
         default_max_tokens=64,
         cors_origins=["*"],
         no_thinking=no_thinking,
+        reasoning_parser_name="qwen3",
     )
     client = TestClient(app)
     # Stream=True so the request reaches _render_prompt then exits via
@@ -1515,6 +1752,99 @@ def test_request_enable_thinking_true_honored(monkeypatch) -> None:
         },
     )
     assert captured.get("enable_thinking") is True
+
+
+@_skip_without_mlx_vlm
+@pytest.mark.parametrize("stream", [False, True])
+def test_explicit_thinking_is_parsed_into_reasoning_content(
+    monkeypatch, stream: bool
+) -> None:
+    """DFlash opt-in thinking uses the standard Qwen reasoning parser."""
+    import json
+
+    import mlx_vlm
+    import mlx_vlm.prompt_utils
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.speculative.dflash.server import _build_app
+
+    monkeypatch.setattr(
+        mlx_vlm.prompt_utils,
+        "apply_chat_template",
+        lambda *args, **kwargs: "rendered prompt",
+    )
+    monkeypatch.setattr(
+        mlx_vlm,
+        "generate",
+        lambda *args, **kwargs: SimpleNamespace(
+            text="<think>Need one addition.</think>Four.",
+            prompt_tokens=5,
+            generation_tokens=7,
+        ),
+    )
+
+    def _stream(*args, **kwargs):
+        for index, text in enumerate(
+            ("<think>", "Need one addition.", "</think>", "Four."), start=1
+        ):
+            yield SimpleNamespace(
+                text=text,
+                token=index,
+                prompt_tokens=5,
+                generation_tokens=index,
+            )
+
+    monkeypatch.setattr(mlx_vlm, "stream_generate", _stream)
+    app = _build_app(
+        model=MagicMock(),
+        processor=MagicMock(),
+        runtime=DFlashRuntime(
+            drafter=MagicMock(),
+            kind="dflash",
+            drafter_repo="z-lab/Qwen3.5-27B-DFlash",
+        ),
+        served_model_name="qwen3.5-27b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+        reasoning_parser_name="qwen3",
+    )
+    request_body = {
+        "model": "qwen3.5-27b-8bit",
+        "messages": [{"role": "user", "content": "What is 2 + 2?"}],
+        "enable_thinking": True,
+        "stream": stream,
+    }
+
+    if not stream:
+        response = TestClient(app).post(
+            "/v1/chat/completions",
+            json=request_body,
+        )
+        assert response.status_code == 200, response.text
+        message = response.json()["choices"][0]["message"]
+        assert message["reasoning_content"] == "Need one addition."
+        assert message["content"] == "Four."
+        return
+
+    with TestClient(app).stream(
+        "POST", "/v1/chat/completions", json=request_body
+    ) as response:
+        assert response.status_code == 200
+        body = b"".join(response.iter_bytes()).decode()
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: {")
+    ]
+    deltas = [
+        choice["delta"] for payload in payloads for choice in payload.get("choices", [])
+    ]
+    assert "".join(delta.get("reasoning_content", "") for delta in deltas) == (
+        "Need one addition."
+    )
+    assert "".join(delta.get("content", "") for delta in deltas) == "Four."
+    assert "<think>" not in body
 
 
 @_skip_without_mlx_vlm
