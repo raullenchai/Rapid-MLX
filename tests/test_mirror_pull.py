@@ -3695,14 +3695,31 @@ def test_silent_hf_tqdm_class_renders_nothing():
     assert getattr(bar, "disable", None) is True
 
 
-def test_hf_fallback_one_passes_silent_tqdm_only_when_suppressing(
-    tmp_path: Path,
+def test_feature_detect_matches_real_hf_signature():
+    """The ``tqdm_class`` feature-detect must reflect the REAL installed
+    ``hf_hub_download`` signature — the whole point is to avoid passing an
+    unsupported kwarg (codex: our >=0.23.0 floor lacks it and would TypeError).
+    """
+    import inspect
+
+    from huggingface_hub import hf_hub_download
+
+    real = "tqdm_class" in inspect.signature(hf_hub_download).parameters
+    assert _mirror._hf_supports_tqdm_class() is real
+
+
+def test_hf_fallback_one_forwards_tqdm_class_when_supported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """``_hf_fallback_one`` forwards a disabled ``tqdm_class`` iff asked."""
+    """On a hub that supports it, a disabled ``tqdm_class`` is forwarded iff
+    ``suppress_progress`` — and never otherwise."""
+    monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: True)
     captured: dict[str, object] = {}
 
-    def _fake_hf(repo_id, filename, revision, cache_dir=None, tqdm_class=None):
-        captured["tqdm_class"] = tqdm_class
+    def _fake_hf(repo_id, filename, revision, cache_dir=None, **kwargs):
+        # ``**kwargs`` so we can detect whether ``tqdm_class`` was actually
+        # forwarded (vs a defaulted None that would hide the distinction).
+        captured["kwargs"] = kwargs
         target = Path(cache_dir) / filename
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"x")
@@ -3712,7 +3729,7 @@ def test_hf_fallback_one_passes_silent_tqdm_only_when_suppressing(
         _mirror._hf_fallback_one(
             "owner/repo", "README.md", "rev", cache_dir=tmp_path, suppress_progress=True
         )
-    assert captured["tqdm_class"] is not None  # disabled class passed
+    assert captured["kwargs"].get("tqdm_class") is not None  # disabled class passed
 
     with patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf):
         _mirror._hf_fallback_one(
@@ -3722,7 +3739,31 @@ def test_hf_fallback_one_passes_silent_tqdm_only_when_suppressing(
             cache_dir=tmp_path,
             suppress_progress=False,
         )
-    assert captured["tqdm_class"] is None  # HF default (bar shown)
+    assert "tqdm_class" not in captured["kwargs"]  # kwarg omitted (bar shown)
+
+
+def test_hf_fallback_one_omits_tqdm_class_on_old_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression for codex round 2: on the >=0.23.0 floor, ``hf_hub_download``
+    has NO ``tqdm_class`` param — passing it would raise ``TypeError``. The
+    fake here deliberately does NOT accept ``tqdm_class`` (mirroring the real
+    old-hub signature), so if the kwarg were forwarded this test would raise.
+    """
+    monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: False)
+
+    def _fake_hf_old(repo_id, filename, revision, cache_dir=None):
+        target = Path(cache_dir) / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"x")
+        return str(target)
+
+    with patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf_old):
+        ok, path = _mirror._hf_fallback_one(
+            "owner/repo", "README.md", "rev", cache_dir=tmp_path, suppress_progress=True
+        )
+    assert ok is True  # would have TypeError'd if tqdm_class were forwarded
+    assert path is not None
 
 
 def _mirrored_pull_setup(tmp_path, monkeypatch, files, r2_status_per_file):
@@ -3859,6 +3900,10 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
     """End-to-end: on a mixed R2-miss pull, a small metadata file's HF
     fallback gets a disabled tqdm while a weight shard keeps its bar.
     """
+    # Force the modern-hub path so the mute assertion is meaningful regardless
+    # of the hub version the test env happens to run (see the old-hub test for
+    # the <0.23.0-floor behavior).
+    monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: True)
     files = [(".gitattributes", 1500), ("model.safetensors", 4000)]
     # Both files miss R2 (404) → both fall back to HF.
     repo_id, revision, router = _mirrored_pull_setup(

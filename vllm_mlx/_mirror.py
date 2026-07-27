@@ -1144,6 +1144,27 @@ def _silent_hf_tqdm_class():
     return _SilentTqdm
 
 
+# ``hf_hub_download`` only grew a ``tqdm_class`` kwarg in a huggingface_hub
+# release NEWER than our ``>=0.23.0`` floor — passing it to an older hub raises
+# ``TypeError``. Feature-detect so metadata-bar suppression is a graceful
+# enhancement on modern hubs and a silent no-op (bar leaks, nothing crashes) on
+# old ones, rather than a hard dependency-version bump. Introspected fresh on
+# each call (a handful per pull, cheap) rather than cached — a cached first call
+# made under a mocked ``hf_hub_download`` would otherwise poison the result.
+def _hf_supports_tqdm_class() -> bool:
+    """True iff the installed ``hf_hub_download`` accepts a ``tqdm_class`` kwarg."""
+    import inspect
+
+    from huggingface_hub import hf_hub_download
+
+    try:
+        return "tqdm_class" in inspect.signature(hf_hub_download).parameters
+    except (ValueError, TypeError):
+        # Signature unintrospectable (C-accelerated / heavily wrapped) — assume
+        # unsupported and skip the kwarg to stay crash-safe.
+        return False
+
+
 def _hf_fallback_one(
     repo_id: str,
     filename: str,
@@ -1162,7 +1183,10 @@ def _hf_fallback_one(
 
     ``suppress_progress`` mutes HF's own per-file tqdm bar (passed a disabled
     ``tqdm_class``); the caller sets it for confirmed-small metadata files so
-    their bars don't collide with our aggregate progress UI.
+    their bars don't collide with our aggregate progress UI. The kwarg is only
+    forwarded when the installed huggingface_hub supports it (see
+    :func:`_hf_supports_tqdm_class`) — on older hubs it is omitted, so the bar
+    leaks rather than the call raising ``TypeError``.
 
     Codex round-2 BLOCKING #4: narrow the exception net. Only expected
     network/cache/HF-API errors are swallowed; programmer errors
@@ -1175,15 +1199,19 @@ def _hf_fallback_one(
     from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
     from huggingface_hub.utils import RepositoryNotFoundError
 
+    kwargs: dict[str, Any] = {
+        "repo_id": repo_id,
+        "filename": filename,
+        "revision": revision,
+        "cache_dir": str(cache_dir) if cache_dir else None,
+    }
+    # Only forward ``tqdm_class`` when the hub actually accepts it; on the
+    # >=0.23.0 floor it does not, and passing it would raise ``TypeError``.
+    if suppress_progress and _hf_supports_tqdm_class():
+        kwargs["tqdm_class"] = _silent_hf_tqdm_class()
+
     try:
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            revision=revision,
-            cache_dir=str(cache_dir) if cache_dir else None,
-            # ``None`` = HF's default tqdm (bar shown); disabled class = quiet.
-            tqdm_class=_silent_hf_tqdm_class() if suppress_progress else None,
-        )
+        path = hf_hub_download(**kwargs)
         return True, path
     except (
         # Expected network / HF API surface — these are legitimate
