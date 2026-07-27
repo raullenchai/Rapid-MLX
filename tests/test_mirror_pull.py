@@ -3897,23 +3897,38 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """End-to-end: on a mixed R2-miss pull, a small metadata file's HF
-    fallback gets a disabled tqdm while a weight shard keeps its bar.
+    """End-to-end: on a mixed R2-miss pull, the pipeline asks to MUTE hf's
+    per-file bar for a small metadata file and to KEEP it for a weight shard.
+
+    We spy on ``_hf_fallback_one`` and assert the ``suppress_progress`` flag it
+    receives per file — i.e. the real ``_should_suppress_hf_bar`` discrimination
+    flowing through ``download_with_mirror_fallback``. This is the behavior this
+    PR introduces, and testing it here is honest and hermetic:
+
+    * It does NOT mock ``_hf_supports_tqdm_class`` (no forced feature support).
+    * It does NOT depend on the installed hub version, nor on introspecting a
+      mocked ``hf_hub_download`` (whose ``patch`` MagicMock has a generic
+      ``(*args, **kwargs)`` signature — feature-detection can't see through it).
+    * It does NOT assert "no stderr output": hf's tqdm auto-disables on a
+      non-TTY stream, so that would be trivially green even on broken code.
+
+    Whether the muted flag actually forwards a disabled ``tqdm_class`` to hf,
+    and whether the real ``hf_hub_download`` honors it, are covered separately
+    by ``test_hf_fallback_one_forwards_tqdm_class_when_supported`` /
+    ``test_feature_detect_matches_real_hf_signature`` (and hf's own contract).
     """
-    # Force the modern-hub path so the mute assertion is meaningful regardless
-    # of the hub version the test env happens to run (see the old-hub test for
-    # the <0.23.0-floor behavior).
-    monkeypatch.setattr(_mirror, "_hf_supports_tqdm_class", lambda: True)
     files = [(".gitattributes", 1500), ("model.safetensors", 4000)]
     # Both files miss R2 (404) → both fall back to HF.
     repo_id, revision, router = _mirrored_pull_setup(
         tmp_path, monkeypatch, files, [404, 404]
     )
 
-    seen: dict[str, object] = {}
+    suppress_seen: dict[str, bool] = {}
 
-    def _fake_hf(repo_id, filename, revision, cache_dir=None, tqdm_class=None):
-        seen[filename] = tqdm_class
+    def _spy_fallback(
+        repo_id, filename, revision, cache_dir=None, suppress_progress=False
+    ):
+        suppress_seen[filename] = suppress_progress
         snap = (
             Path(cache_dir)
             / f"models--{repo_id.replace('/', '--')}"
@@ -3922,8 +3937,9 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
         )
         snap.mkdir(parents=True, exist_ok=True)
         size = next(s for n, s in files if n == filename)
-        (snap / filename).write_bytes(b"h" * size)
-        return str(snap / filename)
+        target = snap / filename
+        target.write_bytes(b"h" * size)
+        return True, str(target)
 
     with (
         patch("urllib.request.urlopen", side_effect=router),
@@ -3931,10 +3947,10 @@ def test_metadata_hf_fallback_mutes_bar_but_weight_keeps_it(
             "huggingface_hub.model_info",
             return_value=_mk_model_info(revision, files),
         ),
-        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+        patch.object(_mirror, "_hf_fallback_one", side_effect=_spy_fallback),
     ):
         ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
 
     assert ok
-    assert seen[".gitattributes"] is not None  # muted
-    assert seen["model.safetensors"] is None  # bar kept
+    assert suppress_seen[".gitattributes"] is True  # metadata → bar muted
+    assert suppress_seen["model.safetensors"] is False  # weight → bar kept
