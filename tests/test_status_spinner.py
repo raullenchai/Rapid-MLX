@@ -139,3 +139,27 @@ def test_stop_before_enter_is_safe():
     sp = _StatusSpinner("Resolving z …", stream=_FakeTTY(is_tty=True))
     sp.stop()
     assert sp._done is True
+
+
+def test_clear_is_last_write_even_with_slow_stream(monkeypatch: pytest.MonkeyPatch):
+    """The draw-lock must make the clear the FINAL write — no spinner frame
+    redraws after stop, even when the stream's write() is slow enough to race
+    the stop path (the codex-flagged scenario).
+    """
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    class _SlowTTY(_FakeTTY):
+        def write(self, s: str) -> int:
+            time.sleep(0.03)  # widen the interleave window
+            return super().write(s)
+
+    stream = _SlowTTY(is_tty=True)
+    sp = _StatusSpinner("Resolving slow …", stream=stream)
+    with sp:
+        assert _wait_until(lambda: stream.write_count() >= 2, timeout=3.0)
+    # After stop returns, the last write must be a clean clear (CR + spaces),
+    # never a braille spinner frame.
+    with stream._lock:
+        last = stream._parts[-1]
+    assert last.strip("\r ") == "", f"last write was not a clean clear: {last!r}"
+    assert not any(ch in last for ch in _StatusSpinner._FRAMES)

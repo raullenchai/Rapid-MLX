@@ -1397,21 +1397,32 @@ class _StatusSpinner:
 
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        # Serializes the worker's frame writes against ``stop``'s clear so the
+        # clear is guaranteed to be the LAST thing written to the stream (no
+        # post-clear redraw). Held only around the brief write/flush — never
+        # across the inter-frame wait — so ``stop`` can grab it promptly.
+        self._draw_lock = threading.Lock()
 
     def _run(self) -> None:
         import time
 
         tick = 0
         while not self._stop_event.is_set():
-            try:
-                elapsed = int(time.monotonic() - self._start)
-                ch = self._FRAMES[tick % len(self._FRAMES)]
-                self._stream.write(
-                    f"\r  \x1b[36m{ch}\x1b[0m {self._label} \x1b[2m{elapsed}s\x1b[0m"
-                )
-                self._stream.flush()
-            except (ValueError, OSError):
-                return  # stream closed underneath us — stop quietly.
+            with self._draw_lock:
+                # Re-check under the lock: if ``stop`` set the event while we
+                # waited for the lock, do not draw — otherwise this frame would
+                # land AFTER stop's clear.
+                if self._stop_event.is_set():
+                    return
+                try:
+                    elapsed = int(time.monotonic() - self._start)
+                    ch = self._FRAMES[tick % len(self._FRAMES)]
+                    self._stream.write(
+                        f"\r  \x1b[36m{ch}\x1b[0m {self._label} \x1b[2m{elapsed}s\x1b[0m"
+                    )
+                    self._stream.flush()
+                except (ValueError, OSError):
+                    return  # stream closed underneath us — stop quietly.
             tick += 1
             self._stop_event.wait(0.1)
 
@@ -1431,9 +1442,17 @@ class _StatusSpinner:
             if self._done:
                 return
             self._done = True
-        if self._thread is not None:
-            self._stop_event.set()
-            self._thread.join(timeout=1.0)
+        self._stop_event.set()
+        if self._thread is None:
+            return  # inert (non-TTY) or never entered — nothing drawn.
+        self._thread.join(timeout=1.0)
+        # Clear under the draw lock so the clear is the worker's final write.
+        # If the worker is wedged in a blocked ``write()`` and never frees the
+        # lock within the timeout, the stream is broken — skip the clear rather
+        # than risk a garbled interleave or an unbounded hang (a stray frame on
+        # a broken stream won't render anyway). ``acquire`` doubles as the
+        # confirmation that no worker write is in flight.
+        if self._draw_lock.acquire(timeout=1.0):
             try:
                 # Clear the whole line; the label + " Ns" fits well within a
                 # generous fixed width (ANSI codes take no display columns).
@@ -1441,6 +1460,8 @@ class _StatusSpinner:
                 self._stream.flush()
             except (ValueError, OSError):
                 pass
+            finally:
+                self._draw_lock.release()
 
     def __exit__(self, *exc: object) -> bool:
         self.stop()
@@ -8827,14 +8848,6 @@ Examples:
         _cmd = getattr(args, "command", "chat")
         _sel_alias, _starter_cached = select_chat_default()
         args.model = _sel_alias
-        # Mark the auto-selected starter so the download gate below can skip
-        # its ``estimate_repo_size_bytes`` HF round-trip: the starter is a
-        # known ~3 GB model, always under the gate's 10 GiB confirm threshold,
-        # so the probe can only ever return "no prompt". Skipping it removes
-        # one of the silent HF round-trips that make the first-run cold start
-        # feel hung (the disk probe + mirror catalog fetch are covered by the
-        # "Resolving…" spinner instead).
-        args._autofilled_starter = True
         if sys.stdin.isatty():
             if _starter_cached:
                 print(
@@ -8973,12 +8986,6 @@ Examples:
         and "/" in args.model  # only HF-style repo ids; local paths skip
         and not os.path.exists(args.model)
         and not _chat_spawn_child
-        # The auto-selected first-run starter is a known ~3 GB model, always
-        # under the confirm threshold — skip the gate's size-probe round-trip
-        # entirely (it can only ever return "no prompt") so the cold start
-        # isn't stalled on a redundant HF ``model_info`` call. The disk-space
-        # gate in ``_ensure_model_downloaded`` still runs, under the spinner.
-        and not getattr(args, "_autofilled_starter", False)
     ):
         # Cheap checks first: env override and non-TTY both short-circuit
         # without touching the HF API. ``confirm_or_abort`` re-checks
@@ -8995,10 +9002,20 @@ Examples:
             )
 
             if not is_repo_cached(args.model):
-                confirm_or_abort(
-                    args.model,
-                    estimate_repo_size_bytes(args.model),
-                )
+                # The size estimate is a silent HF ``model_info`` round-trip
+                # (up to 5s). Cover it with a "Resolving…" spinner so the
+                # first-run cold start doesn't read as a hang here — the same
+                # treatment the download prep gets in ``_ensure_model_
+                # downloaded``. The spinner clears BEFORE ``confirm_or_abort``
+                # so a genuine confirm prompt (large uncached model) lands on a
+                # clean line. We keep the real size-based gate for EVERY model,
+                # including the auto-selected starter: it is an unpinned HF repo
+                # whose declared size we must actually verify, never assume,
+                # before waiving consent.
+                _short = args.model.split("/")[-1]
+                with _StatusSpinner(f"Resolving {_short} …"):
+                    _size = estimate_repo_size_bytes(args.model)
+                confirm_or_abort(args.model, _size)
     # --- END B2 --------------------------------------------------------
 
     if args.command == "serve":

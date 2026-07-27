@@ -367,35 +367,29 @@ def _run_main_gate_probe(
     return confirm, state["dispatched"]
 
 
-def test_autoselected_starter_skips_redundant_gate_probe():
-    # The auto-selected starter skips the gate's ``estimate_repo_size_bytes``
-    # HF round-trip + ``confirm_or_abort``: it is a FIXED, statically-known
-    # ~3.1 GB model (``first_run.FIRST_RUN_MODEL``), always under the gate's
-    # 10 GiB confirm threshold, so the probe can only ever return "no prompt".
-    # Skipping it removes one of the silent HF round-trips that made the
-    # first-run cold start feel hung (the disk-space gate + mirror catalog
-    # fetch are still covered — under the "Resolving…" spinner).
-    #
-    # This is NOT the old unsafe bypass codex flagged: that one derived an
-    # ``_auto_selected_model`` flag from a fail-silent scan of the cache for
-    # *any* cached alias, which could be arbitrarily large — waving through an
-    # unconfirmed multi-GB download. Here the flag is keyed strictly to the
-    # auto-selected fixed starter (``select_chat_default`` always returns
-    # ``FIRST_RUN_MODEL``), which is small by construction, so no large
-    # download can ever bypass confirmation. The disk-space gate in
-    # ``_ensure_model_downloaded`` still runs regardless.
+def test_autoselected_starter_uses_standard_download_gate():
+    # Regression guard: the auto-selected starter must NOT special-case the
+    # download gate. The starter is an unpinned Hugging Face repo whose
+    # declared size we must actually verify — never assume — before waiving
+    # confirmation, so it flows through ``estimate_repo_size_bytes`` +
+    # ``confirm_or_abort`` exactly like an explicit model. (The "small model →
+    # no prompt" decision belongs to confirm_or_abort's own 10 GiB threshold,
+    # covered in test_download_gate — the ~3.1 GB starter is under it, so the
+    # gate stays silent for it on its own, but the size is still checked.)
+    # The redundant round-trip's *latency* is what we hide — behind a
+    # "Resolving…" spinner, NOT by skipping the check.
     confirm, dispatched = _run_main_gate_probe(
         ["chat"], auto_select_alias="qwen3.5-4b-4bit"
     )
-    assert confirm.called is False  # redundant size-probe/confirm skipped
+    assert confirm.called is True  # gate NOT bypassed
     assert dispatched is True  # and the run still reaches dispatch
 
 
 def test_autoselected_starter_still_runs_disk_gate_in_prefetch(monkeypatch):
-    # Belt-and-braces for the safety argument above: skipping the CONFIRM gate
-    # for the starter must not skip the DISK-SPACE gate. ``_ensure_model_
-    # downloaded`` always calls ``_check_disk_space`` (under the spinner)
-    # before pulling, so a full disk still aborts cleanly.
+    # Belt-and-braces: the download-prep path always runs the DISK-SPACE gate
+    # before pulling. ``_ensure_model_downloaded`` calls ``_check_disk_space``
+    # (under the spinner) so a full disk still aborts cleanly regardless of the
+    # confirm gate above.
     called = {"disk": False}
 
     def _fake_disk(model_name, force=False):
