@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+FLEET_MANIFEST = REPO_ROOT / "scripts" / "release_fleet.json"
 MATRIX_FILES = (
     REPO_ROOT / "tests/integrations/test_agents_matrix.py",
     REPO_ROOT / "tests/integrations/test_frameworks_matrix.py",
@@ -84,16 +85,44 @@ class FamilyConfig:
     extras: tuple[str, ...] = ()
 
 
-# Keep this map aligned with tests/integrations/conftest.py::_FAMILY_ALIASES.
-# The cheap aliases make the full four-family release matrix feasible on an
-# isolated M3/Ultra runner; the larger golden models remain a separate perf
-# and weekly-path concern.
-FAMILY_CONFIGS: dict[str, FamilyConfig] = {
-    "qwen36": FamilyConfig("qwen3.5-4b-4bit"),
-    "gemma4": FamilyConfig("gemma-4-12b-4bit", extras=("vision",)),
-    "deepseek": FamilyConfig("deepseek-r1-32b-4bit"),
-    "gptoss": FamilyConfig("gpt-oss-20b-mxfp4-q8"),
-}
+def _load_family_configs(path: Path = FLEET_MANIFEST) -> dict[str, FamilyConfig]:
+    """Load artifact-matrix cells from the shared release-fleet manifest."""
+
+    data = json.loads(path.read_text())
+    if data.get("schema") != 1 or not isinstance(data.get("families"), dict):
+        raise ValueError("release fleet manifest must contain schema 1 families")
+
+    configs: dict[str, FamilyConfig] = {}
+    for family, raw in data["families"].items():
+        if not isinstance(raw, dict) or "artifact_matrix" not in raw:
+            continue
+        artifact = raw["artifact_matrix"]
+        if not isinstance(artifact, dict):
+            raise ValueError(f"{family}: artifact_matrix must be an object")
+        model = artifact.get("model")
+        server_args = artifact.get("server_args", ["--no-thinking"])
+        extras = artifact.get("extras", [])
+        if not isinstance(model, str) or not model:
+            raise ValueError(f"{family}: artifact matrix model must be a string")
+        if not isinstance(server_args, list) or not all(
+            isinstance(arg, str) for arg in server_args
+        ):
+            raise ValueError(f"{family}: server_args must be a string list")
+        if not isinstance(extras, list) or not all(
+            isinstance(extra, str) for extra in extras
+        ):
+            raise ValueError(f"{family}: extras must be a string list")
+        configs[family] = FamilyConfig(model, tuple(server_args), tuple(extras))
+
+    if not configs:
+        raise ValueError("release fleet manifest defines no artifact matrix families")
+    return configs
+
+
+# Artifact models may be cheap stand-ins so the four-family matrix remains
+# feasible on the release runner. Coherence representatives remain real family
+# models and are consumed separately by coherence_sweep.sh.
+FAMILY_CONFIGS = _load_family_configs()
 
 
 def validate_families_json(

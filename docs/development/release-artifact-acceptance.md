@@ -68,7 +68,11 @@ The matrix is one server boot per family. A test run sets both
 - a documented `strict=True` xfail remains an exception, and an unexpected
   pass is a failure.
 
-The current feasible set is four families:
+The current feasible set is four families. The matrix aliases and required
+extras come from the same
+[`scripts/release_fleet.json`](../../scripts/release_fleet.json) manifest as
+the release coherence sweep, so its feasible stand-in aliases and required
+extras cannot drift from the broader coherence fleet:
 
 | Family | Candidate alias | Agent cells | Framework cells |
 | --- | --- | ---: | ---: |

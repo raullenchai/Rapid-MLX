@@ -154,7 +154,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 
 | # | Gate | Side | Where it runs | Catches |
 |---|---|---|---|---|
-| G0 | Output-coherence gate — deterministic golden answers (blocking) + garbage detector (advisory), run FIRST | **M3** | `make release-check-m3` + `scripts/coherence_sweep.sh` | garbage / coherent-but-wrong generation the perf/import/unit gates all miss (#1234 / #1247) |
+| G0 | Output-coherence gate — manifest-driven family sweep, then the gauntlet model; deterministic golden answers block and the garbage detector is advisory | **M3** | `make release-check-m3` | garbage / coherent-but-wrong generation the perf/import/unit gates all miss (#1234 / #1247) |
 | G1 | Build wheel + sdist, then clean-room install + import both | CI | `release-preflight.yml` (macOS-14) | dev mlx symbol drift (#408), incomplete source distribution |
 | G2 | Codex review × 2 rounds | local | maintainer machine | every PR-author bug class |
 | G3 | CLI ↔ Config fidelity audit | CI | `ci.yml` lint (ubuntu) | silent CLI flag drop (#400) |
@@ -187,15 +187,15 @@ make release-check-m3              # uses MODEL=qwen3.5-9b-4bit (default)
 MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 ```
 
-Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs **G0 (output coherence — first, so a garbage model fails fast before the rest re-test the same broken path)** + G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: a single `rapid-mlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
+Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It first runs **G0a**, booting each family representative from [`scripts/release_fleet.json`](../../scripts/release_fleet.json) in turn. It then boots the requested `MODEL` on port 8000 and runs **G0b** against that exact model, followed by G5 (stress), G7 (anthropic + pydantic_ai + smolagents), G7b (agent harness layer: a single `rapid-mlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain), G6 (parallel-tool-call cap repro), G9 (10-seq latency), and G8b (parser microbench, M3 perf baseline). Servers are killed between models and on exit.
 
-**G0 is per-booted-model.** The single-boot gauntlet only proves coherence for the one alias it served. Because a model-specific regression (the 35B RMSNorm incident, #1234) is invisible to a 4B/9B-only run, a release or model-path change **must** additionally sweep the representative aliases it affects — one per family, plus any alias the change touches:
+The normal G0a fleet covers the architecture risk classes that have historically failed differently: small dense (Qwen 3.5 4B), hybrid MoE (Qwen 3.5 35B), large dense (Qwen 3.6 and DeepSeek), large MoE (gpt-oss), and multimodal (Gemma 4). If `mlx`, `mlx-lm`, `mlx-vlm`, or `mlx-audio` changed since the previous release tag, the script automatically selects the `toolchain` scope and adds the Ultra-only Hy3 path. This works both before and after the candidate commit is tagged. A shallow checkout with no discoverable tag keeps the normal release scope; pass a base ref explicitly when toolchain comparison is required. To compare against a different release base, set `RELEASE_FLEET_BASE_REF`:
 
 ```bash
-bash scripts/coherence_sweep.sh qwen3.5-4b-4bit qwen3.6-35b   # boots + gates each in turn
+RELEASE_FLEET_BASE_REF=v0.11.0 make release-check-m3
 ```
 
-This is a hard release requirement, not advisory. (Making the serve-path gate *always-on in CI* rather than a local requirement needs a registered self-hosted Apple-Silicon runner — tracked in #1247. The pure predicate + garbage-detector logic is already always-on via `tests/test_coherence.py` on GitHub-hosted CI.)
+For focused diagnosis only, `scripts/coherence_sweep.sh` still accepts explicit aliases, `MODELS`, or `FLEET_SCOPE=release|toolchain`. The manifest-driven sweep is a hard release requirement, not advisory. (Making the serve-path gate *always-on in CI* rather than a local requirement needs a registered self-hosted Apple-Silicon runner — tracked in #1247. The pure predicate + garbage-detector logic is already always-on via `tests/test_coherence.py` on GitHub-hosted CI.)
 
 G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 

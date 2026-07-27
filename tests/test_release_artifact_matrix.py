@@ -93,6 +93,14 @@ def test_family_configs_cover_the_release_eligible_families(matrix):
     assert matrix.FAMILY_CONFIGS["gemma4"].extras == ("vision",)
 
 
+def test_workflow_default_covers_manifest_artifact_families(matrix):
+    workflow = (
+        _REPO_ROOT / ".github" / "workflows" / "release-artifact-matrix.yml"
+    ).read_text()
+    expected = "default: '" + str(list(matrix.FAMILY_CONFIGS)).replace("'", '"') + "'"
+    assert expected in workflow
+
+
 def test_cli_smoke_covers_base_commands_but_not_optional_chat(matrix):
     assert set(matrix.CLI_SMOKE_SCRIPTS) == {
         "rapid-mlx",

@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "families": {
+    "small_dense": {
+      "coherence_model": "qwen3.5-4b-4bit",
+      "coverage_class": "small_dense",
+      "scopes": ["release", "toolchain"]
+    },
+    "qwen35": {
+      "coherence_model": "qwen3.5-35b-4bit",
+      "coverage_class": "hybrid_moe",
+      "scopes": ["release", "toolchain"]
+    },
+    "qwen36": {
+      "coherence_model": "qwen3.6-27b-4bit",
+      "coverage_class": "large_dense",
+      "scopes": ["release", "toolchain"],
+      "artifact_matrix": {
+        "model": "qwen3.5-4b-4bit",
+        "server_args": ["--no-thinking"],
+        "extras": []
+      }
+    },
+    "gemma4": {
+      "coherence_model": "gemma-4-12b-4bit",
+      "coverage_class": "multimodal",
+      "scopes": ["release", "toolchain"],
+      "artifact_matrix": {
+        "model": "gemma-4-12b-4bit",
+        "server_args": ["--no-thinking"],
+        "extras": ["vision"]
+      }
+    },
+    "deepseek": {
+      "coherence_model": "deepseek-r1-32b-4bit",
+      "coverage_class": "large_dense",
+      "scopes": ["release", "toolchain"],
+      "artifact_matrix": {
+        "model": "deepseek-r1-32b-4bit",
+        "server_args": ["--no-thinking"],
+        "extras": []
+      }
+    },
+    "gptoss": {
+      "coherence_model": "gpt-oss-20b-mxfp4-q8",
+      "coverage_class": "large_moe",
+      "scopes": ["release", "toolchain"],
+      "artifact_matrix": {
+        "model": "gpt-oss-20b-mxfp4-q8",
+        "server_args": ["--no-thinking"],
+        "extras": []
+      }
+    },
+    "hy3": {
+      "coherence_model": "hy3-preview-4bit",
+      "coverage_class": "ultra_moe",
+      "scopes": ["toolchain"]
+    }
+  }
+}

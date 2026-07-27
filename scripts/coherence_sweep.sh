@@ -12,9 +12,15 @@
 # evals/coherence_gate.py (blocking golden answers), then torn down before the
 # next. Any alias that fails its blocking golden gate fails the whole sweep.
 #
+# With no explicit models, the shared release fleet is selected automatically.
+# A normal release covers every routinely feasible family; changes to an MLX
+# dependency since the previous release tag add the Ultra-only Hy3 representative.
+#
 # Usage:
+#   bash scripts/coherence_sweep.sh
 #   bash scripts/coherence_sweep.sh qwen3.5-4b-4bit qwen3.6-35b
 #   MODELS="qwen3.5-4b-4bit qwen3.6-35b" bash scripts/coherence_sweep.sh
+#   FLEET_SCOPE=toolchain bash scripts/coherence_sweep.sh
 #
 # Exit codes:
 #   0 — every alias passed its blocking golden gate
@@ -25,7 +31,22 @@ set -euo pipefail
 
 PY="${PY:-python3.12}"
 PORT="${PORT:-8402}"
-MODELS="${*:-${MODELS:-qwen3.5-4b-4bit}}"
+FLEET_SCOPE="${FLEET_SCOPE:-auto}"
+if [ "$#" -gt 0 ]; then
+  MODELS="$*"
+elif [ -n "${MODELS:-}" ]; then
+  MODELS="$MODELS"
+else
+  fleet_args=(models --scope "$FLEET_SCOPE")
+  if [ -n "${RELEASE_FLEET_BASE_REF:-}" ]; then
+    fleet_args+=(--base-ref "$RELEASE_FLEET_BASE_REF")
+  fi
+  MODELS="$("$PY" scripts/release_fleet.py "${fleet_args[@]}")"
+fi
+if [ -z "$MODELS" ]; then
+  echo "ERROR: release fleet selected no coherence models." >&2
+  exit 2
+fi
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rapid-mlx-coherence-sweep.XXXXXX")"
 LOG="$WORK_DIR/server.log"
 PIDFILE="$WORK_DIR/server.pid"

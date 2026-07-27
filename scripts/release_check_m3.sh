@@ -78,6 +78,18 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+#-------------------- G0a fleet output coherence ------------------
+# Before spending time on the full single-model gauntlet, prove that every
+# release-family representative can still answer deterministic golden
+# questions. The shared manifest expands this list automatically when an MLX
+# dependency changed since the previous release tag (or RELEASE_FLEET_BASE_REF).
+line
+echo "  G0a — release-fleet output coherence sweep"
+line
+PY="$PY" PORT="${FLEET_PORT:-8402}" \
+  FLEET_SCOPE="${FLEET_SCOPE:-auto}" \
+  bash scripts/coherence_sweep.sh
+
 echo "→ Starting server (background)…"
 # --no-thinking: gauntlet's job is API/parser/router correctness, not
 # thinking-mode evaluation. Leaving thinking ON on small models burns
@@ -103,7 +115,7 @@ if ! curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
   exit 2
 fi
 
-#-------------------- G0 output coherence -------------------------
+#-------------------- G0b booted-model coherence ------------------
 # The most fundamental gate: does the served model produce coherent,
 # correct text at all? Qwen3.6/3.5-35B shipped garbage from the first
 # token (#1234) and passed every perf / import / unit gate because
@@ -112,12 +124,10 @@ fi
 # inference path. Blocking = deterministic golden answers; the garbage
 # detector is advisory-only. Reads RAPID_MLX_BASE_URL (exported above).
 #
-# This checks the ONE model the gauntlet booted. A release / model-path
-# change must ALSO sweep the representative aliases it affects (a 35B-
-# specific regression is invisible to a 4B/9B-only run) — see
-# scripts/coherence_sweep.sh and docs/development/releasing.md.
+# G0a covers the release fleet; this second check covers the exact MODEL used
+# by every remaining live-server gate below.
 line
-echo "  G0 — output coherence gate (blocking golden answers)"
+echo "  G0b — gauntlet-model output coherence gate"
 line
 "$PY" evals/coherence_gate.py
 
