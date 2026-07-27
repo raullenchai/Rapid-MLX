@@ -385,6 +385,17 @@ def mtp_generate_step(
             elif c.is_trimmable():
                 c.trim(n_to_drop)
 
+    def _rollback_verify_round(n_to_drop: int) -> None:
+        """Roll back uncommitted target + MTP draft state for one verify round."""
+        if n_to_drop <= 0:
+            _clear_rollback()
+            return
+
+        _rollback_draft(n_to_drop)
+        for mc in mtp_cache:
+            if mc.is_trimmable():
+                mc.trim(n_to_drop)
+
     def _step_backbone(yy, prev, n_predict=1, n_confirmed=0, xtc_draw=None):
         """Run backbone on ``yy`` and return (tokens, logprobs, accept_lps, hidden, prev)."""
         with mx.stream(generation_stream):
@@ -860,13 +871,25 @@ def mtp_generate_step(
                 bonus_tok_arr = toks[k_len]
 
             # ------- SINGLE SYNC -------
-            mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
+            accepted_count = 0
+            try:
+                mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
 
-            # ------- Host-side read (all values already resident) -------
-            accept_flags = accept_mask_arr.tolist()
-            residual_ids = residual_toks_arr.tolist()
-            bonus_id = int(bonus_tok_arr.item())
-            draft_ids = drafts_arr.tolist()
+                # ------- Host-side read (all values already resident) -------
+                accept_flags = accept_mask_arr.tolist()
+                residual_ids = residual_toks_arr.tolist()
+                bonus_id = int(bonus_tok_arr.item())
+                draft_ids = drafts_arr.tolist()
+            except BaseException:
+                # The target verify forward above has already appended
+                # ``[y, d_1, ..., d_K]`` to model_cache, and the prior
+                # MTP chain appended the K draft positions to mtp_cache.
+                # If a cancellation / injected fault / host materialization
+                # error fires before this round's fresh accept count is known,
+                # never let stale state leak into a fallback path: keep the
+                # committed ``y`` position and drop every uncommitted draft.
+                _rollback_verify_round(k_len - accepted_count)
+                raise
 
             # Bump attempts by K (one per draft position considered).
             for _ in range(k_len):
@@ -874,7 +897,6 @@ def mtp_generate_step(
 
             # Sequential accept-reject walk (host-only; no MLX ops).
             accepts: list[bool] = []
-            accepted_count = 0
             for i in range(k_len):
                 ok = bool(accept_flags[i])
                 accepts.append(ok)
@@ -942,22 +964,13 @@ def mtp_generate_step(
                 # (k_len - accepted_count) unaccepted drafts from the
                 # caches.
                 n_to_drop = k_len - accepted_count
-                _rollback_draft(n_to_drop)
+                _rollback_verify_round(n_to_drop)
                 accept_counter.record_reject()
                 if logits_processors and prev_tokens is not None:
                     # Discard the ``n_to_drop`` rejected positions
                     # from prev_tokens (they were appended by
                     # _step_backbone during the batched verify).
                     prev_tokens = prev_tokens[:-n_to_drop]
-
-                # Also trim mtp_cache by the same n_to_drop — those
-                # positions were appended by _step_mtp_chain and
-                # correspond to the rejected drafts. The MTP KV
-                # cache is per-layer KVCache (see qwen3_5_inject
-                # make_mtp_cache / gemma4_inject) — always trimmable.
-                for mc in mtp_cache:
-                    if mc.is_trimmable():
-                        mc.trim(n_to_drop)
 
                 verify_tok_id = int(residual_ids[accepted_count])
 

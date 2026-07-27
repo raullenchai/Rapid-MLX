@@ -2290,6 +2290,55 @@ class _MockedQwen35Model:
         return []
 
 
+class _CountingKVCache:
+    """Tiny trimmable cache double for MTP rollback accounting tests."""
+
+    def __init__(self):
+        self.offset = 0
+        self.trim_calls: list[int] = []
+
+    def is_trimmable(self):
+        return True
+
+    def trim(self, n):
+        if n < 0:
+            raise AssertionError(f"negative trim: {n}")
+        self.trim_calls.append(n)
+        self.offset -= min(self.offset, n)
+
+
+class _CacheAdvancingQwen35Model(_MockedQwen35Model):
+    """Mock that advances supplied cache doubles on each forward."""
+
+    def __init__(self, backbone_outputs: list[int], mtp_outputs: list[int]):
+        super().__init__(backbone_outputs, mtp_outputs)
+        self.layers = [object()]
+
+    def __call__(
+        self,
+        inputs,
+        cache=None,
+        input_embeddings=None,
+        return_hidden: bool = False,
+        n_confirmed: int = 0,
+    ):
+        if cache is not None:
+            for c in cache:
+                c.offset += int(inputs.shape[1])
+        return super().__call__(
+            inputs,
+            cache=cache,
+            input_embeddings=input_embeddings,
+            return_hidden=return_hidden,
+            n_confirmed=n_confirmed,
+        )
+
+    def mtp_forward(self, hidden, next_token_ids, mtp_cache):
+        for c in mtp_cache:
+            c.offset += int(next_token_ids.shape[1])
+        return super().mtp_forward(hidden, next_token_ids, mtp_cache)
+
+
 def test_generator_emits_first_token_from_backbone_then_draft():
     """First yield comes from the backbone (``from_draft=False``); on
     accept the second yield is the MTP draft (``from_draft=True``).
@@ -2347,6 +2396,60 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     assert snap.attempts == 1
     assert snap.accepts == 1
     assert snap.tokens_saved == 1
+
+
+def test_generator_rolls_back_verify_round_on_early_materialization_abort(
+    monkeypatch,
+):
+    """Abort after target verify advances caches, before accept state is fresh.
+
+    The first generator step commits the primary token and builds one MTP draft.
+    The second step runs the target verify forward over ``[primary, draft]``.
+    We then force the host sync/materialization boundary to raise. The guard
+    must keep the committed primary in the target cache while dropping the
+    uncommitted draft from both target and MTP caches.
+    """
+
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model_cache = _CountingKVCache()
+    mtp_cache = _CountingKVCache()
+    model = _CacheAdvancingQwen35Model([7, 11, 13], [11])
+    prompt = mx.array([1], dtype=mx.uint32)
+
+    gen = mtp_generate_step(
+        prompt,
+        model,
+        max_tokens=3,
+        prompt_cache=[model_cache, mtp_cache],
+        accept_counter=MTPAcceptCounter(),
+        disable_auto_k=True,
+    )
+
+    assert next(gen)[0] == 7
+    assert model_cache.offset == 1
+    # The draft is generated when the generator resumes for the next token.
+    assert mtp_cache.offset == 0
+
+    eval_calls = 0
+
+    def _boom_on_verify_sync(*_args, **_kwargs):
+        nonlocal eval_calls
+        eval_calls += 1
+        if eval_calls >= 2:
+            raise RuntimeError("sentinel materialization abort")
+
+    monkeypatch.setattr(generator_mod.mx, "eval", _boom_on_verify_sync)
+
+    with pytest.raises(RuntimeError, match="sentinel materialization abort"):
+        next(gen)
+
+    assert model_cache.offset == 2
+    assert model_cache.trim_calls[-1] == 1
+    assert mtp_cache.offset == 0
+    assert mtp_cache.trim_calls[-1] == 1
 
 
 def test_generator_rejection_path_does_not_count_as_accept():
