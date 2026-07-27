@@ -367,22 +367,47 @@ def _run_main_gate_probe(
     return confirm, state["dispatched"]
 
 
-def test_autoselected_starter_uses_standard_download_gate():
-    # Regression guard: the auto-selected starter must NOT special-case the
-    # download gate. (An earlier revision set an `_auto_selected_model` flag
-    # from a fail-silent pre-scan and bypassed the gate entirely — codex
-    # flagged that the unreliable pre-scan could then wave through an
-    # unconfirmed download.) With the gate armed (is_repo_cached=False,
-    # interactive), an uncached auto-selected starter reaches confirm_or_abort
-    # exactly like an explicit model does. The "small model → no prompt"
-    # decision belongs to confirm_or_abort's own 10 GiB threshold (covered in
-    # test_download_gate), NOT to a bypass here — the ~3.1 GB starter is far
-    # under that threshold, so the gate stays silent for it on its own.
+def test_autoselected_starter_skips_redundant_gate_probe():
+    # The auto-selected starter skips the gate's ``estimate_repo_size_bytes``
+    # HF round-trip + ``confirm_or_abort``: it is a FIXED, statically-known
+    # ~3.1 GB model (``first_run.FIRST_RUN_MODEL``), always under the gate's
+    # 10 GiB confirm threshold, so the probe can only ever return "no prompt".
+    # Skipping it removes one of the silent HF round-trips that made the
+    # first-run cold start feel hung (the disk-space gate + mirror catalog
+    # fetch are still covered — under the "Resolving…" spinner).
+    #
+    # This is NOT the old unsafe bypass codex flagged: that one derived an
+    # ``_auto_selected_model`` flag from a fail-silent scan of the cache for
+    # *any* cached alias, which could be arbitrarily large — waving through an
+    # unconfirmed multi-GB download. Here the flag is keyed strictly to the
+    # auto-selected fixed starter (``select_chat_default`` always returns
+    # ``FIRST_RUN_MODEL``), which is small by construction, so no large
+    # download can ever bypass confirmation. The disk-space gate in
+    # ``_ensure_model_downloaded`` still runs regardless.
     confirm, dispatched = _run_main_gate_probe(
         ["chat"], auto_select_alias="qwen3.5-4b-4bit"
     )
-    assert confirm.called is True  # gate NOT bypassed
+    assert confirm.called is False  # redundant size-probe/confirm skipped
     assert dispatched is True  # and the run still reaches dispatch
+
+
+def test_autoselected_starter_still_runs_disk_gate_in_prefetch(monkeypatch):
+    # Belt-and-braces for the safety argument above: skipping the CONFIRM gate
+    # for the starter must not skip the DISK-SPACE gate. ``_ensure_model_
+    # downloaded`` always calls ``_check_disk_space`` (under the spinner)
+    # before pulling, so a full disk still aborts cleanly.
+    called = {"disk": False}
+
+    def _fake_disk(model_name, force=False):
+        called["disk"] = True
+
+    # An HF-style repo id is not a local path, so the early ``os.path.exists``
+    # return is naturally skipped — no need to patch os.
+    monkeypatch.setattr(cli, "_check_disk_space", _fake_disk)
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *a, **k: True)
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda *a, **k: False)
+    cli._ensure_model_downloaded("mlx-community/Qwen3.5-4B-MLX-4bit")
+    assert called["disk"] is True
 
 
 def test_explicit_uncached_model_still_confirms():

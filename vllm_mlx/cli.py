@@ -18,6 +18,7 @@ Usage:
 import argparse
 import os
 import sys
+from collections.abc import Callable
 
 from vllm_mlx._completion import alias_completer
 
@@ -1364,7 +1365,92 @@ def _check_memory_capacity(model_name: str) -> None:
     print()
 
 
-def _try_mirror_prefetch(model_name: str) -> bool:
+class _StatusSpinner:
+    """Animated ``⠋ <label> Ns`` spinner on stderr for a blocking phase.
+
+    Context manager. On a TTY it spawns a daemon thread that redraws the
+    label + elapsed seconds at ~10 fps; :meth:`stop` (idempotent) clears the
+    line. Non-TTY / ``NO_COLOR`` → fully inert (no thread, no output) so CI
+    logs and pipes stay clean. :meth:`stop` is public so a caller can retire
+    the spinner mid-``with`` — e.g. from a download's ``on_pull_start`` hook,
+    right before the first real progress line — while ``__exit__`` remains a
+    belt-and-braces clear on every exit path.
+
+    Mirrors the inline spinner in :func:`_wait_for_chat_server` (same frames /
+    stream) so the cold-download "Resolving…" phase looks like the warm
+    "loading model…" phase the REPL already shows.
+    """
+
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, label: str, *, stream=None) -> None:
+        self._label = label
+        self._stream = stream if stream is not None else sys.stderr
+        # ``isatty`` can be absent on exotic stream stand-ins; treat missing
+        # as non-TTY so we stay inert rather than crash.
+        _isatty = getattr(self._stream, "isatty", None)
+        self._enabled = bool(_isatty and _isatty()) and "NO_COLOR" not in os.environ
+        self._done = False
+        self._start = 0.0
+        self._thread = None
+        import threading
+
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+
+    def _run(self) -> None:
+        import time
+
+        tick = 0
+        while not self._stop_event.is_set():
+            try:
+                elapsed = int(time.monotonic() - self._start)
+                ch = self._FRAMES[tick % len(self._FRAMES)]
+                self._stream.write(
+                    f"\r  \x1b[36m{ch}\x1b[0m {self._label} \x1b[2m{elapsed}s\x1b[0m"
+                )
+                self._stream.flush()
+            except (ValueError, OSError):
+                return  # stream closed underneath us — stop quietly.
+            tick += 1
+            self._stop_event.wait(0.1)
+
+    def __enter__(self) -> "_StatusSpinner":
+        if self._enabled:
+            import threading
+            import time
+
+            self._start = time.monotonic()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        """Halt the spinner and clear its line. Idempotent + thread-safe."""
+        with self._lock:
+            if self._done:
+                return
+            self._done = True
+        if self._thread is not None:
+            self._stop_event.set()
+            self._thread.join(timeout=1.0)
+            try:
+                # Clear the whole line; the label + " Ns" fits well within a
+                # generous fixed width (ANSI codes take no display columns).
+                self._stream.write("\r" + " " * (len(self._label) + 24) + "\r")
+                self._stream.flush()
+            except (ValueError, OSError):
+                pass
+
+    def __exit__(self, *exc: object) -> bool:
+        self.stop()
+        return False
+
+
+def _try_mirror_prefetch(
+    model_name: str,
+    on_pull_start: Callable[[], None] | None = None,
+) -> bool:
     """Pre-fetch a HuggingFace repo via R2-first / HF-fallback (per file).
 
     Delegates to :func:`vllm_mlx._mirror.download_with_mirror_fallback`.
@@ -1372,6 +1458,9 @@ def _try_mirror_prefetch(model_name: str) -> bool:
     and HF). Returns ``False`` if the caller should fall through to the
     plain ``snapshot_download(repo_id)`` path (catalog unavailable for
     catalog-only paths, or one or more files failed both R2 and HF).
+
+    ``on_pull_start`` is forwarded to the mirror and fired once, right before
+    the first ``Pulling`` line — used to retire a "Resolving…" spinner.
 
     Set ``RAPID_MLX_MODEL_MIRROR=""`` to disable R2 entirely and force
     HuggingFace.
@@ -1389,7 +1478,7 @@ def _try_mirror_prefetch(model_name: str) -> bool:
         # Mirror module not available (minimal-deps install or
         # deliberately removed). Use the legacy HF path.
         return False
-    return download_with_mirror_fallback(model_name)
+    return download_with_mirror_fallback(model_name, on_pull_start=on_pull_start)
 
 
 def _ensure_model_downloaded(model_name: str) -> None:
@@ -1425,17 +1514,32 @@ def _ensure_model_downloaded(model_name: str) -> None:
         # fully present.
         pass
 
-    # Disk-space gate: a 20 GB partial download that fails on the last
-    # shard wastes the user's time. ``_check_disk_space`` queries HF for
-    # the repo size and aborts with a clear message + exit(1) if there
-    # isn't enough room on the resolved HF cache filesystem.
-    _check_disk_space(model_name)
+    # Disk-space gate + mirror pull. Both the disk probe (HF ``model_info``)
+    # and the mirror's own metadata + ``/api/models`` catalog round-trips run
+    # BEFORE the first "Pulling"/"First-time download" line — up to a few
+    # seconds of total silence at the most fragile first-run moment, where it
+    # reads as a hang. Cover it with a "Resolving…" spinner (TTY-only; inert on
+    # CI/pipe) that the mirror retires via ``on_pull_start`` the instant real
+    # progress begins, and that ``__exit__`` clears on every other exit path.
+    _short = model_name.split("/")[-1]
+    spinner = _StatusSpinner(f"Resolving {_short} …")
+    with spinner:
+        # ``_check_disk_space`` queries HF for the repo size and aborts with a
+        # clear message + exit(1) if there isn't enough room on the resolved
+        # HF cache filesystem. Clear the spinner first on that fatal path so
+        # the abort message and the shell prompt after it land on clean lines.
+        try:
+            _check_disk_space(model_name)
+        except SystemExit:
+            spinner.stop()
+            raise
 
-    # User-configured mirror path (R2/S3/any HTTP host). When the mirror
-    # serves every file the repo declares, populate the HF cache layout
-    # ourselves and skip snapshot_download. On any miss we fall through
-    # to the normal HuggingFace download below.
-    if _try_mirror_prefetch(model_name):
+        # User-configured mirror path (R2/S3/any HTTP host). When the mirror
+        # serves every file the repo declares, populate the HF cache layout
+        # ourselves and skip snapshot_download. On any miss we fall through
+        # to the normal HuggingFace download below.
+        mirror_ok = _try_mirror_prefetch(model_name, on_pull_start=spinner.stop)
+    if mirror_ok:
         return
 
     try:
@@ -8723,6 +8827,14 @@ Examples:
         _cmd = getattr(args, "command", "chat")
         _sel_alias, _starter_cached = select_chat_default()
         args.model = _sel_alias
+        # Mark the auto-selected starter so the download gate below can skip
+        # its ``estimate_repo_size_bytes`` HF round-trip: the starter is a
+        # known ~3 GB model, always under the gate's 10 GiB confirm threshold,
+        # so the probe can only ever return "no prompt". Skipping it removes
+        # one of the silent HF round-trips that make the first-run cold start
+        # feel hung (the disk probe + mirror catalog fetch are covered by the
+        # "Resolving…" spinner instead).
+        args._autofilled_starter = True
         if sys.stdin.isatty():
             if _starter_cached:
                 print(
@@ -8861,6 +8973,12 @@ Examples:
         and "/" in args.model  # only HF-style repo ids; local paths skip
         and not os.path.exists(args.model)
         and not _chat_spawn_child
+        # The auto-selected first-run starter is a known ~3 GB model, always
+        # under the confirm threshold — skip the gate's size-probe round-trip
+        # entirely (it can only ever return "no prompt") so the cold start
+        # isn't stalled on a redundant HF ``model_info`` call. The disk-space
+        # gate in ``_ensure_model_downloaded`` still runs, under the spinner.
+        and not getattr(args, "_autofilled_starter", False)
     ):
         # Cheap checks first: env override and non-TTY both short-circuit
         # without touching the HF API. ``confirm_or_abort`` re-checks

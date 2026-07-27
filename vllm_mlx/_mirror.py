@@ -43,6 +43,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -1075,11 +1076,80 @@ def _release_part_lock(lock_fh, lock_path: Path) -> None:
     del lock_path
 
 
+# --- HF per-file tqdm suppression on the mirror path --------------------------
+# When the R2 mirror serves the weight shards (the common case) the only files
+# that fall back to ``hf_hub_download`` are tiny non-weight assets the mirror
+# doesn't carry — ``.gitattributes``, ``README.md``, small configs.
+# ``hf_hub_download`` draws a ``\r``-based tqdm bar for each of them, which
+# collides with our own aggregate ``_ProgressTracker`` heartbeat and the
+# per-file ``[N/M]`` completion lines, garbling the display. We pass a disabled
+# ``tqdm_class`` for those files so HF stays quiet and our UI owns the terminal.
+#
+# We deliberately do NOT suppress the bar for real weight downloads: if a
+# multi-GB shard ever falls back to HF (a transient R2 failure), HF's
+# intra-file bar is the only progress signal — the aggregate tracker credits
+# HF-fallback bytes only at completion (see the ``kind == "hf"`` arm in the
+# ``as_completed`` loop), so muting it there would reintroduce exactly the dead
+# air we are trying to remove. ``_should_suppress_hf_bar`` therefore fails
+# toward SHOWING the bar: it stays on for any weight suffix OR any file whose
+# size we can't confirm is small.
+
+# Binary weight containers whose HF-fallback download is worth an intra-file
+# progress bar. Excludes ``.json`` / ``.txt`` / ``.model`` — those are
+# configs/tokenizers, small enough that a bar is pure noise.
+_STREAMED_WEIGHT_SUFFIXES: tuple[str, ...] = (
+    ".safetensors",
+    ".bin",
+    ".gguf",
+    ".npz",
+    ".pt",
+    ".pth",
+)
+
+# Below this HF-advertised size a non-weight file is treated as "metadata" and
+# its bar is suppressed. 5 MiB clears every real config/README while staying
+# well under any weight shard.
+_HF_BAR_KEEP_MIN_BYTES = 5 * 1024 * 1024
+
+
+def _should_suppress_hf_bar(filename: str, expected_size: int | None) -> bool:
+    """True when HF's per-file tqdm for ``filename`` is noise, not signal.
+
+    Fails toward showing the bar (returns ``False``) for weight shards and for
+    any file whose size we can't confirm is small, so a rare big-shard HF
+    fallback still renders intra-file progress.
+    """
+    if filename.lower().endswith(_STREAMED_WEIGHT_SUFFIXES):
+        return False
+    if expected_size is None:
+        return False
+    return expected_size < _HF_BAR_KEEP_MIN_BYTES
+
+
+def _silent_hf_tqdm_class():
+    """A ``tqdm``-compatible class that never renders, for ``hf_hub_download``.
+
+    Subclasses HuggingFace's own tqdm wrapper and forces ``disable=True`` so
+    the suppression is per-call (thread-safe) — no global
+    ``disable_progress_bars()`` toggle that would race across the worker pool
+    while a concurrent big-shard fallback is still drawing its bar.
+    """
+    from huggingface_hub.utils import tqdm as _hf_tqdm
+
+    class _SilentTqdm(_hf_tqdm):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            kwargs["disable"] = True
+            super().__init__(*args, **kwargs)
+
+    return _SilentTqdm
+
+
 def _hf_fallback_one(
     repo_id: str,
     filename: str,
     revision: str,
     cache_dir: Path | None = None,
+    suppress_progress: bool = False,
 ) -> tuple[bool, str | None]:
     """Download a single file from HuggingFace into the standard cache.
 
@@ -1089,6 +1159,10 @@ def _hf_fallback_one(
     the per-file R2 miss path. Codex round-1 NIT #3: capture the path
     rather than re-resolving via ``snap_dir / fname``, so success
     accounting is robust to changes in HF's symlink layout.
+
+    ``suppress_progress`` mutes HF's own per-file tqdm bar (passed a disabled
+    ``tqdm_class``); the caller sets it for confirmed-small metadata files so
+    their bars don't collide with our aggregate progress UI.
 
     Codex round-2 BLOCKING #4: narrow the exception net. Only expected
     network/cache/HF-API errors are swallowed; programmer errors
@@ -1107,6 +1181,8 @@ def _hf_fallback_one(
             filename=filename,
             revision=revision,
             cache_dir=str(cache_dir) if cache_dir else None,
+            # ``None`` = HF's default tqdm (bar shown); disabled class = quiet.
+            tqdm_class=_silent_hf_tqdm_class() if suppress_progress else None,
         )
         return True, path
     except (
@@ -1172,6 +1248,7 @@ def download_with_mirror_fallback(
     cache_dir: Path | None = None,
     *,
     revision: str | None = None,
+    on_pull_start: Callable[[], None] | None = None,
 ) -> bool:
     """Download ``repo_id`` to the HF cache via R2-first / HF-fallback.
 
@@ -1195,6 +1272,12 @@ def download_with_mirror_fallback(
     ``snapshot_download`` runs and pins the right revision instead of us
     silently overwriting ``refs/main`` with HEAD. ``revision=None`` and
     ``revision="main"`` both mean default branch and are accepted.
+
+    ``on_pull_start`` is an optional zero-arg hook fired exactly once, right
+    before the first ``Pulling`` line is printed (i.e. after the size/catalog
+    round-trips resolve). The CLI uses it to retire a "Resolving…" spinner so
+    it doesn't collide with the download output. It never fires on the
+    ``return False`` fall-through path.
     """
     from ._hf_logging import silence_hf_unauthenticated_warning
 
@@ -1350,6 +1433,19 @@ def download_with_mirror_fallback(
     BOLD = "\x1b[1m" if is_tty else ""
     DIM = "\x1b[2m" if is_tty else ""
     RESET = "\x1b[0m" if is_tty else ""
+
+    # We're about to emit real download output. Let the caller retire any
+    # "Resolving…" spinner it started BEFORE our first ``Pulling`` line so the
+    # two don't collide on the terminal. Fired only on the paths that actually
+    # print (both ``use_r2`` branches) — never before the ``return False``
+    # below, where the caller keeps the spinner up for its own
+    # ``snapshot_download`` banner. The callback must be cheap and
+    # exception-safe; a misbehaving hook shouldn't abort a good pull.
+    if use_r2 and on_pull_start is not None:
+        try:
+            on_pull_start()
+        except Exception:
+            pass
 
     if use_r2 and catalog_mirrored:
         _print_dim(
@@ -1599,7 +1695,16 @@ def download_with_mirror_fallback(
 
         # Either R2 not eligible or R2 missed — fall back to HF for
         # this file. Let huggingface_hub handle its own cache layout.
-        ok, hf_path = _hf_fallback_one(repo_id, fname, revision, cache_dir=cache_root)
+        # Mute HF's tqdm for confirmed-small metadata files so it doesn't
+        # collide with our aggregate UI; keep it for weight/unknown-size
+        # files (see ``_should_suppress_hf_bar``).
+        ok, hf_path = _hf_fallback_one(
+            repo_id,
+            fname,
+            revision,
+            cache_dir=cache_root,
+            suppress_progress=_should_suppress_hf_bar(fname, expected_size),
+        )
         if ok:
             # ``hf_hub_download`` returns the resolved snapshot path
             # (typically a symlink to a blob). Stat the path it gave us
