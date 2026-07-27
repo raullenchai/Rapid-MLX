@@ -14,6 +14,14 @@ def _restore_nemotron_modules():
     from vllm_mlx.utils.tokenizer import _VENDORED_MODEL_TYPES
 
     original = sys.modules.get("mlx_lm.models.nemotron_h")
+    if getattr(original, "__name__", "") == "vllm_mlx.models.nemotron_h":
+        # A previous test already ran ``_register_vendored_archs()`` (any of
+        # the vendored-arch suites calls it), leaving our vendor installed
+        # under the native name. Start from the pristine state so this
+        # test's registration re-evaluates the native-``block_configs``
+        # probe instead of short-circuiting on our own module.
+        original = None
+        sys.modules.pop("mlx_lm.models.nemotron_h", None)
     sys.modules.pop("mlx_lm.models.nemotron_h_puzzle", None)
     _VENDORED_MODEL_TYPES.difference_update({"nemotron_h", "nemotron_h_puzzle"})
     yield
