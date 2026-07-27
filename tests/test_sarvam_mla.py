@@ -79,7 +79,7 @@ def test_loader_routes_sarvam_config_to_vendored_path(tmp_path, monkeypatch):
     expected = (object(), object())
     seen = []
 
-    def _fake_vendor_loader(model_name):
+    def _fake_vendor_loader(model_name, *, enable_dspark=False):
         seen.append(model_name)
         return expected
 
