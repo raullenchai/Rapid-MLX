@@ -62,8 +62,11 @@ restore_cfg() {
   fi
 }
 save_cfg() {
+  mkdir -p "$(dirname "$1")"   # marker (and later --setup) needs the dir to exist
   if [ -f "$1" ]; then cp "$1" "$1.smokebak"; else touch "$1.created"; fi
 }
+# `agents <x> --setup` hardcodes localhost:8000; repoint it at our actual port.
+patch_port() { [ -f "$1" ] && perl -pi -e "s#localhost:8000/v1#localhost:$PORT/v1#g" "$1"; }
 
 cleanup() {
   [ -n "$SERVE_PID" ] && kill -9 "$SERVE_PID" 2>/dev/null
@@ -127,6 +130,7 @@ done
 # ---- Codex (agents codex --setup writes ~/.codex/config.toml) ------------
 save_cfg "$CODEX_CFG"
 "$RMLX" agents codex --setup >/dev/null 2>&1
+patch_port "$CODEX_CFG"
 R_CODEX=FAIL
 for _try in 1 2; do
   seed_repo codex
@@ -139,6 +143,7 @@ restore_cfg "$CODEX_CFG"
 # ---- Hermes (agents hermes --setup; auto-writes context_length >= 64K) ----
 save_cfg "$HERMES_CFG"
 "$RMLX" agents hermes --setup >/dev/null 2>&1
+patch_port "$HERMES_CFG"
 R_HERMES=FAIL
 for _try in 1 2; do
   seed_repo hermes
