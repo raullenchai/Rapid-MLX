@@ -128,6 +128,8 @@ jobs:
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \
             tests/test_microbench_parsers.py \
+            tests/test_telemetry_emit.py \
+            tests/test_telemetry_consent.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \

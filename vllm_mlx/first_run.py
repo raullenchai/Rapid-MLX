@@ -269,6 +269,51 @@ def claim_chat_agent_tip() -> bool:
         return False
 
 
+def _session_seen_marker() -> Path:
+    return _state_dir() / "session_seen"
+
+
+def mark_first_session() -> bool:
+    """Atomically record that this client has reached a recorded session.
+
+    Returns ``True`` for exactly ONE call per machine -- the first process to
+    create the ``session_seen`` marker via exclusive ``O_EXCL`` creation.
+    Every later call (and any concurrent racer that loses) gets ``False``.
+    This is the client-side "first session" signal for the #1272 activation
+    funnel: the client tracks its own first participating session more
+    reliably than the server can infer it from a bounded telemetry-retention
+    window.
+
+    Semantics note (codex #1273): this marks the first session that is
+    actually RECORDED, not necessarily the first-ever binary invocation. The
+    caller (``cli.py``) deliberately does NOT reach this on the run that just
+    collected first-run consent -- the disclosure promises "nothing from
+    before this prompt", so that run emits nothing and is not marked. The
+    next (first participating) session therefore carries ``first_session=
+    True``, exactly once per client. This is the right funnel semantic:
+    "the first session we recorded from this new client." If a client is
+    already opted in before its first run (env / prior consent), that first
+    run is itself the first recorded session and is marked here.
+
+    The marker is a local empty file; only the derived boolean is ever sent,
+    and only when telemetry is enabled.
+
+    Fail-safe toward ``False`` on any error (unwritable state dir, etc.):
+    under-reporting a first run is conservative -- it never inflates the
+    funnel's new-client count -- and never crashes the session.
+    """
+    try:
+        marker = _session_seen_marker()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        with open(marker, "x"):
+            pass
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return False
+
+
 def chat_agent_tip_text() -> str:
     """The one-line tip shown after a user's first successful chat. Names the
     detected agent (claude-code preferred); falls back to the generic

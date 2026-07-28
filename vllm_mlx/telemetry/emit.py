@@ -328,6 +328,8 @@ def session_start(
     subcommand: str,
     flag_names: Iterable[str] = (),
     models_loaded: Iterable[str] = (),
+    first_session: bool = False,
+    auto_selected: bool = False,
 ) -> None:
     """Emit a ``session_start`` payload.
 
@@ -386,6 +388,12 @@ def session_start(
         "models_loaded": [
             normalize_model_path(m) for m in itertools.islice(models_loaded, 32)
         ],
+        # #1272 activation-funnel signals. Session METADATA only -- computed
+        # from session context by the caller (cli.py), never from a prompt or
+        # generated output. ``bool(...)`` coerces so a truthy non-bool caller
+        # value still lands as a plain JSON boolean.
+        "first_session": bool(first_session),
+        "auto_selected": bool(auto_selected),
     }
     get_queue().enqueue(payload)
 
@@ -418,6 +426,12 @@ def session_end(
         "models_loaded": [
             normalize_model_path(m) for m in itertools.islice(models_loaded, 32)
         ],
+        # #1272 fields are start-time signals; session_end carries them at
+        # their defaults so both lifecycle payloads expose the full v1
+        # SessionPayload surface (same completeness contract as the
+        # ``engine`` / ``flag_names`` slots above).
+        "first_session": False,
+        "auto_selected": False,
     }
     get_queue().enqueue(payload)
 

@@ -54,6 +54,15 @@ class SessionPayload:
     # second engine ever lands; bump SCHEMA_VERSION at the same time.
     engine: str = ""
     flag_names: tuple[str, ...] = ()  # names only, sorted, no values
+    # Activation-funnel fields (#1272). Both are session METADATA booleans
+    # -- derived from session context, NOT from any prompt or generated
+    # output -- appended after ``flag_names`` with ``False`` defaults so the
+    # positional-slot back-compat rule documented on ``engine`` above holds.
+    # No SCHEMA_VERSION bump: additive optional fields are backwards-
+    # compatible (old consumers ignore unknown keys), and the schema only
+    # bumps on backwards-INCOMPATIBLE changes.
+    first_session: bool = False  # first session we RECORD from this client (marker)
+    auto_selected: bool = False  # ``chat`` fell back to the starter (no alias given)
 
 
 @dataclass(frozen=True)

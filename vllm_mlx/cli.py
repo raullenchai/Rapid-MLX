@@ -8757,6 +8757,28 @@ Examples:
         )
 
         _session_flag_names = _telemetry_extract_flag_names(_sys.argv[1:])
+        # #1272 activation-funnel signals, computed HERE (before dispatch)
+        # where the argparse result is available. Both are session metadata,
+        # never content.
+        #   - first_session: claim the one-time local marker. This block is
+        #     already skipped on the ``_just_collected_consent`` run (the
+        #     disclosure promises "nothing from before this prompt"), so the
+        #     marker is claimed on the first RECORDED session -- exactly once
+        #     per client -- not the first-ever binary run. That is the funnel
+        #     semantic we want ("first session we recorded from this new
+        #     client"); see ``mark_first_session`` for the full rationale
+        #     (codex #1273). Runs regardless of telemetry on/off within this
+        #     block so a later opt-in still sees the marker already set.
+        #   - auto_selected: ``chat`` with no positional model (nargs="?"
+        #     default None) is exactly the auto-select-the-starter path
+        #     (see ``first_run.select_chat_default``), so the wizard's
+        #     contribution to activation is attributable.
+        from vllm_mlx.first_run import mark_first_session as _mark_first_session
+
+        _first_session = _mark_first_session()
+        _auto_selected = (
+            _session_subcommand == "chat" and getattr(args, "model", None) is None
+        )
         # Round 19 codex NIT: session_start sees an empty IMMUTABLE
         # snapshot of models_loaded so it does not depend on whether
         # ``emit.session_start()`` eagerly copies its input. The closure-
@@ -8766,6 +8788,8 @@ Examples:
             subcommand=_session_subcommand,
             flag_names=_session_flag_names,
             models_loaded=(),
+            first_session=_first_session,
+            auto_selected=_auto_selected,
         )
 
         def _emit_session_end() -> None:

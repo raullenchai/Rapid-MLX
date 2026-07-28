@@ -69,6 +69,10 @@ WHAT WE SEND (only after you say yes):
   - OS family + major.minor version ("darwin 25.3"), arch ("arm64"),
     Python major.minor ("3.12"), Rapid-MLX version ("0.6.79")
   - Which subcommand you ran ("serve" / "chat") and its duration
+  - Two first-run booleans: whether this is the first session we record
+    from this machine, and -- for `chat` with no model named -- whether we
+    auto-picked the starter model for you. Metadata only: no prompt, no
+    output, no content.
   - The NAMES (only) of CLI flags you passed, sorted and de-duplicated
     (`--api-key sk-XXX` becomes the literal string "api-key"; the value
     "sk-XXX" is never even read).

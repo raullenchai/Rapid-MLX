@@ -282,6 +282,44 @@ def test_session_start_envelope_when_enabled(opted_in, stub_queue, monkeypatch):
     assert "8000" not in blob
 
 
+def test_session_start_activation_flags_emitted(opted_in, stub_queue):
+    """#1272: first_session + auto_selected land as plain JSON booleans."""
+    from vllm_mlx.telemetry import emit
+
+    emit.session_start(
+        subcommand="chat",
+        first_session=True,
+        auto_selected=True,
+    )
+    session = stub_queue[0]["session"]
+    assert session["first_session"] is True
+    assert session["auto_selected"] is True
+    assert isinstance(session["first_session"], bool)
+    assert isinstance(session["auto_selected"], bool)
+
+
+def test_session_start_activation_flags_default_false(opted_in, stub_queue):
+    """Omitting the #1272 flags emits plain ``False`` -- the keys are always
+    present so consumers can rely on the shape."""
+    from vllm_mlx.telemetry import emit
+
+    emit.session_start(subcommand="serve")
+    session = stub_queue[0]["session"]
+    assert session["first_session"] is False
+    assert session["auto_selected"] is False
+
+
+def test_mark_first_session_true_once_then_false(fake_home):
+    """#1272 client-side marker: first call claims the machine's first
+    session (True); every later call sees the marker and returns False.
+    Independent of telemetry consent -- purely a local ``O_EXCL`` marker."""
+    from vllm_mlx.first_run import mark_first_session
+
+    assert mark_first_session() is True
+    assert mark_first_session() is False
+    assert mark_first_session() is False
+
+
 def test_session_start_models_loaded_redacted(opted_in, stub_queue):
     """Local paths must collapse to "<local>" — not leak home dirs."""
     from vllm_mlx.telemetry import emit
