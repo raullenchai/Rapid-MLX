@@ -108,7 +108,7 @@ With a server running (step 3), this patches Claude Code's local config (`~/.con
 |---|---|
 | **Apple-Silicon-native** | Pure MLX kernels — no llama.cpp fallback, no Metal shim. Continuous batching, prompt cache (radix + DeltaNet RNN snapshots), and a quantized live KV cache (int4/int8 on the continuous-batching cache + TurboQuant K8V4 codec) run at native MLX bandwidth on M1 → M4. |
 | **Drop-in OpenAI / Anthropic API** | `/v1/chat/completions`, `/v1/responses` (Codex CLI), `/v1/messages` (Anthropic SDK / Claude Code), `/v1/embeddings`, `/v1/audio/*` — same wire as ChatGPT / Claude, no client adapter. |
-| **Tier-1 ecosystem coverage** | 11 agent CLIs and 3 Python frameworks are wire-verified against real weights every release — Codex CLI, Claude Code, OpenCode, Qwen Code, OpenHands, Hermes Agent, Aider, Kilo Code, GitHub Copilot, Factory Droid, Moonshot Kimi Code + LangChain, PydanticAI, smolagents. |
+| **First-class ecosystem coverage** | 11 agent CLIs and 3 Python frameworks are wire-verified against real weights every release (4 are Tier-1, re-verified on current binaries) — Codex CLI, Claude Code, OpenCode, Qwen Code, OpenHands, Hermes Agent, Aider, Kilo Code, GitHub Copilot, Factory Droid, Moonshot Kimi Code + LangChain, PydanticAI, smolagents. |
 
 → [Full feature breakdown](https://rapidmlx.com/docs/index.html)
 
@@ -120,16 +120,19 @@ With a server running (step 3), this patches Claude Code's local config (`~/.con
 |---|---|---|
 | **Chat in the terminal** | `rapid-mlx chat qwen3.5-9b-4bit` | Streaming REPL, `/help` for slash commands, `--think` / `--no-think` to control CoT. |
 | **OpenAI server for your apps** | `rapid-mlx serve qwen3.5-9b-4bit` | Point Cursor, Aider, LibreChat, Open WebUI, LangChain at `http://localhost:8000/v1`. |
-| **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 8 agents auto-configure via `agents <name> --setup` once the server is up (11 wire-verified total) — see [Tier-1 support](#tier-1-support). |
+| **Agent backends** | `rapid-mlx serve qwen3.6-35b-8bit &`<br>`rapid-mlx agents codex --setup && codex` | 8 agents auto-configure via `agents <name> --setup` once the server is up (11 wire-verified total, 4 Tier-1) — see [Agent support](#agent-support). |
 | **Benchmark your Mac** | `rapid-mlx bench qwen3.5-9b-4bit --submit` | Standardized B=1 bench, opens a PR to publish your row on [rapidmlx.com](https://rapidmlx.com). |
 
 → [One-shot IDE setup](https://rapidmlx.com/docs/cli.html#launch) with `rapid-mlx launch <cursor|claude-code|cline|continue-dev>`
 
 ---
 
-## Tier-1 Support
+## Agent Support
 
-Every agent below is wire-verified against real weights every release via its own integration-test cell. The first eight each ship a `rapid-mlx agents <name> --setup` config template (except Claude Code, which is one env-var); GitHub Copilot, Factory Droid, and Moonshot Kimi Code plug in through their own documented BYOK config (auth-gated, so the matrix cell is a wire smoke).
+All 11 agents below are wire-verified against real weights every release via their own integration-test cell. Of these, four are **Tier-1** — **Claude Code, Codex CLI, Hermes, and Aider** — re-verified end-to-end against the *current* client binary every release, with one guardian per API wire (Anthropic `/v1/messages`, OpenAI `/v1/responses`, and `/v1/chat/completions` covered for both tool-calling depth and reach). The other seven are **Tier-2**: wire-verified in the matrix and configured on-demand. The first eight agents each ship a `rapid-mlx agents <name> --setup` config template (except Claude Code, which is one env-var); GitHub Copilot, Factory Droid, and Moonshot Kimi Code plug in through their own documented BYOK config (auth-gated, so the matrix cell is a wire smoke).
+
+**Tier-1 (4):** Claude Code · Codex CLI · Hermes · Aider — last re-verified end-to-end 2026-07-28 on current binaries (claude 2.1.211, codex 0.145.0, hermes 0.9.0, aider 0.86.2) against rapid-mlx 0.11.1.
+**Tier-2 (7):** OpenCode · Qwen Code · OpenHands · Kilo Code · GitHub Copilot · Factory Droid · Moonshot Kimi Code.
 
 | Agents (11) | Frameworks (3) |
 |---|---|
