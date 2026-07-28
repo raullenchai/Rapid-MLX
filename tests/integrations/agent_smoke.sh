@@ -1,9 +1,10 @@
 #!/bin/bash
 # Layer-B Tier-1 agent re-verification smoke.
 #
-# Run ON the Studio (real Apple Silicon + models + agent binaries). GitHub CI
-# cannot do this — it has no Metal, no weights, and release-preflight skips
-# every gate that needs a live `rapid-mlx serve`.
+# Run ON the Studio (real Apple Silicon + models + agent binaries), directly or
+# from the self-hosted `agent-gate.yml` job. GitHub-hosted runners cannot do
+# this — no Metal, no weights, and release-preflight skips every gate that needs
+# a live `rapid-mlx serve`.
 #
 # Boots `rapid-mlx serve`, then drives the FOUR Tier-1 (flagship) agents —
 # Claude Code, Codex, Hermes, Aider — through a real multi-step bug-fix task
@@ -14,11 +15,12 @@
 #            which confounds "weak model" with "broken integration")
 #
 # Exit code: 0 iff all four Tier-1 agents PASS. Non-zero blocks the release.
-# It is non-destructive: it backs up ~/.codex and ~/.hermes config and restores
-# them on exit (the Studio is a shared, in-use machine).
+# Non-destructive on the shared Studio: it starts only its own server (and kills
+# only that one), and backs up / restores (or removes) ~/.codex and ~/.hermes
+# config it touches.
 set -uo pipefail
 
-export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export PATH="/opt/homebrew/bin:/opt/homebrew/opt/coreutils/libexec/gnubin:$HOME/.local/bin:$PATH"
 VENV="${RAPID_MLX_VENV:-$HOME/rapid-mlx-audit-venv}"
 RMLX="$VENV/bin/rapid-mlx"
 ALIAS="${1:-qwen3.6-35b-8bit}"
@@ -26,14 +28,47 @@ PORT="${RAPID_MLX_PORT:-8000}"
 B="http://localhost:$PORT"
 WORK="$HOME/agent-smoke-work"
 LOG="$HOME/agent-smoke-serve.log"
+SERVE_PID=""
 
 CODEX_CFG="$HOME/.codex/config.toml"
 HERMES_CFG="$HOME/.hermes/config.yaml"
 
+# Portable timeout: coreutils `timeout`, or `gtimeout`, else a bash fallback
+# (background the command, hard-kill after N seconds). macOS ships neither
+# `timeout` nor `gtimeout` by default, so never assume one is on PATH.
+if command -v timeout >/dev/null 2>&1; then
+  TO() { timeout "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  TO() { gtimeout "$@"; }
+else
+  TO() {
+    local secs="$1"; shift
+    ( "$@" ) & local cmd_pid=$!
+    ( sleep "$secs"; kill -9 "$cmd_pid" 2>/dev/null ) & local killer=$!
+    wait "$cmd_pid" 2>/dev/null; local rc=$?
+    kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null
+    return $rc
+  }
+fi
+
+# Restore a config we may have overwritten with `--setup`: if we backed up a
+# pre-existing file, put it back; if the file did not exist before, remove the
+# one `--setup` created (and its marker). Idempotent — safe to call twice.
+restore_cfg() {
+  if [ -f "$1.smokebak" ]; then
+    mv -f "$1.smokebak" "$1"
+  elif [ -f "$1.created" ]; then
+    rm -f "$1" "$1.created"
+  fi
+}
+save_cfg() {
+  if [ -f "$1" ]; then cp "$1" "$1.smokebak"; else touch "$1.created"; fi
+}
+
 cleanup() {
-  pkill -9 -f "$VENV/bin/rapid-mlx serve" 2>/dev/null
-  [ -f "$CODEX_CFG.smokebak" ]  && mv -f "$CODEX_CFG.smokebak"  "$CODEX_CFG"  2>/dev/null
-  [ -f "$HERMES_CFG.smokebak" ] && mv -f "$HERMES_CFG.smokebak" "$HERMES_CFG" 2>/dev/null
+  [ -n "$SERVE_PID" ] && kill -9 "$SERVE_PID" 2>/dev/null
+  restore_cfg "$CODEX_CFG"
+  restore_cfg "$HERMES_CFG"
   rm -rf "$WORK" "$LOG"
 }
 trap cleanup EXIT
@@ -47,13 +82,17 @@ for b in claude codex aider hermes; do
   command -v "$b" >/dev/null 2>&1 && printf "  %-9s  %s\n" "$b" "$($b --version 2>&1 | head -1)" \
                                   || printf "  %-9s  MISSING\n" "$b"
 done
-echo "== model: $ALIAS =="
+echo "== model: $ALIAS  port: $PORT =="
 
-# ---- boot serve ----------------------------------------------------------
-pkill -f "$VENV/bin/rapid-mlx serve" 2>/dev/null; sleep 2
+# ---- boot serve (never kill a server we did not start) -------------------
+if curl -s -m 3 "$B/v1/models" >/dev/null 2>&1; then
+  fail "port $PORT already serving — free it (a stray server is not ours to kill)"
+fi
 nohup "$RMLX" serve "$ALIAS" --port "$PORT" > "$LOG" 2>&1 &
+SERVE_PID=$!
 for i in $(seq 1 48); do
   curl -s -m 3 "$B/v1/models" 2>/dev/null | grep -q '"id"' && { echo "serve READY (~$((i*5))s)"; break; }
+  kill -0 "$SERVE_PID" 2>/dev/null || { tail -20 "$LOG"; fail "serve process died during boot"; }
   sleep 5
   [ "$i" = 48 ] && { tail -20 "$LOG"; fail "serve not ready in 240s"; }
 done
@@ -69,8 +108,8 @@ seed_repo() {
 # PASS iff the test now exits 0 (agent fixed the bug and it verifies)
 verify() { cd "$WORK/$1" 2>/dev/null && python3 test_calc.py >/dev/null 2>&1 && echo PASS || echo FAIL; }
 
-# Plain phrasing (no backticks / em-dash — keep the prompt boring so the
-# check measures the integration, not prompt parsing).
+# Plain phrasing (no backticks / em-dash — keep the prompt boring so the check
+# measures the integration, not prompt parsing).
 TASK='Run python3 test_calc.py, it fails. Fix the bug in calc.py so all assertions pass, then re-run to confirm. Only edit calc.py.'
 
 # The agents (codex especially) are non-deterministic, so give each up to 2
@@ -80,40 +119,40 @@ TASK='Run python3 test_calc.py, it fails. Fix the bug in calc.py so all assertio
 R_CLAUDE=FAIL
 for _try in 1 2; do
   seed_repo claude
-  ANTHROPIC_BASE_URL="$B" ANTHROPIC_API_KEY=not-needed \
-    timeout 260 claude -p "$TASK" --model "$ALIAS" --dangerously-skip-permissions >/dev/null 2>&1
+  TO 260 env ANTHROPIC_BASE_URL="$B" ANTHROPIC_API_KEY=not-needed \
+    claude -p "$TASK" --model "$ALIAS" --dangerously-skip-permissions >/dev/null 2>&1
   [ "$(verify claude)" = PASS ] && { R_CLAUDE=PASS; break; }
 done
 
 # ---- Codex (agents codex --setup writes ~/.codex/config.toml) ------------
-[ -f "$CODEX_CFG" ] && cp "$CODEX_CFG" "$CODEX_CFG.smokebak"
+save_cfg "$CODEX_CFG"
 "$RMLX" agents codex --setup >/dev/null 2>&1
 R_CODEX=FAIL
 for _try in 1 2; do
   seed_repo codex
-  timeout 260 codex exec "$TASK" --model "$ALIAS" \
+  TO 260 codex exec "$TASK" --model "$ALIAS" \
     --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check >/dev/null 2>&1
   [ "$(verify codex)" = PASS ] && { R_CODEX=PASS; break; }
 done
-[ -f "$CODEX_CFG.smokebak" ] && mv -f "$CODEX_CFG.smokebak" "$CODEX_CFG"
+restore_cfg "$CODEX_CFG"
 
 # ---- Hermes (agents hermes --setup; auto-writes context_length >= 64K) ----
-[ -f "$HERMES_CFG" ] && cp "$HERMES_CFG" "$HERMES_CFG.smokebak"
+save_cfg "$HERMES_CFG"
 "$RMLX" agents hermes --setup >/dev/null 2>&1
 R_HERMES=FAIL
 for _try in 1 2; do
   seed_repo hermes
-  timeout 300 hermes chat -q "$TASK" -Q -m "$ALIAS" >/dev/null 2>&1
+  TO 300 hermes chat -q "$TASK" -Q -m "$ALIAS" >/dev/null 2>&1
   [ "$(verify hermes)" = PASS ] && { R_HERMES=PASS; break; }
 done
-[ -f "$HERMES_CFG.smokebak" ] && mv -f "$HERMES_CFG.smokebak" "$HERMES_CFG"
+restore_cfg "$HERMES_CFG"
 
 # ---- Aider (env vars, LiteLLM openai/ prefix) ----------------------------
 R_AIDER=FAIL
 for _try in 1 2; do
   seed_repo aider
-  OPENAI_API_BASE="$B/v1" OPENAI_API_KEY=not-needed \
-    timeout 260 aider --model "openai/$ALIAS" --message "$TASK" \
+  TO 260 env OPENAI_API_BASE="$B/v1" OPENAI_API_KEY=not-needed \
+    aider --model "openai/$ALIAS" --message "$TASK" \
     --yes-always --no-auto-commits --no-show-model-warnings calc.py >/dev/null 2>&1
   [ "$(verify aider)" = PASS ] && { R_AIDER=PASS; break; }
 done
