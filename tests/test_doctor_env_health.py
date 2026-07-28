@@ -182,6 +182,34 @@ def test_missing_optional_package_marks_warning():
     assert "pip install" in audio_row.label  # hint preserved
 
 
+def test_unsupported_mlx_audio_version_marks_warning():
+    """A transitive mlx-audio outside Rapid-MLX's pin is not healthy."""
+
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.6" if dist == "mlx-audio" else None
+
+    with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
+        section = eh.section_optional_packages()
+
+    audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
+    assert audio_row.status is eh.CheckStatus.WARN
+    assert "0.4.6" in audio_row.label
+    assert "requires mlx-audio>=0.2.9,<0.4.4" in audio_row.label
+
+
+def test_supported_mlx_audio_version_marks_ok():
+    """A version inside the declared audio range remains healthy."""
+
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
+        section = eh.section_optional_packages()
+
+    audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
+    assert audio_row.status is eh.CheckStatus.OK
+
+
 # ---------------------------------------------------------------------------
 # Section: HuggingFace cache
 # ---------------------------------------------------------------------------

@@ -583,6 +583,23 @@ def section_optional_packages() -> Section:
     for dist, label, hint in OPTIONAL_PACKAGES:
         ver = _safe_version(dist)
         if ver:
+            # #1255: mlx-vlm can install mlx-audio transitively without
+            # respecting Rapid-MLX's supported audio range. Presence alone
+            # must not make doctor report that environment as healthy.
+            if dist == "mlx-audio" and not (
+                _version_at_least(ver, (0, 2, 9))
+                and not _version_at_least(ver, (0, 4, 4))
+            ):
+                s.add(
+                    f"{label} {ver} unsupported — rapid-mlx requires "
+                    f"mlx-audio>=0.2.9,<0.4.4 (`{hint}`)",
+                    CheckStatus.WARN,
+                    detail=(
+                        f"distribution={dist} version={ver} "
+                        f"supported=>=0.2.9,<0.4.4 hint={hint}"
+                    ),
+                )
+                continue
             # #1126: mlx-vlm imports Pillow (PIL) at load. A present
             # mlx-vlm with an absent PIL (Homebrew `pip install --no-deps
             # mlx-vlm`) is a FALSE positive — metadata says "installed" but
