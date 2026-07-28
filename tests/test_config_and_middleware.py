@@ -185,6 +185,50 @@ class TestVerifyApiKey:
         assert r.status_code == 401
         get_config().api_key = None
 
+    def test_non_ascii_key_is_rejected_as_401(self):
+        """Malformed header text must not escape compare_digest as a 500."""
+        import pytest
+        from fastapi import HTTPException
+
+        from vllm_mlx.config import get_config
+        from vllm_mlx.middleware.auth import _verify_api_key_values
+
+        cfg = get_config()
+        cfg.api_key = "test-secret"
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                _verify_api_key_values("tést-secret")
+            assert exc_info.value.status_code == 401
+        finally:
+            cfg.api_key = None
+
+    def test_all_provided_keys_are_compared(self, monkeypatch):
+        """A mismatch must not skip comparison of companion credentials."""
+        import pytest
+        from fastapi import HTTPException
+
+        from vllm_mlx.config import get_config
+        from vllm_mlx.middleware import auth
+
+        calls = []
+
+        def record_compare(provided, expected):
+            calls.append((provided, expected))
+            return provided == expected
+
+        monkeypatch.setattr(auth.secrets, "compare_digest", record_compare)
+        cfg = get_config()
+        cfg.api_key = "test-secret"
+        try:
+            with pytest.raises(HTTPException):
+                auth._verify_api_key_values("wrong", "test-secret")
+            assert calls == [
+                ("wrong", "test-secret"),
+                ("test-secret", "test-secret"),
+            ]
+        finally:
+            cfg.api_key = None
+
 
 # ======================================================================
 # check_rate_limit

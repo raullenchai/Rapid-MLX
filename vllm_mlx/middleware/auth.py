@@ -260,9 +260,18 @@ def _verify_api_key_values(*api_keys: str | None) -> bool:
     provided_keys = [api_key for api_key in api_keys if api_key]
     if not provided_keys:
         raise HTTPException(status_code=401, detail="API key required")
-    if not all(
-        secrets.compare_digest(api_key, cfg.api_key) for api_key in provided_keys
-    ):
+    valid = True
+    for api_key in provided_keys:
+        try:
+            matches = secrets.compare_digest(api_key, cfg.api_key)
+        except TypeError:
+            # compare_digest(str, str) rejects non-ASCII text. Treat malformed
+            # header values as invalid credentials instead of leaking a 500.
+            matches = False
+        # Do not short-circuit: every supplied credential gets the same
+        # comparison work even when an earlier companion header was invalid.
+        valid &= matches
+    if not valid:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
 
