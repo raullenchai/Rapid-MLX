@@ -20,6 +20,25 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _sdk_attr(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
+    """Read an mcp SDK model attribute across the SDK's camelCase→snake_case rename.
+
+    mcp 1.x exposed model fields in camelCase (``protocolVersion``,
+    ``inputSchema``, ``isError``); mcp 2.0 renamed the Python attributes to
+    snake_case (``protocol_version``, ``input_schema``, ``is_error``) and kept
+    camelCase only as a serialization alias. Reading the wrong name raises
+    ``AttributeError`` — which previously aborted the initialize handshake and
+    left every configured server with 0 tools (rapid-desktop#604), because the
+    dev/CI env pinned mcp 1.x while a fresh sidecar build resolved mcp 2.0.
+    Try snake_case first (mcp>=2.0), then camelCase (mcp<2.0), then ``default``.
+    """
+    sentinel = object()
+    value = getattr(obj, snake, sentinel)
+    if value is sentinel:
+        value = getattr(obj, camel, sentinel)
+    return default if value is sentinel else value
+
+
 class MCPClient:
     """
     Client for connecting to a single MCP server.
@@ -176,10 +195,11 @@ class MCPClient:
 
         # Initialize with capabilities
         result = await self._session.initialize()
+        server_info = _sdk_attr(result, "server_info", "serverInfo")
         logger.debug(
             f"MCP server '{self.name}' initialized: "
-            f"protocol={result.protocolVersion}, "
-            f"server={result.serverInfo.name if result.serverInfo else 'unknown'}"
+            f"protocol={_sdk_attr(result, 'protocol_version', 'protocolVersion')}, "
+            f"server={server_info.name if server_info else 'unknown'}"
         )
 
     async def _discover_tools(self):
@@ -196,9 +216,7 @@ class MCPClient:
                     server_name=self.name,
                     name=tool.name,
                     description=tool.description or "",
-                    input_schema=(
-                        tool.inputSchema if hasattr(tool, "inputSchema") else {}
-                    ),
+                    input_schema=_sdk_attr(tool, "input_schema", "inputSchema", {}),
                 )
                 self._tools.append(mcp_tool)
                 logger.debug(f"Discovered tool: {mcp_tool.full_name}")
@@ -282,7 +300,7 @@ class MCPClient:
             return MCPToolResult(
                 tool_name=tool_name,
                 content=content,
-                is_error=result.isError if hasattr(result, "isError") else False,
+                is_error=bool(_sdk_attr(result, "is_error", "isError", False)),
             )
 
         except asyncio.TimeoutError:
