@@ -813,14 +813,26 @@ def _emit_one_request(caller_agent=None):
     )
 
 
-def test_request_caller_agent_bucketed_never_raw(opted_in, stub_queue):
+def test_request_caller_agent_bucketed_never_raw(opted_in, stub_queue, monkeypatch):
     """The inbound UA is bucketed to the allowlist; the raw string (with its
     version + any custom tokens) never reaches the payload."""
+    from vllm_mlx.telemetry import emit
+
+    # Top-level UUIDs are unrelated to the caller-agent input and may
+    # coincidentally contain a short raw substring such as "abc".
+    monkeypatch.setattr(emit, "session_id", lambda: "dead-beef-9abc-cafe")
     _emit_one_request(caller_agent="Claude-Code/1.4.2 (buildX; secret-token=abc)")
     assert len(stub_queue) == 1
-    req = stub_queue[0]["request"]
+    payload = stub_queue[0]
+    req = payload["request"]
     assert req["caller_agent"] == "claude-code"
-    blob = repr(stub_queue[0])
+    assert "abc" in repr(payload)
+    leak_surface = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"client_id", "session_id"}
+    }
+    blob = repr(leak_surface)
     for raw in ("1.4.2", "buildX", "secret-token", "abc"):
         assert raw not in blob
 
