@@ -107,51 +107,57 @@ def anthropic_client(monkeypatch):
             getattr(module, attr, _MISSING) if module is not None else _MISSING
         )
 
-    _install_lightweight_engine_modules(monkeypatch)
+    reset_config = None
+    rate_limiter = None
+    try:
+        _install_lightweight_engine_modules(monkeypatch)
 
-    from vllm_mlx.config import reset_config
-    from vllm_mlx.middleware.auth import rate_limiter
-    from vllm_mlx.routes.anthropic import router
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.middleware.auth import rate_limiter
+        from vllm_mlx.routes.anthropic import router
 
-    cfg = reset_config()
-    cfg.api_key = "test-secret"
-    cfg.engine = _Engine()
-    cfg.model_name = "test-model"
-    cfg.model_registry = None
+        cfg = reset_config()
+        cfg.api_key = "test-secret"
+        cfg.engine = _Engine()
+        cfg.model_name = "test-model"
+        cfg.model_registry = None
 
-    rate_limiter.enabled = False
-    rate_limiter.requests_per_minute = 60
-    rate_limiter._requests.clear()
+        rate_limiter.enabled = False
+        rate_limiter.requests_per_minute = 60
+        rate_limiter._requests.clear()
 
-    app = FastAPI()
-    app.include_router(router)
-    yield SimpleNamespace(
-        client=TestClient(app),
-        engine=cfg.engine,
-        rate_limiter=rate_limiter,
-        reset_config=reset_config,
-    )
+        app = FastAPI()
+        app.include_router(router)
+        yield SimpleNamespace(
+            client=TestClient(app),
+            engine=cfg.engine,
+            rate_limiter=rate_limiter,
+            reset_config=reset_config,
+        )
+    finally:
+        try:
+            if reset_config is not None:
+                reset_config()
+            if rate_limiter is not None:
+                rate_limiter.enabled = False
+                rate_limiter.requests_per_minute = 60
+                rate_limiter._requests.clear()
+        finally:
+            for name, previous in previous_modules.items():
+                if previous is _MISSING:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
 
-    reset_config()
-    rate_limiter.enabled = False
-    rate_limiter.requests_per_minute = 60
-    rate_limiter._requests.clear()
-
-    for name, previous in previous_modules.items():
-        if previous is _MISSING:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous
-
-    for (module_name, attr), previous in previous_attrs.items():
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        if previous is _MISSING:
-            if hasattr(module, attr):
-                delattr(module, attr)
-        else:
-            setattr(module, attr, previous)
+            for (module_name, attr), previous in previous_attrs.items():
+                module = sys.modules.get(module_name)
+                if module is None:
+                    continue
+                if previous is _MISSING:
+                    if hasattr(module, attr):
+                        delattr(module, attr)
+                else:
+                    setattr(module, attr, previous)
 
 
 def _messages_payload() -> dict:

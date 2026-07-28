@@ -324,17 +324,19 @@ class TestHealthRoutes:
             self._restore_config(orig)
 
     @pytest.mark.parametrize(
-        ("method", "path"),
+        ("method", "path", "expected_status"),
         [
-            ("get", "/health"),
-            ("get", "/health/ready"),
-            ("post", "/v1/cache/clear"),
-            ("get", "/v1/status"),
-            ("get", "/v1/cache/stats"),
-            ("delete", "/v1/cache"),
+            ("get", "/health", 200),
+            ("get", "/health/ready", 200),
+            ("post", "/v1/cache/clear", 200),
+            ("get", "/v1/status", 200),
+            ("get", "/v1/cache/stats", 200),
+            ("delete", "/v1/cache", 200),
         ],
     )
-    def test_health_router_accepts_valid_api_key(self, method, path, mock_engine):
+    def test_health_router_accepts_valid_api_key(
+        self, method, path, expected_status, mock_engine
+    ):
         """Valid Bearer token preserves access to protected management routes.
 
         Destructive routes (``/v1/cache/clear``, ``/v1/cache`` DELETE) also
@@ -360,7 +362,9 @@ class TestHealthRoutes:
                 },
             )
 
-            assert r.status_code != 401
+            assert r.status_code == expected_status, (
+                f"{method.upper()} {path} returned {r.status_code}: {r.text}"
+            )
         finally:
             self._restore_config(orig)
 
