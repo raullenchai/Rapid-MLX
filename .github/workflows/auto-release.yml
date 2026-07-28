@@ -67,6 +67,13 @@ jobs:
             echo "⚠️  FORCED release requested by @$ACTOR → v$FORCE_VERSION"
             echo "    reason: ${REASON:-<none given>}"
             echo "⚠️  The Tier-1 agent gate will be BYPASSED for this release."
+            # workflow_dispatch lets the operator pick any ref; a production
+            # release must come from protected main, never a feature/stale
+            # branch that happens to carry the same version in pyproject.toml.
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "❌ Forced release must be dispatched on main (got $GITHUB_REF)" >&2
+              exit 1
+            fi
             VERSION="$FORCE_VERSION"
             # Even a forced release must match pyproject and have a fresh tag.
             PROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
