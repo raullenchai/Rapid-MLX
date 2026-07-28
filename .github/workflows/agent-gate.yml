@@ -1,0 +1,50 @@
+name: Tier-1 agent gate
+
+# Re-verifies the four Tier-1 (flagship) agents — Claude Code, Codex, Hermes,
+# Aider — end-to-end against a real local model on Apple Silicon. This is the
+# one release check GitHub-hosted runners structurally cannot do (no Metal, no
+# weights, no agent binaries), so it runs on a self-hosted Apple-Silicon runner
+# (the Studio). Mirrors how Apple's own MLX gates its Metal tests on
+# `[self-hosted, macos]`.
+#
+# Phase 1: manual (`workflow_dispatch`) only, so we can prove the runner + smoke
+# work before wiring it into the release path. Phase 2 will add this as a
+# `needs:` gate in auto-release.yml so a version bump cannot tag/publish unless
+# it passes.
+#
+# SECURITY: this targets a self-hosted runner, so it must NEVER be triggered by
+# `pull_request` (fork code must not touch self-hosted hardware). Keep the
+# triggers to `workflow_dispatch` and, later, `push`/release on the trusted
+# main branch only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model alias to verify against (>=8-bit; never 4-bit)"
+        default: "qwen3.6-35b-8bit"
+
+permissions:
+  contents: read
+
+concurrency:
+  # One agent-gate run at a time — it boots a large model and drives real
+  # agents; overlapping runs would contend for the Studio's RAM and port 8000.
+  group: tier1-agent-gate
+  cancel-in-progress: false
+
+jobs:
+  tier1-smoke:
+    runs-on: [self-hosted, macOS, rapidmlx-studio]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Tier-1 agent re-verification
+        env:
+          # The isolated audit venv on the Studio (python@3.12, pinned rapid-mlx).
+          # Phase 2 will (re)create this at the release version before the gate.
+          RAPID_MLX_VENV: /Users/raullenstudio/rapid-mlx-audit-venv
+          # Untrusted-ish input passed via env, never interpolated into the
+          # script line (matches the repo's auto-release.yml convention).
+          MODEL: ${{ inputs.model }}
+        run: bash tests/integrations/agent_smoke.sh "$MODEL"
