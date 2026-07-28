@@ -35,6 +35,23 @@ ruff format --check .
 
 Most tests run without a model. Tests in `tests/test_event_loop.py` require a running server.
 
+### Testing install-time patches
+
+An import-time monkeypatch can pass unit tests while never running in
+`rapid-mlx serve` if its installer is wired to the wrong module. For every
+install-time patch:
+
+- install it from a module on the real production load path;
+- add a subprocess test that imports that production module *before* importing
+  the patch's `is_installed` probe; and
+- assert the installer state and its marker on the patched upstream object.
+
+Use the existing `test_install_fires_on_real_serve_import_path` tests in
+`tests/test_deepseek_v32_indexer_gate.py` and
+`tests/test_qwen3_5_norm_shift.py` as the template. The subprocess is required:
+directly importing the patch in the pytest worker can install it as a side
+effect and mask a broken production wiring path.
+
 ## Pull Request Workflow
 
 1. Fork the repo and create a branch: `feat/`, `fix/`, `docs/`, `refactor/`
