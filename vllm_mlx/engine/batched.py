@@ -536,7 +536,9 @@ def _probe_mllm_cache_type(language_model: Any) -> str | None:
     we return None and let the runtime path surface the real error instead
     of masking it with a misleading hybrid-incompat message.
     """
-    from mlx_lm.models.cache import KVCache, RotatingKVCache, make_prompt_cache
+    from mlx_lm.models.cache import make_prompt_cache
+
+    from ..mllm_cache_compat import first_incompatible_mllm_cache_type
 
     try:
         test_cache = make_prompt_cache(language_model)
@@ -544,10 +546,7 @@ def _probe_mllm_cache_type(language_model: Any) -> str | None:
         return None
     if not test_cache:
         return None
-    sample = test_cache[0]
-    if isinstance(sample, (KVCache, RotatingKVCache)):
-        return None
-    return type(sample).__name__
+    return first_incompatible_mllm_cache_type(test_cache)
 
 
 _CHANNEL_TO_STRING = {

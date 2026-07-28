@@ -36,6 +36,7 @@ _mlx_compat.install()
 
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 
+from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
 from .vision_embedding_cache import VisionEmbeddingCache  # noqa: E402
 
@@ -1093,10 +1094,10 @@ class MLLMBatchGenerator:
         # KVCache.merge() creates a BatchKVCache with proper left-padding
         # alignment, so all requests share a single batched cache for
         # subsequent generation steps.
-        from mlx_lm.models.cache import KVCache, RotatingKVCache
-
-        sample_cache = per_request_caches[0][0]
-        if not isinstance(sample_cache, (KVCache, RotatingKVCache)):
+        incompatible_cache_type = first_incompatible_mllm_cache_type(
+            per_request_caches[0]
+        )
+        if incompatible_cache_type is not None:
             # Two distinct causes land here:
             #   1. Hybrid/linear-attention backbone (ArraysCache /
             #      MambaCache) — see GitHub #352. Should be caught at
@@ -1107,7 +1108,7 @@ class MLLMBatchGenerator:
             # quantization is NOT the cause.
             raise ValueError(
                 f"MLLM continuous batching requires KVCache or RotatingKVCache "
-                f"but got {type(sample_cache).__name__}. Either the language "
+                f"but got {incompatible_cache_type}. Either the language "
                 f"backbone is hybrid/linear-attention (drop --mllm or pick a "
                 f"non-hybrid VLM), or --kv-cache-quantization was enabled "
                 f"(disable it for multimodal models with continuous batching)."

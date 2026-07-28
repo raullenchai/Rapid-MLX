@@ -11,11 +11,14 @@ The user-facing contract:
 
 from __future__ import annotations
 
+import builtins
 from unittest.mock import MagicMock
 
+import pytest
 from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 from vllm_mlx.engine.batched import _probe_mllm_cache_type
+from vllm_mlx.mllm_cache_compat import first_incompatible_mllm_cache_type
 
 
 class _FakeArraysCache:
@@ -56,12 +59,51 @@ def test_probe_returns_none_for_rotating_kvcache():
     assert _probe_mllm_cache_type(model) is None
 
 
+@pytest.mark.parametrize("cache_name", ["KVCache", "RotatingKVCache"])
+def test_probe_accepts_mlx_vlm_native_cache_classes(monkeypatch, cache_name):
+    """mlx-vlm 0.6.4+ owns cache classes distinct from mlx-lm's classes.
+
+    The MLLM model returns those native caches from ``make_cache()``.  They
+    have the batching API Rapid-MLX needs, so rejecting them solely because
+    an ``isinstance`` check names mlx-lm's parallel class crashes every
+    affected VLM during startup (rapid-desktop #603).
+    """
+    from mlx_vlm.models import cache as vlm_cache
+
+    native_cache_class = type(cache_name, (), {})
+    monkeypatch.setattr(vlm_cache, cache_name, native_cache_class)
+
+    model = _model_with_cache(native_cache_class())
+    assert _probe_mllm_cache_type(model) is None
+
+
 def test_probe_returns_class_name_for_arrayscache():
     """Hybrid models (Qwen3.5/3.6/Nemotron) produce ArraysCache; probe
     must return the offending type name so the caller can quote it in
     the startup error."""
     model = _model_with_cache(_FakeArraysCache())
     assert _probe_mllm_cache_type(model) == "ArraysCache"
+
+
+def test_compatibility_check_inspects_every_cache_layer():
+    """A mixed backbone may put a supported KV layer before ArraysCache."""
+    assert (
+        first_incompatible_mllm_cache_type([KVCache(), _FakeArraysCache()])
+        == "ArraysCache"
+    )
+
+
+def test_compatibility_check_without_optional_mlx_vlm(monkeypatch):
+    """Text-only installs have mlx-lm but intentionally omit mlx-vlm."""
+    original_import = builtins.__import__
+
+    def import_without_mlx_vlm(name, *args, **kwargs):
+        if name == "mlx_vlm.models.cache":
+            raise ImportError("mlx-vlm is not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_mlx_vlm)
+    assert first_incompatible_mllm_cache_type([KVCache()]) is None
 
 
 def test_probe_returns_none_when_make_prompt_cache_raises():
