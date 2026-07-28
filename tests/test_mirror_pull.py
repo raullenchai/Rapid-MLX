@@ -3708,6 +3708,67 @@ def test_feature_detect_matches_real_hf_signature():
     assert _mirror._hf_supports_tqdm_class() is real
 
 
+def test_silent_class_mutes_hf_real_download_bar_construction():
+    """Against the REAL installed hf, prove both (a) the per-file download bar
+    this PR mutes is a genuine leak and (b) our injected class silences it.
+
+    Exercises hf's own bar-construction function — ``_create_progress_bar``,
+    which ``hf_hub_download`` reaches via ``http_get`` →
+    ``_get_progress_bar_context`` — with the call shape hf uses, differing only
+    in ``cls``:
+
+    * hf's default tqdm            → renders a real bar (``%|`` / ``B/s``),
+    * our ``_silent_hf_tqdm_class()`` → emits nothing.
+
+    Hermetic (no network) and — unlike a "capture a real download's stderr"
+    test — not defeated by a fast sub-interval transfer or by non-TTY
+    auto-disable (both of which mask the difference). This is the direct,
+    non-mocked evidence that the injected class works with the installed hf, and
+    that ``hf_hub_download`` honors ``tqdm_class`` for its per-file bar. If hf
+    relocates these internals in a future release the test skips (the mechanism
+    is also covered by the unit-level forwarding/omit tests) rather than
+    falsely failing.
+    """
+    import logging
+
+    hf_tqdm_utils = pytest.importorskip("huggingface_hub.utils.tqdm")
+    create = getattr(hf_tqdm_utils, "_create_progress_bar", None)
+    hf_tqdm = getattr(hf_tqdm_utils, "tqdm", None)
+    if create is None or hf_tqdm is None:
+        pytest.skip("hf progress-bar internals moved; mechanism covered elsewhere")
+
+    class _FakeTTY(io.StringIO):
+        def isatty(self):  # tqdm renders only when it believes it's a terminal
+            return True
+
+    def _render(cls):
+        buf = _FakeTTY()
+        bar = create(
+            cls=cls,
+            log_level=logging.WARNING,
+            name="huggingface_hub.http_get",
+            unit="B",
+            unit_scale=True,
+            total=17_000_000,
+            initial=0,
+            desc="pytorch_model.bin",
+            file=buf,
+        )
+        for _ in range(4):
+            bar.update(4_250_000)
+            bar.refresh()
+        bar.close()
+        return buf.getvalue()
+
+    default_out = _render(hf_tqdm)
+    silent_out = _render(_mirror._silent_hf_tqdm_class())
+
+    # The leak is real: hf's default renders a per-file progress bar.
+    assert "%|" in default_out or "B/s" in default_out
+    # Our injected class suppresses it entirely.
+    assert silent_out == ""
+
+
 def test_hf_fallback_one_forwards_tqdm_class_when_supported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
