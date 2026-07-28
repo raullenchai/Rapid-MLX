@@ -11,32 +11,83 @@ name: Auto-release on version bump
 # green against the exact source being released. Mirrors Apple MLX's
 # ``publish needs: test_wheel``.
 #
-# Without this, the pipeline stalls between "version committed to main" and
-# "Release published" — a manual step that gets forgotten and leaves users with
-# stale ``rapid-mlx models`` output for days; and a silently-broken agent
-# integration would ship instead of blocking.
+# EMERGENCY OVERRIDE: if the Studio runner is down and a release can't wait, a
+# maintainer can run this workflow manually (``workflow_dispatch``) with
+# ``force_version`` set — that BYPASSES the gate and releases anyway. It is
+# audited (actor + reason are logged and stamped into the release notes). See
+# RELEASE.md § "Studio down / emergency release".
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_version:
+        description: "EMERGENCY only: release this exact version WITHOUT the Tier-1 gate (use when the Studio runner is down). Must equal pyproject.toml. Leave blank otherwise."
+        required: false
+        default: ""
+      reason:
+        description: "Why the gate is being bypassed (recorded in the release notes for audit)."
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 jobs:
   # 1) Cheap detection on a hosted runner: is this a version bump we should
-  #    release? Exposes should_release + version for the downstream jobs.
+  #    release? Exposes should_release + version + force for downstream jobs.
   detect:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.detect.outputs.should_release }}
       version: ${{ steps.detect.outputs.version }}
+      force: ${{ steps.detect.outputs.force }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
-      - name: Detect version bump
+      - name: Detect version bump (or forced release)
         id: detect
+        env:
+          # Pass untrusted-ish dispatch inputs via env, never ``${{ }}`` into the
+          # run block.
+          EVENT: ${{ github.event_name }}
+          FORCE_VERSION: ${{ github.event.inputs.force_version }}
+          REASON: ${{ github.event.inputs.reason }}
+          ACTOR: ${{ github.actor }}
         run: |
+          # --- Emergency manual override (Studio down) ---------------------
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            if [ -z "$FORCE_VERSION" ]; then
+              echo "workflow_dispatch with no force_version — nothing to do."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "force=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "⚠️  FORCED release requested by @$ACTOR → v$FORCE_VERSION"
+            echo "    reason: ${REASON:-<none given>}"
+            echo "⚠️  The Tier-1 agent gate will be BYPASSED for this release."
+            VERSION="$FORCE_VERSION"
+            # Even a forced release must match pyproject and have a fresh tag.
+            PROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
+            if [ "$PROJECT_VER" != "$VERSION" ]; then
+              echo "❌ force_version $VERSION != pyproject.toml $PROJECT_VER" >&2
+              exit 1
+            fi
+            if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q "v$VERSION"; then
+              echo "Tag v$VERSION already exists — nothing to do (idempotent)"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "force=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "force=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # --- Normal push path -------------------------------------------
+          echo "force=false" >> "$GITHUB_OUTPUT"
           SUBJECT=$(git log -1 --pretty=%s)
           echo "subject: $SUBJECT"
 
@@ -73,13 +124,14 @@ jobs:
   #    this is the one release check CI can't do elsewhere. Builds the EXACT
   #    source being released into a fresh venv (it isn't on PyPI yet) and
   #    re-verifies the four Tier-1 agents end-to-end. A failure here blocks the
-  #    release job below.
+  #    release job below. Skipped for an emergency forced release.
   #
   #    SECURITY: this self-hosted job runs only on push to the protected main
-  #    branch (never on pull_request), so fork code cannot reach the runner.
+  #    branch / maintainer workflow_dispatch, never on pull_request, so fork
+  #    code cannot reach the runner.
   tier1-agent-gate:
     needs: detect
-    if: needs.detect.outputs.should_release == 'true'
+    if: needs.detect.outputs.should_release == 'true' && needs.detect.outputs.force != 'true'
     runs-on: [self-hosted, macOS, rapidmlx-studio]
     timeout-minutes: 55
     # Serialize with the manual agent-gate.yml so two runs never contend for the
@@ -113,12 +165,17 @@ jobs:
           RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
           rm -rf "$V"
 
-  # 3) Tag + GitHub Release, only if the gate passed. ``needs`` includes the
-  #    gate, so a gate failure (or skip) blocks this job. publish.yml fires on
+  # 3) Tag + GitHub Release. Runs when the gate passed OR this is a forced
+  #    (gate-bypassed) release. ``!cancelled()`` lets the ``if`` evaluate even
+  #    though the gate job is skipped on a forced release. publish.yml fires on
   #    the resulting ``release: published`` event.
   release:
     needs: [detect, tier1-agent-gate]
-    if: needs.detect.outputs.should_release == 'true'
+    if: >-
+      !cancelled()
+      && needs.detect.result == 'success'
+      && needs.detect.outputs.should_release == 'true'
+      && (needs.detect.outputs.force == 'true' || needs.tier1-agent-gate.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -134,6 +191,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.detect.outputs.version }}
+          FORCE: ${{ needs.detect.outputs.force }}
+          ACTOR: ${{ github.actor }}
+          REASON: ${{ github.event.inputs.reason }}
         run: |
           # Find the last release tag to enumerate merged PRs since then.
           PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
@@ -175,6 +235,11 @@ jobs:
             echo 'body<<__EOF__'
             echo "## What's new in v$VERSION"
             echo
+            if [ "$FORCE" = "true" ]; then
+              echo "> ⚠️ **Emergency release** — the Tier-1 agent gate was bypassed"
+              echo "> (forced by @$ACTOR). Reason: ${REASON:-<none given>}."
+              echo
+            fi
             if [ -n "$COMMITS" ]; then
               echo "$COMMITS"
             else
