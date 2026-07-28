@@ -3,6 +3,7 @@
 
 import time
 
+import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -187,7 +188,7 @@ class TestVerifyApiKey:
 
     def test_non_ascii_key_is_rejected_as_401(self):
         """Malformed header text must not escape compare_digest as a 500."""
-        import pytest
+        pytest.importorskip("mlx")
         from fastapi import HTTPException
 
         from vllm_mlx.config import get_config
@@ -204,7 +205,7 @@ class TestVerifyApiKey:
 
     def test_all_provided_keys_are_compared(self, monkeypatch):
         """A mismatch must not skip comparison of companion credentials."""
-        import pytest
+        pytest.importorskip("mlx")
         from fastapi import HTTPException
 
         from vllm_mlx.config import get_config
