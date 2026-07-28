@@ -1,82 +1,142 @@
 name: Auto-release on version bump
 
 # When a commit lands on main with subject ``chore: bump version to X.Y.Z``,
-# automatically tag ``vX.Y.Z`` and publish a GitHub Release. The existing
-# ``publish.yml`` then publishes to PyPI on the ``release:
-# published`` event.
+# tag ``vX.Y.Z`` and publish a GitHub Release — BUT only after the Tier-1 agent
+# gate passes on the self-hosted Apple-Silicon runner (the Studio). The existing
+# ``publish.yml`` then publishes to PyPI on the ``release: published`` event.
 #
-# Without this, the release pipeline stalls between "version committed
-# to main" and "Release published" — a manual step that gets forgotten
-# and leaves users with stale ``rapid-mlx models`` output for days.
+# Flow:  detect (hosted)  →  tier1-agent-gate (self-hosted Studio)  →  release
+# The release job ``needs`` the gate, so a version bump cannot tag or publish
+# unless the four Tier-1 agents (Claude Code / Codex / Hermes / Aider) re-verify
+# green against the exact source being released. Mirrors Apple MLX's
+# ``publish needs: test_wheel``.
+#
+# Without this, the pipeline stalls between "version committed to main" and
+# "Release published" — a manual step that gets forgotten and leaves users with
+# stale ``rapid-mlx models`` output for days; and a silently-broken agent
+# integration would ship instead of blocking.
 
 on:
   push:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  detect-and-release:
+  # 1) Cheap detection on a hosted runner: is this a version bump we should
+  #    release? Exposes should_release + version for the downstream jobs.
+  detect:
     runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.detect.outputs.should_release }}
+      version: ${{ steps.detect.outputs.version }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-        with:
-          # Release notes and contributor recognition need the complete range
-          # from the previous tag, not only the version-bump commit.
-          fetch-depth: 0
 
-      - name: Parse commit subject
-        id: parse
+      - name: Detect version bump
+        id: detect
         run: |
           SUBJECT=$(git log -1 --pretty=%s)
           echo "subject: $SUBJECT"
 
-          # Strict format: ``chore: bump version to X.Y.Z``, optionally
-          # followed by GitHub's squash-merge suffix `` (#N)``. v0.7.26
-          # slipped because the strict ``$`` anchor rejected the suffix.
-          if echo "$SUBJECT" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
-            VERSION=$(echo "$SUBJECT" | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/')
-            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "Detected version bump → v$VERSION"
-          else
+          # Strict format: ``chore: bump version to X.Y.Z``, optionally followed
+          # by GitHub's squash-merge suffix `` (#N)``.
+          if ! echo "$SUBJECT" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "Not a version bump — skipping"
-          fi
-
-      - name: Verify pyproject.toml matches
-        if: steps.parse.outputs.should_release == 'true'
-        run: |
-          PROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
-          PARSED_VER="${{ steps.parse.outputs.version }}"
-          if [ "$PROJECT_VER" != "$PARSED_VER" ]; then
-            echo "❌ Commit subject says $PARSED_VER but pyproject.toml has $PROJECT_VER" >&2
-            exit 1
-          fi
-          echo "✓ pyproject.toml ($PROJECT_VER) matches commit subject"
-
-      - name: Check tag does not already exist
-        if: steps.parse.outputs.should_release == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="v${{ steps.parse.outputs.version }}"
-          if git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; then
-            echo "Tag $TAG already exists — nothing to do (idempotent)"
+            echo "Not a version bump — skipping (gate + release will not run)"
             exit 0
           fi
-          echo "tag $TAG is new"
+          VERSION=$(echo "$SUBJECT" | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/')
+
+          # pyproject.toml must match the subject — a mismatch is a hard error,
+          # not a silent skip.
+          PROJECT_VER=$(grep -m1 '^version *=' pyproject.toml | awk -F'"' '{print $2}')
+          if [ "$PROJECT_VER" != "$VERSION" ]; then
+            echo "❌ Commit subject says $VERSION but pyproject.toml has $PROJECT_VER" >&2
+            exit 1
+          fi
+
+          # Idempotency: if the tag already exists there is nothing to do.
+          if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q "v$VERSION"; then
+            echo "Tag v$VERSION already exists — skipping (idempotent)"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "✓ Detected version bump → v$VERSION (pyproject matches, tag is new)"
+
+  # 2) The gate. Runs on the self-hosted Apple-Silicon runner (the Studio) —
+  #    GitHub-hosted runners have no Metal, no weights, no agent binaries, so
+  #    this is the one release check CI can't do elsewhere. Builds the EXACT
+  #    source being released into a fresh venv (it isn't on PyPI yet) and
+  #    re-verifies the four Tier-1 agents end-to-end. A failure here blocks the
+  #    release job below.
+  #
+  #    SECURITY: this self-hosted job runs only on push to the protected main
+  #    branch (never on pull_request), so fork code cannot reach the runner.
+  tier1-agent-gate:
+    needs: detect
+    if: needs.detect.outputs.should_release == 'true'
+    runs-on: [self-hosted, macOS, rapidmlx-studio]
+    timeout-minutes: 55
+    # Serialize with the manual agent-gate.yml so two runs never contend for the
+    # single runner / the serve port.
+    concurrency:
+      group: tier1-agent-gate
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Re-verify Tier-1 agents against the release source
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          # Dedicated port so we never collide with (or have to kill) another
+          # rapid-mlx serve on the shared Studio; the smoke repoints agent
+          # configs at it via patch_port.
+          RAPID_MLX_PORT: "8188"
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+          # The version being released is not on PyPI yet (publish.yml runs after
+          # the tag), so build it from the checked-out source into a fresh venv.
+          V="$RUNNER_TEMP/gate-venv-$VERSION"
+          rm -rf "$V"
+          /opt/homebrew/opt/python@3.12/bin/python3.12 -m venv "$V"
+          "$V/bin/pip" install -q --upgrade pip
+          "$V/bin/pip" install -q .
+          echo "gate venv → $("$V/bin/rapid-mlx" --version) (releasing v$VERSION)"
+
+          RAPID_MLX_VENV="$V" bash tests/integrations/agent_smoke.sh qwen3.6-35b-8bit
+          rm -rf "$V"
+
+  # 3) Tag + GitHub Release, only if the gate passed. ``needs`` includes the
+  #    gate, so a gate failure (or skip) blocks this job. publish.yml fires on
+  #    the resulting ``release: published`` event.
+  release:
+    needs: [detect, tier1-agent-gate]
+    if: needs.detect.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # Release notes and contributor recognition need the full range from
+          # the previous tag, not only the version-bump commit.
+          fetch-depth: 0
 
       - name: Build CHANGELOG body
-        if: steps.parse.outputs.should_release == 'true'
         id: changelog
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
         run: |
           # Find the last release tag to enumerate merged PRs since then.
           PREV_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
-          VERSION="${{ steps.parse.outputs.version }}"
 
           if [ -n "$PREV_TAG" ]; then
             echo "Generating notes since $PREV_TAG"
@@ -86,8 +146,6 @@ jobs:
           fi
 
           # Credit every merged PR author other than the repository owner.
-          # Squash commits end in ``(#123)``; merge commits use the standard
-          # ``Merge pull request #123`` subject.
           OWNER="${GITHUB_REPOSITORY%%/*}"
           PR_NUMBERS=$(
             {
@@ -134,20 +192,19 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create tag and release
-        if: steps.parse.outputs.should_release == 'true'
         env:
           # Use a user PAT (RELEASE_PAT) so the resulting ``release: published``
           # event fires downstream workflows. Releases created with the default
           # ``GITHUB_TOKEN`` are suppressed by GitHub's anti-loop guard, leaving
-          # ``publish.yml`` un-triggered and the version stranded between tag
-          # and PyPI/Homebrew. Falls back to ``GITHUB_TOKEN`` if the secret is
-          # absent so forks don't break — the release just won't auto-publish.
+          # ``publish.yml`` un-triggered and the version stranded between tag and
+          # PyPI/Homebrew. Falls back to ``GITHUB_TOKEN`` if the secret is absent
+          # so forks don't break — the release just won't auto-publish.
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           # Pass untrusted strings (commit subjects from git log) via env, never
           # via ``${{ }}`` interpolation into a ``run:`` block — otherwise a
-          # commit subject containing ``$(...)`` would execute on the runner
-          # with ``contents: write``.
-          TAG: v${{ steps.parse.outputs.version }}
+          # commit subject containing ``$(...)`` would execute on the runner with
+          # ``contents: write``.
+          TAG: v${{ needs.detect.outputs.version }}
           NOTES: ${{ steps.changelog.outputs.body }}
           TARGET_SHA: ${{ github.sha }}
         run: |
@@ -157,8 +214,8 @@ jobs:
             exit 0
           fi
 
-          # ``--notes-file -`` reads from stdin so the body is never expanded
-          # by the shell, even if it contains backticks or ``$(...)``.
+          # ``--notes-file -`` reads from stdin so the body is never expanded by
+          # the shell, even if it contains backticks or ``$(...)``.
           printf '%s' "$NOTES" | gh release create "$TAG" \
             --title "$TAG" \
             --notes-file - \
