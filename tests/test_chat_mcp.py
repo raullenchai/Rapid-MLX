@@ -24,15 +24,19 @@ from vllm_mlx.mcp.types import MCPServerConfig, MCPTransport
 
 
 class _FakeResult:
-    def __init__(self, name: str, arguments: dict):
+    def __init__(self, name: str, arguments: dict, *, snake_case: bool = False):
         self.name = name
         self.arguments = arguments
-        self.isError = bool(arguments.get("is_error"))
+        is_error = bool(arguments.get("is_error"))
+        if snake_case:
+            self.is_error = is_error
+        else:
+            self.isError = is_error
 
     def model_dump(self, **_kwargs):
         return {
             "content": [{"type": "text", "text": f"{self.name}:{self.arguments}"}],
-            "isError": self.isError,
+            "isError": bool(getattr(self, "is_error", getattr(self, "isError", False))),
         }
 
 
@@ -51,6 +55,7 @@ class _FakeSessionGroup:
     max_active_calls = 0
     active_calls_by_server: dict[str, int] = {}
     max_active_calls_by_server: dict[str, int] = {}
+    snake_case_fields = False
 
     def __init__(self, component_name_hook):
         self._name_hook = component_name_hook
@@ -89,10 +94,11 @@ class _FakeSessionGroup:
             if tool_name == "lookup"
             else {"type": "object"}
         )
+        schema_field = "input_schema" if self.snake_case_fields else "inputSchema"
         self.tools[full_name] = SimpleNamespace(
             name=tool_name,
             description=f"{label} tool",
-            inputSchema=schema,
+            **{schema_field: schema},
         )
 
     async def call_tool(self, name, arguments):
@@ -121,7 +127,11 @@ class _FakeSessionGroup:
                     self.call_cancelled.set()
             if arguments.get("raise"):
                 raise RuntimeError("tool exploded")
-            return _FakeResult(name, arguments)
+            return _FakeResult(
+                name,
+                arguments,
+                snake_case=self.snake_case_fields,
+            )
         finally:
             type(self).active_calls -= 1
             type(self).active_calls_by_server[server_name] -= 1
@@ -141,6 +151,7 @@ def _fake_sdk_group(monkeypatch):
     _FakeSessionGroup.max_active_calls = 0
     _FakeSessionGroup.active_calls_by_server = {}
     _FakeSessionGroup.max_active_calls_by_server = {}
+    _FakeSessionGroup.snake_case_fields = False
     monkeypatch.setattr(
         mcp.client.session_group,
         "ClientSessionGroup",
@@ -206,6 +217,34 @@ def test_runtime_uses_sdk_groups_for_multiple_servers(tmp_path):
     runtime.close()  # idempotent
     with pytest.raises(RuntimeError, match="closed"):
         runtime.execute_tool_calls([])
+
+
+def test_runtime_accepts_mcp2_snake_case_tool_models(tmp_path):
+    _FakeSessionGroup.snake_case_fields = True
+    path = _write_config(
+        tmp_path,
+        {"alpha": {"command": "python3", "args": ["alpha", "lookup"]}},
+    )
+    events: list[ChatToolEvent] = []
+    runtime = ChatMCPRuntime(str(path))
+    try:
+        assert runtime.tools[0]["function"]["parameters"]["required"] == ["value"]
+        runtime.execute_tool_calls(
+            [
+                {
+                    "id": "call-a",
+                    "function": {
+                        "name": "alpha__lookup",
+                        "arguments": '{"value":"A","is_error":true}',
+                    },
+                }
+            ],
+            on_event=events.append,
+        )
+    finally:
+        runtime.close()
+
+    assert events[-1].is_error is True
 
 
 def test_runtime_parallelizes_servers_but_serializes_each_server(tmp_path):

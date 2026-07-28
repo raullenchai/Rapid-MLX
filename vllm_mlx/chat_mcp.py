@@ -27,6 +27,7 @@ from typing import Any, Literal
 from anyio.abc import TaskStatus
 from anyio.from_thread import start_blocking_portal
 
+from .mcp.client import _sdk_attr
 from .mcp.config import load_mcp_config
 from .mcp.executor import validate_tool_arguments
 from .mcp.security import ToolSandbox
@@ -336,7 +337,10 @@ class ChatMCPRuntime:
                             server_name=server.name,
                             name=sdk_tool.name,
                             description=sdk_tool.description or "",
-                            input_schema=sdk_tool.inputSchema or {},
+                            input_schema=_sdk_attr(
+                                sdk_tool, "input_schema", "inputSchema", {}
+                            )
+                            or {},
                         )
 
             self.tools = mcp_tools_to_openai(list(self._tools_by_name.values()))
@@ -451,7 +455,7 @@ class ChatMCPRuntime:
                 result.model_dump(mode="json", by_alias=True, exclude_none=True),
                 ensure_ascii=False,
             )
-            is_error = bool(getattr(result, "isError", False))
+            is_error = bool(_sdk_attr(result, "is_error", "isError", False))
             self._sandbox.record_execution(
                 tool.name,
                 tool.server_name,
