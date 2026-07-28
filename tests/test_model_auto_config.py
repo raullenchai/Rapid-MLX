@@ -928,6 +928,13 @@ class TestVisibility:
         assert "unknown family" in line
         assert "brand-new-model" in line
 
+    def test_unknown_summary_shows_explicit_runtime_spec_decode(self):
+        line = format_profile_summary(
+            "brand-new-model", None, runtime_spec_decode="mtp"
+        )
+        assert "unknown family" in line
+        assert "spec decode MTP (explicit)" in line
+
     # --- Level 2 / Level 3: ASCII table ---
 
     def test_table_renders_aligned(self):

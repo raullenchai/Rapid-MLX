@@ -2113,13 +2113,14 @@ def format_profile_summary(
     Empty/no-match models return a generic line so the log is consistent
     across known and unknown models.
     """
-    if cfg is None:
-        return f"Model profile: {model_path} (unknown family — using defaults)"
     runtime_status = (
         f"spec decode {runtime_spec_decode.upper()} (explicit)"
         if runtime_spec_decode
         else None
     )
+    if cfg is None:
+        summary = f"Model profile: {model_path} (unknown family — using defaults)"
+        return f"{summary}, {runtime_status}" if runtime_status else summary
     parts = [_arch_label(cfg)]
     parts.append(f"throttle {'ON' if cfg.is_hybrid else 'OFF'}")
     parts.append(
