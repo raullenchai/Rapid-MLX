@@ -2478,7 +2478,7 @@ class MemoryAwarePrefixCache:
                 if elapsed > 0:
                     total_bytes_written += entry.memory_bytes
                     total_write_seconds += elapsed
-                logger.info(
+                logger.debug(
                     f"[cache_persist] saved entry {i}: "
                     f"{len(tokens_key)} tokens, "
                     f"{entry.memory_bytes / _BYTES_PER_MB:.1f}MB KV, "
@@ -3339,7 +3339,7 @@ class MemoryAwarePrefixCache:
                 staged_memory += memory
                 loaded += 1
 
-                logger.info(
+                logger.debug(
                     f"[cache_persist] staged entry {i}: "
                     f"{len(tokens)} tokens, "
                     f"{memory / _BYTES_PER_MB:.1f}MB KV"

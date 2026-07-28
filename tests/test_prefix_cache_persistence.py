@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import array
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -118,6 +119,27 @@ def test_clean_roundtrip_save_then_load(tmp_path):
     # Must hold for any well-formed entry: KV state is exactly as long
     # as the token sequence it claims to represent.
     assert entry.cache[0].offset == len(entry.tokens)
+
+
+def test_persistence_logs_entries_at_debug_and_summaries_at_info(tmp_path, caplog):
+    """Large persisted caches should produce two INFO summaries, not one
+    INFO line per entry; verbose entry details remain available at DEBUG."""
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+
+    with caplog.at_level(logging.DEBUG, logger="vllm_mlx.memory_cache"):
+        assert cache.save_to_disk(str(tmp_path)) is True
+        assert fresh_cache().load_from_disk(str(tmp_path)) == 1
+
+    info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+    debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+
+    assert any("SAVED 1/1 entries" in message for message in info)
+    assert any("LOADED 1 entries" in message for message in info)
+    assert not any("saved entry 0" in message for message in info)
+    assert not any("staged entry 0" in message for message in info)
+    assert any("saved entry 0" in message for message in debug)
+    assert any("staged entry 0" in message for message in debug)
 
 
 # --------------------------------------------------------------------------
