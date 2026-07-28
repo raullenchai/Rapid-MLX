@@ -36,7 +36,11 @@ concurrency:
 jobs:
   tier1-smoke:
     runs-on: [self-hosted, macOS, rapidmlx-studio]
-    timeout-minutes: 40
+    # Headroom above the script's own worst case (~42 min if every agent hits
+    # every per-command timeout) so the smoke exits on its own, prints its
+    # summary, and runs cleanup — instead of GitHub cancelling mid-run. A
+    # passing run finishes in ~5-8 min; the tail only matters on regressions.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Tier-1 agent re-verification
