@@ -2102,7 +2102,12 @@ def _kv_share_label(model_path: str, cfg: "ModelConfig") -> str:
     return "yes (default)" if _resolve_family(model_path, cfg) == "gemma4" else "no"
 
 
-def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
+def format_profile_summary(
+    model_path: str,
+    cfg: "ModelConfig | None",
+    *,
+    runtime_spec_decode: str | None = None,
+) -> str:
     """Single-line profile summary for startup logs (Level 1).
 
     Empty/no-match models return a generic line so the log is consistent
@@ -2110,9 +2115,17 @@ def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
     """
     if cfg is None:
         return f"Model profile: {model_path} (unknown family — using defaults)"
+    runtime_status = (
+        f"spec decode {runtime_spec_decode.upper()} (explicit)"
+        if runtime_spec_decode
+        else None
+    )
     parts = [_arch_label(cfg)]
     parts.append(f"throttle {'ON' if cfg.is_hybrid else 'OFF'}")
-    parts.append(f"spec decode {'OFF' if not cfg.supports_spec_decode else 'OK'}")
+    parts.append(
+        runtime_status
+        or f"spec decode {'OFF' if not cfg.supports_spec_decode else 'OK'}"
+    )
     if cfg.tool_call_parser:
         parts.append(f"tool={cfg.tool_call_parser}")
     if cfg.reasoning_parser:

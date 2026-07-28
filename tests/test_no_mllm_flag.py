@@ -2766,6 +2766,25 @@ def test_engine_core_no_override_leaves_model_config_unchanged(monkeypatch):
     assert core.model_config.supports_spec_decode is False
 
 
+def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
+    """Runtime MTP selection must override the static profile label."""
+    try:
+        from vllm_mlx.engine_core import EngineConfig
+        from vllm_mlx.scheduler import SchedulerConfig
+    except RuntimeError as exc:
+        pytest.skip(f"MLX runtime unavailable ({exc})")
+
+    cfg = EngineConfig(
+        model_name="fake/model",
+        scheduler_config=SchedulerConfig(spec_decode="mtp"),
+    )
+    with caplog.at_level("INFO", logger="vllm_mlx.engine_core"):
+        _make_engine_core_for_override_test(monkeypatch, cfg)
+
+    assert "spec decode MTP (explicit)" in caplog.text
+    assert "spec decode OFF" not in caplog.text
+
+
 def _engine_core_mutex_cases() -> list[dict[str, bool]]:
     """Build mutex-conflict parametrize cases from the registry. For
     every pair with ``model_config_field`` not None, generate one

@@ -300,7 +300,16 @@ class EngineCore:
         # Level 2 — verbose ASCII capability table when explicitly requested
         # via env var ``RAPID_MLX_PROFILE_VERBOSE=1`` (or set on EngineConfig).
         display_path = model_path or "(unknown)"
-        logger.info(format_profile_summary(display_path, self.model_config))
+        runtime_spec_decode = getattr(scheduler_config, "spec_decode", "none")
+        logger.info(
+            format_profile_summary(
+                display_path,
+                self.model_config,
+                runtime_spec_decode=(
+                    runtime_spec_decode if runtime_spec_decode != "none" else None
+                ),
+            )
+        )
         if os.environ.get("RAPID_MLX_PROFILE_VERBOSE") == "1" or getattr(
             self.config, "verbose_profile", False
         ):
