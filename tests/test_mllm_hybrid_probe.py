@@ -96,14 +96,18 @@ def test_compatibility_check_inspects_every_cache_layer():
 def test_compatibility_check_without_optional_mlx_vlm(monkeypatch):
     """Text-only installs have mlx-lm but intentionally omit mlx-vlm."""
     original_import = builtins.__import__
+    blocked = False
 
-    def import_without_mlx_vlm(name, *args, **kwargs):
-        if name == "mlx_vlm.models.cache":
+    def import_without_mlx_vlm(name, globals=None, locals=None, fromlist=(), level=0):
+        nonlocal blocked
+        if name == "mlx_vlm.models" and "cache" in fromlist:
+            blocked = True
             raise ImportError("mlx-vlm is not installed")
-        return original_import(name, *args, **kwargs)
+        return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", import_without_mlx_vlm)
     assert first_incompatible_mllm_cache_type([KVCache()]) is None
+    assert blocked is True
 
 
 def test_probe_returns_none_when_make_prompt_cache_raises():
