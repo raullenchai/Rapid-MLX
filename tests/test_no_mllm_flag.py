@@ -2771,7 +2771,7 @@ def test_engine_core_profile_log_shows_explicit_mtp(monkeypatch, caplog):
     try:
         from vllm_mlx.engine_core import EngineConfig
         from vllm_mlx.scheduler import SchedulerConfig
-    except RuntimeError as exc:
+    except (ImportError, RuntimeError) as exc:
         pytest.skip(f"MLX runtime unavailable ({exc})")
 
     cfg = EngineConfig(
