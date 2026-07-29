@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Audio endpoints (STT/TTS)."""
 
+import asyncio
 import logging
 import os
 import re
 import tempfile
+import threading
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import PlainTextResponse, Response
@@ -989,6 +991,49 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
+#: Serialises the forced-alignment engine cache + ``align`` call. The
+#: alignment body runs on a worker thread (see
+#: :func:`_run_alignment_request`), so two concurrent requests could
+#: otherwise race the ``_stt_engine`` global and load the aligner's
+#: weights twice. A plain ``threading.Lock`` (not ``asyncio.Lock``) is
+#: required because the critical section executes off the event loop.
+_alignment_lock = threading.Lock()
+
+
+def _align_blocking(
+    model_name: str,
+    audio_path: str,
+    text: str,
+    language: str | None,
+):
+    """Blocking half of the forced-alignment request — runs on a thread.
+
+    Loads (or reuses) the aligner engine and runs
+    :meth:`STTEngine.align`. Split out of :func:`_run_alignment_request`
+    so the async handler can hand the seconds-long weight load + align
+    to :func:`asyncio.to_thread` instead of stalling the event loop.
+
+    Holds :data:`_alignment_lock` across the cache check AND the align
+    call so concurrent alignment requests don't double-load weights or
+    swap the shared engine out from under each other mid-align.
+    """
+    global _stt_engine
+
+    from ..audio.stt import STTEngine
+
+    # STTEngine.align defaults language to "Chinese"; only forward an
+    # explicit caller value so the engine default stands otherwise.
+    align_kwargs = {}
+    if language:
+        align_kwargs["language"] = language
+
+    with _alignment_lock:
+        if _stt_engine is None or _stt_engine.model_name != model_name:
+            _stt_engine = STTEngine(model_name)
+            _stt_engine.load()
+        return _stt_engine.align(audio_path, text, **align_kwargs)
+
+
 async def _run_alignment_request(
     file: UploadFile,
     model: str,
@@ -1010,8 +1055,6 @@ async def _run_alignment_request(
     ``srt`` / ``vtt`` all work — the aligner emits exactly the
     ``{text, start, end}`` segment shape those formatters consume.
     """
-    global _stt_engine
-
     # Resolve the aligner model up front (404 for unknown aliases) BEFORE
     # draining the upload — same fail-fast ordering as the ASR path.
     model_name = _resolve_stt_model(model)
@@ -1022,18 +1065,13 @@ async def _run_alignment_request(
             tmp_path = tmp.name
             await _stream_upload_to_tempfile(file, tmp)
 
-        from ..audio.stt import STTEngine
-
-        if _stt_engine is None or _stt_engine.model_name != model_name:
-            _stt_engine = STTEngine(model_name)
-            _stt_engine.load()
-
-        # STTEngine.align defaults language to "Chinese"; only forward an
-        # explicit caller value so the engine default stands otherwise.
-        align_kwargs = {}
-        if language:
-            align_kwargs["language"] = language
-        result = _stt_engine.align(tmp_path, text, **align_kwargs)
+        # Weight load + alignment are seconds of blocking compute, so run
+        # them on a worker thread — an ``async def`` handler that calls
+        # them inline stalls the whole event loop (every concurrent chat
+        # completion, /healthz probe and SSE heartbeat) for the duration.
+        result = await asyncio.to_thread(
+            _align_blocking, model_name, tmp_path, text, language
+        )
 
         return _format_stt_response(result, response_format, task="transcribe")
 
@@ -1298,10 +1336,10 @@ async def create_transcription(
     # Whether the caller explicitly supplied model / response_format —
     # drives the forced-alignment defaults below (aligner model +
     # verbose_json) which only kick in when the field was omitted.
-    model_provided = model_form is not None or model_query is not None
     model_merged = (
         model_form if model_form is not None else model_query
     )  # None when neither source supplied a model
+    model_provided = model_merged is not None
     response_format_provided = (
         response_format_form is not None or response_format_query is not None
     )
@@ -1322,11 +1360,23 @@ async def create_transcription(
         # Default to the registered aligner alias when the caller didn't
         # pick a model — the ASR default (whisper-large-v3) is not an
         # aligner and would fail deep in the engine.
-        model = model_merged if model_provided else DEFAULT_ALIGNER_ALIAS
+        #
+        # A WHITESPACE-ONLY model also takes the default here. FastAPI
+        # already coerces a truly empty form field (``model=""``) to
+        # ``None``, but ``model="   "`` — what you get from a form whose
+        # input was spaced-out, or a shell ``-F "model=$UNSET "`` — comes
+        # through verbatim and 404s in ``_resolve_stt_model`` as a
+        # nonexistent alias. Treat it as unset so "just send audio +
+        # text" keeps working. Scoped to this branch on purpose: the ASR
+        # path's blank-model handling is long-standing contract.
+        alignment_model_chosen = model_provided and bool(model_merged.strip())
+        model = model_merged if alignment_model_chosen else DEFAULT_ALIGNER_ALIAS
         # Default to verbose_json so the timestamped ``segments`` are in
         # the body; the plain ``json`` envelope drops them. An explicit
         # response_format (srt/vtt/text/json) is honoured as-is.
-        if not response_format_provided:
+        # Whitespace-only is treated as unset for the same reason as
+        # ``model`` above (it would otherwise 400 on the allowed set).
+        if not response_format_provided or not response_format.strip():
             response_format = "verbose_json"
     else:
         model = model_merged if model_provided else "whisper-large-v3"
@@ -1950,6 +2000,55 @@ MUSIC_MODEL_ALIASES: dict[str, tuple[str, str]] = {
 #: Fallback when ``model`` isn't a known music alias — the SA3 defaults.
 DEFAULT_MUSIC_DIT_DECODER: tuple[str, str] = ("medium", "same-l")
 
+#: Serialises music generation. ``MusicEngine.generate`` shells out to the
+#: vendored SA3 CLI, which peaks at ~3.9 GB (``medium``) — two concurrent
+#: requests would run two such subprocesses and can exhaust unified memory
+#: on a base-config Mac. One at a time; the rest queue on the thread that
+#: awaits this lock. Also guards the ``_music_engine`` global, which is
+#: mutated from a worker thread.
+_music_lock = threading.Lock()
+
+
+def _generate_music_blocking(
+    dit: str,
+    decoder: str,
+    out_path: str,
+    request: AudioMusicRequest,
+) -> None:
+    """Blocking half of ``/v1/audio/music`` — runs on a worker thread.
+
+    ``MusicEngine.generate`` spawns the vendored Stable Audio 3 CLI and
+    waits on it (default timeout 900 s). Calling that inline from the
+    ``async def`` handler would stall the event loop for the entire
+    render — every concurrent chat completion, ``/healthz`` probe and SSE
+    heartbeat with it — so the handler hands it to
+    :func:`asyncio.to_thread`.
+
+    Holds :data:`_music_lock` across the engine-cache check and the
+    render so concurrent requests neither race the ``_music_engine``
+    global nor run two multi-GB SA3 subprocesses at once.
+    """
+    global _music_engine
+
+    from ..audio.music import MusicEngine
+
+    with _music_lock:
+        if (
+            _music_engine is None
+            or _music_engine.dit != dit
+            or _music_engine.decoder != decoder
+        ):
+            _music_engine = MusicEngine(dit=dit, decoder=decoder)
+
+        _music_engine.generate(
+            request.input,
+            out_path,
+            seconds=request.seconds,
+            steps=request.steps,
+            negative_prompt=request.negative_prompt,
+            seed=request.seed,
+        )
+
 
 def _resolve_music_model(model: str | None) -> tuple[str, str]:
     """Map a ``/v1/audio/music`` ``model`` alias to a ``(dit, decoder)`` pair.
@@ -1983,35 +2082,33 @@ async def create_music(request: AudioMusicRequest = Body(...)):
     ``api_error`` envelope (``code="music_generation_failed"``), matching
     the speech route.
     """
-    global _music_engine
-
     dit, decoder = _resolve_music_model(request.model)
 
     tmp_path: str | None = None
     try:
-        from ..audio.music import MusicEngine
-
-        if (
-            _music_engine is None
-            or _music_engine.dit != dit
-            or _music_engine.decoder != decoder
-        ):
-            _music_engine = MusicEngine(dit=dit, decoder=decoder)
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp_path = tmp.name
 
-        _music_engine.generate(
-            request.input,
-            tmp_path,
-            seconds=request.seconds,
-            steps=request.steps,
-            negative_prompt=request.negative_prompt,
-            seed=request.seed,
+        # Engine load + render are blocking (a subprocess, up to 900 s) —
+        # off the event loop. See _generate_music_blocking.
+        await asyncio.to_thread(
+            _generate_music_blocking, dit, decoder, tmp_path, request
         )
 
-        with open(tmp_path, "rb") as fh:
-            audio_bytes = fh.read()
+        audio_bytes = b""
+        if os.path.exists(tmp_path):
+            with open(tmp_path, "rb") as fh:
+                audio_bytes = fh.read()
+
+        # The SA3 CLI can exit 0 having written nothing (or a 0-byte
+        # placeholder) — e.g. a sampler that bailed after the header. Fail
+        # loudly instead of handing the caller an HTTP 200 with an empty
+        # ``audio/wav`` body, which reads as a successful silent clip.
+        if not audio_bytes:
+            raise RuntimeError(
+                f"music engine produced no audio at {tmp_path} "
+                f"(dit={dit!r}, decoder={decoder!r})"
+            )
 
         # SA3 emits WAV; ``response_format`` is validated to ``wav`` by
         # the request model, so the Content-Type is always ``audio/wav``.

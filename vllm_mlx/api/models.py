@@ -2761,10 +2761,15 @@ class AudioMusicRequest(BaseModel):
       to the engine defaults.
     * ``seconds`` is bounded to SA3's ~47s ceiling; NaN/inf rejected via
       the finite validator (Pydantic ``le=`` alone lets NaN through).
+    * ``input`` is length-capped: ``MusicEngine.generate`` passes it as an
+      argv element to the vendored SA3 CLI, so an unbounded prompt hits
+      the OS ``ARG_MAX`` limit and surfaces as an opaque 500 ``E2BIG``
+      instead of a 422 the caller can act on. The cap matches
+      ``negative_prompt`` (both land on the same command line).
     """
 
     model: str = "medium"
-    input: str = Field(..., min_length=1)
+    input: str = Field(..., min_length=1, max_length=4096)
     seconds: float = Field(default=30.0, gt=0.0, le=_MUSIC_MAX_SECONDS)
     steps: int = Field(default=8, ge=1, le=200)
     negative_prompt: str | None = Field(default=None, max_length=4096)

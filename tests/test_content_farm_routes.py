@@ -64,13 +64,25 @@ def _mount_audio_app() -> tuple[TestClient, callable]:
     return TestClient(app), _restore
 
 
-def _mount_video_app() -> tuple[TestClient, callable]:
-    """Mount the video router on a bare FastAPI app, bypassing auth."""
+def _mount_video_app(with_handlers: bool = False) -> tuple[TestClient, callable]:
+    """Mount the video router on a bare FastAPI app, bypassing auth.
+
+    ``with_handlers=True`` additionally installs the server's global
+    exception handlers, which is what turns a schema rejection into the
+    documented 400 instead of stock FastAPI's 422 — see
+    :meth:`TestVideoContract.test_schema_rejection_is_400_on_the_real_app`.
+    """
     from vllm_mlx.config import get_config
     from vllm_mlx.routes import video as video_route
 
     app = FastAPI()
     app.include_router(video_route.router)
+    if with_handlers:
+        from vllm_mlx.middleware.exception_handlers import (
+            install_exception_handlers,
+        )
+
+        install_exception_handlers(app)
     cfg = get_config()
     saved = cfg.api_key
     cfg.api_key = None
@@ -253,6 +265,105 @@ class TestMusicRoute:
             restore()
         assert r.status_code == 422, r.text
         assert _FakeMusicEngine.last_call is None
+
+    def test_over_long_input_is_422_not_argv_blowup(self, _stub_music_engine):
+        """A giant prompt must 422 at the schema, not reach the engine.
+
+        ``MusicEngine.generate`` passes ``input`` as an argv element to
+        the vendored SA3 CLI, so an unbounded prompt hits the OS
+        ``ARG_MAX`` ceiling and surfaces as an opaque 500 ``E2BIG``. The
+        ``max_length`` bound turns that into an actionable 422.
+        """
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/music",
+                json={"input": "x" * 5000, "seconds": 5},
+            )
+        finally:
+            restore()
+        assert r.status_code == 422, r.text
+        assert _FakeMusicEngine.last_call is None
+
+    def test_engine_writing_nothing_is_500_not_empty_200(self, monkeypatch):
+        """An engine that exits cleanly without writing must 500.
+
+        The SA3 CLI can return success having produced no audio (a sampler
+        that bailed after the header). Returning that as HTTP 200 with an
+        empty ``audio/wav`` body reads to the caller as a successfully
+        generated silent clip — the worst kind of failure. Assert we fail
+        loudly with the documented ``music_generation_failed`` envelope.
+        """
+
+        class _SilentEngine(_FakeMusicEngine):
+            def generate(self, prompt, out_path, **kwargs):  # noqa: D102
+                # Exits "successfully" but leaves the temp file at 0 bytes.
+                return out_path
+
+        from vllm_mlx.routes import audio as audio_route
+
+        monkeypatch.setattr(
+            "vllm_mlx.audio.music.MusicEngine", _SilentEngine, raising=False
+        )
+        music_mod = sys.modules.get("vllm_mlx.audio.music")
+        if music_mod is not None:
+            monkeypatch.setattr(music_mod, "MusicEngine", _SilentEngine)
+        audio_route._music_engine = None
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post("/v1/audio/music", json={"input": "silence", "seconds": 5})
+        finally:
+            restore()
+            audio_route._music_engine = None
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"]["error"]["code"] == "music_generation_failed", r.text
+
+    def test_generation_does_not_block_the_event_loop(self, _stub_music_engine):
+        """The blocking render must run off the event loop.
+
+        ``MusicEngine.generate`` shells out and waits (up to 900 s by
+        default). Calling it inline from the ``async def`` handler would
+        stall every other request on the server for the whole render, so
+        the handler hands it to ``asyncio.to_thread``. Detect that
+        structurally: the engine must observe a DIFFERENT thread than the
+        one running the event loop.
+        """
+        import asyncio
+        import threading
+
+        observed: dict[str, int] = {}
+
+        class _ThreadRecordingEngine(_FakeMusicEngine):
+            def generate(self, prompt, out_path, **kwargs):  # noqa: D102
+                observed["engine_thread"] = threading.get_ident()
+                with open(out_path, "wb") as fh:
+                    fh.write(_make_tone_wav())
+                return out_path
+
+        from vllm_mlx.api.models import AudioMusicRequest
+        from vllm_mlx.routes import audio as audio_route
+
+        async def _drive():
+            observed["loop_thread"] = threading.get_ident()
+            return await audio_route.create_music(
+                AudioMusicRequest(input="a march", seconds=5)
+            )
+
+        saved = audio_route._music_engine
+        try:
+            music_mod = sys.modules["vllm_mlx.audio.music"]
+            saved_cls = music_mod.MusicEngine
+            music_mod.MusicEngine = _ThreadRecordingEngine
+            audio_route._music_engine = None
+            try:
+                resp = asyncio.run(_drive())
+            finally:
+                music_mod.MusicEngine = saved_cls
+        finally:
+            audio_route._music_engine = saved
+
+        assert resp.body[:4] == b"RIFF", resp.body[:16]
+        assert observed["engine_thread"] != observed["loop_thread"], observed
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +548,133 @@ class TestForcedAlignment:
         assert err["type"] == "invalid_request_error", err
         assert err["code"] == "invalid_alignment_request", err
 
+    def test_omitted_model_resolves_to_the_registered_aligner(self, _stub_aligner):
+        """No ``model`` → the ALIGNER alias, not the ASR default.
+
+        ``whisper-large-v3`` is not a forced aligner, so defaulting the
+        alignment branch to it would fail deep in ``STTEngine.align``.
+        Assert the resolved repo is actually the aligner.
+        """
+        from vllm_mlx.routes import audio as audio_route
+
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"text": "abc"},
+                files={"file": ("clip.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        assert "ForcedAligner" in audio_route._stt_engine.model_name, (
+            audio_route._stt_engine.model_name
+        )
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_model_takes_the_aligner_default(self, _stub_aligner, blank):
+        """A BLANK ``model`` must behave as omitted, not error.
+
+        ``""`` is already absorbed by FastAPI (it coerces an empty form
+        field to ``None`` for an ``Optional[str]``) — kept here to pin
+        that boundary. ``"   "`` is the one that actually leaked: it
+        arrives verbatim and pre-fix reached ``_resolve_stt_model`` as an
+        explicit choice, 404-ing as a nonexistent alias, so "just send
+        audio + text" from a form with a spaced-out field never aligned.
+        """
+        from vllm_mlx.routes import audio as audio_route
+
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"text": "abc", "model": blank},
+                files={"file": ("clip.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        assert "ForcedAligner" in audio_route._stt_engine.model_name, (
+            audio_route._stt_engine.model_name
+        )
+
+    def test_blank_response_format_takes_verbose_json(self, _stub_aligner):
+        """A whitespace-only ``response_format`` must fall back to verbose_json.
+
+        Same shape as the ``model`` case above: pre-fix ``"   "`` counted
+        as an explicit choice, reached the allowed-set check and 400'd —
+        losing the timestamps the caller came for.
+        """
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"text": "abc", "response_format": "   "},
+                files={"file": ("clip.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        assert isinstance(r.json()["segments"], list), r.text
+
+    def test_alignment_does_not_block_the_event_loop(self, _stub_aligner):
+        """Weight load + align must run off the event loop.
+
+        Both are seconds of blocking compute; inline in the ``async def``
+        handler they stall every concurrent request on the server. Detect
+        structurally — the engine must see a different thread than the
+        loop.
+        """
+        import asyncio
+        import threading
+
+        from vllm_mlx.routes import audio as audio_route
+
+        seen: dict[str, int] = {}
+        real_align = _FakeAlignerEngine.align
+
+        def _recording_align(self, audio_path, text, language="Chinese"):
+            seen["engine_thread"] = threading.get_ident()
+            return real_align(self, audio_path, text, language=language)
+
+        async def _drive():
+            seen["loop_thread"] = threading.get_ident()
+            with open(_tmp_wav(), "rb") as fh:
+                return await audio_route._run_alignment_request(
+                    file=_UploadLike(fh.read()),
+                    model="qwen3-aligner",
+                    text="abc",
+                    language=None,
+                    response_format="verbose_json",
+                )
+
+        _FakeAlignerEngine.align = _recording_align
+        try:
+            asyncio.run(_drive())
+        finally:
+            _FakeAlignerEngine.align = real_align
+        assert seen["engine_thread"] != seen["loop_thread"], seen
+
+
+def _tmp_wav() -> str:
+    """Write a throwaway tone wav and return its path."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as fh:
+        fh.write(_make_tone_wav())
+        return fh.name
+
+
+class _UploadLike:
+    """Minimal stand-in for ``UploadFile`` — only ``read`` is exercised by
+    ``_stream_upload_to_tempfile``."""
+
+    def __init__(self, payload: bytes):
+        self._buf = io.BytesIO(payload)
+
+    async def read(self, size: int = -1) -> bytes:
+        return self._buf.read(size)
+
 
 # ---------------------------------------------------------------------------
 # Route 3: POST /v1/video/generations  (CONTRACT-ONLY → 501)
@@ -466,7 +704,7 @@ class TestVideoContract:
         assert err is not None, body
         assert err["type"] == "not_implemented_error", err
         assert err["code"] == "video_backend_not_implemented", err
-        assert "REQUIREMENTS_rapid.md B1" in err["message"], err
+        assert "docs/content_farm_api.md" in err["message"], err
 
     def test_image_to_video_request_also_501(self):
         client, restore = _mount_video_app()
@@ -500,6 +738,34 @@ class TestVideoContract:
         finally:
             restore()
         assert r.status_code == 422, r.text
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"model": "ltx-2.3"},  # prompt missing
+            {"prompt": "   "},  # blank prompt
+            {"prompt": "x", "num_frames": 0},
+            {"prompt": "x", "frame_rate": "NaN"},
+            {"prompt": "x", "response_format": "webm"},
+        ],
+    )
+    def test_schema_rejection_is_400_on_the_real_app(self, body):
+        """Schema rejections reach the caller as 400, not FastAPI's 422.
+
+        The bare-app tests above see 422 because they mount the router
+        without the server's handlers. On the REAL server
+        ``install_exception_handlers`` normalizes every
+        ``RequestValidationError`` to a sanitized 400 — verified against a
+        live ``rapid-mlx serve`` — so that is the number
+        ``docs/content_farm_api.md`` documents and clients must code
+        against. Pinned here so the two can't drift apart again.
+        """
+        client, restore = _mount_video_app(with_handlers=True)
+        try:
+            r = client.post("/v1/video/generations", json=body)
+        finally:
+            restore()
+        assert r.status_code == 400, r.text
 
     def test_schema_round_trips(self):
         """The request/response models colleagues integrate against must

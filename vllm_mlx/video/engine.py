@@ -13,7 +13,8 @@ that raises :class:`NotImplementedError` until one is registered. The
 ``/v1/video/generations`` route calls the factory so the day a backend
 lands the route goes live with zero handler changes.
 
-See ``REQUIREMENTS_rapid.md`` B1 for the backend-integration task.
+See ``docs/content_farm_api.md`` for the wire contract and the
+backend-integration task.
 """
 
 from __future__ import annotations
@@ -69,9 +70,10 @@ class VideoEngine(Protocol):
         ...
 
 
-# Registry hook: a concrete backend assigns this to a zero-arg factory
-# returning a :class:`VideoEngine`. Left ``None`` while the lane is
-# contract-only so :func:`resolve_video_engine` fails loudly.
+# Registry hook: a concrete backend assigns this to a callable taking the
+# requested ``model`` id and returning a :class:`VideoEngine` (that is the
+# signature :func:`resolve_video_engine` invokes it with). Left ``None``
+# while the lane is contract-only so the resolver fails loudly.
 _VIDEO_ENGINE_FACTORY = None
 
 
@@ -89,6 +91,6 @@ def resolve_video_engine(model: str) -> VideoEngine:
     """
     if _VIDEO_ENGINE_FACTORY is None:
         raise NotImplementedError(
-            "video backend not yet integrated; see REQUIREMENTS_rapid.md B1"
+            "video backend not yet integrated; see docs/content_farm_api.md"
         )
     return _VIDEO_ENGINE_FACTORY(model)

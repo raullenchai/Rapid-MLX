@@ -14,7 +14,7 @@ envelopes (`{"error": {"message", "type", "code", "param"}}`).
 | --- | --- | --- | --- |
 | `/v1/audio/music` | POST | **LIVE** | `MusicEngine` (Stable Audio 3, MLX-native) |
 | `/v1/audio/transcriptions` (`text` field) | POST | **LIVE** | `STTEngine.align` (Qwen3 forced aligner) |
-| `/v1/video/generations` | POST | **CONTRACT-ONLY** (returns 501) | `VideoEngine` — no backend yet (LTX-2.3 pending, see `REQUIREMENTS_rapid.md` B1) |
+| `/v1/video/generations` | POST | **CONTRACT-ONLY** (returns 501) | `VideoEngine` — no backend yet (LTX-2.3 pending, see [The interface to implement](#the-interface-to-implement)) |
 
 The audio routes are attached only when the server runs with an
 audio-capable model or `--enable-audio`. The video route is always
@@ -34,8 +34,8 @@ Stable Audio 3 engine. Request-in / audio-bytes-out, the same shape as
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `model` | string | `"medium"` | DiT/decoder pairing. `medium` (higher quality) or `sm-music` / `sm-sfx` (fast small). Unknown values fall back to engine defaults. |
-| `input` | string | — (required) | Natural-language prompt. Must be non-blank. |
-| `seconds` | number | `30.0` | Clip length. `0 < seconds <= 47` (SA3 ceiling). |
+| `input` | string | — (required) | Natural-language prompt. Non-blank, max 4096 chars (it becomes an argv element for the SA3 CLI). |
+| `seconds` | number | `30.0` | Clip length. `0 < seconds <= 47` (SA3 ceiling). NaN/inf rejected. |
 | `steps` | integer | `8` | Pingpong sampling steps. `1..200`. |
 | `negative_prompt` | string \| null | `null` | CFG negative branch (e.g. `"vocals, singing"`). Max 4096 chars. |
 | `seed` | integer \| null | `null` | Fixed seed for reproducibility. |
@@ -46,10 +46,17 @@ Stable Audio 3 engine. Request-in / audio-bytes-out, the same shape as
 `200 OK`, `Content-Type: audio/wav` — the raw WAV bytes (same delivery
 as `/v1/audio/speech`).
 
-Errors: `422` for schema violations (blank `input`, `seconds > 47`,
-unsupported `response_format`); `500`
-(`code="music_generation_failed"`) if the engine fails; `503` if the
-engine's runtime deps are unavailable.
+Errors: `400` for schema violations (blank or over-4096-char `input`,
+`seconds > 47`, unsupported `response_format`); `500`
+(`code="music_generation_failed"`) if the engine fails or produces no
+audio; `503` if the engine's runtime deps are unavailable.
+
+> **On the status code:** the schema rejection is a FastAPI
+> `RequestValidationError`, which the rapid-mlx server's global handler
+> normalizes to **400** with a sanitized envelope (see
+> `install_exception_handlers` in `vllm_mlx/server.py`). Stock FastAPI
+> would emit 422 — you'll see 422 only if you mount the router on a bare
+> app without those handlers, as the unit tests do.
 
 ### curl
 
@@ -177,8 +184,8 @@ One schema covers both modes: **text-to-video** when `image` is omitted,
   "model": "ltx-2.3",
   "data": [
     {
-      "b64_video": null,
-      "url": "/path/or/url/to/out.mp4",
+      "b64_video": "AAAAIGZ0eXBpc29t...",
+      "url": null,
       "audio": null,
       "format": "mp4",
       "width": 1216,
@@ -191,8 +198,11 @@ One schema covers both modes: **text-to-video** when `image` is omitted,
 ```
 
 Each `data[]` item populates exactly one of `b64_video` (inline base64
-mp4) or `url`. `audio` carries LTX-2.3's native soundtrack (base64) when
-the backend emits one, else `null`.
+mp4) or `url`. The wired handler returns `b64_video` — a server-side
+filesystem path is not a URL the client can fetch, and echoing one would
+leak the server's layout. A backend that uploads to real object storage
+can populate `url` instead. `audio` carries LTX-2.3's native soundtrack
+(base64) when the backend emits one, else `null`.
 
 ### Current behavior (no backend)
 
@@ -201,7 +211,7 @@ the backend emits one, else `null`.
 ```json
 {
   "error": {
-    "message": "video backend not yet integrated; see REQUIREMENTS_rapid.md B1",
+    "message": "video backend not yet integrated; see docs/content_farm_api.md",
     "type": "not_implemented_error",
     "code": "video_backend_not_implemented",
     "param": null
@@ -209,9 +219,10 @@ the backend emits one, else `null`.
 }
 ```
 
-Schema violations still `422` at the request boundary (missing `prompt`,
-`num_frames=0`, etc.) so you can develop against the real wire contract
-today.
+Schema violations still fail at the request boundary (missing `prompt`,
+`num_frames=0`, `frame_rate=NaN`, `response_format="webm"`, etc.) so you
+can develop against the real wire contract today — as **400** on the
+rapid-mlx server, per the note in §1.
 
 ### The interface to implement
 
@@ -234,8 +245,10 @@ def generate(
 ) -> Path: ...
 ```
 
-and registers a factory so `resolve_video_engine(model)` returns it. See
-`REQUIREMENTS_rapid.md` B1 for the integration task.
+and registers a factory so `resolve_video_engine(model)` returns it:
+assign `vllm_mlx.video.engine._VIDEO_ENGINE_FACTORY` to a callable
+taking the requested `model` id and returning the engine. The route then
+goes live with no handler change.
 
 ### curl
 

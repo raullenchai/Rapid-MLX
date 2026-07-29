@@ -169,6 +169,14 @@ jobs:
         # test_llm.py, test_deltanet_snapshot.py went with it.
         # test_memory_cache exercises mlx-importing code paths so it
         # lives here, not in the Linux test-matrix job.
+        #
+        # Both CI test lists are explicit allowlists, so a new test file
+        # that lands in neither is never gated. test_content_farm_routes
+        # and test_server_auth_ordering are hermetic (engines faked at the
+        # import boundary, no weights / network / mlx_audio) but they are
+        # NOT mlx-free: they import vllm_mlx.config, whose chain reaches
+        # engine_core's `import mlx.core`. That puts them here rather than
+        # in the Linux job.
         run: |
           pytest \
             tests/test_platform.py \
@@ -185,6 +193,8 @@ jobs:
             tests/test_streaming_detokenizer.py \
             tests/test_tool_logits.py \
             tests/test_no_mllm_flag.py \
+            tests/test_content_farm_routes.py \
+            tests/test_server_auth_ordering.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

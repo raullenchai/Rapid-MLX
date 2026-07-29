@@ -200,6 +200,12 @@ PROTECTED_ROUTER_MODULES = (
     "vllm_mlx.routes.mcp_routes",
     "vllm_mlx.routes.models",
     "vllm_mlx.routes.responses",
+    # Content-farm video lane. CONTRACT-ONLY (returns 501 until a backend
+    # is registered) but still auth-gated: the route is mounted
+    # unconditionally in server.py, so an anonymous caller must not be
+    # able to probe it — and the day a backend lands it becomes a heavy
+    # compute endpoint that must already be behind the key.
+    "vllm_mlx.routes.video",
 )
 
 

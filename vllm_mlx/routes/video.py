@@ -10,11 +10,20 @@ raises :class:`NotImplementedError` and the route returns a clean HTTP
 itself the route goes live unchanged.
 """
 
+import asyncio
+import base64
 import logging
+import os
+import tempfile
+import time
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from ..api.models import VideoGenerationRequest
+from ..api.models import (
+    VideoGenerationRequest,
+    VideoGenerationResponse,
+    VideoGenerationResult,
+)
 from ..middleware.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -62,35 +71,84 @@ async def create_video(request: VideoGenerationRequest = Body(...)):
 
     # Reached only once a backend is registered. Kept wired so the route
     # is live the moment resolve_video_engine stops raising — no handler
-    # edit required. (Response serialization into VideoGenerationResponse
-    # is the backend integrator's follow-up per REQUIREMENTS_rapid.md B1.)
-    import time
+    # edit required.
+    return await _render_and_serialize(engine, request)  # pragma: no cover
 
-    from ..api.models import VideoGenerationResponse, VideoGenerationResult
 
-    out_path = engine.generate(  # pragma: no cover — no backend yet
-        request.prompt,
-        None,
-        image=request.image,
-        height=request.height,
-        width=request.width,
-        num_frames=request.num_frames,
-        frame_rate=request.frame_rate,
-        steps=request.steps,
-        negative_prompt=request.negative_prompt,
-        seed=request.seed,
-    )
-    return VideoGenerationResponse(  # pragma: no cover — no backend yet
-        created=int(time.time()),
-        model=request.model,
-        data=[
-            VideoGenerationResult(
-                url=str(out_path),
-                format=request.response_format,
-                width=request.width,
+async def _render_and_serialize(  # pragma: no cover — no backend yet
+    engine, request: VideoGenerationRequest
+) -> VideoGenerationResponse:
+    """Render via ``engine`` and serialize to the wire response.
+
+    Unreachable while the lane is contract-only (``resolve_video_engine``
+    raises first), but kept correct and wired so registering a backend is
+    the ONLY change needed to make ``/v1/video/generations`` live.
+
+    Two things this deliberately does NOT do the naive way:
+
+    * ``out_path`` is a real temp mp4 path. :meth:`VideoEngine.generate`
+      declares ``out_path: str | Path`` and writes the clip there —
+      passing ``None`` would break every conforming backend.
+    * the clip comes back as base64 in ``b64_video``, not as a ``url``
+      holding a server-side filesystem path. A local path is not a URL
+      the client can fetch, and echoing one leaks the server's
+      filesystem layout. A backend that uploads to real object storage
+      can populate ``url`` instead.
+    """
+    out_dir = tempfile.mkdtemp(prefix="rapidmlx-video-")
+    out_path = os.path.join(out_dir, "out.mp4")
+    try:
+        # Rendering is heavy blocking compute — keep it off the event loop
+        # so concurrent requests and health probes stay responsive.
+        written = await asyncio.to_thread(
+            lambda: engine.generate(
+                request.prompt,
+                out_path,
+                image=request.image,
                 height=request.height,
+                width=request.width,
                 num_frames=request.num_frames,
                 frame_rate=request.frame_rate,
+                steps=request.steps,
+                negative_prompt=request.negative_prompt,
+                seed=request.seed,
             )
-        ],
-    )
+        )
+        video_path = str(written or out_path)
+        with open(video_path, "rb") as fh:
+            payload = fh.read()
+        if not payload:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": {
+                        "message": "Video generation produced no output",
+                        "type": "api_error",
+                        "code": "video_generation_failed",
+                        "param": None,
+                    }
+                },
+            )
+        return VideoGenerationResponse(
+            created=int(time.time()),
+            model=request.model,
+            data=[
+                VideoGenerationResult(
+                    b64_video=base64.b64encode(payload).decode("ascii"),
+                    format=request.response_format,
+                    width=request.width,
+                    height=request.height,
+                    num_frames=request.num_frames,
+                    frame_rate=request.frame_rate,
+                )
+            ],
+        )
+    finally:
+        try:
+            if os.path.exists(out_path):
+                os.unlink(out_path)
+            os.rmdir(out_dir)
+        except OSError as cleanup_err:
+            logger.warning(
+                "Failed to clean up video temp dir %s: %s", out_dir, cleanup_err
+            )
