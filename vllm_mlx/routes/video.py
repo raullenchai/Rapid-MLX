@@ -14,6 +14,7 @@ import asyncio
 import base64
 import logging
 import os
+import shutil
 import tempfile
 import time
 
@@ -97,6 +98,10 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
     """
     out_dir = tempfile.mkdtemp(prefix="rapidmlx-video-")
     out_path = os.path.join(out_dir, "out.mp4")
+    # Whatever the backend actually wrote — it may return a path other
+    # than the one we handed it. Tracked so cleanup deletes the real
+    # artifact instead of leaking a multi-MB mp4 on every request.
+    written_path: str | None = None
     try:
         # Rendering is heavy blocking compute — keep it off the event loop
         # so concurrent requests and health probes stay responsive.
@@ -115,6 +120,7 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
             )
         )
         video_path = str(written or out_path)
+        written_path = video_path
         with open(video_path, "rb") as fh:
             payload = fh.read()
         if not payload:
@@ -144,11 +150,16 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
             ],
         )
     finally:
+        # Delete the artifact the backend actually produced, wherever it
+        # put it, then the whole temp dir. ``rmtree`` rather than
+        # ``rmdir`` because a backend may drop sidecars (a probe log, a
+        # separate audio track) next to the clip, and a non-empty dir
+        # would make ``rmdir`` raise and leak the entire directory.
         try:
-            if os.path.exists(out_path):
-                os.unlink(out_path)
-            os.rmdir(out_dir)
+            if written_path and os.path.exists(written_path):
+                os.unlink(written_path)
         except OSError as cleanup_err:
             logger.warning(
-                "Failed to clean up video temp dir %s: %s", out_dir, cleanup_err
+                "Failed to unlink video output %s: %s", written_path, cleanup_err
             )
+        shutil.rmtree(out_dir, ignore_errors=True)

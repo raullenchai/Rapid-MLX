@@ -2833,6 +2833,19 @@ _VIDEO_MAX_DIMENSION: int = 4096
 _VIDEO_MAX_FRAMES: int = 4096
 _VIDEO_MAX_FRAME_RATE: float = 240.0
 
+#: Cap on the i2v conditioning-frame string. A base64 PNG/JPEG frame at
+#: the 4096x4096 dimension ceiling fits comfortably; the bound exists so
+#: an unbounded body can't be used to pin memory before any backend even
+#: looks at it. ~12 MB of base64 ≈ a 9 MB image.
+_VIDEO_MAX_IMAGE_CHARS: int = 12 * 1024 * 1024
+
+#: URL schemes accepted for the i2v conditioning frame. Deliberately a
+#: two-item allowlist rather than a blocklist: the field is a
+#: server-side fetch target, so anything else (``file://``, ``gopher://``,
+#: ``ftp://``, ``data:`` with a non-image type) is a local-file-read or
+#: SSRF primitive the moment a backend starts honouring it.
+_VIDEO_ALLOWED_IMAGE_URL_SCHEMES: tuple[str, ...] = ("http", "https")
+
 
 class VideoGenerationRequest(BaseModel):
     """Request for text→video AND image→video (``/v1/video/generations``).
@@ -2848,9 +2861,10 @@ class VideoGenerationRequest(BaseModel):
 
     model: str = "ltx-2.3"
     prompt: str = Field(..., min_length=1)
-    # base64 (optionally as a ``data:`` URI) OR an http(s) URL of the
-    # conditioning frame for image-to-video. ``None`` → text-to-video.
-    image: str | None = None
+    # base64 (optionally as a ``data:image/*`` URI) OR an http(s) URL of
+    # the conditioning frame for image-to-video. ``None`` → text-to-video.
+    # Scheme-validated below: this becomes a server-side fetch target.
+    image: str | None = Field(default=None, max_length=_VIDEO_MAX_IMAGE_CHARS)
     height: int = Field(default=704, gt=0, le=_VIDEO_MAX_DIMENSION)
     width: int = Field(default=1216, gt=0, le=_VIDEO_MAX_DIMENSION)
     num_frames: int = Field(default=97, ge=1, le=_VIDEO_MAX_FRAMES)
@@ -2875,6 +2889,58 @@ class VideoGenerationRequest(BaseModel):
         if not math.isfinite(v):
             raise ValueError("frame_rate must be a finite number")
         return v
+
+    @field_validator("image")
+    @classmethod
+    def _image_must_be_a_safe_reference(cls, v: str | None) -> str | None:
+        """Constrain the i2v conditioning frame to safe reference forms.
+
+        ``image`` is the one field in this contract a backend will
+        DEREFERENCE, which makes it the request's only server-side fetch
+        primitive. Left unconstrained, ``file:///etc/passwd`` becomes an
+        arbitrary local-file read and ``http://169.254.169.254/...`` (or
+        any internal address) becomes SSRF — the moment
+        ``resolve_video_engine`` stops raising. Validating at the schema
+        boundary means every future backend inherits the restriction
+        instead of each having to remember it.
+
+        Accepted: a ``data:image/...;base64,`` URI, an ``http(s)://`` URL,
+        or a bare base64 payload (no scheme at all). Anything with a
+        scheme outside the allowlist is rejected.
+
+        This is NOT complete SSRF defence — an allowed ``https://`` host
+        can still resolve to a private address. Egress policy for the
+        actual fetch stays the backend integrator's job; see
+        ``docs/content_farm_api.md``.
+        """
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("image must be a non-empty string when provided")
+
+        lowered = stripped.lower()
+        if lowered.startswith("data:"):
+            # Only image payloads — ``data:text/html`` or an unlabelled
+            # ``data:;base64`` is not a conditioning frame.
+            if not lowered.startswith("data:image/"):
+                raise ValueError(
+                    "image data: URI must declare an image/* media type "
+                    "(e.g. data:image/png;base64,...)"
+                )
+            return stripped
+
+        # A scheme is anything before "://". Bare base64 has none and is
+        # allowed through as an inline payload.
+        if "://" in lowered:
+            scheme = lowered.split("://", 1)[0]
+            if scheme not in _VIDEO_ALLOWED_IMAGE_URL_SCHEMES:
+                supported = ", ".join(_VIDEO_ALLOWED_IMAGE_URL_SCHEMES)
+                raise ValueError(
+                    f"image URL scheme {scheme!r} is not allowed; use one of: "
+                    f"{supported} (or pass the frame inline as base64)"
+                )
+        return stripped
 
     @field_validator("response_format")
     @classmethod

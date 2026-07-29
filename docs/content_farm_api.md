@@ -92,7 +92,7 @@ ASR).
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `file` | file | — (required) | The audio whose speech is `text`. |
-| `text` | string | *(absent)* | **Presence switches to alignment.** The known transcript to align. |
+| `text` | string | *(absent)* | **Presence switches to alignment.** The known transcript to align. Present-but-blank is a `400` — it is never silently downgraded to ASR. |
 | `model` | string | `qwen3-aligner` when `text` present, else `whisper-large-v3` | Must resolve to a forced-aligner model (family `qwen3_aligner`) for the alignment path. |
 | `language` | string | aligner default (`Chinese`) | Alignment language, forwarded to the aligner. |
 | `response_format` | string | `verbose_json` when `text` present, else `json` | One of `json`, `text`, `srt`, `vtt`, `verbose_json`. |
@@ -124,9 +124,17 @@ default) returns:
 returns the transcript as `text/plain`.
 
 Errors: `400` (`code="invalid_alignment_request"`) when the chosen model
-is not a forced aligner or the `text` is empty/blank; `404` for an
-unknown `model` alias; `400` (`invalid_audio_file`) for a corrupted
-upload; `413` for uploads over 25 MB.
+is not a forced aligner, or when `text` is present but blank (`param:
+"text"`) — sending `text` means "I have the transcript, give me
+timings", so the route refuses rather than quietly answering a different
+question with ASR; `404` for an unknown `model` alias; `400`
+(`invalid_audio_file`) for a corrupted upload; `413` for uploads over
+25 MB.
+
+A whitespace-only `model` or `response_format` is treated as unset and
+takes the lane default (`qwen3-aligner` / `verbose_json`) rather than
+failing — a truly empty form field is already coerced to absent by
+FastAPI.
 
 ### curl
 
@@ -166,7 +174,7 @@ One schema covers both modes: **text-to-video** when `image` is omitted,
 | --- | --- | --- | --- |
 | `model` | string | `"ltx-2.3"` | Target backend. |
 | `prompt` | string | — (required) | Natural-language description. Must be non-blank. |
-| `image` | string \| null | `null` | Conditioning first frame for i2v: a base64 string / `data:` URI, or an `http(s)` URL. `null` → text-to-video. |
+| `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string. `null` → text-to-video. |
 | `height` | integer | `704` | Output height, `1..4096`. |
 | `width` | integer | `1216` | Output width, `1..4096`. |
 | `num_frames` | integer | `97` | Frames to render, `1..4096`. |
@@ -223,6 +231,27 @@ Schema violations still fail at the request boundary (missing `prompt`,
 `num_frames=0`, `frame_rate=NaN`, `response_format="webm"`, etc.) so you
 can develop against the real wire contract today — as **400** on the
 rapid-mlx server, per the note in §1.
+
+### Security note on `image`
+
+`image` is the only field in this contract a backend **dereferences**,
+which makes it the request's sole server-side fetch primitive. The schema
+therefore restricts it at the boundary — so every future backend inherits
+the restriction instead of each having to remember it:
+
+- `data:` URIs must declare an `image/*` media type (`data:text/html;...`
+  and unlabelled `data:;base64,...` are rejected).
+- URL schemes are an allowlist of `http` / `https`. `file://`,
+  `gopher://`, `ftp://` and friends are rejected — otherwise
+  `file:///etc/passwd` is an arbitrary local-file read the moment a
+  backend honours the field.
+- A bare base64 payload (no scheme) is accepted as an inline frame.
+- The whole string is capped at 12 MB.
+
+This is **not** complete SSRF defence: an allowed `https://` host can
+still resolve to a private address (link-local metadata endpoints,
+`127.0.0.1`, RFC1918). Egress policy for the actual fetch is the backend
+integrator's responsibility.
 
 ### The interface to implement
 

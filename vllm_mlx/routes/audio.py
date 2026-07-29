@@ -994,10 +994,24 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 #: Serialises the forced-alignment engine cache + ``align`` call. The
 #: alignment body runs on a worker thread (see
 #: :func:`_run_alignment_request`), so two concurrent requests could
-#: otherwise race the ``_stt_engine`` global and load the aligner's
-#: weights twice. A plain ``threading.Lock`` (not ``asyncio.Lock``) is
+#: otherwise load the aligner's weights twice or swap the engine out
+#: mid-align. A plain ``threading.Lock`` (not ``asyncio.Lock``) is
 #: required because the critical section executes off the event loop.
 _alignment_lock = threading.Lock()
+
+#: Cached forced-aligner engine — DELIBERATELY separate from
+#: ``_stt_engine``.
+#:
+#: Sharing one global across both lanes is unsafe now that alignment runs
+#: on a worker thread while ASR still runs on the event loop: an ASR
+#: request can replace the engine in between the alignment path's cache
+#: check and its ``align()`` call, and no lock held on only one side can
+#: prevent that. A dedicated cache removes the shared mutable state
+#: instead of trying to synchronise two lanes with different concurrency
+#: models. It also stops the two lanes evicting each other's weights on
+#: every alternating request, since an aligner and an ASR model are never
+#: the same ``model_name``.
+_aligner_engine = None
 
 
 def _align_blocking(
@@ -1015,9 +1029,9 @@ def _align_blocking(
 
     Holds :data:`_alignment_lock` across the cache check AND the align
     call so concurrent alignment requests don't double-load weights or
-    swap the shared engine out from under each other mid-align.
+    swap the engine out from under each other mid-align.
     """
-    global _stt_engine
+    global _aligner_engine
 
     from ..audio.stt import STTEngine
 
@@ -1028,10 +1042,10 @@ def _align_blocking(
         align_kwargs["language"] = language
 
     with _alignment_lock:
-        if _stt_engine is None or _stt_engine.model_name != model_name:
-            _stt_engine = STTEngine(model_name)
-            _stt_engine.load()
-        return _stt_engine.align(audio_path, text, **align_kwargs)
+        if _aligner_engine is None or _aligner_engine.model_name != model_name:
+            _aligner_engine = STTEngine(model_name)
+            _aligner_engine.load()
+        return _aligner_engine.align(audio_path, text, **align_kwargs)
 
 
 async def _run_alignment_request(
@@ -1352,9 +1366,38 @@ async def create_transcription(
         else (response_format_query if response_format_query is not None else "json")
     )
 
-    # Content-farm lane: a non-blank ``text`` field switches the route
-    # from ASR to FORCED ALIGNMENT of that known transcript.
-    is_alignment = text is not None and text.strip() != ""
+    # Content-farm lane: a ``text`` field switches the route from ASR to
+    # FORCED ALIGNMENT of that known transcript.
+    #
+    # PRESENCE, not truthiness, selects the branch. A whitespace-only
+    # ``text`` used to fall through to ASR, which silently answered a
+    # different question than the caller asked — they wanted timestamps
+    # for a transcript and got speech recognition instead, with a 200 that
+    # gives no hint anything was ignored. It now 400s with the same
+    # ``invalid_alignment_request`` envelope ``STTEngine.align`` raises for
+    # blank text, which is what docs/content_farm_api.md documents.
+    #
+    # A truly empty ``text=""`` is indistinguishable from an absent field
+    # here — FastAPI coerces both to ``None`` for an ``Optional[str]``
+    # form param — so it stays ASR. Only a non-empty-but-blank value is
+    # rejectable, and it is the shape that signals real caller intent.
+    if text is not None and not text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        "`text` was supplied but is blank. Send the known "
+                        "transcript to align, or omit `text` entirely for "
+                        "speech recognition."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "invalid_alignment_request",
+                    "param": "text",
+                }
+            },
+        )
+    is_alignment = text is not None
 
     if is_alignment:
         # Default to the registered aligner alias when the caller didn't

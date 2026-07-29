@@ -403,12 +403,23 @@ class _FakeAlignerEngine:
         duration = segments[-1]["end"] if segments else 0.0
         return _FakeAlignResult(text, segments, language, duration)
 
-    # Present so a mis-routed request would blow up loudly rather than
-    # silently ASR — the route must NOT call this on the alignment path.
-    def transcribe(
-        self, audio_path, language=None, task="transcribe"
-    ):  # pragma: no cover
-        raise AssertionError("alignment path must not call transcribe()")
+    #: Set when ``transcribe`` runs, so a test can assert the ASR branch
+    #: was taken AND that it produced a real result — not merely that
+    #: ``align`` was skipped.
+    last_transcribe: dict | None = None
+
+    def transcribe(self, audio_path, language=None, task="transcribe"):
+        _FakeAlignerEngine.last_transcribe = {
+            "audio_path": str(audio_path),
+            "language": language,
+            "task": task,
+        }
+        return _FakeAlignResult(
+            "recognised speech",
+            [{"text": "recognised speech", "start": 0.0, "end": 1.0}],
+            language or "en",
+            1.0,
+        )
 
 
 class _FakeNonAlignerEngine:
@@ -443,9 +454,12 @@ def _stub_aligner(monkeypatch):
     if stt_mod is not None:
         monkeypatch.setattr(stt_mod, "STTEngine", _FakeAlignerEngine)
     _FakeAlignerEngine.last_call = None
+    _FakeAlignerEngine.last_transcribe = None
     audio_route._stt_engine = None
+    audio_route._aligner_engine = None
     yield
     audio_route._stt_engine = None
+    audio_route._aligner_engine = None
     probe._reset_probe_cache()
 
 
@@ -464,8 +478,10 @@ def _stub_non_aligner(monkeypatch):
     if stt_mod is not None:
         monkeypatch.setattr(stt_mod, "STTEngine", _FakeNonAlignerEngine)
     audio_route._stt_engine = None
+    audio_route._aligner_engine = None
     yield
     audio_route._stt_engine = None
+    audio_route._aligner_engine = None
     probe._reset_probe_cache()
 
 
@@ -514,22 +530,54 @@ class TestForcedAlignment:
         assert "a" in body
 
     def test_no_text_field_is_still_asr(self, _stub_aligner):
-        """Absent ``text`` → the alignment branch must NOT fire (the fake
-        aligner's transcribe() asserts if reached, so a clean non-500
-        here proves the ASR branch was taken)."""
+        """Absent ``text`` → unchanged ASR, positively verified.
+
+        This asserts the ASR branch actually SUCCEEDS and returns the
+        recognised text, not merely that ``align()`` was skipped. An
+        earlier version expected a 500 (the fake's ``transcribe`` raised),
+        which would have stayed green even if the whole ASR path were
+        broken — it only ever proved "not alignment".
+        """
         client, restore = _mount_audio_app()
         try:
             r = client.post(
                 "/v1/audio/transcriptions",
-                data={"model": "whisper-large-v3"},
+                data={"model": "whisper-large-v3", "response_format": "verbose_json"},
                 files={"file": ("clip.wav", _make_tone_wav(), "audio/wav")},
             )
         finally:
             restore()
-        # transcribe() raises AssertionError → generic 500 envelope. The
-        # point is the alignment path did NOT run (align() not called).
+        assert r.status_code == 200, r.text
+        assert r.json()["text"] == "recognised speech", r.text
+        # ASR ran; the alignment branch did not.
+        assert _FakeAlignerEngine.last_transcribe is not None
         assert _FakeAlignerEngine.last_call is None
-        assert r.status_code == 500, r.text
+
+    def test_blank_text_is_400_not_a_silent_asr_fallback(self, _stub_aligner):
+        """A present-but-blank ``text`` must 400, never quietly run ASR.
+
+        Sending ``text`` says "I have the transcript, give me timings".
+        Pre-fix a whitespace-only value fell through to speech
+        recognition and returned 200 — answering a different question
+        with no signal that the request had been reinterpreted.
+        """
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"text": "   "},
+                files={"file": ("clip.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+        assert r.status_code == 400, r.text
+        body = r.json()
+        err = body.get("detail", {}).get("error") or body.get("error")
+        assert err["code"] == "invalid_alignment_request", err
+        assert err["param"] == "text", err
+        # Neither engine path ran.
+        assert _FakeAlignerEngine.last_call is None
+        assert _FakeAlignerEngine.last_transcribe is None
 
     def test_non_aligner_model_with_text_is_400(self, _stub_non_aligner):
         client, restore = _mount_audio_app()
@@ -567,8 +615,11 @@ class TestForcedAlignment:
         finally:
             restore()
         assert r.status_code == 200, r.text
-        assert "ForcedAligner" in audio_route._stt_engine.model_name, (
-            audio_route._stt_engine.model_name
+        # The aligner lives in its own cache, deliberately NOT the shared
+        # ``_stt_engine`` the ASR lane mutates from the event loop.
+        assert audio_route._stt_engine is None, audio_route._stt_engine
+        assert "ForcedAligner" in audio_route._aligner_engine.model_name, (
+            audio_route._aligner_engine.model_name
         )
 
     @pytest.mark.parametrize("blank", ["", "   "])
@@ -594,8 +645,11 @@ class TestForcedAlignment:
         finally:
             restore()
         assert r.status_code == 200, r.text
-        assert "ForcedAligner" in audio_route._stt_engine.model_name, (
-            audio_route._stt_engine.model_name
+        # The aligner lives in its own cache, deliberately NOT the shared
+        # ``_stt_engine`` the ASR lane mutates from the event loop.
+        assert audio_route._stt_engine is None, audio_route._stt_engine
+        assert "ForcedAligner" in audio_route._aligner_engine.model_name, (
+            audio_route._aligner_engine.model_name
         )
 
     def test_blank_response_format_takes_verbose_json(self, _stub_aligner):
@@ -766,6 +820,58 @@ class TestVideoContract:
         finally:
             restore()
         assert r.status_code == 400, r.text
+
+    @pytest.mark.parametrize(
+        "image",
+        [
+            "file:///etc/passwd",
+            "FILE:///etc/passwd",
+            "gopher://internal/x",
+            "ftp://internal/frame.png",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "data:;base64,AAAA",
+            "   ",
+        ],
+    )
+    def test_unsafe_image_reference_is_rejected(self, image):
+        """``image`` is the only field a backend DEREFERENCES.
+
+        Left unconstrained it is a local-file-read (``file://``) and SSRF
+        primitive the instant ``resolve_video_engine`` stops raising.
+        Validate at the schema boundary so every future backend inherits
+        the restriction rather than each having to remember it.
+        """
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "animate", "image": image},
+            )
+        finally:
+            restore()
+        assert r.status_code == 422, r.text
+
+    @pytest.mark.parametrize(
+        "image",
+        [
+            "data:image/png;base64,iVBORw0KGgo=",
+            "https://example.com/frame.png",
+            "http://example.com/frame.png",
+            "iVBORw0KGgoAAAANSUhEUg==",  # bare base64, no scheme
+        ],
+    )
+    def test_documented_image_forms_are_accepted(self, image):
+        """The three forms docs/content_farm_api.md advertises must pass
+        validation (and then hit the contract-only 501, not a 422)."""
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "animate", "image": image},
+            )
+        finally:
+            restore()
+        assert r.status_code == 501, r.text
 
     def test_schema_round_trips(self):
         """The request/response models colleagues integrate against must
