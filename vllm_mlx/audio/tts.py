@@ -287,6 +287,7 @@ class TTSEngine:
         lang_code: str = "a",
         instruct: str | None = None,
         ref_audio: str | None = None,
+        exaggeration: float | None = None,
     ) -> AudioOutput:
         """
         Generate speech from text.
@@ -305,12 +306,15 @@ class TTSEngine:
                 families ignore it (they have no emotion-control surface),
                 so passing it is a no-op there rather than an error.
             ref_audio: Path to a reference speech clip for ZERO-SHOT voice
-                cloning. Only IndexTTS honours this — its ``generate`` has no
-                predefined speakers; it reproduces the timbre of whatever
-                short clip you pass here (``ref_audio``) instead of a named
-                ``voice``. Other families ignore it. When the IndexTTS family
-                is loaded and no ``ref_audio`` is given the engine raises,
-                since there is no speaker to fall back to.
+                cloning. Honoured by IndexTTS (required — it has no predefined
+                speakers) and by Chatterbox (optional — clones the ref timbre
+                on top of its default voice). Other families ignore it. When
+                the IndexTTS family is loaded and no ``ref_audio`` is given the
+                engine raises, since there is no speaker to fall back to.
+            exaggeration: Chatterbox emotion/intensity knob (0.0 neutral →
+                ~1.0 very expressive). Only the Chatterbox family honours it;
+                it drives that engine's ``exaggeration`` argument and is the
+                lever that de-flattens the delivery. Other families ignore it.
 
         Returns:
             AudioOutput with audio data and metadata
@@ -341,6 +345,18 @@ class TTSEngine:
                         "to clone); it has no predefined speakers."
                     )
                 gen_kwargs = {"text": text, "ref_audio": ref_audio}
+            elif self._model_family == "chatterbox":
+                # Chatterbox's generate takes ``(text, exaggeration, ref_audio,
+                # ...)`` and has NO ``voice``/``speed``/``lang_code`` surface
+                # (the turbo variant would just drop them into **kwargs). Its
+                # expressiveness comes from ``exaggeration`` and its cloning
+                # from ``ref_audio`` — forward exactly those, only when set, so
+                # the model's own defaults hold otherwise.
+                gen_kwargs = {"text": text}
+                if exaggeration is not None:
+                    gen_kwargs["exaggeration"] = exaggeration
+                if ref_audio:
+                    gen_kwargs["ref_audio"] = ref_audio
             else:
                 gen_kwargs = {"text": text, "voice": voice, "speed": speed}
                 if self._model_family == "qwen3_tts":
