@@ -1581,6 +1581,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     instructions = request.instructions
     ref_audio = request.ref_audio
     ref_text = request.ref_text
+    exaggeration = request.exaggeration
 
     try:
         from ..audio.tts import TTSEngine, UnsupportedAudioFormatError
@@ -1591,14 +1592,31 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
         # handler body.
         model_name = _resolve_tts_model(model)
-        if ref_audio is not None and not (
-            "f5-tts" in model_name.lower() or "f5_tts" in model_name.lower()
-        ):
+        # Zero-shot voice cloning from a reference clip is supported by the
+        # F5-TTS family (clones timbre from ``ref_audio`` + its ``ref_text``
+        # transcript) and the Chatterbox family (clones timbre from
+        # ``ref_audio``; its engine branch ignores the transcript). Every
+        # other family has no cloning surface, so a ``ref_audio`` aimed at
+        # one is a client error — reject it up front rather than silently
+        # dropping the clip. The shared ``AudioSpeechRequest`` validator
+        # still requires ``ref_audio``/``ref_text`` as a pair (the F5
+        # invariant), so a Chatterbox cloning request supplies both even
+        # though Chatterbox consumes only the audio.
+        _model_lower = model_name.lower()
+        _supports_cloning = (
+            "f5-tts" in _model_lower
+            or "f5_tts" in _model_lower
+            or "chatterbox" in _model_lower
+        )
+        if ref_audio is not None and not _supports_cloning:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": {
-                        "message": "ref_audio/ref_text voice cloning requires F5-TTS.",
+                        "message": (
+                            "ref_audio voice cloning requires an F5-TTS or "
+                            "Chatterbox model."
+                        ),
                         "type": "invalid_request_error",
                         "code": "unsupported_voice_cloning",
                         "param": "model",
@@ -1729,6 +1747,14 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         gen_kwargs = {"voice": voice, "speed": speed}
         if instructions:
             gen_kwargs["instruct"] = instructions
+        # Only forward ``exaggeration`` when the caller actually sent it, so
+        # the engine's own default holds otherwise. Like ``instruct`` it is
+        # a no-op keyword for every non-Chatterbox family (``generate``
+        # accepts it but only the Chatterbox branch forwards it to the
+        # model), so a caller may send it against any model without a 400 —
+        # matching OpenAI's ignore-unsupported-styling behaviour.
+        if exaggeration is not None:
+            gen_kwargs["exaggeration"] = exaggeration
         if ref_audio is not None:
             try:
                 ref_bytes = _decode_tts_ref_audio(ref_audio)

@@ -352,13 +352,18 @@ class TTSEngine:
             # would mis-hint the language. Every other family keeps the
             # pre-existing call shape unchanged.
             if self._model_family == "chatterbox":
-                # Chatterbox's generate takes ``(text, exaggeration,
-                # ref_audio, ...)`` and has NO ``voice``/``speed``/
-                # ``lang_code`` surface (the turbo variant would just drop
-                # them into **kwargs). Its expressiveness comes from
-                # ``exaggeration`` and its cloning from ``ref_audio`` —
-                # forward exactly those, only when set, so the model's own
-                # defaults hold otherwise.
+                # Chatterbox's ``generate`` steers expressiveness through
+                # ``exaggeration`` and zero-shot cloning through
+                # ``ref_audio``. It DOES also accept ``voice``/``speed``/
+                # ``lang_code`` kwargs, but their Kokoro-oriented values on
+                # this path (``voice="af_heart"``, ``lang_code="a"``) are
+                # meaningless to it, so we deliberately do NOT forward them
+                # and let the model's own defaults hold. ``exaggeration`` is
+                # a real named parameter on both the non-turbo and turbo
+                # repos (they load the same ``chatterbox.Model``), backed by
+                # ``**kwargs`` on ``Model.generate`` and ``generate_audio``,
+                # so forwarding it never raises TypeError on either variant.
+                # Forward exactly those two knobs, each only when set.
                 gen_kwargs: dict = {"text": text}
                 if exaggeration is not None:
                     gen_kwargs["exaggeration"] = exaggeration

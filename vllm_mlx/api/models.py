@@ -2628,6 +2628,17 @@ class AudioSpeechRequest(BaseModel):
     # service read arbitrary files. 14 MB base64 ~= 10 MB decoded audio.
     ref_audio: str | None = Field(default=None, max_length=14_000_000)
     ref_text: str | None = Field(default=None, max_length=4096)
+    # Rapid-MLX extension for the Chatterbox family's emotion/intensity
+    # control. Drives that engine's ``exaggeration`` argument: 0.0 = flat /
+    # deadpan narration, ~0.5 lively, up to ~2.0 very theatrical. It is the
+    # lever that de-flattens monotone delivery. ONLY the Chatterbox family
+    # honours it; every other TTS family ignores it — matching OpenAI's
+    # behaviour for styling fields on voices that don't support them, so a
+    # caller may send it unconditionally without a 400. ``None`` = omitted,
+    # i.e. let the engine's own default hold. Bounded to [0.0, 2.0] so an
+    # out-of-range value is rejected up front with the standard envelope
+    # rather than reaching the synthesis engine.
+    exaggeration: float | None = Field(default=None, ge=0.0, le=2.0)
 
     @model_validator(mode="before")
     @classmethod
