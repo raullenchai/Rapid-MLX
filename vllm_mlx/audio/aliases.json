@@ -86,7 +86,7 @@
     "hf_id": "mlx-community/VoxCPM1.5",
     "family": "voxcpm",
     "default_voice": "default",
-    "notes": "Chinese/English high-quality TTS (CPM-based)."
+    "notes": "English (experimental) TTS (CPM-based). WARNING: Chinese is currently BROKEN in this MLX port — Chinese input produces Thai-script gibberish plus long runaway generation, so do NOT use voxcpm for Chinese. For Chinese TTS use `f5-tts-zh` (EN+ZH, cloneable) or `qwen3-tts` (named Chinese speakers) instead. English-only is usable but best-effort; report upstream if synth fails."
   },
 
   "dia": {
@@ -110,6 +110,13 @@
     "family": "f5",
     "default_voice": "clone",
     "notes": "F5-TTS (pure-MLX, no torch): EN+ZH multilingual, zero-shot voice CLONING via ref_audio (24kHz clip) + ref_text. Fills the Chinese expressive/cloneable gap (Qwen3-TTS is flat, Chatterbox English-only). With no ref it uses a packaged default voice; supply a Chinese ref for a natural Chinese narrator."
+  },
+  "qwen3-tts-clone": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
+    "family": "qwen3_tts",
+    "default_voice": "clone",
+    "notes": "Alibaba Qwen3-TTS 1.7B **Base** — zero-shot Chinese/multilingual voice CLONING. Requires ref_audio (a clean 5-10s reference clip at the model's native sample rate) plus ref_text (its exact transcript); ignores predefined speakers. Lets a channel reuse ONE consistent branded narrator voice. Distinct from the CustomVoice variant (named speakers + `instruct` emotion, no cloning)."
   },
   "qwen3-tts-customvoice": {
     "type": "tts",

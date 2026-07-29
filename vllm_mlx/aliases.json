@@ -1484,6 +1484,18 @@
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
   },
+  "ltx-2.3-mlx-q4": {
+    "hf_path": "notapalindrome/ltx23-mlx-av-q4",
+    "modality": "video-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 24
+  },
   "embeddinggemma-300m-6bit": {
     "hf_path": "mlx-community/embeddinggemma-300m-6bit",
     "tool_call_parser": null,

@@ -84,7 +84,7 @@ class TestModalityValidation:
         # update the Literal in model_aliases.py AND the dispatch
         # tables in cli.py / routes/models.py. Failing this assertion
         # is the trigger to do that work.
-        assert frozenset({"text", "text-diffusion"}) == _VALID_MODALITIES
+        assert frozenset({"text", "text-diffusion", "video-gen"}) == _VALID_MODALITIES
 
     def test_reserved_modality_set_pinned(self) -> None:
         # Reserved lanes — declared in the type alias so routing

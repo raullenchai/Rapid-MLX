@@ -29,7 +29,7 @@ from .model_profile import Modality, ModelProfile
 # but loading an alias that declares one MUST fail loud right now —
 # otherwise an aliases.json typo would pass schema validation and crash
 # at request time with an unrouted lane (pr_validate codex r13 NIT).
-_VALID_MODALITIES: frozenset[str] = frozenset({"text", "text-diffusion"})
+_VALID_MODALITIES: frozenset[str] = frozenset({"text", "text-diffusion", "video-gen"})
 _RESERVED_MODALITIES: frozenset[str] = frozenset({"vision", "image-gen"})
 
 # Canonical enum for ``suffix_decoding_tier``. Kept here so the contract

@@ -380,6 +380,11 @@ audio = [
     # Additional multilingual dependencies
     "cn2an>=0.5.0",          # Chinese number conversion
 ]
+video = [
+    # MLX-native LTX-2.3 T2V/I2V with synchronized audio. 0.1.36 is the
+    # first verified release with the split-format LTX-2.3 VAE fixes.
+    "mlx-video-with-audio==0.1.36; platform_system == 'Darwin'",
+]
 
 [project.urls]
 Homepage = "https://github.com/raullenchai/Rapid-MLX"
