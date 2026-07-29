@@ -228,72 +228,67 @@ def _mount(monkeypatch):
     # Cold-start voice path: force snapshot enumeration to empty so the
     # route uses the static Qwen3 speaker list (matches a fresh install).
     monkeypatch.setattr(tts_mod, "_list_snapshot_voices", lambda _n: [])
-    audio_route._tts_engine = None
+    # Route the module-global engine cache through monkeypatch so teardown
+    # restores the true original singleton — a direct assignment would leak
+    # our stub into later audio tests and make them order-dependent.
+    monkeypatch.setattr(audio_route, "_tts_engine", None)
 
     app = FastAPI()
     app.include_router(audio_route.router)
     install_exception_handlers(app)
     cfg = get_config()
-    saved = cfg.api_key
-    cfg.api_key = None
-    monkeypatch.setattr(cfg, "api_key", None, raising=False)
+    # monkeypatch captures the REAL api_key and restores it on teardown;
+    # setting it directly first would make monkeypatch record ``None`` as
+    # the "original" and leak auth-disabled config into later tests.
+    monkeypatch.setattr(cfg, "api_key", None)
     client = TestClient(app)
-    return client, saved, cfg
+    return client
 
 
 class TestQwen3TTSRoute:
     def test_speech_forwards_instructions_as_instruct(self, monkeypatch):
-        client, saved, cfg = _mount(monkeypatch)
-        try:
-            resp = client.post(
-                "/v1/audio/speech",
-                json={
-                    "model": "qwen3-tts",
-                    "input": "他被诸葛亮压了一辈子。",
-                    "voice": "Serena",
-                    "instructions": "悬疑而低沉，逐渐激昂。",
-                },
-            )
-            assert resp.status_code == 200, resp.text
-            assert resp.headers["content-type"] == "audio/wav"
-            (engine,) = _RecordingEngine.instances
-            assert engine.model_name == CUSTOMVOICE_BF16
-            (call,) = engine.generate_calls
-            assert call["voice"] == "Serena"
-            assert call["instruct"] == "悬疑而低沉，逐渐激昂。"
-        finally:
-            cfg.api_key = saved
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "qwen3-tts",
+                "input": "他被诸葛亮压了一辈子。",
+                "voice": "Serena",
+                "instructions": "悬疑而低沉，逐渐激昂。",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["content-type"] == "audio/wav"
+        (engine,) = _RecordingEngine.instances
+        assert engine.model_name == CUSTOMVOICE_BF16
+        (call,) = engine.generate_calls
+        assert call["voice"] == "Serena"
+        assert call["instruct"] == "悬疑而低沉，逐渐激昂。"
 
     def test_omitted_voice_resolves_to_registry_default(self, monkeypatch):
-        client, saved, cfg = _mount(monkeypatch)
-        try:
-            resp = client.post(
-                "/v1/audio/speech",
-                json={"model": "qwen3-tts", "input": "你好世界。"},
-            )
-            assert resp.status_code == 200, resp.text
-            (engine,) = _RecordingEngine.instances
-            (call,) = engine.generate_calls
-            # Voice omitted → registry default_voice, not Kokoro's af_heart.
-            assert call["voice"] == "Serena"
-        finally:
-            cfg.api_key = saved
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": "qwen3-tts", "input": "你好世界。"},
+        )
+        assert resp.status_code == 200, resp.text
+        (engine,) = _RecordingEngine.instances
+        (call,) = engine.generate_calls
+        # Voice omitted → registry default_voice, not Kokoro's af_heart.
+        assert call["voice"] == "Serena"
 
     def test_unknown_voice_rejected_with_speaker_list(self, monkeypatch):
-        client, saved, cfg = _mount(monkeypatch)
-        try:
-            resp = client.post(
-                "/v1/audio/speech",
-                json={
-                    "model": "qwen3-tts",
-                    "input": "hi",
-                    "voice": "af_heart",  # a Kokoro voice, invalid for qwen3
-                },
-            )
-            assert resp.status_code == 400, resp.text
-            body = resp.json()
-            assert body["error"]["code"] == "invalid_voice"
-            # The envelope should advertise a real Qwen3 speaker.
-            assert "Serena" in body["error"]["message"]
-        finally:
-            cfg.api_key = saved
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "qwen3-tts",
+                "input": "hi",
+                "voice": "af_heart",  # a Kokoro voice, invalid for qwen3
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_voice"
+        # The envelope should advertise a real Qwen3 speaker.
+        assert "Serena" in body["error"]["message"]
