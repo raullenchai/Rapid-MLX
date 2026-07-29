@@ -9,11 +9,14 @@ These models define the request and response schemas for:
 - MCP (Model Context Protocol) integration
 """
 
+import base64
+import binascii
 import math
 import re
 import time
 import uuid
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -2734,11 +2737,371 @@ class AudioSpeechRequest(BaseModel):
         return lower
 
 
+# Content-farm lane: text→music/SFX ``response_format`` values the
+# ``/v1/audio/music`` route can produce. Stable Audio 3 renders WAV
+# natively; only ``wav`` is offered for now (mirrors the SA3 CLI's
+# output). Centralised so the validator and the route agree.
+_MUSIC_ALLOWED_RESPONSE_FORMATS: tuple[str, ...] = ("wav",)
+
+#: SA3 supports clips up to ~47s; reject longer requests up front so a
+#: caller doesn't wait on a generation the backend will clamp/refuse.
+_MUSIC_MAX_SECONDS: float = 47.0
+
+
+class AudioMusicRequest(BaseModel):
+    """Request for text→music / text→SFX (``/v1/audio/music``).
+
+    OpenAI-flavored shape mirroring :class:`AudioSpeechRequest` so the
+    content-farm music lane reads the same as the speech lane to a
+    colleague integrating over the API. Wired to
+    :class:`vllm_mlx.audio.music.MusicEngine` (MLX-native Stable Audio 3).
+
+    * ``input`` is the natural-language prompt (SA3's positive branch);
+      rejected empty / whitespace-only like the speech route's ``input``.
+    * ``model`` selects a DiT/decoder pairing via the route's
+      ``MUSIC_MODEL_ALIASES`` table (``medium`` = higher quality,
+      ``sm-music`` / ``sm-sfx`` = fast small). Unknown values fall back
+      to the engine defaults.
+    * ``seconds`` is bounded to SA3's ~47s ceiling; NaN/inf rejected via
+      the finite validator (Pydantic ``le=`` alone lets NaN through).
+    * ``input`` is length-capped: ``MusicEngine.generate`` passes it as an
+      argv element to the vendored SA3 CLI, so an unbounded prompt hits
+      the OS ``ARG_MAX`` limit and surfaces as an opaque 500 ``E2BIG``
+      instead of a 422 the caller can act on. The cap matches
+      ``negative_prompt`` (both land on the same command line).
+    """
+
+    model: str = "medium"
+    input: str = Field(..., min_length=1, max_length=4096)
+    seconds: float = Field(default=30.0, gt=0.0, le=_MUSIC_MAX_SECONDS)
+    steps: int = Field(default=8, ge=1, le=200)
+    negative_prompt: str | None = Field(default=None, max_length=4096)
+    seed: int | None = None
+    response_format: str = "wav"
+
+    @field_validator("input")
+    @classmethod
+    def _input_must_be_non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("input must be a non-empty, non-blank string")
+        return v
+
+    @field_validator("seconds")
+    @classmethod
+    def _seconds_must_be_finite(cls, v: float) -> float:
+        # Pydantic ``gt=/le=`` does NOT reject NaN (every NaN comparison
+        # is False), so a ``seconds=NaN`` slips past the bounds and would
+        # reach the engine. Reject non-finite values explicitly.
+        if not math.isfinite(v):
+            raise ValueError("seconds must be a finite number")
+        return v
+
+    @field_validator("response_format")
+    @classmethod
+    def _response_format_must_be_known(cls, v: str) -> str:
+        if v is None:
+            return "wav"
+        lower = v.lower()
+        if lower not in _MUSIC_ALLOWED_RESPONSE_FORMATS:
+            supported = ", ".join(_MUSIC_ALLOWED_RESPONSE_FORMATS)
+            raise ValueError(f"response_format must be one of: {supported}; got {v!r}")
+        return lower
+
+
 class AudioSeparationRequest(BaseModel):
     """Request for audio source separation."""
 
     model: str = "htdemucs"
     stems: list[str] = Field(default_factory=lambda: ["vocals", "accompaniment"])
+
+
+# =============================================================================
+# Video generation (content-farm lane — CONTRACT-ONLY, no backend yet)
+# =============================================================================
+#
+# ``/v1/video/generations`` ships the request/response CONTRACT and the
+# ``VideoEngine`` interface (see :mod:`vllm_mlx.video.engine`) so
+# colleagues can integrate against a stable shape today and drop an
+# LTX-2.3 backend in behind it later. The route returns HTTP 501 until a
+# concrete backend is registered — the models below are the wire schema
+# a future backend must honour.
+
+_VIDEO_ALLOWED_RESPONSE_FORMATS: tuple[str, ...] = ("mp4",)
+
+#: Generous structural bounds — the concrete backend narrows these to
+#: whatever LTX-2.3 actually supports. They exist so a wildly-invalid
+#: request (0-frame, negative dimension, NaN frame rate) 400s at the
+#: schema boundary rather than reaching the engine.
+_VIDEO_MAX_DIMENSION: int = 4096
+_VIDEO_MAX_FRAMES: int = 4096
+_VIDEO_MAX_FRAME_RATE: float = 240.0
+
+#: Cap on the i2v conditioning-frame string. A base64 PNG/JPEG frame at
+#: the 4096x4096 dimension ceiling fits comfortably; the bound exists so
+#: an unbounded body can't be used to pin memory before any backend even
+#: looks at it. ~12 MB of base64 ≈ a 9 MB image.
+_VIDEO_MAX_IMAGE_CHARS: int = 12 * 1024 * 1024
+
+#: URL schemes accepted for the i2v conditioning frame. Deliberately a
+#: two-item allowlist rather than a blocklist: the field is a
+#: server-side fetch target, so anything else (``file://``, ``gopher://``,
+#: ``ftp://``, ``data:`` with a non-image type) is a local-file-read or
+#: SSRF primitive the moment a backend starts honouring it.
+_VIDEO_ALLOWED_IMAGE_URL_SCHEMES: tuple[str, ...] = ("http", "https")
+
+#: Shortest scheme-less ``image`` value accepted as a bare base64 frame.
+#: No real encoded image is anywhere near this small; the floor keeps
+#: short path-shaped strings from qualifying on charset alone.
+_BARE_BASE64_MIN_CHARS: int = 32
+
+
+def _decodes_as_base64(value: str) -> bool:
+    """True if ``value`` (whitespace ignored) is well-formed base64."""
+    compact = "".join(value.split())
+    if not compact or len(compact) % 4 != 0:
+        return False
+    try:
+        base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
+
+
+def _is_bare_base64(value: str) -> bool:
+    """True if ``value`` is plausibly a raw base64 image payload.
+
+    A charset check alone is not enough: ``/etc/passwd`` contains only
+    base64-alphabet characters, so a naive regex accepts an absolute
+    filesystem path as an "inline frame". Require the value to actually
+    DECODE as base64 — which pins the length to a multiple of 4 and
+    rejects path- and hostname-shaped strings — plus a length floor.
+    """
+    compact = "".join(value.split())
+    if len(compact) < _BARE_BASE64_MIN_CHARS:
+        return False
+    return _decodes_as_base64(compact)
+
+
+class VideoGenerationRequest(BaseModel):
+    """Request for text→video AND image→video (``/v1/video/generations``).
+
+    Single schema covers both modes: text-to-video when ``image`` is
+    omitted, image-to-video (i2v) when ``image`` carries a base64 data
+    URI or an ``http(s)://`` URL of the conditioning first frame.
+
+    CONTRACT-ONLY: no backend is wired yet. A future LTX-2.3
+    implementation of :class:`vllm_mlx.video.engine.VideoEngine`
+    consumes exactly these fields.
+    """
+
+    model: str = "ltx-2.3"
+    prompt: str = Field(..., min_length=1)
+    # base64 (optionally as a ``data:image/*`` URI) OR an http(s) URL of
+    # the conditioning frame for image-to-video. ``None`` → text-to-video.
+    # Scheme-validated below: this becomes a server-side fetch target.
+    image: str | None = Field(default=None, max_length=_VIDEO_MAX_IMAGE_CHARS)
+    height: int = Field(default=704, gt=0, le=_VIDEO_MAX_DIMENSION)
+    width: int = Field(default=1216, gt=0, le=_VIDEO_MAX_DIMENSION)
+    num_frames: int = Field(default=97, ge=1, le=_VIDEO_MAX_FRAMES)
+    frame_rate: float = Field(default=25.0, gt=0.0, le=_VIDEO_MAX_FRAME_RATE)
+    steps: int | None = Field(default=None, ge=1, le=500)
+    seed: int | None = None
+    negative_prompt: str | None = Field(default=None, max_length=4096)
+    response_format: str = "mp4"
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_must_be_non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("prompt must be a non-empty, non-blank string")
+        return v
+
+    @field_validator("frame_rate")
+    @classmethod
+    def _frame_rate_must_be_finite(cls, v: float) -> float:
+        # Same NaN caveat as AudioMusicRequest.seconds — ``gt=/le=`` lets
+        # NaN through, so reject non-finite frame rates explicitly.
+        if not math.isfinite(v):
+            raise ValueError("frame_rate must be a finite number")
+        return v
+
+    @field_validator("image")
+    @classmethod
+    def _image_must_be_a_safe_reference(cls, v: str | None) -> str | None:
+        """Constrain the i2v conditioning frame to safe reference forms.
+
+        ``image`` is the one field in this contract a backend will
+        DEREFERENCE, which makes it the request's only server-side fetch
+        primitive. Left unconstrained, ``file:///etc/passwd`` becomes an
+        arbitrary local-file read and ``http://169.254.169.254/...`` (or
+        any internal address) becomes SSRF — the moment
+        ``resolve_video_engine`` stops raising. Validating at the schema
+        boundary means every future backend inherits the restriction
+        instead of each having to remember it.
+
+        Accepted: a ``data:image/...;base64,`` URI, an ``http(s)://`` URL,
+        or a bare base64 payload (no scheme at all). Anything with a
+        scheme outside the allowlist is rejected.
+
+        This is NOT complete SSRF defence — an allowed ``https://`` host
+        can still resolve to a private address. Egress policy for the
+        actual fetch stays the backend integrator's job; see
+        ``docs/content_farm_api.md``.
+        """
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("image must be a non-empty string when provided")
+
+        lowered = stripped.lower()
+        if lowered.startswith("data:"):
+            # Only image payloads — ``data:text/html`` or an unlabelled
+            # ``data:;base64`` is not a conditioning frame.
+            if not lowered.startswith("data:image/"):
+                raise ValueError(
+                    "image data: URI must declare an image/* media type "
+                    "(e.g. data:image/png;base64,...)"
+                )
+            # The media type alone isn't enough: ``data:image/png,%3C...``
+            # is a well-formed data URI carrying URL-encoded text, and
+            # ``data:image/png;base64,not!base64`` carries garbage. The
+            # contract promises base64 image data, so require the marker
+            # and make the payload actually decode.
+            head, sep, payload = stripped.partition(",")
+            if not sep or not head.lower().endswith(";base64"):
+                raise ValueError(
+                    "image data: URI must be base64-encoded "
+                    "(e.g. data:image/png;base64,...)"
+                )
+            if not payload.strip() or not _decodes_as_base64(payload):
+                raise ValueError("image data: URI payload is not valid base64")
+            return stripped
+
+        # Extract the scheme with urlsplit, NOT by looking for "://".
+        # A single-slash URI is still a URI: urlsplit("file:/etc/passwd")
+        # yields scheme "file", but a "://" substring test sees no scheme
+        # and would wave it through as bare base64 — which is exactly the
+        # local-file-read this validator exists to stop.
+        parts = urlsplit(lowered)
+        scheme = parts.scheme
+        if scheme and scheme not in _VIDEO_ALLOWED_IMAGE_URL_SCHEMES:
+            supported = ", ".join(_VIDEO_ALLOWED_IMAGE_URL_SCHEMES)
+            raise ValueError(
+                f"image URL scheme {scheme!r} is not allowed; use one of: "
+                f"{supported} (or pass the frame inline as base64)"
+            )
+        if scheme:
+            # An allowed scheme is not enough — the URL has to name a host.
+            # ``https:///etc/passwd`` (empty netloc, absolute local path)
+            # and ``http:frame.png`` (opaque, no netloc) both clear a
+            # scheme-only check while being exactly the shapes a lenient
+            # fetcher may resolve against the local filesystem.
+            if not parts.netloc:
+                raise ValueError(
+                    "image http(s) URL must include a host "
+                    "(e.g. https://example.com/frame.png)"
+                )
+        # No scheme at all → treated as an inline base64 payload. Require
+        # it to actually BE base64 so a stray path or hostname can't sit
+        # in the field waiting for a backend to guess at it.
+        if not scheme and not _is_bare_base64(stripped):
+            raise ValueError(
+                "image must be a data:image/* URI, an http(s) URL, or a bare "
+                "base64 payload"
+            )
+        return stripped
+
+    @field_validator("response_format")
+    @classmethod
+    def _response_format_must_be_known(cls, v: str) -> str:
+        if v is None:
+            return "mp4"
+        lower = v.lower()
+        if lower not in _VIDEO_ALLOWED_RESPONSE_FORMATS:
+            supported = ", ".join(_VIDEO_ALLOWED_RESPONSE_FORMATS)
+            raise ValueError(f"response_format must be one of: {supported}; got {v!r}")
+        return lower
+
+
+class VideoGenerationResult(BaseModel):
+    """One generated clip inside a :class:`VideoGenerationResponse`.
+
+    Mirrors the OpenAI images ``data[]`` item shape: exactly one of
+    ``b64_video`` (inline base64 mp4) or ``url`` is populated — enforced
+    by :meth:`_exactly_one_delivery_channel`.
+
+    **What the wired handler emits today, and what is reserved.**
+    :meth:`vllm_mlx.video.engine.VideoEngine.generate` returns a single
+    filesystem ``Path``, so the handler in
+    :mod:`vllm_mlx.routes.video` always fills ``b64_video`` and leaves
+    ``url`` and ``audio`` ``None``. Those two fields are RESERVED, not
+    live: a client must not expect them to be populated by the current
+    engine interface. Filling them requires ``VideoEngine`` to return a
+    structured artifact (bytes-or-URL plus an optional separate audio
+    track) rather than a bare ``Path`` — a deliberate follow-up on the
+    interface, kept out of the route layer. Until then, treat
+    ``b64_video`` as the delivery channel and ``url``/``audio`` as
+    forward-compatibility slots. See ``docs/content_farm_api.md``.
+    """
+
+    b64_video: str | None = None
+    url: str | None = None
+    audio: str | None = None
+    format: str = "mp4"
+    width: int | None = None
+    height: int | None = None
+    num_frames: int | None = None
+    frame_rate: float | None = None
+
+    @field_validator("url")
+    @classmethod
+    def _url_must_be_a_fetchable_url(cls, v: str | None) -> str | None:
+        """``url`` must be a real http(s) URL, never a filesystem path.
+
+        The whole reason the wired handler returns ``b64_video`` is that a
+        server-side path is not something the client can fetch and echoing
+        one leaks the server's layout. Enforcing that here stops a future
+        backend from reintroducing the same mistake through this field.
+        """
+        if v is None:
+            return None
+        parts = urlsplit(v)
+        if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            raise ValueError(
+                "url must be an absolute http(s) URL the client can fetch, "
+                "not a server-side filesystem path"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _exactly_one_delivery_channel(self) -> "VideoGenerationResult":
+        """Enforce the documented "exactly one of b64_video / url".
+
+        A docstring invariant a model doesn't check is a comment. Without
+        this, a backend could return both (which does the client no favours
+        — which one is authoritative?) or neither (a 200 carrying no video
+        at all, the failure mode hardest to notice).
+        """
+        if (self.b64_video is None) == (self.url is None):
+            raise ValueError(
+                "exactly one of `b64_video` or `url` must be set on a "
+                "video result (got "
+                f"{'both' if self.b64_video is not None else 'neither'})"
+            )
+        return self
+
+
+class VideoGenerationResponse(BaseModel):
+    """Response envelope for ``/v1/video/generations``.
+
+    Shaped like the OpenAI images API (``{created, data: [...]}``) with a
+    ``model`` echo so multi-model clients can attribute the result.
+    """
+
+    created: int
+    model: str
+    data: list[VideoGenerationResult]
 
 
 # =============================================================================

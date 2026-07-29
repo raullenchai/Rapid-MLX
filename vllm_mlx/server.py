@@ -2047,6 +2047,7 @@ from .routes.mcp_routes import router as _mcp_router
 from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
 from .routes.responses import router as _responses_router
+from .routes.video import router as _video_router
 
 app.include_router(_probe_router)
 app.include_router(_health_router)
@@ -2066,6 +2067,12 @@ app.include_router(_mcp_router)
 # fuzz wave: Qwen3-7B-4bit, etc.) must answer ``/v1/audio/*`` with a
 # stock 404 instead of advertising routes that 500 on first call.
 app.include_router(_cache_router)
+# Content-farm video lane (CONTRACT-ONLY): registered unconditionally so
+# ``/v1/video/generations`` is discoverable in the app and returns a
+# clean HTTP 501 until an LTX-2.3 backend is integrated. Unlike the audio
+# router it has no engine to load, so there's no text-only-server hazard
+# that motivated the audio lane's deferred registration.
+app.include_router(_video_router)
 
 
 def register_audio_routes_if_enabled() -> bool:
