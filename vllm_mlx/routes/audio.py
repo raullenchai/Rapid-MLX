@@ -1526,6 +1526,32 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     return ["default"]
 
 
+def _is_clone_capable_model(model_name: str) -> bool:
+    """Whether ``model_name`` can clone a voice from an inline reference.
+
+    Two TTS families condition synthesis on a ``ref_audio`` reference
+    clip sent on ``/v1/audio/speech``:
+
+    * **F5-TTS** — always conditions on a reference waveform.
+    * **Qwen3-TTS Base** — the ``...-Base-...`` repo clones a voice
+      zero-shot from the reference. Its CustomVoice sibling does NOT
+      clone: it keeps a predefined named speaker and ignores
+      ``ref_audio``.
+
+    Classify on the repo NAME (the last path component) split into
+    ``-``/``_`` tokens, never a whole-id substring, so an org segment
+    (``customvoice-org/...``) or an unrelated ``base`` elsewhere in the
+    path can't flip the verdict — mirrors the Base-reject guard's
+    tokenization inside :func:`create_speech`.
+    """
+    repo = model_name.rsplit("/", 1)[-1].lower()
+    tokens = set(re.split(r"[-_]", repo))
+    is_f5 = "f5-tts" in repo or "f5_tts" in repo or "f5" in tokens
+    is_qwen3 = "qwen3-tts" in repo or "qwen3_tts" in repo
+    is_qwen3_base = is_qwen3 and "base" in tokens and "customvoice" not in tokens
+    return is_f5 or is_qwen3_base
+
+
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
 async def create_speech(request: AudioSpeechRequest = Body(...)):
     """Generate speech from text (OpenAI TTS API compatible).
@@ -1591,14 +1617,23 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
         # handler body.
         model_name = _resolve_tts_model(model)
-        if ref_audio is not None and not (
-            "f5-tts" in model_name.lower() or "f5_tts" in model_name.lower()
-        ):
+
+        # Zero-shot cloning from an inline ``ref_audio`` reference clip is
+        # only wired for the clone-capable families (F5-TTS + Qwen3-TTS
+        # Base). A reference clip aimed at any other model is rejected up
+        # front so the caller gets an actionable 400 rather than the engine
+        # ignoring the clip and silently synthesizing a default voice.
+        clone_capable = _is_clone_capable_model(model_name)
+        inline_clone = ref_audio is not None and clone_capable
+        if ref_audio is not None and not clone_capable:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": {
-                        "message": "ref_audio/ref_text voice cloning requires F5-TTS.",
+                        "message": (
+                            "ref_audio/ref_text voice cloning requires a "
+                            "clone-capable model (F5-TTS or Qwen3-TTS Base)."
+                        ),
                         "type": "invalid_request_error",
                         "code": "unsupported_voice_cloning",
                         "param": "model",
@@ -1607,33 +1642,42 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             )
 
         # Qwen3-TTS ships two shapes: CustomVoice (predefined speakers,
-        # reference-free — what we alias and support) and Base (voice-
-        # cloning ONLY, requires a reference clip). A caller passing a raw
-        # ``...-Base-...`` repo id would otherwise reach the CustomVoice
-        # speaker-validation + generate path and fail deep in the engine
-        # ("Must provide one of ref_audio or ref_mel") as an opaque 500.
-        # Reject it up front with an actionable 400 pointing at CustomVoice.
-        # Classify on the REPO NAME (last path component), split into
-        # ``-``/``_``-delimited tokens, not a whole-id substring: an org like
-        # ``customvoice-org/...`` or an unrelated ``base`` elsewhere in the
-        # path must not flip the decision, and a ``base`` token must be
-        # caught wherever it sits (start/middle/end, hyphen or underscore
-        # delimited) — ``...-0.6B-Base``, ``..._base_bf16``, etc.
+        # reference-free) and Base (voice-cloning ONLY, requires a reference
+        # clip). A Base repo WITH an inline ``ref_audio`` is the correct
+        # clone target and is served below. A Base repo WITHOUT a reference
+        # cannot synthesize reference-free — it would otherwise reach the
+        # CustomVoice speaker-validation + generate path and fail deep in
+        # the engine ("Must provide one of ref_audio or ref_mel") as an
+        # opaque 500. Reject the reference-free case up front with an
+        # actionable 400 that points at both remedies (supply a reference,
+        # or use a CustomVoice repo). Classify on the REPO NAME (last path
+        # component), split into ``-``/``_``-delimited tokens, not a
+        # whole-id substring: an org like ``customvoice-org/...`` or an
+        # unrelated ``base`` elsewhere in the path must not flip the
+        # decision, and a ``base`` token must be caught wherever it sits
+        # (start/middle/end, hyphen or underscore delimited) —
+        # ``...-0.6B-Base``, ``..._base_bf16``, etc.
         _repo = model_name.rsplit("/", 1)[-1].lower()
         _tokens = set(re.split(r"[-_]", _repo))
         _is_qwen3 = "qwen3-tts" in _repo or "qwen3_tts" in _repo
-        if _is_qwen3 and "base" in _tokens and "customvoice" not in _tokens:
+        if (
+            _is_qwen3
+            and "base" in _tokens
+            and "customvoice" not in _tokens
+            and ref_audio is None
+        ):
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": {
                         "message": (
                             f"model {model_name!r} is a Qwen3-TTS Base "
-                            "(voice-cloning-only) repo and needs a reference "
-                            "audio clip, which /v1/audio/speech does not "
-                            "provide. Use a CustomVoice repo (e.g. the "
-                            "`qwen3-tts` alias) for reference-free synthesis "
-                            "with a predefined speaker."
+                            "(voice-cloning-only) repo: it cannot synthesize "
+                            "reference-free. Supply ref_audio (a clean 5-10s "
+                            "reference clip) plus ref_text (its transcript) to "
+                            "clone that voice, or use a CustomVoice repo (e.g. "
+                            "the `qwen3-tts` alias) for reference-free "
+                            "synthesis with a predefined speaker."
                         ),
                         "type": "invalid_request_error",
                         "code": "unsupported_model_variant",
@@ -1642,70 +1686,80 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 },
             )
 
-        # R11-B-F3 (Bo 0.8.12 dogfood, PR #863): translate the literal
-        # ``voice="default"`` to the registry's ``default_voice`` BEFORE
-        # the allowlist check below. Pre-fix the obvious naive caller
-        # value (``"default"``) was rejected by the kokoro allowlist
-        # even though the registry already advertises
-        # ``default_voice="af_heart"`` for it.
-        #
-        # R11-B-F1 (Bo 0.8.12 dogfood, this PR): the same resolver also
-        # fires when ``voice`` was OMITTED from the JSON body. The
-        # Pydantic model defaults ``voice`` to ``"af_heart"`` (kokoro's
-        # canonical voice) for OpenAI-SDK parity. That default is
-        # correct for kokoro but wrong for VibeVoice (no
-        # ``af_heart.safetensors``) and Chatterbox/VoxCPM/Dia (expect
-        # ``"default"``). The omitted-voice shape arrives here as
-        # ``voice="af_heart"`` and 400'd against every non-kokoro
-        # family. Treat the omitted-voice case the same way as the
-        # literal ``"default"`` sentinel — both resolve to the registry
-        # default. A client that EXPLICITLY sends ``voice="af_heart"``
-        # against vibevoice keeps that value (the validator then
-        # surfaces the 400 with the real available list).
-        voice_omitted = "voice" not in request.model_fields_set
-        if voice_omitted:
-            voice = "default"
-        voice = _resolve_default_voice_literal(model_name, voice)
+        # Voice selection + the speaker allowlist govern reference-free
+        # (named-speaker) synthesis only. An inline-clone request is driven
+        # by the reference clip, not a named speaker: a clone-capable Base
+        # repo advertises the ``"clone"`` sentinel as its registry
+        # ``default_voice`` (absent from the speaker allowlist), and F5
+        # conditions on the waveform too — so running the allowlist here
+        # would 400 the very request we intend to serve. Skip voice
+        # resolution + validation entirely for a clone and OMIT ``voice``
+        # from the generate call below — the timbre comes from ``ref_audio``.
+        if not inline_clone:
+            # R11-B-F3 (Bo 0.8.12 dogfood, PR #863): translate the literal
+            # ``voice="default"`` to the registry's ``default_voice`` BEFORE
+            # the allowlist check below. Pre-fix the obvious naive caller
+            # value (``"default"``) was rejected by the kokoro allowlist
+            # even though the registry already advertises
+            # ``default_voice="af_heart"`` for it.
+            #
+            # R11-B-F1 (Bo 0.8.12 dogfood, this PR): the same resolver also
+            # fires when ``voice`` was OMITTED from the JSON body. The
+            # Pydantic model defaults ``voice`` to ``"af_heart"`` (kokoro's
+            # canonical voice) for OpenAI-SDK parity. That default is
+            # correct for kokoro but wrong for VibeVoice (no
+            # ``af_heart.safetensors``) and Chatterbox/VoxCPM/Dia (expect
+            # ``"default"``). The omitted-voice shape arrives here as
+            # ``voice="af_heart"`` and 400'd against every non-kokoro
+            # family. Treat the omitted-voice case the same way as the
+            # literal ``"default"`` sentinel — both resolve to the registry
+            # default. A client that EXPLICITLY sends ``voice="af_heart"``
+            # against vibevoice keeps that value (the validator then
+            # surfaces the 400 with the real available list).
+            voice_omitted = "voice" not in request.model_fields_set
+            if voice_omitted:
+                voice = "default"
+            voice = _resolve_default_voice_literal(model_name, voice)
 
-        # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
-        # model's known voice set BEFORE we load weights. Pre-fix an
-        # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
-        # ``nova`` / typo'd ``af_hart``) fell through to
-        # ``mlx_audio.load_safetensors`` which 500'd on the missing
-        # ``voices/<name>.safetensors`` file. The 500 envelope hid the
-        # actual cause from the operator log AND from the caller. The
-        # check fires post-resolution so a HF passthrough id (``mlx-
-        # community/Kokoro-82M-bf16``) honours the same voice set as
-        # the ``kokoro`` short alias — both go through the same model
-        # family check.
-        valid_voices = _allowed_voices_for(model_name)
-        # Qwen3-TTS matches speaker names case-INsensitively (its engine
-        # lowercases before the ``spk_id`` lookup) and the upstream docs mix
-        # case ("serena" vs "Serena"). Normalize a case-insensitive hit to
-        # the canonical spelling so ``serena`` / ``ono_anna`` aren't
-        # rejected as ``invalid_voice``; the engine then receives the
-        # canonical form. Other families keep exact-match validation.
-        if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
-            _canonical = {v.lower(): v for v in valid_voices}
-            voice = _canonical.get(voice.lower(), voice)
-        if voice not in valid_voices:
-            preview = ", ".join(valid_voices[:8])
-            if len(valid_voices) > 8:
-                preview = f"{preview}, ..."
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": {
-                        "message": (
-                            f"voice {voice!r} not recognized for model "
-                            f"{model_name!r}. Available: {preview}."
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "invalid_voice",
-                        "param": "voice",
-                    }
-                },
-            )
+            # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
+            # model's known voice set BEFORE we load weights. Pre-fix an
+            # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
+            # ``nova`` / typo'd ``af_hart``) fell through to
+            # ``mlx_audio.load_safetensors`` which 500'd on the missing
+            # ``voices/<name>.safetensors`` file. The 500 envelope hid the
+            # actual cause from the operator log AND from the caller. The
+            # check fires post-resolution so a HF passthrough id (``mlx-
+            # community/Kokoro-82M-bf16``) honours the same voice set as
+            # the ``kokoro`` short alias — both go through the same model
+            # family check.
+            valid_voices = _allowed_voices_for(model_name)
+            # Qwen3-TTS matches speaker names case-INsensitively (its engine
+            # lowercases before the ``spk_id`` lookup) and the upstream docs
+            # mix case ("serena" vs "Serena"). Normalize a case-insensitive
+            # hit to the canonical spelling so ``serena`` / ``ono_anna``
+            # aren't rejected as ``invalid_voice``; the engine then receives
+            # the canonical form. Other families keep exact-match validation.
+            if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
+                _canonical = {v.lower(): v for v in valid_voices}
+                voice = _canonical.get(voice.lower(), voice)
+            if voice not in valid_voices:
+                preview = ", ".join(valid_voices[:8])
+                if len(valid_voices) > 8:
+                    preview = f"{preview}, ..."
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                f"voice {voice!r} not recognized for model "
+                                f"{model_name!r}. Available: {preview}."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "invalid_voice",
+                            "param": "voice",
+                        }
+                    },
+                )
 
         # F-K-KOKORO-MISAKI: Kokoro pulls ``misaki`` lazily inside
         # ``KokoroPipeline``; the TTS-lane probe above can't catch
@@ -1726,7 +1780,14 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the real engine, but omitting the kwarg entirely keeps the call
         # shape backward-compatible with any generate() that predates the
         # emotion parameter (only Qwen3-TTS consumes it).
-        gen_kwargs = {"voice": voice, "speed": speed}
+        #
+        # OMIT ``voice`` for an inline clone — the reference clip selects
+        # the timbre and the Base model ignores ``voice`` when a reference
+        # is set (F5 has no named-speaker surface at all). Forwarding the
+        # ``"clone"`` sentinel or a stray named speaker would be meaningless
+        # and, for a strict engine, could raise. Reference-free synthesis
+        # keeps the resolved named speaker.
+        gen_kwargs = {"speed": speed} if inline_clone else {"voice": voice, "speed": speed}
         if instructions:
             gen_kwargs["instruct"] = instructions
         if ref_audio is not None:
