@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+#: Largest clip the wired handler will inline as base64. Encoding costs
+#: 4/3 in size and holds the raw bytes plus the encoded string at once, so
+#: this bounds peak memory per request. A backend that renders longer clips
+#: should upload to object storage and populate ``url`` instead of
+#: ``b64_video``.
+MAX_INLINE_VIDEO_BYTES: int = 256 * 1024 * 1024
+
 
 @router.post("/v1/video/generations", dependencies=[Depends(verify_api_key)])
 async def create_video(request: VideoGenerationRequest = Body(...)):
@@ -121,9 +128,9 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
         )
         video_path = str(written or out_path)
         written_path = video_path
-        with open(video_path, "rb") as fh:
-            payload = fh.read()
-        if not payload:
+
+        size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
+        if not size:
             raise HTTPException(
                 status_code=500,
                 detail={
@@ -135,12 +142,42 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
                     }
                 },
             )
+        # Refuse to inline a clip too large to base64 safely. Encoding
+        # inflates by 4/3 and both the bytes and the encoded string are
+        # resident at once, so an unbounded render could push the server
+        # into swap. A backend producing clips this size should upload to
+        # object storage and populate ``url`` instead.
+        if size > MAX_INLINE_VIDEO_BYTES:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": {
+                        "message": (
+                            f"Generated video is {size} bytes, over the "
+                            f"{MAX_INLINE_VIDEO_BYTES}-byte limit for inline "
+                            "base64 delivery"
+                        ),
+                        "type": "api_error",
+                        "code": "video_too_large_to_inline",
+                        "param": None,
+                    }
+                },
+            )
+
+        # Read + base64 off the event loop: a multi-MB read and encode on
+        # the loop thread stalls every other request for its duration.
+        def _read_and_encode() -> str:
+            with open(video_path, "rb") as fh:
+                return base64.b64encode(fh.read()).decode("ascii")
+
+        b64 = await asyncio.to_thread(_read_and_encode)
+
         return VideoGenerationResponse(
             created=int(time.time()),
             model=request.model,
             data=[
                 VideoGenerationResult(
-                    b64_video=base64.b64encode(payload).decode("ascii"),
+                    b64_video=b64,
                     format=request.response_format,
                     width=request.width,
                     height=request.height,

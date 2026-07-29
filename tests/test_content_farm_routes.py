@@ -828,6 +828,13 @@ class TestVideoContract:
             "ftp://internal/frame.png",
             "data:text/html;base64,PHNjcmlwdD4=",
             "data:;base64,AAAA",
+            # Right media type, but not base64 at all — the contract
+            # promises base64 image data. Regression pin for codex
+            # round-3 finding 3.
+            "data:image/png,not-base64",
+            "data:image/png;base64,not!valid!base64",
+            "data:image/png;base64,",
+            "data:image/png;charset=utf8,%3Cscript%3E",
             "   ",
             # Scheme-less but not base64 — a bare path or host must not
             # sit in the field waiting for a backend to interpret it.
@@ -906,3 +913,65 @@ class TestVideoContract:
         dumped = resp.model_dump()
         assert dumped["data"][0]["url"] == "/tmp/out.mp4"
         assert dumped["data"][0]["format"] == "mp4"
+
+
+class TestAlignmentErrorClassification:
+    """A corrupted upload must be reported as a corrupted upload."""
+
+    def test_decode_error_is_invalid_audio_file_not_alignment_request(
+        self, monkeypatch
+    ):
+        """Decoder ValueErrors must not be mislabelled as a bad request.
+
+        Some codec paths raise ``ValueError`` for undecodable audio. The
+        alignment handler's ``except ValueError`` sits BEFORE the generic
+        handler that owns the decode envelope, so without an explicit
+        decode check first a corrupted upload came back as
+        ``invalid_alignment_request`` blaming ``model``/``text`` — sending
+        the caller to fix a field that was never wrong. Regression pin for
+        codex round-3 finding 1.
+        """
+        from vllm_mlx.audio import probe
+        from vllm_mlx.routes import audio as audio_route
+
+        _install_fake_mlx_audio(monkeypatch)
+        probe._reset_probe_cache()
+
+        class _DecodeFailingEngine:
+            def __init__(self, model_name):
+                self.model_name = model_name
+
+            def load(self):
+                pass
+
+            def align(self, audio_path, text, language="Chinese"):
+                # The shape a codec raises on a truncated/garbage file.
+                raise ValueError(
+                    "Error opening file: File contains data in an unknown format."
+                )
+
+        monkeypatch.setattr(
+            "vllm_mlx.audio.stt.STTEngine", _DecodeFailingEngine, raising=False
+        )
+        stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+        if stt_mod is not None:
+            monkeypatch.setattr(stt_mod, "STTEngine", _DecodeFailingEngine)
+        audio_route._aligner_engine = None
+
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"text": "abc", "model": "qwen3-aligner"},
+                files={"file": ("clip.wav", b"not-a-wav", "audio/wav")},
+            )
+        finally:
+            restore()
+            audio_route._aligner_engine = None
+            probe._reset_probe_cache()
+
+        assert r.status_code == 400, r.text
+        body = r.json()
+        err = body.get("detail", {}).get("error") or body.get("error")
+        assert err["code"] != "invalid_alignment_request", err
+        assert err["param"] != "text", err

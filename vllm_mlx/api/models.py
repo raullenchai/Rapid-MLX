@@ -2855,6 +2855,18 @@ _VIDEO_ALLOWED_IMAGE_URL_SCHEMES: tuple[str, ...] = ("http", "https")
 _BARE_BASE64_MIN_CHARS: int = 32
 
 
+def _decodes_as_base64(value: str) -> bool:
+    """True if ``value`` (whitespace ignored) is well-formed base64."""
+    compact = "".join(value.split())
+    if not compact or len(compact) % 4 != 0:
+        return False
+    try:
+        base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
+
+
 def _is_bare_base64(value: str) -> bool:
     """True if ``value`` is plausibly a raw base64 image payload.
 
@@ -2865,13 +2877,9 @@ def _is_bare_base64(value: str) -> bool:
     rejects path- and hostname-shaped strings — plus a length floor.
     """
     compact = "".join(value.split())
-    if len(compact) < _BARE_BASE64_MIN_CHARS or len(compact) % 4 != 0:
+    if len(compact) < _BARE_BASE64_MIN_CHARS:
         return False
-    try:
-        base64.b64decode(compact, validate=True)
-    except (binascii.Error, ValueError):
-        return False
-    return True
+    return _decodes_as_base64(compact)
 
 
 class VideoGenerationRequest(BaseModel):
@@ -2955,6 +2963,19 @@ class VideoGenerationRequest(BaseModel):
                     "image data: URI must declare an image/* media type "
                     "(e.g. data:image/png;base64,...)"
                 )
+            # The media type alone isn't enough: ``data:image/png,%3C...``
+            # is a well-formed data URI carrying URL-encoded text, and
+            # ``data:image/png;base64,not!base64`` carries garbage. The
+            # contract promises base64 image data, so require the marker
+            # and make the payload actually decode.
+            head, sep, payload = stripped.partition(",")
+            if not sep or not head.lower().endswith(";base64"):
+                raise ValueError(
+                    "image data: URI must be base64-encoded "
+                    "(e.g. data:image/png;base64,...)"
+                )
+            if not payload.strip() or not _decodes_as_base64(payload):
+                raise ValueError("image data: URI payload is not valid base64")
             return stripped
 
         # Extract the scheme with urlsplit, NOT by looking for "://".
@@ -2995,9 +3016,21 @@ class VideoGenerationResult(BaseModel):
     """One generated clip inside a :class:`VideoGenerationResponse`.
 
     Mirrors the OpenAI images ``data[]`` item shape: exactly one of
-    ``b64_video`` (inline base64 mp4) or ``url`` is populated by a
-    backend. ``audio`` carries LTX-2.3's native soundtrack when the
-    backend emits one (base64 of the muxed track), else ``None``.
+    ``b64_video`` (inline base64 mp4) or ``url`` is populated — enforced
+    by :meth:`_exactly_one_delivery_channel`.
+
+    **What the wired handler emits today, and what is reserved.**
+    :meth:`vllm_mlx.video.engine.VideoEngine.generate` returns a single
+    filesystem ``Path``, so the handler in
+    :mod:`vllm_mlx.routes.video` always fills ``b64_video`` and leaves
+    ``url`` and ``audio`` ``None``. Those two fields are RESERVED, not
+    live: a client must not expect them to be populated by the current
+    engine interface. Filling them requires ``VideoEngine`` to return a
+    structured artifact (bytes-or-URL plus an optional separate audio
+    track) rather than a bare ``Path`` — a deliberate follow-up on the
+    interface, kept out of the route layer. Until then, treat
+    ``b64_video`` as the delivery channel and ``url``/``audio`` as
+    forward-compatibility slots. See ``docs/content_farm_api.md``.
     """
 
     b64_video: str | None = None

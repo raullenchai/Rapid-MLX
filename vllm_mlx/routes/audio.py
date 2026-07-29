@@ -1016,6 +1016,40 @@ def _get_alignment_lock() -> asyncio.Lock:
     return _alignment_lock
 
 
+async def _run_to_completion(func, /, *args):
+    """``asyncio.to_thread(func, *args)`` that survives cancellation.
+
+    A plain ``await asyncio.to_thread(...)`` is NOT cancellable — the
+    worker thread keeps running — but the await returns immediately on
+    cancellation. That is the dangerous combination for the audio lanes,
+    where a client disconnect cancels the handler mid-render:
+
+    * the ``async with`` lock around the await would unwind and admit
+      another request while the abandoned thread is still using the
+      cached engine (or running a multi-GB SA3 subprocess), destroying
+      the one-at-a-time memory guarantee the lock exists to provide, and
+    * the ``finally`` block would unlink the temp file the abandoned
+      worker is still writing to.
+
+    So on cancellation we wait for the worker to actually finish before
+    propagating, keeping "lock held" and "temp file alive" true for
+    exactly as long as the thread is running. The client is already gone;
+    the extra wait costs nothing user-visible and is bounded by the
+    engine's own timeout (900 s for SA3).
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Drain the worker (ignoring its outcome — nobody is listening)
+        # before letting the cancellation unwind our lock + cleanup.
+        try:
+            await task
+        except Exception:
+            logger.debug("Abandoned worker finished with an error", exc_info=True)
+        raise
+
+
 #: Cached forced-aligner engine — DELIBERATELY separate from
 #: ``_stt_engine``.
 #:
@@ -1108,7 +1142,7 @@ async def _run_alignment_request(
         # coroutine, whereas queueing inside the worker would pin an
         # executor thread per waiter and starve every other to_thread user.
         async with _get_alignment_lock():
-            result = await asyncio.to_thread(
+            result = await _run_to_completion(
                 _align_blocking, model_name, tmp_path, text, language
             )
 
@@ -1122,6 +1156,15 @@ async def _run_alignment_request(
     except HTTPException:
         raise
     except ValueError as e:
+        # Decoder failures come through as ValueError on some codec paths,
+        # and this handler sits BEFORE the generic ``except Exception``
+        # that owns the decode envelope — so classify decode errors first
+        # or a corrupted upload gets reported as ``invalid_alignment_request``
+        # blaming ``model``/``text``, which sends the caller chasing the
+        # wrong field.
+        if _is_decode_error(e):
+            logger.info("Forced alignment rejected corrupted upload: %s", e)
+            raise _audio_decode_error_envelope(e)
         # align() raises ValueError for the two client-fixable shapes:
         # a non-aligner model, or empty/blank known text. Surface a 400
         # ``invalid_request_error`` rather than the generic 500 so the
@@ -2173,7 +2216,7 @@ async def create_music(request: AudioMusicRequest = Body(...)):
         # queued renders don't each pin a shared executor thread.
         # See _generate_music_blocking and _music_lock.
         async with _get_music_lock():
-            await asyncio.to_thread(
+            await _run_to_completion(
                 _generate_music_blocking, dit, decoder, tmp_path, request
             )
 
