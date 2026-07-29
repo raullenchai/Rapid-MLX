@@ -975,3 +975,63 @@ class TestAlignmentErrorClassification:
         err = body.get("detail", {}).get("error") or body.get("error")
         assert err["code"] != "invalid_alignment_request", err
         assert err["param"] != "text", err
+
+
+def test_direct_handler_call_tolerates_unresolved_form_defaults(monkeypatch):
+    """Calling ``create_transcription`` directly must not hit the new ``text``
+    logic with a FastAPI sentinel.
+
+    Several existing tests (e.g. test_audio_upload_size_limit) invoke the
+    handler as a plain coroutine rather than through the ASGI stack, so any
+    parameter they don't pass arrives as its unresolved ``Form(None)`` /
+    ``Query(None)`` object — truthy and non-None but NOT a string. The
+    pre-existing params only ever compare against None, so they tolerate
+    it; the forced-alignment branch calls ``.strip()``, which raised
+    ``AttributeError: 'Form' object has no attribute 'strip'`` until the
+    merge switched to an isinstance check.
+
+    Caught by pr_validate's full_unit step, not by the route tests — those
+    all go through TestClient, where FastAPI resolves the defaults.
+    """
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from vllm_mlx.audio import probe
+    from vllm_mlx.routes import audio as audio_route
+
+    _install_fake_mlx_audio(monkeypatch)
+    probe._reset_probe_cache()
+
+    class _Boom:
+        """An engine that must never be reached — a bogus model 404s first."""
+
+        def __init__(self, model_name):  # pragma: no cover
+            raise AssertionError("engine must not be constructed")
+
+    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _Boom, raising=False)
+    stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+    if stt_mod is not None:
+        monkeypatch.setattr(stt_mod, "STTEngine", _Boom)
+
+    # Only the pre-F-165 kwargs, exactly as the older direct-call tests do:
+    # text_form / text_query are left at their unresolved defaults.
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                audio_route.create_transcription(
+                    file=_UploadLike(_make_tone_wav()),  # type: ignore[arg-type]
+                    model_form="definitely-not-a-real-alias",
+                    language_form=None,
+                    response_format_form=None,
+                    model_query=None,
+                    language_query=None,
+                    response_format_query=None,
+                )
+            )
+    finally:
+        probe._reset_probe_cache()
+
+    # A 404 for the bogus alias proves we got through the ASR/alignment
+    # branch selection without an AttributeError on the sentinel.
+    assert exc_info.value.status_code == 404, exc_info.value.detail
