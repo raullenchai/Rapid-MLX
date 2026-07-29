@@ -80,6 +80,28 @@ def test_sensevoice_unknown_language_degrades_to_auto() -> None:
     assert model.calls[0][1] == {"verbose": False, "language": "auto"}
 
 
+def test_sensevoice_direct_translation_fails_instead_of_silently_transcribing() -> None:
+    engine = STTEngine("mlx-community/SenseVoiceSmall")
+    engine.model = _SenseVoiceModel()
+    engine._loaded = True
+
+    with pytest.raises(ValueError, match="Whisper"):
+        engine.transcribe("speech.wav", task="translate")
+
+
+def test_sensevoice_backend_detection_uses_loaded_model_metadata(monkeypatch) -> None:
+    model = _SenseVoiceModel()
+    model.config = types.SimpleNamespace(model_type="sensevoice")
+    monkeypatch.setattr("mlx_audio.stt.utils.load_model", lambda _name: model)
+
+    engine = STTEngine("acme/private-asr")
+    engine.load()
+    engine.transcribe("speech.wav", language="zh")
+
+    assert engine._is_sensevoice is True
+    assert model.calls == [("speech.wav", {"verbose": False, "language": "zh"})]
+
+
 @pytest.mark.parametrize(
     "model",
     [

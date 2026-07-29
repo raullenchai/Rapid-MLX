@@ -538,6 +538,12 @@ class STTEngine:
             from mlx_audio.stt.utils import load_model
 
             self.model = load_model(self.model_name)
+            # Prefer the backend metadata after loading so renamed/private
+            # SenseVoice repos still receive the native generate() contract.
+            # The constructor's name check remains a useful pre-load fallback.
+            model_type = getattr(getattr(self.model, "config", None), "model_type", "")
+            if isinstance(model_type, str) and model_type.lower() == "sensevoice":
+                self._is_sensevoice = True
             # F-K-WHISPER-500: patch up the missing WhisperProcessor
             # mlx-community Whisper repos don't ship. Runs AFTER
             # mlx_audio's own post_load_hook, so if that succeeded
@@ -674,6 +680,12 @@ class STTEngine:
             self.load()
 
         audio_path = str(audio_path)
+
+        if self._is_sensevoice and task != "transcribe":
+            raise ValueError(
+                "SenseVoice supports transcription only; use a Whisper model "
+                "for task='translate'."
+            )
 
         # F-K-WHISPER-961: VAD pre-trim guard. Runs only for Whisper
         # engines with the guard enabled — see class docstring + the
