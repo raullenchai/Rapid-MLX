@@ -49,6 +49,11 @@ _WEIGHT_SUFFIXES: tuple[str, ...] = (
     ".safetensors",
     ".bin",
     ".gguf",
+    # ``.npz`` is the weight format the mlx audio repos ship (mlx-whisper's
+    # ``weights.npz`` is ~2.9 GiB for large-v3). Excluding it made those
+    # repos size to ~0 in the download-size estimate — count it so both the
+    # ``[Y/n]`` gate and the ``rapid-mlx models`` Size column are accurate.
+    ".npz",
     ".json",
     ".txt",
     ".model",

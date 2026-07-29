@@ -4632,6 +4632,7 @@ def models_command(args):
     """
     from vllm_mlx._version_check import print_staleness_warning_if_any
     from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_sizes import format_size
 
     print_staleness_warning_if_any()
 
@@ -4651,8 +4652,13 @@ def models_command(args):
     # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
     # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7.
     alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
+    # Size ("438.3 GiB" is the widest current value) comes right after the
+    # alias so the "how big before I pull?" answer is the first thing a user
+    # sees next to the name (issue #1286). Values come from the checked-in
+    # model_sizes.json manifest — no per-invocation HuggingFace round-trip.
     cols = (
         ("Alias", alias_width),
+        ("Size", 10),
         ("Tools", 16),
         ("Reasoning", 12),
         ("Spec-Decode", 10),
@@ -4686,8 +4692,9 @@ def models_command(args):
         # registry column is pure declarative state.
         dflash = "✓" if p.supports_dflash else "—"
         ddtree = "✓" if p.supports_ddtree else "—"
+        size = format_size(p.hf_path)
         row = (
-            f"  {alias:<{alias_width}} {tools:<16} {reasoning:<12} "
+            f"  {alias:<{alias_width}} {size:<10} {tools:<16} {reasoning:<12} "
             f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7}"
         )
         print(row)
@@ -4720,7 +4727,7 @@ def models_command(args):
         audio_sep = "  " + "─" * width
         print(audio_sep)
         audio_header = (
-            f"  {'Alias':<{audio_alias_width}} {'Kind':<10} "
+            f"  {'Alias':<{audio_alias_width}} {'Size':<10} {'Kind':<10} "
             f"{'Family':<12} {'HF id':<40}"
         )
         print(audio_header)
@@ -4728,12 +4735,17 @@ def models_command(args):
         for entry in audio_entries:
             kind_tag = f"[audio:{entry.type}]"
             print(
-                f"  {entry.alias:<{audio_alias_width}} {kind_tag:<10} "
+                f"  {entry.alias:<{audio_alias_width}} "
+                f"{format_size(entry.hf_id):<10} {kind_tag:<10} "
                 f"{entry.family:<12} {entry.hf_id:<40}"
             )
         print(audio_sep)
 
     print()
+    print(
+        "  Size is an approximate download footprint (weight+tokenizer); "
+        "“—” = unknown. The exact size is confirmed at pull time."
+    )
     print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
     print("       `rapid-mlx pull <alias>` to download")
     print("       `rapid-mlx chat <alias>` for an interactive REPL")
@@ -6535,6 +6547,22 @@ def info_command(args):
     print()
     print(format_profile_table(name, cfg))
     print()
+
+    # Download footprint (issue #1286). Manifest-first so known aliases print
+    # instantly and offline. Fall back to a live 5s-capped HF probe ONLY for a
+    # raw hf_path the registry doesn't carry — a manifest entry that is present
+    # but null means "already known to be unresolvable", so we must NOT re-probe
+    # it live (that would reintroduce the network wait the manifest exists to
+    # avoid). ``~`` marks the value as an estimate.
+    from vllm_mlx._download_gate import _format_size, estimate_repo_size_bytes
+    from vllm_mlx.model_sizes import is_listed, size_bytes
+
+    dl_size = size_bytes(name)
+    if dl_size is None and not is_listed(name):
+        dl_size = estimate_repo_size_bytes(name)
+    if dl_size is not None:
+        print(f"  Download size: ~{_format_size(dl_size)}")
+        print()
 
     # DFlash eligibility — render the report so users can see which
     # gates pass/fail without consulting the docs. Skipped for unknown
