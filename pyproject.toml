@@ -390,6 +390,8 @@ mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 
 [project.scripts]
 rapid-mlx = "vllm_mlx.cli:main"
+# First-class short command for accessibility and reduced typing (#1279).
+rmlx = "vllm_mlx.cli:main"
 rapid-mlx-chat = "vllm_mlx.gradio_app:main"
 rapid-mlx-bench = "vllm_mlx.benchmark:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
