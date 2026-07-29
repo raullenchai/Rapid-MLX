@@ -3526,9 +3526,8 @@ async def _disconnect_guard(
     for >35 s after the client TCP-RST'd because nothing on the path
     actually reached into the scheduler with an abort signal until
     the generation hit its token cap. ``holder=None`` (default)
-    preserves the pre-C-01 contract for non-streaming callers and for
-    cloud-routed streams that don't have a local scheduler request
-    id.
+    preserves the pre-C-01 contract for callers that do not expose a local
+    scheduler request id.
     """
     import time as _time
 
@@ -4094,8 +4093,7 @@ def count_prompt_tokens(engine, prompt) -> int:
     list arriving there should not silently bypass the cap. So we
     handle both shapes explicitly: token-id lists skip tokenization
     entirely and use ``len()``; strings flow through ``tokenizer.encode``
-    with BOS-aware ``add_special_tokens`` handling that mirrors
-    ``BatchedEngine.estimate_new_tokens``.
+    with BOS-aware ``add_special_tokens`` handling.
 
     Returns 0 on tokenizer failure / unknown shape so the caller
     falls through to engine-side validation rather than 500-ing on a

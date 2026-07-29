@@ -1219,9 +1219,8 @@ async def count_anthropic_tokens(request: Request):
     # ``ChatCompletionRequest`` adapter chain that ``/v1/messages``
     # uses, then run the engine's ``build_prompt`` so the chat template
     # renders the full conversation (system + messages + tools). The
-    # tokenizer encode that follows uses ``count_prompt_tokens`` which
-    # mirrors ``BatchedEngine.estimate_new_tokens``' BOS-aware
-    # ``add_special_tokens`` handling.
+    # tokenizer encode that follows uses ``count_prompt_tokens`` with
+    # BOS-aware ``add_special_tokens`` handling.
     #
     # Fall through to the legacy per-segment count only when the
     # adapter rejects the body OR the engine doesn't expose

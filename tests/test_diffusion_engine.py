@@ -104,8 +104,7 @@ class FakeTokenizer:
         return rendered
 
     def encode(self, text: str) -> list[int]:
-        # Map characters to incrementing IDs; deterministic and
-        # length-correlated so estimate_new_tokens can be exercised.
+        # Map characters to deterministic token IDs.
         return [ord(c) % 256 for c in text]
 
 
@@ -313,17 +312,6 @@ class TestPromptAndTokenAccounting:
             engine.build_prompt([{"role": "user", "content": "hi"}], tools=None)
             engine.build_prompt([{"role": "user", "content": "hi"}], tools=[])
         assert [r for r in caplog.records if r.levelname == "WARNING"] == []
-
-    def test_estimate_new_tokens_returns_conservative_pair(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _install_mlx_vlm_mock(monkeypatch)
-        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
-
-        engine = DiffusionEngine(model_name="x/y")
-        engine._load_blocking()
-        total, new = engine.estimate_new_tokens("hello")
-        assert total == new == 5
 
 
 class TestStreamChatBlockCollapse:

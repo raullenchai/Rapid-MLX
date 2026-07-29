@@ -101,7 +101,6 @@ def patched_cfg():
     cfg.enable_auto_tool_choice = False
     cfg.engine = None
     cfg.model_name = "qwen3.5-test"
-    cfg.cloud_router = None
     # MagicMock attributes default to truthy MagicMock instances. The route at
     # anthropic.py:332 reads `cfg.no_thinking`; left unset, that path forces
     # chat_kwargs["enable_thinking"]=False, which the #223 fix at line 389

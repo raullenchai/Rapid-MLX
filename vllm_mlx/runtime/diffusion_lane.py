@@ -443,7 +443,7 @@ class DiffusionEngine(BaseEngine):
         # DiffusionGemma technically inherits the Gemma 4 multimodal
         # processor, but v0 of this engine routes text-only — vision
         # inputs raise at chat() time. Reporting ``False`` keeps the
-        # route's text-only paths (cloud routing, build_prompt) wired.
+        # route's text-only prompt path wired.
         return False
 
     @property
@@ -887,12 +887,6 @@ class DiffusionEngine(BaseEngine):
             if len(token_ids) == 1 and int(token_ids[0]) in skip_ids:
                 skip_ids.discard(int(token_ids[0]))
         return skip_ids
-
-    def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
-        self._ensure_loaded()
-        ids = self._processor.tokenizer.encode(prompt)
-        n = len(ids)
-        return (n, n)
 
     # ------------------------------------------------------------------
     # BaseEngine — chat / generate

@@ -78,9 +78,6 @@ class _FakeEngine:
     def build_prompt(self, *args, **kwargs):
         return "prompt"
 
-    def estimate_new_tokens(self, *args, **kwargs):
-        return (11, 7)
-
 
 @pytest.fixture(autouse=True)
 def _patch_cfg(monkeypatch):
@@ -93,7 +90,6 @@ def _patch_cfg(monkeypatch):
     monkeypatch.setattr(cfg, "reasoning_parser_name", None, raising=False)
     monkeypatch.setattr(cfg, "reasoning_parser", None, raising=False)
     monkeypatch.setattr(cfg, "enable_auto_tool_choice", False, raising=False)
-    monkeypatch.setattr(cfg, "cloud_router", None, raising=False)
     monkeypatch.setattr(cfg, "gc_control", False, raising=False)
     yield
 

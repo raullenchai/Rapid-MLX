@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prompt-level ``tool_choice`` enforcement on the chat route (#445).
 
-Pre-fix: ``tool_choice`` was forwarded only to the cloud router — local
-inference accepted the field but never enforced it, so ``"none"`` and
-specific-function modes silently behaved as ``"auto"``. On harmony/hybrid
-models this meant a user explicitly disabling tools (``"none"``) still
-got tool_calls back, and a user forcing function X got whatever the
-model preferred instead.
+Pre-fix, local inference accepted ``tool_choice`` but never enforced it, so
+``"none"`` and specific-function modes silently behaved as ``"auto"``. On
+harmony/hybrid models this meant a user explicitly disabling tools
+(``"none"``) still got tool_calls back, and a user forcing function X got
+whatever the model preferred instead.
 
 Fix (``routes/chat.py``): before any downstream consumption of
 ``request.tools`` (suffix injection at line ~398, chat-template
@@ -587,80 +586,6 @@ def test_tool_choice_named_function_wrong_call_returns_422():
     )
     assert resp.status_code == 422, resp.text
     assert "get_weather" in resp.text
-
-
-def test_tool_choice_required_with_stream_passes_through_cloud_routing():
-    """PR #518 round-8 codex BLOCKING #1: the streaming-required 422
-    guard must NOT fire when the cloud router is configured to handle
-    the request — cloud backends (e.g. GPT-4o) DO support
-    ``required`` with streaming via decoder-side constraints. The
-    guard now lives below the cloud routing block.
-
-    Verifies the guard's PRE-cloud placement was wrong by simulating
-    a cloud-routed request and asserting we don't 422 before cloud
-    routing decides.
-    """
-
-    # Minimal cloud router stub that always claims it would route.
-    # Sets ``stream_completion_called`` on first invocation so the
-    # test can prove the cloud path actually executed (not just that
-    # the local 422 didn't fire — round-9 codex NIT).
-    cloud_called = {"stream": False}
-
-    _CLOUD_SENTINEL_CONTENT = "CLOUD_SENTINEL_X"
-
-    class _FakeCloudRouter:
-        threshold = 0
-        cloud_model = "gpt-4o"
-
-        def should_route_to_cloud(self, _new_tokens):
-            return True
-
-        async def stream_completion(self, *args, **kwargs):
-            cloud_called["stream"] = True
-            yield (
-                'data: {"choices":[{"delta":{"content":"'
-                + _CLOUD_SENTINEL_CONTENT
-                + '"}}]}\n\n'
-            ).encode()
-            yield b"data: [DONE]\n\n"
-
-        async def completion(self, *args, **kwargs):
-            return {"choices": [{"message": {"content": "x"}}]}
-
-    engine = _RecordingEngine()
-    engine.estimate_new_tokens = lambda prompt: (10, 5)  # noqa: E731
-    cfg = reset_config()
-    cfg.engine = engine
-    cfg.model_name = "test-model"
-    cfg.no_thinking = True
-    cfg.tool_call_parser = "hermes"
-    cfg.cloud_router = _FakeCloudRouter()
-    app = FastAPI()
-    app.include_router(chat_router)
-    client = TestClient(app)
-
-    resp = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "weather?"}],
-            "tools": _TOOLS_FIXTURE,
-            "tool_choice": "required",
-            "stream": True,
-            "max_tokens": 32,
-        },
-    )
-    # Must reach the cloud path: 200 OK + cloud's sentinel content in
-    # the body + the cloud router's stream_completion was invoked.
-    assert resp.status_code == 200, resp.text
-    assert _CLOUD_SENTINEL_CONTENT in resp.text, (
-        f"cloud sentinel missing — local path was hit instead: {resp.text[:300]}"
-    )
-    assert cloud_called["stream"], (
-        "cloud router's stream_completion was never called — local 422 fired "
-        "or the request silently fell back to local inference"
-    )
 
 
 def test_tool_choice_required_with_stream_no_parser_returns_422():

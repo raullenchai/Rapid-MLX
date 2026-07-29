@@ -287,9 +287,6 @@ _tool_call_parser: str | None = None  # Parser name: auto, mistral, qwen, llama,
 _tool_parser_instance = None  # Instantiated parser
 _enable_tool_logits_bias: bool = False  # Jump-forward decoding for tool calls
 
-# Cloud routing (offload large-context requests to cloud LLM)
-_cloud_router = None  # CloudRouter instance when --cloud-model is set
-
 # GC control (Tier 0 optimization)
 _gc_control: bool = True  # Disable GC during generation to avoid latency spikes
 _no_thinking: bool = (
@@ -1421,13 +1418,9 @@ def load_model(
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
     prefill_step_size: int | None = None,
-    cloud_model: str | None = None,
-    cloud_threshold: int = 20000,
-    cloud_api_base: str | None = None,
-    cloud_api_key: str | None = None,
+    *,
     served_model_name: str | None = None,
     mtp: bool = False,
-    *,
     max_tokens_is_explicit: bool | None = None,
     force_text: bool = False,
     force_hybrid: bool = False,
@@ -1567,7 +1560,6 @@ def load_model(
         _default_max_tokens, \
         _default_max_tokens_is_explicit, \
         _tool_parser_instance, \
-        _cloud_router, \
         _alias_recommended_sampling, \
         _generation_config_sampling
 
@@ -1619,7 +1611,7 @@ def load_model(
             )
         force_text = True
         # Fail FAST on the alias-pin ↔ ``--mllm`` conflict — before the
-        # generation-config load / cloud-router / guardrail I/O below. The
+        # generation-config load / guardrail I/O below. The
         # general ``force_mllm and force_text`` guard further down still
         # covers direct ``load_model(force_mllm=True, force_text=True)``
         # callers; this early raise just avoids doing config I/O for an
@@ -1691,22 +1683,6 @@ def load_model(
         )
     except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
         logger.debug(f"mxfp4/moe guardrail probe failed (non-fatal): {_e}")
-
-    # Initialize cloud router if --cloud-model is set
-    if cloud_model:
-        from .cloud_router import CloudRouter
-
-        _cloud_router = CloudRouter(
-            cloud_model=cloud_model,
-            threshold=cloud_threshold,
-            api_base=cloud_api_base,
-            api_key=cloud_api_key,
-        )
-        logger.info(
-            f"Cloud routing enabled: model={cloud_model}, threshold={cloud_threshold} new tokens"
-        )
-    else:
-        _cloud_router = None
 
     if force_mllm and force_text:
         raise ValueError(
@@ -1964,7 +1940,6 @@ def _sync_config() -> None:
     cfg.max_request_bytes = _max_request_bytes
     cfg.sse_keepalive_seconds = _sse_keepalive_seconds
     cfg.body_receive_timeout_seconds = _body_receive_timeout_seconds
-    cfg.cloud_router = _cloud_router
     cfg.gc_control = _gc_control
     cfg.no_thinking = _no_thinking
     cfg.thinking_token_budget = _thinking_token_budget
@@ -2365,31 +2340,6 @@ Examples:
         help="Tokens to process per prefill chunk (default: 2048). "
         "Larger values may improve TTFT on Apple Silicon with sufficient memory.",
     )
-    parser.add_argument(
-        "--cloud-model",
-        type=str,
-        default=None,
-        help="Cloud model string for litellm (e.g. 'anthropic/claude-sonnet-4-5-20250929'). "
-        "When set, large-context requests are routed to the cloud provider.",
-    )
-    parser.add_argument(
-        "--cloud-threshold",
-        type=int,
-        default=20000,
-        help="New token threshold to trigger cloud routing (default: 20000)",
-    )
-    parser.add_argument(
-        "--cloud-api-base",
-        type=str,
-        default=None,
-        help="Custom API base URL for cloud model (for OpenAI-compatible providers like Zhipu).",
-    )
-    parser.add_argument(
-        "--cloud-api-key",
-        type=str,
-        default=None,
-        help="API key for cloud model (overrides environment variable).",
-    )
     # Task #292: mirror the ``rapid-mlx serve`` ``--enable-audio`` flag
     # on the legacy ``python -m vllm_mlx.server`` entrypoint so the same
     # text-mode-with-audio escape hatch is available to operators who
@@ -2664,10 +2614,6 @@ Examples:
         max_tokens_is_explicit=_max_tokens_is_explicit,
         force_mllm=args.mllm,
         force_text=args.no_mllm,
-        cloud_model=args.cloud_model,
-        cloud_threshold=args.cloud_threshold,
-        cloud_api_base=args.cloud_api_base,
-        cloud_api_key=args.cloud_api_key,
         force_hybrid=getattr(args, "force_hybrid", False),
         no_hybrid=getattr(args, "no_hybrid", False),
         force_spec_decode=getattr(args, "force_spec_decode", False),

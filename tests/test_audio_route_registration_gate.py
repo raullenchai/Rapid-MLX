@@ -823,7 +823,6 @@ class TestCliServeCommandWiresEnableAudioFlag:
             "_reasoning_parser_name",
             "_alias_recommended_sampling",
             "_generation_config_sampling",
-            "_cloud_router",
             "_model_registry",
         )
         snapshot = {a: getattr(server, a, None) for a in snapshot_attrs}

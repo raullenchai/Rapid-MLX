@@ -212,8 +212,8 @@ class TestScanMessagesForLoneSurrogates:
         _scan_messages_for_lone_surrogates([])  # no raise
 
     def test_dict_message_form_walks(self):
-        """When a caller hands raw dicts (e.g. cloud-routing path), the
-        walker must still recurse — attribute-AND-dict access pattern."""
+        """When a caller hands raw dicts, the walker must still recurse —
+        attribute-and-dict access pattern."""
         with pytest.raises(HTTPException):
             _scan_messages_for_lone_surrogates(
                 [{"role": "user", "content": "hi \ud800"}]

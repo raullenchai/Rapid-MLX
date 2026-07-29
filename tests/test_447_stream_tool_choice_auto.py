@@ -452,9 +452,6 @@ class _FakeEngine:
     def build_prompt(self, *args, **kwargs):
         return "prompt"
 
-    def estimate_new_tokens(self, *args, **kwargs):
-        return (10, 5)
-
 
 def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
     """Run ``stream_chat_completion`` against the fake engine, collect
@@ -533,7 +530,6 @@ class TestStreamSynthForcedToolChoice:
         monkeypatch.setattr(cfg, "tool_call_parser", "hermes", raising=False)
         monkeypatch.setattr(cfg, "reasoning_parser_name", "qwen3", raising=False)
         monkeypatch.setattr(cfg, "enable_auto_tool_choice", True, raising=False)
-        monkeypatch.setattr(cfg, "cloud_router", None, raising=False)
         monkeypatch.setattr(cfg, "gc_control", False, raising=False)
         yield
 

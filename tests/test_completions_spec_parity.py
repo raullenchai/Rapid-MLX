@@ -602,9 +602,6 @@ class TestLogprobsEngineCapability:
             def build_prompt(self, *_a, **_kw):
                 return ""
 
-            def estimate_new_tokens(self, *_a, **_kw):
-                return (0, 0)
-
         assert _Engine().supports_completion_logprobs is True
 
     def test_missing_tokenizer_base_capability_returns_false(self):
@@ -648,9 +645,6 @@ class TestLogprobsEngineCapability:
 
             def build_prompt(self, *_a, **_kw):
                 return ""
-
-            def estimate_new_tokens(self, *_a, **_kw):
-                return (0, 0)
 
         assert _Engine().supports_completion_logprobs is False
 

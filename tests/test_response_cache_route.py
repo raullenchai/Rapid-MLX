@@ -42,10 +42,10 @@ class _CountingEngine:
     distinguishable from a freshly-generated one.
 
     ``chat()`` is the method the non-streaming, non-guided chat path
-    invokes (routes/chat.py ~line 2884). ``build_prompt`` is present so
-    any cloud-routing / validation callers don't blow up, but the cache
-    key is derived from the raw messages — a call to ``build_prompt`` here
-    would be a SECOND render, which the cache deliberately avoids.
+    invokes (routes/chat.py ~line 2884). ``build_prompt`` is present for
+    route validation callers, but the cache key is derived from the raw
+    messages — a call to ``build_prompt`` here would be a SECOND render,
+    which the cache deliberately avoids.
     """
 
     preserve_native_tool_format = False

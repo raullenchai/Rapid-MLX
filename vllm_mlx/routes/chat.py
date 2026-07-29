@@ -119,18 +119,6 @@ _SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 router = APIRouter()
 
 
-# Exceptions worth catching around the cloud call so the local engine can
-# take over: provider/network/auth/quota — transient or out-of-our-control.
-# Anything outside this allowlist (AttributeError, TypeError,
-# NotImplementedError, …) is an engine-contract violation or programming
-# bug and MUST surface as 500. The original ``except Exception`` here hid
-# both #500 (missing ``build_prompt``) and the v0.6.70 hotfix (missing
-# the token-estimation helper on the engine) as silent fallback warnings.
-#
-# ``litellm.exceptions`` is imported lazily — its presence depends on
-# whether cloud routing was configured at startup. ``httpx`` and the
-# stdlib timeout/connection set are always available, so we fall back
-# to those when litellm isn't importable.
 def _tool_call_name(tc) -> str | None:
     """Extract the function name from a tool_call entry regardless of
     shape. Three real shapes seen in production:
@@ -2891,50 +2879,6 @@ def _engine_supports_channel_routed_tool_calls(engine) -> bool:
         return False
 
 
-def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:
-    """Build the allowlist of exception types we treat as recoverable from
-    the cloud call. Lazy so cloud routing being disabled doesn't pay the
-    litellm import cost.
-
-    Covered failure shapes (codex round-1 review on PR #502 — broaden
-    beyond ``httpx.HTTPError`` to catch real production cases):
-      * ``asyncio.TimeoutError`` / ``TimeoutError`` — request budget hit
-      * ``ConnectionError`` — TCP/UDP transport down
-      * ``ssl.SSLError`` — certificate / handshake — common w/ corp MITM
-      * ``json.JSONDecodeError`` — provider returned malformed body
-      * ``httpx.HTTPError`` — covers ``HTTPStatusError``, ``RequestError``,
-        ``ConnectError``, ``ProxyError``, ``ReadTimeout``, etc.
-      * ``litellm.exceptions.APIError`` — provider-side surface
-    """
-    import asyncio
-    import json
-    import ssl
-
-    exc_types: list[type[BaseException]] = [
-        asyncio.TimeoutError,
-        ConnectionError,
-        TimeoutError,
-        ssl.SSLError,
-        json.JSONDecodeError,
-    ]
-    try:
-        import httpx
-
-        exc_types.append(httpx.HTTPError)
-    except ImportError:
-        pass
-    try:
-        from litellm import exceptions as _litellm_exc
-
-        exc_types.append(_litellm_exc.APIError)
-    except (ImportError, AttributeError):
-        pass
-    return tuple(exc_types)
-
-
-_CLOUD_CALL_RECOVERABLE_EXCEPTIONS = _cloud_call_recoverable_exceptions()
-
-
 # Matches a single backslash directly followed by a non-ASCII codepoint.
 # ``lm-format-enforcer``'s grammar permits ``\\`` followed by any codepoint
 # as a valid JSON escape, so a model emitting JSON with CJK / emoji content
@@ -3038,17 +2982,13 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     _validate_model_name(request.model)
     engine = get_engine(request.model)
 
-    # Admission reservation is acquired LATER — after cloud-routing
-    # decision (codex R9: cloud-routable requests must not be 503'd
-    # solely because the local engine is at cap; they bypass local
-    # generation entirely) and after the cheap validation that may
-    # raise HTTPException (codex R3: validation errors used to pin
-    # the slot until restart, exhausting the cap via a trivial
+    # Admission reservation is acquired LATER — after cheap validation
+    # that may raise HTTPException (codex R3: validation errors used to
+    # pin the slot until restart, exhausting the cap via a trivial
     # malformed-JSON DoS). ``_commit_state[0] = True`` is flipped
     # right before returning a StreamingResponse so
     # ``_disconnect_guard`` owns release after the SSE generator
-    # closes; the route-level ``finally`` releases for non-streaming
-    # and cloud paths.
+    # closes; the route-level ``finally`` releases for non-streaming paths.
     _commit_state = [False]
     _admission_acquired = [False]
     try:
@@ -3279,9 +3219,7 @@ def _build_reasoning_budget_processor(
     a processor, ``_effective_posthoc_reasoning_cap`` suppresses the post-hoc cap
     so the two never both run (single mechanism, one source of truth).
 
-    Called from the route ONLY once the request is committed to LOCAL generation
-    (past cloud offload) — a cloud-routed request neither installs the processor
-    nor has its post-hoc cap suppressed (codex).
+    Called from the route only once the request is committed to generation.
 
     Gating (each returns ``None`` → post-hoc cap retained):
       * Thinking must be DEFINITIVELY on — ``_effective_enable_thinking`` is
@@ -3379,11 +3317,11 @@ async def _create_chat_completion_impl(
     _commit_state: list[bool],
     _admission_acquired: list[bool],
 ):
-    """Inner impl for ``create_chat_completion``. Admission is
-    reserved inside this function — after cloud-routing decision
-    and after cheap validation — to avoid (a) 503'ing
-    cloud-routable requests when the local engine is full and
-    (b) leaking the slot on validation HTTPException paths."""
+    """Inner impl for ``create_chat_completion``.
+
+    Admission is reserved after cheap validation to avoid leaking a slot on
+    validation ``HTTPException`` paths.
+    """
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -3753,20 +3691,6 @@ async def _create_chat_completion_impl(
             request.tools = filtered
         elif tc == "none" and request.tools:
             request.tools = None
-
-    # Save original messages (clean dicts) for cloud routing BEFORE
-    # local mutations (extract_multimodal_content, developer→system, suffix injection).
-    if cfg.cloud_router:
-        _cloud_original_messages = [
-            (
-                msg.model_dump(exclude_none=True)
-                if hasattr(msg, "model_dump")
-                else {k: v for k, v in dict(msg).items() if v is not None}
-            )
-            for msg in request.messages
-        ]
-    else:
-        _cloud_original_messages = None
 
     # Content blocks must either reach a capable model path or be rejected
     # before generation. Text-only models reject all media; MLLM/VLM models
@@ -4218,106 +4142,8 @@ async def _create_chat_completion_impl(
         if _restored_prefix:
             chat_kwargs["forced_assistant_prefix"] = _restored_prefix
 
-    # Cloud routing: offload large-context requests to cloud LLM.
-    #
-    # The token-budget computation (``build_prompt`` + ``estimate_new_
-    # tokens``) is part of the BaseEngine contract — any exception there
-    # is a real bug and must surface, NOT be silently swallowed as
-    # "falling back to local". The two regressions this scope-narrowing
-    # closes (#500 + the v0.6.70 hotfix) both hid behind a broad
-    # ``except Exception`` that turned engine-contract violations into
-    # warning logs while cloud routing silently never fired.
-    #
-    # Only the cloud call itself is wrapped, and only "expected,
-    # transient" failure shapes (network, auth, provider) are caught.
-    if cfg.cloud_router and not engine.is_mllm:
-        prompt = engine.build_prompt(messages, tools=request.tools)
-        total_tokens, new_tokens = engine.estimate_new_tokens(prompt)
-        if cfg.cloud_router.should_route_to_cloud(new_tokens):
-            logger.info(
-                f"[CLOUD ROUTE] {new_tokens} new tokens (total {total_tokens}) "
-                f"> threshold {cfg.cloud_router.threshold}, "
-                f"routing to {cfg.cloud_router.cloud_model}"
-            )
-            cloud_messages = _cloud_original_messages
-            cloud_kwargs = {
-                "temperature": chat_kwargs.get("temperature"),
-                "max_tokens": chat_kwargs.get("max_tokens"),
-                "top_p": chat_kwargs.get("top_p"),
-            }
-            if request.stop:
-                cloud_kwargs["stop"] = request.stop
-            if request.tool_choice is not None:
-                cloud_kwargs["tool_choice"] = request.tool_choice
-            if request.response_format:
-                rf = request.response_format
-                cloud_kwargs["response_format"] = (
-                    rf.model_dump() if hasattr(rf, "model_dump") else rf
-                )
-            if request.tools:
-                cloud_kwargs["tools"] = [
-                    t.model_dump() if hasattr(t, "model_dump") else t
-                    for t in request.tools
-                ]
-            # Cloud-routed request: the local scheduler/Metal path
-            # is bypassed entirely, so admission is not acquired
-            # for cloud paths. The wrapper's ``finally`` checks
-            # ``_admission_acquired[0]`` (still False here) and
-            # skips the release. Without this ordering (admission
-            # check moved BELOW the cloud routing block), a burst
-            # of local requests filling the cap would 503
-            # cloud-routable requests that never touch the local
-            # engine (codex R9).
-            try:
-                if request.stream:
-                    return StreamingResponse(
-                        _disconnect_guard(
-                            cfg.cloud_router.stream_completion(
-                                cloud_messages,
-                                model_name=cfg.model_name or "cloud",
-                                **cloud_kwargs,
-                            ),
-                            raw_request,
-                        ),
-                        media_type="text/event-stream",
-                        headers=SSE_RESPONSE_HEADERS,
-                    )
-                else:
-                    result = await _wait_with_disconnect(
-                        cfg.cloud_router.completion(cloud_messages, **cloud_kwargs),
-                        raw_request,
-                        timeout=request.timeout or cfg.default_timeout,
-                    )
-                    if result is None:
-                        return Response(status_code=499, content="Client disconnected")
-                    # NOTE: L-05's enable_thinking warning intentionally
-                    # does NOT fire on the cloud-routed path — the local
-                    # ``cfg.reasoning_parser_name`` isn't authoritative
-                    # for what the cloud provider does with the ctk
-                    # hint. A warning here would be misleading.
-                    return Response(
-                        content=json.dumps(result),
-                        media_type="application/json",
-                    )
-            except _CLOUD_CALL_RECOVERABLE_EXCEPTIONS as e:
-                # Provider/network failures are transient and the local
-                # engine is a reasonable fallback. Engine-contract
-                # violations (AttributeError, TypeError, …) are NOT in
-                # this allowlist on purpose — they must surface as 500.
-                logger.warning(
-                    f"[CLOUD ROUTE] Cloud call failed ({type(e).__name__}: {e}), "
-                    "falling back to local"
-                )
-        else:
-            logger.info(
-                f"[LOCAL] {new_tokens} new tokens (total {total_tokens}) "
-                f"<= threshold {cfg.cloud_router.threshold}, using local inference"
-            )
-
     # Generation-time thinking-token budget — built HERE, only once the request
-    # is committed to LOCAL generation (past the cloud-offload decision), so a
-    # cloud-routed request neither installs the processor nor has its post-hoc
-    # cap suppressed (codex). See ``_build_reasoning_budget_processor``.
+    # is committed to generation. See ``_build_reasoning_budget_processor``.
     # LINE① Option B: when the gated grammar is active, pass ``allow_tools`` so the
     # budget is installed for this tool request (coupled to the gate) and thread
     # the already-rendered generation prefix so no second render runs. The gate
@@ -4368,10 +4194,9 @@ async def _create_chat_completion_impl(
     # upfront with a clear error.
     #
     # Round-7 codex BLOCKING surfaced the silent text-only finish_reason
-    # case; round-8 moved the guard below cloud routing; round-9 narrowed
-    # to the truly-unenforceable case (no parser); round-10 codex BLOCKING
-    # #1 widened "enforceable" to include channel-routed capability so
-    # harmony/gemma4 streaming requests aren't blocked by the gate.
+    # case; later review narrowed the guard to the truly-unenforceable case
+    # (no parser), then widened "enforceable" to include channel-routed
+    # capability so harmony/gemma4 streaming requests aren't blocked.
     # Engine-level veto — even with ``--tool-call-parser`` set, an
     # engine that has explicitly opted out of tool-call surfaces
     # (``supports_tool_calls=False``) cannot emit structured tool
@@ -4459,9 +4284,8 @@ async def _create_chat_completion_impl(
     #
     # Short-circuit a completely repeated DETERMINISTIC request with the
     # previously-computed completion: zero admission, zero engine work,
-    # zero GPU decode. Placed AFTER cloud routing (cloud requests never
-    # produce a local stored completion) and BEFORE the admission gate
-    # (a cache hit must not consume a GPU slot). Disabled by default
+    # zero GPU decode. Placed BEFORE the admission gate because a cache hit
+    # must not consume a GPU slot. Disabled by default
     # (``--response-cache-entries 0``) → this whole block is skipped and
     # the request path is byte-for-byte unchanged.
     #
@@ -4570,12 +4394,10 @@ async def _create_chat_completion_impl(
                         headers=_hit_headers or None,
                     )
 
-    # Local-path admission gate: reserve a slot before kicking the
-    # engine. Placed AFTER cloud routing so cloud-routable requests
-    # don't 503 just because the local cap is full (codex R9), and
-    # AFTER the cheap validation above so a malformed request can't
-    # pin a slot until restart (codex R3). The wrapper's ``finally``
-    # uses ``_admission_acquired`` to decide whether to release.
+    # Admission gate: reserve a slot before kicking the engine. It runs
+    # after cheap validation so a malformed request cannot pin a slot until
+    # restart (codex R3). The wrapper's ``finally`` uses
+    # ``_admission_acquired`` to decide whether to release.
     _check_admission_or_503(engine)
     _admission_acquired[0] = True
 

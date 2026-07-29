@@ -397,6 +397,17 @@ def test_force_text_is_keyword_only_in_load_model():
     )
 
 
+def test_cloud_parameter_removal_does_not_shift_positional_bindings():
+    """Parameters after the removed cloud-routing block must be keyword-only."""
+    import inspect
+
+    from vllm_mlx.server import load_model
+
+    sig = inspect.signature(load_model)
+    assert sig.parameters["served_model_name"].kind == inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["mtp"].kind == inspect.Parameter.KEYWORD_ONLY
+
+
 def test_force_text_and_force_mllm_mutually_exclusive_in_load_model():
     """server.load_model raises ValueError if both flags are True. This
     is the second line of defense — CLI already rejects this via

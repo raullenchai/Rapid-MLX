@@ -3005,8 +3005,6 @@ def serve_command(args):
         features.append(auth_feature)
     if args.rate_limit > 0:
         features.append(f"rate-limit: {args.rate_limit}/min")
-    if args.cloud_model and not args.enable_dflash:
-        features.append(f"cloud: {args.cloud_model}")
     if gc_control and not args.enable_dflash:
         features.append("gc-control")
     if args.pin_system_prompt and not args.enable_dflash:
@@ -3584,10 +3582,6 @@ def serve_command(args):
             force_mllm=args.mllm,
             force_text=args.no_mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
-            cloud_model=args.cloud_model,
-            cloud_threshold=args.cloud_threshold,
-            cloud_api_base=args.cloud_api_base,
-            cloud_api_key=args.cloud_api_key,
             served_model_name=args.served_model_name,
             force_hybrid=getattr(args, "force_hybrid", False),
             no_hybrid=getattr(args, "no_hybrid", False),
@@ -4953,9 +4947,6 @@ def ps_command(_args):
             "--log-level",
             "--mcp-config",
             "--cors-origins",
-            "--cloud-model",
-            "--cloud-api-base",
-            "--cloud-api-key",
             "--served-model-name",
             "--max-tokens",
             "--gpu-memory-utilization",
@@ -8016,33 +8007,6 @@ Examples:
         type=float,
         default=None,
         help="Override default frequency_penalty for all requests (default: use model default)",
-    )
-    # Cloud routing options
-    serve_parser.add_argument(
-        "--cloud-model",
-        type=str,
-        default=None,
-        help="Cloud model string for litellm (e.g. 'anthropic/claude-sonnet-4-5-20250929'). "
-        "When set, large-context requests are routed to the cloud provider.",
-    )
-    serve_parser.add_argument(
-        "--cloud-threshold",
-        type=int,
-        default=20000,
-        help="New token threshold to trigger cloud routing (default: 20000). "
-        "Only requests with more new (uncached) tokens than this are routed.",
-    )
-    serve_parser.add_argument(
-        "--cloud-api-base",
-        type=str,
-        default=None,
-        help="Custom API base URL for cloud model (for OpenAI-compatible providers like Zhipu).",
-    )
-    serve_parser.add_argument(
-        "--cloud-api-key",
-        type=str,
-        default=None,
-        help="API key for cloud model (overrides environment variable).",
     )
     # Embedding model option
     serve_parser.add_argument(

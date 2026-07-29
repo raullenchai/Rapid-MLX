@@ -167,9 +167,6 @@ class ServerConfig:
     # via ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=0`` to disable.
     body_receive_timeout_seconds: float = 15.0
 
-    # --- Cloud routing ---
-    cloud_router: Any = None
-
     # --- Behavior flags ---
     gc_control: bool = True
     no_thinking: bool = False

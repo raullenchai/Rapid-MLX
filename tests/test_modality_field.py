@@ -169,8 +169,6 @@ class TestDiffusionLaneWired:
             _ = engine.tokenizer
         with pytest.raises(RuntimeError, match="not loaded"):
             engine.build_prompt([{"role": "user", "content": "hi"}])
-        with pytest.raises(RuntimeError, match="not loaded"):
-            engine.estimate_new_tokens("hi")
 
     def test_runner_alias_points_at_engine(self) -> None:
         # PR #551 shipped a ``DiffusionRunner`` symbol; we kept it as

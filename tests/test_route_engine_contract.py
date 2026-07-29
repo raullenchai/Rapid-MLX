@@ -1,34 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bug-class AST gates for ``vllm_mlx/routes/*.py`` engine access.
 
-Two regressions back-to-back (``#500`` + the ``v0.6.70`` hotfix) shipped the
-same shape: a route accessed an engine attribute / method that didn't exist
-on the production engine, and the failure was silently swallowed.
+These gates keep route code on the public ``BaseEngine`` contract instead of
+silently probing optional methods or reaching into concrete-engine internals.
+They are intentionally AST-based so refactors do not bypass them.
 
-* ``#500`` — ``hasattr(engine, "build_prompt")`` guarded the cloud-routing
-  branch. When ``#155`` deleted ``SimpleEngine`` (which hosted the method),
-  the guard turned ``False`` against ``BatchedEngine`` and the whole branch
-  was skipped without a log line.
-* ``v0.6.70 hotfix`` — same branch, deeper in the body: ``engine.model.
-  estimate_new_tokens(...)``. ``BatchedEngine`` has no ``.model`` attribute
-  (that was a ``SimpleEngine`` convention). The broad ``except Exception``
-  around the cloud block caught the ``AttributeError`` and the warning
-  ``"falling back to local"`` was the only signal.
-
-Neither was caught by ``pr_validate``, ``make smoke``, ``make stress``, or
-the three integration suites. They all passed because the existing route
-tests used ``MagicMock`` engines that auto-satisfy any attribute access.
-The bugs surfaced only at the release SOP's Gate 6 (real-server live
-repro).
-
-These gates exist so the bug-class is structurally impossible to
-reintroduce. They are intentionally AST-based (not string ``in`` checks)
-so refactors don't accidentally bypass them.
-
-Pattern A — ``hasattr(engine, X)`` is banned unless ``X`` is on an
-explicit allowlist of "genuinely optional" methods. The methods used by
-cloud routing and guided generation are on the ``BaseEngine`` contract;
-guarding them with ``hasattr`` re-creates the silent-skip shape.
+Pattern A — ``hasattr(engine, X)`` is banned unless ``X`` is on an explicit
+allowlist of genuinely optional methods.
 
 Pattern B — ``engine.X.Y`` (two-level access) is banned unless ``X`` is
 explicitly declared on ``BaseEngine``. The only ``X`` that qualifies
@@ -55,9 +33,7 @@ ROUTES_DIR = pathlib.Path(__file__).parent.parent / "vllm_mlx" / "routes"
 # belongs on ``BaseEngine`` with a sensible default instead.
 HASATTR_ENGINE_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # No entries today. The cloud-routing methods (#500) and guided-
-        # generation methods are on BaseEngine now; the hasattr guards
-        # that used to live in routes/chat.py have all been removed.
+        # No entries today. Route-facing methods belong on BaseEngine.
     }
 )
 
@@ -120,9 +96,8 @@ class _HasattrEngineVisitor(ast.NodeVisitor):
 @pytest.mark.parametrize("route_file", _route_files(), ids=lambda p: p.name)
 def test_no_hasattr_engine_guard(route_file: pathlib.Path) -> None:
     """``hasattr(engine, "X")`` is banned unless ``X`` is on the
-    allowlist. The guard is the same shape that silently disabled cloud
-    routing in #500 — when the engine class evolves and the method goes
-    away, the guard turns False and the feature is dead with no signal.
+    allowlist. When the engine class evolves and the method goes away, such
+    guards turn False and silently disable the feature.
 
     If a future engine genuinely doesn't support some optional feature,
     declare it on ``BaseEngine`` with a sensible default (e.g.
@@ -177,10 +152,8 @@ class _TwoLevelEngineVisitor(ast.NodeVisitor):
 @pytest.mark.parametrize("route_file", _route_files(), ids=lambda p: p.name)
 def test_no_two_level_engine_access(route_file: pathlib.Path) -> None:
     """``engine.X.Y`` is banned unless ``X`` is declared on
-    ``BaseEngine``. ``engine.model.estimate_new_tokens`` (v0.6.70 hotfix)
-    is the canonical bad case: ``BatchedEngine`` has no ``.model``
-    attribute, so the access raises ``AttributeError`` and the cloud
-    branch's try/except silently logs ``"falling back to local"``.
+    ``BaseEngine``. Concrete-engine internals such as ``engine.scheduler``
+    are not part of the route contract.
 
     If you genuinely need ``engine.X.Y``, declare ``X`` on
     ``BaseEngine`` as an abstract property so every engine that ships
@@ -263,7 +236,7 @@ def test_gates_catch_pre_fix_shapes(tmp_path: pathlib.Path) -> None:
         "def f(engine):\n"
         '    if hasattr(engine, "build_prompt"):\n'
         '        engine.build_prompt("x")\n'
-        "    return engine.model.estimate_new_tokens('x')\n"
+        "    return engine.scheduler.cancel('x')\n"
     )
     tree = ast.parse(src)
 
@@ -273,7 +246,7 @@ def test_gates_catch_pre_fix_shapes(tmp_path: pathlib.Path) -> None:
 
     b = _TwoLevelEngineVisitor()
     b.visit(tree)
-    assert b.findings == [(4, "model", "engine.model.estimate_new_tokens")]
+    assert b.findings == [(4, "scheduler", "engine.scheduler.cancel")]
 
     c = _DirectEngineMethodVisitor()
     c.visit(tree)

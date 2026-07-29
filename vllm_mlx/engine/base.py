@@ -442,15 +442,8 @@ class BaseEngine(ABC):
     # instantiation (ABC enforcement) instead of silently degrading at
     # request time under a ``hasattr`` guard or broad ``try/except``.
     #
-    # Bug history this contract closes: #500 (``hasattr(engine,
-    # "build_prompt")`` silently disabled cloud routing for ~6 weeks
-    # after #155 deleted SimpleEngine which hosted the method) and the
-    # v0.6.70 hotfix (``engine.model.estimate_new_tokens`` AttributeError
-    # was swallowed by the cloud branch's broad try/except → silent
-    # fallback). Both regressions surfaced only via Gate 6 (real-server
-    # live repro); none of the unit/integration suites caught them
-    # because every test mocked the engine with a MagicMock that
-    # auto-satisfies any attribute access.
+    # Declaring route-facing methods here makes missing implementations fail
+    # at instantiation instead of silently degrading behind ``hasattr`` guards.
     # ------------------------------------------------------------------
 
     @abstractmethod
@@ -468,21 +461,9 @@ class BaseEngine(ABC):
         generation prefix so the reasoning-budget seed probe can diff two
         renders to isolate the template-added prefix.
 
-        Called by ``routes/chat.py`` for cloud-routing token estimation
-        and for eager streaming chat-template validation (so template
-        errors surface as HTTP 400 instead of mid-stream failures).
-        """
-
-    @abstractmethod
-    def estimate_new_tokens(self, prompt: str) -> tuple[int, int]:
-        """Return ``(total_tokens, new_tokens)`` for ``prompt``.
-
-        Called by ``routes/chat.py`` cloud routing to decide whether the
-        request crosses ``--cloud-threshold`` and should be offloaded.
-        ``new_tokens`` is the count that would need fresh prefill — i.e.
-        total minus the prefix already warm in cache. A conservative
-        ``(total, total)`` is acceptable; correctness only requires that
-        the threshold semantics hold.
+        Called by ``routes/chat.py`` for eager streaming chat-template
+        validation so template errors surface as HTTP 400 instead of
+        mid-stream failures.
         """
 
     @property
