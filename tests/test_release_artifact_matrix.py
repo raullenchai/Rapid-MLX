@@ -104,6 +104,7 @@ def test_workflow_default_covers_manifest_artifact_families(matrix):
 def test_cli_smoke_covers_base_commands_but_not_optional_chat(matrix):
     assert set(matrix.CLI_SMOKE_SCRIPTS) == {
         "rapid-mlx",
+        "rmlx",
         "rapid-mlx-bench",
         "vllm-mlx",
         "vllm-mlx-bench",

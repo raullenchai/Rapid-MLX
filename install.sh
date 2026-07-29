@@ -199,6 +199,7 @@ done
 
 # rapid-mlx aliases
 [ -f "$INSTALL_DIR/bin/vllm-mlx" ]      && ln -sf "$INSTALL_DIR/bin/vllm-mlx"      "$BIN_DIR/rapid-mlx"
+[ -f "$INSTALL_DIR/bin/rmlx" ]          && ln -sf "$INSTALL_DIR/bin/rmlx"          "$BIN_DIR/rmlx"
 [ -f "$INSTALL_DIR/bin/vllm-mlx-chat" ]  && ln -sf "$INSTALL_DIR/bin/vllm-mlx-chat"  "$BIN_DIR/rapid-mlx-chat"
 [ -f "$INSTALL_DIR/bin/vllm-mlx-bench" ] && ln -sf "$INSTALL_DIR/bin/vllm-mlx-bench" "$BIN_DIR/rapid-mlx-bench"
 ln -sf "$INSTALL_DIR/bin/python3" "$BIN_DIR/rapid-mlx-python"

@@ -70,6 +70,7 @@ MATRIX_TEST_DEPENDENCIES = (
 # valid base wheel.
 CLI_SMOKE_SCRIPTS = (
     "rapid-mlx",
+    "rmlx",
     "rapid-mlx-bench",
     "vllm-mlx",
     "vllm-mlx-bench",
