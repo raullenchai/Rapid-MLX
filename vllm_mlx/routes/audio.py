@@ -1559,6 +1559,35 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # handler body.
         model_name = _resolve_tts_model(model)
 
+        # Qwen3-TTS ships two shapes: CustomVoice (predefined speakers,
+        # reference-free — what we alias and support) and Base (voice-
+        # cloning ONLY, requires a reference clip). A caller passing a raw
+        # ``...-Base-...`` repo id would otherwise reach the CustomVoice
+        # speaker-validation + generate path and fail deep in the engine
+        # ("Must provide one of ref_audio or ref_mel") as an opaque 500.
+        # Reject it up front with an actionable 400 pointing at CustomVoice.
+        _name_lower = model_name.lower()
+        _is_qwen3 = "qwen3-tts" in _name_lower or "qwen3_tts" in _name_lower
+        if _is_qwen3 and "base" in _name_lower and "customvoice" not in _name_lower:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            f"model {model_name!r} is a Qwen3-TTS Base "
+                            "(voice-cloning-only) repo and needs a reference "
+                            "audio clip, which /v1/audio/speech does not "
+                            "provide. Use a CustomVoice repo (e.g. the "
+                            "`qwen3-tts` alias) for reference-free synthesis "
+                            "with a predefined speaker."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_model_variant",
+                        "param": "model",
+                    }
+                },
+            )
+
         # R11-B-F3 (Bo 0.8.12 dogfood, PR #863): translate the literal
         # ``voice="default"`` to the registry's ``default_voice`` BEFORE
         # the allowlist check below. Pre-fix the obvious naive caller

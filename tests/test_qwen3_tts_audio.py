@@ -338,6 +338,42 @@ class TestQwen3TTSRoute:
         (call,) = engine.generate_calls
         assert call["voice"] == canonical
 
+    def test_engine_recreated_on_model_switch(self, monkeypatch):
+        """The process-global _tts_engine is keyed on model_name: a second
+        request for a different model must build a fresh engine, never
+        synthesize on the previously-cached one."""
+        client = _mount(monkeypatch)
+        r1 = client.post(
+            "/v1/audio/speech",
+            json={"model": "qwen3-tts", "input": "一。", "voice": "Serena"},
+        )
+        r2 = client.post(
+            "/v1/audio/speech",
+            json={"model": "qwen3-tts-6bit", "input": "二。", "voice": "Serena"},
+        )
+        assert r1.status_code == 200 and r2.status_code == 200
+        # Two distinct engines were constructed, the second for the 6bit id.
+        assert len(_RecordingEngine.instances) == 2
+        assert _RecordingEngine.instances[0].model_name.endswith("CustomVoice-bf16")
+        assert _RecordingEngine.instances[1].model_name.endswith("CustomVoice-6bit")
+
+    def test_base_repo_rejected_with_actionable_error(self, monkeypatch):
+        """A raw Qwen3-TTS Base (voice-cloning-only) repo id must be
+        rejected up front, not fail opaquely deep in the engine."""
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
+                "input": "hi",
+                "voice": "Serena",
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["code"] == "unsupported_model_variant"
+        assert "CustomVoice" in body["error"]["message"]
+
     def test_unknown_voice_rejected_with_speaker_list(self, monkeypatch):
         client = _mount(monkeypatch)
         resp = client.post(
