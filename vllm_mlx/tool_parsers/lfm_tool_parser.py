@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-LFM / Liquid tool call parser for Rapid-MLX.
+LFM / Liquid tool call parser for vllm-mlx.
 
 Handles Liquid AI's LFM model tool calling format:
 - Bracketed pythonic format: [func_name(arg1=val1, arg2=val2)]

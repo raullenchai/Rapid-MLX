@@ -9,6 +9,20 @@ PUBLIC_TEXT_ROOTS = (
     REPO_ROOT / "examples",
 )
 OLD_BRAND = "vllm-mlx"
+TEXT_SUFFIXES = {
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".py",
+    ".rst",
+    ".sh",
+    ".toml",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 
 
 def _public_text_files() -> list[Path]:
@@ -17,7 +31,11 @@ def _public_text_files() -> list[Path]:
         if root.is_file():
             files.append(root)
         else:
-            files.extend(path for path in root.rglob("*") if path.is_file())
+            files.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES
+            )
     return files
 
 
