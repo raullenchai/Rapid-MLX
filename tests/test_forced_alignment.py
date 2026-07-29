@@ -310,9 +310,7 @@ def _stub_route_engine(monkeypatch):
     probe._reset_probe_cache()
     _ALIGN_CALLS.clear()
 
-    monkeypatch.setattr(
-        "vllm_mlx.audio.stt.STTEngine", _FakeRouteEngine, raising=False
-    )
+    monkeypatch.setattr("vllm_mlx.audio.stt.STTEngine", _FakeRouteEngine, raising=False)
     audio_stt_mod = sys.modules.get("vllm_mlx.audio.stt")
     if audio_stt_mod is not None:
         monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeRouteEngine)
@@ -379,7 +377,11 @@ class TestAlignmentRoute:
         try:
             r = _post(
                 client,
-                {"model": "qwen3-aligner", "text": "你好世界", "response_format": "srt"},
+                {
+                    "model": "qwen3-aligner",
+                    "text": "你好世界",
+                    "response_format": "srt",
+                },
             )
         finally:
             restore()
