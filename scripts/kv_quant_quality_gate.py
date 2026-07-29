@@ -61,6 +61,10 @@ from vllm_mlx.kv_quant_gate import (  # noqa: E402
     logit_divergence,
     structured_output_retention,
 )
+from vllm_mlx.quantized_batch_cache import (  # noqa: E402
+    probe_kv_head_dims,
+    resolve_kv_quantization,
+)
 
 # Built-in prompt set. A couple explicitly ask for JSON so the structured-output
 # retention metric has attributable prompts. Kept small — this is an M-sized
@@ -116,6 +120,18 @@ def _encode_prompt(tokenizer, text: str) -> list[int]:
             )
         )
     return list(tokenizer.encode(text))
+
+
+def _is_kv_quant_incompat(exc: BaseException) -> bool:
+    """True iff ``exc`` is MLX's "head_dim not divisible by group size" error.
+
+    ``mx.quantize`` raises a ``ValueError`` like "The last dimension of the matrix
+    needs to be divisible by the quantization group size 64 ..." when the head_dim
+    is incompatible. We match on that shape so the gate can degrade to an advisory
+    skip for THIS failure only, never swallowing an unrelated error.
+    """
+    msg = str(exc).lower()
+    return "group size" in msg and "divisible" in msg
 
 
 def _decode_text(tokenizer, token_ids: list[int]) -> str:
@@ -455,6 +471,52 @@ def run_gate(
     model, tokenizer = load(hf_path)
     eos_ids = _eos_ids(tokenizer)
 
+    # KV-quant group-size compatibility (issue #1294). ``mx.quantize`` requires
+    # BOTH the key and value head dims to be exact multiples of the group size; a
+    # model whose head_dim isn't divisible by the requested size (e.g. Phi-3's
+    # head_dim=96 vs the default 64) would otherwise abort the whole gate with a
+    # raw MLX ValueError mid-generation. Resolve a compatible size up front with
+    # the SAME probe + policy the live serve path uses (``probe_kv_head_dims`` +
+    # ``resolve_kv_quantization``), so the gate measures the exact config serving
+    # would run — including MLA models whose K/V head dims differ. Baseline runs
+    # are unquantized, so this only affects the candidate generations.
+    k_head_dim, v_head_dim = probe_kv_head_dims(model)
+    resolved, live_disabled = resolve_kv_quantization(
+        k_head_dim, v_head_dim, kv_group_size
+    )
+    if live_disabled:
+        # Serving would keep this model's KV cache bf16 — either its K/V head dims
+        # divide no supported group size (e.g. head_dim=80) or they couldn't be
+        # probed. Either way there is no live KV-quant configuration to measure,
+        # so skip rather than test a config serving never runs (or crash on an
+        # incompatible mx.quantize). Mirrors resolve_kv_quantization exactly.
+        if k_head_dim is not None and v_head_dim is not None:
+            reason = (
+                f"KV head dims (k={k_head_dim}, v={v_head_dim}) divide no "
+                "supported group size (128/64/32)"
+            )
+        else:
+            reason = "KV head dims could not be probed"
+        print(
+            f"[kv-quant-gate] {reason}; serving keeps this model's KV cache bf16 "
+            "— nothing to measure.",
+            file=sys.stderr,
+        )
+        if json_out is not None:
+            json_out.write_text(json.dumps([], indent=2))
+            print(f"[kv-quant-gate] wrote JSON report -> {json_out}", file=sys.stderr)
+        # Advisory: nothing to measure, exit 0. Enforced: a gate that measured
+        # NOTHING must not read as success (mirrors the empty-candidate guard).
+        return 0 if advisory else 1
+    if resolved != kv_group_size:
+        print(
+            f"[kv-quant-gate] adjusted --group-size {kv_group_size} -> {resolved} "
+            f"to satisfy this model's KV head dims (k={k_head_dim}, v={v_head_dim}; "
+            "mx.quantize constraint).",
+            file=sys.stderr,
+        )
+        kv_group_size = resolved
+
     try:
         chip = detect_chip_tier()
     except Exception:
@@ -523,43 +585,60 @@ def run_gate(
         divergences: list[LogitDivergence] = []
         retention_pairs: list[tuple[str, str]] = []
 
-        for base in baseline_runs:
-            cand_tokens, cand_lp, _ = _run_generation(
+        # Safety net for the residual case the up-front resolve can't cover — a
+        # model whose head_dim we couldn't infer, or one with mixed per-layer head
+        # dims (e.g. a k_pe rope split). If ``mx.quantize`` still rejects the
+        # head_dim, skip THIS candidate with an advisory rather than crash the
+        # whole gate (issue #1294). Only the divisibility error is caught.
+        try:
+            for base in baseline_runs:
+                cand_tokens, cand_lp, _ = _run_generation(
+                    model,
+                    base["prompt_ids"],
+                    max_tokens=max_tokens,
+                    kv_bits=cand_bits,
+                    kv_group_size=kv_group_size,
+                    eos_ids=eos_ids,
+                    collect_logprobs=True,
+                    stop_on_eos=True,
+                )
+                ag = greedy_agreement_rate(base["tokens"], cand_tokens)
+                agreements.append(ag)
+                # Same-context prefix: up to AND INCLUDING the first divergence
+                # step (its distributions still share a context), else the whole
+                # overlap.
+                compare_len = (
+                    ag.first_divergence_index + 1
+                    if ag.first_divergence_index is not None
+                    else ag.total
+                )
+                divergences.append(
+                    logit_divergence(base["logprobs"], cand_lp, compare_len=compare_len)
+                )
+                if base["kind"] == "json":
+                    # Candidate decoded with skip_special_tokens so a trailing EOS
+                    # control token can't break the strict whole-output JSON parse.
+                    retention_pairs.append(
+                        (base["text"], _decode_text(tokenizer, cand_tokens))
+                    )
+
+            cand_bytes, _ = _measure_kv_bytes(
                 model,
-                base["prompt_ids"],
-                max_tokens=max_tokens,
+                mem_prompt_ids,
+                mem_tokens=mem_tokens,
                 kv_bits=cand_bits,
                 kv_group_size=kv_group_size,
-                eos_ids=eos_ids,
-                collect_logprobs=True,
-                stop_on_eos=True,
             )
-            ag = greedy_agreement_rate(base["tokens"], cand_tokens)
-            agreements.append(ag)
-            # Same-context prefix: up to AND INCLUDING the first divergence step
-            # (its distributions still share a context), else the whole overlap.
-            compare_len = (
-                ag.first_divergence_index + 1
-                if ag.first_divergence_index is not None
-                else ag.total
+        except ValueError as exc:
+            if not _is_kv_quant_incompat(exc):
+                raise
+            print(
+                f"[kv-quant-gate] skipping {cdtype} candidate — this model's "
+                f"head_dim is incompatible with KV-quant group size "
+                f"{kv_group_size} ({exc}).",
+                file=sys.stderr,
             )
-            divergences.append(
-                logit_divergence(base["logprobs"], cand_lp, compare_len=compare_len)
-            )
-            if base["kind"] == "json":
-                # Candidate decoded with skip_special_tokens so a trailing EOS
-                # control token can't break the strict whole-output JSON parse.
-                retention_pairs.append(
-                    (base["text"], _decode_text(tokenizer, cand_tokens))
-                )
-
-        cand_bytes, _ = _measure_kv_bytes(
-            model,
-            mem_prompt_ids,
-            mem_tokens=mem_tokens,
-            kv_bits=cand_bits,
-            kv_group_size=kv_group_size,
-        )
+            continue
         from vllm_mlx.kv_quant_gate import memory_delta
 
         niah = _maybe_run_niah(
@@ -603,6 +682,15 @@ def run_gate(
 
     if advisory:
         return 0
+    # Enforced: a run where every candidate was skipped as incompatible measured
+    # NOTHING and must not report success (mirrors the empty-candidate guard).
+    if not reports:
+        print(
+            "[kv-quant-gate] --enforce: no candidate could be measured "
+            "(all incompatible with this model's head_dim).",
+            file=sys.stderr,
+        )
+        return 1
     return 1 if any_fail else 0
 
 

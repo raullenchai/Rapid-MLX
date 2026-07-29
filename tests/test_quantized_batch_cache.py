@@ -460,6 +460,10 @@ def test_supported_group_size():
     assert supported_group_size(128, 128) == 128
     assert supported_group_size(80, 64) is None  # 80 not div by 32/64/128
     assert supported_group_size(40, 128) is None
+    # Never exceeds the requested size: head_dim=128 with requested=96 resolves
+    # DOWN to 64, not up to 128 — the KV-quant gate (scripts/kv_quant_quality_
+    # gate.py, #1294) reuses this so it measures the SAME config serving runs.
+    assert supported_group_size(128, 96) == 64
 
 
 def test_probe_head_dim():

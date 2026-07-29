@@ -6,8 +6,8 @@ Chip *detection* already exists in the engine:
 * :func:`vllm_mlx.optimizations.detect_hardware` returns a
   :class:`~vllm_mlx.optimizations.HardwareInfo` whose ``chip_name`` is a short
   profile key (e.g. ``"M3 Ultra"``).
-* :func:`vllm_mlx.vllm_platform._get_apple_chip_name` reads the raw
-  ``machdep.cpu.brand_string`` (e.g. ``"Apple M3 Ultra"``).
+* :func:`detect_chip_tier` (below) reads the raw ``machdep.cpu.brand_string``
+  via ``sysctl`` (e.g. ``"Apple M3 Ultra"``).
 
 What was MISSING is a *structured* tier — a small, pure parse of that free-form
 chip string into fields code can branch on without substring-matching at every
@@ -104,8 +104,9 @@ def classify_chip_tier(chip_name: str | None) -> ChipTier:
     ``M<n>`` (``"BMW M3"``) is NOT misread as Apple silicon.
 
     Args:
-        chip_name: The chip string from ``detect_hardware().chip_name`` or
-            ``_get_apple_chip_name()``. ``None`` is tolerated.
+        chip_name: The chip string from ``detect_hardware().chip_name`` or the
+            raw ``machdep.cpu.brand_string`` (see :func:`detect_chip_tier`).
+            ``None`` is tolerated.
 
     Returns:
         A :class:`ChipTier`. For an unrecognized string:
@@ -161,29 +162,23 @@ def classify_chip_tier(chip_name: str | None) -> ChipTier:
 def detect_chip_tier() -> ChipTier:
     """Classify the *current* machine's chip.
 
-    Thin convenience that reuses the engine's existing chip detection
-    (:func:`vllm_mlx.vllm_platform._get_apple_chip_name`, which reads
-    ``machdep.cpu.brand_string``) and runs it through :func:`classify_chip_tier`.
-    Falls back to a local ``sysctl`` read, then to the unknown tier, so it never
-    raises on a non-macOS host.
+    Reads the raw ``machdep.cpu.brand_string`` (e.g. ``"Apple M3 Ultra"``) via
+    ``sysctl`` and runs it through :func:`classify_chip_tier`. Any failure — a
+    non-macOS host, a missing ``sysctl``, a timeout — degrades to an empty
+    string and hence the unknown tier, so this never raises.
     """
     chip_name = ""
-    try:  # Prefer the existing detector — single source of truth.
-        from vllm_mlx.vllm_platform import _get_apple_chip_name
+    try:
+        import subprocess
 
-        chip_name = _get_apple_chip_name()
+        result = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        chip_name = result.stdout.strip()
     except Exception:
-        try:
-            import subprocess
-
-            result = subprocess.run(
-                ["sysctl", "-n", "machdep.cpu.brand_string"],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=2,
-            )
-            chip_name = result.stdout.strip()
-        except Exception:
-            chip_name = ""
+        chip_name = ""
     return classify_chip_tier(chip_name)

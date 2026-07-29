@@ -8,6 +8,9 @@ fallback / non-Apple shapes. Pure string parsing — no system calls.
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 from vllm_mlx.chip_tier import (
@@ -106,3 +109,36 @@ def test_detect_chip_tier_returns_valid_tier():
     else:
         assert tier.generation is None
         assert tier.variant == VARIANT_UNKNOWN
+
+
+def test_chip_tier_has_no_dangling_vllm_platform_reference():
+    """Regression for #1295: #1288 deleted ``vllm_mlx.vllm_platform`` but
+    ``chip_tier.py`` still imported ``_get_apple_chip_name`` from it. The
+    ``try/except`` masked the resulting ``ImportError`` at runtime (the
+    ``sysctl`` fallback ran), so no test caught the dangling reference. Assert
+    the deleted module is never referenced in the source at all.
+    """
+    import vllm_mlx.chip_tier as chip_tier_mod
+
+    source = Path(chip_tier_mod.__file__).read_text()
+    assert "vllm_platform" not in source, (
+        "chip_tier.py references the deleted vllm_platform module — the #1288 "
+        "removal left a dangling import (issue #1295)."
+    )
+
+
+def test_detect_chip_tier_uses_sysctl_not_deleted_import(monkeypatch):
+    """detect_chip_tier reads the chip via ``sysctl`` directly, without routing
+    through the removed ``vllm_platform`` helper. Fake the subprocess and assert
+    the brand string flows through to the classifier."""
+    import subprocess
+
+    def _fake_run(cmd, *args, **kwargs):
+        assert cmd[:2] == ["sysctl", "-n"]
+        return SimpleNamespace(stdout="Apple M3 Ultra\n")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    tier = detect_chip_tier()
+    assert tier.is_apple_silicon
+    assert tier.generation == 3
+    assert tier.variant == VARIANT_ULTRA
