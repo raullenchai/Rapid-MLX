@@ -368,22 +368,39 @@ class TestQwen3TTSRoute:
         assert _RecordingEngine.instances[0].model_name.endswith("CustomVoice-bf16")
         assert _RecordingEngine.instances[1].model_name.endswith("CustomVoice-6bit")
 
-    def test_base_repo_rejected_with_actionable_error(self, monkeypatch):
-        """A raw Qwen3-TTS Base (voice-cloning-only) repo id must be
-        rejected up front, not fail opaquely deep in the engine."""
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",  # -Base- (middle)
+            "mlx-community/Qwen3-TTS-0.6B-Base",  # -Base at the very end
+            "someorg/Qwen3_TTS_0.6B_base_bf16",  # underscore delimiters
+        ],
+    )
+    def test_base_repo_rejected_with_actionable_error(self, monkeypatch, model_id):
+        """Any raw Qwen3-TTS Base (voice-cloning-only) repo id must be
+        rejected up front, not fail opaquely deep in the engine — the
+        ``base`` token is caught wherever it sits."""
         client = _mount(monkeypatch)
         resp = client.post(
             "/v1/audio/speech",
-            json={
-                "model": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16",
-                "input": "hi",
-                "voice": "Serena",
-            },
+            json={"model": model_id, "input": "hi", "voice": "Serena"},
         )
         assert resp.status_code == 400, resp.text
         body = resp.json()
         assert body["error"]["code"] == "unsupported_model_variant"
         assert "CustomVoice" in body["error"]["message"]
+
+    def test_customvoice_org_prefix_not_misclassified_as_base(self, monkeypatch):
+        """An org name containing 'customvoice' must NOT suppress the Base
+        guard, and a CustomVoice repo must NOT be rejected — classification
+        is on the repo name's tokens, not the whole id."""
+        client = _mount(monkeypatch)
+        # Real CustomVoice repo → accepted (200), not Base-rejected.
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": "qwen3-tts", "input": "hi", "voice": "Serena"},
+        )
+        assert resp.status_code == 200, resp.text
 
     def test_unknown_voice_rejected_with_speaker_list(self, monkeypatch):
         client = _mount(monkeypatch)
