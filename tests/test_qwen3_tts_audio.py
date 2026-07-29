@@ -83,17 +83,28 @@ class TestQwen3TTSRegistry:
 # ---------------------------------------------------------------------------
 
 
+_UNSET = object()
+
+
 class _CapturingModel:
-    """Fake mlx_audio model: records the kwargs ``generate`` was called
-    with and yields one result carrying a tiny audio buffer."""
+    """Fake mlx_audio model mirroring the real Qwen3-TTS ``generate``
+    keyword surface (text/voice/speed/lang_code/instruct). An explicit
+    signature — rather than a catch-all ``**kwargs`` — means the engine
+    passing a keyword the real model doesn't accept raises ``TypeError``
+    here instead of silently passing the test. ``instruct`` uses a sentinel
+    default so a call is recorded as carrying it ONLY when actually passed,
+    letting the tests assert conditional forwarding."""
 
     def __init__(self):
         self.calls: list[dict] = []
 
-    def generate(self, **kwargs):
+    def generate(self, *, text, voice=None, speed=1.0, lang_code=None, instruct=_UNSET):
         import numpy as np
 
-        self.calls.append(kwargs)
+        rec = {"text": text, "voice": voice, "speed": speed, "lang_code": lang_code}
+        if instruct is not _UNSET:
+            rec["instruct"] = instruct
+        self.calls.append(rec)
         result = types.SimpleNamespace(
             audio=np.zeros(240, dtype=np.float32), sample_rate=24000
         )

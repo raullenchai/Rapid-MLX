@@ -1566,9 +1566,13 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # speaker-validation + generate path and fail deep in the engine
         # ("Must provide one of ref_audio or ref_mel") as an opaque 500.
         # Reject it up front with an actionable 400 pointing at CustomVoice.
-        _name_lower = model_name.lower()
-        _is_qwen3 = "qwen3-tts" in _name_lower or "qwen3_tts" in _name_lower
-        if _is_qwen3 and "base" in _name_lower and "customvoice" not in _name_lower:
+        # Classify on the REPO NAME (last path component) with exact hyphen-
+        # delimited tokens, not a whole-id substring: an org like
+        # ``customvoice-org/...`` or an unrelated ``base`` elsewhere in the
+        # path must not flip the decision.
+        _repo = model_name.rsplit("/", 1)[-1].lower()
+        _is_qwen3 = "qwen3-tts" in _repo or "qwen3_tts" in _repo
+        if _is_qwen3 and "-base-" in _repo and "customvoice" not in _repo:
             raise HTTPException(
                 status_code=400,
                 detail={
