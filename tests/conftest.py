@@ -23,7 +23,7 @@ def pytest_addoption(parser):
         "--server-url",
         action="store",
         default="http://localhost:8000",
-        help="URL of the vllm-mlx server for integration tests",
+        help="URL of the Rapid-MLX server for integration tests",
     )
     parser.addoption(
         "--run-slow",

@@ -8,7 +8,7 @@ Tests:
 3. Request queuing: second request waits for first to complete, no preemption
 4. Golden prompt benchmarks: run prompts from golden_prompts.py, measure speed
 
-Requires a running vllm-mlx server on localhost:8000.
+Requires a running Rapid-MLX server on localhost:8000.
 
 Usage:
     python tests/test_event_loop.py                   # run event loop tests only

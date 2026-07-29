@@ -2573,7 +2573,7 @@ def test_routing_override_kwargs_are_keyword_only_in_load_model():
     # device, importing these modules raises RuntimeError before any
     # assertion can run. Skip gracefully — the gate's intent is a
     # signature/positional audit that only matters on machines that
-    # can actually run vllm-mlx. Mirrors the pattern in
+    # can actually run Rapid-MLX. Mirrors the pattern in
     # `test_registry_forwarded_kwargs_exist_on_signatures` and
     # `_make_engine_core_for_override_test`.
     try:

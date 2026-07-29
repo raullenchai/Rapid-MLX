@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-GSM8K Evaluation Script for vllm-mlx.
+GSM8K evaluation script for Rapid-MLX.
 
 Evaluates model performance on the GSM8K (Grade School Math 8K) benchmark.
-Works with both the local vllm-mlx server and any OpenAI-compatible API.
+Works with both a local Rapid-MLX server and any OpenAI-compatible API.
 
 Usage:
     # Start server first:
-    vllm-mlx serve mlx-community/Qwen2.5-3B-Instruct-4bit --port 8000
+    rapid-mlx serve mlx-community/Qwen2.5-3B-Instruct-4bit --port 8000
 
     # Run evaluation:
     python tests/evals/gsm8k/gsm8k_eval.py --port 8000 --num-questions 10
 
-    # Or directly with vllm-mlx engine (no server needed):
+    # Or directly with the Rapid-MLX engine (no server needed):
     python tests/evals/gsm8k/gsm8k_eval.py --model mlx-community/Qwen2.5-3B-Instruct-4bit --num-questions 10
 """
 
@@ -351,7 +351,7 @@ def load_gsm8k_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GSM8K Evaluation for vllm-mlx")
+    parser = argparse.ArgumentParser(description="GSM8K Evaluation for Rapid-MLX")
     parser.add_argument("--host", type=str, default="localhost", help="Server host")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     parser.add_argument(

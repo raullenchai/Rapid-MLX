@@ -579,7 +579,7 @@ def main():
     print("     TEST COMPLETE")
     print("=" * 70)
     print("\nTo enable paged cache in production:")
-    print("  vllm-mlx serve <model> --use-paged-cache")
+    print("  rapid-mlx serve <model> --use-paged-cache")
     print()
 
 

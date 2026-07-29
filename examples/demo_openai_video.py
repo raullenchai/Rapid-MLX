@@ -13,6 +13,7 @@ Usage:
 """
 
 import base64
+from pathlib import Path
 
 from openai import OpenAI
 
@@ -107,7 +108,7 @@ try:
     import os
 
     # Check if there's a sample video in the examples directory
-    sample_video = "/Users/waybarrios/Documents/code/vllm-mlx/examples/sample_video.mp4"
+    sample_video = str(Path(__file__).with_name("sample_video.mp4"))
     if os.path.exists(sample_video):
         with open(sample_video, "rb") as f:
             video_base64 = base64.b64encode(f.read()).decode("utf-8")

@@ -15,7 +15,7 @@
 #     PORT             local port (default: 8765)
 #     API_KEY          bearer token (default: random 24 hex bytes)
 #     RAPID_MLX_CMD    serve command (default: auto — editable `python3.12 -m
-#                      vllm_mlx.cli` if we're inside the vllm-mlx repo,
+#                      vllm_mlx.cli` if we're inside the Rapid-MLX repo,
 #                      else system `rapid-mlx`). The editable path sees
 #                      newly-added aliases.json entries; the brew-installed
 #                      binary only knows the aliases bundled at install time.
@@ -113,7 +113,7 @@ if is_alive "$SERVER_PID" || is_alive "$TUNNEL_PID"; then
 fi
 
 # Pick the serve command. Prefer the editable repo CLI when we're inside
-# vllm-mlx — the brew-installed `rapid-mlx` ships an older aliases.json
+# Rapid-MLX — the brew-installed executable may ship an older aliases.json
 # and won't see recent additions like `minimax-m2.7-mxfp4`.
 if [ -z "${RAPID_MLX_CMD:-}" ]; then
   if [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/vllm_mlx/cli.py" ] \

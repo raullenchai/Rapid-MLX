@@ -455,7 +455,7 @@ def main():
     print("  - Hash-based deduplication")
 
     print("\nUsage:")
-    print("  vllm-mlx serve <model> --use-paged-cache")
+    print("  rapid-mlx serve <model> --use-paged-cache")
     print()
 
 

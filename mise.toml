@@ -2,7 +2,7 @@
 python = "3.12"
 
 [tasks.serve]
-description = "Start the vllm-mlx server"
+description = "Start the Rapid-MLX server"
 run = "python -m vllm_mlx.server"
 
 [tasks.test]

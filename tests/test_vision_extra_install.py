@@ -561,7 +561,7 @@ def test_dev_extra_pins_tomli_for_python_310() -> None:
 # 0.6.5 fix, so a bare ``mlx-vlm>=0.6.3`` resolves a fresh
 # ``pip install 'rapid-mlx[vision]'`` STRAIGHT to the broken wheel.
 # Every extra that pulls mlx-vlm must exclude it. Mirrors the upstream
-# fix waybarrios/vllm-mlx#633 for our rebranded tree.
+# Preserve the upstream issue #633 fix in our tree.
 # ──────────────────────────────────────────────────────────────────────
 
 

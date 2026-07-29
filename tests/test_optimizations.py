@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for vllm-mlx hardware detection and system info.
+Tests for Rapid-MLX hardware detection and system info.
 
 Usage:
     pytest tests/test_optimizations.py -v

@@ -1,2 +1,2 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for vllm-mlx."""
+"""Tests for Rapid-MLX."""

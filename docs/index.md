@@ -1,10 +1,11 @@
-# vLLM-MLX Documentation
+# Rapid-MLX Documentation
 
-**Apple Silicon MLX Backend for vLLM** - GPU-accelerated Text, Image, Video & Audio on Mac
+**Native AI inference for Apple Silicon** — GPU-accelerated text, image, video, and audio on Mac.
 
-## What is vLLM-MLX?
+## What is Rapid-MLX?
 
-rapid-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
+Rapid-MLX is an independent inference engine that brings native Apple Silicon
+GPU acceleration to local AI workloads by integrating:
 
 - **[MLX](https://github.com/ml-explore/mlx)**: Apple's ML framework with unified memory and Metal kernels
 - **[mlx-lm](https://github.com/ml-explore/mlx-lm)**: Optimized LLM inference with KV cache and quantization

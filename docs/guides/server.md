@@ -720,7 +720,7 @@ Create `/etc/systemd/system/rapid-mlx.service`:
 
 ```ini
 [Unit]
-Description=vLLM-MLX Server
+Description=Rapid-MLX Server
 After=network.target
 
 [Service]

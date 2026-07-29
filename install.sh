@@ -192,16 +192,16 @@ esac
 
 mkdir -p "$BIN_DIR"
 
-# Link all CLI entry points
-for cmd in vllm-mlx vllm-mlx-chat vllm-mlx-bench; do
+# Link the Rapid-MLX CLI entry points.
+for cmd in rapid-mlx rapid-mlx-chat rapid-mlx-bench; do
     [ -f "$INSTALL_DIR/bin/$cmd" ] && ln -sf "$INSTALL_DIR/bin/$cmd" "$BIN_DIR/$cmd"
 done
 
-# rapid-mlx aliases
-[ -f "$INSTALL_DIR/bin/vllm-mlx" ]      && ln -sf "$INSTALL_DIR/bin/vllm-mlx"      "$BIN_DIR/rapid-mlx"
-[ -f "$INSTALL_DIR/bin/rmlx" ]          && ln -sf "$INSTALL_DIR/bin/rmlx"          "$BIN_DIR/rmlx"
-[ -f "$INSTALL_DIR/bin/vllm-mlx-chat" ]  && ln -sf "$INSTALL_DIR/bin/vllm-mlx-chat"  "$BIN_DIR/rapid-mlx-chat"
-[ -f "$INSTALL_DIR/bin/vllm-mlx-bench" ] && ln -sf "$INSTALL_DIR/bin/vllm-mlx-bench" "$BIN_DIR/rapid-mlx-bench"
+# Keep pre-Rapid command aliases available for existing automation.
+for cmd in vllm-mlx vllm-mlx-chat vllm-mlx-bench; do
+    [ -f "$INSTALL_DIR/bin/$cmd" ] && ln -sf "$INSTALL_DIR/bin/$cmd" "$BIN_DIR/$cmd"
+done
+[ -f "$INSTALL_DIR/bin/rmlx" ] && ln -sf "$INSTALL_DIR/bin/rmlx" "$BIN_DIR/rmlx"
 ln -sf "$INSTALL_DIR/bin/python3" "$BIN_DIR/rapid-mlx-python"
 
 # ── 7. Ensure ~/.local/bin is in PATH ────────────────────────────────────────
@@ -227,7 +227,7 @@ fi
 
 # ── 8. Verify + done ────────────────────────────────────────────────────────
 
-VERSION=$("$INSTALL_DIR/bin/vllm-mlx" --version 2>/dev/null || echo "unknown")
+VERSION=$("$INSTALL_DIR/bin/rapid-mlx" --version 2>/dev/null || echo "unknown")
 
 echo ""
 echo "  ╭─────────────────────────────────────╮"

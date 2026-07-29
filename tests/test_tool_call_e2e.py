@@ -8,7 +8,7 @@ the server correctly parses tool calls (including text-format fallback)
 and returns structured SSE responses.
 
 Usage:
-    # Requires a running vllm-mlx server on localhost:8000
+    # Requires a running Rapid-MLX server on localhost:8000
     python3.12 -m pytest tests/test_tool_call_e2e.py -v -s
 
     # Or run directly as a script for interactive debugging:
@@ -246,7 +246,7 @@ MAX_ROUNDS = 8
 
 
 def _server_available() -> bool:
-    """Check if a vllm-mlx server on :8000 is reachable AND unauthenticated.
+    """Check if a Rapid-MLX server on :8000 is reachable AND unauthenticated.
 
     The tests POST to ``/v1/chat/completions`` without any Authorization
     header. A server with an API key configured will respond 401 there,
@@ -426,7 +426,7 @@ def run_agent_loop(user_msg, max_rounds=MAX_ROUNDS):
 
 server_required = pytest.mark.skipif(
     not _server_available(),
-    reason="vllm-mlx server not running on localhost:8000",
+    reason="Rapid-MLX server not running on localhost:8000",
 )
 
 

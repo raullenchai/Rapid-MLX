@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for /v1/requests/{id}/cancel and BatchedEngine.abort_request routing.
 
-Cherry-pick coverage of upstream waybarrios/vllm-mlx#426 adapted to our
+Coverage adapted from upstream issue #426 for our
 routes/ split (their endpoint lives on the FastAPI app; ours lives on the
 health router).
 """
