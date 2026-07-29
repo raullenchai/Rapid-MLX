@@ -246,5 +246,19 @@
     "family": "parakeet",
     "languages": "en",
     "notes": "Parakeet TDT 0.6B v3."
+  },
+  "sensevoice": {
+    "type": "stt",
+    "hf_id": "mlx-community/SenseVoiceSmall",
+    "family": "sensevoice",
+    "languages": "zh,yue,ja,ko,en",
+    "notes": "FunAudioLLM SenseVoice Small (~234M, non-autoregressive CTC). Dedicated fast Asian-language ASR (strong on Chinese/Cantonese/Japanese/Korean). Also emits per-segment emotion + audio-event tags. Bare ``sensevoice`` -> the small model."
+  },
+  "sensevoice-small": {
+    "type": "stt",
+    "hf_id": "mlx-community/SenseVoiceSmall",
+    "family": "sensevoice",
+    "languages": "zh,yue,ja,ko,en",
+    "notes": "Explicit long-form alias for ``sensevoice`` — same HF id."
   }
 }
