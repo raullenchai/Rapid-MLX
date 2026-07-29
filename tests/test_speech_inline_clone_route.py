@@ -270,9 +270,31 @@ class TestF5InlineCloneRoute:
         # CustomVoice repo look clone-capable.
         ("base-org/Qwen3-TTS-0.6B-CustomVoice", False),
         ("mlx-community/Kokoro-82M-bf16", False),
+        # A bare ``f5`` token that is NOT ``f5-tts``/``f5_tts`` must NOT be
+        # deemed clone-capable: TTSEngine._detect_family classifies it as
+        # Kokoro and would drop ref_audio, so the gate must agree and let
+        # the reference be rejected up front rather than silently ignored.
+        ("org/f5-foo", False),
+        ("org/f5", False),
     ],
 )
 def test_is_clone_capable_model_classification(model_name, expected):
     from vllm_mlx.routes.audio import _is_clone_capable_model
 
     assert _is_clone_capable_model(model_name) is expected
+
+
+def test_clone_gate_matches_engine_family_for_f5_token():
+    """Regression pin (codex round 2): the route clone gate and the engine
+    family classifier must never disagree in the DANGEROUS direction —
+    gate says clone-capable but engine drops ref_audio. For an ``f5`` token
+    that is not ``f5-tts``/``f5_tts`` the engine detects the default
+    (Kokoro) family, so the gate must NOT deem it clone-capable."""
+    from vllm_mlx.audio.tts import TTSEngine
+    from vllm_mlx.routes.audio import _is_clone_capable_model
+
+    name = "org/f5-foo"
+    assert _is_clone_capable_model(name) is False
+    # Engine would NOT treat it as F5 (family falls back to kokoro), which
+    # is exactly why the gate must reject the reference.
+    assert TTSEngine(name)._model_family != "f5"

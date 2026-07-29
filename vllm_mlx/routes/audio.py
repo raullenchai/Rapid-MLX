@@ -1538,18 +1538,30 @@ def _is_clone_capable_model(model_name: str) -> bool:
       clone: it keeps a predefined named speaker and ignores
       ``ref_audio``.
 
-    Classify on the repo NAME (the last path component) split into
-    ``-``/``_`` tokens, never a whole-id substring, so an org segment
-    (``customvoice-org/...``) or an unrelated ``base`` elsewhere in the
-    path can't flip the verdict — mirrors the Base-reject guard's
-    tokenization inside :func:`create_speech`.
+    The verdict MUST stay in lock-step with
+    :meth:`vllm_mlx.audio.tts.TTSEngine._detect_family`: a model this
+    gate deems clone-capable while the engine classifies into a
+    non-cloning family would skip voice validation here yet drop
+    ``ref_audio`` in the engine — a silent 200 with the wrong (default)
+    voice. So the F5 check uses the SAME whole-id substring the engine
+    uses (``f5-tts``/``f5_tts``), NOT a broad ``f5`` token that would
+    catch an unrelated ``org/f5-foo`` the engine treats as Kokoro.
+
+    Qwen3-TTS Base is classified on the repo NAME (last path component)
+    split into ``-``/``_`` tokens — mirroring the Base-reject guard so
+    an org segment (``customvoice-org/...``) or an unrelated ``base``
+    elsewhere in the path can't flip the verdict. A repo name containing
+    ``qwen3-tts`` is necessarily a substring of the full id, so whenever
+    this returns True for Base the engine also detects ``qwen3_tts`` and
+    forwards the reference — the dangerous direction cannot occur.
     """
+    name_lower = model_name.lower()
+    if "f5-tts" in name_lower or "f5_tts" in name_lower:
+        return True
     repo = model_name.rsplit("/", 1)[-1].lower()
     tokens = set(re.split(r"[-_]", repo))
-    is_f5 = "f5-tts" in repo or "f5_tts" in repo or "f5" in tokens
     is_qwen3 = "qwen3-tts" in repo or "qwen3_tts" in repo
-    is_qwen3_base = is_qwen3 and "base" in tokens and "customvoice" not in tokens
-    return is_f5 or is_qwen3_base
+    return is_qwen3 and "base" in tokens and "customvoice" not in tokens
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
