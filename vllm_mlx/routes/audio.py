@@ -329,6 +329,20 @@ def _resolve_stt_model(model: str) -> str:
     )
 
 
+def _is_aligner_model(model_name: str) -> bool:
+    """Return True iff ``model_name`` is a forced-alignment model.
+
+    Mirrors :attr:`vllm_mlx.audio.stt.STTEngine._is_aligner` — the
+    ``"aligner"`` substring is the same signal the engine uses to pick
+    the ``align()`` call surface (``mlx-community/Qwen3-ForcedAligner-
+    0.6B-8bit`` and the ``qwen3-aligner`` / ``qwen3-forced-aligner``
+    aliases all resolve to an id containing ``aligner``). Kept at module
+    scope so the transcriptions route can fail-fast BEFORE draining the
+    upload rather than surfacing the engine's own ValueError as a 500.
+    """
+    return isinstance(model_name, str) and "aligner" in model_name.lower()
+
+
 def _reject_non_whisper_for_translation(model: str) -> None:
     """Codex r6 NIT: ``/v1/audio/translations`` promises English output.
 
@@ -985,6 +999,7 @@ async def _run_stt_request(
     language: str | None,
     response_format: str,
     task: str,
+    text: str | None = None,
 ):
     """Shared STT pipeline used by both ``/v1/audio/transcriptions`` and
     ``/v1/audio/translations``.
@@ -1019,6 +1034,63 @@ async def _run_stt_request(
     # "model_not_found_error" and never trigger a model load (F-165).
     model_name = _resolve_stt_model(model)
 
+    # Forced-alignment routing (Qwen3-ForcedAligner). The transcriptions
+    # route doubles as the alignment surface: when the caller supplies
+    # the KNOWN transcript via the ``text`` field, we call
+    # ``STTEngine.align`` instead of ``transcribe`` and return per-unit
+    # timings in the same segment shape the verbose_json/srt/vtt
+    # serializers already consume. Reject the two incoherent
+    # combinations up front (BEFORE draining the upload) with a clean
+    # 400 so the caller gets an actionable message instead of the
+    # engine's ValueError collapsing into a generic 500:
+    #   * aligner model selected but no ``text`` — there is nothing to
+    #     align to (the aligner does not recognize speech);
+    #   * ``text`` supplied to a non-aligner model — a Whisper/Parakeet
+    #     engine cannot force-align, so silently ignoring ``text`` would
+    #     mislead the caller into thinking alignment ran.
+    is_aligner = _is_aligner_model(model_name)
+    # Strip only to decide whether meaningful text was supplied — the
+    # ORIGINAL (unstripped) ``text`` is what we align, so a transcript
+    # whose authoritative form includes leading/trailing whitespace is
+    # aligned verbatim rather than silently mutated.
+    has_align_text = isinstance(text, str) and bool(text.strip())
+    if is_aligner and not has_align_text:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"model `{model}` is a forced-alignment model and "
+                        "requires the known transcript in the `text` field. "
+                        "Forced alignment returns per-character timings for "
+                        "text you already have; it does not recognize speech. "
+                        "Use a Whisper/Parakeet model for recognition."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "alignment_text_required",
+                    "param": "text",
+                }
+            },
+        )
+    if has_align_text and not is_aligner:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"the `text` field triggers forced alignment, which "
+                        f"requires a forced-aligner model; `{model}` is not "
+                        "one. Pass `model=qwen3-aligner` (or another aligner "
+                        "alias) to align `text` to the audio, or omit `text` "
+                        "for normal speech-to-text."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "alignment_model_required",
+                    "param": "model",
+                }
+            },
+        )
+
     tmp_path: str | None = None
     try:
         # SECURITY: Stream the upload to a bounded temp file *before* doing
@@ -1036,7 +1108,16 @@ async def _run_stt_request(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
-        result = _stt_engine.transcribe(tmp_path, language=language, task=task)
+        if has_align_text:
+            # Forced alignment: ``language`` here is the aligner's full
+            # language NAME (e.g. "Chinese", "English"), not an ISO code.
+            # Fall back to the engine default when omitted. ``text`` is
+            # passed verbatim (unstripped) — see ``has_align_text`` above.
+            result = _stt_engine.align(
+                tmp_path, text=text, language=language or "Chinese"
+            )
+        else:
+            result = _stt_engine.transcribe(tmp_path, language=language, task=task)
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
@@ -1141,9 +1222,17 @@ async def create_transcription(
     model_form: str | None = Form(None, alias="model"),
     language_form: str | None = Form(None, alias="language"),
     response_format_form: str | None = Form(None, alias="response_format"),
+    # ``text`` is a rapid-mlx extension (NOT an OpenAI field) that turns
+    # this route into the forced-alignment surface: when present with a
+    # forced-aligner model (``qwen3-aligner``), the known transcript is
+    # aligned to the audio and per-character timings come back in the
+    # segment shape verbose_json/srt/vtt already render. Accepted on
+    # both form and query for parity with the other STT fields.
+    text_form: str | None = Form(None, alias="text"),
     model_query: str | None = Query(None, alias="model"),
     language_query: str | None = Query(None, alias="language"),
     response_format_query: str | None = Query(None, alias="response_format"),
+    text_query: str | None = Query(None, alias="text"),
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
 
@@ -1180,6 +1269,9 @@ async def create_transcription(
         if response_format_form is not None
         else (response_format_query if response_format_query is not None else "json")
     )
+    # Forced-alignment transcript (rapid-mlx extension). Form wins over
+    # query, matching the model/language/response_format precedence.
+    text = text_form if text_form is not None else text_query
 
     # R6-H2: reject unknown ``response_format`` values up front with a
     # 400 envelope so a typo (``"jsno"``) or unsupported value
@@ -1205,6 +1297,7 @@ async def create_transcription(
         language=language,
         response_format=response_format,
         task="transcribe",
+        text=text,
     )
 
 
@@ -1526,6 +1619,49 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     return ["default"]
 
 
+def _is_clone_capable_model(model_name: str) -> bool:
+    """Whether ``model_name`` can clone a voice from an inline reference.
+
+    Three TTS families condition synthesis on a ``ref_audio`` reference
+    clip sent on ``/v1/audio/speech``:
+
+    * **F5-TTS** — always conditions on a reference waveform.
+    * **Chatterbox** — optionally clones the reference timbre on top of
+      its default voice (its engine branch forwards ``ref_audio``).
+    * **Qwen3-TTS Base** — the ``...-Base-...`` repo clones a voice
+      zero-shot from the reference. Its CustomVoice sibling does NOT
+      clone: it keeps a predefined named speaker and ignores
+      ``ref_audio``.
+
+    The verdict MUST stay in lock-step with
+    :meth:`vllm_mlx.audio.tts.TTSEngine._detect_family`: a model this
+    gate deems clone-capable while the engine classifies into a
+    non-cloning family would skip voice validation here yet drop
+    ``ref_audio`` in the engine — a silent 200 with the wrong (default)
+    voice. So the F5 and Chatterbox checks use the SAME whole-id
+    substrings the engine uses (``f5-tts``/``f5_tts`` and ``chatterbox``),
+    NOT a broad ``f5`` token that would catch an unrelated ``org/f5-foo``
+    the engine treats as Kokoro.
+
+    Qwen3-TTS Base is classified on the repo NAME (last path component)
+    split into ``-``/``_`` tokens — mirroring the Base-reject guard so
+    an org segment (``customvoice-org/...``) or an unrelated ``base``
+    elsewhere in the path can't flip the verdict. A repo name containing
+    ``qwen3-tts`` is necessarily a substring of the full id, so whenever
+    this returns True for Base the engine also detects ``qwen3_tts`` and
+    forwards the reference — the dangerous direction cannot occur.
+    """
+    name_lower = model_name.lower()
+    if "f5-tts" in name_lower or "f5_tts" in name_lower:
+        return True
+    if "chatterbox" in name_lower:
+        return True
+    repo = model_name.rsplit("/", 1)[-1].lower()
+    tokens = set(re.split(r"[-_]", repo))
+    is_qwen3 = "qwen3-tts" in repo or "qwen3_tts" in repo
+    return is_qwen3 and "base" in tokens and "customvoice" not in tokens
+
+
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
 async def create_speech(request: AudioSpeechRequest = Body(...)):
     """Generate speech from text (OpenAI TTS API compatible).
@@ -1592,30 +1728,27 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
         # handler body.
         model_name = _resolve_tts_model(model)
-        # Zero-shot voice cloning from a reference clip is supported by the
-        # F5-TTS family (clones timbre from ``ref_audio`` + its ``ref_text``
-        # transcript) and the Chatterbox family (clones timbre from
-        # ``ref_audio``; its engine branch ignores the transcript). Every
-        # other family has no cloning surface, so a ``ref_audio`` aimed at
-        # one is a client error — reject it up front rather than silently
-        # dropping the clip. The shared ``AudioSpeechRequest`` validator
-        # still requires ``ref_audio``/``ref_text`` as a pair (the F5
-        # invariant), so a Chatterbox cloning request supplies both even
-        # though Chatterbox consumes only the audio.
-        _model_lower = model_name.lower()
-        _supports_cloning = (
-            "f5-tts" in _model_lower
-            or "f5_tts" in _model_lower
-            or "chatterbox" in _model_lower
-        )
-        if ref_audio is not None and not _supports_cloning:
+
+        # Zero-shot cloning from an inline ``ref_audio`` reference clip is
+        # only wired for the clone-capable families (F5-TTS, Chatterbox, and
+        # Qwen3-TTS Base — see ``_is_clone_capable_model``). A reference clip
+        # aimed at any other model is rejected up front so the caller gets an
+        # actionable 400 rather than the engine ignoring the clip and silently
+        # synthesizing a default voice. (The shared ``AudioSpeechRequest``
+        # validator still requires ``ref_audio``/``ref_text`` as a pair — the
+        # F5 invariant — so a Chatterbox clone request supplies both even
+        # though the Chatterbox engine branch consumes only the audio.)
+        clone_capable = _is_clone_capable_model(model_name)
+        inline_clone = ref_audio is not None and clone_capable
+        if ref_audio is not None and not clone_capable:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": {
                         "message": (
-                            "ref_audio voice cloning requires an F5-TTS or "
-                            "Chatterbox model."
+                            "ref_audio/ref_text voice cloning requires a "
+                            "clone-capable model (F5-TTS, Chatterbox, or "
+                            "Qwen3-TTS Base)."
                         ),
                         "type": "invalid_request_error",
                         "code": "unsupported_voice_cloning",
@@ -1625,33 +1758,42 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             )
 
         # Qwen3-TTS ships two shapes: CustomVoice (predefined speakers,
-        # reference-free — what we alias and support) and Base (voice-
-        # cloning ONLY, requires a reference clip). A caller passing a raw
-        # ``...-Base-...`` repo id would otherwise reach the CustomVoice
-        # speaker-validation + generate path and fail deep in the engine
-        # ("Must provide one of ref_audio or ref_mel") as an opaque 500.
-        # Reject it up front with an actionable 400 pointing at CustomVoice.
-        # Classify on the REPO NAME (last path component), split into
-        # ``-``/``_``-delimited tokens, not a whole-id substring: an org like
-        # ``customvoice-org/...`` or an unrelated ``base`` elsewhere in the
-        # path must not flip the decision, and a ``base`` token must be
-        # caught wherever it sits (start/middle/end, hyphen or underscore
-        # delimited) — ``...-0.6B-Base``, ``..._base_bf16``, etc.
+        # reference-free) and Base (voice-cloning ONLY, requires a reference
+        # clip). A Base repo WITH an inline ``ref_audio`` is the correct
+        # clone target and is served below. A Base repo WITHOUT a reference
+        # cannot synthesize reference-free — it would otherwise reach the
+        # CustomVoice speaker-validation + generate path and fail deep in
+        # the engine ("Must provide one of ref_audio or ref_mel") as an
+        # opaque 500. Reject the reference-free case up front with an
+        # actionable 400 that points at both remedies (supply a reference,
+        # or use a CustomVoice repo). Classify on the REPO NAME (last path
+        # component), split into ``-``/``_``-delimited tokens, not a
+        # whole-id substring: an org like ``customvoice-org/...`` or an
+        # unrelated ``base`` elsewhere in the path must not flip the
+        # decision, and a ``base`` token must be caught wherever it sits
+        # (start/middle/end, hyphen or underscore delimited) —
+        # ``...-0.6B-Base``, ``..._base_bf16``, etc.
         _repo = model_name.rsplit("/", 1)[-1].lower()
         _tokens = set(re.split(r"[-_]", _repo))
         _is_qwen3 = "qwen3-tts" in _repo or "qwen3_tts" in _repo
-        if _is_qwen3 and "base" in _tokens and "customvoice" not in _tokens:
+        if (
+            _is_qwen3
+            and "base" in _tokens
+            and "customvoice" not in _tokens
+            and ref_audio is None
+        ):
             raise HTTPException(
                 status_code=400,
                 detail={
                     "error": {
                         "message": (
                             f"model {model_name!r} is a Qwen3-TTS Base "
-                            "(voice-cloning-only) repo and needs a reference "
-                            "audio clip, which /v1/audio/speech does not "
-                            "provide. Use a CustomVoice repo (e.g. the "
-                            "`qwen3-tts` alias) for reference-free synthesis "
-                            "with a predefined speaker."
+                            "(voice-cloning-only) repo: it cannot synthesize "
+                            "reference-free. Supply ref_audio (a clean 5-10s "
+                            "reference clip) plus ref_text (its transcript) to "
+                            "clone that voice, or use a CustomVoice repo (e.g. "
+                            "the `qwen3-tts` alias) for reference-free "
+                            "synthesis with a predefined speaker."
                         ),
                         "type": "invalid_request_error",
                         "code": "unsupported_model_variant",
@@ -1660,70 +1802,80 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 },
             )
 
-        # R11-B-F3 (Bo 0.8.12 dogfood, PR #863): translate the literal
-        # ``voice="default"`` to the registry's ``default_voice`` BEFORE
-        # the allowlist check below. Pre-fix the obvious naive caller
-        # value (``"default"``) was rejected by the kokoro allowlist
-        # even though the registry already advertises
-        # ``default_voice="af_heart"`` for it.
-        #
-        # R11-B-F1 (Bo 0.8.12 dogfood, this PR): the same resolver also
-        # fires when ``voice`` was OMITTED from the JSON body. The
-        # Pydantic model defaults ``voice`` to ``"af_heart"`` (kokoro's
-        # canonical voice) for OpenAI-SDK parity. That default is
-        # correct for kokoro but wrong for VibeVoice (no
-        # ``af_heart.safetensors``) and Chatterbox/VoxCPM/Dia (expect
-        # ``"default"``). The omitted-voice shape arrives here as
-        # ``voice="af_heart"`` and 400'd against every non-kokoro
-        # family. Treat the omitted-voice case the same way as the
-        # literal ``"default"`` sentinel — both resolve to the registry
-        # default. A client that EXPLICITLY sends ``voice="af_heart"``
-        # against vibevoice keeps that value (the validator then
-        # surfaces the 400 with the real available list).
-        voice_omitted = "voice" not in request.model_fields_set
-        if voice_omitted:
-            voice = "default"
-        voice = _resolve_default_voice_literal(model_name, voice)
+        # Voice selection + the speaker allowlist govern reference-free
+        # (named-speaker) synthesis only. An inline-clone request is driven
+        # by the reference clip, not a named speaker: a clone-capable Base
+        # repo advertises the ``"clone"`` sentinel as its registry
+        # ``default_voice`` (absent from the speaker allowlist), and F5
+        # conditions on the waveform too — so running the allowlist here
+        # would 400 the very request we intend to serve. Skip voice
+        # resolution + validation entirely for a clone and OMIT ``voice``
+        # from the generate call below — the timbre comes from ``ref_audio``.
+        if not inline_clone:
+            # R11-B-F3 (Bo 0.8.12 dogfood, PR #863): translate the literal
+            # ``voice="default"`` to the registry's ``default_voice`` BEFORE
+            # the allowlist check below. Pre-fix the obvious naive caller
+            # value (``"default"``) was rejected by the kokoro allowlist
+            # even though the registry already advertises
+            # ``default_voice="af_heart"`` for it.
+            #
+            # R11-B-F1 (Bo 0.8.12 dogfood, this PR): the same resolver also
+            # fires when ``voice`` was OMITTED from the JSON body. The
+            # Pydantic model defaults ``voice`` to ``"af_heart"`` (kokoro's
+            # canonical voice) for OpenAI-SDK parity. That default is
+            # correct for kokoro but wrong for VibeVoice (no
+            # ``af_heart.safetensors``) and Chatterbox/VoxCPM/Dia (expect
+            # ``"default"``). The omitted-voice shape arrives here as
+            # ``voice="af_heart"`` and 400'd against every non-kokoro
+            # family. Treat the omitted-voice case the same way as the
+            # literal ``"default"`` sentinel — both resolve to the registry
+            # default. A client that EXPLICITLY sends ``voice="af_heart"``
+            # against vibevoice keeps that value (the validator then
+            # surfaces the 400 with the real available list).
+            voice_omitted = "voice" not in request.model_fields_set
+            if voice_omitted:
+                voice = "default"
+            voice = _resolve_default_voice_literal(model_name, voice)
 
-        # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
-        # model's known voice set BEFORE we load weights. Pre-fix an
-        # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
-        # ``nova`` / typo'd ``af_hart``) fell through to
-        # ``mlx_audio.load_safetensors`` which 500'd on the missing
-        # ``voices/<name>.safetensors`` file. The 500 envelope hid the
-        # actual cause from the operator log AND from the caller. The
-        # check fires post-resolution so a HF passthrough id (``mlx-
-        # community/Kokoro-82M-bf16``) honours the same voice set as
-        # the ``kokoro`` short alias — both go through the same model
-        # family check.
-        valid_voices = _allowed_voices_for(model_name)
-        # Qwen3-TTS matches speaker names case-INsensitively (its engine
-        # lowercases before the ``spk_id`` lookup) and the upstream docs mix
-        # case ("serena" vs "Serena"). Normalize a case-insensitive hit to
-        # the canonical spelling so ``serena`` / ``ono_anna`` aren't
-        # rejected as ``invalid_voice``; the engine then receives the
-        # canonical form. Other families keep exact-match validation.
-        if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
-            _canonical = {v.lower(): v for v in valid_voices}
-            voice = _canonical.get(voice.lower(), voice)
-        if voice not in valid_voices:
-            preview = ", ".join(valid_voices[:8])
-            if len(valid_voices) > 8:
-                preview = f"{preview}, ..."
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": {
-                        "message": (
-                            f"voice {voice!r} not recognized for model "
-                            f"{model_name!r}. Available: {preview}."
-                        ),
-                        "type": "invalid_request_error",
-                        "code": "invalid_voice",
-                        "param": "voice",
-                    }
-                },
-            )
+            # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
+            # model's known voice set BEFORE we load weights. Pre-fix an
+            # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
+            # ``nova`` / typo'd ``af_hart``) fell through to
+            # ``mlx_audio.load_safetensors`` which 500'd on the missing
+            # ``voices/<name>.safetensors`` file. The 500 envelope hid the
+            # actual cause from the operator log AND from the caller. The
+            # check fires post-resolution so a HF passthrough id (``mlx-
+            # community/Kokoro-82M-bf16``) honours the same voice set as
+            # the ``kokoro`` short alias — both go through the same model
+            # family check.
+            valid_voices = _allowed_voices_for(model_name)
+            # Qwen3-TTS matches speaker names case-INsensitively (its engine
+            # lowercases before the ``spk_id`` lookup) and the upstream docs
+            # mix case ("serena" vs "Serena"). Normalize a case-insensitive
+            # hit to the canonical spelling so ``serena`` / ``ono_anna``
+            # aren't rejected as ``invalid_voice``; the engine then receives
+            # the canonical form. Other families keep exact-match validation.
+            if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
+                _canonical = {v.lower(): v for v in valid_voices}
+                voice = _canonical.get(voice.lower(), voice)
+            if voice not in valid_voices:
+                preview = ", ".join(valid_voices[:8])
+                if len(valid_voices) > 8:
+                    preview = f"{preview}, ..."
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                f"voice {voice!r} not recognized for model "
+                                f"{model_name!r}. Available: {preview}."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "invalid_voice",
+                            "param": "voice",
+                        }
+                    },
+                )
 
         # F-K-KOKORO-MISAKI: Kokoro pulls ``misaki`` lazily inside
         # ``KokoroPipeline``; the TTS-lane probe above can't catch
@@ -1744,7 +1896,16 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the real engine, but omitting the kwarg entirely keeps the call
         # shape backward-compatible with any generate() that predates the
         # emotion parameter (only Qwen3-TTS consumes it).
-        gen_kwargs = {"voice": voice, "speed": speed}
+        #
+        # OMIT ``voice`` for an inline clone — the reference clip selects
+        # the timbre and the Base model ignores ``voice`` when a reference
+        # is set (F5 has no named-speaker surface at all). Forwarding the
+        # ``"clone"`` sentinel or a stray named speaker would be meaningless
+        # and, for a strict engine, could raise. Reference-free synthesis
+        # keeps the resolved named speaker.
+        gen_kwargs = (
+            {"speed": speed} if inline_clone else {"voice": voice, "speed": speed}
+        )
         if instructions:
             gen_kwargs["instruct"] = instructions
         # Only forward ``exaggeration`` when the caller actually sent it, so

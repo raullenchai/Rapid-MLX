@@ -498,6 +498,12 @@ class STTEngine:
         # only fires for actual Whisper backends — non-Whisper engines
         # surface their own load-time errors unmodified.
         self._is_whisper = "whisper" in model_name.lower()
+        # Forced-alignment models (Qwen3-ForcedAligner) take audio + the
+        # KNOWN transcript and return per-character timings. They use a
+        # different call surface (``generate(audio, text, language)``) and
+        # a dedicated ``align()`` method — ``transcribe()`` is not valid on
+        # them (there is no text to discover).
+        self._is_aligner = "aligner" in model_name.lower()
         # F-K-WHISPER-961: VAD pre-trim guard. See top-of-file block
         # for the full rationale. Only applied to Whisper engines —
         # Parakeet/Canary/etc. have their own silence semantics and
@@ -634,6 +640,17 @@ class STTEngine:
         Returns:
             TranscriptionResult with text and metadata
         """
+        # Guard BEFORE load(): an aligner model has no transcribe surface,
+        # so reject up front rather than downloading gigabytes of weights
+        # only to raise. ``_is_aligner`` is resolved in ``__init__`` from
+        # the model name, so this check is load-independent.
+        if self._is_aligner:
+            raise ValueError(
+                "This is a forced-alignment model — call align(audio, text, "
+                "language) with the known transcript, not transcribe() (there "
+                "is no text to recognize)."
+            )
+
         if not self._loaded:
             self.load()
 
@@ -713,6 +730,76 @@ class STTEngine:
             )
         except Exception as e:
             logger.error(f"Transcription failed: {e}")
+            raise
+
+    def align(
+        self,
+        audio_path: str | Path,
+        text: str,
+        language: str = "Chinese",
+    ) -> TranscriptionResult:
+        """Forced alignment: return per-character timings for KNOWN text.
+
+        Unlike :meth:`transcribe`, the transcript is an INPUT — the model
+        aligns the given ``text`` to ``audio_path`` rather than recognizing
+        speech, so there is zero recognition error and only the timing is
+        estimated. This is the capability behind karaoke captions and
+        beat-synced editing, and (unlike ASR word-timestamps) it stays exact
+        even on hard names / homophones because the words are supplied.
+
+        Requires a forced-aligner model (registry family ``qwen3_aligner``,
+        e.g. alias ``qwen3-aligner``). Returns a :class:`TranscriptionResult`
+        whose ``segments`` is a list of ``{"text", "start", "end"}`` — one
+        entry per aligned unit (per Chinese character for zh) — matching the
+        segment shape the ``/v1/audio/transcriptions`` verbose_json/srt/vtt
+        serializers already consume.
+
+        Args:
+            audio_path: Path to the audio whose speech is ``text``.
+            text: The known transcript to align.
+            language: Alignment language (aligner-specific; default
+                ``"Chinese"``). Passed through to the model.
+
+        Returns:
+            TranscriptionResult with per-character ``segments``.
+        """
+        # Guard BEFORE load(): validating the model kind and the input
+        # text is load-independent (``_is_aligner`` is set in ``__init__``,
+        # ``text`` is a caller arg), so reject invalid calls without first
+        # downloading/loading gigabytes of weights.
+        if not self._is_aligner:
+            raise ValueError(
+                f"align() requires a forced-aligner model; {self.model_name!r} "
+                "is not one (use a registry alias like 'qwen3-aligner')."
+            )
+        if not text or not text.strip():
+            raise ValueError("align() requires non-empty known text to align.")
+
+        if not self._loaded:
+            self.load()
+
+        try:
+            result = self.model.generate(
+                audio=str(audio_path), text=text, language=language
+            )
+            items = getattr(result, "items", None) or []
+            segments = [
+                {
+                    "text": it.text,
+                    "start": float(it.start_time),
+                    "end": float(it.end_time),
+                }
+                for it in items
+            ]
+            duration = segments[-1]["end"] if segments else None
+            return TranscriptionResult(
+                text=getattr(result, "text", text) or text,
+                language=language,
+                duration=duration,
+                segments=segments,
+            )
+        except Exception as e:
+            logger.error(f"Forced alignment failed: {e}")
             raise
 
     def unload(self) -> None:

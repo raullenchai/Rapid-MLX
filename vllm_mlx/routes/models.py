@@ -406,6 +406,9 @@ def _detect_capabilities(
         # embedding model id — the chat surface is not wired.
         return ["embedding"]
 
+    if profile_modality == "video-gen":
+        return ["video.generation"]
+
     caps: list[str] = ["text"]
     if _is_vlm(model_id, profile_modality, is_text_only):
         caps.append("vision")

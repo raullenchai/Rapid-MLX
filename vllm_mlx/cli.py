@@ -2268,6 +2268,18 @@ def serve_command(args):
     _max_tokens_is_explicit = _arg_max_tokens is not None
     effective_max_tokens = _arg_max_tokens if _arg_max_tokens is not None else 32768
 
+    # Video aliases use a dedicated MLX-native runtime. Check the optional
+    # package and ffmpeg before version prompts or a 22+ GB model download.
+    from .model_aliases import resolve_profile as _resolve_serve_profile
+
+    _serve_profile = _resolve_serve_profile(
+        getattr(args, "_original_alias", None) or getattr(args, "model", "")
+    )
+    if _serve_profile is not None and _serve_profile.modality == "video-gen":
+        from .runtime.video_lane import require_video_runtime_or_exit
+
+        require_video_runtime_or_exit()
+
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
     # ``prompt_upgrade_if_available`` (which may exit 0 on user

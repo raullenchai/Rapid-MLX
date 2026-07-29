@@ -107,7 +107,14 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 # domain-appropriate cap. We skip them here so the generic 8 MiB JSON
 # cap doesn't trample a 25 MB Whisper upload that the audio middleware
 # already validates. See ``vllm_mlx/routes/audio.py``.
-_EXCLUDED_PATHS = frozenset({"/v1/audio/transcriptions"})
+_EXCLUDED_PATHS = frozenset(
+    {
+        "/v1/audio/transcriptions",
+        # Multipart video uploads have a dedicated 20 MiB file / 21 MiB
+        # request cap plus pre-parse authentication in routes.video.
+        "/v1/videos",
+    }
+)
 
 
 def _path_is_guarded(path: str | None) -> bool:

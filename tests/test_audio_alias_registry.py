@@ -1206,3 +1206,119 @@ class TestAudioServeArgparseAcceptsBothFlags:
         assert (
             captured.get("embedding_model") == "mlx-community/embeddinggemma-300m-6bit"
         )
+
+
+# ---------------------------------------------------------------------------
+# I) voxcpm must NOT advertise (broken) Chinese support
+# ---------------------------------------------------------------------------
+
+
+class TestVoxcpmDoesNotAdvertiseChinese:
+    """The ``voxcpm`` (``mlx-community/VoxCPM1.5``) MLX port is
+    empirically broken for Chinese — Chinese input yields Thai-script
+    gibberish plus long runaway generation. The registry ``notes``
+    are the operator-facing description surfaced by ``rapid-mlx info
+    <alias>``; pre-fix they read exactly
+    ``"Chinese/English high-quality TTS (CPM-based)."``, actively
+    steering users toward a language path that does not work.
+
+    Scope of this test (deliberately narrow + robust):
+
+    ``notes`` is a single free-form prose string — the schema carries
+    no structured "supported languages" or "recommended alternative"
+    field for TTS entries. Asserting *intent* by keyword-searching
+    prose is fragile (a phrase like "Chinese is NOT broken" would
+    satisfy a naive ``"broken" in notes`` check), so this test does
+    NOT try to parse the prose. It pins only the two unambiguous,
+    structural facts that define the de-advertisement:
+
+    1. ``voxcpm`` still RESOLVES as a tts/voxcpm alias — the change is
+       metadata-only and must not drop the entry.
+    2. The exact pre-fix advertising sentence is GONE — i.e. the
+       registry no longer presents ``voxcpm`` as a
+       ``Chinese/English high-quality TTS``.
+
+    Both assertions fail on the pre-fix ``aliases.json`` and pass with
+    the fix. Verifying the *replacement* wording (warning text,
+    alternative recommendation) or the alternatives' actual Chinese
+    synthesis is out of scope: the former needs structured metadata
+    the schema doesn't have, the latter needs model weights + an
+    integration/eval path.
+    """
+
+    #: The verbatim pre-fix ``voxcpm`` notes string that advertised
+    #: Chinese as a supported, high-quality language. Removing this is
+    #: the literal definition of the de-advertisement.
+    _PREFIX_ADVERTISING_NOTES = "Chinese/English high-quality TTS (CPM-based)."
+
+    #: The exact approved post-fix ``voxcpm`` notes. Pinned verbatim so
+    #: the test enforces the *approved* de-advertised copy rather than
+    #: keyword-searching prose — the latter can be gamed by contradictory
+    #: text (e.g. "Chinese is not broken; do not use English"). A full
+    #: string equality is negation-proof: no rephrasing that advertises
+    #: Chinese as supported can satisfy it. If the copy is intentionally
+    #: revised, update this constant in the same commit.
+    _APPROVED_NOTES = (
+        "English (experimental) TTS (CPM-based). WARNING: Chinese is "
+        "currently BROKEN in this MLX port — Chinese input produces "
+        "Thai-script gibberish plus long runaway generation, so do NOT "
+        "use voxcpm for Chinese. For Chinese TTS use `f5-tts-zh` (EN+ZH, "
+        "cloneable) or `qwen3-tts` (named Chinese speakers) instead. "
+        "English-only is usable but best-effort; report upstream if "
+        "synth fails."
+    )
+
+    def test_voxcpm_still_resolves_as_tts(self):
+        """Metadata-only change: the alias must not be dropped or
+        retyped."""
+        from vllm_mlx.audio.registry import resolve_audio_alias
+
+        entry = resolve_audio_alias("voxcpm")
+        assert entry is not None, (
+            "voxcpm must remain a registered audio alias — the "
+            "de-advertisement is metadata-only, it must NOT drop the "
+            "entry."
+        )
+        assert entry.type == "tts"
+        assert entry.family == "voxcpm"
+        assert entry.hf_id == "mlx-community/VoxCPM1.5"
+
+    def test_voxcpm_notes_match_the_approved_deadvertised_copy(self):
+        """The ``voxcpm`` notes must equal the approved de-advertised
+        copy verbatim.
+
+        A full-string equality (rather than keyword-searching the
+        prose) is the negation-proof contract: keyword checks can be
+        satisfied by contradictory text such as
+        ``"Chinese is not broken; do not use English"``, whereas exact
+        equality can only be satisfied by the reviewed, approved
+        warning — which describes voxcpm as English (experimental),
+        warns Chinese is BROKEN, tells users not to use voxcpm for
+        Chinese, and points them at ``f5-tts-zh`` / ``qwen3-tts``.
+
+        It fails on the pre-fix ``aliases.json`` (which advertised
+        ``Chinese/English high-quality TTS``) and passes with the fix.
+        If the copy is intentionally revised later, ``_APPROVED_NOTES``
+        must be updated in the same commit — an intentional, reviewed
+        act, not an accidental drift back toward advertising Chinese.
+        """
+        from vllm_mlx.audio.registry import resolve_audio_alias
+
+        entry = resolve_audio_alias("voxcpm")
+
+        assert entry.notes == self._APPROVED_NOTES, (
+            "voxcpm notes have drifted from the approved de-advertised "
+            "copy. Expected the reviewed warning that describes voxcpm "
+            "as English (experimental) and marks Chinese BROKEN; got "
+            f"{entry.notes!r}. If this change is intentional, update "
+            "TestVoxcpmDoesNotAdvertiseChinese._APPROVED_NOTES in the "
+            "same commit."
+        )
+        # Belt-and-suspenders: the pre-fix advertising phrase is gone.
+        # (Implied by the equality above, but kept as an explicit,
+        # self-documenting guard against the specific regression.)
+        assert self._PREFIX_ADVERTISING_NOTES.lower() not in entry.notes.lower(), (
+            "voxcpm notes still carry the pre-fix advertising phrase "
+            "``Chinese/English high-quality TTS`` — the de-advertisement "
+            "must stop presenting voxcpm as a Chinese/English TTS."
+        )

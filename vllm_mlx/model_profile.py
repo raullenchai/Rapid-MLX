@@ -54,7 +54,7 @@ from typing import Literal
 # Adding a new value requires editing this Literal AND the dispatch table
 # in cli.py / routes/models.py so the surface-level UX (info, ls, chat)
 # doesn't silently expose LLM-only columns on a non-LLM alias.
-Modality = Literal["text", "text-diffusion", "vision", "image-gen"]
+Modality = Literal["text", "text-diffusion", "vision", "image-gen", "video-gen"]
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -96,9 +96,41 @@ rapid-mlx launch claude-code
 
 With a server running (step 3), this patches Claude Code's local config (`~/.config/claude/settings.json`) to route at `http://localhost:8000` — no manual env vars, no editing JSON by hand. You get a fully local Claude Code: `$0` per token, nothing leaves your Mac. Swap in `cursor`, `cline`, or `continue-dev` for the other IDE clients, or run `rapid-mlx launch list` to see what's detected on this machine.
 
-> **Vision / audio / diffusion models?** Base install is text-only (~460 MB). Vision, audio, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
+> **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio, LTX-2.3 video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
 > **Not into the terminal?** [**Rapid-MLX Desktop**](https://rapidmlx.com/desktop) bundles the same engine inside a one-click Mac app.
+
+---
+
+## LTX-2.3 video generation
+
+Run text-to-video or image-to-video locally with synchronized audio through
+the OpenAI-compatible Videos API. The default MLX Q4 checkpoint is a 22.8 GB
+download and needs at least 24 GB unified memory; 32 GB or more is recommended.
+`ffmpeg` is required for the final MP4 mux.
+
+```bash
+pip install 'rapid-mlx[video]'
+brew install ffmpeg
+rapid-mlx serve ltx-2.3-mlx-q4
+```
+
+Create and download a four-second video:
+
+```bash
+curl http://localhost:8000/v1/videos \
+  -F model=ltx-2.3-mlx-q4 \
+  -F 'prompt=A fox running through fresh snow, cinematic tracking shot' \
+  -F seconds=4 \
+  -F size=768x512
+
+# Poll until GET /v1/videos/VIDEO_ID reports "status": "completed", then:
+curl http://localhost:8000/v1/videos/VIDEO_ID/content -o output.mp4
+```
+
+The create call returns a job immediately. Poll `GET /v1/videos/VIDEO_ID`
+until `status` is `completed`. Add `-F input_reference=@start.png` for
+image-to-video.
 
 ---
 
@@ -107,7 +139,7 @@ With a server running (step 3), this patches Claude Code's local config (`~/.con
 | | |
 |---|---|
 | **Apple-Silicon-native** | Pure MLX kernels — no llama.cpp fallback, no Metal shim. Continuous batching, prompt cache (radix + DeltaNet RNN snapshots), and a quantized live KV cache (int4/int8 on the continuous-batching cache + TurboQuant K8V4 codec) run at native MLX bandwidth on M1 → M4. |
-| **Drop-in OpenAI / Anthropic API** | `/v1/chat/completions`, `/v1/responses` (Codex CLI), `/v1/messages` (Anthropic SDK / Claude Code), `/v1/embeddings`, `/v1/audio/*` — same wire as ChatGPT / Claude, no client adapter. |
+| **Drop-in OpenAI / Anthropic API** | `/v1/chat/completions`, `/v1/responses` (Codex CLI), `/v1/messages` (Anthropic SDK / Claude Code), `/v1/embeddings`, `/v1/audio/*`, `/v1/videos` — same wire as ChatGPT / Claude, no client adapter. |
 | **First-class ecosystem coverage** | 11 agent CLIs and 3 Python frameworks are wire-verified against real weights every release (4 are Tier-1, re-verified on current binaries) — Codex CLI, Claude Code, OpenCode, Qwen Code, OpenHands, Hermes Agent, Aider, Kilo Code, GitHub Copilot, Factory Droid, Moonshot Kimi Code + LangChain, PydanticAI, smolagents. |
 
 → [Full feature breakdown](https://rapidmlx.com/docs/index.html)

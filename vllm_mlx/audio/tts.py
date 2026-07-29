@@ -320,11 +320,17 @@ class TTSEngine:
                 so passing it is a no-op there rather than an error.
             ref_audio: Optional path to a reference audio clip for zero-shot
                 voice cloning. Used by the F5-TTS ``f5`` family to clone the
-                clip's timbre, and optionally by the Chatterbox family (clones
-                the ref timbre on top of its default voice); ignored by
-                families without a cloning surface.
+                clip's timbre; by the Chatterbox family (optional — clones the
+                ref timbre on top of its default voice); and by Qwen3-TTS
+                **Base** (optional — the Base variant ignores ``voice`` when
+                ``ref_audio`` is set, while CustomVoice ignores ``ref_audio``
+                and keeps its named speaker). Use a clean 5-10s clip at the
+                model's native sample rate. Ignored by families without a
+                cloning surface.
             ref_text: Optional transcript of ``ref_audio`` (its exact spoken
-                text). Paired with ``ref_audio`` for F5-TTS cloning.
+                text). Paired with ``ref_audio`` for F5-TTS cloning and to
+                anchor Qwen3-TTS Base cloning. Ignored by families that clone
+                reference-free.
             exaggeration: Chatterbox emotion/intensity knob (0.0 neutral →
                 ~1.0 very expressive). Only the Chatterbox family honours it;
                 it drives that engine's ``exaggeration`` argument and is the
@@ -375,6 +381,15 @@ class TTSEngine:
                     gen_kwargs["lang_code"] = "auto"
                     if instruct:
                         gen_kwargs["instruct"] = instruct
+                    # Qwen3-TTS Base = zero-shot voice cloning: forward the
+                    # reference clip (+ its transcript) when given. Base ignores
+                    # ``voice`` while a ref is set; CustomVoice ignores
+                    # ``ref_audio`` and keeps its named speaker — so forwarding
+                    # only-when-set lets one family serve both variants.
+                    if ref_audio:
+                        gen_kwargs["ref_audio"] = ref_audio
+                        if ref_text:
+                            gen_kwargs["ref_text"] = ref_text
                 else:
                     gen_kwargs["lang_code"] = lang_code
 
