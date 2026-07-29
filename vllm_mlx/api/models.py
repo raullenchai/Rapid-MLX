@@ -2618,8 +2618,11 @@ class AudioSpeechRequest(BaseModel):
     # compatibility and route it to engines that expose an emotion/style
     # control — currently Qwen3-TTS CustomVoice (its ``instruct`` arg).
     # Families with no such control ignore it, matching OpenAI's behaviour
-    # for voices that don't support styling. ``None`` = omitted.
-    instructions: str | None = None
+    # for voices that don't support styling. ``None`` = omitted. Bounded to
+    # OpenAI's documented 4096-char ceiling so an oversized style prompt is
+    # rejected up front with the standard envelope rather than ballooning
+    # the generation.
+    instructions: str | None = Field(default=None, max_length=4096)
 
     @model_validator(mode="before")
     @classmethod

@@ -287,6 +287,34 @@ class TestQwen3TTSRoute:
         # Both shapes → registry default_voice (Serena), not Kokoro's af_heart.
         assert call["voice"] == "Serena"
 
+    @pytest.mark.parametrize(
+        "speaker",
+        # Every speaker the model's talker_config.spk_id carries — Chinese,
+        # English, and the README-undocumented Japanese (Ono_Anna) and
+        # Korean (Sohee). Each must pass route voice validation, not 400.
+        [
+            "Vivian",
+            "Serena",
+            "Uncle_Fu",
+            "Dylan",
+            "Eric",
+            "Ryan",
+            "Aiden",
+            "Ono_Anna",
+            "Sohee",
+        ],
+    )
+    def test_all_documented_speakers_accepted(self, monkeypatch, speaker):
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": "qwen3-tts", "input": "测试。", "voice": speaker},
+        )
+        assert resp.status_code == 200, resp.text
+        (engine,) = _RecordingEngine.instances
+        (call,) = engine.generate_calls
+        assert call["voice"] == speaker
+
     def test_unknown_voice_rejected_with_speaker_list(self, monkeypatch):
         client = _mount(monkeypatch)
         resp = client.post(

@@ -43,9 +43,17 @@ CHATTERBOX_VOICES = ["default"]  # Uses reference audio for voice
 # NO ``voices/`` snapshot dir (voices are baked-in named speakers, not
 # per-voice safetensors), so ``_list_snapshot_voices`` returns ``[]`` and
 # the route's ``_allowed_voices_for`` / ``get_voices`` fall back to this
-# static list. Names are the canonical capitalized speaker ids documented
-# in the upstream ``mlx_audio.tts.models.qwen3_tts`` README — Chinese
-# speakers first (the primary short-drama-dubbing use case), then English.
+# static list.
+#
+# The AUTHORITATIVE speaker set is the model config's
+# ``talker_config.spk_id`` keys (see ``mlx_audio.tts.models.qwen3_tts``:
+# ``supported_speakers = list(config.talker_config.spk_id.keys())``), which
+# the engine matches case-INsensitively (``speaker.lower() in spk_id``).
+# The upstream README under-documents it (lists only the Chinese + English
+# speakers); the shipped ``1.7B-CustomVoice`` config actually carries nine,
+# including the Japanese ``ono_anna`` and Korean ``sohee`` — omitting those
+# would make the route 400 two valid voices. We list the canonical
+# capitalized display forms here, grouped Chinese → English → JA → KO.
 QWEN3_TTS_VOICES = [
     "Vivian",
     "Serena",
@@ -54,6 +62,8 @@ QWEN3_TTS_VOICES = [
     "Eric",  # Sichuan dialect
     "Ryan",
     "Aiden",
+    "Ono_Anna",  # Japanese
+    "Sohee",  # Korean
 ]
 
 
