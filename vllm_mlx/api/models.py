@@ -2734,11 +2734,184 @@ class AudioSpeechRequest(BaseModel):
         return lower
 
 
+# Content-farm lane: text→music/SFX ``response_format`` values the
+# ``/v1/audio/music`` route can produce. Stable Audio 3 renders WAV
+# natively; only ``wav`` is offered for now (mirrors the SA3 CLI's
+# output). Centralised so the validator and the route agree.
+_MUSIC_ALLOWED_RESPONSE_FORMATS: tuple[str, ...] = ("wav",)
+
+#: SA3 supports clips up to ~47s; reject longer requests up front so a
+#: caller doesn't wait on a generation the backend will clamp/refuse.
+_MUSIC_MAX_SECONDS: float = 47.0
+
+
+class AudioMusicRequest(BaseModel):
+    """Request for text→music / text→SFX (``/v1/audio/music``).
+
+    OpenAI-flavored shape mirroring :class:`AudioSpeechRequest` so the
+    content-farm music lane reads the same as the speech lane to a
+    colleague integrating over the API. Wired to
+    :class:`vllm_mlx.audio.music.MusicEngine` (MLX-native Stable Audio 3).
+
+    * ``input`` is the natural-language prompt (SA3's positive branch);
+      rejected empty / whitespace-only like the speech route's ``input``.
+    * ``model`` selects a DiT/decoder pairing via the route's
+      ``MUSIC_MODEL_ALIASES`` table (``medium`` = higher quality,
+      ``sm-music`` / ``sm-sfx`` = fast small). Unknown values fall back
+      to the engine defaults.
+    * ``seconds`` is bounded to SA3's ~47s ceiling; NaN/inf rejected via
+      the finite validator (Pydantic ``le=`` alone lets NaN through).
+    """
+
+    model: str = "medium"
+    input: str = Field(..., min_length=1)
+    seconds: float = Field(default=30.0, gt=0.0, le=_MUSIC_MAX_SECONDS)
+    steps: int = Field(default=8, ge=1, le=200)
+    negative_prompt: str | None = Field(default=None, max_length=4096)
+    seed: int | None = None
+    response_format: str = "wav"
+
+    @field_validator("input")
+    @classmethod
+    def _input_must_be_non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("input must be a non-empty, non-blank string")
+        return v
+
+    @field_validator("seconds")
+    @classmethod
+    def _seconds_must_be_finite(cls, v: float) -> float:
+        # Pydantic ``gt=/le=`` does NOT reject NaN (every NaN comparison
+        # is False), so a ``seconds=NaN`` slips past the bounds and would
+        # reach the engine. Reject non-finite values explicitly.
+        if not math.isfinite(v):
+            raise ValueError("seconds must be a finite number")
+        return v
+
+    @field_validator("response_format")
+    @classmethod
+    def _response_format_must_be_known(cls, v: str) -> str:
+        if v is None:
+            return "wav"
+        lower = v.lower()
+        if lower not in _MUSIC_ALLOWED_RESPONSE_FORMATS:
+            supported = ", ".join(_MUSIC_ALLOWED_RESPONSE_FORMATS)
+            raise ValueError(f"response_format must be one of: {supported}; got {v!r}")
+        return lower
+
+
 class AudioSeparationRequest(BaseModel):
     """Request for audio source separation."""
 
     model: str = "htdemucs"
     stems: list[str] = Field(default_factory=lambda: ["vocals", "accompaniment"])
+
+
+# =============================================================================
+# Video generation (content-farm lane — CONTRACT-ONLY, no backend yet)
+# =============================================================================
+#
+# ``/v1/video/generations`` ships the request/response CONTRACT and the
+# ``VideoEngine`` interface (see :mod:`vllm_mlx.video.engine`) so
+# colleagues can integrate against a stable shape today and drop an
+# LTX-2.3 backend in behind it later. The route returns HTTP 501 until a
+# concrete backend is registered — the models below are the wire schema
+# a future backend must honour.
+
+_VIDEO_ALLOWED_RESPONSE_FORMATS: tuple[str, ...] = ("mp4",)
+
+#: Generous structural bounds — the concrete backend narrows these to
+#: whatever LTX-2.3 actually supports. They exist so a wildly-invalid
+#: request (0-frame, negative dimension, NaN frame rate) 400s at the
+#: schema boundary rather than reaching the engine.
+_VIDEO_MAX_DIMENSION: int = 4096
+_VIDEO_MAX_FRAMES: int = 4096
+_VIDEO_MAX_FRAME_RATE: float = 240.0
+
+
+class VideoGenerationRequest(BaseModel):
+    """Request for text→video AND image→video (``/v1/video/generations``).
+
+    Single schema covers both modes: text-to-video when ``image`` is
+    omitted, image-to-video (i2v) when ``image`` carries a base64 data
+    URI or an ``http(s)://`` URL of the conditioning first frame.
+
+    CONTRACT-ONLY: no backend is wired yet. A future LTX-2.3
+    implementation of :class:`vllm_mlx.video.engine.VideoEngine`
+    consumes exactly these fields.
+    """
+
+    model: str = "ltx-2.3"
+    prompt: str = Field(..., min_length=1)
+    # base64 (optionally as a ``data:`` URI) OR an http(s) URL of the
+    # conditioning frame for image-to-video. ``None`` → text-to-video.
+    image: str | None = None
+    height: int = Field(default=704, gt=0, le=_VIDEO_MAX_DIMENSION)
+    width: int = Field(default=1216, gt=0, le=_VIDEO_MAX_DIMENSION)
+    num_frames: int = Field(default=97, ge=1, le=_VIDEO_MAX_FRAMES)
+    frame_rate: float = Field(default=25.0, gt=0.0, le=_VIDEO_MAX_FRAME_RATE)
+    steps: int | None = Field(default=None, ge=1, le=500)
+    seed: int | None = None
+    negative_prompt: str | None = Field(default=None, max_length=4096)
+    response_format: str = "mp4"
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_must_be_non_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("prompt must be a non-empty, non-blank string")
+        return v
+
+    @field_validator("frame_rate")
+    @classmethod
+    def _frame_rate_must_be_finite(cls, v: float) -> float:
+        # Same NaN caveat as AudioMusicRequest.seconds — ``gt=/le=`` lets
+        # NaN through, so reject non-finite frame rates explicitly.
+        if not math.isfinite(v):
+            raise ValueError("frame_rate must be a finite number")
+        return v
+
+    @field_validator("response_format")
+    @classmethod
+    def _response_format_must_be_known(cls, v: str) -> str:
+        if v is None:
+            return "mp4"
+        lower = v.lower()
+        if lower not in _VIDEO_ALLOWED_RESPONSE_FORMATS:
+            supported = ", ".join(_VIDEO_ALLOWED_RESPONSE_FORMATS)
+            raise ValueError(f"response_format must be one of: {supported}; got {v!r}")
+        return lower
+
+
+class VideoGenerationResult(BaseModel):
+    """One generated clip inside a :class:`VideoGenerationResponse`.
+
+    Mirrors the OpenAI images ``data[]`` item shape: exactly one of
+    ``b64_video`` (inline base64 mp4) or ``url`` is populated by a
+    backend. ``audio`` carries LTX-2.3's native soundtrack when the
+    backend emits one (base64 of the muxed track), else ``None``.
+    """
+
+    b64_video: str | None = None
+    url: str | None = None
+    audio: str | None = None
+    format: str = "mp4"
+    width: int | None = None
+    height: int | None = None
+    num_frames: int | None = None
+    frame_rate: float | None = None
+
+
+class VideoGenerationResponse(BaseModel):
+    """Response envelope for ``/v1/video/generations``.
+
+    Shaped like the OpenAI images API (``{created, data: [...]}``) with a
+    ``model`` echo so multi-model clients can attribute the result.
+    """
+
+    created: int
+    model: str
+    data: list[VideoGenerationResult]
 
 
 # =============================================================================

@@ -188,12 +188,14 @@ class TestRegisterAudioRoutes:
             for r in _walk_routes(app)
             if getattr(r, "path", "").startswith("/v1/audio/")
         ]
-        # transcriptions + translations + speech + voices = 4 unique paths.
+        # transcriptions + translations + speech + music + voices =
+        # 5 unique paths (music is the content-farm lane addition).
         unique_paths = {r.path for r in audio_routes}
         assert unique_paths == {
             "/v1/audio/transcriptions",
             "/v1/audio/translations",
             "/v1/audio/speech",
+            "/v1/audio/music",
             "/v1/audio/voices",
         }
 

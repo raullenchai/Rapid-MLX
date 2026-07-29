@@ -9,7 +9,7 @@ import tempfile
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import PlainTextResponse, Response
 
-from ..api.models import AudioSpeechRequest
+from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -146,6 +146,7 @@ _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 # Audio engines (lazy loaded, module-level to persist across requests)
 _stt_engine = None
 _tts_engine = None
+_music_engine = None
 
 # OpenAI-style STT model alias → MLX repo. Promoted to module scope so
 # the route can validate the model BEFORE streaming the upload (F-165):
@@ -229,6 +230,17 @@ def _is_valid_repo_component(comp: str) -> bool:
 #: ``"default"`` to the boot-time CLI model — STT has no boot-time
 #: model bound, so the route default is the closest equivalent.
 DEFAULT_STT_ALIAS = "whisper-large-v3"
+
+#: Default forced-aligner alias used when ``/v1/audio/transcriptions``
+#: receives a ``text`` field (→ forced alignment) but the caller did NOT
+#: explicitly pick a ``model``. The transcription default
+#: (``whisper-large-v3``) is an ASR model, not an aligner — routing the
+#: alignment branch to it would raise ``align() requires a forced-aligner
+#: model`` deep in the engine. Defaulting to the registered aligner alias
+#: keeps the common "just send audio + text" call working. Both this and
+#: the long-form ``qwen3-forced-aligner`` alias live in the audio
+#: registry (type ``stt``), so ``_resolve_stt_model`` resolves them.
+DEFAULT_ALIGNER_ALIAS = "qwen3-aligner"
 
 
 def _resolve_stt_model(model: str) -> str:
@@ -977,6 +989,106 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
+async def _run_alignment_request(
+    file: UploadFile,
+    model: str,
+    text: str,
+    language: str | None,
+    response_format: str,
+):
+    """Forced-alignment pipeline for ``/v1/audio/transcriptions`` + ``text``.
+
+    When the transcription request carries a ``text`` field the caller is
+    asking for FORCED ALIGNMENT (align the KNOWN transcript to the audio,
+    returning per-character/word timestamps) rather than ASR. This helper
+    mirrors :func:`_run_stt_request`'s size/resolve/cleanup/envelope
+    wiring but calls :meth:`STTEngine.align` and defaults ``language`` to
+    the aligner's ``"Chinese"`` default when the caller omits it.
+
+    The result's per-unit ``segments`` flow through the SAME
+    ``_format_stt_response`` serializers ASR uses, so ``verbose_json`` /
+    ``srt`` / ``vtt`` all work — the aligner emits exactly the
+    ``{text, start, end}`` segment shape those formatters consume.
+    """
+    global _stt_engine
+
+    # Resolve the aligner model up front (404 for unknown aliases) BEFORE
+    # draining the upload — same fail-fast ordering as the ASR path.
+    model_name = _resolve_stt_model(model)
+
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            await _stream_upload_to_tempfile(file, tmp)
+
+        from ..audio.stt import STTEngine
+
+        if _stt_engine is None or _stt_engine.model_name != model_name:
+            _stt_engine = STTEngine(model_name)
+            _stt_engine.load()
+
+        # STTEngine.align defaults language to "Chinese"; only forward an
+        # explicit caller value so the engine default stands otherwise.
+        align_kwargs = {}
+        if language:
+            align_kwargs["language"] = language
+        result = _stt_engine.align(tmp_path, text, **align_kwargs)
+
+        return _format_stt_response(result, response_format, task="transcribe")
+
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # align() raises ValueError for the two client-fixable shapes:
+        # a non-aligner model, or empty/blank known text. Surface a 400
+        # ``invalid_request_error`` rather than the generic 500 so the
+        # caller learns to pick an aligner alias / supply text.
+        logger.info("Forced alignment rejected request: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": str(e),
+                    "type": "invalid_request_error",
+                    "code": "invalid_alignment_request",
+                    "param": "text" if "text" in str(e).lower() else "model",
+                }
+            },
+        )
+    except Exception as e:
+        if _is_decode_error(e):
+            logger.info("Forced alignment rejected corrupted upload: %s", e)
+            raise _audio_decode_error_envelope(e)
+        logger.exception("Forced alignment failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": "Audio forced alignment failed",
+                    "type": "api_error",
+                    "code": "alignment_failed",
+                    "param": None,
+                }
+            },
+        )
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
+                )
+
+
 async def _run_stt_request(
     file: UploadFile,
     model: str,
@@ -1139,11 +1251,27 @@ async def create_transcription(
     model_form: str | None = Form(None, alias="model"),
     language_form: str | None = Form(None, alias="language"),
     response_format_form: str | None = Form(None, alias="response_format"),
+    # Content-farm lane: when ``text`` is present the request is FORCED
+    # ALIGNMENT (align the known transcript to the audio, returning
+    # per-character/word timestamps) instead of ASR. Absent → unchanged
+    # transcription behaviour. Accepted on both form (OpenAI-style
+    # multipart) and query (internal-caller parity with model/language).
+    text_form: str | None = Form(None, alias="text"),
     model_query: str | None = Query(None, alias="model"),
     language_query: str | None = Query(None, alias="language"),
     response_format_query: str | None = Query(None, alias="response_format"),
+    text_query: str | None = Query(None, alias="text"),
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
+
+    Forced-alignment extension (content-farm lane): if the request
+    carries a ``text`` field, the route aligns that KNOWN transcript to
+    the uploaded audio (per-character/word timestamps, zero recognition
+    error) via :meth:`STTEngine.align` instead of running ASR. When
+    ``text`` is present but ``model`` is omitted it defaults to the
+    registered aligner alias (:data:`DEFAULT_ALIGNER_ALIAS`), and the
+    response defaults to ``verbose_json`` so the timestamped ``segments``
+    are returned. When ``text`` is absent the behaviour is unchanged.
 
     Two-layer size guard (defense in depth):
 
@@ -1167,17 +1295,41 @@ async def create_transcription(
     # Form wins over query when both are present (form is the OpenAI
     # contract; query is the pre-F-165 internal contract we're keeping
     # for back-compat). Defaults match the original signature.
-    model = (
-        model_form
-        if model_form is not None
-        else (model_query if model_query is not None else "whisper-large-v3")
+    # Whether the caller explicitly supplied model / response_format —
+    # drives the forced-alignment defaults below (aligner model +
+    # verbose_json) which only kick in when the field was omitted.
+    model_provided = model_form is not None or model_query is not None
+    model_merged = (
+        model_form if model_form is not None else model_query
+    )  # None when neither source supplied a model
+    response_format_provided = (
+        response_format_form is not None or response_format_query is not None
     )
+    text = text_form if text_form is not None else text_query
+
     language = language_form if language_form is not None else language_query
     response_format = (
         response_format_form
         if response_format_form is not None
         else (response_format_query if response_format_query is not None else "json")
     )
+
+    # Content-farm lane: a non-blank ``text`` field switches the route
+    # from ASR to FORCED ALIGNMENT of that known transcript.
+    is_alignment = text is not None and text.strip() != ""
+
+    if is_alignment:
+        # Default to the registered aligner alias when the caller didn't
+        # pick a model — the ASR default (whisper-large-v3) is not an
+        # aligner and would fail deep in the engine.
+        model = model_merged if model_provided else DEFAULT_ALIGNER_ALIAS
+        # Default to verbose_json so the timestamped ``segments`` are in
+        # the body; the plain ``json`` envelope drops them. An explicit
+        # response_format (srt/vtt/text/json) is honoured as-is.
+        if not response_format_provided:
+            response_format = "verbose_json"
+    else:
+        model = model_merged if model_provided else "whisper-large-v3"
 
     # R6-H2: reject unknown ``response_format`` values up front with a
     # 400 envelope so a typo (``"jsno"``) or unsupported value
@@ -1196,6 +1348,15 @@ async def create_transcription(
     from ..audio.probe import require_mlx_audio_stt
 
     require_mlx_audio_stt()
+
+    if is_alignment:
+        return await _run_alignment_request(
+            file=file,
+            model=model,
+            text=text,
+            language=language,
+            response_format=response_format,
+        )
 
     return await _run_stt_request(
         file=file,
@@ -1759,6 +1920,139 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 }
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# Content-farm lane: text→music / text→SFX (``/v1/audio/music``).
+#
+# Wired to ``vllm_mlx.audio.music.MusicEngine`` (MLX-native Stable Audio
+# 3). OpenAI-flavored: JSON body in, WAV bytes out — the same
+# request-in / audio-bytes-out shape as ``/v1/audio/speech``. The
+# ``model`` field selects a DiT/decoder pairing via the alias table
+# below; unknown values fall back to the engine defaults.
+# ---------------------------------------------------------------------------
+
+#: ``model`` alias → ``(dit, decoder)`` pairing for SA3. ``medium`` is
+#: higher quality (~3.9 GB peak); ``sm-music`` / ``sm-sfx`` are the fast
+#: small variants (~1.7 GB, ~4x realtime). Kept local to the route (not
+#: in the audio registry, whose closed schema is stt/tts-typed) so adding
+#: a music variant is a one-line edit here. ``default`` maps to the
+#: engine's own defaults.
+MUSIC_MODEL_ALIASES: dict[str, tuple[str, str]] = {
+    "medium": ("medium", "same-l"),
+    "same-l": ("medium", "same-l"),
+    "sm-music": ("sm-music", "same-s"),
+    "sm-sfx": ("sm-sfx", "same-s"),
+    "same-s": ("sm-music", "same-s"),
+    "default": ("medium", "same-l"),
+}
+
+#: Fallback when ``model`` isn't a known music alias — the SA3 defaults.
+DEFAULT_MUSIC_DIT_DECODER: tuple[str, str] = ("medium", "same-l")
+
+
+def _resolve_music_model(model: str | None) -> tuple[str, str]:
+    """Map a ``/v1/audio/music`` ``model`` alias to a ``(dit, decoder)`` pair.
+
+    Recognises the :data:`MUSIC_MODEL_ALIASES` short names
+    (case-insensitively). ``None`` / ``""`` / ``"default"`` and any
+    unknown value fall back to :data:`DEFAULT_MUSIC_DIT_DECODER` (SA3's
+    own defaults) so an unfamiliar ``model`` still produces audio rather
+    than 404-ing — matching the TTS route's tolerant passthrough.
+    """
+    if not model:
+        return DEFAULT_MUSIC_DIT_DECODER
+    return MUSIC_MODEL_ALIASES.get(model.lower(), DEFAULT_MUSIC_DIT_DECODER)
+
+
+@router.post("/v1/audio/music", dependencies=[Depends(verify_api_key)])
+async def create_music(request: AudioMusicRequest = Body(...)):
+    """Generate music / SFX from a text prompt (content-farm lane).
+
+    OpenAI-flavored: a JSON body (:class:`AudioMusicRequest`) in, WAV
+    bytes out — the same request-in / audio-bytes-out contract as
+    ``/v1/audio/speech``. Wired to
+    :class:`vllm_mlx.audio.music.MusicEngine` (MLX-native Stable Audio
+    3), which renders ``seconds`` of audio for ``input`` to a temp file
+    that we stream back as ``audio/wav``.
+
+    ``model`` selects the DiT/decoder pairing (see
+    :data:`MUSIC_MODEL_ALIASES`); ``input`` (non-blank), ``seconds``
+    (≤47s), ``steps``, ``negative_prompt`` and ``seed`` are validated by
+    the request model. Backend failures surface a 500 with the OpenAI
+    ``api_error`` envelope (``code="music_generation_failed"``), matching
+    the speech route.
+    """
+    global _music_engine
+
+    dit, decoder = _resolve_music_model(request.model)
+
+    tmp_path: str | None = None
+    try:
+        from ..audio.music import MusicEngine
+
+        if (
+            _music_engine is None
+            or _music_engine.dit != dit
+            or _music_engine.decoder != decoder
+        ):
+            _music_engine = MusicEngine(dit=dit, decoder=decoder)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+
+        _music_engine.generate(
+            request.input,
+            tmp_path,
+            seconds=request.seconds,
+            steps=request.steps,
+            negative_prompt=request.negative_prompt,
+            seed=request.seed,
+        )
+
+        with open(tmp_path, "rb") as fh:
+            audio_bytes = fh.read()
+
+        # SA3 emits WAV; ``response_format`` is validated to ``wav`` by
+        # the request model, so the Content-Type is always ``audio/wav``.
+        return Response(content=audio_bytes, media_type="audio/wav")
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"music engine dependencies unavailable at runtime: {e}. "
+                "Install with: pip install 'rapid-mlx[audio]'"
+            ),
+        )
+    except Exception as e:
+        # Mirror the speech route: full traceback to the operator log,
+        # generic OpenAI-shape envelope to the client so we don't leak
+        # subprocess/filesystem internals.
+        logger.exception("Music generation failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": "Audio music generation failed",
+                    "type": "api_error",
+                    "code": "music_generation_failed",
+                    "param": None,
+                }
+            },
+        )
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp music file %s: %s", tmp_path, cleanup_err
+                )
 
 
 @router.get("/v1/audio/voices", dependencies=[Depends(verify_api_key)])
