@@ -841,6 +841,11 @@ class TestVideoContract:
             "/etc/passwd",
             "../../secret.png",
             "internal.corp.example",
+            # Allowed scheme but no host — shapes a lenient fetcher may
+            # resolve against the local filesystem. codex round-5 #2.
+            "https:///etc/passwd",
+            "http:frame.png",
+            "https://",
         ],
     )
     def test_unsafe_image_reference_is_rejected(self, image):
@@ -1083,12 +1088,15 @@ class TestMusicEmptyOutputDetection:
         assert r.status_code == 500, r.text
         assert r.json()["detail"]["error"]["code"] == "music_generation_failed", r.text
 
-    def test_unparseable_container_is_still_returned(self, monkeypatch):
-        """Non-WAV bytes must NOT be rejected by the emptiness guard.
+    def test_unparseable_output_is_500_not_mislabelled_wav(self, monkeypatch):
+        """Output that isn't a readable WAV must fail, not be mislabelled.
 
-        The guard exists to catch a specific empty-output failure, not to
-        become a format validator that refuses a good clip in a container
-        ``wave`` can't parse. Bytes it can't read count as having audio.
+        Fail-closed is right here because the producer uses the SAME
+        parser: SA3's ``save_wav`` writes 16-bit PCM through ``wave.open``
+        (``audio/sa3/scripts/sa3_mlx.py``). So bytes ``wave`` can't read
+        are not SA3 output, and returning them under
+        ``Content-Type: audio/wav`` would be mislabelling. Regression pin
+        for codex round-5 finding 1.
         """
 
         class _OpaqueEngine(_FakeMusicEngine):
@@ -1098,8 +1106,8 @@ class TestMusicEmptyOutputDetection:
                 return out_path
 
         r = self._post_with_engine(monkeypatch, _OpaqueEngine)
-        assert r.status_code == 200, r.text
-        assert r.content == b"\x00\x01\x02\x03" * 64
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"]["error"]["code"] == "music_generation_failed", r.text
 
 
 class TestAlignmentInternalErrorsAreNot400:

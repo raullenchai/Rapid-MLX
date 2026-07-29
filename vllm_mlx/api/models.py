@@ -2983,13 +2983,25 @@ class VideoGenerationRequest(BaseModel):
         # yields scheme "file", but a "://" substring test sees no scheme
         # and would wave it through as bare base64 — which is exactly the
         # local-file-read this validator exists to stop.
-        scheme = urlsplit(lowered).scheme
+        parts = urlsplit(lowered)
+        scheme = parts.scheme
         if scheme and scheme not in _VIDEO_ALLOWED_IMAGE_URL_SCHEMES:
             supported = ", ".join(_VIDEO_ALLOWED_IMAGE_URL_SCHEMES)
             raise ValueError(
                 f"image URL scheme {scheme!r} is not allowed; use one of: "
                 f"{supported} (or pass the frame inline as base64)"
             )
+        if scheme:
+            # An allowed scheme is not enough — the URL has to name a host.
+            # ``https:///etc/passwd`` (empty netloc, absolute local path)
+            # and ``http:frame.png`` (opaque, no netloc) both clear a
+            # scheme-only check while being exactly the shapes a lenient
+            # fetcher may resolve against the local filesystem.
+            if not parts.netloc:
+                raise ValueError(
+                    "image http(s) URL must include a host "
+                    "(e.g. https://example.com/frame.png)"
+                )
         # No scheme at all → treated as an inline base64 payload. Require
         # it to actually BE base64 so a stray path or hostname can't sit
         # in the field waiting for a backend to guess at it.

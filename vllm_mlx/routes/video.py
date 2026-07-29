@@ -10,7 +10,6 @@ raises :class:`NotImplementedError` and the route returns a clean HTTP
 itself the route goes live unchanged.
 """
 
-import asyncio
 import base64
 import logging
 import os
@@ -130,7 +129,14 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
                 seed=request.seed,
             )
         )
+        # Resolve a RELATIVE returned path against the directory we gave
+        # the backend, not the server's cwd. A backend that returns
+        # ``Path("out.mp4")`` is naming the file it just wrote into
+        # out_dir; resolving that against cwd reports a perfectly good
+        # render as missing.
         video_path = str(written or out_path)
+        if not os.path.isabs(video_path):
+            video_path = os.path.join(out_dir, video_path)
         written_path = video_path
 
         size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
@@ -170,11 +176,14 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
 
         # Read + base64 off the event loop: a multi-MB read and encode on
         # the loop thread stalls every other request for its duration.
+        # ``run_to_completion`` again, not bare ``to_thread`` — cancelling
+        # here would otherwise drop into ``finally`` and rmtree the file
+        # the reader is holding open.
         def _read_and_encode() -> str:
             with open(video_path, "rb") as fh:
                 return base64.b64encode(fh.read()).decode("ascii")
 
-        b64 = await asyncio.to_thread(_read_and_encode)
+        b64 = await run_to_completion(_read_and_encode)
 
         return VideoGenerationResponse(
             created=int(time.time()),

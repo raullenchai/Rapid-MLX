@@ -2189,22 +2189,24 @@ def _generate_music_blocking(
 
 
 def _wav_has_audio_frames(payload: bytes) -> bool:
-    """True if ``payload`` is a WAV carrying at least one sample frame.
+    """True if ``payload`` is a parseable WAV with at least one sample frame.
 
-    Used to reject the "successful silent clip" outcome: SA3 can exit 0
-    having written only a RIFF header (~44 bytes), which passes a
-    non-empty-bytes check but contains no audio.
+    Rejects both empty-output failure modes: SA3 exiting 0 having written
+    only a RIFF header (~44 bytes, which passes a non-empty-bytes check
+    but contains no audio), and output that isn't a readable WAV at all.
 
-    Anything we cannot parse as WAV is treated as HAVING audio, on
-    purpose — this guard exists to catch a specific empty-output failure,
-    not to become a format validator that rejects a perfectly good clip
-    in a container ``wave`` doesn't understand.
+    Fail-CLOSED on a parse error, because the producer and this check use
+    the same parser: SA3's ``save_wav`` writes 16-bit PCM via
+    ``wave.open`` (see ``audio/sa3/scripts/sa3_mlx.py``). So anything
+    ``wave`` can't read is not SA3 output, and handing it back under
+    ``Content-Type: audio/wav`` would be mislabelling bytes rather than
+    tolerating an exotic container.
     """
     try:
         with wave.open(io.BytesIO(payload), "rb") as w:
             return w.getnframes() > 0
     except (wave.Error, EOFError, OSError):
-        return True
+        return False
 
 
 def _resolve_music_model(model: str | None) -> tuple[str, str]:
