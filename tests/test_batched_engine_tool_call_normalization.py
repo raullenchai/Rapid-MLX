@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for OpenAI tool-call replay normalization before chat templating.
 
-Coverage adapted from upstream issue #470. Many chat templates
+Coverage adapted from https://github.com/waybarrios/vllm-mlx/issues/470. Many chat templates
 iterate ``message.tool_calls[i].function.arguments`` as a mapping; OpenAI's API
 contract gives it as a JSON string. Without normalization the template render
 raises mid-batch with ``AttributeError: 'str' object has no attribute 'items'``.

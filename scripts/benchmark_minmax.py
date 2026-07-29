@@ -334,7 +334,7 @@ def test_tool_call():
         ("Simple tool call", "What's the weather in Tokyo?"),
         (
             "Multi-arg tool call",
-            "Search for 'Rapid-MLX benchmarks' and show me 5 results",
+            "Search for 'vLLM MLX benchmarks' and show me 5 results",
         ),
         (
             "Code execution",

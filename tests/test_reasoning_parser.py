@@ -1071,7 +1071,8 @@ class TestDeepSeekNoTagThreshold:
 class TestGlm4Parser:
     """Tests for the GLM-4 reasoning parser.
 
-    Ported from upstream issue #295's TestGlm4Parser, adapted
+    Ported from https://github.com/waybarrios/vllm-mlx/issues/295's
+    TestGlm4Parser, adapted
     to our base class shape (``_saw_any_tag`` flag vs upstream's
     ``_phase`` enum). The behavioural contract is the same.
 

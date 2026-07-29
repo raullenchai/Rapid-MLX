@@ -204,9 +204,9 @@
           "prompt_tokens": 374,
           "completion_tokens": 77,
           "content": "",
-          "reasoning": "The user wants me to search for information about 'Rapid-MLX benchmarks' and show them 5 results. I'll use the search_web function to find this information.\n",
+          "reasoning": "The user wants me to search for information about 'vLLM MLX benchmarks' and show them 5 results. I'll use the search_web function to find this information.\n",
           "tool_calls": [
-            "ChoiceDeltaToolCall(index=0, id='call_a4cd4a2b', function=ChoiceDeltaToolCallFunction(arguments='{\"query\": \"Rapid-MLX benchmarks\", \"num_results\": 5}', name='search_web'), type='function')"
+            "ChoiceDeltaToolCall(index=0, id='call_a4cd4a2b', function=ChoiceDeltaToolCallFunction(arguments='{\"query\": \"vLLM MLX benchmarks\", \"num_results\": 5}', name='search_web'), type='function')"
           ],
           "finish_reason": "tool_calls",
           "chunks": 35
