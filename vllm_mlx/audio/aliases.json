@@ -190,6 +190,21 @@
     "notes": "Whisper tiny (smallest, fastest, lowest accuracy)."
   },
 
+  "qwen3-aligner": {
+    "type": "stt",
+    "hf_id": "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+    "family": "qwen3_aligner",
+    "languages": "multilingual",
+    "notes": "Forced ALIGNMENT (not ASR): given audio + the KNOWN transcript, returns per-character start/end times with zero recognition error. Use STTEngine.align(audio, text, language) or /v1/audio/transcriptions with a `text` field. Powers karaoke captions + beat-synced editing; unoccupied on MLX."
+  },
+  "qwen3-forced-aligner": {
+    "type": "stt",
+    "hf_id": "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+    "family": "qwen3_aligner",
+    "languages": "multilingual",
+    "notes": "Long-form alias for ``qwen3-aligner`` — same HF id."
+  },
+
   "parakeet": {
     "type": "stt",
     "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
