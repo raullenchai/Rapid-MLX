@@ -1,0 +1,34 @@
+Vendored third-party code: MLX Stable Audio 3 (SA3)
+===================================================
+
+Source:   https://github.com/Stability-AI/stable-audio-3
+Revision: 124e8a799f57a1f665495ecb72e547d0a62867f1
+License:  MIT — Copyright (c) 2026 Stability AI (see ./LICENSE)
+
+Everything under vllm_mlx/audio/sa3/ (except this NOTICE, LICENSE, and
+README.md, which are added by rapid-mlx) is the `optimized/mlx` tree of the
+upstream repository, redistributed under the MIT License. The top-level MIT
+LICENSE of stable-audio-3 covers `optimized/mlx` in full (no sub-license
+applies). The `stable-audio-tools` / `underfit` names that appear in a few
+generate-path comments are Stability's own ported components and a
+weight-provenance note — they are comments, not third-party non-MIT code.
+
+Scope of the vendored tree
+--------------------------
+Only the text-to-music/SFX *generation* path is vendored here. The upstream
+developer toolchain (LoRA training, the Gradio UI, dataset/pre-encode/parity/
+benchmark/install helpers) was removed when vendoring — see README.md. The
+kept files carry an `# SPDX-License-Identifier: MIT` header.
+
+Model weights
+-------------
+No model weights are committed or shipped in the wheel. The `.npz` tensors are
+downloaded at first use from the HuggingFace repo
+`stabilityai/stable-audio-3-optimized` under the **Stability AI Community
+License** (free commercial use under $1M revenue). That download is the user's
+own retrieval at runtime, not redistribution by rapid-mlx.
+
+rapid-mlx's own code
+--------------------
+`vllm_mlx/audio/music.py` (`MusicEngine`) is rapid-mlx code under Apache-2.0;
+it only drives `scripts/sa3_mlx.py` as a subprocess.

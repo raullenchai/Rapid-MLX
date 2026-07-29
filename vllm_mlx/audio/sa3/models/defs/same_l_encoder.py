@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Stability AI — vendored from github.com/Stability-AI/stable-audio-3
 """SAME-L Encoder — MLX implementation.
 
 Inverse of `same_l_decoder.py`. 12 blocks · dim=1536 · differential SWA

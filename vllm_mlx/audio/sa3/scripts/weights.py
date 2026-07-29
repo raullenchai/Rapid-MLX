@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Stability AI — vendored from github.com/Stability-AI/stable-audio-3
 """Shared weights manifest + downloader.
 
 Maps every weight file the runtime needs to its position in the

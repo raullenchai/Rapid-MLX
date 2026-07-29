@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Stability AI — vendored from github.com/Stability-AI/stable-audio-3
 """SAME-S Decoder — MLX implementation.
 
 Mirrors `same_s_decoder_torch.py` exactly. 6 blocks, dim=768, NUM_HEADS=12,

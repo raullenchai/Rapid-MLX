@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Stability AI — vendored from github.com/Stability-AI/stable-audio-3
 """End-to-end SA3 inference pieces in MLX — no stable-audio-tools dependency.
 
 Bundles four small components ported from stable-audio-tools:

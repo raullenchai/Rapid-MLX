@@ -419,6 +419,11 @@ vllm_mlx = [
     # this, the test runner shows a confusing path-error skip.
     "_integration_tests/*.py",
     "_integration_tests/*.sh",
+    # Vendored Stability AI MLX Stable Audio 3 attribution — the MIT license
+    # text + provenance NOTICE/README must travel with the redistributed code.
+    "audio/sa3/LICENSE",
+    "audio/sa3/NOTICE",
+    "audio/sa3/README.md",
 ]
 
 [tool.setuptools.packages.find]

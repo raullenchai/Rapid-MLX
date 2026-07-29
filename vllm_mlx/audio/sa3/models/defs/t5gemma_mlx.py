@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Stability AI — vendored from github.com/Stability-AI/stable-audio-3
 """T5Gemma (google/t5gemma-b-b-ul2) encoder in MLX.
 
 Files:
