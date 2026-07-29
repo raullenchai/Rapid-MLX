@@ -46,28 +46,29 @@ def test_every_row_aligns_with_the_header_separator(capsys):
         data_rows.append(ln)
     assert len(data_rows) >= 100, "expected the full 120-alias listing"
 
-    # Column position of "Tools" in the header — every data row must
-    # have its second column starting at the same offset.
-    tools_col = header.index("Tools")
+    # Column position of "Size" in the header — the column immediately
+    # after the alias (issue #1286). Every data row must have its second
+    # column starting at the same offset.
+    size_col = header.index("Size")
     # The split-on-spaces second token starts at the first non-space
     # character after the alias. With the dynamic width that position
-    # is exactly tools_col on every row.
+    # is exactly size_col on every row.
     for row in data_rows:
         # Find the position of the first non-space after the leading
         # alias name. The alias may itself contain hyphens but not
         # spaces; the first space-delimited gap separates alias and
-        # tools.
+        # the Size column.
         stripped = row[2:]  # drop the leading "  " indent
         first_gap = stripped.find(" ")
-        # Index of the second column (Tools) in absolute terms:
+        # Index of the second column (Size) in absolute terms:
         second_col_abs = (
             2
             + len(stripped[:first_gap])
             + (len(stripped[first_gap:]) - len(stripped[first_gap:].lstrip()))
         )
-        assert second_col_abs == tools_col, (
-            f"Row mis-aligned: tools col at {second_col_abs}, header at "
-            f"{tools_col}. Row: {row!r}"
+        assert second_col_abs == size_col, (
+            f"Row mis-aligned: size col at {second_col_abs}, header at "
+            f"{size_col}. Row: {row!r}"
         )
 
 
@@ -80,14 +81,14 @@ def test_alias_column_width_floor_is_24(capsys, monkeypatch):
     short_profile = AliasProfile(hf_path="x/y")
     monkeypatch.setattr(model_aliases, "list_profiles", lambda: {"qwen": short_profile})
     out = _capture(capsys)
-    # Header has "Alias" followed by at least 19 spaces before "Tools"
-    # → column starts at position 2 + 24 + 1 = 27.
+    # The alias column's floor is 24, so the next column (Size, added for
+    # issue #1286) starts at position 2 + 24 + 1 = 27 → offset 25 from Alias.
     header_line = next(
         ln for ln in out.splitlines() if "Alias" in ln and "DFlash" in ln
     )
-    assert header_line.index("Tools") - header_line.index("Alias") == 25, (
+    assert header_line.index("Size") - header_line.index("Alias") == 25, (
         "Alias-column floor regression: short registry should still pad "
-        "to 24 chars (Tools header at offset 25 from Alias)."
+        "to 24 chars (Size header at offset 25 from Alias)."
     )
 
 
