@@ -8,6 +8,7 @@ Provides:
 - Audio Processing: SAM-Audio (voice separation)
 """
 
+from .music import MusicEngine
 from .processor import AudioProcessor, separate_voice
 from .stt import STTEngine, transcribe_audio
 from .tts import TTSEngine, generate_speech
@@ -19,6 +20,8 @@ __all__ = [
     # TTS
     "TTSEngine",
     "generate_speech",
+    # Music / SFX
+    "MusicEngine",
     # Processing
     "AudioProcessor",
     "separate_voice",

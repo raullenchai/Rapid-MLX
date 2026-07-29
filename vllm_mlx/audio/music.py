@@ -127,43 +127,52 @@ class MusicEngine:
 
         Args:
             prompt: Natural-language description of the music/SFX.
-            out_path: Output wav path (absolute recommended).
+            out_path: Output wav path. Relative paths are resolved against the
+                caller's cwd (see the ``--out`` note below).
             seconds: Length in seconds (SA3 supports up to ~47s).
             steps: Pingpong sampling steps (8 is a good fast default).
             negative_prompt: CFG negative branch (e.g. "vocals, singing").
             seed: Fixed seed for reproducibility (None = random per run).
-            quantize: Weight quantization (3/4/5/6/8).
+            timeout: Seconds to wait for the generation subprocess.
         Returns:
-            The output Path.
+            The output Path (always absolute).
         """
-        out_path = Path(out_path)
+        # ``sa3_mlx.py`` re-roots any RELATIVE ``--out`` under its own vendored
+        # ``sa3/output/`` directory, which for an installed wheel is inside
+        # site-packages. That both hides the wav from the caller and makes the
+        # post-run existence check below fail on a successful generation, so
+        # resolve to an absolute path against the caller's cwd up front.
+        out_path = Path(out_path).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_weights()
+        # ``--flag=value`` form so a prompt that begins with "-" is never
+        # mistaken for an option by the child's argparse.
         cmd = [
             sys.executable,
             str(_SA3_CLI),
-            "--prompt",
-            prompt,
-            "--dit",
-            self.dit,
-            "--decoder",
-            self.decoder,
-            "--steps",
-            str(steps),
-            "--seconds",
-            f"{seconds:.2f}",
-            "--out",
-            str(out_path),
+            f"--prompt={prompt}",
+            f"--dit={self.dit}",
+            f"--decoder={self.decoder}",
+            f"--steps={steps}",
+            f"--seconds={seconds:.2f}",
+            f"--out={out_path}",
         ]
         if negative_prompt:
-            cmd += ["--negative-prompt", negative_prompt]
+            cmd.append(f"--negative-prompt={negative_prompt}")
         if seed is not None:
-            cmd += ["--seed", str(seed)]
+            cmd.append(f"--seed={seed}")
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            raise TimeoutError(
+                f"MusicEngine (SA3) generation exceeded {timeout}s "
+                f"(prompt={prompt[:60]!r}, seconds={seconds})"
+            ) from e
         except subprocess.CalledProcessError as e:
+            stderr = e.stderr.decode(errors="replace") if e.stderr else ""
             raise RuntimeError(
-                f"MusicEngine (SA3) generation failed: "
-                f"{e.stderr.decode()[-400:] if e.stderr else e}"
+                f"MusicEngine (SA3) generation failed "
+                f"(exit {e.returncode}): {stderr[-400:] or '<no stderr>'}"
             ) from e
         if not out_path.exists():
             raise RuntimeError(f"MusicEngine produced no output at {out_path}")

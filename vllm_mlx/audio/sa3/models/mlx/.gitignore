@@ -1,0 +1,3 @@
+# Weights are downloaded here at runtime by MusicEngine._ensure_weights().
+# Never commit .npz tensors (or symlinks into a local HF cache) into git.
+*.npz
