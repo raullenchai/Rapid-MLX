@@ -10,6 +10,7 @@ raises :class:`NotImplementedError` and the route returns a clean HTTP
 itself the route goes live unchanged.
 """
 
+import asyncio
 import base64
 import logging
 import os
@@ -37,6 +38,58 @@ router = APIRouter()
 #: should upload to object storage and populate ``url`` instead of
 #: ``b64_video``.
 MAX_INLINE_VIDEO_BYTES: int = 256 * 1024 * 1024
+
+#: Serialises rendering, for the same reason the audio lanes do it: a
+#: video model is the heaviest thing this server can be asked to run, and
+#: concurrent renders would multiply peak unified memory. On the event
+#: loop (not a ``threading.Lock`` in the worker) so queued requests cost a
+#: coroutine rather than pinning shared-executor threads — see
+#: :mod:`vllm_mlx.routes._async_utils`.
+#:
+#: Lazily created: the module imports before any event loop exists, and an
+#: ``asyncio.Lock`` must bind to the running loop.
+_render_lock: asyncio.Lock | None = None
+
+
+def _get_render_lock() -> asyncio.Lock:
+    """Return the process-wide video render lock, creating it on first use."""
+    global _render_lock
+    if _render_lock is None:
+        _render_lock = asyncio.Lock()
+    return _render_lock
+
+
+def _resolve_inside(out_dir: str, candidate: str) -> str:
+    """Resolve ``candidate`` under ``out_dir``, refusing anything outside.
+
+    A backend returns a path; we must not treat that path as trusted. A
+    relative return value is resolved against the directory we handed the
+    backend (not the server's cwd), and the result must still live beneath
+    that directory. ``..`` traversal therefore can't get an arbitrary file
+    read, base64'd into a response — containment is checked BEFORE we open
+    the file, not only before we delete it.
+    """
+    resolved = (
+        candidate if os.path.isabs(candidate) else os.path.join(out_dir, candidate)
+    )
+    real_dir = os.path.realpath(out_dir)
+    real_path = os.path.realpath(resolved)
+    if os.path.commonpath([real_dir, real_path]) != real_dir:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": (
+                        "Video backend returned an output path outside its "
+                        "working directory"
+                    ),
+                    "type": "api_error",
+                    "code": "video_generation_failed",
+                    "param": None,
+                }
+            },
+        )
+    return real_path
 
 
 @router.post("/v1/video/generations", dependencies=[Depends(verify_api_key)])
@@ -105,39 +158,32 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
     """
     out_dir = tempfile.mkdtemp(prefix="rapidmlx-video-")
     out_path = os.path.join(out_dir, "out.mp4")
-    # Whatever the backend actually wrote — it may return a path other
-    # than the one we handed it. Tracked so cleanup deletes the real
-    # artifact instead of leaking a multi-MB mp4 on every request.
-    written_path: str | None = None
     try:
         # Rendering is heavy blocking compute — keep it off the event loop
         # so concurrent requests and health probes stay responsive.
         # ``run_to_completion`` (not bare ``to_thread``) so a client
         # disconnect can't send us into ``finally`` and delete the output
         # directory while the worker is still rendering into it.
-        written = await run_to_completion(
-            lambda: engine.generate(
-                request.prompt,
-                out_path,
-                image=request.image,
-                height=request.height,
-                width=request.width,
-                num_frames=request.num_frames,
-                frame_rate=request.frame_rate,
-                steps=request.steps,
-                negative_prompt=request.negative_prompt,
-                seed=request.seed,
+        # Serialised on the loop before offloading — one render at a time.
+        async with _get_render_lock():
+            written = await run_to_completion(
+                lambda: engine.generate(
+                    request.prompt,
+                    out_path,
+                    image=request.image,
+                    height=request.height,
+                    width=request.width,
+                    num_frames=request.num_frames,
+                    frame_rate=request.frame_rate,
+                    steps=request.steps,
+                    negative_prompt=request.negative_prompt,
+                    seed=request.seed,
+                )
             )
-        )
-        # Resolve a RELATIVE returned path against the directory we gave
-        # the backend, not the server's cwd. A backend that returns
-        # ``Path("out.mp4")`` is naming the file it just wrote into
-        # out_dir; resolving that against cwd reports a perfectly good
-        # render as missing.
-        video_path = str(written or out_path)
-        if not os.path.isabs(video_path):
-            video_path = os.path.join(out_dir, video_path)
-        written_path = video_path
+        # Resolve relative against out_dir (not the server's cwd — a
+        # backend returning ``Path("out.mp4")`` means the file it wrote
+        # into our directory) and refuse anything that escapes it.
+        video_path = _resolve_inside(out_dir, str(written or out_path))
 
         size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
         if not size:
@@ -200,30 +246,12 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
             ],
         )
     finally:
-        # We own ``out_dir`` and nothing else. ``rmtree`` rather than
-        # ``rmdir`` because a backend may drop sidecars (a probe log, a
-        # separate audio track) next to the clip, and a non-empty dir
+        # ``rmtree``, not ``rmdir``: a backend may drop sidecars (a probe
+        # log, a separate audio track) beside the clip, and a non-empty dir
         # would make ``rmdir`` raise and leak the whole directory.
         #
-        # A backend is free to return a path OUTSIDE our directory — a
-        # cached render, a shared spool file. Deleting that would destroy
-        # an artifact we never created and don't own, so containment is
-        # checked before unlinking. Anything inside out_dir is swept by
-        # the rmtree below regardless.
-        if written_path:
-            try:
-                real_out = os.path.realpath(out_dir)
-                real_written = os.path.realpath(written_path)
-                contained = os.path.commonpath([real_out, real_written]) == real_out
-                if contained and os.path.exists(real_written):
-                    os.unlink(real_written)
-                elif not contained:
-                    logger.debug(
-                        "Leaving backend-owned video output in place: %s",
-                        written_path,
-                    )
-            except (OSError, ValueError) as cleanup_err:
-                logger.warning(
-                    "Failed to unlink video output %s: %s", written_path, cleanup_err
-                )
+        # ``written_path`` is already guaranteed to be inside out_dir by
+        # ``_resolve_inside``, so the sweep below covers it — no separate
+        # unlink needed, and no risk of deleting a backend-owned artifact
+        # we never created.
         shutil.rmtree(out_dir, ignore_errors=True)

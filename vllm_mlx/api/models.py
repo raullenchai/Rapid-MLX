@@ -3054,6 +3054,26 @@ class VideoGenerationResult(BaseModel):
     num_frames: int | None = None
     frame_rate: float | None = None
 
+    @field_validator("url")
+    @classmethod
+    def _url_must_be_a_fetchable_url(cls, v: str | None) -> str | None:
+        """``url`` must be a real http(s) URL, never a filesystem path.
+
+        The whole reason the wired handler returns ``b64_video`` is that a
+        server-side path is not something the client can fetch and echoing
+        one leaks the server's layout. Enforcing that here stops a future
+        backend from reintroducing the same mistake through this field.
+        """
+        if v is None:
+            return None
+        parts = urlsplit(v)
+        if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            raise ValueError(
+                "url must be an absolute http(s) URL the client can fetch, "
+                "not a server-side filesystem path"
+            )
+        return v
+
     @model_validator(mode="after")
     def _exactly_one_delivery_channel(self) -> "VideoGenerationResult":
         """Enforce the documented "exactly one of b64_video / url".

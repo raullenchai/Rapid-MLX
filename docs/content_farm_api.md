@@ -257,10 +257,30 @@ the restriction instead of each having to remember it:
 - A bare base64 payload (no scheme) is accepted as an inline frame.
 - The whole string is capped at 12 MB.
 
-This is **not** complete SSRF defence: an allowed `https://` host can
-still resolve to a private address (link-local metadata endpoints,
-`127.0.0.1`, RFC1918). Egress policy for the actual fetch is the backend
-integrator's responsibility.
+- `http(s)` URLs must name a host: `https:///etc/passwd` (allowed scheme,
+  empty host, absolute local path) and `http:frame.png` (opaque, no host)
+  are rejected, since both are shapes a lenient fetcher resolves against
+  the local filesystem.
+
+**This is deliberately NOT complete SSRF defence, and the backend must
+finish the job.** Schema validation runs before any network activity, so
+it can only constrain the *shape* of the reference. An allowed
+`https://` host can still resolve to a private address — `127.0.0.1`,
+RFC1918, link-local metadata endpoints (`169.254.169.254`) — or DNS-rebind
+between validation and connect, or redirect to any of those.
+
+**A backend that dereferences `image` MUST**, at fetch time:
+
+1. resolve the hostname and reject non-public addresses **per connection**
+   (not once up front — that's the rebinding window),
+2. re-apply the same check to **every redirect hop**, not just the initial
+   URL, and
+3. bound response size and time.
+
+The route layer cannot do any of this for you: there is no fetch here to
+hook, and doing it correctly requires control of the socket. Treat the
+validation above as a shape filter that removes the trivially-wrong
+inputs, not as an egress policy.
 
 ### The interface to implement
 

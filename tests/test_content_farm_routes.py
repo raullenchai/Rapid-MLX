@@ -910,13 +910,24 @@ class TestVideoContract:
         with pytest.raises(ValidationError):
             VideoGenerationResult()
 
+        # A filesystem path is NOT a client-fetchable url — the field the
+        # handler deliberately avoids must refuse one. codex round-6 #4.
+        with pytest.raises(ValidationError):
+            VideoGenerationResult(url="/tmp/out.mp4")
+        with pytest.raises(ValidationError):
+            VideoGenerationResult(url="file:///tmp/out.mp4")
+
         resp = VideoGenerationResponse(
             created=123,
             model="ltx-2.3",
-            data=[VideoGenerationResult(url="/tmp/out.mp4", width=1216, height=704)],
+            data=[
+                VideoGenerationResult(
+                    url="https://cdn.example.com/out.mp4", width=1216, height=704
+                )
+            ],
         )
         dumped = resp.model_dump()
-        assert dumped["data"][0]["url"] == "/tmp/out.mp4"
+        assert dumped["data"][0]["url"] == "https://cdn.example.com/out.mp4"
         assert dumped["data"][0]["format"] == "mp4"
 
 
