@@ -329,6 +329,20 @@ def _resolve_stt_model(model: str) -> str:
     )
 
 
+def _is_aligner_model(model_name: str) -> bool:
+    """Return True iff ``model_name`` is a forced-alignment model.
+
+    Mirrors :attr:`vllm_mlx.audio.stt.STTEngine._is_aligner` — the
+    ``"aligner"`` substring is the same signal the engine uses to pick
+    the ``align()`` call surface (``mlx-community/Qwen3-ForcedAligner-
+    0.6B-8bit`` and the ``qwen3-aligner`` / ``qwen3-forced-aligner``
+    aliases all resolve to an id containing ``aligner``). Kept at module
+    scope so the transcriptions route can fail-fast BEFORE draining the
+    upload rather than surfacing the engine's own ValueError as a 500.
+    """
+    return isinstance(model_name, str) and "aligner" in model_name.lower()
+
+
 def _reject_non_whisper_for_translation(model: str) -> None:
     """Codex r6 NIT: ``/v1/audio/translations`` promises English output.
 
@@ -985,6 +999,7 @@ async def _run_stt_request(
     language: str | None,
     response_format: str,
     task: str,
+    text: str | None = None,
 ):
     """Shared STT pipeline used by both ``/v1/audio/transcriptions`` and
     ``/v1/audio/translations``.
@@ -1019,6 +1034,59 @@ async def _run_stt_request(
     # "model_not_found_error" and never trigger a model load (F-165).
     model_name = _resolve_stt_model(model)
 
+    # Forced-alignment routing (Qwen3-ForcedAligner). The transcriptions
+    # route doubles as the alignment surface: when the caller supplies
+    # the KNOWN transcript via the ``text`` field, we call
+    # ``STTEngine.align`` instead of ``transcribe`` and return per-unit
+    # timings in the same segment shape the verbose_json/srt/vtt
+    # serializers already consume. Reject the two incoherent
+    # combinations up front (BEFORE draining the upload) with a clean
+    # 400 so the caller gets an actionable message instead of the
+    # engine's ValueError collapsing into a generic 500:
+    #   * aligner model selected but no ``text`` — there is nothing to
+    #     align to (the aligner does not recognize speech);
+    #   * ``text`` supplied to a non-aligner model — a Whisper/Parakeet
+    #     engine cannot force-align, so silently ignoring ``text`` would
+    #     mislead the caller into thinking alignment ran.
+    is_aligner = _is_aligner_model(model_name)
+    align_text = text.strip() if isinstance(text, str) and text.strip() else None
+    if is_aligner and align_text is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"model `{model}` is a forced-alignment model and "
+                        "requires the known transcript in the `text` field. "
+                        "Forced alignment returns per-character timings for "
+                        "text you already have; it does not recognize speech. "
+                        "Use a Whisper/Parakeet model for recognition."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "alignment_text_required",
+                    "param": "text",
+                }
+            },
+        )
+    if align_text is not None and not is_aligner:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"the `text` field triggers forced alignment, which "
+                        f"requires a forced-aligner model; `{model}` is not "
+                        "one. Pass `model=qwen3-aligner` (or another aligner "
+                        "alias) to align `text` to the audio, or omit `text` "
+                        "for normal speech-to-text."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "alignment_model_required",
+                    "param": "model",
+                }
+            },
+        )
+
     tmp_path: str | None = None
     try:
         # SECURITY: Stream the upload to a bounded temp file *before* doing
@@ -1036,7 +1104,15 @@ async def _run_stt_request(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
-        result = _stt_engine.transcribe(tmp_path, language=language, task=task)
+        if align_text is not None:
+            # Forced alignment: ``language`` here is the aligner's full
+            # language NAME (e.g. "Chinese", "English"), not an ISO code.
+            # Fall back to the engine default when omitted.
+            result = _stt_engine.align(
+                tmp_path, text=align_text, language=language or "Chinese"
+            )
+        else:
+            result = _stt_engine.transcribe(tmp_path, language=language, task=task)
 
         # R6-H2: branch on the validated ``response_format`` so callers
         # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
@@ -1141,9 +1217,17 @@ async def create_transcription(
     model_form: str | None = Form(None, alias="model"),
     language_form: str | None = Form(None, alias="language"),
     response_format_form: str | None = Form(None, alias="response_format"),
+    # ``text`` is a rapid-mlx extension (NOT an OpenAI field) that turns
+    # this route into the forced-alignment surface: when present with a
+    # forced-aligner model (``qwen3-aligner``), the known transcript is
+    # aligned to the audio and per-character timings come back in the
+    # segment shape verbose_json/srt/vtt already render. Accepted on
+    # both form and query for parity with the other STT fields.
+    text_form: str | None = Form(None, alias="text"),
     model_query: str | None = Query(None, alias="model"),
     language_query: str | None = Query(None, alias="language"),
     response_format_query: str | None = Query(None, alias="response_format"),
+    text_query: str | None = Query(None, alias="text"),
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
 
@@ -1180,6 +1264,9 @@ async def create_transcription(
         if response_format_form is not None
         else (response_format_query if response_format_query is not None else "json")
     )
+    # Forced-alignment transcript (rapid-mlx extension). Form wins over
+    # query, matching the model/language/response_format precedence.
+    text = text_form if text_form is not None else text_query
 
     # R6-H2: reject unknown ``response_format`` values up front with a
     # 400 envelope so a typo (``"jsno"``) or unsupported value
@@ -1205,6 +1292,7 @@ async def create_transcription(
         language=language,
         response_format=response_format,
         task="transcribe",
+        text=text,
     )
 
 
