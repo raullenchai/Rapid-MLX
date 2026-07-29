@@ -2,16 +2,19 @@
 """Audio endpoints (STT/TTS)."""
 
 import asyncio
+import io
 import logging
 import os
 import re
 import tempfile
+import wave
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import PlainTextResponse, Response
 
 from ..api.models import AudioMusicRequest, AudioSpeechRequest
 from ..middleware.auth import verify_api_key
+from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
 
@@ -1016,38 +1019,21 @@ def _get_alignment_lock() -> asyncio.Lock:
     return _alignment_lock
 
 
-async def _run_to_completion(func, /, *args):
-    """``asyncio.to_thread(func, *args)`` that survives cancellation.
+#: Signatures of the two ``ValueError``s :meth:`STTEngine.align` raises
+#: for caller mistakes (see its body): a model that isn't a forced
+#: aligner, and empty/blank known text. Matched on message because the
+#: engine raises bare ``ValueError`` for both; everything else that
+#: surfaces as a ValueError is an internal fault, not a bad request.
+_CLIENT_ALIGNMENT_ERROR_SIGNATURES = (
+    "requires a forced-aligner model",
+    "requires non-empty known text",
+)
 
-    A plain ``await asyncio.to_thread(...)`` is NOT cancellable — the
-    worker thread keeps running — but the await returns immediately on
-    cancellation. That is the dangerous combination for the audio lanes,
-    where a client disconnect cancels the handler mid-render:
 
-    * the ``async with`` lock around the await would unwind and admit
-      another request while the abandoned thread is still using the
-      cached engine (or running a multi-GB SA3 subprocess), destroying
-      the one-at-a-time memory guarantee the lock exists to provide, and
-    * the ``finally`` block would unlink the temp file the abandoned
-      worker is still writing to.
-
-    So on cancellation we wait for the worker to actually finish before
-    propagating, keeping "lock held" and "temp file alive" true for
-    exactly as long as the thread is running. The client is already gone;
-    the extra wait costs nothing user-visible and is bounded by the
-    engine's own timeout (900 s for SA3).
-    """
-    task = asyncio.ensure_future(asyncio.to_thread(func, *args))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # Drain the worker (ignoring its outcome — nobody is listening)
-        # before letting the cancellation unwind our lock + cleanup.
-        try:
-            await task
-        except Exception:
-            logger.debug("Abandoned worker finished with an error", exc_info=True)
-        raise
+def _is_client_alignment_error(exc: Exception) -> bool:
+    """True if ``exc`` is an ``align()`` rejection the CALLER can fix."""
+    message = str(exc).lower()
+    return any(sig in message for sig in _CLIENT_ALIGNMENT_ERROR_SIGNATURES)
 
 
 #: Cached forced-aligner engine — DELIBERATELY separate from
@@ -1148,7 +1134,7 @@ async def _run_alignment_request(
         # coroutine, whereas queueing inside the worker would pin an
         # executor thread per waiter and starve every other to_thread user.
         async with _get_alignment_lock():
-            result = await _run_to_completion(
+            result = await run_to_completion(
                 _align_blocking, model_name, tmp_path, text, language
             )
 
@@ -1161,36 +1147,43 @@ async def _run_alignment_request(
         )
     except HTTPException:
         raise
-    except ValueError as e:
-        # Decoder failures come through as ValueError on some codec paths,
-        # and this handler sits BEFORE the generic ``except Exception``
-        # that owns the decode envelope — so classify decode errors first
-        # or a corrupted upload gets reported as ``invalid_alignment_request``
-        # blaming ``model``/``text``, which sends the caller chasing the
-        # wrong field.
-        if _is_decode_error(e):
-            logger.info("Forced alignment rejected corrupted upload: %s", e)
-            raise _audio_decode_error_envelope(e)
-        # align() raises ValueError for the two client-fixable shapes:
-        # a non-aligner model, or empty/blank known text. Surface a 400
-        # ``invalid_request_error`` rather than the generic 500 so the
-        # caller learns to pick an aligner alias / supply text.
-        logger.info("Forced alignment rejected request: %s", e)
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": {
-                    "message": str(e),
-                    "type": "invalid_request_error",
-                    "code": "invalid_alignment_request",
-                    "param": "text" if "text" in str(e).lower() else "model",
-                }
-            },
-        )
     except Exception as e:
+        # ONE handler, classified inside — deliberately not a chain of
+        # ``except ValueError`` / ``except Exception`` clauses. A bare
+        # ``raise`` in the narrower clause exits the whole try statement
+        # rather than falling through to the broader one, so an
+        # "unclassified → let the generic handler take it" flow silently
+        # became a 500 with no envelope. Classifying in one place makes
+        # the precedence explicit and testable.
+
+        # 1. Corrupted / undecodable upload. Checked FIRST because some
+        #    codec paths raise plain ValueError, which would otherwise be
+        #    reported as a bad alignment request blaming ``model``/``text``
+        #    and send the caller chasing a field that was never wrong.
         if _is_decode_error(e):
             logger.info("Forced alignment rejected corrupted upload: %s", e)
             raise _audio_decode_error_envelope(e)
+
+        # 2. The two ``align()`` rejections the CALLER can fix: a model
+        #    that isn't a forced aligner, or blank known text. Any other
+        #    ValueError (weight loading, tokenizing, a reshape deep in the
+        #    model) is an internal fault and must not be dressed up as a
+        #    client error.
+        if isinstance(e, ValueError) and _is_client_alignment_error(e):
+            logger.info("Forced alignment rejected request: %s", e)
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "invalid_request_error",
+                        "code": "invalid_alignment_request",
+                        "param": "text" if "text" in str(e).lower() else "model",
+                    }
+                },
+            )
+
+        # 3. Everything else is ours, not the caller's.
         logger.exception("Forced alignment failed: %s", e)
         raise HTTPException(
             status_code=500,
@@ -2195,6 +2188,25 @@ def _generate_music_blocking(
     )
 
 
+def _wav_has_audio_frames(payload: bytes) -> bool:
+    """True if ``payload`` is a WAV carrying at least one sample frame.
+
+    Used to reject the "successful silent clip" outcome: SA3 can exit 0
+    having written only a RIFF header (~44 bytes), which passes a
+    non-empty-bytes check but contains no audio.
+
+    Anything we cannot parse as WAV is treated as HAVING audio, on
+    purpose — this guard exists to catch a specific empty-output failure,
+    not to become a format validator that rejects a perfectly good clip
+    in a container ``wave`` doesn't understand.
+    """
+    try:
+        with wave.open(io.BytesIO(payload), "rb") as w:
+            return w.getnframes() > 0
+    except (wave.Error, EOFError, OSError):
+        return True
+
+
 def _resolve_music_model(model: str | None) -> tuple[str, str]:
     """Map a ``/v1/audio/music`` ``model`` alias to a ``(dit, decoder)`` pair.
 
@@ -2239,7 +2251,7 @@ async def create_music(request: AudioMusicRequest = Body(...)):
         # queued renders don't each pin a shared executor thread.
         # See _generate_music_blocking and _music_lock.
         async with _get_music_lock():
-            await _run_to_completion(
+            await run_to_completion(
                 _generate_music_blocking, dit, decoder, tmp_path, request
             )
 
@@ -2248,14 +2260,20 @@ async def create_music(request: AudioMusicRequest = Body(...)):
             with open(tmp_path, "rb") as fh:
                 audio_bytes = fh.read()
 
-        # The SA3 CLI can exit 0 having written nothing (or a 0-byte
-        # placeholder) — e.g. a sampler that bailed after the header. Fail
-        # loudly instead of handing the caller an HTTP 200 with an empty
-        # ``audio/wav`` body, which reads as a successful silent clip.
-        if not audio_bytes:
+        # The SA3 CLI can exit 0 having written nothing, a 0-byte
+        # placeholder, or a valid RIFF header with zero sample frames —
+        # a sampler that bailed right after opening the file. All three
+        # must fail loudly: handing back an HTTP 200 with an empty or
+        # frameless ``audio/wav`` body reads to the caller as a
+        # successfully generated silent clip, which is the failure mode
+        # hardest to notice. A byte-count check alone misses the
+        # header-only case (a bare WAV header is ~44 bytes), so count
+        # actual frames.
+        if not audio_bytes or not _wav_has_audio_frames(audio_bytes):
             raise RuntimeError(
                 f"music engine produced no audio at {tmp_path} "
-                f"(dit={dit!r}, decoder={decoder!r})"
+                f"(dit={dit!r}, decoder={decoder!r}, "
+                f"{len(audio_bytes)} bytes)"
             )
 
         # SA3 emits WAV; ``response_format`` is validated to ``wav`` by

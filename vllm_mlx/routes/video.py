@@ -26,6 +26,7 @@ from ..api.models import (
     VideoGenerationResult,
 )
 from ..middleware.auth import verify_api_key
+from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,10 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
     try:
         # Rendering is heavy blocking compute — keep it off the event loop
         # so concurrent requests and health probes stay responsive.
-        written = await asyncio.to_thread(
+        # ``run_to_completion`` (not bare ``to_thread``) so a client
+        # disconnect can't send us into ``finally`` and delete the output
+        # directory while the worker is still rendering into it.
+        written = await run_to_completion(
             lambda: engine.generate(
                 request.prompt,
                 out_path,
@@ -187,16 +191,30 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
             ],
         )
     finally:
-        # Delete the artifact the backend actually produced, wherever it
-        # put it, then the whole temp dir. ``rmtree`` rather than
+        # We own ``out_dir`` and nothing else. ``rmtree`` rather than
         # ``rmdir`` because a backend may drop sidecars (a probe log, a
         # separate audio track) next to the clip, and a non-empty dir
-        # would make ``rmdir`` raise and leak the entire directory.
-        try:
-            if written_path and os.path.exists(written_path):
-                os.unlink(written_path)
-        except OSError as cleanup_err:
-            logger.warning(
-                "Failed to unlink video output %s: %s", written_path, cleanup_err
-            )
+        # would make ``rmdir`` raise and leak the whole directory.
+        #
+        # A backend is free to return a path OUTSIDE our directory — a
+        # cached render, a shared spool file. Deleting that would destroy
+        # an artifact we never created and don't own, so containment is
+        # checked before unlinking. Anything inside out_dir is swept by
+        # the rmtree below regardless.
+        if written_path:
+            try:
+                real_out = os.path.realpath(out_dir)
+                real_written = os.path.realpath(written_path)
+                contained = os.path.commonpath([real_out, real_written]) == real_out
+                if contained and os.path.exists(real_written):
+                    os.unlink(real_written)
+                elif not contained:
+                    logger.debug(
+                        "Leaving backend-owned video output in place: %s",
+                        written_path,
+                    )
+            except (OSError, ValueError) as cleanup_err:
+                logger.warning(
+                    "Failed to unlink video output %s: %s", written_path, cleanup_err
+                )
         shutil.rmtree(out_dir, ignore_errors=True)

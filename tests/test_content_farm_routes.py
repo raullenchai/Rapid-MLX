@@ -973,8 +973,12 @@ class TestAlignmentErrorClassification:
         assert r.status_code == 400, r.text
         body = r.json()
         err = body.get("detail", {}).get("error") or body.get("error")
-        assert err["code"] != "invalid_alignment_request", err
-        assert err["param"] != "text", err
+        # Assert the EXACT documented decode envelope, not merely
+        # "something other than invalid_alignment_request" — a weaker
+        # assertion would be satisfied by any unrelated error.
+        assert err["type"] == "invalid_request_error", err
+        assert err["code"] == "invalid_audio_file", err
+        assert err["param"] == "file", err
 
 
 def test_direct_handler_call_tolerates_unresolved_form_defaults(monkeypatch):
@@ -1035,3 +1039,116 @@ def test_direct_handler_call_tolerates_unresolved_form_defaults(monkeypatch):
     # A 404 for the bogus alias proves we got through the ASR/alignment
     # branch selection without an AttributeError on the sentinel.
     assert exc_info.value.status_code == 404, exc_info.value.detail
+
+
+class TestMusicEmptyOutputDetection:
+    """A "successful" render with no audio must not become a 200."""
+
+    def _post_with_engine(self, monkeypatch, engine_cls):
+        from vllm_mlx.routes import audio as audio_route
+
+        monkeypatch.setattr(
+            "vllm_mlx.audio.music.MusicEngine", engine_cls, raising=False
+        )
+        music_mod = sys.modules.get("vllm_mlx.audio.music")
+        if music_mod is not None:
+            monkeypatch.setattr(music_mod, "MusicEngine", engine_cls)
+        audio_route._music_engine = None
+        client, restore = _mount_audio_app()
+        try:
+            return client.post("/v1/audio/music", json={"input": "x", "seconds": 5})
+        finally:
+            restore()
+            audio_route._music_engine = None
+
+    def test_header_only_wav_is_500_not_a_silent_clip(self, monkeypatch):
+        """A valid RIFF header with ZERO sample frames must fail.
+
+        A bare WAV header is ~44 bytes, so a non-empty-bytes check passes
+        it and the caller receives a 200 with `audio/wav` that plays as
+        silence — indistinguishable from a real quiet track. Regression
+        pin for codex round-4 finding 1.
+        """
+
+        class _HeaderOnlyEngine(_FakeMusicEngine):
+            def generate(self, prompt, out_path, **kwargs):  # noqa: D102
+                with wave.open(str(out_path), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(44100)
+                    # No writeframes() call at all.
+                return out_path
+
+        r = self._post_with_engine(monkeypatch, _HeaderOnlyEngine)
+        assert r.status_code == 500, r.text
+        assert r.json()["detail"]["error"]["code"] == "music_generation_failed", r.text
+
+    def test_unparseable_container_is_still_returned(self, monkeypatch):
+        """Non-WAV bytes must NOT be rejected by the emptiness guard.
+
+        The guard exists to catch a specific empty-output failure, not to
+        become a format validator that refuses a good clip in a container
+        ``wave`` can't parse. Bytes it can't read count as having audio.
+        """
+
+        class _OpaqueEngine(_FakeMusicEngine):
+            def generate(self, prompt, out_path, **kwargs):  # noqa: D102
+                with open(out_path, "wb") as fh:
+                    fh.write(b"\x00\x01\x02\x03" * 64)
+                return out_path
+
+        r = self._post_with_engine(monkeypatch, _OpaqueEngine)
+        assert r.status_code == 200, r.text
+        assert r.content == b"\x00\x01\x02\x03" * 64
+
+
+class TestAlignmentInternalErrorsAreNot400:
+    def test_unexpected_value_error_is_500_not_invalid_request(self, monkeypatch):
+        """An internal ValueError must not be blamed on `model` / `text`.
+
+        ``align()`` raises ValueError for exactly two caller mistakes. A
+        ValueError from anywhere else (weight loading, tokenizing, a
+        numeric conversion) is an internal fault; reporting it as
+        ``invalid_alignment_request`` sends the caller to fix a field that
+        was never wrong. Regression pin for codex round-4 finding 2.
+        """
+        from vllm_mlx.audio import probe
+        from vllm_mlx.routes import audio as audio_route
+
+        _install_fake_mlx_audio(monkeypatch)
+        probe._reset_probe_cache()
+
+        class _InternallyBrokenEngine:
+            def __init__(self, model_name):
+                self.model_name = model_name
+
+            def load(self):
+                pass
+
+            def align(self, audio_path, text, language="Chinese"):
+                # Nothing to do with the caller's model or text.
+                raise ValueError("cannot reshape array of size 0 into shape (1,80)")
+
+        monkeypatch.setattr(
+            "vllm_mlx.audio.stt.STTEngine", _InternallyBrokenEngine, raising=False
+        )
+        stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+        if stt_mod is not None:
+            monkeypatch.setattr(stt_mod, "STTEngine", _InternallyBrokenEngine)
+        audio_route._aligner_engine = None
+
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"text": "abc", "model": "qwen3-aligner"},
+                files={"file": ("clip.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+            audio_route._aligner_engine = None
+            probe._reset_probe_cache()
+
+        assert r.status_code == 500, r.text
+        err = r.json()["detail"]["error"]
+        assert err["code"] == "alignment_failed", err
