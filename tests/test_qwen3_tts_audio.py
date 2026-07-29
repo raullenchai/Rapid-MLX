@@ -265,16 +265,26 @@ class TestQwen3TTSRoute:
         assert call["voice"] == "Serena"
         assert call["instruct"] == "悬疑而低沉，逐渐激昂。"
 
-    def test_omitted_voice_resolves_to_registry_default(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # Voice omitted entirely (Pydantic default af_heart never reaches
+            # the engine — the omitted-field resolver maps it to the registry
+            # default).
+            {"model": "qwen3-tts", "input": "你好世界。"},
+            # Explicit OpenAI ``"default"`` sentinel (what SDKs emit when the
+            # caller doesn't pick a voice) — the same resolution path.
+            {"model": "qwen3-tts", "input": "你好世界。", "voice": "default"},
+        ],
+        ids=["omitted", "explicit-default"],
+    )
+    def test_default_voice_resolves_to_registry_default(self, monkeypatch, body):
         client = _mount(monkeypatch)
-        resp = client.post(
-            "/v1/audio/speech",
-            json={"model": "qwen3-tts", "input": "你好世界。"},
-        )
+        resp = client.post("/v1/audio/speech", json=body)
         assert resp.status_code == 200, resp.text
         (engine,) = _RecordingEngine.instances
         (call,) = engine.generate_calls
-        # Voice omitted → registry default_voice, not Kokoro's af_heart.
+        # Both shapes → registry default_voice (Serena), not Kokoro's af_heart.
         assert call["voice"] == "Serena"
 
     def test_unknown_voice_rejected_with_speaker_list(self, monkeypatch):
