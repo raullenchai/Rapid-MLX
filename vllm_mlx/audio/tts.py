@@ -255,6 +255,8 @@ class TTSEngine:
             return "cosyvoice"
         elif "qwen3-tts" in name_lower or "qwen3_tts" in name_lower:
             return "qwen3_tts"
+        elif "indextts" in name_lower or "index-tts" in name_lower:
+            return "indextts"
         else:
             return "kokoro"  # Default
 
@@ -284,6 +286,7 @@ class TTSEngine:
         speed: float = 1.0,
         lang_code: str = "a",
         instruct: str | None = None,
+        ref_audio: str | None = None,
     ) -> AudioOutput:
         """
         Generate speech from text.
@@ -301,6 +304,13 @@ class TTSEngine:
                 the emotional delivery of the predefined speaker. Other
                 families ignore it (they have no emotion-control surface),
                 so passing it is a no-op there rather than an error.
+            ref_audio: Path to a reference speech clip for ZERO-SHOT voice
+                cloning. Only IndexTTS honours this — its ``generate`` has no
+                predefined speakers; it reproduces the timbre of whatever
+                short clip you pass here (``ref_audio``) instead of a named
+                ``voice``. Other families ignore it. When the IndexTTS family
+                is loaded and no ``ref_audio`` is given the engine raises,
+                since there is no speaker to fall back to.
 
         Returns:
             AudioOutput with audio data and metadata
@@ -320,13 +330,25 @@ class TTSEngine:
             # forwarding Kokoro's single-letter ``lang_code="a"`` to it
             # would mis-hint the language. Every other family keeps the
             # pre-existing call shape unchanged.
-            gen_kwargs: dict = {"text": text, "voice": voice, "speed": speed}
-            if self._model_family == "qwen3_tts":
-                gen_kwargs["lang_code"] = "auto"
-                if instruct:
-                    gen_kwargs["instruct"] = instruct
+            if self._model_family == "indextts":
+                # IndexTTS is a pure zero-shot cloner: its ``generate`` takes
+                # ``(text, ref_audio, ...)`` and has NO ``voice``/``speed``/
+                # ``lang_code`` surface — passing those raises. The timbre
+                # comes entirely from ``ref_audio``, so it is required here.
+                if not ref_audio:
+                    raise ValueError(
+                        "IndexTTS requires ref_audio (a reference speech clip "
+                        "to clone); it has no predefined speakers."
+                    )
+                gen_kwargs = {"text": text, "ref_audio": ref_audio}
             else:
-                gen_kwargs["lang_code"] = lang_code
+                gen_kwargs = {"text": text, "voice": voice, "speed": speed}
+                if self._model_family == "qwen3_tts":
+                    gen_kwargs["lang_code"] = "auto"
+                    if instruct:
+                        gen_kwargs["instruct"] = instruct
+                else:
+                    gen_kwargs["lang_code"] = lang_code
 
             for result in self.model.generate(**gen_kwargs):
                 audio_data = result.audio
@@ -559,6 +581,11 @@ class TTSEngine:
             return CHATTERBOX_VOICES
         elif self._model_family == "qwen3_tts":
             return list(QWEN3_TTS_VOICES)
+        elif self._model_family == "indextts":
+            # No predefined speakers — the "voice" is whatever reference clip
+            # the caller clones from. Advertise a single sentinel so the route
+            # has a stable value; actual timbre is driven by ``ref_audio``.
+            return ["clone"]
         else:
             return ["default"]
 
