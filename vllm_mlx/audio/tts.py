@@ -22,6 +22,19 @@ logger = logging.getLogger(__name__)
 # Default models
 DEFAULT_TTS_MODEL = "mlx-community/Kokoro-82M-bf16"
 
+# F5-TTS normalizes the reference clip toward ``TARGET_RMS`` via
+# ``aud * TARGET_RMS / rms``. A silent (rms==0) or near-silent reference would
+# either divide by zero (NaN/inf) or get amplified by a huge factor, turning
+# quantization noise / DC offset into full-scale garbage. Refs whose RMS falls
+# below this floor (~-80 dBFS) are rejected with a clear error instead.
+F5_MIN_REF_RMS = 1e-4
+
+# Multi-channel references are downmixed to mono, but the channel count is left
+# unbounded by the (frames-only) duration guard. Cap it so a pathological
+# many-channel header can't force a disproportionately large decode/allocation
+# before the downmix. Mono and stereo are the only realistic reference formats.
+F5_MAX_REF_CHANNELS = 2
+
 # Available voices per model family
 KOKORO_VOICES = [
     "af_heart",
@@ -412,19 +425,36 @@ class TTSEngine:
         )
 
         def read_reference(source):
-            info = sf.info(source)
-            if info.samplerate != SAMPLE_RATE:
-                raise ValueError(
-                    f"F5 ref_audio must be {SAMPLE_RATE} Hz "
-                    f"(got {info.samplerate}); resample it."
-                )
-            if info.channels != 1:
-                raise ValueError("F5 ref_audio must be mono.")
-            if info.frames <= 0 or info.frames > SAMPLE_RATE * 30:
-                raise ValueError("F5 ref_audio must be between 0 and 30 seconds.")
             if hasattr(source, "seek"):
                 source.seek(0)
-            audio, _ = sf.read(source)
+            # Open the source once and validate metadata + read samples through
+            # the SAME handle. Using ``sf.info(path)`` then ``sf.read(path)``
+            # would open the path twice (TOCTOU): a file swapped between the two
+            # opens could pass the sample-rate/frame/channel guards yet decode
+            # something else. A single handle closes that gap and also bounds the
+            # decode to the header's validated frames*channels.
+            with sf.SoundFile(source) as handle:
+                if handle.samplerate != SAMPLE_RATE:
+                    raise ValueError(
+                        f"F5 ref_audio must be {SAMPLE_RATE} Hz "
+                        f"(got {handle.samplerate}); resample it."
+                    )
+                if handle.frames <= 0 or handle.frames > SAMPLE_RATE * 30:
+                    raise ValueError("F5 ref_audio must be between 0 and 30 seconds.")
+                # Reject pathological channel counts before decoding: the
+                # duration guard bounds frames only, so a many-channel header
+                # would otherwise force a frames*channels allocation.
+                if handle.channels < 1 or handle.channels > F5_MAX_REF_CHANNELS:
+                    raise ValueError(
+                        f"F5 ref_audio must be mono or stereo "
+                        f"(got {handle.channels} channels)."
+                    )
+                audio = handle.read()
+            # soundfile returns shape (frames,) for mono and (frames, channels)
+            # for multi-channel. F5's sample() expects batched mono, so downmix
+            # any extra channels to a single mono track by averaging.
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
             return audio
 
         if ref_audio is not None:
@@ -443,8 +473,21 @@ class TTSEngine:
         rms = mx.sqrt(mx.mean(mx.square(aud)))
         mx.eval(rms)
         rms_value = float(rms)
-        if not np.isfinite(rms_value) or rms_value <= 0:
-            raise ValueError("F5 ref_audio must contain finite, non-silent audio.")
+        # A zero/near-silent reference divides by ~0 below (NaN/inf) or is
+        # amplified into full-scale noise. Reject it with a clear error. Report
+        # a non-finite RMS separately so the message doesn't nonsensically claim
+        # NaN/inf is "below the floor".
+        if not np.isfinite(rms_value):
+            raise ValueError(
+                "F5 ref_audio must contain finite, non-silent audio "
+                f"(reference RMS is non-finite: {rms_value})."
+            )
+        if rms_value < F5_MIN_REF_RMS:
+            raise ValueError(
+                "F5 ref_audio must contain finite, non-silent audio "
+                f"(reference RMS {rms_value:.2e} is below the "
+                f"{F5_MIN_REF_RMS:.0e} floor)."
+            )
         if rms_value < TARGET_RMS:
             aud = aud * TARGET_RMS / rms
         # explicit duration estimate — F5's auto heuristic can collapse to ~0s
