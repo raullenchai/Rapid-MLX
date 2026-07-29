@@ -54,8 +54,8 @@ the shift — the MoE class ``qwen3_5_moe.Model`` and the VLM wrapper
 The step-3 "actually applied" re-check keys the correction off observed
 behavior, not off a copy of upstream's gate — so if upstream later fixes the
 misfire (stops shifting standard-form checkpoints), this wrapper detects no
-shift happened and does nothing. Delete this module + the import/call in
-``vllm_mlx.model_runner`` once mlx-lm ships the fix; nothing else changes.
+shift happened and does nothing. Delete this module + its install hook in
+``vllm_mlx.utils.tokenizer`` once mlx-lm ships the fix; nothing else changes.
 
 What it does NOT change
 -----------------------

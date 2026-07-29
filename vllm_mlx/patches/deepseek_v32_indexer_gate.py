@@ -68,7 +68,7 @@ What it does NOT change
   take the upstream path verbatim. Every patched function delegates straight
   to the original on the no-types branch.
 * No vendored copy of ``deepseek_v32.py``. Total surface area: this module
-  plus one import + one call in ``vllm_mlx.model_runner``.
+  plus its production install hook in ``vllm_mlx.utils.tokenizer``.
 
 Concurrency note
 ----------------
@@ -81,8 +81,8 @@ layer's attribute IMMEDIATELY before the layer runs so stale values from a
 prior forward cannot leak into a fresh one.
 
 When upstream mlx_lm lands first-class ``indexer_types`` support, delete this
-module and the import in ``vllm_mlx.model_runner`` — nothing else needs to
-change.
+module and its install hook in ``vllm_mlx.utils.tokenizer`` — nothing else
+needs to change.
 """
 
 from __future__ import annotations

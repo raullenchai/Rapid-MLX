@@ -304,9 +304,6 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
-vllm = [
-    "vllm>=0.4.0",
-]
 # Guided decoding with llguidance for structured JSON output.
 # llguidance drives constrained decoding via its native MLX Metal mask
 # kernel (llguidance.mlx); it interprets JSON Schema natively ($defs/$ref/
@@ -384,9 +381,6 @@ audio = [
 Homepage = "https://github.com/raullenchai/Rapid-MLX"
 Documentation = "https://github.com/raullenchai/Rapid-MLX#readme"
 Repository = "https://github.com/raullenchai/Rapid-MLX"
-
-[project.entry-points."vllm.platform_plugins"]
-mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 
 [project.scripts]
 rapid-mlx = "vllm_mlx.cli:main"

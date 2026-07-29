@@ -4,15 +4,15 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                     vLLM API Layer                        │
+│                  Rapid-MLX API Layer                      │
 │  (OpenAI-compatible: chat, completions, embeddings,      │
 │   audio, tools, MCP, reasoning)                          │
 └──────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│                      MLXPlatform                          │
-│       (vLLM platform plugin for Apple Silicon)           │
+│              BatchedEngine + Scheduler                   │
+│     (native Apple Silicon inference and caching)         │
 └──────────────────────────────────────────────────────────┘
                            │
        ┌──────────┬────────┴────────┬──────────┐

@@ -18,23 +18,19 @@ logger = logging.getLogger(__name__)
 
 # Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit). The hook is
-# placed HERE (and not only in vllm_mlx.model_runner) because the real
-# `rapid-mlx serve` boot path is:
+# placed here because this is the real `rapid-mlx serve` boot path:
 #   cli -> server -> engine.batched._start_llm -> utils.tokenizer.load_model_with_fallback
 #   -> mlx_lm.load -> mlx_lm.utils.load_model
-# None of those import model_runner, so installing the gate there alone
-# missed the production load path (PR #967 wiring bug). Install is
-# idempotent (_LOCK + _INSTALLED early-return) and a no-op on configs
-# that don't publish ``indexer_types``.
+# Install is idempotent (_LOCK + _INSTALLED early-return) and a no-op on
+# configs that don't publish ``indexer_types``.
 from ..patches.deepseek_v32_indexer_gate import (
     install_deepseek_v32_indexer_gate as _install_dsv32_indexer_gate,
 )
 
-# Same wiring rationale as the indexer gate above: the production load path
-# (engine/batched.py -> load_model_with_fallback -> mlx_lm.load) does NOT
-# import model_runner, so installing the Qwen3.5/3.6 norm-shift correction
-# there alone would miss it. Install here too. Idempotent + a no-op on
-# checkpoints whose norm gains are already zero-centered.
+# Same wiring rationale as the indexer gate above: install the Qwen3.5/3.6
+# norm-shift correction on the canonical production model-load path.
+# Idempotent + a no-op on checkpoints whose norm gains are already
+# zero-centered.
 from ..patches.qwen3_5_norm_shift import (
     install_qwen3_5_norm_shift_fix as _install_qwen3_5_norm_shift_fix,
 )

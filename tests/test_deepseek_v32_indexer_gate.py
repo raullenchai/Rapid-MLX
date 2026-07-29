@@ -713,16 +713,16 @@ def test_install_fires_on_real_serve_import_path():
     SERVE-path module is imported, not only when the patch module itself
     is imported directly.
 
-    The original PR #967 wired ``install_deepseek_v32_indexer_gate()`` at
-    ``vllm_mlx/model_runner.py:34``. The real ``rapid-mlx serve`` boot
+    The original PR #967 wired ``install_deepseek_v32_indexer_gate()`` only
+    in the retired vLLM adapter. The real ``rapid-mlx serve`` boot
     path is::
 
         cli -> server -> engine.batched._start_llm
         -> utils.tokenizer.load_model_with_fallback -> mlx_lm.load
         -> mlx_lm.utils.load_model
 
-    None of those import ``model_runner``, so the gate was NEVER installed
-    in production and ``mlx_lm.load`` aborted with ``Missing 285 parameters
+    That adapter was not on this path, so the gate was NEVER installed in
+    production and ``mlx_lm.load`` aborted with ``Missing 285 parameters
     ...indexer...`` on real GLM-5.2 REAP-pruned weights. The 11 synthetic
     regression tests passed only because pytest imports the patch module
     directly via ``from vllm_mlx.patches.deepseek_v32_indexer_gate import

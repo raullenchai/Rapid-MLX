@@ -271,9 +271,9 @@ def test_install_fires_on_real_serve_import_path():
         cli -> server -> engine.batched -> utils.tokenizer.
         load_model_with_fallback -> mlx_lm.load -> mlx_lm.utils.load_model
 
-    None of those import ``model_runner``, so wiring the install ONLY at
-    ``model_runner.py`` (as this fix first did) never fired in production and
-    Qwen3.6-35B still served garbage. The in-process tests above would pass
+    The retired vLLM adapter was not on that path, so wiring the install only
+    there (as this fix first did) never fired in production and Qwen3.6-35B
+    still served garbage. The in-process tests above would pass
     anyway because they import the patch module directly, masking the gap —
     exactly the trap the deepseek_v32 indexer gate documents. This test runs
     in a SUBPROCESS (pristine interpreter, no state leak) and imports a

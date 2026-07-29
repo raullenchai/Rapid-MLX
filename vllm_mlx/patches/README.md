@@ -1,8 +1,8 @@
 # Runtime compatibility patches
 
 Install-time patches must be wired from a module on the real production load
-path, not only from `model_runner.py` or from their own test module. Each
-installer therefore needs a subprocess regression test that:
+path, not only from an adapter or from their own test module. Each installer
+therefore needs a subprocess regression test that:
 
 1. starts a clean interpreter;
 2. imports the production entrypoint first (currently

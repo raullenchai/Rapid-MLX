@@ -93,33 +93,10 @@ def __getattr__(name):
 
         return getattr(model_registry, name)
 
-    # vLLM integration components (require torch)
-    if name == "MLXPlatform":
-        from vllm_mlx.vllm_platform import MLXPlatform
-
-        return MLXPlatform
-    if name == "MLXWorker":
-        from vllm_mlx.worker import MLXWorker
-
-        return MLXWorker
-    if name == "MLXModelRunner":
-        from vllm_mlx.model_runner import MLXModelRunner
-
-        return MLXModelRunner
-    if name == "MLXAttentionBackend":
-        from vllm_mlx.attention import MLXAttentionBackend
-
-        return MLXAttentionBackend
-
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
-    # Core (lazy loaded, require torch)
-    "MLXPlatform",
-    "MLXWorker",
-    "MLXModelRunner",
-    "MLXAttentionBackend",
     # Request management
     "Request",
     "RequestOutput",

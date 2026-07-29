@@ -3362,14 +3362,13 @@ class Scheduler:
         Auto-derivation formula (uniform baseline):
             ``2 (K + V) × num_layers × num_kv_heads × head_dim × dtype_bytes``
 
-        Defaults match ``model_runner.py``'s cache-block-size helper
-        for consistency. ``dtype_bytes=2`` (fp16) is the dominant
-        case; 8-bit / 4-bit KV-cache deployments OVER-estimate, which
-        is the safe direction (a 4-bit user pays the price of an
+        ``dtype_bytes=2`` (fp16) is the conservative default for the
+        dominant case; 8-bit / 4-bit KV-cache deployments OVER-estimate,
+        which is the safe direction (a 4-bit user pays the price of an
         admission rejection at half the actual cap headroom — still
-        better than the D-METAL-CAP cliff). Operators on quantized-
-        KV deployments can pin a tighter value via the SchedulerConfig
-        field to recover precision.
+        better than the D-METAL-CAP cliff). Operators on quantized-KV
+        deployments can pin a tighter value via the SchedulerConfig field
+        to recover precision.
 
         Architecture-aware refinement (``kv_estimation``): the uniform
         formula counts EVERY layer as a full-growth attention layer,
@@ -3424,10 +3423,9 @@ class Scheduler:
             self._kv_sliding_window = 0
             self._kv_bytes_per_token_resolved = True
             return configured
-        # Auto-derive from model.config — same pattern as
-        # ``model_runner._cache_block_size``. Defensive ``isinstance(..., int)``
-        # filter so a MagicMock model (which returns mock objects on
-        # every attribute access) does not produce a phantom positive
+        # Auto-derive directly from model.config. Defensive
+        # ``isinstance(..., int)`` filtering keeps a MagicMock model from
+        # returning mock objects that produce a phantom positive
         # estimate. Pre-fix this was a real surprise during testing:
         # ``int(MagicMock())`` coerces to ``1``, so a stub model
         # yielded a 4-byte-per-token estimate that turned every
