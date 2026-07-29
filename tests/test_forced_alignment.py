@@ -119,6 +119,20 @@ class TestTranscribeRejectsAligner:
         with pytest.raises(ValueError, match="forced-alignment model"):
             eng.transcribe("/tmp/whatever.wav")
 
+    def test_transcribe_guard_fires_before_load(self):
+        # Codex MAJOR regression: the aligner guard must reject BEFORE
+        # load() so an invalid call never downloads gigabytes of weights.
+        from vllm_mlx.audio.stt import STTEngine
+
+        eng = STTEngine(_ALIGNER_ID)  # _loaded is False
+
+        def _boom():
+            raise AssertionError("load() must not run for an invalid call")
+
+        eng.load = _boom
+        with pytest.raises(ValueError, match="forced-alignment model"):
+            eng.transcribe("/tmp/whatever.wav")
+
 
 class TestAlignGuards:
     def test_align_on_non_aligner_raises(self):
@@ -134,6 +148,25 @@ class TestAlignGuards:
         eng = _make_aligner_engine([])
         with pytest.raises(ValueError, match="non-empty known text"):
             eng.align("/tmp/a.wav", text="   ")
+
+    def test_align_guards_fire_before_load(self):
+        # Codex MAJOR regression: both the model-kind and empty-text
+        # guards must reject BEFORE load() (no weight download on an
+        # invalid call).
+        from vllm_mlx.audio.stt import STTEngine
+
+        def _boom():
+            raise AssertionError("load() must not run for an invalid call")
+
+        non_aligner = STTEngine("mlx-community/whisper-large-v3-mlx")
+        non_aligner.load = _boom
+        with pytest.raises(ValueError, match="requires a forced-aligner model"):
+            non_aligner.align("/tmp/a.wav", text="hello")
+
+        aligner = STTEngine(_ALIGNER_ID)
+        aligner.load = _boom
+        with pytest.raises(ValueError, match="non-empty known text"):
+            aligner.align("/tmp/a.wav", text="  ")
 
 
 class TestAlignSegmentShaping:
@@ -225,6 +258,12 @@ class _FakeAlignmentResult:
     ]
 
 
+# Module-level capture of the args the route hands to ``align`` — the
+# fake engine instances are created inside the route and not otherwise
+# reachable from the test.
+_ALIGN_CALLS: list[dict] = []
+
+
 class _FakeRouteEngine:
     """Mirrors the ``STTEngine`` surface the route depends on: both
     ``transcribe`` and ``align``. Returns distinguishable results so the
@@ -240,6 +279,7 @@ class _FakeRouteEngine:
         return _FakeTranscribeResult()
 
     def align(self, audio_path, text, language="Chinese"):
+        _ALIGN_CALLS.append({"text": text, "language": language})
         return _FakeAlignmentResult()
 
 
@@ -268,6 +308,7 @@ def _stub_route_engine(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_audio.stt.utils", fake_stt_utils)
 
     probe._reset_probe_cache()
+    _ALIGN_CALLS.clear()
 
     monkeypatch.setattr(
         "vllm_mlx.audio.stt.STTEngine", _FakeRouteEngine, raising=False
@@ -378,6 +419,22 @@ class TestAlignmentRoute:
         err = r.json()["detail"]["error"]
         assert err["code"] == "alignment_model_required"
         assert err["param"] == "model"
+
+    def test_route_passes_unstripped_text_to_align(self, _stub_route_engine):
+        # Codex MINOR regression: the route must align the ORIGINAL
+        # transcript, using strip only to decide the text was non-empty.
+        client, restore = _mount_audio_app()
+        try:
+            r = _post(
+                client,
+                {"model": "qwen3-aligner", "text": "  你好  ", "language": "Chinese"},
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        assert _ALIGN_CALLS, "align() was not called"
+        assert _ALIGN_CALLS[-1]["text"] == "  你好  ", _ALIGN_CALLS
+        assert _ALIGN_CALLS[-1]["language"] == "Chinese"
 
     def test_no_text_still_transcribes(self, _stub_route_engine):
         # Backward-compat: a normal transcription request (no text) must

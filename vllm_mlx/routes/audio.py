@@ -1049,8 +1049,12 @@ async def _run_stt_request(
     #     engine cannot force-align, so silently ignoring ``text`` would
     #     mislead the caller into thinking alignment ran.
     is_aligner = _is_aligner_model(model_name)
-    align_text = text.strip() if isinstance(text, str) and text.strip() else None
-    if is_aligner and align_text is None:
+    # Strip only to decide whether meaningful text was supplied — the
+    # ORIGINAL (unstripped) ``text`` is what we align, so a transcript
+    # whose authoritative form includes leading/trailing whitespace is
+    # aligned verbatim rather than silently mutated.
+    has_align_text = isinstance(text, str) and bool(text.strip())
+    if is_aligner and not has_align_text:
         raise HTTPException(
             status_code=400,
             detail={
@@ -1068,7 +1072,7 @@ async def _run_stt_request(
                 }
             },
         )
-    if align_text is not None and not is_aligner:
+    if has_align_text and not is_aligner:
         raise HTTPException(
             status_code=400,
             detail={
@@ -1104,12 +1108,13 @@ async def _run_stt_request(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
-        if align_text is not None:
+        if has_align_text:
             # Forced alignment: ``language`` here is the aligner's full
             # language NAME (e.g. "Chinese", "English"), not an ISO code.
-            # Fall back to the engine default when omitted.
+            # Fall back to the engine default when omitted. ``text`` is
+            # passed verbatim (unstripped) — see ``has_align_text`` above.
             result = _stt_engine.align(
-                tmp_path, text=align_text, language=language or "Chinese"
+                tmp_path, text=text, language=language or "Chinese"
             )
         else:
             result = _stt_engine.transcribe(tmp_path, language=language, task=task)

@@ -640,15 +640,19 @@ class STTEngine:
         Returns:
             TranscriptionResult with text and metadata
         """
-        if not self._loaded:
-            self.load()
-
+        # Guard BEFORE load(): an aligner model has no transcribe surface,
+        # so reject up front rather than downloading gigabytes of weights
+        # only to raise. ``_is_aligner`` is resolved in ``__init__`` from
+        # the model name, so this check is load-independent.
         if self._is_aligner:
             raise ValueError(
                 "This is a forced-alignment model — call align(audio, text, "
                 "language) with the known transcript, not transcribe() (there "
                 "is no text to recognize)."
             )
+
+        if not self._loaded:
+            self.load()
 
         audio_path = str(audio_path)
 
@@ -759,9 +763,10 @@ class STTEngine:
         Returns:
             TranscriptionResult with per-character ``segments``.
         """
-        if not self._loaded:
-            self.load()
-
+        # Guard BEFORE load(): validating the model kind and the input
+        # text is load-independent (``_is_aligner`` is set in ``__init__``,
+        # ``text`` is a caller arg), so reject invalid calls without first
+        # downloading/loading gigabytes of weights.
         if not self._is_aligner:
             raise ValueError(
                 f"align() requires a forced-aligner model; {self.model_name!r} "
@@ -769,6 +774,9 @@ class STTEngine:
             )
         if not text or not text.strip():
             raise ValueError("align() requires non-empty known text to align.")
+
+        if not self._loaded:
+            self.load()
 
         try:
             result = self.model.generate(
