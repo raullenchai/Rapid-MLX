@@ -49,8 +49,17 @@ class LintStep(Step):
         check_log = ctx.artifact_path("lint-check.log")
         format_log = ctx.artifact_path("lint-format.log")
 
-        check_rc = _run_ruff(["check", *py_files], check_log)
-        format_rc = _run_ruff(["format", "--check", *py_files], format_log)
+        # `--force-exclude` is REQUIRED here: when ruff is handed explicit
+        # file paths (as opposed to discovering them itself), it does NOT
+        # apply the `[tool.ruff].exclude` / `[tool.ruff.format].exclude`
+        # config unless this flag is set. Without it, vendored files that
+        # pyproject deliberately excludes (deepseek_v4.py, gemma4_vendored/*,
+        # hy_v3.py, ...) get lint/format-checked anyway, falsely failing the
+        # step on any PR that merely touches them.
+        check_rc = _run_ruff(["check", "--force-exclude", *py_files], check_log)
+        format_rc = _run_ruff(
+            ["format", "--check", "--force-exclude", *py_files], format_log
+        )
 
         if check_rc == 0 and format_rc == 0:
             return StepResult(
