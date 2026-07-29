@@ -365,8 +365,14 @@ class TestQwen3TTSRoute:
         assert r1.status_code == 200 and r2.status_code == 200
         # Two distinct engines were constructed, the second for the 6bit id.
         assert len(_RecordingEngine.instances) == 2
-        assert _RecordingEngine.instances[0].model_name.endswith("CustomVoice-bf16")
-        assert _RecordingEngine.instances[1].model_name.endswith("CustomVoice-6bit")
+        eng1, eng2 = _RecordingEngine.instances
+        assert eng1.model_name.endswith("CustomVoice-bf16")
+        assert eng2.model_name.endswith("CustomVoice-6bit")
+        # Crucially: each request synthesized on ITS OWN engine — the second
+        # request did NOT reuse the stale first engine. Each engine got
+        # exactly one generate call, carrying that request's text.
+        assert [c["text"] for c in eng1.generate_calls] == ["一。"]
+        assert [c["text"] for c in eng2.generate_calls] == ["二。"]
 
     @pytest.mark.parametrize(
         "model_id",
@@ -390,12 +396,27 @@ class TestQwen3TTSRoute:
         assert body["error"]["code"] == "unsupported_model_variant"
         assert "CustomVoice" in body["error"]["message"]
 
-    def test_customvoice_org_prefix_not_misclassified_as_base(self, monkeypatch):
-        """An org name containing 'customvoice' must NOT suppress the Base
-        guard, and a CustomVoice repo must NOT be rejected — classification
-        is on the repo name's tokens, not the whole id."""
+    def test_customvoice_org_prefix_does_not_suppress_base_guard(self, monkeypatch):
+        """A ``customvoice`` in the ORG segment must NOT suppress the Base
+        guard: classification is on the repo NAME's tokens, so a raw
+        ``customvoice-org/Qwen3-TTS-0.6B-Base`` id is still rejected. (A
+        whole-id substring check would wrongly accept it.)"""
         client = _mount(monkeypatch)
-        # Real CustomVoice repo → accepted (200), not Base-rejected.
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "customvoice-org/Qwen3-TTS-0.6B-Base",
+                "input": "hi",
+                "voice": "Serena",
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["error"]["code"] == "unsupported_model_variant"
+
+    def test_real_customvoice_repo_not_base_rejected(self, monkeypatch):
+        """The converse: an actual CustomVoice repo must NOT trip the Base
+        guard — it synthesizes normally."""
+        client = _mount(monkeypatch)
         resp = client.post(
             "/v1/audio/speech",
             json={"model": "qwen3-tts", "input": "hi", "voice": "Serena"},
