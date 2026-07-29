@@ -257,12 +257,26 @@ class TTSEngine:
             return "qwen3_tts"
         elif "indextts" in name_lower or "index-tts" in name_lower:
             return "indextts"
+        elif "f5-tts" in name_lower or "f5_tts" in name_lower:
+            return "f5"
         else:
             return "kokoro"  # Default
 
     def load(self) -> None:
         """Load the TTS model."""
         if self._loaded:
+            return
+
+        # F5-TTS is a standalone pure-MLX package (not mlx_audio's load_model
+        # path): EN+ZH multilingual, zero-shot voice cloning, no torch. It fills
+        # the Chinese expressive/cloneable gap Qwen3-TTS (flat) and Chatterbox
+        # (English-only) leave open.
+        if self._model_family == "f5":
+            from f5_tts_mlx.cfm import F5TTS
+
+            self.model = F5TTS.from_pretrained(self.model_name)
+            self._loaded = True
+            logger.info(f"TTS model loaded (f5): {self.model_name}")
             return
 
         try:
@@ -329,6 +343,9 @@ class TTSEngine:
         """
         if not self._loaded:
             self.load()
+
+        if self._model_family == "f5":
+            return self._generate_f5(text, ref_audio, ref_text)
 
         try:
             import mlx.core as mx
@@ -415,6 +432,63 @@ class TTSEngine:
         except Exception as e:
             logger.error(f"TTS generation failed: {e}")
             raise
+
+    def _generate_f5(
+        self, text: str, ref_audio: str | None, ref_text: str | None
+    ) -> AudioOutput:
+        """F5-TTS inference (pure MLX). Clones the reference clip's timbre and
+        speaks ``text`` in it; with no ``ref_audio`` it uses the packaged default
+        reference. Mirrors ``f5_tts_mlx.generate.generate`` but reuses the
+        already-loaded model (no per-call reload)."""
+        import pkgutil
+
+        import mlx.core as mx
+        import soundfile as sf
+        from f5_tts_mlx.generate import (
+            FRAMES_PER_SEC,
+            SAMPLE_RATE,
+            TARGET_RMS,
+            convert_char_to_pinyin,
+            estimated_duration,
+        )
+
+        if ref_audio:
+            aud, sr = sf.read(ref_audio)
+            if sr != SAMPLE_RATE:
+                raise ValueError(
+                    f"F5 ref_audio must be {SAMPLE_RATE} Hz (got {sr}); resample it."
+                )
+            rtext = ref_text or ""
+        else:
+            # packaged short reference (its timbre; content comes from `text`)
+            data = pkgutil.get_data("f5_tts_mlx", "tests/test_en_1_ref_short.wav")
+            tmp = "/tmp/f5_default_ref.wav"
+            with open(tmp, "wb") as f:
+                f.write(data)  # type: ignore[arg-type]
+            aud, _sr = sf.read(tmp)
+            rtext = "Some call me nature, others call me mother nature."
+
+        aud = mx.array(aud)
+        rms = mx.sqrt(mx.mean(mx.square(aud)))
+        if rms < TARGET_RMS:
+            aud = aud * TARGET_RMS / rms
+        # explicit duration estimate — F5's auto heuristic can collapse to ~0s
+        dur = int(estimated_duration(aud, rtext, text, 1.0) * FRAMES_PER_SEC)
+        ptext = convert_char_to_pinyin([rtext + " " + text])
+        wave, _ = self.model.sample(
+            mx.expand_dims(aud, axis=0),
+            text=ptext,
+            duration=dur,
+            steps=8,
+            cfg_strength=2.0,
+            sway_sampling_coef=-1.0,
+        )
+        wave = wave[aud.shape[0] :]  # trim the reference prefix
+        mx.eval(wave)
+        out = np.array(wave, dtype=np.float32)
+        return AudioOutput(
+            audio=out, sample_rate=SAMPLE_RATE, duration=len(out) / SAMPLE_RATE
+        )
 
     def stream_generate(
         self,

@@ -104,6 +104,13 @@
     "default_voice": "Serena",
     "notes": "Alibaba Qwen3-TTS 1.7B CustomVoice (bf16). Multilingual predefined speakers (Chinese: Vivian, Serena, Uncle_Fu, Dylan, Eric; English: Ryan, Aiden; Japanese: Ono_Anna; Korean: Sohee) matched case-insensitively, with emotion/style control via the OpenAI `instructions` field. The CustomVoice variant is used (not 0.6B-Base, which is voice-cloning-only and needs a reference clip)."
   },
+  "f5-tts-zh": {
+    "type": "tts",
+    "hf_id": "lucasnewman/f5-tts-mlx",
+    "family": "f5",
+    "default_voice": "clone",
+    "notes": "F5-TTS (pure-MLX, no torch): EN+ZH multilingual, zero-shot voice CLONING via ref_audio (24kHz clip) + ref_text. Fills the Chinese expressive/cloneable gap (Qwen3-TTS is flat, Chatterbox English-only). With no ref it uses a packaged default voice; supply a Chinese ref for a natural Chinese narrator."
+  },
   "qwen3-tts-clone": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
