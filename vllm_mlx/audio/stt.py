@@ -24,10 +24,10 @@ DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
 DEFAULT_SENSEVOICE_MODEL = "mlx-community/SenseVoiceSmall"
 
 # SenseVoice accepts a keyword-only language hint restricted to this set;
-# anything else maps to "auto" (language-id) inside mlx_audio, so callers
-# passing a Whisper-style code (e.g. "es") degrade gracefully to detection.
+# anything else maps to "auto" so callers passing a Whisper-style code
+# (e.g. "es") degrade gracefully to language detection.
 # See mlx_audio/stt/models/sensevoice/README.md.
-_SENSEVOICE_LANGUAGES = ("auto", "zh", "en", "ja", "ko", "yue", "nospeech")
+_SENSEVOICE_LANGUAGES = frozenset({"auto", "zh", "en", "ja", "ko", "yue", "nospeech"})
 
 # ---------------------------------------------------------------------------
 # F-K-WHISPER-961: VAD pre-trim guard (see #961)
@@ -460,7 +460,7 @@ def _shift_segment_time(seg: Any, offset: float) -> None:
 
 class STTEngine:
     """
-    Speech-to-Text engine supporting Whisper and Parakeet models.
+    Speech-to-Text engine supporting Whisper, Parakeet, and SenseVoice models.
 
     Usage:
         engine = STTEngine("mlx-community/whisper-large-v3-mlx")
@@ -702,9 +702,13 @@ class STTEngine:
             if self._is_sensevoice:
                 # SenseVoice: keyword-only ``language`` (default auto-detect),
                 # no translation ``task``. A caller-supplied code outside
-                # ``_SENSEVOICE_LANGUAGES`` still maps to auto upstream, so we
-                # forward it verbatim rather than second-guessing here.
-                kwargs["language"] = language or "auto"
+                # ``_SENSEVOICE_LANGUAGES`` maps to auto-detection. Normalize
+                # here as part of our adapter contract rather than depending
+                # on mlx_audio's current unknown-key fallback.
+                language_hint = (language or "auto").lower()
+                kwargs["language"] = (
+                    language_hint if language_hint in _SENSEVOICE_LANGUAGES else "auto"
+                )
             elif not self._is_parakeet:
                 if language:
                     kwargs["language"] = language

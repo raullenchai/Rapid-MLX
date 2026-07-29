@@ -562,6 +562,7 @@ _AUDIO_ALIASES_FOR_CAP_CHECK = [
     ("whisper", "mlx-community/whisper-large-v3-mlx", "audio.transcription"),
     ("whisper-large-v3", "mlx-community/whisper-large-v3-mlx", "audio.transcription"),
     ("parakeet", "mlx-community/parakeet-tdt-0.6b-v2", "audio.transcription"),
+    ("sensevoice", "mlx-community/SenseVoiceSmall", "audio.transcription"),
 ]
 
 

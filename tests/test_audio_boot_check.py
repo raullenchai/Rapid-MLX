@@ -39,11 +39,14 @@ def test_is_audio_model_alias_recognises_common_aliases() -> None:
         "whisper-small",
         "parakeet",
         "parakeet-v3",
+        "sensevoice",
+        "sensevoice-small",
         # HF-style ids — capitalisation must not matter.
         "mlx-community/Kokoro-82M-bf16",
         "mlx-community/Kokoro-82M-4bit",
         "mlx-community/whisper-large-v3-mlx",
         "mlx-community/parakeet-tdt-0.6b-v2",
+        "mlx-community/SenseVoiceSmall",
     ]
     for name in audio_positive:
         assert is_audio_model_alias(name), name
