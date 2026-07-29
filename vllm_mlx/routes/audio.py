@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import tempfile
-import threading
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import PlainTextResponse, Response
@@ -991,13 +990,31 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
-#: Serialises the forced-alignment engine cache + ``align`` call. The
-#: alignment body runs on a worker thread (see
-#: :func:`_run_alignment_request`), so two concurrent requests could
-#: otherwise load the aligner's weights twice or swap the engine out
-#: mid-align. A plain ``threading.Lock`` (not ``asyncio.Lock``) is
-#: required because the critical section executes off the event loop.
-_alignment_lock = threading.Lock()
+#: Serialises forced alignment: one weight load / one ``align`` at a time,
+#: so concurrent requests neither double-load the aligner nor swap the
+#: cached engine out from under an in-flight align.
+#:
+#: An ``asyncio.Lock`` acquired ON THE EVENT LOOP, deliberately not a
+#: ``threading.Lock`` held inside the worker. ``asyncio.to_thread`` uses
+#: the shared default executor (min(32, cpu+4) threads), so queued
+#: requests blocking on a thread-level lock would each pin an executor
+#: thread just to wait — starving every other ``to_thread`` user in the
+#: process (prefix-cache save, tool-grammar warmup, the diffusion lane).
+#: Waiting on the loop instead costs a coroutine, not a thread, and only
+#: the request that actually runs ever occupies an executor slot.
+#:
+#: Lazily created because the module imports before any event loop exists
+#: and an ``asyncio.Lock`` must be bound to the running loop.
+_alignment_lock: asyncio.Lock | None = None
+
+
+def _get_alignment_lock() -> asyncio.Lock:
+    """Return the process-wide alignment lock, creating it on first use."""
+    global _alignment_lock
+    if _alignment_lock is None:
+        _alignment_lock = asyncio.Lock()
+    return _alignment_lock
+
 
 #: Cached forced-aligner engine — DELIBERATELY separate from
 #: ``_stt_engine``.
@@ -1027,9 +1044,9 @@ def _align_blocking(
     so the async handler can hand the seconds-long weight load + align
     to :func:`asyncio.to_thread` instead of stalling the event loop.
 
-    Holds :data:`_alignment_lock` across the cache check AND the align
-    call so concurrent alignment requests don't double-load weights or
-    swap the engine out from under each other mid-align.
+    The caller holds :data:`_alignment_lock` for the whole call, so this
+    body is already serialised — no thread-level locking here (see the
+    lock's own comment for why it lives on the event loop).
     """
     global _aligner_engine
 
@@ -1041,11 +1058,14 @@ def _align_blocking(
     if language:
         align_kwargs["language"] = language
 
-    with _alignment_lock:
-        if _aligner_engine is None or _aligner_engine.model_name != model_name:
-            _aligner_engine = STTEngine(model_name)
-            _aligner_engine.load()
-        return _aligner_engine.align(audio_path, text, **align_kwargs)
+    if _aligner_engine is None or _aligner_engine.model_name != model_name:
+        # Load into a local first and publish only on success. Caching a
+        # half-constructed engine would leave later requests matching on
+        # ``model_name`` against an object whose weights never loaded.
+        engine = STTEngine(model_name)
+        engine.load()
+        _aligner_engine = engine
+    return _aligner_engine.align(audio_path, text, **align_kwargs)
 
 
 async def _run_alignment_request(
@@ -1083,9 +1103,14 @@ async def _run_alignment_request(
         # them on a worker thread — an ``async def`` handler that calls
         # them inline stalls the whole event loop (every concurrent chat
         # completion, /healthz probe and SSE heartbeat) for the duration.
-        result = await asyncio.to_thread(
-            _align_blocking, model_name, tmp_path, text, language
-        )
+        #
+        # Serialise BEFORE offloading: queueing on the loop costs a
+        # coroutine, whereas queueing inside the worker would pin an
+        # executor thread per waiter and starve every other to_thread user.
+        async with _get_alignment_lock():
+            result = await asyncio.to_thread(
+                _align_blocking, model_name, tmp_path, text, language
+            )
 
         return _format_stt_response(result, response_format, task="transcribe")
 
@@ -2046,10 +2071,22 @@ DEFAULT_MUSIC_DIT_DECODER: tuple[str, str] = ("medium", "same-l")
 #: Serialises music generation. ``MusicEngine.generate`` shells out to the
 #: vendored SA3 CLI, which peaks at ~3.9 GB (``medium``) — two concurrent
 #: requests would run two such subprocesses and can exhaust unified memory
-#: on a base-config Mac. One at a time; the rest queue on the thread that
-#: awaits this lock. Also guards the ``_music_engine`` global, which is
-#: mutated from a worker thread.
-_music_lock = threading.Lock()
+#: on a base-config Mac. Also guards the ``_music_engine`` global, mutated
+#: from a worker thread.
+#:
+#: On the event loop, not in the worker — same reasoning as
+#: :data:`_alignment_lock`: a thread-level wait would pin one shared
+#: executor thread per queued request. With a 900 s render that is a long
+#: time to hold threads other subsystems need.
+_music_lock: asyncio.Lock | None = None
+
+
+def _get_music_lock() -> asyncio.Lock:
+    """Return the process-wide music lock, creating it on first use."""
+    global _music_lock
+    if _music_lock is None:
+        _music_lock = asyncio.Lock()
+    return _music_lock
 
 
 def _generate_music_blocking(
@@ -2067,30 +2104,29 @@ def _generate_music_blocking(
     heartbeat with it — so the handler hands it to
     :func:`asyncio.to_thread`.
 
-    Holds :data:`_music_lock` across the engine-cache check and the
-    render so concurrent requests neither race the ``_music_engine``
-    global nor run two multi-GB SA3 subprocesses at once.
+    The caller holds :data:`_music_lock` for the whole call, so this body
+    is already serialised — no thread-level locking here (see the lock's
+    own comment for why it lives on the event loop).
     """
     global _music_engine
 
     from ..audio.music import MusicEngine
 
-    with _music_lock:
-        if (
-            _music_engine is None
-            or _music_engine.dit != dit
-            or _music_engine.decoder != decoder
-        ):
-            _music_engine = MusicEngine(dit=dit, decoder=decoder)
+    if (
+        _music_engine is None
+        or _music_engine.dit != dit
+        or _music_engine.decoder != decoder
+    ):
+        _music_engine = MusicEngine(dit=dit, decoder=decoder)
 
-        _music_engine.generate(
-            request.input,
-            out_path,
-            seconds=request.seconds,
-            steps=request.steps,
-            negative_prompt=request.negative_prompt,
-            seed=request.seed,
-        )
+    _music_engine.generate(
+        request.input,
+        out_path,
+        seconds=request.seconds,
+        steps=request.steps,
+        negative_prompt=request.negative_prompt,
+        seed=request.seed,
+    )
 
 
 def _resolve_music_model(model: str | None) -> tuple[str, str]:
@@ -2133,10 +2169,13 @@ async def create_music(request: AudioMusicRequest = Body(...)):
             tmp_path = tmp.name
 
         # Engine load + render are blocking (a subprocess, up to 900 s) —
-        # off the event loop. See _generate_music_blocking.
-        await asyncio.to_thread(
-            _generate_music_blocking, dit, decoder, tmp_path, request
-        )
+        # off the event loop. Serialised on the loop before offloading so
+        # queued renders don't each pin a shared executor thread.
+        # See _generate_music_blocking and _music_lock.
+        async with _get_music_lock():
+            await asyncio.to_thread(
+                _generate_music_blocking, dit, decoder, tmp_path, request
+            )
 
         audio_bytes = b""
         if os.path.exists(tmp_path):

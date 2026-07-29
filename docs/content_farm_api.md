@@ -92,7 +92,7 @@ ASR).
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `file` | file | — (required) | The audio whose speech is `text`. |
-| `text` | string | *(absent)* | **Presence switches to alignment.** The known transcript to align. Present-but-blank is a `400` — it is never silently downgraded to ASR. |
+| `text` | string | *(absent)* | **Presence switches to alignment.** The known transcript to align. A whitespace-only value is a `400`, never a silent downgrade to ASR. |
 | `model` | string | `qwen3-aligner` when `text` present, else `whisper-large-v3` | Must resolve to a forced-aligner model (family `qwen3_aligner`) for the alignment path. |
 | `language` | string | aligner default (`Chinese`) | Alignment language, forwarded to the aligner. |
 | `response_format` | string | `verbose_json` when `text` present, else `json` | One of `json`, `text`, `srt`, `vtt`, `verbose_json`. |
@@ -124,10 +124,19 @@ default) returns:
 returns the transcript as `text/plain`.
 
 Errors: `400` (`code="invalid_alignment_request"`) when the chosen model
-is not a forced aligner, or when `text` is present but blank (`param:
+is not a forced aligner, or when `text` is whitespace-only (`param:
 "text"`) — sending `text` means "I have the transcript, give me
 timings", so the route refuses rather than quietly answering a different
-question with ASR; `404` for an unknown `model` alias; `400`
+question with ASR.
+
+> One boundary worth knowing: a **truly empty** `text=""` is
+> indistinguishable from an omitted field, because FastAPI coerces an
+> empty form value to `None` for an optional parameter. `text=""`
+> therefore behaves as "no `text`" and runs ASR. Any non-empty blank
+> value (`"   "`) is rejected as above. Send no `text` field for ASR and
+> a real transcript for alignment; don't rely on the empty string.
+
+Also: `404` for an unknown `model` alias; `400`
 (`invalid_audio_file`) for a corrupted upload; `413` for uploads over
 25 MB.
 

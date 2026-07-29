@@ -9,11 +9,14 @@ These models define the request and response schemas for:
 - MCP (Model Context Protocol) integration
 """
 
+import base64
+import binascii
 import math
 import re
 import time
 import uuid
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
@@ -2846,6 +2849,30 @@ _VIDEO_MAX_IMAGE_CHARS: int = 12 * 1024 * 1024
 #: SSRF primitive the moment a backend starts honouring it.
 _VIDEO_ALLOWED_IMAGE_URL_SCHEMES: tuple[str, ...] = ("http", "https")
 
+#: Shortest scheme-less ``image`` value accepted as a bare base64 frame.
+#: No real encoded image is anywhere near this small; the floor keeps
+#: short path-shaped strings from qualifying on charset alone.
+_BARE_BASE64_MIN_CHARS: int = 32
+
+
+def _is_bare_base64(value: str) -> bool:
+    """True if ``value`` is plausibly a raw base64 image payload.
+
+    A charset check alone is not enough: ``/etc/passwd`` contains only
+    base64-alphabet characters, so a naive regex accepts an absolute
+    filesystem path as an "inline frame". Require the value to actually
+    DECODE as base64 — which pins the length to a multiple of 4 and
+    rejects path- and hostname-shaped strings — plus a length floor.
+    """
+    compact = "".join(value.split())
+    if len(compact) < _BARE_BASE64_MIN_CHARS or len(compact) % 4 != 0:
+        return False
+    try:
+        base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return True
+
 
 class VideoGenerationRequest(BaseModel):
     """Request for text→video AND image→video (``/v1/video/generations``).
@@ -2930,16 +2957,26 @@ class VideoGenerationRequest(BaseModel):
                 )
             return stripped
 
-        # A scheme is anything before "://". Bare base64 has none and is
-        # allowed through as an inline payload.
-        if "://" in lowered:
-            scheme = lowered.split("://", 1)[0]
-            if scheme not in _VIDEO_ALLOWED_IMAGE_URL_SCHEMES:
-                supported = ", ".join(_VIDEO_ALLOWED_IMAGE_URL_SCHEMES)
-                raise ValueError(
-                    f"image URL scheme {scheme!r} is not allowed; use one of: "
-                    f"{supported} (or pass the frame inline as base64)"
-                )
+        # Extract the scheme with urlsplit, NOT by looking for "://".
+        # A single-slash URI is still a URI: urlsplit("file:/etc/passwd")
+        # yields scheme "file", but a "://" substring test sees no scheme
+        # and would wave it through as bare base64 — which is exactly the
+        # local-file-read this validator exists to stop.
+        scheme = urlsplit(lowered).scheme
+        if scheme and scheme not in _VIDEO_ALLOWED_IMAGE_URL_SCHEMES:
+            supported = ", ".join(_VIDEO_ALLOWED_IMAGE_URL_SCHEMES)
+            raise ValueError(
+                f"image URL scheme {scheme!r} is not allowed; use one of: "
+                f"{supported} (or pass the frame inline as base64)"
+            )
+        # No scheme at all → treated as an inline base64 payload. Require
+        # it to actually BE base64 so a stray path or hostname can't sit
+        # in the field waiting for a backend to guess at it.
+        if not scheme and not _is_bare_base64(stripped):
+            raise ValueError(
+                "image must be a data:image/* URI, an http(s) URL, or a bare "
+                "base64 payload"
+            )
         return stripped
 
     @field_validator("response_format")
@@ -2971,6 +3008,23 @@ class VideoGenerationResult(BaseModel):
     height: int | None = None
     num_frames: int | None = None
     frame_rate: float | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_delivery_channel(self) -> "VideoGenerationResult":
+        """Enforce the documented "exactly one of b64_video / url".
+
+        A docstring invariant a model doesn't check is a comment. Without
+        this, a backend could return both (which does the client no favours
+        — which one is authoritative?) or neither (a 200 carrying no video
+        at all, the failure mode hardest to notice).
+        """
+        if (self.b64_video is None) == (self.url is None):
+            raise ValueError(
+                "exactly one of `b64_video` or `url` must be set on a "
+                "video result (got "
+                f"{'both' if self.b64_video is not None else 'neither'})"
+            )
+        return self
 
 
 class VideoGenerationResponse(BaseModel):

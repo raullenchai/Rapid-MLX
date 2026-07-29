@@ -27,6 +27,7 @@ import wave
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -693,14 +694,13 @@ class TestForcedAlignment:
 
         async def _drive():
             seen["loop_thread"] = threading.get_ident()
-            with open(_tmp_wav(), "rb") as fh:
-                return await audio_route._run_alignment_request(
-                    file=_UploadLike(fh.read()),
-                    model="qwen3-aligner",
-                    text="abc",
-                    language=None,
-                    response_format="verbose_json",
-                )
+            return await audio_route._run_alignment_request(
+                file=_UploadLike(_make_tone_wav()),
+                model="qwen3-aligner",
+                text="abc",
+                language=None,
+                response_format="verbose_json",
+            )
 
         _FakeAlignerEngine.align = _recording_align
         try:
@@ -708,15 +708,6 @@ class TestForcedAlignment:
         finally:
             _FakeAlignerEngine.align = real_align
         assert seen["engine_thread"] != seen["loop_thread"], seen
-
-
-def _tmp_wav() -> str:
-    """Write a throwaway tone wav and return its path."""
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as fh:
-        fh.write(_make_tone_wav())
-        return fh.name
 
 
 class _UploadLike:
@@ -826,11 +817,23 @@ class TestVideoContract:
         [
             "file:///etc/passwd",
             "FILE:///etc/passwd",
+            # Single-slash URIs are still URIs. urlsplit() sees scheme
+            # "file" here, but a "://" substring test does not — that gap
+            # would wave an arbitrary local-file read through as "bare
+            # base64". Regression pin for codex round-2 finding 1.
+            "file:/etc/passwd",
+            "file:/../../etc/shadow",
+            "gopher:/internal/x",
             "gopher://internal/x",
             "ftp://internal/frame.png",
             "data:text/html;base64,PHNjcmlwdD4=",
             "data:;base64,AAAA",
             "   ",
+            # Scheme-less but not base64 — a bare path or host must not
+            # sit in the field waiting for a backend to interpret it.
+            "/etc/passwd",
+            "../../secret.png",
+            "internal.corp.example",
         ],
     )
     def test_unsafe_image_reference_is_rejected(self, image):
@@ -857,7 +860,8 @@ class TestVideoContract:
             "data:image/png;base64,iVBORw0KGgo=",
             "https://example.com/frame.png",
             "http://example.com/frame.png",
-            "iVBORw0KGgoAAAANSUhEUg==",  # bare base64, no scheme
+            # Bare base64, no scheme — a real (truncated) PNG payload.
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwABAQEAGn0nsQAAAABJRU5ErkJggg==",
         ],
     )
     def test_documented_image_forms_are_accepted(self, image):
@@ -887,6 +891,12 @@ class TestVideoContract:
         )
         assert req.num_frames == 97
         assert req.response_format == "mp4"
+
+        # XOR invariant: both channels set, or neither, must be refused.
+        with pytest.raises(ValidationError):
+            VideoGenerationResult(b64_video="AAAA", url="https://x/y.mp4")
+        with pytest.raises(ValidationError):
+            VideoGenerationResult()
 
         resp = VideoGenerationResponse(
             created=123,
