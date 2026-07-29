@@ -102,6 +102,17 @@ def test_sensevoice_backend_detection_uses_loaded_model_metadata(monkeypatch) ->
     assert model.calls == [("speech.wav", {"verbose": False, "language": "zh"})]
 
 
+def test_loaded_model_metadata_overrides_false_positive_name(monkeypatch) -> None:
+    model = _SenseVoiceModel()
+    model.config = types.SimpleNamespace(model_type="whisper")
+    monkeypatch.setattr("mlx_audio.stt.utils.load_model", lambda _name: model)
+
+    engine = STTEngine("acme/not-really-sensevoice")
+    engine.load()
+
+    assert engine._is_sensevoice is False
+
+
 @pytest.mark.parametrize(
     "model",
     [

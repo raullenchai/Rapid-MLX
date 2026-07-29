@@ -542,8 +542,8 @@ class STTEngine:
             # SenseVoice repos still receive the native generate() contract.
             # The constructor's name check remains a useful pre-load fallback.
             model_type = getattr(getattr(self.model, "config", None), "model_type", "")
-            if isinstance(model_type, str) and model_type.lower() == "sensevoice":
-                self._is_sensevoice = True
+            if isinstance(model_type, str) and model_type:
+                self._is_sensevoice = model_type.lower() == "sensevoice"
             # F-K-WHISPER-500: patch up the missing WhisperProcessor
             # mlx-community Whisper repos don't ship. Runs AFTER
             # mlx_audio's own post_load_hook, so if that succeeded
