@@ -58,6 +58,7 @@
     "mlx-community/Qwen3-8B-8bit": 8719009971,
     "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit": 17197080734,
     "mlx-community/Qwen3-Coder-Next-4bit": 44855905712,
+    "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16": 4544210194,
     "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit": 2312056829,
     "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit": 2696097845,
     "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16": 4520193026,
