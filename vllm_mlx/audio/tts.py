@@ -79,6 +79,123 @@ QWEN3_TTS_VOICES = [
     "Sohee",  # Korean
 ]
 
+# Fallback voice description for the Qwen3-TTS *VoiceDesign* variant. Unlike
+# CustomVoice (named speaker + optional ``instruct`` emotion), VoiceDesign has
+# NO speakers — the whole voice is defined by a natural-language description
+# carried in ``instruct``, which mlx_audio's ``generate_voice_design`` requires
+# as a mandatory positional (no default). If a caller reaches a VoiceDesign
+# model without supplying one we substitute this neutral narrator description
+# rather than crash deep inside mlx_audio with a missing-arg TypeError.
+QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT = (
+    "A clear, natural narrator voice with a calm, neutral tone."
+)
+
+# Voice surface for the Qwen3-TTS *VoiceDesign* variant. VoiceDesign has NO
+# named speakers — ``voice`` is ignored and the whole voice is authored in
+# natural language via ``instruct``. Rather than advertise the nine CustomVoice
+# speakers (which would mislead callers into thinking a picked speaker matters),
+# it exposes a single ``describe`` sentinel, mirroring how the F5 family
+# advertises ``clone`` for its reference-driven surface. The sentinel is also
+# the registry ``default_voice`` for the VoiceDesign aliases so the
+# voice-omitted / cold-start path validates without a real speaker name.
+QWEN3_TTS_VOICEDESIGN_VOICES = ["describe"]
+
+
+def is_qwen3_tts_model(model_name: str) -> bool:
+    """True for any Qwen3-TTS checkpoint (CustomVoice OR VoiceDesign).
+
+    Shared classifier so the engine's family detection and the route's voice
+    allowlist agree on exactly which ids are Qwen3-TTS. Matches the ``qwen3-tts``
+    / ``qwen3_tts`` token anywhere in the id (the same full-id rule
+    ``TTSEngine._detect_family`` has always used).
+    """
+    name_lower = model_name.lower()
+    return "qwen3-tts" in name_lower or "qwen3_tts" in name_lower
+
+
+def _qwen3_repo_component(model_name: str) -> str:
+    """Extract the repo/model NAME component from any Qwen3-TTS identifier.
+
+    The CustomVoice/VoiceDesign variant token lives in the repo NAME, so the
+    variant check must look ONLY there — never at parent directories or the org
+    namespace, which may coincidentally contain a token (``/srv/customvoice/
+    Qwen3-TTS-VoiceDesign-bf16``, ``voicedesign-org/...-CustomVoice-...``).
+    Handles the three id shapes the engine sees:
+
+    * HuggingFace cache snapshot path — ``.../hub/models--<org>--<repo>/
+      snapshots/<hash>``: decode the ``models--<org>--<repo>`` segment and
+      return ``<repo>`` (the part after the LAST ``--``), so neither the
+      ``snapshots/<hash>`` tail nor the org leaks in.
+    * ``org/name`` HF id or a plain filesystem path — return the last path
+      component (basename).
+    * a bare alias/name with no separators — returned as-is.
+
+    Trailing path separators are stripped first so a directory id written with a
+    slash (``/models/Qwen3-TTS-VoiceDesign-bf16/``) still yields the repo name
+    rather than an empty final component.
+    """
+    lowered = model_name.rstrip("/").lower()
+    idx = lowered.find("models--")
+    if idx != -1:
+        segment = lowered[idx + len("models--") :].split("/", 1)[0]
+        # ``segment`` is ``<org>--<repo>``; the repo is after the last ``--``.
+        return segment.rsplit("--", 1)[-1]
+    return lowered.rsplit("/", 1)[-1]
+
+
+def is_qwen3_voicedesign_model(model_name: str) -> bool:
+    """True for a Qwen3-TTS *VoiceDesign* checkpoint specifically.
+
+    A single source of truth for the CustomVoice/VoiceDesign split, used by
+    BOTH ``TTSEngine`` (which generate-arg shape + voice surface to use) and the
+    route's ``_allowed_voices_for`` (which voice allowlist to validate against),
+    so the two can never disagree — a mismatch would let a request synthesize
+    as VoiceDesign while being validated against CustomVoice speakers (or vice
+    versa).
+
+    Authoritative path: resolve through the alias registry FIRST. Every
+    supported input — the short aliases (``qwen3-tts-voicedesign``) and the
+    canonical mlx-community HF ids — resolves to its clean canonical ``hf_id``
+    (always ``mlx-community/Qwen3-TTS-...-VoiceDesign-...`` / ``...-CustomVoice-
+    ...``), so the variant is read off registry metadata rather than whatever
+    local filesystem path the model was loaded from. This mirrors how
+    ``_list_snapshot_voices`` resolves aliases before touching the cache.
+
+    Fallback path: for an UNREGISTERED id / bare local directory the registry
+    can't help, so we read the ``customvoice`` / ``voicedesign`` variant token
+    — mutually exclusive in the real repo names — from the REPO NAME component
+    only (see :func:`_qwen3_repo_component`), never the parent dirs / org, with
+    ``customvoice`` winning if both somehow appear (CustomVoice, a real speaker
+    set, is the safe default). The truly authoritative signal for an
+    unregistered checkpoint is its baked ``tts_model_type`` config, available
+    only after the weights load; this pre-load name check is a deliberate
+    best-effort so voice validation and the ``instruct`` fallback can run before
+    a multi-GB download.
+    """
+    # Lazy import mirrors ``_list_snapshot_voices`` — the registry doesn't
+    # import this module, and API-only runners without the audio extras can
+    # still import ``tts``. Only the import is guarded (ImportError); a genuine
+    # registry error (e.g. corrupt aliases.json) is left to propagate rather
+    # than be masked by a silent heuristic fallback.
+    name = model_name
+    try:
+        from .registry import resolve_audio_alias
+    except ImportError:  # pragma: no cover — covered by ``[audio]``
+        resolve_audio_alias = None  # type: ignore[assignment]
+    if resolve_audio_alias is not None:
+        entry = resolve_audio_alias(model_name)
+        if entry is not None:
+            name = entry.hf_id
+
+    # Family test uses the whole id (``qwen3-tts`` may sit in the org); the
+    # variant token is read only from the repo-name component.
+    if not is_qwen3_tts_model(name):
+        return False
+    component = _qwen3_repo_component(name)
+    if "customvoice" in component:
+        return False
+    return "voicedesign" in component
+
 
 def _list_snapshot_voices(model_name: str) -> list[str]:
     """Return the safetensors voice files cached for ``model_name``.
@@ -251,6 +368,22 @@ class TTSEngine:
         self._loaded = False
         self._model_family = self._detect_family(model_name)
 
+    def _is_qwen3_voicedesign(self) -> bool:
+        """True for a Qwen3-TTS *VoiceDesign* checkpoint.
+
+        VoiceDesign and CustomVoice share the ``qwen3_tts`` family (identical
+        mlx_audio loader + ``generate()`` surface); they differ only in what
+        ``generate()`` dispatches to — ``generate_voice_design`` (voice fully
+        described by ``instruct``, no speakers) vs ``generate_custom_voice``
+        (named speaker + optional ``instruct``). The mlx-community repos encode
+        the variant in the id (``...-VoiceDesign-...``), so a substring check on
+        the model name is enough to pick the right per-request arg shape without
+        loading the weights. Delegates to the module-level
+        :func:`is_qwen3_voicedesign_model` so the engine and the route's voice
+        allowlist share ONE classifier and can never disagree.
+        """
+        return is_qwen3_voicedesign_model(self.model_name)
+
     def _detect_family(self, model_name: str) -> str:
         """Detect model family from name."""
         name_lower = model_name.lower()
@@ -266,7 +399,11 @@ class TTSEngine:
             return "csm"
         elif "cosyvoice" in name_lower:
             return "cosyvoice"
-        elif "qwen3-tts" in name_lower or "qwen3_tts" in name_lower:
+        elif is_qwen3_tts_model(model_name):
+            # Both CustomVoice and VoiceDesign share the ``qwen3_tts`` family
+            # (same mlx_audio loader + generate() entry). The VoiceDesign vs
+            # CustomVoice split is a per-request generate-arg distinction, not
+            # a separate loader — see ``_is_qwen3_voicedesign``.
             return "qwen3_tts"
         elif "f5-tts" in name_lower or "f5_tts" in name_lower:
             return "f5"
@@ -326,11 +463,17 @@ class TTSEngine:
                 Kokoro-style single-letter code. Ignored by families that
                 auto-detect language (Qwen3-TTS).
             instruct: Optional emotion/style instruction (e.g. "Very happy
-                and excited."). Only Qwen3-TTS CustomVoice honours this —
-                it maps to that engine's ``instruct`` argument and drives
-                the emotional delivery of the predefined speaker. Other
-                families ignore it (they have no emotion-control surface),
-                so passing it is a no-op there rather than an error.
+                and excited."). Honoured by the Qwen3-TTS family — it maps to
+                that engine's ``instruct`` argument. For CustomVoice it
+                modulates the emotional delivery of the predefined speaker
+                (``voice``). For VoiceDesign it is the PRIMARY control: the
+                full voice (timbre, gender, age, accent, emotion, prosody) is
+                described here in natural language and ``voice`` is ignored;
+                if omitted a neutral narrator description is substituted
+                (``QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT``) so the mandatory
+                arg is never missing. Other families ignore it (they have no
+                emotion-control surface), so passing it is a no-op there
+                rather than an error.
             ref_audio: Optional path to a reference audio clip for zero-shot
                 voice cloning. Used by the F5-TTS ``f5`` family to clone the
                 clip's timbre; by the Chatterbox family (optional — clones the
@@ -392,7 +535,20 @@ class TTSEngine:
                 gen_kwargs = {"text": text, "voice": voice, "speed": speed}
                 if self._model_family == "qwen3_tts":
                     gen_kwargs["lang_code"] = "auto"
-                    if instruct:
+                    if self._is_qwen3_voicedesign():
+                        # VoiceDesign: the voice itself is authored in natural
+                        # language via ``instruct`` (mandatory — the weights
+                        # self-dispatch to ``generate_voice_design``, which
+                        # drops ``voice`` and requires ``instruct``). Always
+                        # forward a description, falling back to a neutral
+                        # narrator so a missing one degrades gracefully instead
+                        # of raising a TypeError deep in mlx_audio.
+                        gen_kwargs["instruct"] = (
+                            instruct or QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT
+                        )
+                    elif instruct:
+                        # CustomVoice: named speaker (``voice``) with optional
+                        # ``instruct`` emotion/style modulation.
                         gen_kwargs["instruct"] = instruct
                     # Qwen3-TTS Base = zero-shot voice cloning: forward the
                     # reference clip (+ its transcript) when given. Base ignores
@@ -754,6 +910,12 @@ class TTSEngine:
         elif self._model_family == "chatterbox":
             return CHATTERBOX_VOICES
         elif self._model_family == "qwen3_tts":
+            # VoiceDesign has no speakers — advertise the ``describe``
+            # sentinel instead of the CustomVoice speaker list so callers
+            # aren't misled into thinking a picked speaker matters (the
+            # voice is authored entirely via ``instruct``).
+            if self._is_qwen3_voicedesign():
+                return list(QWEN3_TTS_VOICEDESIGN_VOICES)
             return list(QWEN3_TTS_VOICES)
         else:
             return ["default"]

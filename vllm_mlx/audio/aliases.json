@@ -140,6 +140,28 @@
     "notes": "4-bit quant of Qwen3-TTS 1.7B CustomVoice — smallest download."
   },
 
+  "qwen3-tts-voicedesign": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+    "family": "qwen3_tts",
+    "default_voice": "describe",
+    "notes": "Qwen3-TTS 1.7B VoiceDesign (bf16). The VOICE-DESIGN sibling of CustomVoice: instead of picking a named speaker, the ENTIRE voice — timbre, gender, age, accent, emotion, prosody — is described in natural language via the OpenAI `instructions` field (mapped to mlx_audio's mandatory `instruct` arg; the weights self-dispatch to `generate_voice_design`). Richer style control than CustomVoice's `instruct` (which only modulates a fixed speaker). Has NO named speakers, so `voice` is ignored — the voice surface is the single `describe` sentinel (like F5's `clone`) and `default_voice` is that sentinel so the voice-omitted path validates. Supply a description, e.g. `instructions=\"a warm, low female narrator, calm and measured\"`."
+  },
+  "qwen3-tts-voicedesign-8bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit",
+    "family": "qwen3_tts",
+    "default_voice": "describe",
+    "notes": "8-bit quant of Qwen3-TTS 1.7B VoiceDesign — smaller download, mild quality drop."
+  },
+  "qwen3-tts-voicedesign-4bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit",
+    "family": "qwen3_tts",
+    "default_voice": "describe",
+    "notes": "4-bit quant of Qwen3-TTS 1.7B VoiceDesign — smallest download."
+  },
+
   "whisper": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-mlx",

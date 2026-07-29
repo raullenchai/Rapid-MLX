@@ -1565,8 +1565,11 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     from ..audio.tts import (
         CHATTERBOX_VOICES,
         KOKORO_VOICES,
+        QWEN3_TTS_VOICEDESIGN_VOICES,
         QWEN3_TTS_VOICES,
         _list_snapshot_voices,
+        is_qwen3_tts_model,
+        is_qwen3_voicedesign_model,
     )
 
     # Preferred path: enumerate the snapshot. Returns ``[]`` if the
@@ -1583,7 +1586,19 @@ def _allowed_voices_for(model_name: str) -> list[str]:
         return list(KOKORO_VOICES)
     if "chatterbox" in name_lower:
         return list(CHATTERBOX_VOICES)
-    if "qwen3-tts" in name_lower or "qwen3_tts" in name_lower:
+    if is_qwen3_voicedesign_model(model_name):
+        # Qwen3-TTS VoiceDesign has NO named speakers — ``voice`` is ignored
+        # and the whole voice is authored via ``instruct``. Advertise the
+        # ``describe`` sentinel (mirrors F5's ``clone``) rather than the
+        # CustomVoice speaker set. Checked BEFORE the general qwen3-tts branch
+        # because a VoiceDesign id also matches the Qwen3-TTS family. Uses the
+        # SAME shared classifier the engine's ``_is_qwen3_voicedesign`` does so
+        # the two can't disagree (a mismatch would validate a VoiceDesign
+        # request against CustomVoice speakers, or vice versa). The registry
+        # ``default_voice`` for the VoiceDesign aliases is this same sentinel
+        # so the voice-omitted / cold-start path validates.
+        return list(QWEN3_TTS_VOICEDESIGN_VOICES)
+    if is_qwen3_tts_model(model_name):
         # Qwen3-TTS CustomVoice ships baked-in named speakers and no
         # ``voices/`` snapshot dir, so the enumeration above always
         # returns ``[]`` and we serve the documented speaker set. The
