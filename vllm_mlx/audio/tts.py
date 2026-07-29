@@ -287,6 +287,7 @@ class TTSEngine:
         lang_code: str = "a",
         instruct: str | None = None,
         ref_audio: str | None = None,
+        ref_text: str | None = None,
         exaggeration: float | None = None,
     ) -> AudioOutput:
         """
@@ -307,10 +308,17 @@ class TTSEngine:
                 so passing it is a no-op there rather than an error.
             ref_audio: Path to a reference speech clip for ZERO-SHOT voice
                 cloning. Honoured by IndexTTS (required — it has no predefined
-                speakers) and by Chatterbox (optional — clones the ref timbre
-                on top of its default voice). Other families ignore it. When
-                the IndexTTS family is loaded and no ``ref_audio`` is given the
-                engine raises, since there is no speaker to fall back to.
+                speakers), Chatterbox (optional), and Qwen3-TTS **Base**
+                (optional — clones the ref timbre; the Base variant ignores
+                ``voice`` when ``ref_audio`` is set, while CustomVoice ignores
+                ``ref_audio`` and uses its named speakers). Use a clean 5-10s
+                clip at the model's native sample rate. Other families ignore
+                it. When the IndexTTS family is loaded and no ``ref_audio`` is
+                given the engine raises, since there is no speaker to fall back
+                to.
+            ref_text: Exact transcript of ``ref_audio``. Qwen3-TTS Base uses it
+                to anchor the cloning; supply it alongside ``ref_audio`` for the
+                cleanest clone. Ignored by families that clone reference-free.
             exaggeration: Chatterbox emotion/intensity knob (0.0 neutral →
                 ~1.0 very expressive). Only the Chatterbox family honours it;
                 it drives that engine's ``exaggeration`` argument and is the
@@ -363,6 +371,15 @@ class TTSEngine:
                     gen_kwargs["lang_code"] = "auto"
                     if instruct:
                         gen_kwargs["instruct"] = instruct
+                    # Qwen3-TTS Base = zero-shot voice cloning: forward the
+                    # reference clip (+ its transcript) when given. Base
+                    # ignores ``voice`` while a ref is set; CustomVoice ignores
+                    # ``ref_audio`` and keeps its named speaker — so forwarding
+                    # only-when-set lets one family serve both variants.
+                    if ref_audio:
+                        gen_kwargs["ref_audio"] = ref_audio
+                        if ref_text:
+                            gen_kwargs["ref_text"] = ref_text
                 else:
                     gen_kwargs["lang_code"] = lang_code
 
