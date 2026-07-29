@@ -380,6 +380,18 @@ audio = [
     # Additional multilingual dependencies
     "cn2an>=0.5.0",          # Chinese number conversion
 ]
+# Video lane (VideoEngine) — MLX-native LTX-2.3 backend for text→video and
+# image→video with native synchronized audio (POC, PR #1300 route contract).
+# OPTIONAL and deliberately OUT of the base install: ``ltx-2-mlx`` is a
+# pure-MLX package (no torch) but pulls heavy diffusion pipelines + Metal
+# kernels and multi-GB weights. ``VideoEngine`` shells out to its
+# ``ltx-2-mlx`` console-script, so this extra just needs the package on PATH;
+# the q4 distilled variant runs t2v + i2v on a 32 GB Mac mini. Install with
+# ``pip install '.[video]'``. If it is absent, ``VideoEngine.generate`` raises
+# a clear install-hint error rather than failing at import time.
+video = [
+    "ltx-2-mlx>=0.1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/raullenchai/Rapid-MLX"
