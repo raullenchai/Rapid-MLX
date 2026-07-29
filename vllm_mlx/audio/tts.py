@@ -300,6 +300,7 @@ class TTSEngine:
         instruct: str | None = None,
         ref_audio: str | None = None,
         ref_text: str | None = None,
+        exaggeration: float | None = None,
     ) -> AudioOutput:
         """
         Generate speech from text.
@@ -319,9 +320,15 @@ class TTSEngine:
                 so passing it is a no-op there rather than an error.
             ref_audio: Optional path to a reference audio clip for zero-shot
                 voice cloning. Used by the F5-TTS ``f5`` family to clone the
-                clip's timbre; ignored by families without a cloning surface.
+                clip's timbre, and optionally by the Chatterbox family (clones
+                the ref timbre on top of its default voice); ignored by
+                families without a cloning surface.
             ref_text: Optional transcript of ``ref_audio`` (its exact spoken
                 text). Paired with ``ref_audio`` for F5-TTS cloning.
+            exaggeration: Chatterbox emotion/intensity knob (0.0 neutral →
+                ~1.0 very expressive). Only the Chatterbox family honours it;
+                it drives that engine's ``exaggeration`` argument and is the
+                lever that de-flattens the delivery. Other families ignore it.
 
         Returns:
             AudioOutput with audio data and metadata
@@ -344,13 +351,27 @@ class TTSEngine:
             # forwarding Kokoro's single-letter ``lang_code="a"`` to it
             # would mis-hint the language. Every other family keeps the
             # pre-existing call shape unchanged.
-            gen_kwargs: dict = {"text": text, "voice": voice, "speed": speed}
-            if self._model_family == "qwen3_tts":
-                gen_kwargs["lang_code"] = "auto"
-                if instruct:
-                    gen_kwargs["instruct"] = instruct
+            if self._model_family == "chatterbox":
+                # Chatterbox's generate takes ``(text, exaggeration,
+                # ref_audio, ...)`` and has NO ``voice``/``speed``/
+                # ``lang_code`` surface (the turbo variant would just drop
+                # them into **kwargs). Its expressiveness comes from
+                # ``exaggeration`` and its cloning from ``ref_audio`` —
+                # forward exactly those, only when set, so the model's own
+                # defaults hold otherwise.
+                gen_kwargs: dict = {"text": text}
+                if exaggeration is not None:
+                    gen_kwargs["exaggeration"] = exaggeration
+                if ref_audio:
+                    gen_kwargs["ref_audio"] = ref_audio
             else:
-                gen_kwargs["lang_code"] = lang_code
+                gen_kwargs = {"text": text, "voice": voice, "speed": speed}
+                if self._model_family == "qwen3_tts":
+                    gen_kwargs["lang_code"] = "auto"
+                    if instruct:
+                        gen_kwargs["instruct"] = instruct
+                else:
+                    gen_kwargs["lang_code"] = lang_code
 
             for result in self.model.generate(**gen_kwargs):
                 audio_data = result.audio
