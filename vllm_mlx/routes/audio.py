@@ -1596,6 +1596,15 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the ``kokoro`` short alias — both go through the same model
         # family check.
         valid_voices = _allowed_voices_for(model_name)
+        # Qwen3-TTS matches speaker names case-INsensitively (its engine
+        # lowercases before the ``spk_id`` lookup) and the upstream docs mix
+        # case ("serena" vs "Serena"). Normalize a case-insensitive hit to
+        # the canonical spelling so ``serena`` / ``ono_anna`` aren't
+        # rejected as ``invalid_voice``; the engine then receives the
+        # canonical form. Other families keep exact-match validation.
+        if "qwen3-tts" in model_name.lower() or "qwen3_tts" in model_name.lower():
+            _canonical = {v.lower(): v for v in valid_voices}
+            voice = _canonical.get(voice.lower(), voice)
         if voice not in valid_voices:
             preview = ", ".join(valid_voices[:8])
             if len(valid_voices) > 8:

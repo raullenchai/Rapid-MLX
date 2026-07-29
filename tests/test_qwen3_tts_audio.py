@@ -315,6 +315,29 @@ class TestQwen3TTSRoute:
         (call,) = engine.generate_calls
         assert call["voice"] == speaker
 
+    @pytest.mark.parametrize(
+        "sent,canonical",
+        [
+            ("serena", "Serena"),
+            ("SERENA", "Serena"),
+            ("ono_anna", "Ono_Anna"),
+            ("sohee", "Sohee"),
+        ],
+    )
+    def test_speaker_case_insensitive_normalized(self, monkeypatch, sent, canonical):
+        """Qwen3's engine matches speakers case-insensitively and the docs
+        mix case; the route must accept any case and hand the engine the
+        canonical spelling rather than 400."""
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": "qwen3-tts", "input": "测试。", "voice": sent},
+        )
+        assert resp.status_code == 200, resp.text
+        (engine,) = _RecordingEngine.instances
+        (call,) = engine.generate_calls
+        assert call["voice"] == canonical
+
     def test_unknown_voice_rejected_with_speaker_list(self, monkeypatch):
         client = _mount(monkeypatch)
         resp = client.post(
