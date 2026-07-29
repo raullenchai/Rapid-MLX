@@ -97,6 +97,35 @@
     "notes": "Dia 1.6B multi-speaker dialogue TTS (4-bit). Best-effort — covered by the audio probe but mlx_audio support is experimental; report bugs upstream if synth fails."
   },
 
+  "qwen3-tts": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
+    "family": "qwen3_tts",
+    "default_voice": "Serena",
+    "notes": "Alibaba Qwen3-TTS 1.7B CustomVoice (bf16). Multilingual predefined speakers (Chinese: Vivian, Serena, Uncle_Fu, Dylan, Eric; English: Ryan, Aiden) with emotion/style control via the OpenAI `instructions` field. The CustomVoice variant is used (not 0.6B-Base, which is voice-cloning-only and needs a reference clip)."
+  },
+  "qwen3-tts-customvoice": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16",
+    "family": "qwen3_tts",
+    "default_voice": "Serena",
+    "notes": "Long-form alias for ``qwen3-tts`` — same HF id (1.7B CustomVoice bf16)."
+  },
+  "qwen3-tts-6bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
+    "family": "qwen3_tts",
+    "default_voice": "Serena",
+    "notes": "6-bit quant of Qwen3-TTS 1.7B CustomVoice — smaller download, mild quality drop."
+  },
+  "qwen3-tts-4bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit",
+    "family": "qwen3_tts",
+    "default_voice": "Serena",
+    "notes": "4-bit quant of Qwen3-TTS 1.7B CustomVoice — smallest download."
+  },
+
   "whisper": {
     "type": "stt",
     "hf_id": "mlx-community/whisper-large-v3-mlx",

@@ -1447,6 +1447,7 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     from ..audio.tts import (
         CHATTERBOX_VOICES,
         KOKORO_VOICES,
+        QWEN3_TTS_VOICES,
         _list_snapshot_voices,
     )
 
@@ -1464,6 +1465,13 @@ def _allowed_voices_for(model_name: str) -> list[str]:
         return list(KOKORO_VOICES)
     if "chatterbox" in name_lower:
         return list(CHATTERBOX_VOICES)
+    if "qwen3-tts" in name_lower or "qwen3_tts" in name_lower:
+        # Qwen3-TTS CustomVoice ships baked-in named speakers and no
+        # ``voices/`` snapshot dir, so the enumeration above always
+        # returns ``[]`` and we serve the documented speaker set. The
+        # registry ``default_voice`` (``Serena``) is a member of this
+        # list so the cold-start / voice-omitted path validates.
+        return list(QWEN3_TTS_VOICES)
     if "vibevoice" in name_lower:
         # Cold-start fallback for VibeVoice — the canonical English
         # default is ``en-Grace_woman`` (per the upstream repo's
@@ -1539,6 +1547,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     voice = request.voice
     speed = request.speed
     response_format = request.response_format
+    instructions = request.instructions
 
     try:
         from ..audio.tts import TTSEngine, UnsupportedAudioFormatError
@@ -1620,7 +1629,15 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             _tts_engine = TTSEngine(model_name)
             _tts_engine.load()
 
-        audio = _tts_engine.generate(input_text, voice=voice, speed=speed)
+        # Only forward ``instruct`` when the caller actually sent an
+        # ``instructions`` field. Passing ``instruct=None`` is a no-op for
+        # the real engine, but omitting the kwarg entirely keeps the call
+        # shape backward-compatible with any generate() that predates the
+        # emotion parameter (only Qwen3-TTS consumes it).
+        gen_kwargs = {"voice": voice, "speed": speed}
+        if instructions:
+            gen_kwargs["instruct"] = instructions
+        audio = _tts_engine.generate(input_text, **gen_kwargs)
         try:
             audio_bytes = _tts_engine.to_bytes(audio, format=response_format)
         except UnsupportedAudioFormatError as e:

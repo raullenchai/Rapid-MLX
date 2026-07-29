@@ -39,6 +39,23 @@ KOKORO_VOICES = [
 
 CHATTERBOX_VOICES = ["default"]  # Uses reference audio for voice
 
+# Qwen3-TTS CustomVoice predefined speakers. The CustomVoice repos ship
+# NO ``voices/`` snapshot dir (voices are baked-in named speakers, not
+# per-voice safetensors), so ``_list_snapshot_voices`` returns ``[]`` and
+# the route's ``_allowed_voices_for`` / ``get_voices`` fall back to this
+# static list. Names are the canonical capitalized speaker ids documented
+# in the upstream ``mlx_audio.tts.models.qwen3_tts`` README — Chinese
+# speakers first (the primary short-drama-dubbing use case), then English.
+QWEN3_TTS_VOICES = [
+    "Vivian",
+    "Serena",
+    "Uncle_Fu",
+    "Dylan",  # Beijing dialect
+    "Eric",  # Sichuan dialect
+    "Ryan",
+    "Aiden",
+]
+
 
 def _list_snapshot_voices(model_name: str) -> list[str]:
     """Return the safetensors voice files cached for ``model_name``.
@@ -226,6 +243,8 @@ class TTSEngine:
             return "csm"
         elif "cosyvoice" in name_lower:
             return "cosyvoice"
+        elif "qwen3-tts" in name_lower or "qwen3_tts" in name_lower:
+            return "qwen3_tts"
         else:
             return "kokoro"  # Default
 
@@ -254,6 +273,7 @@ class TTSEngine:
         voice: str = "af_heart",
         speed: float = 1.0,
         lang_code: str = "a",
+        instruct: str | None = None,
     ) -> AudioOutput:
         """
         Generate speech from text.
@@ -263,6 +283,14 @@ class TTSEngine:
             voice: Voice ID (model-specific)
             speed: Speech speed (0.5 to 2.0)
             lang_code: Language code (a=English, e=Spanish, f=French, etc.)
+                Kokoro-style single-letter code. Ignored by families that
+                auto-detect language (Qwen3-TTS).
+            instruct: Optional emotion/style instruction (e.g. "Very happy
+                and excited."). Only Qwen3-TTS CustomVoice honours this —
+                it maps to that engine's ``instruct`` argument and drives
+                the emotional delivery of the predefined speaker. Other
+                families ignore it (they have no emotion-control surface),
+                so passing it is a no-op there rather than an error.
 
         Returns:
             AudioOutput with audio data and metadata
@@ -276,12 +304,21 @@ class TTSEngine:
             audio_chunks = []
             sample_rate = 24000  # Default for most models
 
-            for result in self.model.generate(
-                text=text,
-                voice=voice,
-                speed=speed,
-                lang_code=lang_code,
-            ):
+            # Family-aware generate kwargs. Qwen3-TTS auto-detects the
+            # language (``lang_code="auto"``) and accepts an ``instruct``
+            # emotion/style argument the Kokoro-style path doesn't have;
+            # forwarding Kokoro's single-letter ``lang_code="a"`` to it
+            # would mis-hint the language. Every other family keeps the
+            # pre-existing call shape unchanged.
+            gen_kwargs: dict = {"text": text, "voice": voice, "speed": speed}
+            if self._model_family == "qwen3_tts":
+                gen_kwargs["lang_code"] = "auto"
+                if instruct:
+                    gen_kwargs["instruct"] = instruct
+            else:
+                gen_kwargs["lang_code"] = lang_code
+
+            for result in self.model.generate(**gen_kwargs):
                 audio_data = result.audio
                 if hasattr(result, "sample_rate"):
                     sample_rate = result.sample_rate
@@ -510,6 +547,8 @@ class TTSEngine:
             return KOKORO_VOICES
         elif self._model_family == "chatterbox":
             return CHATTERBOX_VOICES
+        elif self._model_family == "qwen3_tts":
+            return list(QWEN3_TTS_VOICES)
         else:
             return ["default"]
 
