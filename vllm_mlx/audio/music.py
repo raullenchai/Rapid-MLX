@@ -144,6 +144,11 @@ class MusicEngine:
         # resolve to an absolute path against the caller's cwd up front.
         out_path = Path(out_path).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Clear any previous file at the target so the post-run existence check
+        # below cannot mistake a stale wav for a successful generation (the
+        # child could exit 0 without writing anything).
+        if out_path.is_symlink() or out_path.exists():
+            out_path.unlink()
         self._ensure_weights()
         # ``--flag=value`` form so a prompt that begins with "-" is never
         # mistaken for an option by the child's argparse.

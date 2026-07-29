@@ -169,6 +169,30 @@ def test_missing_output_is_reported(tmp_path, monkeypatch, no_weight_fetch):
         MusicEngine().generate("x", tmp_path / "g.wav")
 
 
+def test_stale_output_is_not_reported_as_success(
+    tmp_path, monkeypatch, no_weight_fetch
+):
+    """A previous wav at out_path must not mask a no-op generation."""
+    stale = tmp_path / "h.wav"
+    stale.write_bytes(b"OLD AUDIO")
+    monkeypatch.setattr(
+        music.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, b"", b""),
+    )
+    with pytest.raises(RuntimeError, match="produced no output"):
+        MusicEngine().generate("x", stale)
+    assert not stale.exists()
+
+
+def test_existing_output_is_overwritten(tmp_path, no_weight_fetch, fake_run):
+    """The happy path still replaces an existing file."""
+    out = tmp_path / "i.wav"
+    out.write_bytes(b"OLD AUDIO")
+    got = MusicEngine().generate("x", out)
+    assert got.read_bytes() == b"RIFF____WAVE"
+
+
 # ------------------------------------------------------------ weight resolution
 
 
@@ -250,10 +274,26 @@ def test_ensure_weights_replaces_dangling_symlink(tmp_path, monkeypatch):
     assert dangling.read_bytes() == b"real"
 
 
-def test_no_weights_committed_to_git():
-    """Guard: real tensors (or local-cache symlinks) must never land in git."""
-    mlx_dir = Path(music.__file__).parent / "sa3" / "models" / "mlx"
-    strays = list(mlx_dir.glob("*.npz")) if mlx_dir.exists() else []
-    # Downloaded weights are gitignored; this only fails if someone commits one.
-    for p in strays:
-        assert not p.is_symlink() or p.exists(), f"dangling committed pointer: {p}"
+def test_no_weights_tracked_by_git():
+    """Guard: no ``*.npz`` may be TRACKED under sa3/models/mlx.
+
+    Weights are multi-hundred-MB and are downloaded at runtime. Committing
+    either a real tensor or a symlink into someone's local HuggingFace cache
+    (the original state of this PR) must fail here. Asked of git rather than
+    the filesystem, so a developer's downloaded weights don't trip it.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    if not (repo_root / ".git").exists():
+        pytest.skip("not a git checkout")
+
+    proc = subprocess.run(
+        ["git", "ls-files", "--", "vllm_mlx/audio/sa3/models/mlx"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"git ls-files unavailable: {proc.stderr.strip()}")
+
+    tracked = [ln for ln in proc.stdout.split() if ln.endswith(".npz")]
+    assert tracked == [], f"weights must not be committed to git: {tracked}"
