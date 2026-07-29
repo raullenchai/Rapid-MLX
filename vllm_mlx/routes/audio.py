@@ -1799,7 +1799,9 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # ``"clone"`` sentinel or a stray named speaker would be meaningless
         # and, for a strict engine, could raise. Reference-free synthesis
         # keeps the resolved named speaker.
-        gen_kwargs = {"speed": speed} if inline_clone else {"voice": voice, "speed": speed}
+        gen_kwargs = (
+            {"speed": speed} if inline_clone else {"voice": voice, "speed": speed}
+        )
         if instructions:
             gen_kwargs["instruct"] = instructions
         if ref_audio is not None:
