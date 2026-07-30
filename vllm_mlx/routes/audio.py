@@ -2459,9 +2459,9 @@ def _generate_speech_blocking(
     from ..audio.tts import TTSEngine
 
     if _tts_engine is None or _tts_engine.model_name != model_name:
-        engine = TTSEngine(model_name)
-        engine.load()
-        _tts_engine = engine
+        tts_candidate = TTSEngine(model_name)
+        tts_candidate.load()
+        _tts_engine = tts_candidate
 
     kwargs = dict(gen_kwargs)
     if ref_bytes is not None:
@@ -2885,6 +2885,7 @@ MUSIC_MODEL_ALIASES: dict[str, tuple[str, str]] = {
 
 #: Defaults used when ``model`` is omitted or explicitly ``"default"``.
 DEFAULT_MUSIC_DIT_DECODER: tuple[str, str] = ("medium", "same-l")
+
 
 #: Serialises music generation. ``MusicEngine.generate`` shells out to the
 #: vendored SA3 CLI, which peaks at ~3.9 GB (``medium``) — two concurrent
