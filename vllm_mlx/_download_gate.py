@@ -478,11 +478,14 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
     LLMs never carry those manifests, so an incomplete text cache always falls
     through to :func:`is_repo_cached`.
 
-    Adapter / LoRA sidecars (``adapter*.safetensors``) aren't a model's
-    primary weights and don't count. Cache-hygiene: only a ``.safetensors``
-    whose realpath stays inside this repo's own cache dir counts (HF snapshots
-    symlink into ``<repo_root>/blobs/``); a symlink escaping to an unrelated
-    file must not suppress the notice.
+    Adapter / LoRA sidecars aren't a model's primary weights and don't count —
+    PEFT ``adapter*.safetensors`` and the diffusers LoRA convention
+    (``pytorch_lora_weights.safetensors`` / any ``*lora*`` name), so a
+    LoRA-only pack whose base components are still missing doesn't look
+    weighted. Cache-hygiene: only a ``.safetensors`` whose realpath stays
+    inside this repo's own cache dir counts (HF snapshots symlink into
+    ``<repo_root>/blobs/``); a symlink escaping to an unrelated file must not
+    suppress the notice.
 
     Scope note: this establishes weights are *present*, not that a non-text
     cache is *complete* (component-completeness would need each loader's
@@ -526,8 +529,16 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
             for fname in filenames:
                 if not fname.endswith(".safetensors"):
                     continue
-                # Adapter / LoRA sidecars aren't primary weights.
-                if fname.lower().startswith("adapter"):
+                # Adapter / LoRA sidecars aren't a model's primary weights, so
+                # a repo shipping ONLY those (a LoRA-only diffusers pack with
+                # its base components still missing) must not look weighted.
+                # Covers PEFT ``adapter*.safetensors`` and the diffusers LoRA
+                # convention ``pytorch_lora_weights.safetensors`` / any
+                # ``*_lora_*`` / ``*lora*`` name. Over-excluding fails SAFE
+                # (back to the cosmetic false alarm); under-excluding would
+                # wrongly suppress the notice.
+                _low = fname.lower()
+                if _low.startswith("adapter") or "lora" in _low:
                     continue
                 fpath = os.path.join(dirpath, fname)
                 # Only count a file whose real target lives inside this repo's

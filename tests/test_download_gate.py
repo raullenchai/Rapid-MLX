@@ -1311,6 +1311,33 @@ def test_is_weightless_stub_ignores_adapter_only_safetensors(tmp_path, monkeypat
     assert gate.is_weightless_stub("some/lora-adapter") is True
 
 
+def test_is_weightless_stub_true_for_manifest_plus_lora_only(tmp_path, monkeypatch):
+    """Regression guard (codex round-4 BLOCKING): a diffusers repo can carry a
+    positive manifest (``model_index.json``) yet have ONLY a LoRA sidecar
+    cached — ``pytorch_lora_weights.safetensors`` — with its base components
+    still missing. A LoRA file isn't a primary weight, so it must NOT suppress
+    the notice. The ``adapter``-prefix filter alone would miss the diffusers
+    LoRA name; the ``lora``-substring exclusion catches it."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--vendor--diffusers-lora-pack"
+    sha = "7777777777777777777777777777777777777777"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model_index.json").write_text('{"_class_name": "SomePipeline"}')
+    # Only the LoRA delta is cached — no base transformer/vae components.
+    (snap / "pytorch_lora_weights.safetensors").write_bytes(b"l" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert gate._snapshot_has_alt_layout_weights("vendor/diffusers-lora-pack") is False
+    assert gate.is_weightless_stub("vendor/diffusers-lora-pack") is True
+
+
 def test_is_weightless_stub_true_for_dangling_text_shard_with_aux_weight(
     tmp_path, monkeypatch
 ):
