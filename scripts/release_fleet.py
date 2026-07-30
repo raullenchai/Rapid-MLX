@@ -6,6 +6,20 @@ The manifest is the source of truth for release-time model-family coverage.
 Normal releases sweep one real representative for every routinely feasible
 family. Changes to the MLX toolchain expand the sweep to the Ultra-only Hy3
 family as well.
+
+A family may set ``"coherence": false`` (the flag defaults to ``true`` when
+absent) to opt out of the G0a coherence sweep in *every* scope while remaining a
+full member of the fleet for artifact-acceptance and integration coverage. This
+exists for reasoning-distill families (e.g. DeepSeek-R1-Distill): the coherence
+gate boots each model with ``--no-thinking`` and exact-matches a terse golden
+answer, but reasoning-distill models emit chain-of-thought in the visible channel
+and get cut off at ``max_tokens`` before producing the terse answer, false-failing
+a gate that is measuring format compliance rather than coherence. Such a family is
+skipped by ``models_for_scope`` and is not counted toward
+``REQUIRED_RELEASE_CLASSES`` (so it can never mask a missing coverage class), yet
+its ``artifact_matrix`` cell -- which is scope- and coherence-independent -- still
+runs. The flag is retired once the coherence gate is reasoning-aware (issue
+#1323).
 """
 
 from __future__ import annotations
@@ -39,6 +53,7 @@ class FleetFamily:
     coverage_class: str
     scopes: tuple[str, ...]
     artifact_matrix: dict[str, Any] | None
+    coherence_enabled: bool = True
 
 
 def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
@@ -60,6 +75,7 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
         coverage_class = raw.get("coverage_class")
         scopes = raw.get("scopes")
         artifact = raw.get("artifact_matrix")
+        coherence_enabled = raw.get("coherence", True)
         if (
             not isinstance(model, str)
             or not model
@@ -86,6 +102,8 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
             )
         if artifact is not None and not isinstance(artifact, dict):
             raise ValueError(f"{name}: artifact_matrix must be an object")
+        if not isinstance(coherence_enabled, bool):
+            raise ValueError(f"{name}: coherence must be a boolean")
         families.append(
             FleetFamily(
                 name=name,
@@ -93,10 +111,13 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
                 coverage_class=coverage_class,
                 scopes=tuple(scopes),
                 artifact_matrix=artifact,
+                coherence_enabled=coherence_enabled,
             )
         )
     release_classes = {
-        family.coverage_class for family in families if "release" in family.scopes
+        family.coverage_class
+        for family in families
+        if "release" in family.scopes and family.coherence_enabled
     }
     missing_classes = REQUIRED_RELEASE_CLASSES - release_classes
     if missing_classes:
@@ -110,7 +131,9 @@ def models_for_scope(scope: str, *, path: Path = DEFAULT_MANIFEST) -> tuple[str,
     if scope not in VALID_SCOPES:
         raise ValueError(f"unknown release fleet scope {scope!r}")
     return tuple(
-        family.coherence_model for family in load_fleet(path) if scope in family.scopes
+        family.coherence_model
+        for family in load_fleet(path)
+        if scope in family.scopes and family.coherence_enabled
     )
 
 

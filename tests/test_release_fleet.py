@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -31,7 +32,6 @@ def test_release_scope_covers_routinely_feasible_families(fleet):
         "qwen3.5-35b-4bit",
         "qwen3.6-27b-4bit",
         "gemma-4-12b-4bit",
-        "deepseek-r1-32b-4bit",
         "gpt-oss-20b-mxfp4-q8",
     )
 
@@ -42,13 +42,89 @@ def test_toolchain_scope_adds_ultra_only_family(fleet):
     assert toolchain_models == release_models | {"hy3-preview-4bit"}
 
 
+def test_reasoning_distill_excluded_from_coherence_all_scopes(fleet):
+    # DeepSeek-R1-Distill false-fails the exact-match --no-thinking coherence
+    # gate (it emits CoT in the visible channel and is cut off before the terse
+    # answer), so it opts out of the coherence sweep in EVERY scope via
+    # `"coherence": false`. It must appear in no coherence scope -- release or
+    # toolchain -- so it can never re-trip the gate. See issue #1323.
+    assert "deepseek-r1-32b-4bit" not in fleet.models_for_scope("release")
+    assert "deepseek-r1-32b-4bit" not in fleet.models_for_scope("toolchain")
+    deepseek = next(f for f in fleet.load_fleet() if f.name == "deepseek")
+    assert deepseek.coherence_enabled is False
+
+
+def test_coherence_excluded_family_still_provides_artifact_matrix(fleet):
+    # Opting out of the coherence sweep must NOT drop the family from the
+    # scope-independent artifact-acceptance matrix; DeepSeek stays a full
+    # release fleet member for artifact/integration coverage.
+    deepseek = next(f for f in fleet.load_fleet() if f.name == "deepseek")
+    assert deepseek.artifact_matrix is not None
+    assert deepseek.artifact_matrix.get("model") == "deepseek-r1-32b-4bit"
+
+
 def test_release_scope_covers_each_architecture_risk_class(fleet):
     release_classes = {
         family.coverage_class
         for family in fleet.load_fleet()
-        if "release" in family.scopes
+        if "release" in family.scopes and family.coherence_enabled
     }
     assert release_classes >= fleet.REQUIRED_RELEASE_CLASSES
+
+
+def test_coherence_flag_defaults_true_and_rejects_non_bool(fleet, tmp_path):
+    # Absent flag -> coherence-enabled; a non-bool value is rejected like the
+    # other manifest field validators.
+    base = {
+        "coherence_model": "m",
+        "coverage_class": "small_dense",
+        "scopes": ["release", "toolchain"],
+    }
+    ok = tmp_path / "ok.json"
+    ok.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "families": {
+                    "small_dense": base,
+                    "hybrid_moe": {
+                        **base,
+                        "coherence_model": "m2",
+                        "coverage_class": "hybrid_moe",
+                    },
+                    "large_dense": {
+                        **base,
+                        "coherence_model": "m3",
+                        "coverage_class": "large_dense",
+                    },
+                    "large_moe": {
+                        **base,
+                        "coherence_model": "m4",
+                        "coverage_class": "large_moe",
+                    },
+                    "multimodal": {
+                        **base,
+                        "coherence_model": "m5",
+                        "coverage_class": "multimodal",
+                    },
+                },
+            }
+        )
+    )
+    families = fleet.load_fleet(ok)
+    assert all(family.coherence_enabled for family in families)
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "families": {"small_dense": {**base, "coherence": "no"}},
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="coherence must be a boolean"):
+        fleet.load_fleet(bad)
 
 
 def test_toolchain_snapshot_detects_lock_only_version_bump(fleet):

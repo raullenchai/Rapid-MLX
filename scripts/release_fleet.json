@@ -35,6 +35,7 @@
       "coherence_model": "deepseek-r1-32b-4bit",
       "coverage_class": "large_dense",
       "scopes": ["release", "toolchain"],
+      "coherence": false,
       "artifact_matrix": {
         "model": "deepseek-r1-32b-4bit",
         "server_args": ["--no-thinking"],
