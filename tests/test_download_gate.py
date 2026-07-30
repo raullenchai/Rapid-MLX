@@ -1250,6 +1250,43 @@ def test_snapshot_split_model_rejects_path_traversal_component(tmp_path, monkeyp
         ), bad
 
 
+def test_snapshot_split_model_rejects_directory_named_component(tmp_path, monkeypatch):
+    """Codex round-5 MAJOR: ``os.path.getsize`` reports a positive size for a
+    directory, so a component that is a DIRECTORY named
+    ``vae.safetensors/`` (or a symlink to a directory inside the repo root)
+    would pass a size-only check even though the real weight never arrived.
+    The helper must require a regular file (``os.path.isfile``), so this stays
+    incomplete and the notice still fires."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--vendor--dir-component"
+    sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee0"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "split_model.json").write_text('{"components": ["transformer", "vae"]}')
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    # ``vae`` is a DIRECTORY, not a weight file — getsize() > 0 but not a file.
+    (snap / "vae.safetensors").mkdir()
+    (snap / "vae.safetensors" / "placeholder").write_bytes(b"x" * 16)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert gate._snapshot_is_complete_split_model("vendor/dir-component") is False
+    assert gate.is_weightless_stub("vendor/dir-component") is True
+
+    # A symlink-to-directory at the component path is the same failure mode.
+    (snap / "vae.safetensors" / "placeholder").unlink()
+    (snap / "vae.safetensors").rmdir()
+    real_dir = snap / "vae_real_dir"
+    real_dir.mkdir()
+    (snap / "vae.safetensors").symlink_to(real_dir)
+    assert gate._snapshot_is_complete_split_model("vendor/dir-component") is False
+
+
 def test_is_weightless_stub_true_for_interrupted_multimodal_aux_weight_first(
     tmp_path, monkeypatch
 ):

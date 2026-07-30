@@ -520,6 +520,14 @@ def _snapshot_is_complete_split_model(repo_id: str) -> bool:
             ):
                 return False
             fpath = os.path.join(snap_dir, f"{component}.safetensors")
+            # Must be a real regular file (following the blob symlink), not a
+            # directory named ``<component>.safetensors`` nor a dangling /
+            # directory symlink — ``os.path.getsize`` alone reports a positive
+            # size for a directory, so an empty ``vae.safetensors/`` dir would
+            # otherwise pass. ``isfile`` follows symlinks and is False for
+            # symlink→dir and dangling symlinks (codex round-5 MAJOR).
+            if not os.path.isfile(fpath):
+                return False
             # The file (via its blob symlink) must resolve inside this repo's
             # own cache dir — a symlink escaping elsewhere doesn't count.
             real = os.path.realpath(fpath)
