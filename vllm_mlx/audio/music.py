@@ -18,6 +18,7 @@ internals can change without touching callers.
 
 from __future__ import annotations
 
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -32,9 +33,10 @@ DEFAULT_DIT = "medium"
 DEFAULT_DECODER = "same-l"
 
 # HuggingFace repo holding the real (LFS) SA3 weights. The vendored
-# ``sa3/models/mlx/*.npz`` are only pointers/symlinks in git — the actual
-# tensors are fetched from here on first use. Repo layout puts every MLX file
-# under ``MLX/`` (mirrors the repo→local map in ``sa3/scripts/weights.py``).
+# ``sa3/models/mlx/`` dir ships no tensors — they are fetched from here on first
+# use into the writable HF cache and loaded from there (never written back into
+# the possibly read-only package dir). Repo layout puts every MLX file under
+# ``MLX/`` (mirrors the repo→local map in ``sa3/scripts/weights.py``).
 _SA3_REPO_ID = "stabilityai/stable-audio-3-optimized"
 
 # Selected-component → weight filename (basename shared by the local vendored
@@ -51,6 +53,11 @@ _DECODER_NPZ = {
 # T5Gemma text conditioner — shared by every dit/decoder combination.
 _SHARED_NPZ = ("t5gemma_f16.npz",)
 
+# Stable Audio 3 is trained/served for clips up to ~47 s (the DiT positional
+# grid and the schedule are sized for it); longer requests degrade or blow up
+# memory. Enforce a sane positive range before doing any work.
+_MAX_SECONDS = 47.0
+
 
 class MusicEngine:
     """Text-to-music / text-to-SFX via MLX-native Stable Audio 3.
@@ -65,15 +72,20 @@ class MusicEngine:
         self.dit = dit
         self.decoder = decoder
 
-    def _ensure_weights(self) -> None:
-        """Fetch the real SA3 weights for the selected dit/decoder if missing.
+    def _ensure_weights(self) -> dict[str, Path]:
+        """Resolve the SA3 weights for the selected dit/decoder, returning the
+        absolute path of each component file.
 
-        The vendored ``sa3/models/mlx/*.npz`` files are only pointers in git
-        (a fresh checkout has dangling symlinks, not tensors). Before the first
-        generation we download the DiT, decoder, and shared T5Gemma component
-        files from HuggingFace and materialize them at the vendored paths, so
-        ``MusicEngine().generate(...)`` works out of the box. Real files that
-        are already present are left untouched (no re-download).
+        Any component not already present as a real vendored file is fetched
+        from HuggingFace into the writable HF cache (``~/.cache/huggingface``)
+        and its cache path is returned. We deliberately do NOT copy/symlink the
+        download into the vendored ``sa3/models/mlx/`` directory: under a
+        pip/brew install that directory lives inside a read-only
+        ``site-packages`` tree, so writing there raises ``PermissionError`` and
+        first generation would crash. The SA3 runner loads the weights from the
+        returned cache paths (it re-resolves them via the same manifest, an
+        idempotent ``hf_hub_download`` cache hit), so nothing is ever written
+        into the package directory.
         """
         try:
             dit_npz = _DIT_NPZ[self.dit]
@@ -90,28 +102,32 @@ class MusicEngine:
             ) from e
 
         needed = (dit_npz, decoder_npz, *_SHARED_NPZ)
-        missing = [name for name in needed if not (_SA3_MLX_DIR / name).exists()]
-        if not missing:
-            return  # all real weights already on disk
 
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError as e:
-            raise RuntimeError(
-                "huggingface_hub is required to auto-download SA3 weights.\n"
-                "Run:  pip install huggingface_hub"
-            ) from e
+        resolved: dict[str, Path] = {}
+        to_fetch = []
+        for name in needed:
+            vendored = _SA3_MLX_DIR / name
+            # A real (materialized) vendored file — a dev checkout — is used as
+            # is. ``exists()`` follows symlinks, so a dangling committed pointer
+            # counts as absent and is fetched from the cache instead.
+            if vendored.exists():
+                resolved[name] = vendored
+            else:
+                to_fetch.append(name)
 
-        _SA3_MLX_DIR.mkdir(parents=True, exist_ok=True)
-        for name in missing:
-            # ``Path.exists()`` is False for a dangling symlink, so this branch
-            # also covers the committed pointers; replace them with a link to
-            # the canonical file in the HuggingFace cache.
-            cached = hf_hub_download(repo_id=_SA3_REPO_ID, filename=f"MLX/{name}")
-            local = _SA3_MLX_DIR / name
-            if local.is_symlink() or local.exists():
-                local.unlink()
-            local.symlink_to(cached)
+        if to_fetch:
+            try:
+                from huggingface_hub import hf_hub_download
+            except ImportError as e:
+                raise RuntimeError(
+                    "huggingface_hub is required to auto-download SA3 weights.\n"
+                    "Run:  pip install huggingface_hub"
+                ) from e
+            for name in to_fetch:
+                cached = hf_hub_download(repo_id=_SA3_REPO_ID, filename=f"MLX/{name}")
+                resolved[name] = Path(cached)
+
+        return resolved
 
     def generate(
         self,
@@ -136,7 +152,24 @@ class MusicEngine:
             timeout: Seconds to wait for the generation subprocess.
         Returns:
             The output Path (always absolute).
+
+        Raises:
+            ValueError: if ``seconds`` is non-finite, <= 0, or > ~47 (the SA3
+                supported maximum).
         """
+        # Validate duration up front — before deleting the destination or
+        # launching the subprocess. ``float(... )`` also rejects non-numeric
+        # input; NaN/inf slip past a plain range check, so test finiteness
+        # explicitly (Pydantic's ``ge=/le=`` has the same NaN gap).
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"seconds must be a number, got {seconds!r}") from e
+        if not math.isfinite(seconds) or seconds <= 0 or seconds > _MAX_SECONDS:
+            raise ValueError(
+                f"seconds must be in (0, {_MAX_SECONDS:g}] "
+                f"(Stable Audio 3's supported range); got {seconds!r}"
+            )
         # ``sa3_mlx.py`` re-roots any RELATIVE ``--out`` under its own vendored
         # ``sa3/output/`` directory, which for an installed wheel is inside
         # site-packages. That both hides the wav from the caller and makes the

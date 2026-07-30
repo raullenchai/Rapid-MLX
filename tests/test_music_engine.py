@@ -217,11 +217,12 @@ def test_every_preset_maps_to_a_weight_file():
     assert music.DEFAULT_DECODER in music._DECODER_NPZ
 
 
-def test_ensure_weights_downloads_only_missing(tmp_path, monkeypatch):
-    """DiT + decoder + shared T5Gemma are fetched; present files are skipped."""
+def test_ensure_weights_fetches_missing_and_returns_cache_paths(tmp_path, monkeypatch):
+    """DiT + decoder are fetched to the HF cache; a real vendored file is used
+    as-is; the returned map points at the cache paths, never the package dir."""
     mlx_dir = tmp_path / "mlx"
     mlx_dir.mkdir()
-    # t5gemma already on disk -> must NOT be re-downloaded
+    # t5gemma already present as a real vendored file -> must NOT be re-downloaded
     (mlx_dir / "t5gemma_f16.npz").write_bytes(b"cached")
     monkeypatch.setattr(music, "_SA3_MLX_DIR", mlx_dir)
 
@@ -229,7 +230,7 @@ def test_ensure_weights_downloads_only_missing(tmp_path, monkeypatch):
 
     def _dl(repo_id, filename):
         requested.append((repo_id, filename))
-        src = tmp_path / "hf" / filename
+        src = tmp_path / "hf" / filename  # stand-in for the HF cache
         src.parent.mkdir(parents=True, exist_ok=True)
         src.write_bytes(b"tensors")
         return str(src)
@@ -240,23 +241,37 @@ def test_ensure_weights_downloads_only_missing(tmp_path, monkeypatch):
         types.SimpleNamespace(hf_hub_download=_dl),
     )
 
-    MusicEngine(dit="sm-music", decoder="same-s")._ensure_weights()
+    resolved = MusicEngine(dit="sm-music", decoder="same-s")._ensure_weights()
 
+    # Only the two absent files hit the network; the present t5gemma is skipped.
     assert requested == [
         ("stabilityai/stable-audio-3-optimized", "MLX/dit_sm-music_f16.npz"),
         ("stabilityai/stable-audio-3-optimized", "MLX/same_s_decoder_f32.npz"),
     ]
-    assert (mlx_dir / "dit_sm-music_f16.npz").exists()
-    assert (mlx_dir / "t5gemma_f16.npz").read_bytes() == b"cached"
+    # Downloaded files resolve to the HF cache, NOT the (possibly read-only)
+    # vendored package dir.
+    assert (
+        resolved["dit_sm-music_f16.npz"]
+        == tmp_path / "hf" / "MLX" / "dit_sm-music_f16.npz"
+    )
+    assert (
+        resolved["same_s_decoder_f32.npz"]
+        == tmp_path / "hf" / "MLX" / "same_s_decoder_f32.npz"
+    )
+    # The already-vendored real file is used in place.
+    assert resolved["t5gemma_f16.npz"] == mlx_dir / "t5gemma_f16.npz"
+    # Nothing was written into the package dir for the fetched components.
+    assert not (mlx_dir / "dit_sm-music_f16.npz").exists()
+    assert not (mlx_dir / "same_s_decoder_f32.npz").exists()
+    assert sorted(p.name for p in mlx_dir.iterdir()) == ["t5gemma_f16.npz"]
 
 
-def test_ensure_weights_replaces_dangling_symlink(tmp_path, monkeypatch):
-    """A dangling pointer must be replaced, not treated as present."""
+def test_ensure_weights_does_not_write_into_readonly_package_dir(tmp_path, monkeypatch):
+    """Regression for the read-only-prod crash: when the vendored package dir
+    is read-only (as under a pip/site-packages install), resolving weights must
+    still succeed by loading from the HF cache rather than symlinking in."""
     mlx_dir = tmp_path / "mlx"
     mlx_dir.mkdir()
-    dangling = mlx_dir / "t5gemma_f16.npz"
-    dangling.symlink_to(tmp_path / "nope" / "gone.npz")
-    assert dangling.is_symlink() and not dangling.exists()
     monkeypatch.setattr(music, "_SA3_MLX_DIR", mlx_dir)
 
     def _dl(repo_id, filename):
@@ -269,9 +284,65 @@ def test_ensure_weights_replaces_dangling_symlink(tmp_path, monkeypatch):
         sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=_dl)
     )
 
-    MusicEngine()._ensure_weights()
-    assert dangling.exists()
-    assert dangling.read_bytes() == b"real"
+    # Make the package dir read-only — any attempt to symlink/copy a weight
+    # into it would raise PermissionError.
+    mlx_dir.chmod(0o500)
+    try:
+        resolved = MusicEngine()._ensure_weights()  # medium / same-l
+    finally:
+        mlx_dir.chmod(0o700)  # restore so tmp cleanup can remove it
+
+    # All three components resolved to the writable cache, none into the dir.
+    assert set(resolved) == {
+        "dit_medium_f16.npz",
+        "same_l_decoder_f32.npz",
+        "t5gemma_f16.npz",
+    }
+    for name, path in resolved.items():
+        assert path == tmp_path / "hf" / "MLX" / name
+    assert list(mlx_dir.iterdir()) == []  # package dir untouched
+
+
+# --------------------------------------------------------------- seconds guard
+
+
+@pytest.mark.parametrize("bad", [0, 0.0, -1, -12.5])
+def test_generate_rejects_nonpositive_seconds(tmp_path, bad):
+    """seconds <= 0 must fail fast (empty/degenerate output otherwise)."""
+    with pytest.raises(ValueError, match="seconds must be in"):
+        MusicEngine().generate("x", tmp_path / "a.wav", seconds=bad)
+
+
+@pytest.mark.parametrize("bad", [47.01, 60, 1000])
+def test_generate_rejects_too_long_seconds(tmp_path, bad):
+    """seconds beyond SA3's ~47s support must be rejected (memory blowup)."""
+    with pytest.raises(ValueError, match="seconds must be in"):
+        MusicEngine().generate("x", tmp_path / "a.wav", seconds=bad)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_generate_rejects_nonfinite_seconds(tmp_path, bad):
+    """NaN/inf slip past a plain range check — must be rejected explicitly."""
+    with pytest.raises(ValueError, match="seconds must be in"):
+        MusicEngine().generate("x", tmp_path / "a.wav", seconds=bad)
+
+
+def test_generate_rejects_seconds_before_touching_output(tmp_path):
+    """Validation happens before the destination is deleted — a bad seconds
+    value must not destroy a pre-existing file."""
+    out = tmp_path / "keep.wav"
+    out.write_bytes(b"PRIOR")
+    with pytest.raises(ValueError, match="seconds must be in"):
+        MusicEngine().generate("x", out, seconds=0)
+    assert out.read_bytes() == b"PRIOR"
+
+
+def test_generate_accepts_boundary_seconds(tmp_path, no_weight_fetch, fake_run):
+    """The 47s upper bound and small positive values are accepted."""
+    MusicEngine().generate("x", tmp_path / "a.wav", seconds=47.0)
+    assert _argv_to_map(fake_run[0][0])["--seconds"] == "47.00"
+    MusicEngine().generate("x", tmp_path / "b.wav", seconds=0.5)
+    assert _argv_to_map(fake_run[1][0])["--seconds"] == "0.50"
 
 
 def test_no_weights_tracked_by_git():

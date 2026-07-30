@@ -55,12 +55,18 @@ loads pre-converted MLX `.npz` weights fetched from HuggingFace).
 ## Weights are not in git
 
 `models/mlx/*.npz` are **not** committed as tensors.
-`MusicEngine._ensure_weights()` fetches them from
+`MusicEngine._ensure_weights()` (and the runner's `weights.ensure_local()`)
+fetch them from
 [`stabilityai/stable-audio-3-optimized`](https://huggingface.co/stabilityai/stable-audio-3-optimized)
 (Stability AI Community License; free commercial use under $1M revenue) on first
-use and links them into `models/mlx/`. Nothing under `models/mlx/` ships in the
-wheel — the weight download is the user's own runtime retrieval, not
-redistribution by rapid-mlx.
+use **into the writable HuggingFace cache** (`~/.cache/huggingface`) and load
+them straight from there. They are deliberately **not** copied/symlinked into
+this vendored `models/mlx/` directory, which is read-only under a pip/brew
+`site-packages` install (writing there would `PermissionError` on first
+generation). A real file already vendored at `models/mlx/<name>` (a dev
+checkout) is still used in place. Nothing under `models/mlx/` ships in the wheel
+— the weight download is the user's own runtime retrieval, not redistribution by
+rapid-mlx.
 
 ## Ruff policy
 

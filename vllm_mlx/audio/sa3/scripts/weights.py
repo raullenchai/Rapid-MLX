@@ -132,12 +132,24 @@ def _show_hf_login_tip_once() -> None:
 def ensure_local(local_rel_path: str, verbose: bool = True) -> Path:
     """Resolve a weight file to an absolute local path, downloading if missing.
 
-    Files are streamed into the HuggingFace cache (~/.cache/huggingface/hub/)
-    and symlinked into the project at `local_rel_path` so the on-disk layout
-    looks the same whether the file was bundled or downloaded.
+    Resolution order:
+      1. A real (materialized) file already vendored at ``local_rel_path`` — a
+         dev checkout that ran the old bundle flow. Used as-is.
+      2. Otherwise the file is streamed into the writable HuggingFace cache
+         (``~/.cache/huggingface/hub/``) and that cache path is returned
+         DIRECTLY.
+
+    The runtime loads weights straight from the returned path. We deliberately
+    do NOT symlink/copy the download into the vendored package directory: when
+    rapid-mlx is pip/brew-installed that directory lives under a read-only
+    ``site-packages`` tree, so writing there raises ``PermissionError`` and
+    generation would crash on first use. Keeping the download in the HF cache
+    keeps first-run generation working regardless of install layout.
     """
     target = SCRIPT_DIR / local_rel_path
-    if target.exists() or target.is_symlink():
+    # ``exists()`` follows symlinks, so a dangling committed pointer is treated
+    # as absent and falls through to the (idempotent) download below.
+    if target.exists():
         return target
 
     if local_rel_path not in FLAT_MANIFEST:
@@ -162,14 +174,10 @@ def ensure_local(local_rel_path: str, verbose: bool = True) -> Path:
             "Or run the install.py script in this directory."
         ) from e
 
+    # Lands in the writable HF cache; load straight from there (no write into
+    # the possibly read-only vendored package dir).
     cached = hf_hub_download(repo_id=REPO_ID, filename=hf_filename)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Symlink keeps the HF cache canonical (one copy on disk) while exposing
-    # the file at the project-relative path the runtime expects.
-    if target.is_symlink():
-        target.unlink()
-    target.symlink_to(cached)
-    return target
+    return Path(cached)
 
 
 def is_present(local_rel_path: str) -> bool:
