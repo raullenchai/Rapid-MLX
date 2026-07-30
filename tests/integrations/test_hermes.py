@@ -498,7 +498,7 @@ def test_hermes_read_file():
         with open(path, "w") as f:
             f.write(f"{marker}\n")
         out, err = hermes_query(
-            f"Use the read_file tool to read {os.path.basename(path)}, "
+            f"Use the read_file tool to read {path}, "
             "then reply with its exact contents."
         )
         fail_or_skip(err)
