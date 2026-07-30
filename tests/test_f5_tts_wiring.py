@@ -162,7 +162,13 @@ def _install_fake_soundfile(
                 raise AssertionError("SoundFile.read() should not be reached")
             return np.array(data)
 
-    monkeypatch.setattr("soundfile.SoundFile", _FakeSoundFile)
+    # ``soundfile`` belongs to the optional audio extra and is intentionally
+    # absent from the core test environment. Install the fake module at the
+    # import boundary instead of asking monkeypatch to import the real package
+    # before replacing one attribute.
+    fake_soundfile = ModuleType("soundfile")
+    fake_soundfile.SoundFile = _FakeSoundFile
+    monkeypatch.setitem(sys.modules, "soundfile", fake_soundfile)
     return opened
 
 
