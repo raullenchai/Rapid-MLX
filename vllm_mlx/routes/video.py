@@ -115,19 +115,61 @@ class VideoBodyLimitMiddleware:
                 return await response(scope, receive, send)
 
         total = 0
+        limit_tripped = False
+        replacement_sent = False
+        downstream_started = False
+        downstream_completed = False
 
         async def bounded_receive():
-            nonlocal total
+            nonlocal total, limit_tripped
             message = await receive()
             if message.get("type") == "http.request":
-                total += len(message.get("body", b"") or b"")
+                chunk = message.get("body", b"") or b""
+                total += len(chunk)
                 if total > _VIDEO_REQUEST_BYTES:
+                    limit_tripped = True
                     raise _VideoBodyTooLargeError
             return message
 
+        async def guarded_send(message):
+            nonlocal replacement_sent, downstream_started, downstream_completed
+            if limit_tripped:
+                # Starlette's ServerErrorMiddleware catches the receive
+                # sentinel and attempts to emit a 500 before re-raising it.
+                # Replace that response at the same ASGI boundary, and swallow
+                # its remaining frames, so the client sees exactly one 413.
+                if not downstream_started and not replacement_sent:
+                    response = JSONResponse(
+                        status_code=413,
+                        content={"detail": "video request body exceeds 21 MB"},
+                    )
+                    await response(scope, receive, send)
+                    replacement_sent = True
+                return
+
+            message_type = message.get("type")
+            if message_type == "http.response.start":
+                downstream_started = True
+            elif message_type == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                downstream_completed = True
+            await send(message)
+
         try:
-            await self.app(scope, bounded_receive, send)
+            await self.app(scope, bounded_receive, guarded_send)
         except _VideoBodyTooLargeError:
+            if replacement_sent or downstream_completed:
+                return
+            if downstream_started:
+                # The video route parses its multipart body before entering the
+                # handler, so this should be unreachable. If a future handler
+                # starts a response first, it is too late to change the status;
+                # terminate the stream instead of emitting a second response.
+                await send(
+                    {"type": "http.response.body", "body": b"", "more_body": False}
+                )
+                return
             response = JSONResponse(
                 status_code=413,
                 content={"detail": "video request body exceeds 21 MB"},

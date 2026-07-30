@@ -12,6 +12,10 @@ from types import ModuleType, SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from PIL import Image
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from vllm_mlx.model_aliases import resolve_profile
 from vllm_mlx.routes import video
@@ -185,6 +189,65 @@ async def test_video_multipart_gate_caps_chunked_body(
         cfg.api_key = saved_key
 
     assert sent[0]["status"] == 413
+
+
+@pytest.mark.asyncio
+async def test_video_multipart_gate_emits_one_413_through_starlette(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The streaming cap must reject outside Starlette's 500 handler."""
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    saved_key = cfg.api_key
+    cfg.api_key = None
+    monkeypatch.setattr(video, "_VIDEO_REQUEST_BYTES", 4)
+
+    async def endpoint(request: Request) -> JSONResponse:
+        await request.body()
+        return JSONResponse({"ok": True})
+
+    app = video.VideoBodyLimitMiddleware(
+        Starlette(routes=[Route("/v1/videos", endpoint, methods=["POST"])])
+    )
+    chunks = iter(
+        [
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"def", "more_body": False},
+        ]
+    )
+    sent = []
+
+    async def receive():
+        return next(chunks)
+
+    async def send(message) -> None:
+        sent.append(message)
+
+    try:
+        await app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "http",
+                "path": "/v1/videos",
+                "raw_path": b"/v1/videos",
+                "query_string": b"",
+                "root_path": "",
+                "headers": [],
+                "client": ("test", 1),
+                "server": ("test", 80),
+            },
+            receive,
+            send,
+        )
+    finally:
+        cfg.api_key = saved_key
+
+    starts = [message for message in sent if message["type"] == "http.response.start"]
+    assert [message["status"] for message in starts] == [413]
 
 
 def test_serve_dispatches_video_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
