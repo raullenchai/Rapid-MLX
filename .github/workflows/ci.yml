@@ -187,6 +187,7 @@ jobs:
             tests/test_no_mllm_flag.py \
             tests/test_audio_music_route.py \
             tests/test_audio_route_registration_gate.py \
+            tests/test_forced_alignment_route_hardening.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

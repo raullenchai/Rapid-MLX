@@ -10,7 +10,9 @@ import math
 import os
 import re
 import tempfile
+import threading
 import wave
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import PlainTextResponse, Response
@@ -237,6 +239,12 @@ def _is_valid_repo_component(comp: str) -> bool:
 #: ``"default"`` to the boot-time CLI model — STT has no boot-time
 #: model bound, so the route default is the closest equivalent.
 DEFAULT_STT_ALIAS = "whisper-large-v3"
+
+#: Registry alias used when a forced-alignment request (``text`` present)
+#: omits ``model``. The ASR default (:data:`DEFAULT_STT_ALIAS`) is NOT an
+#: aligner, so defaulting the alignment branch to it would fail deep
+#: inside ``STTEngine.align`` rather than doing what the caller asked.
+DEFAULT_ALIGNER_ALIAS = "qwen3-aligner"
 
 
 def _resolve_stt_model(model: str) -> str:
@@ -1218,7 +1226,6 @@ async def _run_stt_request(
     language: str | None,
     response_format: str,
     task: str,
-    text: str | None = None,
     timestamp_granularities: list[str] | None = None,
 ):
     """Shared STT pipeline used by both ``/v1/audio/transcriptions`` and
@@ -1254,27 +1261,16 @@ async def _run_stt_request(
     # "model_not_found_error" and never trigger a model load (F-165).
     model_name = _resolve_stt_model(model)
 
-    # Forced-alignment routing (Qwen3-ForcedAligner). The transcriptions
-    # route doubles as the alignment surface: when the caller supplies
-    # the KNOWN transcript via the ``text`` field, we call
-    # ``STTEngine.align`` instead of ``transcribe`` and return per-unit
-    # timings in the same segment shape the verbose_json/srt/vtt
-    # serializers already consume. Reject the two incoherent
-    # combinations up front (BEFORE draining the upload) with a clean
-    # 400 so the caller gets an actionable message instead of the
-    # engine's ValueError collapsing into a generic 500:
-    #   * aligner model selected but no ``text`` — there is nothing to
-    #     align to (the aligner does not recognize speech);
-    #   * ``text`` supplied to a non-aligner model — a Whisper/Parakeet
-    #     engine cannot force-align, so silently ignoring ``text`` would
-    #     mislead the caller into thinking alignment ran.
-    is_aligner = _is_aligner_model(model_name)
-    # Strip only to decide whether meaningful text was supplied — the
-    # ORIGINAL (unstripped) ``text`` is what we align, so a transcript
-    # whose authoritative form includes leading/trailing whitespace is
-    # aligned verbatim rather than silently mutated.
-    has_align_text = isinstance(text, str) and bool(text.strip())
-    if is_aligner and not has_align_text:
+    # Forced-alignment routing (Qwen3-ForcedAligner). Requests that carry
+    # a ``text`` field never reach this helper — ``create_transcription``
+    # dispatches them to :func:`_run_alignment_request` instead. What is
+    # left here is the incoherent combination that lands on the ASR path:
+    # an aligner model with nothing to align to. Reject it BEFORE draining
+    # the upload with a clean 400 so the caller gets an actionable message
+    # instead of the engine's own ValueError collapsing into a generic 500
+    # (``STTEngine.transcribe`` refuses aligner models — it cannot
+    # recognize speech).
+    if _is_aligner_model(model_name):
         raise HTTPException(
             status_code=400,
             detail={
@@ -1292,24 +1288,6 @@ async def _run_stt_request(
                 }
             },
         )
-    if has_align_text and not is_aligner:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": {
-                    "message": (
-                        f"the `text` field triggers forced alignment, which "
-                        f"requires a forced-aligner model; `{model}` is not "
-                        "one. Pass `model=qwen3-aligner` (or another aligner "
-                        "alias) to align `text` to the audio, or omit `text` "
-                        "for normal speech-to-text."
-                    ),
-                    "type": "invalid_request_error",
-                    "code": "alignment_model_required",
-                    "param": "model",
-                }
-            },
-        )
 
     tmp_path: str | None = None
     try:
@@ -1324,19 +1302,22 @@ async def _run_stt_request(
 
         from ..audio.stt import STTEngine
 
-        if _stt_engine is None or _stt_engine.model_name != model_name:
-            _stt_engine = STTEngine(model_name)
-            _stt_engine.load()
+        # Same lock the alignment lane takes. ASR still runs INLINE on the
+        # event loop, so this does not change how it executes — it makes
+        # explicit the serialisation it already had implicitly, and closes
+        # the window that offloading alignment would otherwise open: an ASR
+        # request on the loop concurrent with an alignment render in the
+        # executor means two multi-GB models resident and two callers
+        # driving the accelerator. See _stt_lane_lock.
+        async with _get_stt_lane_lock():
+            if _stt_engine is None or _stt_engine.model_name != model_name:
+                # Symmetric with the alignment path: one STT model resident.
+                _evict_other_lane("asr")
+                _stt_engine = None
+                stt_engine = STTEngine(model_name)
+                stt_engine.load()
+                _stt_engine = stt_engine
 
-        if has_align_text:
-            # Forced alignment: ``language`` here is the aligner's full
-            # language NAME (e.g. "Chinese", "English"), not an ISO code.
-            # Fall back to the engine default when omitted. ``text`` is
-            # passed verbatim (unstripped) — see ``has_align_text`` above.
-            result = _stt_engine.align(
-                tmp_path, text=text, language=language or "Chinese"
-            )
-        else:
             # Forward ``timestamp_granularities`` only when requested.
             # Keeping the default call shape unchanged preserves compatibility
             # with older STTEngine-shaped stubs and third-party engines.
@@ -1434,6 +1415,359 @@ async def _run_stt_request(
                 )
 
 
+# ---------------------------------------------------------------------------
+# Forced-alignment lane for ``/v1/audio/transcriptions`` + ``text``.
+#
+# Kept separate from ``_run_stt_request`` because the two lanes have
+# different concurrency models: ASR still runs its engine call inline on
+# the event loop, while alignment offloads to a worker thread (see the
+# lock and engine-cache comments below).
+# ---------------------------------------------------------------------------
+
+
+#: Serialises the STT lane — BOTH transcription/translation and forced
+#: alignment. One lock, not one per lane, and that matters.
+#:
+#: The two lanes share no Python state (``_stt_engine`` and
+#: ``_aligner_engine`` are separate caches on purpose), but they share the
+#: accelerator: each loads its own multi-GB model into unified memory and
+#: runs MLX work against it. Before this change every audio lane executed
+#: inline on the event loop, so they were mutually exclusive by accident.
+#: Offloading alignment to a worker thread removes that accident — an ASR
+#: request could then run on the loop while an alignment render is live in
+#: the executor, with two models resident and two callers driving the GPU.
+#: The lock restores the invariant deliberately instead of relying on the
+#: event loop to provide it.
+#:
+#: Note this does not change how ASR EXECUTES: it still runs inline, so
+#: taking the lock around it only makes explicit the serialisation it
+#: already had. Moving ASR (and TTS) off the loop is a separate change —
+#: ``main`` currently has zero ``to_thread`` calls in this module.
+#:
+#: An ``asyncio.Lock`` acquired ON THE EVENT LOOP, deliberately not a
+#: ``threading.Lock`` held inside the worker. ``asyncio.to_thread`` uses
+#: the shared default executor (min(32, cpu+4) threads), so queued
+#: requests blocking on a thread-level lock would each pin an executor
+#: thread just to wait — starving every other ``to_thread`` user in the
+#: process (prefix-cache save, tool-grammar warmup). Waiting on the loop
+#: instead costs a coroutine, not a thread, and only the request that
+#: actually runs ever occupies an executor slot.
+#:
+class _CrossLoopAsyncLock:
+    """Process-wide lock that never occupies the shared asyncio executor."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rapid-mlx-stt-lock"
+        )
+
+    async def __aenter__(self):
+        loop = asyncio.get_running_loop()
+        completed = threading.Event()
+
+        def acquire() -> None:
+            try:
+                self._lock.acquire()
+            finally:
+                completed.set()
+
+        waiter = loop.run_in_executor(self._executor, acquire)
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            # Cancelling an asyncio Future cannot stop a running
+            # ``threading.Lock.acquire``. Drain the dedicated worker before
+            # propagating so an abandoned acquisition never owns the lock.
+            while not completed.is_set():
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    pass
+            self._lock.release()
+            raise
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        self._lock.release()
+
+
+_stt_lane_lock = _CrossLoopAsyncLock()
+
+
+def _get_stt_lane_lock() -> _CrossLoopAsyncLock:
+    """Return the process-wide STT-lane lock."""
+    return _stt_lane_lock
+
+
+#: Signatures of the two ``ValueError``s :meth:`STTEngine.align` raises
+#: for caller mistakes (see its body): a model that isn't a forced
+#: aligner, and empty/blank known text. Matched on message because the
+#: engine raises bare ``ValueError`` for both; everything else that
+#: surfaces as a ValueError is an internal fault, not a bad request.
+#:
+#: The route rejects both shapes up front (``_is_aligner_model`` before
+#: the upload drains, blank ``text`` in ``create_transcription``), so
+#: this classifier is a BACKSTOP: it keeps an engine-side rejection from
+#: being dressed up as a generic 500 should the engine's own aligner
+#: predicate ever diverge from the route's substring heuristic.
+_CLIENT_ALIGNMENT_ERROR_SIGNATURES = (
+    "requires a forced-aligner model",
+    "requires non-empty known text",
+)
+
+
+def _is_client_alignment_error(exc: Exception) -> bool:
+    """True if ``exc`` is an ``align()`` rejection the CALLER can fix."""
+    message = str(exc).lower()
+    return any(sig in message for sig in _CLIENT_ALIGNMENT_ERROR_SIGNATURES)
+
+
+#: Cached forced-aligner engine — DELIBERATELY separate from
+#: ``_stt_engine``.
+#:
+#: Sharing one global across both lanes is unsafe now that alignment runs
+#: on a worker thread while ASR still runs on the event loop: an ASR
+#: request can replace the engine in between the alignment path's cache
+#: check and its ``align()`` call, and no lock held on only one side can
+#: prevent that. A dedicated cache removes the shared mutable state
+#: instead of trying to synchronise two lanes with different concurrency
+#: models. It also stops the two lanes evicting each other's weights on
+#: every alternating request, since an aligner and an ASR model are never
+#: the same ``model_name``.
+_aligner_engine = None
+
+
+def _evict_other_lane(keep: str) -> None:
+    """Release the STT lane's *other* cached engine before loading one.
+
+    ``keep`` is ``"asr"`` or ``"aligner"``. Only ever called with the lane
+    lock held, so the engine being dropped is guaranteed idle.
+
+    Why this exists: separate caches per lane fix the race (an ASR request
+    can no longer swap the engine under an in-flight alignment) but not the
+    footprint — alternating requests would leave both models resident. MLX
+    frees on refcount, so clearing the global is the release.
+    """
+    global _stt_engine, _aligner_engine
+
+    if keep == "aligner" and _stt_engine is not None:
+        logger.info(
+            "Releasing ASR model %s to load the forced aligner "
+            "(one STT model resident at a time)",
+            getattr(_stt_engine, "model_name", "?"),
+        )
+        _stt_engine = None
+    elif keep == "asr" and _aligner_engine is not None:
+        logger.info(
+            "Releasing forced aligner %s to load the ASR model "
+            "(one STT model resident at a time)",
+            getattr(_aligner_engine, "model_name", "?"),
+        )
+        _aligner_engine = None
+
+
+def _align_blocking(
+    model_name: str,
+    audio_path: str,
+    text: str,
+    language: str | None,
+):
+    """Blocking half of the forced-alignment request — runs on a thread.
+
+    Loads (or reuses) the aligner engine and runs
+    :meth:`STTEngine.align`. Split out of :func:`_run_alignment_request`
+    so the async handler can hand the seconds-long weight load + align
+    to a worker thread instead of stalling the event loop.
+
+    The caller holds :data:`_stt_lane_lock` for the whole call, so this
+    body is already serialised — no thread-level locking here (see the
+    lock's own comment for why it lives on the event loop).
+    """
+    global _aligner_engine
+
+    from ..audio.stt import STTEngine
+
+    # STTEngine.align defaults language to "Chinese"; only forward an
+    # explicit caller value so the engine default stands otherwise.
+    align_kwargs = {}
+    if language:
+        align_kwargs["language"] = language
+
+    if _aligner_engine is None or _aligner_engine.model_name != model_name:
+        # Drop the ASR lane's model before loading ours. The lock already
+        # stops the two lanes RUNNING at once, but without this they both
+        # stay resident after alternating requests — two multi-GB models in
+        # unified memory for a server that can only use one at a time. The
+        # caller holds the lane lock, so no ASR request is mid-flight and
+        # this cannot pull weights out from under one.
+        _evict_other_lane("aligner")
+        # Also drop any PREVIOUS aligner (a different aligner alias) before
+        # loading the replacement, so two multi-GB aligner models never sit
+        # resident together during ``load()``. Inert under the current
+        # single-aligner registry — the branch only re-enters when the cache
+        # was already emptied (an ASR request evicted us), so there is nothing
+        # to drop — but it keeps the "one STT model resident" invariant true if
+        # a second aligner alias is ever registered. On a failed reload the
+        # cache stays ``None`` and the next request reloads from disk, strictly
+        # better than pinning a stale model.
+        _aligner_engine = None
+        # Load into a local first and publish only on success. Caching a
+        # half-constructed engine would leave later requests matching on
+        # ``model_name`` against an object whose weights never loaded.
+        #
+        # Named ``aligner``, not ``engine``: test_route_engine_contract
+        # scans this module for ``engine.<method>()`` calls and requires
+        # the method to exist on the LLM ``BaseEngine``. An ``STTEngine``
+        # is a different hierarchy entirely, so the name would trip that
+        # gate with a false positive.
+        aligner = STTEngine(model_name)
+        aligner.load()
+        _aligner_engine = aligner
+    return _aligner_engine.align(audio_path, text, **align_kwargs)
+
+
+async def _run_alignment_request(
+    file: UploadFile,
+    model: str,
+    text: str,
+    language: str | None,
+    response_format: str,
+):
+    """Forced-alignment pipeline for ``/v1/audio/transcriptions`` + ``text``.
+
+    When the transcription request carries a ``text`` field the caller is
+    asking for FORCED ALIGNMENT (align the KNOWN transcript to the audio,
+    returning per-character/word timestamps) rather than ASR. This helper
+    mirrors :func:`_run_stt_request`'s size/resolve/cleanup/envelope
+    wiring but calls :meth:`STTEngine.align` and lets ``language`` fall
+    back to the aligner's own ``"Chinese"`` default when omitted.
+
+    The result's per-unit ``segments`` flow through the SAME
+    ``_format_stt_response`` serializers ASR uses, so ``verbose_json`` /
+    ``srt`` / ``vtt`` all work — the aligner emits exactly the
+    ``{text, start, end}`` segment shape those formatters consume.
+    """
+    # Resolve the aligner model up front (404 for unknown aliases) BEFORE
+    # draining the upload — same fail-fast ordering as the ASR path.
+    model_name = _resolve_stt_model(model)
+
+    # ``text`` only means anything to a forced aligner: a Whisper /
+    # Parakeet engine cannot align, so silently ignoring the field would
+    # mislead the caller into thinking alignment ran. Reject before the
+    # upload drains rather than letting ``align()`` raise several
+    # megabytes later.
+    if not _is_aligner_model(model_name):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"the `text` field triggers forced alignment, which "
+                        f"requires a forced-aligner model; `{model}` is not "
+                        f"one. Pass `model={DEFAULT_ALIGNER_ALIAS}` (or another "
+                        "aligner alias) to align `text` to the audio, or omit "
+                        "`text` for normal speech-to-text."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "alignment_model_required",
+                    "param": "model",
+                }
+            },
+        )
+
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            await _stream_upload_to_tempfile(file, tmp)
+
+        # Weight load + alignment are seconds of blocking compute, so run
+        # them on a worker thread — an ``async def`` handler that calls
+        # them inline stalls the whole event loop (every concurrent chat
+        # completion, /healthz probe and SSE heartbeat) for the duration.
+        #
+        # Serialise BEFORE offloading: queueing on the loop costs a
+        # coroutine, whereas queueing inside the worker would pin an
+        # executor thread per waiter and starve every other to_thread user.
+        # ``run_to_completion`` keeps the lock held and ``tmp_path`` alive
+        # for exactly as long as the worker runs, even if the client
+        # disconnects and cancels us mid-align.
+        async with _get_stt_lane_lock():
+            result = await run_to_completion(
+                _align_blocking, model_name, tmp_path, text, language
+            )
+
+        return _format_stt_response(result, response_format, task="transcribe")
+
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # ONE handler, classified inside — deliberately not a chain of
+        # ``except ValueError`` / ``except Exception`` clauses. A bare
+        # ``raise`` in the narrower clause exits the whole try statement
+        # rather than falling through to the broader one, so an
+        # "unclassified → let the generic handler take it" flow silently
+        # became a 500 with no envelope. Classifying in one place makes
+        # the precedence explicit and testable.
+
+        # 1. Corrupted / undecodable upload. Checked FIRST because some
+        #    codec paths raise plain ValueError, which would otherwise be
+        #    reported as a bad alignment request blaming ``model``/``text``
+        #    and send the caller chasing a field that was never wrong.
+        if _is_decode_error(e):
+            logger.info("Forced alignment rejected corrupted upload: %s", e)
+            raise _audio_decode_error_envelope(e)
+
+        # 2. The two ``align()`` rejections the CALLER can fix: a model
+        #    that isn't a forced aligner, or blank known text. Any other
+        #    ValueError (weight loading, tokenizing, a reshape deep in the
+        #    model) is an internal fault and must not be dressed up as a
+        #    client error.
+        if isinstance(e, ValueError) and _is_client_alignment_error(e):
+            logger.info("Forced alignment rejected request: %s", e)
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "invalid_request_error",
+                        "code": "invalid_alignment_request",
+                        "param": "text" if "text" in str(e).lower() else "model",
+                    }
+                },
+            )
+
+        # 3. Everything else is ours, not the caller's.
+        logger.exception("Forced alignment failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": "Audio forced alignment failed",
+                    "type": "api_error",
+                    "code": "alignment_failed",
+                    "param": None,
+                }
+            },
+        )
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
+                )
+
+
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
     file: UploadFile,
@@ -1454,11 +1788,11 @@ async def create_transcription(
     language_form: str | None = Form(None, alias="language"),
     response_format_form: str | None = Form(None, alias="response_format"),
     # ``text`` is a rapid-mlx extension (NOT an OpenAI field) that turns
-    # this route into the forced-alignment surface: when present with a
-    # forced-aligner model (``qwen3-aligner``), the known transcript is
-    # aligned to the audio and per-character timings come back in the
-    # segment shape verbose_json/srt/vtt already render. Accepted on
-    # both form and query for parity with the other STT fields.
+    # this route into the forced-alignment surface: when present, the
+    # known transcript is aligned to the audio and per-character timings
+    # come back in the segment shape verbose_json/srt/vtt already render.
+    # ``model`` then defaults to :data:`DEFAULT_ALIGNER_ALIAS`. Accepted
+    # on both form and query for parity with the other STT fields.
     text_form: str | None = Form(None, alias="text"),
     # STT-word-timestamps: OpenAI serialises the array field as
     # ``timestamp_granularities[]`` (bracketed) in the multipart body.
@@ -1485,6 +1819,16 @@ async def create_transcription(
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
 
+    Forced-alignment extension: if the request carries a ``text`` field,
+    the route aligns that KNOWN transcript to the uploaded audio
+    (per-character/word timestamps, zero recognition error) via
+    :meth:`STTEngine.align` instead of running ASR. When ``text`` is
+    present but ``model`` is omitted it defaults to the registered
+    aligner alias (:data:`DEFAULT_ALIGNER_ALIAS`), and the response
+    defaults to ``verbose_json`` so the timestamped ``segments`` are
+    actually in the body. When ``text`` is absent the behaviour is
+    unchanged.
+
     Two-layer size guard (defense in depth):
 
     1. :class:`AudioBodyLimitMiddleware` runs at the ASGI layer and
@@ -1507,20 +1851,112 @@ async def create_transcription(
     # Form wins over query when both are present (form is the OpenAI
     # contract; query is the pre-F-165 internal contract we're keeping
     # for back-compat). Defaults match the original signature.
-    model = (
-        model_form
-        if model_form is not None
-        else (model_query if model_query is not None else "whisper-large-v3")
+    #
+    # ``model_merged`` / ``response_format_provided`` record whether the
+    # caller explicitly supplied the field — they drive the alignment
+    # defaults below, which only kick in when the field was omitted.
+    model_merged = next(
+        (v for v in (model_form, model_query) if isinstance(v, str)),
+        None,
     )
-    language = language_form if language_form is not None else language_query
-    response_format = (
-        response_format_form
-        if response_format_form is not None
-        else (response_format_query if response_format_query is not None else "json")
+    model_provided = model_merged is not None
+    response_format_provided = any(
+        isinstance(v, str) for v in (response_format_form, response_format_query)
+    )
+    # Select with an isinstance(str) check, NOT ``is not None``, for the same
+    # direct-call reason as ``text`` below: a handler invoked as a plain
+    # coroutine (not through FastAPI) receives any unpassed param as its
+    # unresolved ``Form``/``Query`` sentinel — truthy and non-None but NOT a
+    # string. Left as ``is not None`` that sentinel would flow through to the
+    # ASR/alignment engines as a bogus ``language``. Treat a non-str as absent.
+    language = next(
+        (v for v in (language_form, language_query) if isinstance(v, str)),
+        None,
+    )
+    response_format = next(
+        (
+            v
+            for v in (response_format_form, response_format_query)
+            if isinstance(v, str)
+        ),
+        "json",
     )
     # Forced-alignment transcript (rapid-mlx extension). Form wins over
     # query, matching the model/language/response_format precedence.
-    text = text_form if text_form is not None else text_query
+    #
+    # Merge with an isinstance check, NOT ``is not None``. Several existing
+    # tests (e.g. test_audio_upload_size_limit) call this handler directly
+    # rather than through FastAPI, so any parameter they don't pass arrives
+    # as its unresolved ``Form(None)`` / ``Query(None)`` object — truthy
+    # and non-None, but NOT a string. The pre-existing params only ever get
+    # compared against None so they tolerate that; ``text`` is inspected
+    # with ``.strip()`` below, which would raise ``AttributeError: 'Form'
+    # object has no attribute 'strip'``. Treat a non-str as absent.
+    text = next(
+        (v for v in (text_form, text_query) if isinstance(v, str)),
+        None,
+    )
+
+    # PRESENCE, not truthiness, selects the alignment branch. A
+    # whitespace-only ``text`` used to fall through to ASR whenever the
+    # model wasn't an aligner, which silently answered a different
+    # question than the caller asked — they wanted timestamps for a
+    # transcript and got speech recognition instead, with a 200 that gives
+    # no hint anything was ignored. It now 400s regardless of ``model``.
+    #
+    # A truly empty ``text=""`` is indistinguishable from an absent field
+    # here — FastAPI coerces both to ``None`` for an ``Optional[str]``
+    # form param — so it stays ASR. Only a non-empty-but-blank value is
+    # rejectable, and it is the shape that signals real caller intent.
+    if text is not None and not text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        "`text` was supplied but is blank. Send the known "
+                        "transcript to align, or omit `text` entirely for "
+                        "speech recognition."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "alignment_text_required",
+                    "param": "text",
+                }
+            },
+        )
+    is_alignment = text is not None
+
+    if is_alignment:
+        # Default to the registered aligner alias when the caller didn't
+        # pick a model — the ASR default (whisper-large-v3) is not an
+        # aligner and would fail deep in the engine.
+        #
+        # A WHITESPACE-ONLY model also takes the default here. FastAPI
+        # already coerces a truly empty form field (``model=""``) to
+        # ``None``, but ``model="   "`` — what you get from a form whose
+        # input was spaced-out, or a shell ``-F "model=$UNSET "`` — comes
+        # through verbatim and 404s in ``_resolve_stt_model`` as a
+        # nonexistent alias. Treat it as unset so "just send audio +
+        # text" keeps working. Scoped to this branch on purpose: the ASR
+        # path's blank-model handling is long-standing contract.
+        # isinstance guard for the same direct-call reason as ``text``.
+        alignment_model_chosen = isinstance(model_merged, str) and bool(
+            model_merged.strip()
+        )
+        model = model_merged if alignment_model_chosen else DEFAULT_ALIGNER_ALIAS
+        # Default to verbose_json so the timestamped ``segments`` are in
+        # the body; the plain ``json`` envelope drops them. An explicit
+        # response_format (srt/vtt/text/json) is honoured as-is.
+        # Whitespace-only is treated as unset for the same reason as
+        # ``model`` above (it would otherwise 400 on the allowed set).
+        if (
+            not response_format_provided
+            or not isinstance(response_format, str)
+            or not response_format.strip()
+        ):
+            response_format = "verbose_json"
+    else:
+        model = model_merged if model_provided else DEFAULT_STT_ALIAS
 
     # R6-H2: reject unknown ``response_format`` values up front with a
     # 400 envelope so a typo (``"jsno"``) or unsupported value
@@ -1535,12 +1971,30 @@ async def create_transcription(
     # bracketed query → plain query), then validate the values up front so
     # a bad value (``"words"``) fails cheaply with a 400 before the upload
     # drains — same lifecycle as ``response_format`` above.
-    timestamp_granularities = _normalise_timestamp_granularities(
-        timestamp_granularities_bracket_form
-        or timestamp_granularities_plain_form
-        or timestamp_granularities_bracket_query
-        or timestamp_granularities_plain_query
+    #
+    # Select the first NON-EMPTY list, NOT the first truthy value. Same
+    # direct-call hazard the ``text`` merge above guards: a handler invoked
+    # as a plain coroutine (not through FastAPI) receives any unpassed param
+    # as its unresolved ``Form``/``Query`` sentinel — truthy and non-None but
+    # NOT a list — so a raw ``or`` chain would forward that sentinel into the
+    # normaliser and raise ``TypeError: 'Form' object is not iterable``. The
+    # ``isinstance(v, list) and v`` guard keeps the original first-truthy
+    # precedence (None / empty list / sentinel all skipped) while tolerating
+    # the sentinel.
+    _tg_source = next(
+        (
+            v
+            for v in (
+                timestamp_granularities_bracket_form,
+                timestamp_granularities_plain_form,
+                timestamp_granularities_bracket_query,
+                timestamp_granularities_plain_query,
+            )
+            if isinstance(v, list) and v
+        ),
+        None,
     )
+    timestamp_granularities = _normalise_timestamp_granularities(_tg_source)
 
     # OpenAI contract: ``timestamp_granularities[]`` is only meaningful
     # with ``response_format=verbose_json`` (the only shape that carries a
@@ -1579,13 +2033,21 @@ async def create_transcription(
 
     require_mlx_audio_stt()
 
+    if is_alignment:
+        return await _run_alignment_request(
+            file=file,
+            model=model,
+            text=text,
+            language=language,
+            response_format=response_format,
+        )
+
     return await _run_stt_request(
         file=file,
         model=model,
         language=language,
         response_format=response_format,
         task="transcribe",
-        text=text,
         timestamp_granularities=timestamp_granularities,
     )
 

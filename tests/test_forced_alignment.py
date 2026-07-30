@@ -316,8 +316,13 @@ def _stub_route_engine(monkeypatch):
         monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeRouteEngine)
 
     audio_route._stt_engine = None
+    # The alignment lane keeps its OWN engine cache (see the module
+    # comment on ``_aligner_engine``), so both must be cleared — leaving
+    # the stub in ``_aligner_engine`` would leak into later tests.
+    audio_route._aligner_engine = None
     yield
     audio_route._stt_engine = None
+    audio_route._aligner_engine = None
     probe._reset_probe_cache()
 
 
