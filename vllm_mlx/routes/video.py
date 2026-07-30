@@ -308,13 +308,24 @@ async def _render_and_serialize(
         # the clip is something it isn't. A backend that honours arbitrary
         # fps simply doesn't set ``native_frame_rate`` and the request
         # value stands.
-        # A backend that can't vary fps reports its real rate here. ``None``
-        # means "this backend genuinely doesn't know" (e.g. a Wan checkpoint
-        # with no config.json — 2.1 is 16 fps and 2.2 is 24, and the two
-        # aren't distinguishable from weights), in which case echoing the
-        # request is the honest answer rather than asserting a guess.
-        native = getattr(engine, "native_frame_rate", None)
-        actual_fps = float(native) if native else float(request.frame_rate)
+        # Three distinct states, and the wire has a representation for each:
+        #
+        #   * backend reports a rate      -> report it (it's the real one)
+        #   * backend has no such concept -> the request value stands, since
+        #     that backend honours what it was asked for
+        #   * backend HAS the concept but doesn't know for this checkpoint
+        #     (a Wan checkpoint with no config.json: 2.1 is 16 fps, 2.2 is
+        #     24, and weights don't distinguish them) -> ``null``
+        #
+        # That last case must not echo ``request.frame_rate``: Wan never
+        # forwards it, so reporting 30 for a clip that is actually 16 or 24
+        # is a fabricated number, which is the exact failure this reporting
+        # exists to prevent.
+        if hasattr(engine, "native_frame_rate"):
+            native = engine.native_frame_rate
+            actual_fps = float(native) if native is not None else None
+        else:
+            actual_fps = float(request.frame_rate)
         # Same principle for the model echo: report what RAN. The request's
         # ``model`` is a schema default (``ltx-2.3``) that selects nothing —
         # echoing it on a Wan-rendered clip actively misattributes the

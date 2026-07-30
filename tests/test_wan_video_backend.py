@@ -279,10 +279,16 @@ class TestNativeFrameRate:
             is None
         )
 
-    def test_route_falls_back_to_requested_fps_when_unknown(
-        self, tmp_path, monkeypatch
-    ):
-        """Unknown native rate -> echo the request, don't assert a guess."""
+    def test_route_reports_null_when_the_rate_is_unknown(self, tmp_path, monkeypatch):
+        """Unknown native rate -> ``null``, not the requested value.
+
+        Round 1 of review said "don't default to 24 when the checkpoint is
+        silent"; round 4 pointed out that echoing the REQUEST is equally a
+        fabrication, because Wan never forwards it — a response claiming
+        30 fps for a clip that is really 16 or 24 is exactly the failure
+        this reporting exists to prevent. The wire field is nullable, so
+        "we don't know" has a representation. Use it.
+        """
         _install_fake_mlx_video(monkeypatch)
         from vllm_mlx.video.wan import ENV_MODEL_DIR
 
@@ -305,7 +311,7 @@ class TestNativeFrameRate:
         finally:
             restore()
         assert r.status_code == 200, r.text
-        assert r.json()["data"][0]["frame_rate"] == 30.0
+        assert r.json()["data"][0]["frame_rate"] is None
 
 
 class TestLoraSpecParsing:
@@ -1105,12 +1111,36 @@ class TestUpstreamSignatureCompatibility:
         )
         if accepts_var_kw:
             pytest.skip("upstream takes **kwargs; signature check is vacuous")
+
         missing = sorted(self.REQUIRED_KWARGS - set(sig.parameters))
         assert not missing, (
             f"mlx-video's generate_video no longer accepts {missing}. "
             f"WanVideoEngine.generate passes these; update the call and the "
             f"pinned commit in docs/content_farm_api.md together."
         )
+
+        # Name presence alone is not enough: if upstream makes one of these
+        # POSITIONAL_ONLY the name still appears in `parameters` while our
+        # keyword call raises TypeError at runtime. Actually BIND a
+        # representative call — that is what production does.
+        try:
+            sig.bind(**{name: None for name in self.REQUIRED_KWARGS})
+        except TypeError as e:
+            positional_only = sorted(
+                name
+                for name, prm in sig.parameters.items()
+                if name in self.REQUIRED_KWARGS
+                and prm.kind is inspect.Parameter.POSITIONAL_ONLY
+            )
+            pytest.fail(
+                f"WanVideoEngine.generate's keyword call to generate_video no "
+                f"longer binds: {e}"
+                + (
+                    f" (now positional-only: {positional_only})"
+                    if positional_only
+                    else ""
+                )
+            )
 
 
 class TestImagePayloadMustActuallyBeAnImage:
@@ -1243,3 +1273,123 @@ class TestInstallHintIsPinned:
         msg = probe_mlx_video()
         assert MLX_VIDEO_PIN in msg, msg
         assert "mlx-video.git'" not in msg, "unpinned URL leaked into the hint"
+
+
+class TestImageResourceBounds:
+    def test_decompression_bomb_is_refused_before_decoding(self, tmp_path, monkeypatch):
+        """A small compressed image declaring a huge canvas must not be decoded.
+
+        The 12 MB cap on the base64 string bounds the COMPRESSED size. A PNG
+        of a few KB can declare 30000x30000 and cost gigabytes the moment
+        ``load()`` runs, so the pixel count is checked from the header first.
+        """
+        import base64
+        import struct
+        import zlib
+
+        pytest.importorskip("PIL.Image", reason="needs Pillow")
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        def _chunk(tag, data):
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            )
+
+        # Declares 30000x30000 (900 MP) in the header; the IDAT is tiny.
+        bomb = (
+            b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", struct.pack(">IIBBBBB", 30000, 30000, 8, 2, 0, 0, 0))
+            + _chunk(b"IDAT", zlib.compress(b"\x00" * 64))
+            + _chunk(b"IEND", b"")
+        )
+        assert len(bomb) < 4096, "the point is that the payload is small"
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path))
+        # Refused as caller-fixable, never decoded. (Above ~178 MP PIL's own
+        # DecompressionBombError fires first, which is fine — defence in
+        # depth; the assertion is on the OUTCOME, not which layer caught it.)
+        with pytest.raises(InvalidVideoRequestError):
+            eng.generate(
+                "x",
+                tmp_path / "o.mp4",
+                image=base64.b64encode(bomb).decode(),
+                num_frames=49,
+            )
+
+    def test_our_ceiling_catches_what_pillow_would_allow(self):
+        """The 64 MP bound is stricter than Pillow's ~178 MP default.
+
+        Between the two, PIL would happily decode — so this window is the
+        part of the guard that is actually ours, and it must be exercised
+        rather than assumed.
+        """
+        import struct
+        import zlib
+
+        pytest.importorskip("PIL.Image", reason="needs Pillow")
+        from vllm_mlx.video.wan import _MAX_IMAGE_PIXELS, _decode_error
+
+        def _chunk(tag, data):
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            )
+
+        side = 10000  # 100 MP: over our 64 MP, under Pillow's ~178 MP
+        assert _MAX_IMAGE_PIXELS < side * side < 178_956_970
+        big = (
+            b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, 8, 2, 0, 0, 0))
+            + _chunk(b"IDAT", zlib.compress(b"\x00" * 64))
+            + _chunk(b"IEND", b"")
+        )
+        problem = _decode_error(big)
+        assert problem is not None and "pixel limit" in problem, problem
+
+    def test_partial_write_does_not_strand_a_temp_frame(self, tmp_path, monkeypatch):
+        """A failing write must clean up after itself.
+
+        ``NamedTemporaryFile(delete=False)`` creates the file immediately, so
+        a write that fails (disk full — the likely case on this machine)
+        would otherwise leave a rapidmlx-i2v-* file nobody owns, because the
+        caller only learns the path on success.
+        """
+        import base64
+        import glob
+        import tempfile as _tf
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video import wan as wan_mod
+
+        before = set(glob.glob(_tf.gettempdir() + "/rapidmlx-i2v-*"))
+
+        real_ntf = _tf.NamedTemporaryFile
+
+        def _exploding_ntf(*a, **kw):
+            fh = real_ntf(*a, **kw)
+            original_write = fh.write
+
+            def _boom(data):
+                original_write(data[:8])  # partial write, then fail
+                raise OSError(28, "No space left on device")
+
+            fh.write = _boom
+            return fh
+
+        # tempfile is imported inside _materialise_image, so patch the
+        # stdlib module itself rather than a module attribute that
+        # doesn't exist.
+        monkeypatch.setattr(_tf, "NamedTemporaryFile", _exploding_ntf)
+
+        with pytest.raises(OSError):
+            wan_mod._materialise_image(base64.b64encode(_png_bytes()).decode())
+
+        after = set(glob.glob(_tf.gettempdir() + "/rapidmlx-i2v-*"))
+        assert after == before, f"stranded temp frame(s): {sorted(after - before)}"

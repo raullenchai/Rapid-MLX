@@ -183,11 +183,11 @@ clients can build against the contract before any weights exist.
 | --- | --- | --- | --- |
 | `model` | string | `"ltx-2.3"` | **Ignored.** rapid-mlx serves ONE checkpoint per process (as with the LLM lane), so this selects nothing — the served checkpoint is whatever `$RAPID_MLX_WAN_MODEL_DIR` names. The response reports the checkpoint that actually ran (e.g. `wan2.2-ti2v`), not this value. |
 | `prompt` | string | — (required) | Natural-language description. Must be non-blank. |
-| `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string. `null` → text-to-video. **The Wan backend accepts the two inline forms only** — see [Why remote image URLs are refused](#why-remote-image-urls-are-refused). |
+| `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string and 64 MP decoded (checked from the header before decoding, so a compression bomb can't expand into memory). `null` → text-to-video. **The Wan backend accepts the two inline forms only** — see [Why remote image URLs are refused](#why-remote-image-urls-are-refused). |
 | `height` | integer | `704` | Output height, `1..4096`. |
 | `width` | integer | `1216` | Output width, `1..4096`. |
 | `num_frames` | integer | `97` | Frames to render, `1..4096`. **Wan requires `4n+1`** (its latent temporal stride is 4) — `49`, `81`, `97` are valid, `80` is not. A violation is a `400` naming the nearest valid values. |
-| `frame_rate` | number | `25.0` | Playback fps, `0 < fps <= 240`. **Wan ignores this**: the model emits frames at a fixed trained rate (16 fps for 2.1, 24 fps for 2.2) and fps is a container property, not a generation parameter. The response reports the clip's REAL rate, not what you asked for. |
+| `frame_rate` | number | `25.0` | Playback fps, `0 < fps <= 240`. **Wan ignores this**: the model emits frames at a fixed trained rate (16 fps for 2.1, 24 fps for 2.2) and fps is a container property, not a generation parameter. The response reports the clip's REAL rate — or `null` if the checkpoint doesn't declare one, rather than echoing a number nothing honoured. |
 | `steps` | integer \| null | `null` | Denoising steps, `1..500` (`null` = the checkpoint's default: 50 for Wan2.1, 40 for Wan2.2). **This is the dominant cost** — see [Performance](#performance). |
 | `seed` | integer \| null | `null` | Fixed seed. |
 | `negative_prompt` | string \| null | `null` | CFG negative branch. Max 4096 chars. |
@@ -462,11 +462,16 @@ Two conventions worth following, both of which the route relies on:
   report those as "your request is invalid", so raising plain `ValueError`
   gets you a `500`, not a `400`.
 * Raise **`VideoBackendUnavailableError`** (or `ImportError`) for
-  OPERATOR-fixable faults — missing dependency, a model directory that
-  doesn't exist, a checkpoint that won't load. Those become `503
-  video_backend_unavailable` with your message. Note this must be raised
-  from your factory too, not just from `generate`: the route resolves the
-  engine outside the generation error mapping.
+  OPERATOR-fixable faults you can recognise up front — a missing
+  dependency, a model directory that doesn't exist. Those become `503
+  video_backend_unavailable` with your message. Raise them from your
+  **factory** as well as from `generate`: the route resolves the engine
+  outside the generation error mapping, so a factory that raises anything
+  else produces an unstructured error.
+  Note the Wan backend does *not* try to classify mid-render checkpoint
+  load failures this way — telling "these weights are corrupt" apart from
+  "this render failed" inside a third-party call is guesswork, so those
+  surface as `500` (below) rather than being mislabelled `503`.
 * Anything else you raise is treated as an internal fault and becomes a
   generic `500 video_generation_failed` with the traceback in the operator
   log and no detail leaked to the client.

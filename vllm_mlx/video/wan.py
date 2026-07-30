@@ -126,6 +126,14 @@ MLX_VIDEO_INSTALL = (
     f"pip install 'git+https://github.com/Blaizzy/mlx-video.git@{MLX_VIDEO_PIN}'"
 )
 
+#: Pixel ceiling for a conditioning frame, checked from the header BEFORE
+#: decoding. The 12 MB cap on the base64 string bounds the *compressed*
+#: size, not the decompressed one — a small PNG can declare a 30000x30000
+#: canvas and cost gigabytes on ``load()``. 64 MP is far above any sane
+#: input (Wan crops and resizes to the requested output size regardless)
+#: and far below anything that threatens the process.
+_MAX_IMAGE_PIXELS = 64 * 1024 * 1024
+
 #: Magic-byte prefixes for the raster formats PIL will open. Used instead of
 #: ``PIL.Image.open`` because Pillow lives in the ``[vision]`` extra and this
 #: check must work on a base install.
@@ -176,9 +184,23 @@ def _decode_error(raw: bytes) -> str | None:
         )
 
     try:
-        # verify() checks structure without decoding pixels, but it leaves
-        # the file object unusable — so re-open to force a full load, which
-        # is what actually catches truncation.
+        # Read the header FIRST and bound the pixel count before decoding
+        # anything. A conditioning frame is size-capped at 12 MB of base64,
+        # but compressed formats expand: a small PNG can carry a
+        # 30000x30000 canvas that costs gigabytes once decompressed. Opening
+        # is header-only and cheap; ``load()`` is what allocates.
+        probe = Image.open(io.BytesIO(raw))
+        w, h = probe.size
+        if w * h > _MAX_IMAGE_PIXELS:
+            return (
+                f"image is {w}x{h} ({w * h} pixels), over the "
+                f"{_MAX_IMAGE_PIXELS}-pixel limit for a conditioning frame. "
+                "Downscale it — Wan crops and resizes to the requested "
+                "output size anyway."
+            )
+        # verify() checks structure without decoding pixels but leaves the
+        # file object unusable, so re-open to force a full load — that is
+        # what actually catches truncation.
         Image.open(io.BytesIO(raw)).verify()
         Image.open(io.BytesIO(raw)).load()
     except Exception as e:  # noqa: BLE001 — PIL raises many types here
@@ -251,11 +273,24 @@ def _materialise_image(image: str) -> tuple[str, bool]:
 
     # Suffix matters: PIL sniffs content, but a sensible extension keeps the
     # temp file legible in logs and to anything else that inspects it.
-    with tempfile.NamedTemporaryFile(
+    # Capture the name before writing: NamedTemporaryFile(delete=False)
+    # creates the file immediately, so a failing write (disk full, most
+    # likely on the machine this runs on) would otherwise strand a
+    # rapidmlx-i2v-* file that nobody owns — the caller only learns the
+    # path on success.
+    fh = tempfile.NamedTemporaryFile(
         delete=False, prefix="rapidmlx-i2v-", suffix=".png"
-    ) as fh:
-        fh.write(raw)
-        return fh.name, True
+    )
+    try:
+        with fh:
+            fh.write(raw)
+    except Exception:
+        try:
+            os.unlink(fh.name)
+        except OSError:
+            logger.warning("Could not remove partial i2v frame %s", fh.name)
+        raise
+    return fh.name, True
 
 
 def probe_mlx_video() -> str | None:
