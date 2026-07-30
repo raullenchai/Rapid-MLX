@@ -213,6 +213,26 @@ class WanVideoEngine:
         return float(self._config.get("sample_fps") or 24)
 
     @property
+    def served_model(self) -> str:
+        """Identifier for the checkpoint that actually ran, e.g. ``wan2.2-ti2v``.
+
+        The route echoes this instead of the request's ``model`` field.
+        Reporting back ``"ltx-2.3"`` (our schema default) on a clip that a
+        Wan checkpoint rendered is worse than useless to a client trying to
+        attribute a result — same reasoning as :attr:`native_frame_rate`.
+
+        Falls back to the directory name when the checkpoint has no
+        ``config.json`` to describe itself.
+        """
+        version = self._config.get("model_version")
+        kind = self._config.get("model_type")
+        if version and kind:
+            return f"wan{version}-{kind}"
+        if version:
+            return f"wan{version}"
+        return self.model_dir.name
+
+    @property
     def max_area(self) -> int:
         """Pixel-area ceiling from the checkpoint (0 = unconstrained).
 

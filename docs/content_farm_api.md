@@ -181,7 +181,7 @@ clients can build against the contract before any weights exist.
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `model` | string | `"ltx-2.3"` | Echoed back in the response. rapid-mlx serves ONE checkpoint per process (as with the LLM lane), so this does not select a model — the served checkpoint is whatever `$RAPID_MLX_WAN_MODEL_DIR` names. |
+| `model` | string | `"ltx-2.3"` | **Ignored.** rapid-mlx serves ONE checkpoint per process (as with the LLM lane), so this selects nothing — the served checkpoint is whatever `$RAPID_MLX_WAN_MODEL_DIR` names. The response reports the checkpoint that actually ran (e.g. `wan2.2-ti2v`), not this value. |
 | `prompt` | string | — (required) | Natural-language description. Must be non-blank. |
 | `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string. `null` → text-to-video. |
 | `height` | integer | `704` | Output height, `1..4096`. |
@@ -198,7 +198,7 @@ clients can build against the contract before any weights exist.
 ```json
 {
   "created": 1730000000,
-  "model": "ltx-2.3",
+  "model": "wan2.2-ti2v",
   "data": [
     {
       "b64_video": "AAAAIGZ0eXBpc29t...",

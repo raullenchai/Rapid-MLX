@@ -285,9 +285,15 @@ async def _render_and_serialize(
         # fps simply doesn't set ``native_frame_rate`` and the request
         # value stands.
         actual_fps = float(getattr(engine, "native_frame_rate", request.frame_rate))
+        # Same principle for the model echo: report what RAN. The request's
+        # ``model`` is a schema default (``ltx-2.3``) that selects nothing —
+        # echoing it on a Wan-rendered clip actively misattributes the
+        # result. Backends that don't identify themselves fall back to the
+        # request value.
+        actual_model = str(getattr(engine, "served_model", None) or request.model)
         return VideoGenerationResponse(
             created=int(time.time()),
-            model=request.model,
+            model=actual_model,
             data=[
                 VideoGenerationResult(
                     b64_video=b64,

@@ -565,3 +565,55 @@ class TestVideoRouteWithWanBackend:
             restore()
         assert r.status_code == 501, r.text
         assert r.json()["detail"]["error"]["code"] == "video_backend_not_implemented"
+
+
+class TestServedModelReporting:
+    """The response must attribute the clip to the checkpoint that ran."""
+
+    @pytest.mark.parametrize(
+        ("cfg", "expected"),
+        [
+            ({"model_version": "2.2", "model_type": "ti2v"}, "wan2.2-ti2v"),
+            ({"model_version": "2.1", "model_type": "t2v"}, "wan2.1-t2v"),
+        ],
+    )
+    def test_derived_from_checkpoint_config(self, tmp_path, cfg, expected):
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        assert WanVideoEngine(_write_ckpt(tmp_path, **cfg)).served_model == expected
+
+    def test_falls_back_to_directory_name(self, tmp_path):
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        d = tmp_path / "my-wan-build"
+        d.mkdir()
+        (d / "model.safetensors").write_bytes(b"stub")
+        assert WanVideoEngine(d).served_model == "my-wan-build"
+
+    def test_route_echoes_the_real_model_not_the_schema_default(
+        self, tmp_path, monkeypatch
+    ):
+        """`model` defaults to "ltx-2.3" and selects nothing.
+
+        Echoing that back on a clip a Wan checkpoint produced misattributes
+        the result, so the route reports what actually ran.
+        """
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={
+                    "prompt": "x",
+                    "width": 832,
+                    "height": 480,
+                    "num_frames": 49,
+                },
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        assert r.json()["model"] == "wan2.2-ti2v", r.json()["model"]
