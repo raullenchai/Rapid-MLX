@@ -81,10 +81,15 @@ MIN_FREE_DISK_GB = 30
 # HF connection on a 7-GB shard.
 SERVE_READY_TIMEOUT_S = 600  # 10 minutes
 
-# Per-harness-round timeout. The harness runner's own per-profile cap
-# is 300s (HARNESS_PROFILE_TIMEOUT_S); we add headroom for the
-# bench-CLI startup cost.
-ROUND_TIMEOUT_S = 360
+# Per-harness-round timeout. A scoped ``bench --tier harness`` round
+# runs ONE harness profile end-to-end; the hermes profile alone is
+# ~740-800s on a dense 9B once its deep agentic tests actually run
+# (post #1326/#1330). The old 360s was sized against a stale 300s
+# per-profile cap and killed every hermes round. Track the real profile
+# length with headroom, and keep it below the inherited per-profile cap
+# (HARNESS_PROFILE_TIMEOUT_S, 1200s in the gauntlet) so in the gauntlet
+# the outer subprocess timeout — not the inner cap — bounds a hung round.
+ROUND_TIMEOUT_S = 1080
 
 
 # Match a parameter-count token bounded by name separators (``-``,
@@ -100,6 +105,12 @@ ROUND_TIMEOUT_S = 360
 # than guessed at — guessing landed us with ``glm4.5-air-4bit`` parsing
 # as a 4 B model and slipping past the disk-budget filter.
 _SIZE_TOKEN_RE = re.compile(r"(?:^|[-_.])(\d+(?:\.\d+)?)[bB](?=[-_.]|$)")
+
+# Match an MoE ACTIVE-parameter token: ``A1B`` in ``LFM2.5-8B-A1B``,
+# ``A10B`` in ``Qwen3.5-122B-A10B``. Bounded by name separators. Used to
+# apply the capability floor to a MoE's active (not total) params — an
+# 8B-total/1B-active model is far too weak for agentic harness tasks.
+_ACTIVE_TOKEN_RE = re.compile(r"(?:^|[-_.])[aA](\d+(?:\.\d+)?)[bB](?=[-_.]|$)")
 
 
 def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
@@ -123,6 +134,13 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             # Known-bad: model-side ``thought\n…`` loop on agent prompts.
             # See issue #686 + HF discussion google/gemma-4-12B-it#41.
             continue
+        if isinstance(entry, dict) and entry.get("is_hybrid"):
+            # Hybrid models can't spec/suffix-decode and run agentic
+            # harness rounds several times slower → they blow the
+            # per-round timeout (esp. hermes) and add false-fail spam,
+            # not coverage signal (same class as the gemma-4 exclude).
+            # G0a/G0b already cover hybrids on non-agentic prompts.
+            continue
         # Use .get() — a future schema change that omits ``hf_path``
         # should silently skip the entry, not crash the gauntlet.
         hf_path = entry.get("hf_path") if isinstance(entry, dict) else None
@@ -137,6 +155,13 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             continue
         size_b = float(match.group(1))
         if not (4.0 <= size_b <= 12.0):
+            continue
+        # Effective-capacity floor for MoEs: e.g. ``LFM2.5-8B-A1B`` is 8B
+        # total but ~1B ACTIVE/token — too weak to solve agentic harness
+        # tasks (emits malformed tool calls → false-fail spam), the same
+        # rationale as the 4B total-size floor but applied to active params.
+        active_m = _ACTIVE_TOKEN_RE.search(repo_name)
+        if active_m and float(active_m.group(1)) < 4.0:
             continue
         out.append((size_b, name, hf_path))
     out.sort()
@@ -269,6 +294,13 @@ def _run_harness_round(
     """Run one ``bench --tier harness`` invocation scoped to one
     harness. Returns ``(ok, wall_clock_s, error_excerpt)``."""
     env = {**os.environ, "RAPID_MLX_HARNESS_PROFILES_FILTER": harness}
+    # Right-size the inner per-profile cap for standalone runs. Via
+    # release_check_m3.sh the gauntlet exports HARNESS_PROFILE_TIMEOUT_S
+    # (1200s) and this setdefault is a no-op; standalone, default it to
+    # ROUND_TIMEOUT_S - 60 so the ~800s hermes profile isn't killed by the
+    # 300s library default. A genuine hang still surfaces as a failure —
+    # the inner cap trips a hair before the outer subprocess timeout.
+    env.setdefault("HARNESS_PROFILE_TIMEOUT_S", str(ROUND_TIMEOUT_S - 60))
     cmd = [
         sys.executable,
         "-m",
