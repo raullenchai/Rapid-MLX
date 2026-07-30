@@ -51,6 +51,16 @@ def _is_wan_name(model_name: str | None) -> bool:
 
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
+    if sys.version_info < (3, 11):
+        print(
+            "\n  Error: video generation requires Python 3.11 or newer "
+            f"(current: {sys.version_info.major}.{sys.version_info.minor}). "
+            "Rapid-MLX core still supports Python 3.10, but the upstream "
+            "mlx-video runtime does not.\n",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     missing = []
     if _is_cogvideox_name(model_name):
         cogvideox_modules = {

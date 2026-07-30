@@ -19,11 +19,17 @@ from starlette.routing import Route
 
 from vllm_mlx.model_aliases import resolve_profile
 from vllm_mlx.routes import video
+from vllm_mlx.runtime import video_lane
 from vllm_mlx.runtime.video_lane import (
     VideoEngine,
     VideoRuntimeError,
     require_video_runtime_or_exit,
 )
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
 
 
 def test_ltx23_alias_routes_to_video_lane() -> None:
@@ -56,6 +62,35 @@ def test_video_runtime_preflight_fails_before_download(
     error = capsys.readouterr().err
     assert "rapid-mlx[video]" in error
     assert "brew install ffmpeg" in error
+
+
+def test_video_runtime_preflight_reports_python_311_floor(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Python310(tuple):
+        major = 3
+        minor = 10
+
+    monkeypatch.setattr(video_lane.sys, "version_info", Python310((3, 10, 0)))
+
+    with pytest.raises(SystemExit) as exc:
+        require_video_runtime_or_exit()
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "requires Python 3.11 or newer" in error
+    assert "current: 3.10" in error
+
+
+def test_video_extra_marks_every_dependency_python_311_or_newer() -> None:
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as file:
+        pyproject = tomllib.load(file)
+
+    video_specs = pyproject["project"]["optional-dependencies"]["video"]
+    assert video_specs
+    assert any(spec.startswith("mlx-video-with-audio==0.1.36;") for spec in video_specs)
+    assert all("python_version >= '3.11'" in spec for spec in video_specs)
 
 
 @pytest.mark.asyncio

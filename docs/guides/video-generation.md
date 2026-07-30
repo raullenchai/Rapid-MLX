@@ -3,6 +3,10 @@
 Rapid-MLX exposes LTX-2.3, CogVideoX-Fun and Wan through the asynchronous
 OpenAI-compatible Videos API.
 
+Video generation requires Python 3.11 or newer because the upstream
+`mlx-video-with-audio` runtime does not support Python 3.10. Rapid-MLX's core
+text and audio features continue to support Python 3.10.
+
 ## Wan 2.1 / 2.2
 
 Wan uses the `mlx-video-with-audio` runtime included in the video extra. Four

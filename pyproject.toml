@@ -382,11 +382,16 @@ audio = [
 ]
 video = [
     # MLX-native LTX-2.3 T2V/I2V with synchronized audio. 0.1.36 is the
-    # first verified release with the split-format LTX-2.3 VAE fixes.
-    "mlx-video-with-audio==0.1.36; platform_system == 'Darwin'",
-    "mlx-arsenal>=0.10.1; platform_system == 'Darwin'",
-    "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin'",
-    "pillow>=10.0.0; platform_system == 'Darwin'",
+    # first verified release with the split-format LTX-2.3 VAE fixes. The
+    # upstream runtime requires Python >=3.11, while Rapid-MLX core continues
+    # to support Python 3.10. Keep every dependency behind the same marker so
+    # universal lock generation remains satisfiable for the declared core
+    # Python range; the video startup preflight gives 3.10 users an explicit
+    # upgrade diagnostic.
+    "mlx-video-with-audio==0.1.36; platform_system == 'Darwin' and python_version >= '3.11'",
+    "mlx-arsenal>=0.10.1; platform_system == 'Darwin' and python_version >= '3.11'",
+    "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
+    "pillow>=10.0.0; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
 [project.urls]
