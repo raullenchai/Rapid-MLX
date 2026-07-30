@@ -1484,6 +1484,42 @@
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
   },
+  "cogvideox-fun-5b-q4": {
+    "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4",
+    "modality": "video-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 24
+  },
+  "cogvideox-fun-5b-q8": {
+    "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q8",
+    "modality": "video-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 24
+  },
+  "cogvideox-fun-5b-bf16": {
+    "hf_path": "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx",
+    "modality": "video-gen",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown",
+    "min_memory_gb": 32
+  },
   "ltx-2.3-mlx-q4": {
     "hf_path": "notapalindrome/ltx23-mlx-av-q4",
     "modality": "video-gen",

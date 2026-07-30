@@ -2278,7 +2278,10 @@ def serve_command(args):
     if _serve_profile is not None and _serve_profile.modality == "video-gen":
         from .runtime.video_lane import require_video_runtime_or_exit
 
-        require_video_runtime_or_exit()
+        if "cogvideox" in args.model.casefold():
+            require_video_runtime_or_exit(args.model)
+        else:
+            require_video_runtime_or_exit()
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before

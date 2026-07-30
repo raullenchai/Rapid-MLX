@@ -18,18 +18,23 @@ class VideoRuntimeError(RuntimeError):
 _PROCESS_GENERATION_LOCK = threading.Lock()
 
 
-def require_video_runtime_or_exit() -> None:
+def _is_cogvideox_name(model_name: str | None) -> bool:
+    return bool(model_name and "cogvideox" in model_name.casefold())
+
+
+def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
     missing = []
-    if importlib.util.find_spec("mlx_video") is None:
+    if _is_cogvideox_name(model_name):
+        if importlib.util.find_spec("videox_fun_mlx") is None:
+            missing.append("the VideoX-Fun-mlx source runtime on PYTHONPATH")
+    elif importlib.util.find_spec("mlx_video") is None:
         missing.append("the `rapid-mlx[video]` Python extra")
     if shutil.which("ffmpeg") is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
     if missing:
         print(
-            "\n  Error: LTX-2.3 video generation requires "
-            + " and ".join(missing)
-            + ".\n",
+            "\n  Error: video generation requires " + " and ".join(missing) + ".\n",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -48,6 +53,14 @@ class VideoEngine:
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
+        self.video_family = (
+            "cogvideox-fun" if _is_cogvideox_name(model_name) else "ltx-2.3"
+        )
+        self._cog_engine = None
+        if self.video_family == "cogvideox-fun":
+            from ..video.engine import VideoGenerationEngine
+
+            self._cog_engine = VideoGenerationEngine(model_name)
         # Shared across engine instances and app lifespans. A bounded shutdown
         # may detach an old daemon worker; an in-process restart must not run a
         # second Metal graph concurrently with that still-draining worker.
@@ -67,6 +80,21 @@ class VideoEngine:
         output_width: int | None = None,
         output_height: int | None = None,
     ) -> None:
+        if self._cog_engine is not None:
+            if image is not None:
+                raise VideoRuntimeError(
+                    "CogVideoX-Fun MVP currently supports text-to-video only."
+                )
+            self._cog_engine.generate_sync(
+                output_path=output_path,
+                prompt=prompt,
+                width=width,
+                height=height,
+                frames=num_frames,
+                fps=fps,
+                seed=seed,
+            )
+            return
         if shutil.which("ffmpeg") is None:
             raise VideoRuntimeError(
                 "LTX-2.3 video generation requires ffmpeg. "
@@ -145,4 +173,5 @@ class VideoEngine:
         """Video weights load lazily; startup must not trigger a 40+ GB pull."""
 
     async def stop(self) -> None:
-        """No persistent worker is owned by this thin adapter."""
+        if self._cog_engine is not None:
+            await self._cog_engine.close()

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OpenAI-compatible video jobs backed by MLX-native LTX-2.3."""
+"""OpenAI-compatible video jobs backed by MLX-native video pipelines."""
 
 from __future__ import annotations
 
@@ -349,8 +349,9 @@ async def _run_job(
     started = False
     output = _jobs_root / job.id / "output.mp4"
     generation_gate = _generation_gate_for_current_loop()
-    generation_width = ((width + 63) // 64) * 64
-    generation_height = ((height + 63) // 64) * 64
+    is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
+    generation_width = width if is_cogvideox else ((width + 63) // 64) * 64
+    generation_height = height if is_cogvideox else ((height + 63) // 64) * 64
 
     async def generate_under_gate() -> bool:
         nonlocal started
@@ -369,8 +370,8 @@ async def _run_job(
                 output_path=output,
                 width=generation_width,
                 height=generation_height,
-                num_frames=_frame_count(seconds),
-                fps=24,
+                num_frames=5 if is_cogvideox else _frame_count(seconds),
+                fps=5 if is_cogvideox else 24,
                 seed=seed,
                 image=image_path,
                 output_width=width,
@@ -416,7 +417,7 @@ async def _run_job(
     except Exception as exc:  # noqa: BLE001
         from ..runtime.video_lane import VideoRuntimeError
 
-        logger.exception("LTX-2.3 video job %s failed", job.id)
+        logger.exception("Video generation job %s failed", job.id)
         message = (
             str(exc)
             if isinstance(exc, VideoRuntimeError)
@@ -439,27 +440,56 @@ async def create_video(
     input_reference: UploadFile | None = File(None),
 ):
     engine = _video_engine()
+    is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
     with _jobs_lock:
         if not _accepting_jobs:
             raise HTTPException(status_code=503, detail="video server is shutting down")
     prompt = prompt.strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt must not be blank")
-    if model not in {"ltx-2.3-mlx-q4", engine.model_name}:
-        raise HTTPException(status_code=400, detail="model must be ltx-2.3-mlx-q4")
+    allowed_models = {engine.model_name}
+    if is_cogvideox:
+        allowed_models.update(
+            {
+                "cogvideox-fun-5b-q4",
+                "cogvideox-fun-5b-q8",
+                "cogvideox-fun-5b-bf16",
+            }
+        )
+    else:
+        allowed_models.add("ltx-2.3-mlx-q4")
+    if model not in allowed_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model must match the served video model ({engine.model_name})",
+        )
     try:
         seconds_int = int(seconds)
     except ValueError as exc:
         raise HTTPException(
             status_code=400, detail="seconds must be an integer"
         ) from exc
+    if is_cogvideox and seconds_int != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="CogVideoX-Fun MVP currently supports seconds=1 only",
+        )
     if not 1 <= seconds_int <= 20:
         raise HTTPException(status_code=400, detail="seconds must be between 1 and 20")
-    width, height = _parse_size(size)
+    if is_cogvideox:
+        if size != "672x384":
+            raise HTTPException(
+                status_code=400,
+                detail="CogVideoX-Fun MVP currently supports size=672x384 only",
+            )
+        width, height = 672, 384
+    else:
+        width, height = _parse_size(size)
     generation_width = ((width + 63) // 64) * 64
     generation_height = ((height + 63) // 64) * 64
     if (
-        generation_width * generation_height * _frame_count(seconds_int)
+        not is_cogvideox
+        and generation_width * generation_height * _frame_count(seconds_int)
         > _MAX_PIXEL_FRAMES
     ):
         raise HTTPException(
@@ -478,6 +508,11 @@ async def create_video(
     evicted_id: str | None = None
     task: asyncio.Task | None = None
     try:
+        if is_cogvideox and input_reference is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="CogVideoX-Fun MVP currently supports text-to-video only",
+            )
         if input_reference is not None:
             image_path = job_dir / "reference.img"
             total = 0
@@ -496,7 +531,7 @@ async def create_video(
 
         job = _VideoJob(
             id=job_id,
-            model="ltx-2.3-mlx-q4",
+            model=model,
             prompt=prompt,
             seconds=str(seconds_int),
             size=f"{width}x{height}",
