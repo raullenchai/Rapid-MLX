@@ -111,7 +111,12 @@ class VideoGenerationEngine:
             lambda: self._generate_sync(**kwargs)
         ).result()
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(generated), output_path)
+        try:
+            shutil.move(str(generated), output_path)
+        except Exception:
+            Path(generated).unlink(missing_ok=True)
+            Path(output_path).unlink(missing_ok=True)
+            raise
 
     def _load_sync(self):
         if self._pipeline is not None:

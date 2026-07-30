@@ -50,6 +50,28 @@ def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
     assert len(set(thread_ids)) == 1
 
 
+def test_cogvideox_engine_cleans_failed_output_move(monkeypatch, tmp_path) -> None:
+    from vllm_mlx.video.engine import VideoGenerationEngine
+
+    engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
+    generated = tmp_path / "generated.mp4"
+    generated.write_bytes(b"complete")
+    output = tmp_path / "output.mp4"
+    monkeypatch.setattr(engine, "_generate_sync", lambda **kwargs: generated)
+
+    def fail_after_partial_copy(source, destination):
+        Path(destination).write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr("vllm_mlx.video.engine.shutil.move", fail_after_partial_copy)
+    with pytest.raises(OSError, match="disk full"):
+        engine.generate_sync(output_path=output, prompt="test")
+    asyncio.run(engine.close())
+
+    assert not generated.exists()
+    assert not output.exists()
+
+
 def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
     from vllm_mlx.video.engine import _resolve_tokenizer_path
 
