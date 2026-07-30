@@ -26,6 +26,13 @@ RMLX="$VENV/bin/rapid-mlx"
 ALIAS="${1:-qwen3.6-35b-8bit}"
 PORT="${RAPID_MLX_PORT:-8000}"
 B="http://localhost:$PORT"
+# Per-agent wall-clock budgets. The default gate model is a slow 35B hybrid with
+# reasoning: cold (agentic tool/long-context kernels still compiling) it runs
+# ~8 tok/s, warm ~23 tok/s. A multi-turn fix with a large agent system prompt can
+# approach the old 260/300s knee cold, so give generous headroom (the kernel
+# warmup after serve-ready also helps). A genuine hang still fails on the budget.
+AGENT_TO="${AGENT_SMOKE_TIMEOUT:-480}"
+HERMES_TO="${HERMES_SMOKE_TIMEOUT:-600}"
 WORK="$HOME/agent-smoke-work"
 LOG="$HOME/agent-smoke-serve.log"
 SERVE_PID=""
@@ -108,6 +115,16 @@ for i in $(seq 1 120); do
   [ "$i" = 120 ] && { tail -20 "$LOG"; fail "serve not ready in 600s"; }
 done
 
+# Warm the model kernels before the timed agents. ``/v1/models`` returning above
+# only means the server bound the port — the FIRST real completion still JIT-
+# compiles the hybrid GatedDeltaNet / attention Metal kernels (cold ~8 tok/s vs
+# warm ~23). Paying that here, untimed, keeps a cold shader cache from pushing
+# the first agent past its per-agent budget. Best-effort — never fatal.
+echo "warming kernels…"
+curl -s -m 180 "$B/v1/chat/completions" -H 'Content-Type: application/json' \
+  -d "{\"model\":\"$ALIAS\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}],\"max_tokens\":16,\"temperature\":0}" \
+  >/dev/null 2>&1 || true
+
 # ---- the task: a buggy factorial + a failing test the agent must fix -----
 seed_repo() {
   local d="$WORK/$1"; rm -rf "$d"; mkdir -p "$d"; cd "$d" || return 1
@@ -130,32 +147,40 @@ TASK='Run python3 test_calc.py, it fails. Fix the bug in calc.py so all assertio
 R_CLAUDE=FAIL
 for _try in 1 2; do
   seed_repo claude
-  TO 260 env ANTHROPIC_BASE_URL="$B" ANTHROPIC_API_KEY=not-needed \
+  TO "$AGENT_TO" env ANTHROPIC_BASE_URL="$B" ANTHROPIC_API_KEY=not-needed \
     claude -p "$TASK" --model "$ALIAS" --dangerously-skip-permissions >/dev/null 2>&1
   [ "$(verify claude)" = PASS ] && { R_CLAUDE=PASS; break; }
 done
 
 # ---- Codex (agents codex --setup writes ~/.codex/config.toml) ------------
+# Pass --base-url so setup points at OUR serve port (not the default :8000) —
+# otherwise the written base_url is wrong and detection can't reach the model.
 save_cfg "$CODEX_CFG"
-"$RMLX" agents codex --setup >/dev/null 2>&1
+"$RMLX" agents codex --setup --base-url "$B/v1" >/dev/null 2>&1
 patch_port "$CODEX_CFG"
 R_CODEX=FAIL
 for _try in 1 2; do
   seed_repo codex
-  TO 260 codex exec "$TASK" --model "$ALIAS" \
+  TO "$AGENT_TO" codex exec "$TASK" --model "$ALIAS" \
     --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check >/dev/null 2>&1
   [ "$(verify codex)" = PASS ] && { R_CODEX=PASS; break; }
 done
 restore_cfg "$CODEX_CFG"
 
-# ---- Hermes (agents hermes --setup; auto-writes context_length >= 64K) ----
+# ---- Hermes (agents hermes --setup writes ~/.hermes/config.yaml) ----------
+# --base-url is REQUIRED here: Hermes rejects any model whose context_length is
+# below 64K, and setup only writes the model's real context (e.g. 262144) when
+# it can reach the running server to detect it. Without --base-url, setup queries
+# the default :8000 (empty in this run), falls back to the 32768 default, and
+# Hermes refuses to start every time. Give hermes a third attempt — the gate
+# model occasionally hallucinates a "tests already pass" no-op (~1 in 3).
 save_cfg "$HERMES_CFG"
-"$RMLX" agents hermes --setup >/dev/null 2>&1
+"$RMLX" agents hermes --setup --base-url "$B/v1" >/dev/null 2>&1
 patch_port "$HERMES_CFG"
 R_HERMES=FAIL
-for _try in 1 2; do
+for _try in 1 2 3; do
   seed_repo hermes
-  TO 300 hermes chat -q "$TASK" -Q -m "$ALIAS" >/dev/null 2>&1
+  TO "$HERMES_TO" hermes chat -q "$TASK" -Q -m "$ALIAS" >/dev/null 2>&1
   [ "$(verify hermes)" = PASS ] && { R_HERMES=PASS; break; }
 done
 restore_cfg "$HERMES_CFG"
@@ -164,7 +189,7 @@ restore_cfg "$HERMES_CFG"
 R_AIDER=FAIL
 for _try in 1 2; do
   seed_repo aider
-  TO 260 env OPENAI_API_BASE="$B/v1" OPENAI_API_KEY=not-needed \
+  TO "$AGENT_TO" env OPENAI_API_BASE="$B/v1" OPENAI_API_KEY=not-needed \
     aider --model "openai/$ALIAS" --message "$TASK" \
     --yes-always --no-auto-commits --no-show-model-warnings calc.py >/dev/null 2>&1
   [ "$(verify aider)" = PASS ] && { R_AIDER=PASS; break; }
