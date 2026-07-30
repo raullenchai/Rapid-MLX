@@ -354,6 +354,87 @@ def _frame_count(seconds: int, fps: int = 24) -> int:
     return max(9, round((requested - 1) / 8) * 8 + 1)
 
 
+def _video_capabilities(engine) -> dict:
+    """Describe the live video model using the route's validation contract."""
+    family = getattr(engine, "video_family", "ltx-2.3")
+    native_fps = 5 if family == "cogvideox-fun" else getattr(engine, "native_fps", 24)
+    model_type = None
+    max_area = None
+    if family == "wan":
+        wan_engine = getattr(engine, "_wan_engine", None)
+        model_type = getattr(wan_engine, "model_type", None)
+        max_area = getattr(wan_engine, "max_area", None)
+
+    if family == "cogvideox-fun":
+        modes = ["text-to-video"]
+        size = {"type": "fixed", "values": ["672x384"]}
+        seconds = {"minimum": 1, "maximum": 1, "default": 1}
+        frames = {"minimum": 5, "maximum": 1201, "step": 4, "offset": 1}
+    elif family == "wan":
+        modes = {
+            "t2v": ["text-to-video"],
+            "i2v": ["image-to-video"],
+            "ti2v": ["text-to-video", "image-to-video"],
+        }.get(model_type, ["text-to-video", "image-to-video"])
+        size = {
+            "type": "range",
+            "width": {"minimum": 256, "maximum": 1920, "multiple_of": 64},
+            "height": {"minimum": 256, "maximum": 1920, "multiple_of": 64},
+            "maximum_area": max_area,
+            "also_supported": ["1280x720", "720x1280"],
+        }
+        seconds = {"minimum": 1, "maximum": 20, "default": 4}
+        frames = {"minimum": 5, "maximum": 1201, "step": 4, "offset": 1}
+    else:
+        modes = ["text-to-video", "image-to-video"]
+        size = {
+            "type": "range",
+            "width": {"minimum": 256, "maximum": 1920, "multiple_of": 64},
+            "height": {"minimum": 256, "maximum": 1920, "multiple_of": 64},
+            "also_supported": ["1280x720", "720x1280"],
+        }
+        seconds = {"minimum": 1, "maximum": 20, "default": 4}
+        frames = {"minimum": 9, "maximum": 1201, "step": 8, "offset": 1}
+
+    return {
+        "object": "video.capabilities",
+        "model": engine.model_name,
+        "modality": "video-gen",
+        "family": family,
+        "modes": modes,
+        "limits": {
+            "size": size,
+            "seconds": seconds,
+            "fps": {
+                "minimum": native_fps if family == "wan" else 1,
+                "maximum": native_fps if family == "wan" else 60,
+                "default": native_fps,
+                "fixed": family == "wan",
+            },
+            "frames": frames,
+            "workload": {
+                "metric": "pixel_frames",
+                "maximum": _MAX_PIXEL_FRAMES,
+                "dimension_rounding": (
+                    "none" if family == "cogvideox-fun" else "ceil_to_64"
+                ),
+            },
+            "input_reference": {
+                "maximum_bytes": _MAX_REFERENCE_BYTES,
+                "maximum_pixels": _MAX_REFERENCE_PIXELS,
+                "formats": ["jpeg", "png", "webp"],
+            },
+        },
+        "controls": {
+            "guidance_scale": {"minimum": 1.0, "maximum": 30.0},
+            "conditioning_strength": (
+                {"minimum": 0.0, "maximum": 1.0} if family == "ltx-2.3" else None
+            ),
+            "negative_prompt": True,
+        },
+    }
+
+
 def _validate_reference_image(path: Path) -> None:
     try:
         from PIL import Image
@@ -735,6 +816,12 @@ async def create_video(
             shutil.rmtree, _jobs_root / evicted_id, ignore_errors=True
         )
     return job.public()
+
+
+@router.get("/v1/videos/capabilities", dependencies=[Depends(verify_api_key)])
+async def video_capabilities():
+    """Return machine-readable limits for the currently served video model."""
+    return _video_capabilities(_video_engine())
 
 
 def _get_job(video_id: str) -> _VideoJob:
