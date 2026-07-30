@@ -1064,6 +1064,105 @@ def test_is_weightless_stub_real_tree(tmp_path, monkeypatch):
     assert gate.is_weightless_stub("mlx-community/gemma-4-e4b-it-4bit") is False
 
 
+def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypatch):
+    """Video-gen / diffusers repos ship their weights as component files
+    (``transformer.safetensors`` / ``vae.safetensors`` / ...) that mlx-lm's
+    text ``model*.safetensors`` glob never matches — so ``is_repo_cached``
+    reads a fully-cached video model as weightless. That must NOT surface the
+    "config cached, weights missing — will download ~N GB" notice on every
+    serve of an already-downloaded video model (the CogVideoX-Fun / LTX-2.3
+    false alarm). Exercises the real ``_snapshot_has_alt_layout_weights``."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--dgrauet--CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
+    sha = "027bc0493a9dc41fad584568a9453961e18abb55"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    # Real CogVideoX-Fun layout: component weights at the snapshot root,
+    # none of them named ``model*.safetensors``.
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    (snap / "vae.safetensors").write_bytes(b"v" * 4096)
+    (snap / "text_encoder.safetensors").write_bytes(b"e" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    # is_repo_cached (text glob) still reads False — video weights aren't
+    # ``model*.safetensors`` — but the stub notice must be suppressed.
+    assert gate.is_repo_cached("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4") is False
+    assert (
+        gate._snapshot_has_alt_layout_weights(
+            "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
+        )
+        is True
+    )
+    assert gate.is_weightless_stub("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4") is False
+
+
+def test_is_weightless_stub_false_for_nested_diffusers_weights(tmp_path, monkeypatch):
+    """Diffusers repos that nest weights in ``transformer/`` / ``vae/``
+    subdirectories are still recognized as weight-present — the alt-layout
+    walk is recursive, not root-only."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--some--diffusers-repo"
+    sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    snap = repo_root / "snapshots" / sha
+    (snap / "transformer").mkdir(parents=True)
+    (snap / "vae").mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
+        b"t" * 4096
+    )
+    (snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert gate._snapshot_has_alt_layout_weights("some/diffusers-repo") is True
+    assert gate.is_weightless_stub("some/diffusers-repo") is False
+
+
+def test_is_weightless_stub_true_for_partial_text_download(tmp_path, monkeypatch):
+    """A genuinely-incomplete TEXT download (one shard present, a later shard
+    still missing) must STAY a weightless stub — finding ⑥'s original intent.
+    Its shard is ``model-*.safetensors`` at the root, which the alt-layout
+    walk deliberately skips (that's the text loader's own glob), so the stub
+    notice still fires and warns the user about the pending download."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--gemma-4-27b-it-4bit"
+    sha = "1111111111111111111111111111111111111111"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    # Sharded index expects two shards; only shard 1/2 is on disk.
+    (snap / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"s" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    # No alt-layout weights (the lone shard is a root model*.safetensors), the
+    # cache is incomplete, so the stub notice must still fire.
+    assert (
+        gate._snapshot_has_alt_layout_weights("mlx-community/gemma-4-27b-it-4bit")
+        is False
+    )
+    assert gate.is_repo_cached("mlx-community/gemma-4-27b-it-4bit") is False
+    assert gate.is_weightless_stub("mlx-community/gemma-4-27b-it-4bit") is True
+
+
 def test_weightless_stub_notice_is_size_free_and_no_extra_hf_call(monkeypatch):
     """The notice names the repo and says config cached / weights missing —
     and is deliberately SIZE-FREE. Computing a byte figure here would fire a

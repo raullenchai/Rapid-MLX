@@ -438,6 +438,67 @@ def is_repo_cached(repo_id: str) -> bool:
     return False
 
 
+def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
+    """True if the resolved snapshot holds non-empty ``.safetensors`` weights
+    that mlx-lm's text ``model*.safetensors`` root-glob does NOT pick up.
+
+    Non-text models don't lay their weights out the way :func:`is_repo_cached`
+    (which mirrors mlx-lm's text loader) expects. Video-gen repos ship
+    component files at the snapshot root — CogVideoX-Fun has
+    ``transformer.safetensors`` / ``vae.safetensors`` / ``text_encoder.safetensors``,
+    LTX-2.3 has ``transformer.safetensors`` / ``vae_encoder.safetensors`` /
+    ``vocoder.safetensors`` / … — and diffusers repos nest them in
+    ``transformer/`` / ``vae/`` subdirectories. None of those match
+    ``model*.safetensors`` at the root, so ``is_repo_cached`` reads a fully
+    cached video model as *weightless*, which would make
+    :func:`is_weightless_stub` cry wolf ("config cached, weights missing —
+    will download ~N GB") on every serve of an already-downloaded video model.
+
+    A partial *text* download (``model-00001-of-00002.safetensors`` present,
+    a later shard still missing) is deliberately NOT matched: its shard names
+    begin with ``model`` at the snapshot root, so they're treated as the text
+    loader's own weights and skipped here — leaving that repo to flow through
+    to the stub notice, which is exactly finding ⑥'s original intent.
+
+    Mirrors :func:`is_repo_cached`'s snapshot resolution (``refs/main`` →
+    pinned sha) so both read the same on-disk snapshot. Returns ``False`` on
+    any internal error so the caller defaults to the existing text-glob path.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        repo_root = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+        )
+        resolved_sha = _resolved_snapshot_sha(repo_root)
+        if resolved_sha is None:
+            return False
+        snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
+        if not os.path.isdir(snap_dir):
+            return False
+        snap_real = os.path.realpath(snap_dir)
+        for dirpath, _dirnames, filenames in os.walk(snap_dir):
+            at_root = os.path.realpath(dirpath) == snap_real
+            for fname in filenames:
+                if not fname.endswith(".safetensors"):
+                    continue
+                # A text-loader weight is ``model*.safetensors`` AT the
+                # snapshot root; that's is_repo_cached's job, not ours.
+                # Anything else — a component file, or a nested shard — is
+                # an alt-layout weight the text glob can't see.
+                if at_root and _is_model_weight_filename(fname):
+                    continue
+                try:
+                    if os.path.getsize(os.path.join(dirpath, fname)) > 0:
+                        return True
+                except OSError:
+                    continue
+        return False
+    except Exception:
+        return False
+
+
 def is_weightless_stub(repo_id: str) -> bool:
     """True if ``repo_id``'s config is cached but its weight shards are NOT.
 
@@ -456,6 +517,15 @@ def is_weightless_stub(repo_id: str) -> bool:
     instead of a generic notice. Local paths and never-touched repos
     return ``False``.
 
+    Non-text scope (video-gen false-alarm fix): the underlying weight
+    probe is mlx-lm's text glob ``model*.safetensors``, which video-gen /
+    diffusers repos never satisfy (their weights are component files like
+    ``transformer.safetensors`` / ``vae.safetensors``). A fully-cached
+    video model would therefore look weightless and mis-fire this notice on
+    every serve. :func:`_snapshot_has_alt_layout_weights` detects that
+    alt layout so the stub notice stays scoped to genuinely-empty text
+    stubs.
+
     Returns ``False`` on any internal error — a best-effort diagnostic
     must never break an otherwise-fine serve.
     """
@@ -470,6 +540,12 @@ def is_weightless_stub(repo_id: str) -> bool:
         # a real cached path (str) counts as "config present".
         cached_config = try_to_load_from_cache(repo_id, "config.json")
         if not isinstance(cached_config, str):
+            return False
+        # A non-text model (video-gen / diffusers) stores its weights as
+        # component files the text glob can't see — those are present, not
+        # "missing", so it's not a stub. Check this BEFORE the text-glob
+        # probe so a fully-cached video model doesn't mis-fire the notice.
+        if _snapshot_has_alt_layout_weights(repo_id):
             return False
         # Config is on disk; the stub is exactly "config present but the
         # loader's weight glob (model*.safetensors) is not satisfied".
