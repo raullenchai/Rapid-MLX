@@ -185,6 +185,7 @@ class VideoGenerationEngine:
         try:
             import mlx.core as mx  # noqa: F401
             from huggingface_hub import snapshot_download
+
             from videox_fun_mlx.models.cogvideox_transformer3d import (
                 CogVideoXTransformer3DModel,
             )
@@ -199,10 +200,8 @@ class VideoGenerationEngine:
             from videox_fun_mlx.pipeline.scheduler import DDIMScheduler
         except ImportError as exc:
             raise VideoBackendUnavailableError(
-                "CogVideoX requires the rapid-mlx[video] dependencies and the "
-                "VideoX-Fun-mlx runtime. Install the extra, then install "
-                "https://github.com/dgrauet/VideoX-Fun-mlx and ensure its "
-                "repository root is on PYTHONPATH."
+                "CogVideoX requires the rapid-mlx[video] dependencies. "
+                "Install them with: pip install 'rapid-mlx[video]'."
             ) from exc
 
         model_path = snapshot_download(self.model_id)

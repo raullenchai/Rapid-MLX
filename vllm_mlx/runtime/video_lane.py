@@ -64,7 +64,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     missing = []
     if _is_cogvideox_name(model_name):
         cogvideox_modules = {
-            "videox_fun_mlx": "the VideoX-Fun-mlx source runtime on PYTHONPATH",
+            "videox_fun_mlx": "the bundled VideoX-Fun-mlx runtime",
             "mlx_arsenal": "mlx-arsenal",
             "imageio": "imageio",
             "PIL": "Pillow",

@@ -392,6 +392,7 @@ video = [
     "mlx-arsenal>=0.10.1; platform_system == 'Darwin' and python_version >= '3.11'",
     "imageio[ffmpeg]>=2.34.0; platform_system == 'Darwin' and python_version >= '3.11'",
     "pillow>=10.0.0; platform_system == 'Darwin' and python_version >= '3.11'",
+    "sentencepiece>=0.2.0; platform_system == 'Darwin' and python_version >= '3.11'",
 ]
 
 [project.urls]
@@ -433,13 +434,18 @@ vllm_mlx = [
     "audio/sa3/NOTICE",
     "audio/sa3/README.md",
 ]
+videox_fun_mlx = ["LICENSE", "NOTICE"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["vllm_mlx*"]
+include = ["vllm_mlx*", "videox_fun_mlx*"]
 
 [tool.ruff]
 line-length = 88
+extend-exclude = [
+    # Vendored CogVideoX-Fun MLX runtime. Keep iso-upstream.
+    "videox_fun_mlx",
+]
 
 [tool.ruff.format]
 # Vendored upstream files — keep formatting identical to the source PR
@@ -451,6 +457,8 @@ exclude = [
     # Vendored Stability AI MLX Stable Audio 3 (models + scripts). Keep
     # formatting identical to the upstream source so future syncs stay clean.
     "vllm_mlx/audio/sa3/**/*.py",
+    # Vendored CogVideoX-Fun MLX runtime. Keep iso-upstream.
+    "videox_fun_mlx/**/*.py",
 ]
 
 [tool.ruff.lint]
