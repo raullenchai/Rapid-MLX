@@ -52,26 +52,30 @@ def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
     assert thread_ids[0] != caller_thread_id
 
 
-def test_cogvideox_engine_cleans_failed_output_move(monkeypatch, tmp_path) -> None:
+def test_cogvideox_engine_cleans_failed_output_copy(monkeypatch, tmp_path) -> None:
     from vllm_mlx.video.engine import VideoGenerationEngine
 
     engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
     generated = tmp_path / "generated.mp4"
     generated.write_bytes(b"complete")
     output = tmp_path / "output.mp4"
+    output.write_bytes(b"original")
     monkeypatch.setattr(engine, "_generate_sync", lambda **kwargs: generated)
 
     def fail_after_partial_copy(source, destination):
         Path(destination).write_bytes(b"partial")
         raise OSError("disk full")
 
-    monkeypatch.setattr("vllm_mlx.video.engine.shutil.move", fail_after_partial_copy)
+    monkeypatch.setattr(
+        "vllm_mlx.video.engine.shutil.copyfile", fail_after_partial_copy
+    )
     with pytest.raises(OSError, match="disk full"):
         engine.generate_sync(output_path=output, prompt="test")
     asyncio.run(engine.close())
 
     assert not generated.exists()
-    assert not output.exists()
+    assert output.read_bytes() == b"original"
+    assert not list(tmp_path.glob(".output.mp4.*.tmp"))
 
 
 def test_cogvideox_engine_cleans_output_when_directory_creation_fails(

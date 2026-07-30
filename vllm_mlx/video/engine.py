@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import queue
 import shutil
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 _COGVIDEOX_TOKENIZER_REPO = "alibaba-pai/CogVideoX-Fun-V1.5-5b-InP"
@@ -62,12 +67,37 @@ class VideoGenerationEngine:
     def __init__(self, model_id: str, *, output_dir: str | Path | None = None):
         self.model_id = model_id
         self.output_dir = Path(output_dir) if output_dir else None
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="rapid-mlx-video"
+        self._work_queue: queue.Queue[tuple[Future, Callable[[], Any]] | None] = (
+            queue.Queue()
         )
+        self._state_lock = threading.Lock()
+        self._worker = threading.Thread(
+            target=self._worker_main,
+            name="rapid-mlx-video",
+            daemon=True,
+        )
+        self._worker.start()
         self._pipeline = None
         self._model_path: str | None = None
         self._closed = False
+
+    def _worker_main(self) -> None:
+        while (item := self._work_queue.get()) is not None:
+            future, function = item
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(function())
+            except BaseException as exc:
+                future.set_exception(exc)
+
+    def _submit(self, function: Callable[[], Any]) -> Future:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("video engine is closed")
+            future: Future = Future()
+            self._work_queue.put((future, function))
+            return future
 
     async def generate(
         self,
@@ -82,11 +112,7 @@ class VideoGenerationEngine:
         guidance_scale: float = 6.0,
         seed: int = 42,
     ) -> Path:
-        if self._closed:
-            raise RuntimeError("video engine is closed")
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._executor,
+        future = self._submit(
             lambda: self._generate_sync(
                 prompt=prompt,
                 negative_prompt=negative_prompt,
@@ -97,25 +123,34 @@ class VideoGenerationEngine:
                 steps=steps,
                 guidance_scale=guidance_scale,
                 seed=seed,
-            ),
+            )
         )
+        return await asyncio.wrap_future(future)
 
     def generate_sync(self, *, output_path: Path, **kwargs) -> None:
         """Generate from a non-MLX caller thread using the persistent worker."""
-        if self._closed:
-            raise RuntimeError("video engine is closed")
         kwargs.setdefault("negative_prompt", "")
         kwargs.setdefault("steps", 50)
         kwargs.setdefault("guidance_scale", 6.0)
-        generated = self._executor.submit(
-            lambda: self._generate_sync(**kwargs)
-        ).result()
+        generated = self._submit(lambda: self._generate_sync(**kwargs)).result()
+        staged: Path | None = None
         try:
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(generated), output_path)
+            handle = tempfile.NamedTemporaryFile(
+                prefix=f".{Path(output_path).name}.",
+                suffix=".tmp",
+                dir=Path(output_path).parent,
+                delete=False,
+            )
+            handle.close()
+            staged = Path(handle.name)
+            shutil.copyfile(generated, staged)
+            os.replace(staged, output_path)
+            Path(generated).unlink(missing_ok=True)
         except Exception:
             Path(generated).unlink(missing_ok=True)
-            Path(output_path).unlink(missing_ok=True)
+            if staged is not None:
+                staged.unlink(missing_ok=True)
             raise
 
     def _load_sync(self):
@@ -212,7 +247,12 @@ class VideoGenerationEngine:
         return output_path
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        await asyncio.to_thread(self._executor.shutdown, wait=True, cancel_futures=True)
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._work_queue.put(None)
+        # The route drains jobs for 30 seconds first. Keep this final join
+        # bounded; the daemon worker may safely finish a non-interruptible
+        # Metal graph without preventing process exit.
+        await asyncio.to_thread(self._worker.join, 1.0)

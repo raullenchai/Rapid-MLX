@@ -12,6 +12,7 @@ The CogVideoX MLX port is currently source-only:
 brew install ffmpeg
 pip install 'rapid-mlx[video]'
 git clone https://github.com/dgrauet/VideoX-Fun-mlx.git
+git -C VideoX-Fun-mlx checkout 26326e7d52e6762375227b320d77003dac764d14
 export PYTHONPATH="$PWD/VideoX-Fun-mlx:$PYTHONPATH"
 ```
 
