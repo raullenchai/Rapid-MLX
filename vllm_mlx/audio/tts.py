@@ -5,11 +5,13 @@ Text-to-Speech (TTS) engine using mlx-audio.
 Supports:
 - Kokoro (fast, lightweight)
 - Chatterbox (multilingual, expressive)
+- IndexTTS (zero-shot voice cloning)
 - VibeVoice (realtime, low latency)
 - VoxCPM (Chinese/English, high quality)
 """
 
 import io
+import json
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -99,6 +101,66 @@ QWEN3_TTS_VOICEDESIGN_DEFAULT_INSTRUCT = (
 # the registry ``default_voice`` for the VoiceDesign aliases so the
 # voice-omitted / cold-start path validates without a real speaker name.
 QWEN3_TTS_VOICEDESIGN_VOICES = ["describe"]
+INDEXTTS_VOICES = ["clone"]
+
+
+def is_indextts_model(model_name: str) -> bool:
+    """True for IndexTTS checkpoints and aliases."""
+    name_lower = model_name.lower()
+    return "indextts" in name_lower or "index-tts" in name_lower
+
+
+def _load_indextts_model(model_name: str):
+    """Load IndexTTS without mutating its incomplete cached config.
+
+    The community checkpoints include ``tokenizer.model`` but omit the
+    ``tokenizer_name`` field required by mlx-audio's ``ModelArgs``. Patch an
+    in-memory copy and otherwise follow mlx-audio's normal load sequence.
+    """
+    import mlx.core as mx
+    from huggingface_hub import snapshot_download
+    from mlx_audio.tts.models.indextts.indextts import Model
+
+    local_path = Path(model_name).expanduser()
+    if local_path.is_dir():
+        model_path = local_path.resolve()
+    else:
+        model_path = Path(
+            snapshot_download(
+                model_name,
+                allow_patterns=[
+                    "config.json",
+                    "tokenizer.model",
+                    "*.safetensors",
+                    "*.safetensors.index.json",
+                ],
+            )
+        )
+    with open(model_path / "config.json") as config_file:
+        config = json.load(config_file)
+
+    tokenizer_path = model_path / "tokenizer.model"
+    if not tokenizer_path.is_file():
+        raise FileNotFoundError(
+            f"IndexTTS tokenizer not found at {tokenizer_path}; "
+            "the checkpoint must include tokenizer.model"
+        )
+    # mlx-audio treats tokenizer_name as a repo id first and a directory
+    # second, appending ``tokenizer.model`` itself on the local fallback.
+    config["tokenizer_name"] = str(model_path)
+
+    model = Model(config)
+    weights = {}
+    for weight_path in sorted(model_path.glob("*.safetensors")):
+        weights.update(mx.load(str(weight_path)))
+    if not weights:
+        raise FileNotFoundError(f"No IndexTTS safetensors found in {model_path}")
+    if hasattr(model, "sanitize"):
+        weights = model.sanitize(weights)
+    model.load_weights(list(weights.items()), strict=True)
+    mx.eval(model.parameters())
+    model.eval()
+    return model
 
 
 def is_qwen3_tts_model(model_name: str) -> bool:
@@ -405,6 +467,8 @@ class TTSEngine:
             # CustomVoice split is a per-request generate-arg distinction, not
             # a separate loader — see ``_is_qwen3_voicedesign``.
             return "qwen3_tts"
+        elif is_indextts_model(model_name):
+            return "indextts"
         elif "f5-tts" in name_lower or "f5_tts" in name_lower:
             return "f5"
         else:
@@ -425,6 +489,12 @@ class TTSEngine:
             self.model = F5TTS.from_pretrained(self.model_name)
             self._loaded = True
             logger.info(f"TTS model loaded (f5): {self.model_name}")
+            return
+
+        if self._model_family == "indextts":
+            self.model = _load_indextts_model(self.model_name)
+            self._loaded = True
+            logger.info(f"TTS model loaded (indextts): {self.model_name}")
             return
 
         try:
@@ -480,7 +550,8 @@ class TTSEngine:
                 ref timbre on top of its default voice); and by Qwen3-TTS
                 **Base** (optional — the Base variant ignores ``voice`` when
                 ``ref_audio`` is set, while CustomVoice ignores ``ref_audio``
-                and keeps its named speaker). Use a clean 5-10s clip at the
+                and keeps its named speaker); and by IndexTTS (required — it
+                has no predefined speakers). Use a clean 5-10s clip at the
                 model's native sample rate. Ignored by families without a
                 cloning surface.
             ref_text: Optional transcript of ``ref_audio`` (its exact spoken
@@ -513,7 +584,23 @@ class TTSEngine:
             # forwarding Kokoro's single-letter ``lang_code="a"`` to it
             # would mis-hint the language. Every other family keeps the
             # pre-existing call shape unchanged.
-            if self._model_family == "chatterbox":
+            if self._model_family == "indextts":
+                if not ref_audio:
+                    raise ValueError(
+                        "IndexTTS requires ref_audio (a reference speech clip "
+                        "to clone); it has no predefined speakers."
+                    )
+                # Older supported mlx-audio releases require an mx.array;
+                # newer releases also accept a path. Decode explicitly so the
+                # route behaves identically across the supported range.
+                from mlx_audio.tts.generate import load_audio
+
+                ref_waveform = load_audio(
+                    ref_audio,
+                    sample_rate=getattr(self.model, "sample_rate", 24000),
+                )
+                gen_kwargs: dict = {"text": text, "ref_audio": ref_waveform}
+            elif self._model_family == "chatterbox":
                 # Chatterbox's ``generate`` steers expressiveness through
                 # ``exaggeration`` and zero-shot cloning through
                 # ``ref_audio``. It DOES also accept ``voice``/``speed``/
@@ -917,6 +1004,8 @@ class TTSEngine:
             if self._is_qwen3_voicedesign():
                 return list(QWEN3_TTS_VOICEDESIGN_VOICES)
             return list(QWEN3_TTS_VOICES)
+        elif self._model_family == "indextts":
+            return list(INDEXTTS_VOICES)
         else:
             return ["default"]
 

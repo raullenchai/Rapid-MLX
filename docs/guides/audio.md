@@ -3,7 +3,7 @@
 rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
 - **STT (Speech-to-Text)**: Whisper, Parakeet
-- **TTS (Text-to-Speech)**: Kokoro, Chatterbox, VibeVoice, VoxCPM, Dia
+- **TTS (Text-to-Speech)**: Kokoro, Chatterbox, IndexTTS, VibeVoice, VoxCPM, Dia
 - **Audio Processing**: SAM-Audio (voice separation)
 
 ## Supported Aliases (R10-C1)
@@ -20,6 +20,7 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 | `vibevoice` / `vibevoice-realtime` | TTS | `mlx-community/VibeVoice-Realtime-0.5B-4bit` |
 | `voxcpm` | TTS | `mlx-community/VoxCPM1.5` |
 | `dia` | TTS | `mlx-community/Dia-1.6B-4bit` |
+| `indextts` / `indextts-1.5` | TTS voice cloning | `mlx-community/IndexTTS-1.5` |
 | `whisper` / `whisper-1` / `whisper-large-v3` | STT | `mlx-community/whisper-large-v3-mlx` |
 | `whisper-large-v3-turbo` | STT | `mlx-community/whisper-large-v3-turbo` |
 | `whisper-medium` / `-small` / `-base` / `-tiny` | STT | `mlx-community/whisper-{size}-mlx` |
@@ -51,6 +52,22 @@ rapid-mlx serve whisper-large-v3
 curl -s http://localhost:8000/v1/audio/transcriptions \
   -F "model=whisper-large-v3" \
   -F "file=@speech.mp3"
+```
+
+### IndexTTS zero-shot voice cloning
+
+IndexTTS has no predefined speakers. Send a base64-encoded reference clip
+through the rapid-mlx `ref_audio` extension; unlike F5-TTS and Qwen3-TTS Base,
+IndexTTS does not require a transcript of that clip.
+
+```bash
+rapid-mlx serve indextts
+
+REF_AUDIO=$(base64 < reference.wav | tr -d '\n')
+curl -s http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"indextts\",\"input\":\"Hello in the cloned voice.\",\"ref_audio\":\"$REF_AUDIO\"}" \
+  --output cloned.wav
 ```
 
 If `mlx-audio` is missing, the boot guard exits with rc=2 and the install hint:

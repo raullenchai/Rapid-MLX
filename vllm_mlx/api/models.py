@@ -2747,6 +2747,14 @@ class AudioSpeechRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_f5_reference_pair(self):
+        model_lower = self.model.lower()
+        is_indextts = "indextts" in model_lower or "index-tts" in model_lower
+        if is_indextts:
+            if self.ref_text is not None and self.ref_audio is None:
+                raise ValueError("ref_text requires ref_audio")
+            if self.ref_text is not None and not self.ref_text.strip():
+                raise ValueError("ref_text must not be blank")
+            return self
         if (self.ref_audio is None) != (self.ref_text is None):
             raise ValueError("ref_audio and ref_text must be provided together")
         if self.ref_text is not None and not self.ref_text.strip():

@@ -1857,6 +1857,7 @@ def _allowed_voices_for(model_name: str) -> list[str]:
         QWEN3_TTS_VOICEDESIGN_VOICES,
         QWEN3_TTS_VOICES,
         _list_snapshot_voices,
+        is_indextts_model,
         is_qwen3_tts_model,
         is_qwen3_voicedesign_model,
     )
@@ -1894,6 +1895,8 @@ def _allowed_voices_for(model_name: str) -> list[str]:
         # registry ``default_voice`` (``Serena``) is a member of this
         # list so the cold-start / voice-omitted path validates.
         return list(QWEN3_TTS_VOICES)
+    if is_indextts_model(model_name):
+        return ["clone"]
     if "f5-tts" in name_lower or "f5_tts" in name_lower:
         # F5 conditions on a reference waveform rather than a named
         # safetensors voice. ``clone`` is the registry's UI/API sentinel;
@@ -1926,12 +1929,13 @@ def _allowed_voices_for(model_name: str) -> list[str]:
 def _is_clone_capable_model(model_name: str) -> bool:
     """Whether ``model_name`` can clone a voice from an inline reference.
 
-    Three TTS families condition synthesis on a ``ref_audio`` reference
+    Four TTS families condition synthesis on a ``ref_audio`` reference
     clip sent on ``/v1/audio/speech``:
 
     * **F5-TTS** — always conditions on a reference waveform.
     * **Chatterbox** — optionally clones the reference timbre on top of
       its default voice (its engine branch forwards ``ref_audio``).
+    * **IndexTTS** — requires a reference clip and has no named speakers.
     * **Qwen3-TTS Base** — the ``...-Base-...`` repo clones a voice
       zero-shot from the reference. Its CustomVoice sibling does NOT
       clone: it keeps a predefined named speaker and ignores
@@ -1959,6 +1963,8 @@ def _is_clone_capable_model(model_name: str) -> bool:
     if "f5-tts" in name_lower or "f5_tts" in name_lower:
         return True
     if "chatterbox" in name_lower:
+        return True
+    if "indextts" in name_lower or "index-tts" in name_lower:
         return True
     repo = model_name.rsplit("/", 1)[-1].lower()
     tokens = set(re.split(r"[-_]", repo))
@@ -2024,7 +2030,11 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     exaggeration = request.exaggeration
 
     try:
-        from ..audio.tts import TTSEngine, UnsupportedAudioFormatError
+        from ..audio.tts import (
+            TTSEngine,
+            UnsupportedAudioFormatError,
+            is_indextts_model,
+        )
 
         # R7-H3 follow-up: alias resolution lives in a shared helper
         # (see ``_resolve_tts_model``) so the bare alias / ``"default"``
@@ -2051,12 +2061,29 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                     "error": {
                         "message": (
                             "ref_audio/ref_text voice cloning requires a "
-                            "clone-capable model (F5-TTS, Chatterbox, or "
-                            "Qwen3-TTS Base)."
+                            "clone-capable model (F5-TTS, Chatterbox, "
+                            "IndexTTS, or Qwen3-TTS Base)."
                         ),
                         "type": "invalid_request_error",
                         "code": "unsupported_voice_cloning",
                         "param": "model",
+                    }
+                },
+            )
+
+        if is_indextts_model(model_name) and ref_audio is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            f"model {model_name!r} is an IndexTTS "
+                            "voice-cloning-only repo. Supply ref_audio with a "
+                            "clean reference speech clip; ref_text is optional."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "missing_reference_audio",
+                        "param": "ref_audio",
                     }
                 },
             )
@@ -2247,7 +2274,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 with open(ref_path, "wb") as ref_file:
                     ref_file.write(ref_bytes)
                 gen_kwargs["ref_audio"] = ref_path.path
-                gen_kwargs["ref_text"] = ref_text
+                if ref_text is not None:
+                    gen_kwargs["ref_text"] = ref_text
                 audio = _tts_engine.generate(input_text, **gen_kwargs)
         else:
             audio = _tts_engine.generate(input_text, **gen_kwargs)

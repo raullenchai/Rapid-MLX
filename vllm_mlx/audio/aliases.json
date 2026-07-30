@@ -111,6 +111,20 @@
     "default_voice": "clone",
     "notes": "F5-TTS (pure-MLX, no torch): EN+ZH multilingual, zero-shot voice CLONING via ref_audio (24kHz clip) + ref_text. Fills the Chinese expressive/cloneable gap (Qwen3-TTS is flat, Chatterbox English-only). With no ref it uses a packaged default voice; supply a Chinese ref for a natural Chinese narrator."
   },
+  "indextts": {
+    "type": "tts",
+    "hf_id": "mlx-community/IndexTTS-1.5",
+    "family": "indextts",
+    "default_voice": "clone",
+    "notes": "IndexTTS 1.5 zero-shot voice cloning. Requires ref_audio; the reference transcript is not required. No predefined speakers."
+  },
+  "indextts-1.5": {
+    "type": "tts",
+    "hf_id": "mlx-community/IndexTTS-1.5",
+    "family": "indextts",
+    "default_voice": "clone",
+    "notes": "Long-form alias for indextts — same IndexTTS 1.5 MLX checkpoint."
+  },
   "qwen3-tts-clone": {
     "type": "tts",
     "hf_id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16",
