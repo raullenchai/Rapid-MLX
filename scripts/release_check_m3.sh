@@ -25,6 +25,21 @@ set -euo pipefail
 MODEL="${MODEL:-qwen3.5-9b-4bit}"
 PY="${PY:-python3.12}"
 PORT="${PORT:-8000}"
+
+# G7b's consolidated `bench --tier harness` runs 5 harness profiles
+# (codex/opencode/hermes/aider/langchain) under ONE shared per-profile cap
+# (tier_runner's HARNESS_PROFILE_TIMEOUT_S, library default 300s). That default
+# is sized for a single fast harness — codex/opencode/aider/langchain each
+# finish <135s on the 9B gauntlet model — but the hermes profile runs 20+
+# serial agentic tests (~740s). 300s kills hermes mid-profile and false-fails
+# the release gate. Raise the cap for the whole gauntlet: exporting here means
+# every bench subprocess this script spawns later inherits it (the G7b harness
+# at the `--tier harness` call AND the G12 random sweep) — intended, and can
+# only make those gates more lenient, never stricter. The tier_runner library
+# default (300s) is left untouched for any non-gauntlet / standalone caller.
+# See knowledge/release-check-m3-tuning-backlog. Env-overridable.
+export HARNESS_PROFILE_TIMEOUT_S="${HARNESS_PROFILE_TIMEOUT_S:-1200}"
+
 LOG=/tmp/release-check-m3.log
 PIDFILE=/tmp/release-check-m3.pid
 

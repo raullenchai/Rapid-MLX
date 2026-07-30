@@ -529,7 +529,9 @@ def test_hermes_multi_step():
     """Hermes does a multi-step task (search → read → analyze)."""
     out, err = hermes_query(
         "Find the file aliases.json, read it, and tell me how many entries it has",
-        timeout_sec=180,
+        # Slow-but-completes on the 9B gauntlet model (~142s standalone, but
+        # variance pushes it past the old 180s cap under gauntlet contention).
+        timeout_sec=360,
     )
     fail_or_skip(err)
     # Should mention a number (we have ~22 aliases)
@@ -596,8 +598,15 @@ def test_hermes_code_with_tests():
 def test_hermes_code_review():
     """Hermes reads a file and gives a code review suggestion."""
     out, err = hermes_query(
-        "Read vllm_mlx/model_auto_config.py and suggest one specific improvement. Be concise.",
-        timeout_sec=120,
+        # Directive, no-clarify prompt: an open-ended "suggest an improvement"
+        # ask makes the 9B gauntlet model enter hermes' clarify flow, which
+        # blocks 120s per cycle on absent stdin in -Q mode and runs away past
+        # 600s. Giving an explicit path + forbidding clarification keeps the
+        # agent on-task (same class of fix as read_file basename->abspath, #1326).
+        "Read the file vllm_mlx/model_auto_config.py and suggest one specific "
+        "improvement to the code. Do not ask any clarifying questions — just "
+        "give your suggestion directly.",
+        timeout_sec=300,
     )
     fail_or_skip(err)
     # Should mention something about the code (patterns, config, etc.)
