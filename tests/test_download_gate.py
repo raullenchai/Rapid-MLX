@@ -1071,17 +1071,20 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     reads a fully-cached video model as weightless. That must NOT surface the
     "config cached, weights missing — will download ~N GB" notice on every
     serve of an already-downloaded video model (the CogVideoX-Fun / LTX-2.3
-    false alarm). Exercises the real ``_snapshot_has_alt_layout_weights``."""
+    false alarm). Exercises the real ``_snapshot_is_complete_split_model``."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--dgrauet--CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
     sha = "027bc0493a9dc41fad584568a9453961e18abb55"
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
-    # Real CogVideoX-Fun layout: a diffusers pipeline manifest + component
-    # weights at the snapshot root, none named ``model*.safetensors``.
+    # Real CogVideoX-Fun layout: a diffusers pipeline manifest + the mlx-video
+    # ``split_model.json`` component manifest + one ``<component>.safetensors``
+    # per component at the snapshot root, none named ``model*.safetensors``.
     (snap / "model_index.json").write_text('{"_class_name": "CogVideoXPipeline"}')
-    (snap / "split_model.json").write_text("{}")
+    (snap / "split_model.json").write_text(
+        '{"components": ["transformer", "text_encoder", "vae"]}'
+    )
     (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
     (snap / "vae.safetensors").write_bytes(b"v" * 4096)
     (snap / "text_encoder.safetensors").write_bytes(b"e" * 4096)
@@ -1096,7 +1099,7 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     # ``model*.safetensors`` — but the stub notice must be suppressed.
     assert gate.is_repo_cached("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4") is False
     assert (
-        gate._snapshot_has_alt_layout_weights(
+        gate._snapshot_is_complete_split_model(
             "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
         )
         is True
@@ -1104,23 +1107,26 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     assert gate.is_weightless_stub("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4") is False
 
 
-def test_is_weightless_stub_false_for_nested_diffusers_weights(tmp_path, monkeypatch):
-    """Diffusers repos (positively identified by ``model_index.json``) that
-    nest weights in ``transformer/`` / ``vae/`` subdirectories are still
-    recognized as weight-present — the alt-layout walk is recursive, not
-    root-only."""
+def test_is_weightless_stub_true_for_partial_split_model_components(
+    tmp_path, monkeypatch
+):
+    """Codex round-5 BLOCKING: an INTERRUPTED video pull that has landed its
+    ``split_model.json`` manifest + only SOME of its components (here ``vae``
+    is on disk but ``transformer`` is not) must NOT be read as fully weighted.
+    ``_snapshot_is_complete_split_model`` requires EVERY declared component's
+    ``<component>.safetensors`` to be present + non-empty; a missing one means
+    the download is incomplete, so the stub notice must still fire."""
     cache_root = tmp_path / "hf-cache"
-    repo_root = cache_root / "models--some--diffusers-repo"
-    sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+    repo_root = cache_root / "models--dgrauet--CogVideoX-Fun-partial-q4"
+    sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     snap = repo_root / "snapshots" / sha
-    (snap / "transformer").mkdir(parents=True)
-    (snap / "vae").mkdir(parents=True)
+    snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
-    (snap / "model_index.json").write_text('{"_class_name": "SomePipeline"}')
-    (snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
-        b"t" * 4096
+    (snap / "split_model.json").write_text(
+        '{"components": ["transformer", "text_encoder", "vae"]}'
     )
-    (snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"v" * 4096)
+    # Only ``vae`` arrived; ``transformer`` + ``text_encoder`` still pending.
+    (snap / "vae.safetensors").write_bytes(b"v" * 4096)
     _seed_refs_main(repo_root, sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -1128,8 +1134,120 @@ def test_is_weightless_stub_false_for_nested_diffusers_weights(tmp_path, monkeyp
 
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
-    assert gate._snapshot_has_alt_layout_weights("some/diffusers-repo") is True
-    assert gate.is_weightless_stub("some/diffusers-repo") is False
+    assert (
+        gate._snapshot_is_complete_split_model("dgrauet/CogVideoX-Fun-partial-q4")
+        is False
+    )
+    assert gate.is_repo_cached("dgrauet/CogVideoX-Fun-partial-q4") is False
+    assert gate.is_weightless_stub("dgrauet/CogVideoX-Fun-partial-q4") is True
+
+
+def test_is_weightless_stub_true_for_zero_byte_split_model_component(
+    tmp_path, monkeypatch
+):
+    """A component whose ``<component>.safetensors`` is a 0-byte in-flight
+    placeholder (HF writes these before the blob lands) must count as
+    incomplete — same failure family as the text zero-byte-shard case. The
+    manifest is present and lists every component, but one file has no bytes,
+    so the pull isn't done and the notice must still fire."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--dgrauet--CogVideoX-Fun-inflight-q4"
+    sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "split_model.json").write_text('{"components": ["transformer", "vae"]}')
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    (snap / "vae.safetensors").write_bytes(b"")  # 0-byte placeholder
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert (
+        gate._snapshot_is_complete_split_model("dgrauet/CogVideoX-Fun-inflight-q4")
+        is False
+    )
+    assert gate.is_weightless_stub("dgrauet/CogVideoX-Fun-inflight-q4") is True
+
+
+def test_snapshot_split_model_rejects_malformed_or_empty_manifest(
+    tmp_path, monkeypatch
+):
+    """Defensive: a ``split_model.json`` that is malformed JSON, not an object,
+    or names no components tells us nothing is complete — the helper must
+    return False (fall through to the text-glob path) rather than raise or
+    wrongly suppress. All three shapes share one fixture tree; the component
+    weights are on disk so only the manifest shape is under test."""
+    import json
+
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--vendor--bad-manifest"
+    sha = "cccccccccccccccccccccccccccccccccccccccc"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    (snap / "vae.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    manifest = snap / "split_model.json"
+    for shape in (
+        "{ this is not valid json",  # malformed
+        "[]",  # not an object
+        "{}",  # object, no components key
+        '{"components": []}',  # empty list
+        '{"components": "transformer"}',  # not a list
+        '{"components": [""]}',  # empty component name
+        '{"components": [123]}',  # non-string component
+    ):
+        manifest.write_text(shape)
+        assert gate._snapshot_is_complete_split_model("vendor/bad-manifest") is False, (
+            shape
+        )
+
+    # And a well-formed manifest over the same on-disk components DOES pass —
+    # proving the False results above are the manifest's doing, not the tree's.
+    manifest.write_text(json.dumps({"components": ["transformer", "vae"]}))
+    assert gate._snapshot_is_complete_split_model("vendor/bad-manifest") is True
+
+
+def test_snapshot_split_model_rejects_path_traversal_component(tmp_path, monkeypatch):
+    """Security: a component name that is absolute, contains a path separator,
+    or contains ``..`` could point ``<component>.safetensors`` outside the
+    snapshot root. The loader never reads such a path, so the helper must
+    reject it rather than stat a file elsewhere on disk."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--vendor--escape-component"
+    sha = "dddddddddddddddddddddddddddddddddddddddd"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    # A real file at the escaped location the traversal would resolve to.
+    (cache_root / "vae.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    import json
+
+    manifest = snap / "split_model.json"
+    for bad in ("../vae", "/etc/passwd", "sub/dir/vae", ".."):
+        manifest.write_text(json.dumps({"components": ["transformer", bad]}))
+        assert (
+            gate._snapshot_is_complete_split_model("vendor/escape-component") is False
+        ), bad
 
 
 def test_is_weightless_stub_true_for_interrupted_multimodal_aux_weight_first(
@@ -1140,8 +1258,8 @@ def test_is_weightless_stub_true_for_interrupted_multimodal_aux_weight_first(
     its index/shards — with NO text-layout signal on disk yet. Inferring
     "non-text" from the absence of ``model*.safetensors`` would misread this as
     a fully-weighted non-text model and wrongly suppress the notice. Requiring
-    a POSITIVE non-text manifest (model_index.json / split_model.json), which a
-    text repo never ships, keeps it a stub so the notice fires."""
+    a POSITIVE mlx-video ``split_model.json`` manifest, which a text repo never
+    ships, keeps it a stub so the notice fires."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--interrupted-vlm-4bit"
     sha = "5555555555555555555555555555555555555555"
@@ -1159,7 +1277,7 @@ def test_is_weightless_stub_true_for_interrupted_multimodal_aux_weight_first(
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
     assert (
-        gate._snapshot_has_alt_layout_weights("mlx-community/interrupted-vlm-4bit")
+        gate._snapshot_is_complete_split_model("mlx-community/interrupted-vlm-4bit")
         is False
     )
     assert gate.is_repo_cached("mlx-community/interrupted-vlm-4bit") is False
@@ -1188,7 +1306,7 @@ def test_is_weightless_stub_true_for_component_weights_without_manifest(
 
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
-    assert gate._snapshot_has_alt_layout_weights("vendor/manifestless-video") is False
+    assert gate._snapshot_is_complete_split_model("vendor/manifestless-video") is False
     assert gate.is_weightless_stub("vendor/manifestless-video") is True
 
 
@@ -1202,7 +1320,9 @@ def test_is_weightless_stub_false_for_split_model_manifest(tmp_path, monkeypatch
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text('{"model_type": "AudioVideo"}')
-    (snap / "split_model.json").write_text("{}")
+    (snap / "split_model.json").write_text(
+        '{"components": ["transformer", "vae_decoder", "vocoder"]}'
+    )
     (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
     (snap / "vae_decoder.safetensors").write_bytes(b"v" * 4096)
     (snap / "vocoder.safetensors").write_bytes(b"o" * 4096)
@@ -1214,7 +1334,7 @@ def test_is_weightless_stub_false_for_split_model_manifest(tmp_path, monkeypatch
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
     assert (
-        gate._snapshot_has_alt_layout_weights("notapalindrome/ltx23-mlx-av-q4") is True
+        gate._snapshot_is_complete_split_model("notapalindrome/ltx23-mlx-av-q4") is True
     )
     assert gate.is_weightless_stub("notapalindrome/ltx23-mlx-av-q4") is False
 
@@ -1247,7 +1367,7 @@ def test_is_weightless_stub_true_for_partial_text_download(tmp_path, monkeypatch
     # No non-text manifest → not an alt-layout model; the cache is an
     # incomplete text pull, so the stub notice must still fire.
     assert (
-        gate._snapshot_has_alt_layout_weights("mlx-community/gemma-4-27b-it-4bit")
+        gate._snapshot_is_complete_split_model("mlx-community/gemma-4-27b-it-4bit")
         is False
     )
     assert gate.is_repo_cached("mlx-community/gemma-4-27b-it-4bit") is False
@@ -1261,7 +1381,7 @@ def test_is_weightless_stub_true_for_incomplete_text_with_aux_weight(
     auxiliary ``.safetensors`` (e.g. a vision tower) that isn't
     ``model*.safetensors``. That aux file must NOT mask an incomplete text
     shard set. Because the repo ships NO positive non-text manifest,
-    ``_snapshot_has_alt_layout_weights`` returns False and is_repo_cached is
+    ``_snapshot_is_complete_split_model`` returns False and is_repo_cached is
     the sole authority, so the missing shard still fires the notice."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--some-vlm-4bit"
@@ -1283,7 +1403,9 @@ def test_is_weightless_stub_true_for_incomplete_text_with_aux_weight(
 
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
-    assert gate._snapshot_has_alt_layout_weights("mlx-community/some-vlm-4bit") is False
+    assert (
+        gate._snapshot_is_complete_split_model("mlx-community/some-vlm-4bit") is False
+    )
     assert gate.is_repo_cached("mlx-community/some-vlm-4bit") is False
     assert gate.is_weightless_stub("mlx-community/some-vlm-4bit") is True
 
@@ -1307,26 +1429,30 @@ def test_is_weightless_stub_ignores_adapter_only_safetensors(tmp_path, monkeypat
 
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
-    assert gate._snapshot_has_alt_layout_weights("some/lora-adapter") is False
+    assert gate._snapshot_is_complete_split_model("some/lora-adapter") is False
     assert gate.is_weightless_stub("some/lora-adapter") is True
 
 
-def test_is_weightless_stub_true_for_manifest_plus_lora_only(tmp_path, monkeypatch):
-    """Regression guard (codex round-4 BLOCKING): a diffusers repo can carry a
-    positive manifest (``model_index.json``) yet have ONLY a LoRA sidecar
-    cached — ``pytorch_lora_weights.safetensors`` — with its base components
-    still missing. A LoRA file isn't a primary weight, so it must NOT suppress
-    the notice. The ``adapter``-prefix filter alone would miss the diffusers
-    LoRA name; the ``lora``-substring exclusion catches it."""
+def test_is_weightless_stub_true_for_model_index_without_split_model(
+    tmp_path, monkeypatch
+):
+    """Documented scope limit: a bare diffusers ``model_index.json`` (pipeline
+    manifest) is NOT accepted on its own — it names components but not their
+    on-disk weight filenames (flat vs ``component/`` subdir vs sharded), so it
+    can't be completeness-checked. Only the mlx-video ``split_model.json``
+    manifest is authoritative. A repo shipping model_index.json + component
+    weights but no split_model.json falls back to the (cosmetic) false alarm —
+    the conservative direction — rather than risking a wrong suppression."""
     cache_root = tmp_path / "hf-cache"
-    repo_root = cache_root / "models--vendor--diffusers-lora-pack"
+    repo_root = cache_root / "models--vendor--index-only-diffusers"
     sha = "7777777777777777777777777777777777777777"
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
     (snap / "model_index.json").write_text('{"_class_name": "SomePipeline"}')
-    # Only the LoRA delta is cached — no base transformer/vae components.
-    (snap / "pytorch_lora_weights.safetensors").write_bytes(b"l" * 4096)
+    # Full component weights present — but no split_model.json manifest.
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    (snap / "vae.safetensors").write_bytes(b"v" * 4096)
     _seed_refs_main(repo_root, sha)
 
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
@@ -1334,8 +1460,10 @@ def test_is_weightless_stub_true_for_manifest_plus_lora_only(tmp_path, monkeypat
 
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
-    assert gate._snapshot_has_alt_layout_weights("vendor/diffusers-lora-pack") is False
-    assert gate.is_weightless_stub("vendor/diffusers-lora-pack") is True
+    assert (
+        gate._snapshot_is_complete_split_model("vendor/index-only-diffusers") is False
+    )
+    assert gate.is_weightless_stub("vendor/index-only-diffusers") is True
 
 
 def test_is_weightless_stub_true_for_dangling_text_shard_with_aux_weight(
@@ -1344,7 +1472,7 @@ def test_is_weightless_stub_true_for_dangling_text_shard_with_aux_weight(
     """A corrupted/interrupted text snapshot whose ``model-*.safetensors``
     shard is a DANGLING symlink (target not yet materialized) — plus an
     auxiliary ``vision_model.safetensors`` — must still be a stub. It ships no
-    positive non-text manifest, so ``_snapshot_has_alt_layout_weights`` returns
+    positive non-text manifest, so ``_snapshot_is_complete_split_model`` returns
     False and is_repo_cached (which treats the dangling shard as incomplete) is
     the sole authority. The aux weight cannot mask the incomplete cache."""
     cache_root = tmp_path / "hf-cache"
@@ -1367,7 +1495,7 @@ def test_is_weightless_stub_true_for_dangling_text_shard_with_aux_weight(
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
     assert (
-        gate._snapshot_has_alt_layout_weights("mlx-community/dangling-vlm-4bit")
+        gate._snapshot_is_complete_split_model("mlx-community/dangling-vlm-4bit")
         is False
     )
     assert gate.is_repo_cached("mlx-community/dangling-vlm-4bit") is False

@@ -438,62 +438,40 @@ def is_repo_cached(repo_id: str) -> bool:
     return False
 
 
-# Root-level manifests that POSITIVELY identify a non-text (component-split /
-# diffusers) model layout — the kind whose weights mlx-lm's text
-# ``model*.safetensors`` glob can't see. Requiring one of these before we
-# accept alternate-layout weights (rather than inferring "non-text" from the
-# mere absence of text files) is what keeps an interrupted *text* / multimodal
-# download — where an auxiliary weight lands before the index/shards — from
-# being misread as fully weighted (codex BLOCKING). Text LLMs never ship
-# either file: ``model_index.json`` is the diffusers pipeline manifest and
-# ``split_model.json`` is mlx-video's component-split manifest.
-_NON_TEXT_LAYOUT_MANIFESTS = ("model_index.json", "split_model.json")
+def _snapshot_is_complete_split_model(repo_id: str) -> bool:
+    """True if the resolved snapshot is a mlx-video component-split model whose
+    EVERY declared component weight is cached — the non-text analogue of
+    :func:`is_repo_cached` (which only knows mlx-lm's text
+    ``model*.safetensors`` layout).
 
-
-def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
-    """True if the resolved snapshot is a POSITIVELY-identified non-text model
-    whose weights are present in a layout mlx-lm's text ``model*.safetensors``
-    root-glob can't see.
-
-    Non-text models don't lay their weights out the way :func:`is_repo_cached`
-    (which mirrors mlx-lm's text loader) expects. Video-gen repos ship
-    component files at the snapshot root — CogVideoX-Fun has
-    ``transformer.safetensors`` / ``vae.safetensors`` / ``text_encoder.safetensors``,
-    LTX-2.3 has ``transformer.safetensors`` / ``vae_encoder.safetensors`` /
-    ``vocoder.safetensors`` / … — and diffusers repos nest them in
-    ``transformer/`` / ``vae/`` subdirectories. None of those match
-    ``model*.safetensors`` at the root, so ``is_repo_cached`` reads a fully
-    cached video model as *weightless*, which would make
+    Video-gen repos don't lay their weights out the way the text loader
+    expects: they ship one ``<component>.safetensors`` per component at the
+    snapshot root (CogVideoX-Fun → ``transformer`` / ``text_encoder`` / ``vae``;
+    LTX-2.3 → ``transformer`` / ``connector`` / ``vae_decoder`` / ``vocoder`` /
+    …), never a ``model*.safetensors``. ``is_repo_cached`` therefore reads a
+    fully-cached video model as *weightless*, which would make
     :func:`is_weightless_stub` cry wolf ("config cached, weights missing —
     will download ~N GB") on every serve of an already-downloaded video model.
 
-    Positive identification (codex BLOCKING): a TEXT / multimodal repo can ALSO
-    carry auxiliary ``.safetensors`` (a ``vision_model.safetensors`` tower, an
-    adapter, a neighbour of a half-downloaded shard). Inferring "non-text" from
-    the mere *absence* of text files would misread an interrupted multimodal
-    text download — one whose auxiliary weight arrived before the index/shards
-    — as fully weighted and wrongly suppress its notice. So we require a
-    POSITIVE non-text-layout marker (:data:`_NON_TEXT_LAYOUT_MANIFESTS`, probed
-    by bare directory-entry name) before accepting any alternate weight. Text
-    LLMs never carry those manifests, so an incomplete text cache always falls
-    through to :func:`is_repo_cached`.
+    Completeness, not mere presence (codex BLOCKING): we DON'T infer "non-text,
+    weighted" from the presence of any stray ``.safetensors`` — that would
+    misread (a) an interrupted multimodal *text* download whose vision tower
+    landed before its shards, or (b) an interrupted *video* pull that has only
+    one of its components. Instead we anchor on ``split_model.json`` — the
+    mlx-video manifest that positively identifies the layout AND enumerates the
+    exact component list — and require EVERY ``<component>.safetensors`` to be
+    present and non-empty, exactly as :func:`_snapshot_is_complete` walks the
+    text ``weight_map``. A text LLM never ships ``split_model.json``, so an
+    incomplete text cache always falls through to :func:`is_repo_cached`; a
+    partial video cache fails a component check and also falls through.
 
-    Adapter / LoRA sidecars aren't a model's primary weights and don't count —
-    PEFT ``adapter*.safetensors`` and the diffusers LoRA convention
-    (``pytorch_lora_weights.safetensors`` / any ``*lora*`` name), so a
-    LoRA-only pack whose base components are still missing doesn't look
-    weighted. Cache-hygiene: only a ``.safetensors`` whose realpath stays
-    inside this repo's own cache dir counts (HF snapshots symlink into
-    ``<repo_root>/blobs/``); a symlink escaping to an unrelated file must not
-    suppress the notice.
-
-    Scope note: this establishes weights are *present*, not that a non-text
-    cache is *complete* (component-completeness would need each loader's
-    manifest). An interrupted video pull that already has its manifest + one
-    component may thus skip the notice — acceptable, since it's purely cosmetic
-    and the download path still fetches whatever is missing. A non-text repo
-    that ships NEITHER manifest simply falls back to the old (cosmetic) false
-    alarm rather than a wrong suppression.
+    ``model_index.json`` (bare diffusers pipeline manifest) is intentionally
+    NOT accepted on its own: it names components but not their on-disk weight
+    filenames (flat file vs ``component/`` subdir vs sharded — packaging
+    dependent), so it can't be completeness-checked reliably here. Both rapid-
+    mlx video families (CogVideoX-Fun, LTX-2.3) ship ``split_model.json``; a
+    hypothetical manifest-less / index-only repo simply falls back to the
+    (cosmetic) false alarm rather than risking a wrong suppression.
 
     Mirrors :func:`is_repo_cached`'s snapshot resolution (``refs/main`` →
     pinned sha) so both read the same on-disk snapshot. Returns ``False`` on
@@ -513,47 +491,46 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
         if not os.path.isdir(snap_dir):
             return False
 
-        try:
-            root_entries = set(os.listdir(snap_dir))
-        except OSError:
+        manifest_path = os.path.join(snap_dir, "split_model.json")
+        if not os.path.isfile(manifest_path):
             return False
-        # Require POSITIVE evidence of a non-text layout — never infer it from
-        # the absence of text files (that misreads interrupted multimodal text
-        # downloads). Probe by bare name so a dangling manifest symlink still
-        # counts as the marker.
-        if not any(m in root_entries for m in _NON_TEXT_LAYOUT_MANIFESTS):
+        import json
+
+        try:
+            with open(manifest_path) as fh:
+                manifest = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return False
+        components = manifest.get("components") if isinstance(manifest, dict) else None
+        # A manifest that names no components tells us nothing is complete.
+        if not isinstance(components, list) or not components:
             return False
 
         repo_root_real = os.path.realpath(repo_root)
-        for dirpath, _dirnames, filenames in os.walk(snap_dir):
-            for fname in filenames:
-                if not fname.endswith(".safetensors"):
-                    continue
-                # Adapter / LoRA sidecars aren't a model's primary weights, so
-                # a repo shipping ONLY those (a LoRA-only diffusers pack with
-                # its base components still missing) must not look weighted.
-                # Covers PEFT ``adapter*.safetensors`` and the diffusers LoRA
-                # convention ``pytorch_lora_weights.safetensors`` / any
-                # ``*_lora_*`` / ``*lora*`` name. Over-excluding fails SAFE
-                # (back to the cosmetic false alarm); under-excluding would
-                # wrongly suppress the notice.
-                _low = fname.lower()
-                if _low.startswith("adapter") or "lora" in _low:
-                    continue
-                fpath = os.path.join(dirpath, fname)
-                # Only count a file whose real target lives inside this repo's
-                # cache dir (snapshots symlink into ``<repo_root>/blobs/``).
-                real = os.path.realpath(fpath)
-                if real != repo_root_real and not real.startswith(
-                    repo_root_real + os.sep
-                ):
-                    continue
-                try:
-                    if os.path.getsize(fpath) > 0:
-                        return True
-                except OSError:
-                    continue
-        return False
+        for component in components:
+            # Component names become ``<component>.safetensors`` at the
+            # snapshot root; reject anything that could escape it.
+            if not isinstance(component, str) or not component:
+                return False
+            if (
+                os.path.isabs(component)
+                or os.sep in component
+                or "/" in component
+                or ".." in component.split("/")
+            ):
+                return False
+            fpath = os.path.join(snap_dir, f"{component}.safetensors")
+            # The file (via its blob symlink) must resolve inside this repo's
+            # own cache dir — a symlink escaping elsewhere doesn't count.
+            real = os.path.realpath(fpath)
+            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+                return False
+            try:
+                if os.path.getsize(fpath) <= 0:
+                    return False
+            except OSError:
+                return False
+        return True
     except Exception:
         return False
 
@@ -581,9 +558,9 @@ def is_weightless_stub(repo_id: str) -> bool:
     diffusers repos never satisfy (their weights are component files like
     ``transformer.safetensors`` / ``vae.safetensors``). A fully-cached
     video model would therefore look weightless and mis-fire this notice on
-    every serve. :func:`_snapshot_has_alt_layout_weights` detects that
-    alt layout so the stub notice stays scoped to genuinely-empty text
-    stubs.
+    every serve. :func:`_snapshot_is_complete_split_model` validates the
+    mlx-video ``split_model.json`` component manifest so the stub notice
+    stays scoped to genuinely-incomplete caches.
 
     Returns ``False`` on any internal error — a best-effort diagnostic
     must never break an otherwise-fine serve.
@@ -600,11 +577,12 @@ def is_weightless_stub(repo_id: str) -> bool:
         cached_config = try_to_load_from_cache(repo_id, "config.json")
         if not isinstance(cached_config, str):
             return False
-        # A non-text model (video-gen / diffusers) stores its weights as
-        # component files the text glob can't see — those are present, not
-        # "missing", so it's not a stub. Check this BEFORE the text-glob
-        # probe so a fully-cached video model doesn't mis-fire the notice.
-        if _snapshot_has_alt_layout_weights(repo_id):
+        # A component-split non-text model (video-gen) stores its weights as
+        # per-component files the text glob can't see. If its split_model.json
+        # manifest lists components and EVERY one is cached, the weights are
+        # present — not a stub. Check this BEFORE the text-glob probe so a
+        # fully-cached video model doesn't mis-fire the notice.
+        if _snapshot_is_complete_split_model(repo_id):
             return False
         # Config is on disk; the stub is exactly "config present but the
         # loader's weight glob (model*.safetensors) is not satisfied".
