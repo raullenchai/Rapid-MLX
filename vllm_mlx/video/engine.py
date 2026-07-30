@@ -58,10 +58,29 @@ class VideoBackendUnavailableError(RuntimeError):
 class VideoEngine(Protocol):
     """The surface a text→/image→video backend must implement.
 
-    A backend (e.g. an MLX-native LTX-2.3 port) implements ``generate``
-    and is returned by :func:`resolve_video_engine`. The route layer
-    depends ONLY on this Protocol, so swapping backends never touches
+    A backend implements ``generate`` and is returned by
+    :func:`resolve_video_engine`. The route layer depends ONLY on this
+    Protocol, so swapping backends never touches
     ``vllm_mlx.routes.video``.
+
+    Two OPTIONAL attributes are part of the contract even though they are
+    not declared as Protocol members (adding non-method members would break
+    ``isinstance`` on a ``runtime_checkable`` Protocol). Declare them if
+    they apply; the route reads them with a sentinel so "not declared" and
+    "declared as None" stay distinguishable:
+
+    ``native_frame_rate: float | None``
+        The fps your model actually emits, when it cannot honour an
+        arbitrary requested ``frame_rate``. ``None`` means "this model has
+        a fixed rate but I can't determine it for this checkpoint", which
+        the route reports as a ``null`` frame_rate rather than echoing a
+        number nothing honoured. Omit the attribute entirely if your
+        backend does render at the requested rate.
+
+    ``served_model: str``
+        An identifier for the checkpoint that actually ran, echoed in the
+        response instead of the request's ``model`` field (which selects
+        nothing on a one-checkpoint-per-process server).
     """
 
     def generate(

@@ -72,6 +72,33 @@ ENV_LORA = "RAPID_MLX_WAN_LORA"  # path[:strength][,path[:strength]]
 ENV_LORA_HIGH = "RAPID_MLX_WAN_LORA_HIGH"
 ENV_LORA_LOW = "RAPID_MLX_WAN_LORA_LOW"
 
+#: Solver names mlx-video's Wan pipeline accepts.
+_SCHEDULERS: frozenset[str] = frozenset({"euler", "dpm++", "unipc"})
+
+#: VAE-decode tiling modes mlx-video's Wan pipeline accepts.
+_TILING_MODES: frozenset[str] = frozenset(
+    {"auto", "none", "default", "aggressive", "conservative", "spatial", "temporal"}
+)
+
+
+def _validated_choice(
+    value: str, allowed: frozenset[str], env_var: str, label: str
+) -> str:
+    """Return ``value`` if it's an accepted option, else fail at construction.
+
+    A typo in these reaches the renderer and becomes a generic 500 —
+    potentially *after* a multi-GB weight load, which is an expensive way to
+    learn about a misspelling. Checking here surfaces it as a 503 naming the
+    variable, before anything is loaded.
+    """
+    if value not in allowed:
+        raise VideoBackendUnavailableError(
+            f"invalid {label} {value!r} in ${env_var}: expected one of "
+            f"{', '.join(sorted(allowed))}"
+        )
+    return value
+
+
 #: Wan's latent temporal stride is 4, so a clip's frame count must be
 #: ``4n+1`` — one anchor frame plus n groups of 4. Anything else makes
 #: mlx-video raise deep in latent packing.
@@ -364,13 +391,25 @@ class WanVideoEngine:
             # Raised while the ROUTE is resolving the engine, i.e. outside
             # the generation try/except — so it must be a type the route
             # already maps, or a typo'd env var becomes an unstructured 500.
+            #
+            # The path goes to the LOG, not the message: the route returns
+            # this text to the client, and disclosing the server's
+            # filesystem layout is the same leak we refuse for ``url``.
+            # Naming the env var is enough for the operator to act, and
+            # they can read their own logs for the value.
+            logger.error(
+                "Configured Wan model directory does not exist: %s", self.model_dir
+            )
             raise VideoBackendUnavailableError(
-                f"Wan model directory does not exist: {self.model_dir}. "
-                f"Set ${ENV_MODEL_DIR} to a converted MLX Wan checkpoint."
+                f"the configured Wan model directory does not exist. Check "
+                f"${ENV_MODEL_DIR} points at a converted MLX Wan checkpoint "
+                f"(the resolved path is in the server log)."
             )
         self._steps = steps
-        self._scheduler = scheduler
-        self._tiling = tiling
+        self._scheduler = _validated_choice(
+            scheduler, _SCHEDULERS, ENV_SCHEDULER, "scheduler"
+        )
+        self._tiling = _validated_choice(tiling, _TILING_MODES, ENV_TILING, "tiling")
         self._loras = loras
         self._loras_high = loras_high
         self._loras_low = loras_low
@@ -389,9 +428,10 @@ class WanVideoEngine:
         """
         if self.native_frame_rate is None:
             logger.warning(
-                "Checkpoint %s declares no sample_fps: responses will echo the "
-                "requested frame_rate instead of the model's real rate "
-                "(Wan2.1 is 16 fps, Wan2.2 is 24)",
+                "Checkpoint %s declares no sample_fps: responses will report "
+                "frame_rate as null, because the real rate is unknowable here "
+                "(Wan2.1 is 16 fps, Wan2.2 is 24, and weight shapes don't "
+                "distinguish them)",
                 self.model_dir,
             )
         if self.max_area == 0:

@@ -1393,3 +1393,121 @@ class TestImageResourceBounds:
 
         after = set(glob.glob(_tf.gettempdir() + "/rapidmlx-i2v-*"))
         assert after == before, f"stranded temp frame(s): {sorted(after - before)}"
+
+
+class TestNoServerPathLeaks:
+    def test_503_message_does_not_disclose_the_model_path(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The 503 body must name the env var, not the filesystem.
+
+        The route returns this text to the client. Disclosing the server's
+        layout here is the same leak the handler refuses for `url`, so the
+        path goes to the log and the message names `$RAPID_MLX_WAN_MODEL_DIR`
+        — enough for the operator, nothing for a caller.
+        """
+        import logging
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        secret = tmp_path / "srv" / "private" / "weights-here"
+        monkeypatch.setenv(ENV_MODEL_DIR, str(secret))
+        client, restore = _mount_video_app()
+        try:
+            with caplog.at_level(logging.ERROR):
+                r = client.post(
+                    "/v1/video/generations",
+                    json={
+                        "prompt": "x",
+                        "width": 832,
+                        "height": 480,
+                        "num_frames": 49,
+                    },
+                )
+        finally:
+            restore()
+
+        assert r.status_code == 503, r.text
+        body = r.text
+        assert "weights-here" not in body, f"path leaked to client: {body}"
+        assert str(secret) not in body, f"path leaked to client: {body}"
+        assert ENV_MODEL_DIR in body, "message must tell the operator what to fix"
+        # ...and the operator can still find the real value.
+        assert any("weights-here" in rec.getMessage() for rec in caplog.records), (
+            "the resolved path should be logged server-side"
+        )
+
+
+class TestSchedulerAndTilingValidation:
+    @pytest.mark.parametrize("bad", ["unipd", "UNIPC", "", "dpm"])
+    def test_bad_scheduler_fails_before_any_weight_load(
+        self, tmp_path, monkeypatch, bad
+    ):
+        """A typo must not cost a multi-GB load to discover.
+
+        Unvalidated, these reach the renderer and become a generic 500 —
+        possibly after loading weights, which is an expensive way to learn
+        about a misspelling.
+        """
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import VideoBackendUnavailableError
+        from vllm_mlx.video.wan import ENV_SCHEDULER, WanVideoEngine
+
+        with pytest.raises(VideoBackendUnavailableError) as ei:
+            WanVideoEngine(_write_ckpt(tmp_path), scheduler=bad)
+        assert ENV_SCHEDULER in str(ei.value), ei.value
+
+    @pytest.mark.parametrize("bad", ["agressive", "Auto", "tiled"])
+    def test_bad_tiling_mode_is_rejected(self, tmp_path, monkeypatch, bad):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import VideoBackendUnavailableError
+        from vllm_mlx.video.wan import ENV_TILING, WanVideoEngine
+
+        with pytest.raises(VideoBackendUnavailableError) as ei:
+            WanVideoEngine(_write_ckpt(tmp_path), tiling=bad)
+        assert ENV_TILING in str(ei.value), ei.value
+
+    @pytest.mark.parametrize("good", ["euler", "dpm++", "unipc"])
+    def test_documented_schedulers_are_accepted(self, tmp_path, monkeypatch, good):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        assert WanVideoEngine(_write_ckpt(tmp_path), scheduler=good)._scheduler == good
+
+    @pytest.mark.parametrize(
+        "good",
+        [
+            "auto",
+            "none",
+            "default",
+            "aggressive",
+            "conservative",
+            "spatial",
+            "temporal",
+        ],
+    )
+    def test_documented_tiling_modes_are_accepted(self, tmp_path, monkeypatch, good):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        assert WanVideoEngine(_write_ckpt(tmp_path), tiling=good)._tiling == good
+
+    def test_bad_env_value_surfaces_as_503_through_the_route(
+        self, tmp_path, monkeypatch
+    ):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR, ENV_SCHEDULER
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        monkeypatch.setenv(ENV_SCHEDULER, "not-a-solver")
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "x", "width": 832, "height": 480, "num_frames": 49},
+            )
+        finally:
+            restore()
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"]["error"]["code"] == "video_backend_unavailable"

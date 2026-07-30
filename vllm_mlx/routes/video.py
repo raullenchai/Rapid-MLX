@@ -42,6 +42,12 @@ router = APIRouter()
 #: ``b64_video``.
 MAX_INLINE_VIDEO_BYTES: int = 256 * 1024 * 1024
 
+#: Sentinel distinguishing "the backend does not declare this optional
+#: attribute" from "it declares it as None". Both are meaningful and they
+#: mean different things for ``frame_rate`` reporting, so a plain
+#: ``getattr(..., None)`` would conflate them.
+_NOT_DECLARED = object()
+
 #: Serialises rendering, for the same reason the audio lanes do it: a
 #: video model is the heaviest thing this server can be asked to run, and
 #: concurrent renders would multiply peak unified memory. On the event
@@ -321,11 +327,11 @@ async def _render_and_serialize(
         # forwards it, so reporting 30 for a clip that is actually 16 or 24
         # is a fabricated number, which is the exact failure this reporting
         # exists to prevent.
-        if hasattr(engine, "native_frame_rate"):
-            native = engine.native_frame_rate
-            actual_fps = float(native) if native is not None else None
-        else:
+        native = getattr(engine, "native_frame_rate", _NOT_DECLARED)
+        if native is _NOT_DECLARED:
             actual_fps = float(request.frame_rate)
+        else:
+            actual_fps = float(native) if native is not None else None
         # Same principle for the model echo: report what RAN. The request's
         # ``model`` is a schema default (``ltx-2.3``) that selects nothing —
         # echoing it on a Wan-rendered clip actively misattributes the
