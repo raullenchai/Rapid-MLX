@@ -26,6 +26,21 @@ from typing import Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 
+class InvalidVideoRequestError(ValueError):
+    """A request a BACKEND rejects for a model-specific, caller-fixable reason.
+
+    Exists so the route can tell "your request violates this model's
+    constraints" apart from "something broke inside the backend". A bare
+    ``except ValueError`` around a generate call cannot: corrupt weights, an
+    incompatible LoRA and a scheduler fault all raise ValueError too, and
+    reporting those as ``400 invalid_request`` sends the caller off to fix a
+    request that was fine.
+
+    Subclasses ``ValueError`` so a backend that raises it is still correct
+    under the Protocol's documented contract.
+    """
+
+
 @runtime_checkable
 class VideoEngine(Protocol):
     """The surface a text→/image→video backend must implement.
@@ -80,8 +95,13 @@ class VideoEngine(Protocol):
 _VIDEO_ENGINE_FACTORY = None
 
 #: Guards :func:`_autoregister` so a lane with no configured backend
-#: doesn't re-probe the environment on every request.
+#: doesn't re-probe the environment on every request. Only set after an
+#: attempt that did NOT raise, so a failure retries rather than latching.
 _AUTOREGISTER_DONE = False
+
+#: Why the last auto-registration attempt failed, if it did. Surfaced as a
+#: 503 rather than being swallowed into a misleading 501.
+_AUTOREGISTER_ERROR: BaseException | None = None
 
 
 def _autoregister() -> None:
@@ -95,18 +115,29 @@ def _autoregister() -> None:
 
     A backend that isn't configured returns ``False`` and leaves the lane
     unclaimed, which keeps the contract-only 501 as the default answer.
+
+    On failure the attempt is NOT marked done and the reason is retained:
+    latching "done" before success would turn a transient import error into
+    a permanent, misleading 501 for the life of the process, and swallowing
+    the reason would hide a configured-but-broken backend behind "no video
+    support". The retained error makes the next request retry and, if it
+    fails again, report it as unavailable (503) instead.
     """
-    global _AUTOREGISTER_DONE
+    global _AUTOREGISTER_DONE, _AUTOREGISTER_ERROR
     if _AUTOREGISTER_DONE:
         return
-    _AUTOREGISTER_DONE = True
     try:
         from .wan import register as _register_wan
 
-        if _register_wan():
-            logger.info("Video lane: Wan backend registered")
-    except Exception:  # noqa: BLE001 — never let a backend break the route
+        claimed = _register_wan()
+    except Exception as e:  # noqa: BLE001 — never let a backend break the route
         logger.exception("Video backend auto-registration failed")
+        _AUTOREGISTER_ERROR = e
+        return
+    _AUTOREGISTER_ERROR = None
+    _AUTOREGISTER_DONE = True
+    if claimed:
+        logger.info("Video lane: Wan backend registered")
 
 
 def resolve_video_engine(model: str) -> VideoEngine:
@@ -131,6 +162,13 @@ def resolve_video_engine(model: str) -> VideoEngine:
     """
     if _VIDEO_ENGINE_FACTORY is None:
         _autoregister()
+    if _VIDEO_ENGINE_FACTORY is None and _AUTOREGISTER_ERROR is not None:
+        # A backend tried to claim the lane and blew up. That is an
+        # operator-fixable install/config fault, not "no video support",
+        # so it must not masquerade as the contract-only 501.
+        raise ImportError(
+            f"video backend failed to initialise: {_AUTOREGISTER_ERROR}"
+        ) from _AUTOREGISTER_ERROR
     if _VIDEO_ENGINE_FACTORY is None:
         raise NotImplementedError(
             "no video backend configured. Set $RAPID_MLX_WAN_MODEL_DIR to a "

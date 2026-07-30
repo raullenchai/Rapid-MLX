@@ -237,15 +237,22 @@ class TestNativeFrameRate:
         eng = WanVideoEngine(_write_ckpt(tmp_path, sample_fps=sample_fps))
         assert eng.native_frame_rate == expected
 
-    def test_defaults_when_config_absent(self, tmp_path):
-        """A checkpoint with no config.json is still servable (mlx-video
-        auto-detects the variant from weight shapes), so this must not raise."""
+    def test_unknown_rather_than_guessed_when_config_absent(self, tmp_path):
+        """No config.json -> None, NOT a guess.
+
+        Such a checkpoint is still servable (mlx-video auto-detects the
+        variant from weight shapes), so construction must not raise. But
+        Wan2.1 emits 16 fps and Wan2.2 emits 24, and the two are not
+        distinguishable from weights alone — both ship a 14B variant. A
+        default would therefore be wrong half the time, and asserting a
+        wrong rate defeats the entire purpose of this property.
+        """
         from vllm_mlx.video.wan import WanVideoEngine
 
         d = tmp_path / "bare"
         d.mkdir()
         (d / "model.safetensors").write_bytes(b"stub")
-        assert WanVideoEngine(d).native_frame_rate == 24.0
+        assert WanVideoEngine(d).native_frame_rate is None
 
     def test_unreadable_config_does_not_break_construction(self, tmp_path):
         from vllm_mlx.video.wan import WanVideoEngine
@@ -253,7 +260,44 @@ class TestNativeFrameRate:
         d = tmp_path / "broken"
         d.mkdir()
         (d / "config.json").write_text("{not json")
-        assert WanVideoEngine(d).native_frame_rate == 24.0
+        assert WanVideoEngine(d).native_frame_rate is None
+
+    @pytest.mark.parametrize("bad", [0, -1, "abc", None])
+    def test_nonsense_sample_fps_is_unknown_not_propagated(self, tmp_path, bad):
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        assert (
+            WanVideoEngine(_write_ckpt(tmp_path, sample_fps=bad)).native_frame_rate
+            is None
+        )
+
+    def test_route_falls_back_to_requested_fps_when_unknown(
+        self, tmp_path, monkeypatch
+    ):
+        """Unknown native rate -> echo the request, don't assert a guess."""
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        d = tmp_path / "nofps"
+        d.mkdir()
+        (d / "model.safetensors").write_bytes(b"stub")
+        monkeypatch.setenv(ENV_MODEL_DIR, str(d))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={
+                    "prompt": "x",
+                    "width": 832,
+                    "height": 480,
+                    "num_frames": 49,
+                    "frame_rate": 30.0,
+                },
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        assert r.json()["data"][0]["frame_rate"] == 30.0
 
 
 class TestLoraSpecParsing:
@@ -617,3 +661,113 @@ class TestServedModelReporting:
             restore()
         assert r.status_code == 200, r.text
         assert r.json()["model"] == "wan2.2-ti2v", r.json()["model"]
+
+
+class TestInternalErrorsAreNot400:
+    def test_backend_value_error_is_not_reported_as_a_bad_request(
+        self, tmp_path, monkeypatch
+    ):
+        """A plain ValueError from inside the pipeline must NOT become a 400.
+
+        Corrupt weights, an incompatible LoRA and a scheduler fault all
+        raise ValueError. Catching that broadly around the generate call
+        would report every one of them as "your request is invalid",
+        sending the caller to fix a request that was fine. Only the
+        dedicated ``InvalidVideoRequestError`` maps to 400.
+        """
+        _install_fake_mlx_video(monkeypatch)
+
+        def _boom(**kwargs):
+            raise ValueError("could not load tensor: unexpected EOF in shard 3")
+
+        sys.modules["mlx_video.models.wan_2.generate"].generate_video = _boom
+
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={
+                    "prompt": "x",
+                    "width": 832,
+                    "height": 480,
+                    "num_frames": 49,
+                },
+            )
+        finally:
+            restore()
+        assert r.status_code != 400, f"internal fault mislabelled: {r.text}"
+        assert r.status_code == 500, r.text
+
+    def test_guard_rejection_still_maps_to_400(self, tmp_path, monkeypatch):
+        """The dedicated type must still reach the caller as actionable."""
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        _install_fake_mlx_video(monkeypatch)
+        eng = WanVideoEngine(_write_ckpt(tmp_path))
+        with pytest.raises(InvalidVideoRequestError):
+            eng.generate("x", tmp_path / "o.mp4", num_frames=50)
+
+
+class TestStepsEnvValidation:
+    @pytest.mark.parametrize("bad", ["0", "-5", "501", "9999"])
+    def test_out_of_contract_range_is_ignored(self, tmp_path, monkeypatch, bad):
+        """The env override is held to the same 1..500 the HTTP contract is.
+
+        Without this, `RAPID_MLX_WAN_STEPS=0` silently forwards a value the
+        API itself would have rejected, and the failure surfaces from inside
+        the sampler instead of at configuration time.
+        """
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR, ENV_STEPS, build_engine_from_env
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        monkeypatch.setenv(ENV_STEPS, bad)
+        assert build_engine_from_env("wan")._steps is None
+
+    @pytest.mark.parametrize("good", ["1", "4", "40", "500"])
+    def test_in_range_is_honoured(self, tmp_path, monkeypatch, good):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR, ENV_STEPS, build_engine_from_env
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        monkeypatch.setenv(ENV_STEPS, good)
+        assert build_engine_from_env("wan")._steps == int(good)
+
+
+class TestAutoregistrationFailureHandling:
+    def test_failure_does_not_latch_into_a_permanent_501(self, monkeypatch):
+        """A transient registration failure must be retried, and reported as 503.
+
+        Marking the attempt "done" before it succeeded would degrade every
+        later request to a misleading 501 for the life of the process, and
+        swallowing the reason would hide a configured-but-broken backend
+        behind "rapid-mlx has no video support".
+        """
+        from vllm_mlx.video import engine as engine_mod
+
+        calls = {"n": 0}
+
+        def _flaky():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient boom")
+            return False
+
+        import vllm_mlx.video.wan as wan_mod
+
+        monkeypatch.setattr(wan_mod, "register", _flaky)
+
+        # First attempt fails -> ImportError (503), not NotImplementedError.
+        with pytest.raises(ImportError, match="failed to initialise"):
+            engine_mod.resolve_video_engine("x")
+        assert engine_mod._AUTOREGISTER_DONE is False, "must not latch on failure"
+
+        # Second attempt is retried and reports the honest 501.
+        with pytest.raises(NotImplementedError):
+            engine_mod.resolve_video_engine("x")
+        assert calls["n"] == 2, "registration was not retried"
+        assert engine_mod._AUTOREGISTER_DONE is True

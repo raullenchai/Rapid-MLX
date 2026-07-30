@@ -42,6 +42,8 @@ import logging
 import os
 from pathlib import Path
 
+from .engine import InvalidVideoRequestError
+
 logger = logging.getLogger(__name__)
 
 #: Env var pointing at a converted MLX Wan model directory (the layout
@@ -74,6 +76,10 @@ ENV_LORA_LOW = "RAPID_MLX_WAN_LORA_LOW"
 #: ``4n+1`` — one anchor frame plus n groups of 4. Anything else makes
 #: mlx-video raise deep in latent packing.
 _FRAME_MULTIPLE = 4
+
+#: Upper bound on ``steps``, mirroring ``VideoGenerationRequest.steps`` so an
+#: env override can't smuggle in a value the HTTP contract would reject.
+_MAX_STEPS = 500
 
 
 def _valid_frame_counts_around(n: int) -> tuple[int, int]:
@@ -177,6 +183,32 @@ class WanVideoEngine:
         self._loras_high = loras_high
         self._loras_low = loras_low
         self._config = self._read_config()
+        self._warn_if_unguarded()
+
+    def _warn_if_unguarded(self) -> None:
+        """Say so, once, when checkpoint metadata leaves a guard inactive.
+
+        Both the fps report and the resolution ceiling come from
+        ``config.json``. A checkpoint without it still renders (mlx-video
+        auto-detects the variant from weight shapes), so this is a warning
+        and not a refusal — but an operator should know that two safety
+        rails are off rather than discovering it from a wrong ``frame_rate``
+        in a response.
+        """
+        if self.native_frame_rate is None:
+            logger.warning(
+                "Checkpoint %s declares no sample_fps: responses will echo the "
+                "requested frame_rate instead of the model's real rate "
+                "(Wan2.1 is 16 fps, Wan2.2 is 24)",
+                self.model_dir,
+            )
+        if self.max_area == 0:
+            logger.warning(
+                "Checkpoint %s declares no max_area: the resolution ceiling "
+                "guard is inactive, so an oversized request will fail inside "
+                "the pipeline instead of as a clean 400",
+                self.model_dir,
+            )
 
     def _read_config(self) -> dict:
         """Read the checkpoint's ``config.json``, tolerating its absence.
@@ -201,16 +233,32 @@ class WanVideoEngine:
             return {}
 
     @property
-    def native_frame_rate(self) -> float:
-        """The fps the checkpoint was TRAINED at (16 for 2.1, 24 for 2.2).
+    def native_frame_rate(self) -> float | None:
+        """The fps the checkpoint was TRAINED at, or ``None`` if unknown.
 
         Wan does not take fps as a generation parameter — the model emits
         frames at a fixed rate and fps is purely a container property. The
         route reads this so the response reports the clip's real playback
         rate instead of echoing back a ``frame_rate`` the generator never
         honoured.
+
+        Returns ``None`` rather than guessing when ``config.json`` is
+        absent or has no ``sample_fps``. Wan2.1 emits 16 fps and Wan2.2
+        emits 24, and the two are NOT distinguishable from weight shapes
+        alone (both ship a 14B variant), so a default would be wrong half
+        the time — and asserting a wrong rate is worse than admitting we
+        don't know, which is the whole reason this property exists. The
+        route falls back to the requested value when it gets ``None``.
         """
-        return float(self._config.get("sample_fps") or 24)
+        fps = self._config.get("sample_fps")
+        if fps is None:
+            return None
+        try:
+            value = float(fps)
+        except (TypeError, ValueError):
+            logger.warning("Checkpoint declares a non-numeric sample_fps: %r", fps)
+            return None
+        return value if value > 0 else None
 
     @property
     def served_model(self) -> str:
@@ -238,10 +286,22 @@ class WanVideoEngine:
 
         TI2V-5B declares 901120 (= 704x1280). Exceeding it doesn't fail
         cleanly inside the pipeline, so the guard lives here.
+
+        0 means "no ceiling declared", which matches mlx-video's own
+        ``WanModelConfig`` default — we are not inventing a laxer rule than
+        upstream. But a checkpoint whose config was stripped therefore
+        loses the guard entirely, so that case is logged once at
+        construction rather than passing silently; see
+        :meth:`_warn_if_unguarded`.
         """
         try:
             return int(self._config.get("max_area") or 0)
         except (TypeError, ValueError):
+            logger.warning(
+                "Checkpoint declares a non-numeric max_area (%r); treating as "
+                "unconstrained",
+                self._config.get("max_area"),
+            )
             return 0
 
     def generate(
@@ -276,7 +336,7 @@ class WanVideoEngine:
 
         if num_frames % _FRAME_MULTIPLE != 1:
             lower, upper = _valid_frame_counts_around(num_frames)
-            raise ValueError(
+            raise InvalidVideoRequestError(
                 f"num_frames must be 4n+1 for Wan (latent temporal stride "
                 f"is 4); got {num_frames}. Nearest valid values: "
                 f"{lower} or {upper}."
@@ -284,21 +344,24 @@ class WanVideoEngine:
 
         area_cap = self.max_area
         if area_cap and width * height > area_cap:
-            raise ValueError(
+            raise InvalidVideoRequestError(
                 f"{width}x{height} is {width * height} pixels, over this "
                 f"checkpoint's {area_cap}-pixel ceiling "
                 f"(e.g. 1280x704). Reduce width/height."
             )
 
-        if abs(frame_rate - self.native_frame_rate) > 0.5:
+        native = self.native_frame_rate
+        if native is not None and abs(frame_rate - native) > 0.5:
             # Once per request, at info: the caller asked for something the
             # generator structurally cannot vary, and silently ignoring it
             # would leave them wondering why playback speed never changes.
+            # Skipped when the rate is unknown — there is nothing to compare
+            # against, and _warn_if_unguarded already said so at construction.
             logger.info(
                 "Wan generates at a fixed %.0f fps; requested frame_rate=%.1f "
                 "is ignored (fps is a container property, not a generation "
                 "parameter for this model family)",
-                self.native_frame_rate,
+                native,
                 frame_rate,
             )
 
@@ -344,10 +407,24 @@ def build_engine_from_env(model: str) -> WanVideoEngine:
     steps_raw = os.environ.get(ENV_STEPS)
     steps = None
     if steps_raw:
+        # Hold the env override to the SAME 1..500 bound the public request
+        # contract enforces. Without this, `RAPID_MLX_WAN_STEPS=0` silently
+        # forwards a value the API would have rejected, and the failure
+        # surfaces from inside the sampler instead of at configuration time.
         try:
-            steps = int(steps_raw)
+            candidate = int(steps_raw)
         except ValueError:
             logger.warning("Ignoring non-integer %s=%r", ENV_STEPS, steps_raw)
+        else:
+            if 1 <= candidate <= _MAX_STEPS:
+                steps = candidate
+            else:
+                logger.warning(
+                    "Ignoring out-of-range %s=%r (must be 1..%d)",
+                    ENV_STEPS,
+                    steps_raw,
+                    _MAX_STEPS,
+                )
     logger.info("Serving video request for model=%r from %s", model, model_dir)
     return WanVideoEngine(
         model_dir,

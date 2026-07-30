@@ -28,6 +28,7 @@ from ..api.models import (
     VideoGenerationResult,
 )
 from ..middleware.auth import verify_api_key
+from ..video.engine import InvalidVideoRequestError
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
@@ -196,12 +197,14 @@ async def _render_and_serialize(
                         seed=request.seed,
                     )
                 )
-        except ValueError as e:
-            # Backends raise ValueError for CALLER-fixable requests that
-            # the generic schema can't catch, because the constraint is
-            # model-specific: Wan needs num_frames == 4n+1 and enforces a
-            # per-checkpoint pixel-area ceiling. Reporting those as a 500
-            # would tell the caller nothing actionable.
+        except InvalidVideoRequestError as e:
+            # ONLY the dedicated type, never a bare ValueError. Backends
+            # raise this for caller-fixable requests the generic schema
+            # can't catch because the constraint is model-specific (Wan
+            # needs num_frames == 4n+1, and enforces a per-checkpoint
+            # pixel-area ceiling). Catching plain ValueError here would
+            # also swallow corrupt weights, a bad LoRA and scheduler
+            # faults, reporting all of them as "your request is invalid".
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -223,6 +226,27 @@ async def _render_and_serialize(
                         "message": str(e),
                         "type": "api_error",
                         "code": "video_backend_unavailable",
+                        "param": None,
+                    }
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Everything else is OUR fault, not the caller's: corrupt
+            # weights, an incompatible LoRA, a scheduler fault. Own the
+            # envelope here rather than letting it escape to the global
+            # handler, so this lane answers in the same shape as the audio
+            # lanes — full traceback to the operator log, generic message to
+            # the client so we don't leak filesystem or subprocess detail.
+            logger.exception("Video generation failed: %s", e)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": {
+                        "message": "Video generation failed",
+                        "type": "api_error",
+                        "code": "video_generation_failed",
                         "param": None,
                     }
                 },
@@ -284,7 +308,13 @@ async def _render_and_serialize(
         # the clip is something it isn't. A backend that honours arbitrary
         # fps simply doesn't set ``native_frame_rate`` and the request
         # value stands.
-        actual_fps = float(getattr(engine, "native_frame_rate", request.frame_rate))
+        # A backend that can't vary fps reports its real rate here. ``None``
+        # means "this backend genuinely doesn't know" (e.g. a Wan checkpoint
+        # with no config.json — 2.1 is 16 fps and 2.2 is 24, and the two
+        # aren't distinguishable from weights), in which case echoing the
+        # request is the honest answer rather than asserting a guess.
+        native = getattr(engine, "native_frame_rate", None)
+        actual_fps = float(native) if native else float(request.frame_rate)
         # Same principle for the model echo: report what RAN. The request's
         # ``model`` is a schema default (``ltx-2.3``) that selects nothing —
         # echoing it on a Wan-rendered clip actively misattributes the
