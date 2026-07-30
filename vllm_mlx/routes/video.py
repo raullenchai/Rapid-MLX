@@ -28,7 +28,7 @@ from ..api.models import (
     VideoGenerationResult,
 )
 from ..middleware.auth import verify_api_key
-from ..video.engine import InvalidVideoRequestError
+from ..video.engine import InvalidVideoRequestError, VideoBackendUnavailableError
 from ._async_utils import run_to_completion
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ async def create_video(request: VideoGenerationRequest = Body(...)):
                 }
             },
         )
-    except ImportError as e:
+    except (ImportError, VideoBackendUnavailableError) as e:
         # A backend IS configured but its runtime dependency is missing or
         # is the WRONG package (the `mlx-video` PyPI name belongs to an
         # unrelated project — see vllm_mlx/video/wan.py). That is an
@@ -216,7 +216,7 @@ async def _render_and_serialize(
                     }
                 },
             )
-        except ImportError as e:
+        except (ImportError, VideoBackendUnavailableError) as e:
             # Dependency probe can also fire here (the engine re-checks at
             # call time), same 503 reasoning as in create_video.
             raise HTTPException(

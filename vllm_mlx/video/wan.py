@@ -42,7 +42,7 @@ import logging
 import os
 from pathlib import Path
 
-from .engine import InvalidVideoRequestError
+from .engine import InvalidVideoRequestError, VideoBackendUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,70 @@ def _parse_loras(spec: str | None) -> list[tuple[str, float]] | None:
     return out or None
 
 
+def _materialise_image(image: str) -> tuple[str, bool]:
+    """Turn a contract ``image`` value into a local file path for mlx-video.
+
+    mlx-video's I2V path does ``PIL.Image.open(image)`` — a **filesystem
+    path**, nothing else. It does not fetch URLs and does not decode
+    base64. Handing it the wire formats our contract advertises
+    (``data:image/*;base64,...`` or a bare base64 payload) would have PIL
+    treat a multi-megabyte string as a filename and fail, so i2v was
+    advertised and broken. This decodes inline payloads to a temp file.
+
+    Returns ``(path, is_temp)`` — the caller unlinks when ``is_temp``.
+
+    Remote ``http(s)`` URLs are REFUSED here rather than fetched. Fetching
+    them would make this the server's only outbound-request primitive and
+    therefore an SSRF vector (loopback, RFC1918, link-local metadata
+    endpoints, DNS rebinding between validation and connect, redirects to
+    any of those). Doing that safely needs socket-level control — resolve
+    and re-check on every connection and every redirect hop — which is a
+    subsystem, not a helper, and one this backend has no way to exercise.
+    The schema still accepts URLs because another backend may implement a
+    safe loader; this one asks the client to inline the frame instead,
+    which it can always do.
+
+    Raises:
+        InvalidVideoRequestError: for a remote URL, or a payload that
+            isn't decodable image data.
+    """
+    import base64
+    import binascii
+    import tempfile
+    from urllib.parse import urlsplit
+
+    scheme = urlsplit(image).scheme.lower()
+    if scheme in ("http", "https"):
+        raise InvalidVideoRequestError(
+            "this backend does not fetch remote images: pass the "
+            "conditioning frame inline as a data:image/*;base64,... URI or a "
+            "bare base64 payload. (Fetching caller-supplied URLs server-side "
+            "would be an SSRF vector; see vllm_mlx/video/wan.py.)"
+        )
+
+    payload = image
+    if image.lower().startswith("data:"):
+        # Schema already guaranteed data:image/*;base64, — take the tail.
+        _, _, payload = image.partition(",")
+
+    try:
+        raw = base64.b64decode("".join(payload.split()), validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise InvalidVideoRequestError(
+            f"image is not decodable base64 image data: {e}"
+        ) from e
+    if not raw:
+        raise InvalidVideoRequestError("image decoded to zero bytes")
+
+    # Suffix matters: PIL sniffs content, but a sensible extension keeps the
+    # temp file legible in logs and to anything else that inspects it.
+    with tempfile.NamedTemporaryFile(
+        delete=False, prefix="rapidmlx-i2v-", suffix=".png"
+    ) as fh:
+        fh.write(raw)
+        return fh.name, True
+
+
 def probe_mlx_video() -> str | None:
     """Return ``None`` if mlx-video is importable, else why it isn't.
 
@@ -137,10 +201,23 @@ def probe_mlx_video() -> str | None:
         )
     try:
         from mlx_video.models.wan_2.generate import generate_video  # noqa: F401
-    except ImportError:
+    except ImportError as e:
+        # Two very different causes land here and the advice differs, so
+        # distinguish them instead of always blaming the PyPI collision:
+        #   * the Wan package itself is absent -> wrong distribution
+        #   * a TRANSITIVE dependency is absent -> right package, broken env
+        # Telling someone to uninstall the correct package because PIL is
+        # missing would be actively harmful.
+        missing = getattr(e, "name", "") or ""
+        if missing.split(".")[0] not in ("", "mlx_video"):
+            return (
+                f"mlx-video is installed but a dependency is missing: {e}. "
+                f"Install it (e.g. `pip install {missing.split('.')[0]}`) — the "
+                "Wan pipeline itself is present, so do NOT reinstall mlx-video."
+            )
         return (
             "an `mlx_video` module is importable but has no Wan pipeline "
-            "(`mlx_video.models.wan_2`). The PyPI package named "
+            f"(`mlx_video.models.wan_2`): {e}. The PyPI package named "
             "`mlx-video` is an unrelated video-loading utility; this "
             "backend needs Prince Canuma's generation package:\n"
             "    pip uninstall mlx-video && "
@@ -172,7 +249,10 @@ class WanVideoEngine:
     ) -> None:
         self.model_dir = Path(model_dir)
         if not self.model_dir.is_dir():
-            raise ValueError(
+            # Raised while the ROUTE is resolving the engine, i.e. outside
+            # the generation try/except — so it must be a type the route
+            # already maps, or a typo'd env var becomes an unstructured 500.
+            raise VideoBackendUnavailableError(
                 f"Wan model directory does not exist: {self.model_dir}. "
                 f"Set ${ENV_MODEL_DIR} to a converted MLX Wan checkpoint."
             )
@@ -365,28 +445,70 @@ class WanVideoEngine:
                 frame_rate,
             )
 
+        self._check_mode_supports_image(image)
+
         from mlx_video.models.wan_2.generate import generate_video
 
         out_path = Path(out_path)
-        # mlx-video treats seed=-1 as "random"; our Protocol uses None.
-        generate_video(
-            model_dir=str(self.model_dir),
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=image,
-            width=width,
-            height=height,
-            num_frames=num_frames,
-            steps=steps if steps is not None else self._steps,
-            seed=-1 if seed is None else seed,
-            output_path=str(out_path),
-            scheduler=self._scheduler,
-            tiling=self._tiling,
-            loras=self._loras,
-            loras_high=self._loras_high,
-            loras_low=self._loras_low,
-        )
+        image_path: str | None = None
+        image_is_temp = False
+        if image is not None:
+            image_path, image_is_temp = _materialise_image(image)
+
+        try:
+            # mlx-video treats seed=-1 as "random"; our Protocol uses None.
+            generate_video(
+                model_dir=str(self.model_dir),
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=image_path,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                steps=steps if steps is not None else self._steps,
+                seed=-1 if seed is None else seed,
+                output_path=str(out_path),
+                scheduler=self._scheduler,
+                tiling=self._tiling,
+                loras=self._loras,
+                loras_high=self._loras_high,
+                loras_low=self._loras_low,
+            )
+        finally:
+            if image_is_temp and image_path:
+                try:
+                    os.unlink(image_path)
+                except OSError as e:
+                    logger.warning(
+                        "Failed to unlink temp i2v frame %s: %s", image_path, e
+                    )
         return out_path
+
+    def _check_mode_supports_image(self, image: str | None) -> None:
+        """Reject an image/no-image combination the checkpoint can't do.
+
+        ``model_type`` says which modes a checkpoint supports: ``t2v`` is
+        text-only, ``i2v`` requires a conditioning frame, ``ti2v`` does
+        both. Without this check, handing an image to a T2V checkpoint (or
+        omitting one for I2V) reaches the pipeline and surfaces as an
+        opaque 500 after a weight load, instead of a 400 the caller can act
+        on immediately.
+
+        Unknown/absent ``model_type`` permits either — we don't guess.
+        """
+        kind = str(self._config.get("model_type") or "").lower()
+        if kind == "t2v" and image is not None:
+            raise InvalidVideoRequestError(
+                "this checkpoint is text-to-video only (model_type=t2v) and "
+                "cannot take a conditioning frame; omit `image`, or serve a "
+                "ti2v/i2v checkpoint for image-to-video."
+            )
+        if kind == "i2v" and image is None:
+            raise InvalidVideoRequestError(
+                "this checkpoint is image-to-video only (model_type=i2v) and "
+                "requires a conditioning frame; supply `image`, or serve a "
+                "ti2v/t2v checkpoint for text-to-video."
+            )
 
 
 def build_engine_from_env(model: str) -> WanVideoEngine:

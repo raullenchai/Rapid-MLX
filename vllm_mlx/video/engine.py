@@ -41,6 +41,19 @@ class InvalidVideoRequestError(ValueError):
     """
 
 
+class VideoBackendUnavailableError(RuntimeError):
+    """A backend is configured but cannot run — an OPERATOR-fixable fault.
+
+    Missing runtime dependency, a model directory that doesn't exist, a
+    checkpoint that won't load. Distinct from :class:`NotImplementedError`
+    ("no backend configured", a 501) because "your install or config is
+    wrong" is a different instruction than "this server has no video
+    support", and distinct from :class:`InvalidVideoRequestError` because
+    the caller can do nothing about it. The route maps this to
+    ``503 video_backend_unavailable``.
+    """
+
+
 @runtime_checkable
 class VideoEngine(Protocol):
     """The surface a text→/image→video backend must implement.

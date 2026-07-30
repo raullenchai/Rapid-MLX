@@ -183,7 +183,7 @@ clients can build against the contract before any weights exist.
 | --- | --- | --- | --- |
 | `model` | string | `"ltx-2.3"` | **Ignored.** rapid-mlx serves ONE checkpoint per process (as with the LLM lane), so this selects nothing — the served checkpoint is whatever `$RAPID_MLX_WAN_MODEL_DIR` names. The response reports the checkpoint that actually ran (e.g. `wan2.2-ti2v`), not this value. |
 | `prompt` | string | — (required) | Natural-language description. Must be non-blank. |
-| `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string. `null` → text-to-video. |
+| `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string. `null` → text-to-video. **The Wan backend accepts the two inline forms only** — see [Why remote image URLs are refused](#why-remote-image-urls-are-refused). |
 | `height` | integer | `704` | Output height, `1..4096`. |
 | `width` | integer | `1216` | Output width, `1..4096`. |
 | `num_frames` | integer | `97` | Frames to render, `1..4096`. **Wan requires `4n+1`** (its latent temporal stride is 4) — `49`, `81`, `97` are valid, `80` is not. A violation is a `400` naming the nearest valid values. |
@@ -227,7 +227,7 @@ when a backend emits one — Wan 2.1/2.2 do not, so it is `null` today.
 | --- | --- | --- |
 | `501` | `video_backend_not_implemented` | No backend configured. The request was still fully validated — this is the contract check to develop against. |
 | `503` | `video_backend_unavailable` | A backend IS configured but its runtime dependency is missing (or is the wrong package — see the warning below). The message carries the install command. |
-| `400` | `invalid_video_request` | A model-specific constraint the generic schema can't express: Wan's `num_frames == 4n+1`, or a resolution over the checkpoint's pixel-area ceiling. |
+| `400` | `invalid_video_request` | A model-specific constraint the generic schema can't express: Wan's `num_frames == 4n+1`; a resolution over the checkpoint's pixel-area ceiling; a remote `image` URL; an `image` on a `t2v`-only checkpoint or a missing one on an `i2v`-only checkpoint. |
 | `400` | `invalid_request` | Schema violation (missing `prompt`, `num_frames=0`, `frame_rate=NaN`, `response_format="webm"`, an unsafe `image`…). 400 rather than 422 per the note in §1. |
 | `500` | `video_generation_failed` | The backend ran but produced no output. |
 | `500` | `video_too_large_to_inline` | The clip exceeds the 256 MB inline-base64 ceiling. |
@@ -250,8 +250,16 @@ The `501` body:
 **Step 1 — install the generation package.**
 
 ```bash
-pip install git+https://github.com/Blaizzy/mlx-video.git
+# Pinned to the commit this backend was developed and verified against.
+pip install 'git+https://github.com/Blaizzy/mlx-video.git@87db56a'
 ```
+
+Pinning matters more than usual here: because the PyPI name is taken by an
+unrelated project there is no versioned release to depend on, so an
+unpinned `main` could change `generate_video`'s signature under a working
+install. `tests/test_wan_video_backend.py::TestUpstreamSignatureCompatibility`
+asserts the keywords we pass still exist whenever the real package is
+present, so drift fails a test instead of a production request.
 
 > ⚠️ **Do NOT run `pip install mlx-video`.** That PyPI name belongs to an
 > **unrelated project** (`AmiraniLabs/mlx-video`, a 5 KB video *loading*
@@ -295,6 +303,28 @@ rapid-mlx serve <your-llm> --port 8000
 | `RAPID_MLX_WAN_TILING` | VAE decode tiling: `auto` (default), `none`, `aggressive`, … Lower memory at some speed cost. |
 | `RAPID_MLX_WAN_LORA` | `path[:strength][,path[:strength]]`, applied to all models. |
 | `RAPID_MLX_WAN_LORA_HIGH` / `_LOW` | Same, for the two halves of a dual-model (A14B) checkpoint. |
+
+### Why remote image URLs are refused
+
+The schema accepts an `http(s)://` URL for `image` because that is the
+generic contract and a future backend may implement a safe loader. **The Wan
+backend refuses them** and returns `400 invalid_video_request` asking you to
+inline the frame instead.
+
+This is deliberate. `image` is the only field a backend dereferences, so
+fetching it would make the server's video route its sole outbound-request
+primitive — an SSRF vector reaching loopback, RFC1918, and link-local
+metadata endpoints, defeatable by DNS rebinding between validation and
+connect, and by redirects to any of those. Doing it safely requires
+socket-level control: resolve and re-check the address on every connection
+*and* every redirect hop, plus size and time bounds. That is a subsystem,
+not a helper, and one this backend has no way to exercise. A client can
+always fetch the image itself and pass the bytes, so refusing costs little
+and removes the whole class of problem.
+
+Inline forms are decoded to a temporary file before rendering, because
+mlx-video's I2V path is `PIL.Image.open(path)` — it accepts a filesystem
+path and nothing else.
 
 ### Which Wan versions, and why not 2.7
 

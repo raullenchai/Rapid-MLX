@@ -113,10 +113,18 @@ class TestWanEngineContract:
         eng = WanVideoEngine(_write_ckpt(tmp_path))
         assert isinstance(eng, VideoEngine)
 
-    def test_missing_model_dir_is_rejected_at_construction(self, tmp_path):
+    def test_missing_model_dir_is_operator_fault_not_a_raw_500(self, tmp_path):
+        """A typo'd $RAPID_MLX_WAN_MODEL_DIR must be a mapped 503.
+
+        This raises while the ROUTE is resolving the engine — outside the
+        generation try/except — so it has to be a type the route already
+        maps, or the operator gets an unstructured 500 with no hint that
+        their config is wrong.
+        """
+        from vllm_mlx.video.engine import VideoBackendUnavailableError
         from vllm_mlx.video.wan import WanVideoEngine
 
-        with pytest.raises(ValueError, match="does not exist"):
+        with pytest.raises(VideoBackendUnavailableError, match="does not exist"):
             WanVideoEngine(tmp_path / "nope")
 
     def test_maps_protocol_args_onto_mlx_video(self, tmp_path, monkeypatch):
@@ -771,3 +779,290 @@ class TestAutoregistrationFailureHandling:
             engine_mod.resolve_video_engine("x")
         assert calls["n"] == 2, "registration was not retried"
         assert engine_mod._AUTOREGISTER_DONE is True
+
+
+def _png_bytes() -> bytes:
+    """A minimal valid 1x1 PNG."""
+    import base64
+
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4"
+        "DwABAQEAGn0nsQAAAABJRU5ErkJggg=="
+    )
+
+
+class TestImageToVideoMaterialisation:
+    """i2v was advertised but broken: mlx-video does PIL.Image.open(path).
+
+    It never fetches URLs and never decodes base64, so every image form the
+    contract documents was being handed to PIL as a *filename*. These pin
+    the conversion to a real local file.
+    """
+
+    def test_data_uri_is_decoded_to_a_local_file(self, tmp_path, monkeypatch):
+        rec: dict = {}
+        _install_fake_mlx_video(monkeypatch, rec)
+        import base64
+
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        b64 = base64.b64encode(_png_bytes()).decode()
+        seen = {}
+
+        def _capture(**kw):
+            # Assert *while the file still exists* — it's cleaned up after.
+            p = kw["image"]
+            seen["exists"] = p is not None and Path(p).is_file()
+            seen["bytes"] = Path(p).read_bytes() if seen["exists"] else b""
+            seen["path"] = p
+            Path(kw["output_path"]).write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            return Path(kw["output_path"])
+
+        sys.modules["mlx_video.models.wan_2.generate"].generate_video = _capture
+
+        WanVideoEngine(_write_ckpt(tmp_path)).generate(
+            "x",
+            tmp_path / "o.mp4",
+            image=f"data:image/png;base64,{b64}",
+            num_frames=49,
+            width=832,
+            height=480,
+        )
+        assert seen["exists"], "image was not materialised to a real file"
+        assert seen["bytes"] == _png_bytes(), "decoded payload mismatch"
+        # And the temp frame must not be left behind.
+        assert not Path(seen["path"]).exists(), "temp i2v frame leaked"
+
+    def test_bare_base64_is_decoded_too(self, tmp_path, monkeypatch):
+        import base64
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        seen = {}
+
+        def _capture(**kw):
+            seen["bytes"] = Path(kw["image"]).read_bytes()
+            Path(kw["output_path"]).write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            return Path(kw["output_path"])
+
+        sys.modules["mlx_video.models.wan_2.generate"].generate_video = _capture
+        WanVideoEngine(_write_ckpt(tmp_path)).generate(
+            "x",
+            tmp_path / "o.mp4",
+            image=base64.b64encode(_png_bytes()).decode(),
+            num_frames=49,
+            width=832,
+            height=480,
+        )
+        assert seen["bytes"] == _png_bytes()
+
+    @pytest.mark.parametrize(
+        "url", ["https://example.com/f.png", "http://169.254.169.254/latest/meta-data"]
+    )
+    def test_remote_urls_are_refused_not_fetched(self, tmp_path, monkeypatch, url):
+        """Refusing is the fix, not fetching.
+
+        Fetching caller-supplied URLs would make this the server's only
+        outbound-request primitive and therefore an SSRF vector (loopback,
+        RFC1918, link-local metadata, DNS rebinding, redirects). Doing it
+        safely needs socket-level control on every connection and redirect
+        — a subsystem this backend can't exercise. The client can inline
+        the frame instead.
+        """
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        with pytest.raises(InvalidVideoRequestError, match="does not fetch remote"):
+            WanVideoEngine(_write_ckpt(tmp_path)).generate(
+                "x", tmp_path / "o.mp4", image=url, num_frames=49
+            )
+
+    def test_remote_url_is_400_through_the_route(self, tmp_path, monkeypatch):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={
+                    "prompt": "x",
+                    "width": 832,
+                    "height": 480,
+                    "num_frames": 49,
+                    "image": "https://example.com/frame.png",
+                },
+            )
+        finally:
+            restore()
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"]["code"] == "invalid_video_request"
+
+
+class TestModeValidation:
+    def test_image_on_a_t2v_checkpoint_is_400(self, tmp_path, monkeypatch):
+        """model_type was read but never enforced — an image on a T2V-only
+        checkpoint reached the pipeline and became a 500 after a weight load."""
+        import base64
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path, model_type="t2v"))
+        with pytest.raises(InvalidVideoRequestError, match="text-to-video only"):
+            eng.generate(
+                "x",
+                tmp_path / "o.mp4",
+                image=base64.b64encode(_png_bytes()).decode(),
+                num_frames=49,
+            )
+
+    def test_no_image_on_an_i2v_checkpoint_is_400(self, tmp_path, monkeypatch):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path, model_type="i2v"))
+        with pytest.raises(InvalidVideoRequestError, match="image-to-video only"):
+            eng.generate("x", tmp_path / "o.mp4", num_frames=49)
+
+    def test_ti2v_accepts_both(self, tmp_path, monkeypatch):
+        import base64
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path, model_type="ti2v"))
+        eng.generate("x", tmp_path / "a.mp4", num_frames=49, width=832, height=480)
+        eng.generate(
+            "x",
+            tmp_path / "b.mp4",
+            image=base64.b64encode(_png_bytes()).decode(),
+            num_frames=49,
+            width=832,
+            height=480,
+        )
+
+    def test_unknown_model_type_permits_either(self, tmp_path, monkeypatch):
+        """Absent metadata means we don't know — so we don't guess."""
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        d = tmp_path / "bare"
+        d.mkdir()
+        (d / "model.safetensors").write_bytes(b"stub")
+        WanVideoEngine(d).generate(
+            "x", tmp_path / "o.mp4", num_frames=49, width=832, height=480
+        )
+
+
+class TestBadModelDirIsA503:
+    def test_route_maps_missing_dir_to_503(self, tmp_path, monkeypatch):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(tmp_path / "definitely-not-here"))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "x", "width": 832, "height": 480, "num_frames": 49},
+            )
+        finally:
+            restore()
+        assert r.status_code == 503, r.text
+        err = r.json()["detail"]["error"]
+        assert err["code"] == "video_backend_unavailable"
+        assert "does not exist" in err["message"]
+
+
+class TestProbeDistinguishesMissingTransitiveDep:
+    def test_missing_dependency_is_not_blamed_on_the_pypi_collision(self, monkeypatch):
+        """Right package, missing transitive dep -> don't say "uninstall".
+
+        Telling someone to remove the correct package because PIL is absent
+        would be actively harmful.
+        """
+        m = types.ModuleType("mlx_video")
+        m.__path__ = []
+        monkeypatch.setitem(sys.modules, "mlx_video", m)
+        for stale in [k for k in sys.modules if k.startswith("mlx_video.")]:
+            monkeypatch.delitem(sys.modules, stale, raising=False)
+
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name, *a, **kw):
+            if name.startswith("mlx_video.models.wan_2"):
+                raise ImportError("No module named 'PIL'", name="PIL")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+        from vllm_mlx.video.wan import probe_mlx_video
+
+        msg = probe_mlx_video()
+        assert msg is not None
+        assert "dependency is missing" in msg, msg
+        assert "do NOT reinstall" in msg, msg
+        assert "pip uninstall" not in msg, msg
+
+
+class TestUpstreamSignatureCompatibility:
+    """Guard against mlx-video signature drift.
+
+    The fakes above accept ``**kwargs``, which is what makes them hermetic
+    — but it also means they can NEVER catch an upstream rename or removal.
+    Since the install is a git URL (mlx-video's PyPI name belongs to an
+    unrelated project, so there is no pinnable release to depend on), an
+    upstream change could break production while CI stayed green.
+
+    This test runs only where the real package is installed — the
+    apple-silicon CI job and any dev machine that has it — and asserts the
+    keywords this backend passes still exist upstream.
+    """
+
+    #: Every keyword `WanVideoEngine.generate` sends to `generate_video`.
+    REQUIRED_KWARGS = frozenset(
+        {
+            "model_dir",
+            "prompt",
+            "negative_prompt",
+            "image",
+            "width",
+            "height",
+            "num_frames",
+            "steps",
+            "seed",
+            "output_path",
+            "scheduler",
+            "tiling",
+            "loras",
+            "loras_high",
+            "loras_low",
+        }
+    )
+
+    def test_generate_video_still_accepts_every_kwarg_we_pass(self):
+        import inspect
+
+        real = pytest.importorskip(
+            "mlx_video.models.wan_2.generate",
+            reason="real mlx-video not installed (hermetic fakes are used elsewhere)",
+        )
+        sig = inspect.signature(real.generate_video)
+        accepts_var_kw = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        if accepts_var_kw:
+            pytest.skip("upstream takes **kwargs; signature check is vacuous")
+        missing = sorted(self.REQUIRED_KWARGS - set(sig.parameters))
+        assert not missing, (
+            f"mlx-video's generate_video no longer accepts {missing}. "
+            f"WanVideoEngine.generate passes these; update the call and the "
+            f"pinned commit in docs/content_farm_api.md together."
+        )
