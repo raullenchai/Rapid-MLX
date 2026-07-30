@@ -1078,8 +1078,10 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)
     (snap / "config.json").write_text("{}")
-    # Real CogVideoX-Fun layout: component weights at the snapshot root,
-    # none of them named ``model*.safetensors``.
+    # Real CogVideoX-Fun layout: a diffusers pipeline manifest + component
+    # weights at the snapshot root, none named ``model*.safetensors``.
+    (snap / "model_index.json").write_text('{"_class_name": "CogVideoXPipeline"}')
+    (snap / "split_model.json").write_text("{}")
     (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
     (snap / "vae.safetensors").write_bytes(b"v" * 4096)
     (snap / "text_encoder.safetensors").write_bytes(b"e" * 4096)
@@ -1103,9 +1105,10 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
 
 
 def test_is_weightless_stub_false_for_nested_diffusers_weights(tmp_path, monkeypatch):
-    """Diffusers repos that nest weights in ``transformer/`` / ``vae/``
-    subdirectories are still recognized as weight-present — the alt-layout
-    walk is recursive, not root-only."""
+    """Diffusers repos (positively identified by ``model_index.json``) that
+    nest weights in ``transformer/`` / ``vae/`` subdirectories are still
+    recognized as weight-present — the alt-layout walk is recursive, not
+    root-only."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--some--diffusers-repo"
     sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
@@ -1113,6 +1116,7 @@ def test_is_weightless_stub_false_for_nested_diffusers_weights(tmp_path, monkeyp
     (snap / "transformer").mkdir(parents=True)
     (snap / "vae").mkdir(parents=True)
     (snap / "config.json").write_text("{}")
+    (snap / "model_index.json").write_text('{"_class_name": "SomePipeline"}')
     (snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
         b"t" * 4096
     )
@@ -1126,6 +1130,93 @@ def test_is_weightless_stub_false_for_nested_diffusers_weights(tmp_path, monkeyp
 
     assert gate._snapshot_has_alt_layout_weights("some/diffusers-repo") is True
     assert gate.is_weightless_stub("some/diffusers-repo") is False
+
+
+def test_is_weightless_stub_true_for_interrupted_multimodal_aux_weight_first(
+    tmp_path, monkeypatch
+):
+    """Regression guard (codex BLOCKING): an interrupted MULTIMODAL text
+    download can land an auxiliary weight (``vision_model.safetensors``) BEFORE
+    its index/shards — with NO text-layout signal on disk yet. Inferring
+    "non-text" from the absence of ``model*.safetensors`` would misread this as
+    a fully-weighted non-text model and wrongly suppress the notice. Requiring
+    a POSITIVE non-text manifest (model_index.json / split_model.json), which a
+    text repo never ships, keeps it a stub so the notice fires."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--interrupted-vlm-4bit"
+    sha = "5555555555555555555555555555555555555555"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    # Only the vision tower arrived so far — no index, no model*.safetensors,
+    # and (crucially) no non-text pipeline manifest.
+    (snap / "vision_model.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert (
+        gate._snapshot_has_alt_layout_weights("mlx-community/interrupted-vlm-4bit")
+        is False
+    )
+    assert gate.is_repo_cached("mlx-community/interrupted-vlm-4bit") is False
+    assert gate.is_weightless_stub("mlx-community/interrupted-vlm-4bit") is True
+
+
+def test_is_weightless_stub_true_for_component_weights_without_manifest(
+    tmp_path, monkeypatch
+):
+    """Documented scope limit: a non-text repo shipping component weights but
+    NEITHER positive manifest falls back to the (cosmetic) false alarm rather
+    than a wrong suppression — the conservative failure direction. Pins that we
+    require positive metadata evidence, never inference-from-absence."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--vendor--manifestless-video"
+    sha = "6666666666666666666666666666666666666666"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    (snap / "vae.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert gate._snapshot_has_alt_layout_weights("vendor/manifestless-video") is False
+    assert gate.is_weightless_stub("vendor/manifestless-video") is True
+
+
+def test_is_weightless_stub_false_for_split_model_manifest(tmp_path, monkeypatch):
+    """LTX-2.3's positive marker is ``split_model.json`` (no model_index.json).
+    A cached component layout carrying it must be recognized as weight-present
+    so the notice is suppressed."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--notapalindrome--ltx23-mlx-av-q4"
+    sha = "88b4b5b2ed7697c25f281e76e3c692f659027ab1"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text('{"model_type": "AudioVideo"}')
+    (snap / "split_model.json").write_text("{}")
+    (snap / "transformer.safetensors").write_bytes(b"t" * 4096)
+    (snap / "vae_decoder.safetensors").write_bytes(b"v" * 4096)
+    (snap / "vocoder.safetensors").write_bytes(b"o" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert (
+        gate._snapshot_has_alt_layout_weights("notapalindrome/ltx23-mlx-av-q4") is True
+    )
+    assert gate.is_weightless_stub("notapalindrome/ltx23-mlx-av-q4") is False
 
 
 def test_is_weightless_stub_true_for_partial_text_download(tmp_path, monkeypatch):
@@ -1153,8 +1244,8 @@ def test_is_weightless_stub_true_for_partial_text_download(tmp_path, monkeypatch
 
     monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
 
-    # No alt-layout weights (the lone shard is a root model*.safetensors), the
-    # cache is incomplete, so the stub notice must still fire.
+    # No non-text manifest → not an alt-layout model; the cache is an
+    # incomplete text pull, so the stub notice must still fire.
     assert (
         gate._snapshot_has_alt_layout_weights("mlx-community/gemma-4-27b-it-4bit")
         is False
@@ -1169,10 +1260,9 @@ def test_is_weightless_stub_true_for_incomplete_text_with_aux_weight(
     """Regression guard (codex MAJOR): a multimodal TEXT repo can carry an
     auxiliary ``.safetensors`` (e.g. a vision tower) that isn't
     ``model*.safetensors``. That aux file must NOT mask an incomplete text
-    shard set — the ``model.safetensors.index.json`` text-layout signal makes
-    is_repo_cached the sole authority, so a missing shard still fires the
-    notice. Without the text-layout guard, the aux weight would wrongly
-    suppress it."""
+    shard set. Because the repo ships NO positive non-text manifest,
+    ``_snapshot_has_alt_layout_weights`` returns False and is_repo_cached is
+    the sole authority, so the missing shard still fires the notice."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--some-vlm-4bit"
     sha = "2222222222222222222222222222222222222222"
@@ -1224,13 +1314,12 @@ def test_is_weightless_stub_ignores_adapter_only_safetensors(tmp_path, monkeypat
 def test_is_weightless_stub_true_for_dangling_text_shard_with_aux_weight(
     tmp_path, monkeypatch
 ):
-    """Regression guard (codex round-2 MAJOR): the text-layout signal is the
-    ENTRY NAME, not a resolvable file. A corrupted/interrupted text snapshot
-    whose ``model-*.safetensors`` shard is a DANGLING symlink (target not yet
-    materialized) — plus an auxiliary ``vision_model.safetensors`` — must
-    still be recognized as a text repo, so the aux weight can't mask the
-    incomplete cache. ``os.path.isfile``/``exists`` would miss the dangling
-    entry; the name-based probe catches it."""
+    """A corrupted/interrupted text snapshot whose ``model-*.safetensors``
+    shard is a DANGLING symlink (target not yet materialized) — plus an
+    auxiliary ``vision_model.safetensors`` — must still be a stub. It ships no
+    positive non-text manifest, so ``_snapshot_has_alt_layout_weights`` returns
+    False and is_repo_cached (which treats the dangling shard as incomplete) is
+    the sole authority. The aux weight cannot mask the incomplete cache."""
     cache_root = tmp_path / "hf-cache"
     repo_root = cache_root / "models--mlx-community--dangling-vlm-4bit"
     sha = "4444444444444444444444444444444444444444"

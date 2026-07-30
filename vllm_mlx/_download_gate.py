@@ -438,10 +438,22 @@ def is_repo_cached(repo_id: str) -> bool:
     return False
 
 
+# Root-level manifests that POSITIVELY identify a non-text (component-split /
+# diffusers) model layout — the kind whose weights mlx-lm's text
+# ``model*.safetensors`` glob can't see. Requiring one of these before we
+# accept alternate-layout weights (rather than inferring "non-text" from the
+# mere absence of text files) is what keeps an interrupted *text* / multimodal
+# download — where an auxiliary weight lands before the index/shards — from
+# being misread as fully weighted (codex BLOCKING). Text LLMs never ship
+# either file: ``model_index.json`` is the diffusers pipeline manifest and
+# ``split_model.json`` is mlx-video's component-split manifest.
+_NON_TEXT_LAYOUT_MANIFESTS = ("model_index.json", "split_model.json")
+
+
 def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
-    """True if the resolved snapshot is a NON-text model whose weights are
-    present in a layout mlx-lm's text ``model*.safetensors`` root-glob can't
-    see.
+    """True if the resolved snapshot is a POSITIVELY-identified non-text model
+    whose weights are present in a layout mlx-lm's text ``model*.safetensors``
+    root-glob can't see.
 
     Non-text models don't lay their weights out the way :func:`is_repo_cached`
     (which mirrors mlx-lm's text loader) expects. Video-gen repos ship
@@ -455,28 +467,30 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
     :func:`is_weightless_stub` cry wolf ("config cached, weights missing —
     will download ~N GB") on every serve of an already-downloaded video model.
 
-    Text-model guard (codex-caught regression): a TEXT / multimodal repo can
-    ALSO carry auxiliary ``.safetensors`` (a ``vision_model.safetensors``
-    tower, an adapter, a neighbour of a half-downloaded shard). If we counted
-    those, an *incomplete* text cache — one whose ``model-*`` shards are still
-    missing — could get its stub notice wrongly suppressed. So when the
-    snapshot shows a text-layout signal (a ``model.safetensors.index.json`` or
-    ANY root ``model*.safetensors``), this is a text model and its
-    completeness is :func:`is_repo_cached`'s sole call; we bail with ``False``.
-    That also keeps the finding-⑥ intent for a partial text download intact.
+    Positive identification (codex BLOCKING): a TEXT / multimodal repo can ALSO
+    carry auxiliary ``.safetensors`` (a ``vision_model.safetensors`` tower, an
+    adapter, a neighbour of a half-downloaded shard). Inferring "non-text" from
+    the mere *absence* of text files would misread an interrupted multimodal
+    text download — one whose auxiliary weight arrived before the index/shards
+    — as fully weighted and wrongly suppress its notice. So we require a
+    POSITIVE non-text-layout marker (:data:`_NON_TEXT_LAYOUT_MANIFESTS`, probed
+    by bare directory-entry name) before accepting any alternate weight. Text
+    LLMs never carry those manifests, so an incomplete text cache always falls
+    through to :func:`is_repo_cached`.
 
     Adapter / LoRA sidecars (``adapter*.safetensors``) aren't a model's
-    primary weights, so a repo shipping only those is not "weighted" for
-    serve and doesn't count. Cache-hygiene: only a ``.safetensors`` whose
-    realpath stays inside this repo's own cache dir counts (HF snapshots
+    primary weights and don't count. Cache-hygiene: only a ``.safetensors``
+    whose realpath stays inside this repo's own cache dir counts (HF snapshots
     symlink into ``<repo_root>/blobs/``); a symlink escaping to an unrelated
     file must not suppress the notice.
 
     Scope note: this establishes weights are *present*, not that a non-text
     cache is *complete* (component-completeness would need each loader's
-    manifest, which we don't have here). An interrupted video pull may thus
-    skip the notice — acceptable, since it's purely cosmetic and the download
-    path still fetches whatever is missing.
+    manifest). An interrupted video pull that already has its manifest + one
+    component may thus skip the notice — acceptable, since it's purely cosmetic
+    and the download path still fetches whatever is missing. A non-text repo
+    that ships NEITHER manifest simply falls back to the old (cosmetic) false
+    alarm rather than a wrong suppression.
 
     Mirrors :func:`is_repo_cached`'s snapshot resolution (``refs/main`` →
     pinned sha) so both read the same on-disk snapshot. Returns ``False`` on
@@ -496,19 +510,15 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
         if not os.path.isdir(snap_dir):
             return False
 
-        # Text-layout signal → this is is_repo_cached's job alone; never let
-        # an auxiliary weight mask an incomplete text shard set. Probe by bare
-        # directory-entry NAME, not os.path.exists/isfile: a dangling shard
-        # symlink (or a symlink-to-dir) is still the loader's signal that this
-        # is a text model — exactly how _snapshot_is_complete treats a
-        # corrupted root glob entry as incomplete rather than absent.
         try:
-            root_entries = os.listdir(snap_dir)
+            root_entries = set(os.listdir(snap_dir))
         except OSError:
             return False
-        if "model.safetensors.index.json" in root_entries:
-            return False
-        if any(_is_model_weight_filename(name) for name in root_entries):
+        # Require POSITIVE evidence of a non-text layout — never infer it from
+        # the absence of text files (that misreads interrupted multimodal text
+        # downloads). Probe by bare name so a dangling manifest symlink still
+        # counts as the marker.
+        if not any(m in root_entries for m in _NON_TEXT_LAYOUT_MANIFESTS):
             return False
 
         repo_root_real = os.path.realpath(repo_root)
