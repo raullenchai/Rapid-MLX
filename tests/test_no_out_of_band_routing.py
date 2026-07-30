@@ -148,6 +148,41 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # ``telemetry/emit.py::_request_sample_rate``; never chooses
         # model / parser / tier / any routing decision.
         "RAPID_MLX_TELEMETRY_REQUEST_SAMPLE",
+        # ---- Video lane (Wan 2.1/2.2 backend, vllm_mlx/video/wan.py) ----
+        #
+        # These configure a SEPARATE generation lane and cannot influence any
+        # member of ROUTING_ATTRS above. Nothing here is read by config,
+        # aliases, model_auto_config, load_model or detect_model_config; the
+        # only consumer is ``vllm_mlx.video.wan.build_engine_from_env``,
+        # reached exclusively from the ``/v1/video/generations`` route. They
+        # cannot make a text model load as multimodal, flip MoE/dense, or
+        # engage spec-decode — the surfaces this gate exists to protect.
+        #
+        # MODEL_DIR names the converted MLX Wan checkpoint the video route
+        # serves. It is model SELECTION, but for the video lane only, and
+        # deliberately not an alias table: pointing at pre-converted
+        # third-party uploads would make a first request silently fetch
+        # multi-GB weights from an unvetted account. Acknowledged
+        # inconsistency: the LLM lane takes its model as a CLI positional,
+        # so a ``--video-model`` flag would be more uniform. That is a
+        # follow-up, not a routing bypass — adding a video CLI flag needs
+        # its own review against the SOP-§10 flag gate.
+        "RAPID_MLX_WAN_MODEL_DIR",
+        # Generation-quality/perf knobs, all forwarded straight to
+        # mlx-video's sampler. Bounded and validated at engine construction
+        # (steps 1..500 mirroring the request schema; scheduler and tiling
+        # against their documented option sets).
+        "RAPID_MLX_WAN_STEPS",
+        "RAPID_MLX_WAN_SCHEDULER",
+        "RAPID_MLX_WAN_TILING",
+        # Step-distilled LoRA paths (Wan2.2-Lightning). The single biggest
+        # wall-clock lever — 40 steps to 8 took a 2 s 480p clip from 295 s to
+        # 77 s on an M3 Ultra — which is why they need a config surface at
+        # all. Paths only; they select adapters for the video model, never a
+        # routing decision.
+        "RAPID_MLX_WAN_LORA",
+        "RAPID_MLX_WAN_LORA_HIGH",
+        "RAPID_MLX_WAN_LORA_LOW",
         # Port for doctor harness probe checks, not engine routing.
         "RAPID_MLX_PORT",
         # Skip the [Y/n] confirmation prompt before large model downloads
