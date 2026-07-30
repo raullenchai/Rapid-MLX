@@ -76,7 +76,7 @@ def test_generate_builds_expected_argv(tmp_path, no_weight_fetch, fake_run):
     assert args["--dit"] == music.DEFAULT_DIT
     assert args["--decoder"] == music.DEFAULT_DECODER
     assert args["--steps"] == "6"
-    assert args["--seconds"] == "12.50"
+    assert args["--seconds"] == "12.5"
     assert kwargs["check"] is True
     assert kwargs["timeout"] == 900
     # never through a shell
@@ -340,9 +340,36 @@ def test_generate_rejects_seconds_before_touching_output(tmp_path):
 def test_generate_accepts_boundary_seconds(tmp_path, no_weight_fetch, fake_run):
     """The 47s upper bound and small positive values are accepted."""
     MusicEngine().generate("x", tmp_path / "a.wav", seconds=47.0)
-    assert _argv_to_map(fake_run[0][0])["--seconds"] == "47.00"
+    assert _argv_to_map(fake_run[0][0])["--seconds"] == "47.0"
     MusicEngine().generate("x", tmp_path / "b.wav", seconds=0.5)
-    assert _argv_to_map(fake_run[1][0])["--seconds"] == "0.50"
+    assert _argv_to_map(fake_run[1][0])["--seconds"] == "0.5"
+
+
+def test_generate_forwards_full_seconds_precision(tmp_path, no_weight_fetch, fake_run):
+    """Regression: a fixed 2-decimal format collapsed small valid durations to
+    ``0.00`` (empty clip). The full float must be forwarded verbatim."""
+    MusicEngine().generate("x", tmp_path / "tiny.wav", seconds=0.003)
+    assert _argv_to_map(fake_run[0][0])["--seconds"] == "0.003"
+
+
+def test_generate_unlinks_symlink_destination_not_its_target(
+    tmp_path, no_weight_fetch, fake_run
+):
+    """Regression: resolving the full out_path would dereference a final
+    symlink, so unlink would delete the link's TARGET. The link itself must be
+    removed and the target left intact."""
+    target = tmp_path / "precious.wav"
+    target.write_bytes(b"DO NOT DELETE")
+    link = tmp_path / "out.wav"
+    link.symlink_to(target)
+
+    got = MusicEngine().generate("x", link)
+
+    # The symlink was replaced (fake_run writes a fresh file at the link path),
+    # and the original target was never touched.
+    assert target.read_bytes() == b"DO NOT DELETE"
+    assert not got.is_symlink()
+    assert got.read_bytes() == b"RIFF____WAVE"
 
 
 def test_no_weights_tracked_by_git():

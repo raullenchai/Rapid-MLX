@@ -175,11 +175,18 @@ class MusicEngine:
         # site-packages. That both hides the wav from the caller and makes the
         # post-run existence check below fail on a successful generation, so
         # resolve to an absolute path against the caller's cwd up front.
-        out_path = Path(out_path).expanduser().resolve()
+        #
+        # Resolve only the PARENT: ``Path.resolve()`` on the full path would
+        # dereference a final-component symlink, so a subsequent ``unlink()``
+        # would delete the symlink's *target* (and generation would write
+        # through the link) instead of replacing the link itself.
+        _p = Path(out_path).expanduser()
+        out_path = _p.parent.resolve() / _p.name
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        # Clear any previous file at the target so the post-run existence check
+        # Clear any previous entry at the target so the post-run existence check
         # below cannot mistake a stale wav for a successful generation (the
-        # child could exit 0 without writing anything).
+        # child could exit 0 without writing anything). ``is_symlink()`` is
+        # checked first so we unlink the LINK, never follow it to a target.
         if out_path.is_symlink() or out_path.exists():
             out_path.unlink()
         self._ensure_weights()
@@ -192,7 +199,10 @@ class MusicEngine:
             f"--dit={self.dit}",
             f"--decoder={self.decoder}",
             f"--steps={steps}",
-            f"--seconds={seconds:.2f}",
+            # Forward the full float (round-trippable ``str(float)``) — a fixed
+            # 2-decimal format would collapse small valid durations (e.g.
+            # 0.003s) to ``0.00`` and generate an empty clip.
+            f"--seconds={seconds!r}",
             f"--out={out_path}",
         ]
         if negative_prompt:
