@@ -110,8 +110,8 @@ class VideoGenerationEngine:
         generated = self._executor.submit(
             lambda: self._generate_sync(**kwargs)
         ).result()
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         try:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(generated), output_path)
         except Exception:
             Path(generated).unlink(missing_ok=True)

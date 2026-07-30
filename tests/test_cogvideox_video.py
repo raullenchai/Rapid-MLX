@@ -31,6 +31,7 @@ def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
 
     engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
     thread_ids: list[int] = []
+    caller_thread_id = threading.get_ident()
 
     def fake_generate(**kwargs):
         thread_ids.append(threading.get_ident())
@@ -48,6 +49,7 @@ def test_cogvideox_engine_uses_persistent_worker(monkeypatch, tmp_path) -> None:
     assert first.read_bytes() == b"video"
     assert second.read_bytes() == b"video"
     assert len(set(thread_ids)) == 1
+    assert thread_ids[0] != caller_thread_id
 
 
 def test_cogvideox_engine_cleans_failed_output_move(monkeypatch, tmp_path) -> None:
@@ -70,6 +72,29 @@ def test_cogvideox_engine_cleans_failed_output_move(monkeypatch, tmp_path) -> No
 
     assert not generated.exists()
     assert not output.exists()
+
+
+def test_cogvideox_engine_cleans_output_when_directory_creation_fails(
+    monkeypatch, tmp_path
+) -> None:
+    from vllm_mlx.video.engine import VideoGenerationEngine
+
+    engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
+    generated = tmp_path / "generated.mp4"
+    generated.write_bytes(b"complete")
+    monkeypatch.setattr(engine, "_generate_sync", lambda **kwargs: generated)
+    monkeypatch.setattr(
+        "vllm_mlx.video.engine.Path.mkdir",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("read-only")),
+    )
+
+    with pytest.raises(OSError, match="read-only"):
+        engine.generate_sync(
+            output_path=tmp_path / "unwritable" / "output.mp4", prompt="test"
+        )
+    asyncio.run(engine.close())
+
+    assert not generated.exists()
 
 
 def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
