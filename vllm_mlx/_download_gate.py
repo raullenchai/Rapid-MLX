@@ -497,18 +497,18 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
             return False
 
         # Text-layout signal → this is is_repo_cached's job alone; never let
-        # an auxiliary weight mask an incomplete text shard set.
-        if os.path.exists(os.path.join(snap_dir, "model.safetensors.index.json")):
-            return False
+        # an auxiliary weight mask an incomplete text shard set. Probe by bare
+        # directory-entry NAME, not os.path.exists/isfile: a dangling shard
+        # symlink (or a symlink-to-dir) is still the loader's signal that this
+        # is a text model — exactly how _snapshot_is_complete treats a
+        # corrupted root glob entry as incomplete rather than absent.
         try:
             root_entries = os.listdir(snap_dir)
         except OSError:
             return False
-        if any(
-            _is_model_weight_filename(name)
-            and os.path.isfile(os.path.join(snap_dir, name))
-            for name in root_entries
-        ):
+        if "model.safetensors.index.json" in root_entries:
+            return False
+        if any(_is_model_weight_filename(name) for name in root_entries):
             return False
 
         repo_root_real = os.path.realpath(repo_root)

@@ -1221,6 +1221,43 @@ def test_is_weightless_stub_ignores_adapter_only_safetensors(tmp_path, monkeypat
     assert gate.is_weightless_stub("some/lora-adapter") is True
 
 
+def test_is_weightless_stub_true_for_dangling_text_shard_with_aux_weight(
+    tmp_path, monkeypatch
+):
+    """Regression guard (codex round-2 MAJOR): the text-layout signal is the
+    ENTRY NAME, not a resolvable file. A corrupted/interrupted text snapshot
+    whose ``model-*.safetensors`` shard is a DANGLING symlink (target not yet
+    materialized) — plus an auxiliary ``vision_model.safetensors`` — must
+    still be recognized as a text repo, so the aux weight can't mask the
+    incomplete cache. ``os.path.isfile``/``exists`` would miss the dangling
+    entry; the name-based probe catches it."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--dangling-vlm-4bit"
+    sha = "4444444444444444444444444444444444444444"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    # A dangling shard symlink (target never downloaded) — os.path.exists is
+    # False for it, but the entry name is present in the directory listing.
+    (snap / "model-00001-of-00002.safetensors").symlink_to(
+        tmp_path / "never-materialized-blob"
+    )
+    (snap / "vision_model.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert (
+        gate._snapshot_has_alt_layout_weights("mlx-community/dangling-vlm-4bit")
+        is False
+    )
+    assert gate.is_repo_cached("mlx-community/dangling-vlm-4bit") is False
+    assert gate.is_weightless_stub("mlx-community/dangling-vlm-4bit") is True
+
+
 def test_weightless_stub_notice_is_size_free_and_no_extra_hf_call(monkeypatch):
     """The notice names the repo and says config cached / weights missing —
     and is deliberately SIZE-FREE. Computing a byte figure here would fire a
