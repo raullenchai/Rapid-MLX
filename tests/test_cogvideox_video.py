@@ -101,6 +101,36 @@ def test_cogvideox_engine_cleans_output_when_directory_creation_fails(
     assert not generated.exists()
 
 
+@pytest.mark.asyncio
+async def test_cogvideox_engine_cleans_result_after_cancellation(
+    monkeypatch, tmp_path
+) -> None:
+    from vllm_mlx.video.engine import VideoGenerationEngine
+
+    engine = VideoGenerationEngine("test/model", output_dir=tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+    generated = tmp_path / "cancelled.mp4"
+
+    def slow_generate(**kwargs):
+        started.set()
+        release.wait()
+        generated.write_bytes(b"complete")
+        return generated
+
+    monkeypatch.setattr(engine, "_generate_sync", slow_generate)
+    task = asyncio.create_task(engine.generate(prompt="test"))
+    assert await asyncio.to_thread(started.wait, 1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    await engine.close()
+
+    assert not generated.exists()
+    assert engine._worker.is_alive() is False
+
+
 def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
     from vllm_mlx.video.engine import _resolve_tokenizer_path
 

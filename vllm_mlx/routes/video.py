@@ -528,7 +528,7 @@ async def create_video(
 
         job = _VideoJob(
             id=job_id,
-            model=model,
+            model=model if is_cogvideox else "ltx-2.3-mlx-q4",
             prompt=prompt,
             seconds=str(seconds_int),
             size=f"{width}x{height}",

@@ -15,7 +15,7 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Callable
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +87,20 @@ class VideoGenerationEngine:
             if not future.set_running_or_notify_cancel():
                 continue
             try:
-                future.set_result(function())
+                result = function()
             except BaseException as exc:
-                future.set_exception(exc)
+                if not future.cancelled():
+                    future.set_exception(exc)
+                continue
+            if future.cancelled():
+                if isinstance(result, (str, Path)):
+                    Path(result).unlink(missing_ok=True)
+                continue
+            try:
+                future.set_result(result)
+            except InvalidStateError:
+                if isinstance(result, (str, Path)):
+                    Path(result).unlink(missing_ok=True)
 
     def _submit(self, function: Callable[[], Any]) -> Future:
         with self._state_lock:
@@ -125,7 +136,22 @@ class VideoGenerationEngine:
                 seed=seed,
             )
         )
-        return await asyncio.wrap_future(future)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+
+            def cleanup_result(completed: Future) -> None:
+                if completed.cancelled():
+                    return
+                try:
+                    result = completed.result()
+                except BaseException:
+                    return
+                if isinstance(result, (str, Path)):
+                    Path(result).unlink(missing_ok=True)
+
+            future.add_done_callback(cleanup_result)
+            raise
 
     def generate_sync(self, *, output_path: Path, **kwargs) -> None:
         """Generate from a non-MLX caller thread using the persistent worker."""
