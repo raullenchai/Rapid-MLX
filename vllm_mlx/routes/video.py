@@ -376,12 +376,19 @@ def _video_capabilities(engine) -> dict:
             "i2v": ["image-to-video"],
             "ti2v": ["text-to-video", "image-to-video"],
         }.get(model_type, ["text-to-video", "image-to-video"])
+        openai_sizes = [(1280, 720), (720, 1280)]
+        supported_openai_sizes = [
+            f"{width}x{height}"
+            for width, height in openai_sizes
+            if max_area is None
+            or ((width + 63) // 64) * 64 * (((height + 63) // 64) * 64) <= max_area
+        ]
         size = {
             "type": "range",
             "width": {"minimum": 256, "maximum": 1920, "multiple_of": 64},
             "height": {"minimum": 256, "maximum": 1920, "multiple_of": 64},
             "maximum_area": max_area,
-            "also_supported": ["1280x720", "720x1280"],
+            "also_supported": supported_openai_sizes,
         }
         seconds = {"minimum": 1, "maximum": 20, "default": 4}
         frames = {"minimum": 5, "maximum": 1201, "step": 4, "offset": 1}

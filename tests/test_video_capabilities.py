@@ -66,6 +66,7 @@ async def test_wan_capabilities_use_checkpoint_limits(monkeypatch) -> None:
 
     assert body["modes"] == ["image-to-video"]
     assert body["limits"]["size"]["maximum_area"] == 901_120
+    assert body["limits"]["size"]["also_supported"] == []
     assert body["limits"]["fps"] == {
         "minimum": 24,
         "maximum": 24,
@@ -73,6 +74,26 @@ async def test_wan_capabilities_use_checkpoint_limits(monkeypatch) -> None:
         "fixed": True,
     }
     assert body["limits"]["frames"]["step"] == 4
+
+
+@pytest.mark.asyncio
+async def test_wan_only_lists_openai_sizes_accepted_after_alignment(
+    monkeypatch,
+) -> None:
+    engine = SimpleNamespace(
+        model_name="custom/wan",
+        video_family="wan",
+        native_fps=16,
+        _wan_engine=SimpleNamespace(model_type="t2v", max_area=1280 * 768),
+    )
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+
+    body = await video.video_capabilities()
+
+    assert body["limits"]["size"]["also_supported"] == [
+        "1280x720",
+        "720x1280",
+    ]
 
 
 def test_capabilities_route_precedes_dynamic_video_id_route() -> None:
