@@ -210,4 +210,4 @@ class VideoGenerationEngine:
         if self._closed:
             return
         self._closed = True
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        await asyncio.to_thread(self._executor.shutdown, wait=True, cancel_futures=True)

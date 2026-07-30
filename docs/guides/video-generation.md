@@ -9,6 +9,7 @@ generation backend on Apple Silicon. The MVP supports one-second,
 The CogVideoX MLX port is currently source-only:
 
 ```bash
+brew install ffmpeg
 pip install 'rapid-mlx[video]'
 git clone https://github.com/dgrauet/VideoX-Fun-mlx.git
 export PYTHONPATH="$PWD/VideoX-Fun-mlx:$PYTHONPATH"

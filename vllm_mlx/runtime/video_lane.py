@@ -26,8 +26,19 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
     """Fail before model download when the optional video stack is absent."""
     missing = []
     if _is_cogvideox_name(model_name):
-        if importlib.util.find_spec("videox_fun_mlx") is None:
-            missing.append("the VideoX-Fun-mlx source runtime on PYTHONPATH")
+        cogvideox_modules = {
+            "videox_fun_mlx": "the VideoX-Fun-mlx source runtime on PYTHONPATH",
+            "mlx_arsenal": "mlx-arsenal",
+            "imageio": "imageio",
+            "PIL": "Pillow",
+            "numpy": "numpy",
+            "huggingface_hub": "huggingface-hub",
+        }
+        missing.extend(
+            label
+            for module, label in cogvideox_modules.items()
+            if importlib.util.find_spec(module) is None
+        )
     elif importlib.util.find_spec("mlx_video") is None:
         missing.append("the `rapid-mlx[video]` Python extra")
     if shutil.which("ffmpeg") is None:
@@ -85,15 +96,16 @@ class VideoEngine:
                 raise VideoRuntimeError(
                     "CogVideoX-Fun MVP currently supports text-to-video only."
                 )
-            self._cog_engine.generate_sync(
-                output_path=output_path,
-                prompt=prompt,
-                width=width,
-                height=height,
-                frames=num_frames,
-                fps=fps,
-                seed=seed,
-            )
+            with self._generation_lock:
+                self._cog_engine.generate_sync(
+                    output_path=output_path,
+                    prompt=prompt,
+                    width=width,
+                    height=height,
+                    frames=num_frames,
+                    fps=fps,
+                    seed=seed,
+                )
             return
         if shutil.which("ffmpeg") is None:
             raise VideoRuntimeError(

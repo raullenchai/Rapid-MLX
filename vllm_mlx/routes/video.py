@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..middleware.auth import _verify_api_key_values, verify_api_key
+from ..model_aliases import resolve_profile
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -449,13 +450,9 @@ async def create_video(
         raise HTTPException(status_code=400, detail="prompt must not be blank")
     allowed_models = {engine.model_name}
     if is_cogvideox:
-        allowed_models.update(
-            {
-                "cogvideox-fun-5b-q4",
-                "cogvideox-fun-5b-q8",
-                "cogvideox-fun-5b-bf16",
-            }
-        )
+        profile = resolve_profile(model)
+        if profile is not None and profile.hf_path == engine.model_name:
+            allowed_models.add(model)
     else:
         allowed_models.add("ltx-2.3-mlx-q4")
     if model not in allowed_models:

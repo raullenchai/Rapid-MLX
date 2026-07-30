@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from vllm_mlx.model_aliases import resolve_profile
 from vllm_mlx.routes import video
-from vllm_mlx.runtime.video_lane import VideoEngine
+from vllm_mlx.runtime.video_lane import VideoEngine, require_video_runtime_or_exit
 
 
 def test_cogvideox_aliases_route_to_video_lane() -> None:
@@ -62,6 +62,27 @@ def test_cogvideox_tokenizer_falls_back_to_upstream(tmp_path) -> None:
     assert _resolve_tokenizer_path(str(tmp_path), fake_download) == "/cached/upstream"
     assert calls[0][0] == "alibaba-pai/CogVideoX-Fun-V1.5-5b-InP"
     assert "tokenizer/spiece.model" in calls[0][1]["allow_patterns"]
+
+
+def test_cogvideox_runtime_guard_checks_transitive_modules(monkeypatch, capsys) -> None:
+    import vllm_mlx.runtime.video_lane as lane
+
+    missing = {"mlx_arsenal", "imageio", "PIL"}
+    monkeypatch.setattr(
+        lane.importlib.util,
+        "find_spec",
+        lambda module: None if module in missing else object(),
+    )
+    monkeypatch.setattr(lane.shutil, "which", lambda executable: "/opt/ffmpeg")
+
+    with pytest.raises(SystemExit) as exc:
+        require_video_runtime_or_exit("dgrauet/CogVideoX-Fun-mlx-q4")
+
+    assert exc.value.code == 2
+    error = capsys.readouterr().err
+    assert "mlx-arsenal" in error
+    assert "imageio" in error
+    assert "Pillow" in error
 
 
 @pytest.mark.asyncio
@@ -116,6 +137,26 @@ async def test_cogvideox_mvp_rejects_unsupported_shape(monkeypatch) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_cogvideox_rejects_alias_for_different_served_checkpoint(
+    monkeypatch,
+) -> None:
+    engine = SimpleNamespace(
+        model_name="dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4",
+        video_family="cogvideox-fun",
+    )
+    monkeypatch.setattr(video, "_video_engine", lambda: engine)
+    with pytest.raises(HTTPException, match="must match"):
+        await video.create_video(
+            prompt="test",
+            model="cogvideox-fun-5b-q8",
+            seconds="1",
+            size="672x384",
+            seed=1,
+            input_reference=None,
+        )
+
+
 def test_video_engine_delegates_cogvideox(monkeypatch, tmp_path) -> None:
     fake_module = ModuleType("vllm_mlx.video.engine")
     captured = {}
@@ -134,6 +175,16 @@ def test_video_engine_delegates_cogvideox(monkeypatch, tmp_path) -> None:
     fake_module.VideoGenerationEngine = FakeCogEngine
     monkeypatch.setitem(sys.modules, "vllm_mlx.video.engine", fake_module)
     engine = VideoEngine("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4")
+    lock_events = []
+
+    class RecordingLock:
+        def __enter__(self):
+            lock_events.append("enter")
+
+        def __exit__(self, *_args):
+            lock_events.append("exit")
+
+    engine._generation_lock = RecordingLock()
     output = tmp_path / "result.mp4"
     engine.generate(
         prompt="sunset",
@@ -147,3 +198,4 @@ def test_video_engine_delegates_cogvideox(monkeypatch, tmp_path) -> None:
     )
     assert output.read_bytes() == b"mp4"
     assert captured["frames"] == 5
+    assert lock_events == ["enter", "exit"]
