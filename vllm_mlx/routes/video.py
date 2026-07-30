@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Video-generation endpoint (content-farm lane — CONTRACT-ONLY).
+"""Video-generation endpoint (content-farm lane).
 
-``POST /v1/video/generations`` ships the full text→video / image→video
-request+response CONTRACT and wires to the
-:class:`vllm_mlx.video.engine.VideoEngine` interface. No concrete
-backend exists yet, so :func:`vllm_mlx.video.engine.resolve_video_engine`
-raises :class:`NotImplementedError` and the route returns a clean HTTP
-501 with an OpenAI-shape envelope. The day an LTX-2.3 backend registers
-itself the route goes live unchanged.
+``POST /v1/video/generations`` — text→video and image→video, served
+through whatever :class:`vllm_mlx.video.engine.VideoEngine` backend is
+configured. Wan 2.1 / 2.2 is the built-in backend (see
+:mod:`vllm_mlx.video.wan`); the route itself depends only on the
+Protocol, so it never changes when a backend is added or swapped.
+
+With no backend configured the route still validates the full request and
+answers HTTP 501, which keeps the wire contract discoverable and
+developable-against on a text-only server.
 """
 
 import asyncio
@@ -96,28 +98,30 @@ def _resolve_inside(out_dir: str, candidate: str) -> str:
 async def create_video(request: VideoGenerationRequest = Body(...)):
     """Generate a video from text (t2v) or an image + text (i2v).
 
-    CONTRACT-ONLY: the request/response schema and the ``VideoEngine``
-    interface are fixed, but no backend is integrated yet. The route
-    validates the request (so callers can develop against the real wire
-    contract) and then returns HTTP 501 ``not_implemented`` because
-    :func:`vllm_mlx.video.engine.resolve_video_engine` has no backend to
-    hand back.
+    Status codes worth knowing apart:
 
-    A future LTX-2.3 backend implementing
-    :class:`vllm_mlx.video.engine.VideoEngine` makes this route go live
-    with no change here — the resolver stops raising and the engine call
-    below runs.
+    * **501** ``video_backend_not_implemented`` — no backend configured.
+      The request was still fully validated, so this is also the contract
+      check clients develop against.
+    * **503** ``video_backend_unavailable`` — a backend IS configured but
+      its runtime dependency is missing (or is the wrong package). The
+      message carries the install command.
+    * **400** ``invalid_video_request`` — a model-specific constraint the
+      generic schema can't express, e.g. Wan's ``num_frames == 4n+1`` or a
+      per-checkpoint pixel-area ceiling.
     """
-    # Lazy import mirrors the audio routes — keeps the video lane's deps
-    # (none yet) off the module-import hot path.
+    # Lazy import mirrors the audio routes — keeps the backend's optional
+    # dependency off the module-import hot path, which matters because
+    # server.py mounts this router unconditionally.
     from ..video.engine import resolve_video_engine
 
     try:
         engine = resolve_video_engine(request.model)
     except NotImplementedError as e:
-        # CONTRACT-ONLY state: surface a clean 501 with the OpenAI-shape
-        # envelope so colleagues get the exact message + the pointer to
-        # the backend-integration task, not a stack trace.
+        # No backend configured. Surface a clean 501 with the OpenAI-shape
+        # envelope so callers get the exact message + how to enable the
+        # lane, not a stack trace. The request was still fully validated,
+        # so this doubles as a contract check for client development.
         raise HTTPException(
             status_code=501,
             detail={
@@ -129,21 +133,32 @@ async def create_video(request: VideoGenerationRequest = Body(...)):
                 }
             },
         )
+    except ImportError as e:
+        # A backend IS configured but its runtime dependency is missing or
+        # is the WRONG package (the `mlx-video` PyPI name belongs to an
+        # unrelated project — see vllm_mlx/video/wan.py). That is an
+        # operator-fixable install problem, not "no video support", so it
+        # gets a 503 carrying the actual install command rather than the
+        # 501 above.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "message": str(e),
+                    "type": "api_error",
+                    "code": "video_backend_unavailable",
+                    "param": None,
+                }
+            },
+        )
 
-    # Reached only once a backend is registered. Kept wired so the route
-    # is live the moment resolve_video_engine stops raising — no handler
-    # edit required.
-    return await _render_and_serialize(engine, request)  # pragma: no cover
+    return await _render_and_serialize(engine, request)
 
 
-async def _render_and_serialize(  # pragma: no cover — no backend yet
+async def _render_and_serialize(
     engine, request: VideoGenerationRequest
 ) -> VideoGenerationResponse:
     """Render via ``engine`` and serialize to the wire response.
-
-    Unreachable while the lane is contract-only (``resolve_video_engine``
-    raises first), but kept correct and wired so registering a backend is
-    the ONLY change needed to make ``/v1/video/generations`` live.
 
     Two things this deliberately does NOT do the naive way:
 
@@ -165,20 +180,52 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
         # disconnect can't send us into ``finally`` and delete the output
         # directory while the worker is still rendering into it.
         # Serialised on the loop before offloading — one render at a time.
-        async with _get_render_lock():
-            written = await run_to_completion(
-                lambda: engine.generate(
-                    request.prompt,
-                    out_path,
-                    image=request.image,
-                    height=request.height,
-                    width=request.width,
-                    num_frames=request.num_frames,
-                    frame_rate=request.frame_rate,
-                    steps=request.steps,
-                    negative_prompt=request.negative_prompt,
-                    seed=request.seed,
+        try:
+            async with _get_render_lock():
+                written = await run_to_completion(
+                    lambda: engine.generate(
+                        request.prompt,
+                        out_path,
+                        image=request.image,
+                        height=request.height,
+                        width=request.width,
+                        num_frames=request.num_frames,
+                        frame_rate=request.frame_rate,
+                        steps=request.steps,
+                        negative_prompt=request.negative_prompt,
+                        seed=request.seed,
+                    )
                 )
+        except ValueError as e:
+            # Backends raise ValueError for CALLER-fixable requests that
+            # the generic schema can't catch, because the constraint is
+            # model-specific: Wan needs num_frames == 4n+1 and enforces a
+            # per-checkpoint pixel-area ceiling. Reporting those as a 500
+            # would tell the caller nothing actionable.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "invalid_request_error",
+                        "code": "invalid_video_request",
+                        "param": None,
+                    }
+                },
+            )
+        except ImportError as e:
+            # Dependency probe can also fire here (the engine re-checks at
+            # call time), same 503 reasoning as in create_video.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "api_error",
+                        "code": "video_backend_unavailable",
+                        "param": None,
+                    }
+                },
             )
         # Resolve relative against out_dir (not the server's cwd — a
         # backend returning ``Path("out.mp4")`` means the file it wrote
@@ -231,6 +278,13 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
 
         b64 = await run_to_completion(_read_and_encode)
 
+        # Report the clip's REAL playback rate, not the requested one. Some
+        # model families (Wan) emit frames at a fixed trained rate and
+        # cannot vary fps — echoing back the request would tell the client
+        # the clip is something it isn't. A backend that honours arbitrary
+        # fps simply doesn't set ``native_frame_rate`` and the request
+        # value stands.
+        actual_fps = float(getattr(engine, "native_frame_rate", request.frame_rate))
         return VideoGenerationResponse(
             created=int(time.time()),
             model=request.model,
@@ -241,7 +295,7 @@ async def _render_and_serialize(  # pragma: no cover — no backend yet
                     width=request.width,
                     height=request.height,
                     num_frames=request.num_frames,
-                    frame_rate=request.frame_rate,
+                    frame_rate=actual_fps,
                 )
             ],
         )

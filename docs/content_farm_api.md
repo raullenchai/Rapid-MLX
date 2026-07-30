@@ -14,12 +14,13 @@ envelopes (`{"error": {"message", "type", "code", "param"}}`).
 | --- | --- | --- | --- |
 | `/v1/audio/music` | POST | **LIVE** | `MusicEngine` (Stable Audio 3, MLX-native) |
 | `/v1/audio/transcriptions` (`text` field) | POST | **LIVE** | `STTEngine.align` (Qwen3 forced aligner) |
-| `/v1/video/generations` | POST | **CONTRACT-ONLY** (returns 501) | `VideoEngine` — no backend yet (LTX-2.3 pending, see [The interface to implement](#the-interface-to-implement)) |
+| `/v1/video/generations` | POST | **LIVE** when a backend is configured, else `501` | `WanVideoEngine` — Wan 2.1 / 2.2 via [mlx-video](https://github.com/Blaizzy/mlx-video) (see [§3](#3-post-v1videogenerations--text--video--image--video)) |
 
 The audio routes are attached only when the server runs with an
 audio-capable model or `--enable-audio`. The video route is always
-registered (it has no engine to load) and returns HTTP 501 until a
-backend is integrated.
+registered and answers `501` until a video backend is configured — the
+request is still fully validated, so the contract stays developable-against
+on a text-only server.
 
 ---
 
@@ -165,35 +166,34 @@ curl -s http://localhost:8000/v1/audio/transcriptions \
 
 ---
 
-## 3. `POST /v1/video/generations` — text → video / image → video (CONTRACT-ONLY)
-
-The full request/response contract and the `VideoEngine` interface are
-defined now so colleagues can integrate against a stable shape. **There
-is no backend yet** — the route validates the request and then returns
-**HTTP 501**. A future MLX-native LTX-2.3 backend implementing
-`vllm_mlx.video.engine.VideoEngine` makes the route go live with no
-change to the route handler.
+## 3. `POST /v1/video/generations` — text → video / image → video
 
 One schema covers both modes: **text-to-video** when `image` is omitted,
 **image-to-video** when `image` carries the conditioning first frame.
+
+The built-in backend is **Wan 2.1 / 2.2** (Alibaba, Apache 2.0) running
+MLX-natively through [mlx-video](https://github.com/Blaizzy/mlx-video) —
+see [Enabling the Wan backend](#enabling-the-wan-backend). With nothing
+configured the route answers `501` and the schema still validates, so
+clients can build against the contract before any weights exist.
 
 ### Request (JSON body)
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `model` | string | `"ltx-2.3"` | Target backend. |
+| `model` | string | `"ltx-2.3"` | Echoed back in the response. rapid-mlx serves ONE checkpoint per process (as with the LLM lane), so this does not select a model — the served checkpoint is whatever `$RAPID_MLX_WAN_MODEL_DIR` names. |
 | `prompt` | string | — (required) | Natural-language description. Must be non-blank. |
 | `image` | string \| null | `null` | Conditioning first frame for i2v. One of: a `data:image/*;base64,...` URI, an `http(s)://` URL, or a bare base64 payload. Max 12 MB of string. `null` → text-to-video. |
 | `height` | integer | `704` | Output height, `1..4096`. |
 | `width` | integer | `1216` | Output width, `1..4096`. |
-| `num_frames` | integer | `97` | Frames to render, `1..4096`. |
-| `frame_rate` | number | `25.0` | Playback fps, `0 < fps <= 240`. |
-| `steps` | integer \| null | `null` | Denoising steps, `1..500` (`null` = backend default). |
+| `num_frames` | integer | `97` | Frames to render, `1..4096`. **Wan requires `4n+1`** (its latent temporal stride is 4) — `49`, `81`, `97` are valid, `80` is not. A violation is a `400` naming the nearest valid values. |
+| `frame_rate` | number | `25.0` | Playback fps, `0 < fps <= 240`. **Wan ignores this**: the model emits frames at a fixed trained rate (16 fps for 2.1, 24 fps for 2.2) and fps is a container property, not a generation parameter. The response reports the clip's REAL rate, not what you asked for. |
+| `steps` | integer \| null | `null` | Denoising steps, `1..500` (`null` = the checkpoint's default: 50 for Wan2.1, 40 for Wan2.2). **This is the dominant cost** — see [Performance](#performance). |
 | `seed` | integer \| null | `null` | Fixed seed. |
 | `negative_prompt` | string \| null | `null` | CFG negative branch. Max 4096 chars. |
 | `response_format` | string | `"mp4"` | Only `mp4` is supported. |
 
-### Response (once a backend is integrated)
+### Response
 
 ```json
 {
@@ -218,17 +218,26 @@ Each `data[]` item populates exactly one of `b64_video` (inline base64
 mp4) or `url`. The wired handler returns `b64_video` — a server-side
 filesystem path is not a URL the client can fetch, and echoing one would
 leak the server's layout. A backend that uploads to real object storage
-can populate `url` instead. `audio` carries LTX-2.3's native soundtrack
-(base64) when the backend emits one, else `null`.
+can populate `url` instead. `audio` carries a native soundtrack (base64)
+when a backend emits one — Wan 2.1/2.2 do not, so it is `null` today.
 
-### Current behavior (no backend)
+### Error codes
 
-`501 Not Implemented`:
+| Status | `code` | Meaning |
+| --- | --- | --- |
+| `501` | `video_backend_not_implemented` | No backend configured. The request was still fully validated — this is the contract check to develop against. |
+| `503` | `video_backend_unavailable` | A backend IS configured but its runtime dependency is missing (or is the wrong package — see the warning below). The message carries the install command. |
+| `400` | `invalid_video_request` | A model-specific constraint the generic schema can't express: Wan's `num_frames == 4n+1`, or a resolution over the checkpoint's pixel-area ceiling. |
+| `400` | `invalid_request` | Schema violation (missing `prompt`, `num_frames=0`, `frame_rate=NaN`, `response_format="webm"`, an unsafe `image`…). 400 rather than 422 per the note in §1. |
+| `500` | `video_generation_failed` | The backend ran but produced no output. |
+| `500` | `video_too_large_to_inline` | The clip exceeds the 256 MB inline-base64 ceiling. |
+
+The `501` body:
 
 ```json
 {
   "error": {
-    "message": "video backend not yet integrated; see docs/content_farm_api.md",
+    "message": "no video backend configured. Set $RAPID_MLX_WAN_MODEL_DIR to a converted MLX Wan 2.1/2.2 checkpoint to serve this route; see docs/content_farm_api.md",
     "type": "not_implemented_error",
     "code": "video_backend_not_implemented",
     "param": null
@@ -236,10 +245,110 @@ can populate `url` instead. `audio` carries LTX-2.3's native soundtrack
 }
 ```
 
-Schema violations still fail at the request boundary (missing `prompt`,
-`num_frames=0`, `frame_rate=NaN`, `response_format="webm"`, etc.) so you
-can develop against the real wire contract today — as **400** on the
-rapid-mlx server, per the note in §1.
+### Enabling the Wan backend
+
+**Step 1 — install the generation package.**
+
+```bash
+pip install git+https://github.com/Blaizzy/mlx-video.git
+```
+
+> ⚠️ **Do NOT run `pip install mlx-video`.** That PyPI name belongs to an
+> **unrelated project** (`AmiraniLabs/mlx-video`, a 5 KB video *loading*
+> utility). It satisfies the `mlx_video` import name and then fails at call
+> time in a thoroughly confusing way. This is also why rapid-mlx has no
+> `[video]` pip extra: the package we need is only installable from git,
+> which PyPI forbids as a direct reference in published metadata. The
+> backend probes at runtime and tells you if the wrong one is installed.
+
+**Step 2 — point the server at a converted MLX checkpoint.**
+
+mlx-video needs weights in its own MLX layout (`model.safetensors` or
+`{high,low}_noise_model.safetensors`, plus `t5_encoder.safetensors`,
+`vae.safetensors`, `config.json`). Either convert the official PyTorch
+release yourself:
+
+```bash
+huggingface-cli download Wan-AI/Wan2.2-TI2V-5B --local-dir ./Wan2.2-TI2V-5B
+python -m mlx_video.models.wan_2.convert \
+    --input ./Wan2.2-TI2V-5B --output ./wan22-ti2v-5b-mlx \
+    --quantize --bits 8 --group-size 64
+```
+
+…or use a pre-converted community upload (several exist on the Hub with
+the exact layout above, ~18 GB for TI2V-5B at 8-bit). **We deliberately do
+not ship an alias table pointing at those**: silently fetching multi-GB
+weights from an unvetted third-party account on a user's first request is a
+supply-chain decision, not a convenience. Name the directory you trust.
+
+```bash
+export RAPID_MLX_WAN_MODEL_DIR=/path/to/wan22-ti2v-5b-mlx
+rapid-mlx serve <your-llm> --port 8000
+```
+
+**Optional tuning** (unset → the checkpoint's own defaults):
+
+| Env var | Effect |
+| --- | --- |
+| `RAPID_MLX_WAN_STEPS` | Denoising steps. The single biggest cost lever. |
+| `RAPID_MLX_WAN_SCHEDULER` | `unipc` (default), `dpm++`, `euler`. |
+| `RAPID_MLX_WAN_TILING` | VAE decode tiling: `auto` (default), `none`, `aggressive`, … Lower memory at some speed cost. |
+| `RAPID_MLX_WAN_LORA` | `path[:strength][,path[:strength]]`, applied to all models. |
+| `RAPID_MLX_WAN_LORA_HIGH` / `_LOW` | Same, for the two halves of a dual-model (A14B) checkpoint. |
+
+### Which Wan versions, and why not 2.7
+
+Open weights stop at **Wan 2.2**. Wan 2.5, 2.6 and 2.7 are **API-only** —
+no HuggingFace weights, no GitHub repo, no self-hosting. Verified against
+the [`Wan-AI` HF org](https://huggingface.co/Wan-AI) (tops out at Wan2.2)
+and the [`Wan-Video` GitHub org](https://github.com/Wan-Video) (only
+`Wan2.1` and `Wan2.2` repos). Several SEO sites claim Wan 2.7 ships
+Apache-2.0 open weights; that is false. A local inference server can only
+serve what has weights, so this backend covers 2.1 and 2.2.
+
+There is no Wan 2.3 or 2.4 — the series went 2.1 (Feb 2025) → 2.2
+(Jul 2025) → 2.5-preview (Sep 2025) → 2.6 → 2.7 (Apr 2026).
+
+| Variant | Params | Pipeline | Native |
+| --- | --- | --- | --- |
+| Wan2.1 T2V-1.3B | 1.3B | single | 480p, 16 fps |
+| Wan2.1 T2V-14B | 14B | single | 720p, 16 fps |
+| Wan2.2 TI2V-5B | 5B | single | 720p, 24 fps |
+| Wan2.2 T2V-A14B | 27B (14B active) | dual (MoE) | 720p, 24 fps |
+| Wan2.2 I2V-A14B | 27B (14B active) | dual (MoE) | 720p, 24 fps |
+
+### Performance
+
+Measured on an **M3 Ultra / 256 GB**, Wan2.2-TI2V-5B at 8-bit, `unipc`:
+
+| Resolution | Clip | Steps | Wall clock | Peak memory |
+| --- | --- | --- | --- | --- |
+| 832×480 | 1.0 s | 8 | 46 s | 24.5 GB |
+| 832×480 | 2.0 s | 8 | 77 s | 38.5 GB |
+| 832×480 | 2.0 s | 40 (default) | 295 s | 38.5 GB |
+
+**Steps dominate.** Going 40 → 8 steps cut a 2-second 480p clip from 295 s
+to 77 s on identical hardware. If you want 720p to be practical, a
+step-distilled LoRA (Wan2.2-Lightning, 4 steps) via
+`RAPID_MLX_WAN_LORA_HIGH` / `_LOW` is the lever that matters far more than
+resolution or quantization.
+
+Stage breakdown for the 2 s / 8-step run: T5 encode 4 s, weight load 0.2 s,
+denoise 54 s, VAE decode 19 s. Weights are loaded per request — a
+resident-model mode is a follow-up.
+
+> A widely-cited figure has Wan 2.2 taking **82 minutes** for a 2-second
+> clip on an M1 Max. That measurement is ComfyUI / PyTorch-MPS with GGUF
+> weights — a different runtime, different hardware and a dual-model 14B
+> checkpoint. It is not comparable to the MLX numbers above, in either
+> direction; quoted here only because it is the number most people find
+> first when asking whether Wan runs on a Mac.
+
+Rendering holds a process-wide lock: a video request is the heaviest thing
+this server can be asked to do, and concurrent renders would multiply peak
+unified memory. Queued requests wait on the event loop, so the LLM lane and
+health probes stay responsive — but a Mac serving coding agents and video
+from one process will contend for the GPU.
 
 ### Security note on `image`
 
@@ -282,7 +391,11 @@ hook, and doing it correctly requires control of the socket. Treat the
 validation above as a shape filter that removes the trivially-wrong
 inputs, not as an egress policy.
 
-### The interface to implement
+### Adding another backend
+
+`WanVideoEngine` is one implementation, not a special case — the route
+depends only on the Protocol, so a second backend (LTX-2, HunyuanVideo, …)
+plugs in without touching `vllm_mlx/routes/video.py`.
 
 A backend implements `vllm_mlx/video/engine.py::VideoEngine`:
 
@@ -304,24 +417,35 @@ def generate(
 ```
 
 and registers a factory so `resolve_video_engine(model)` returns it:
-assign `vllm_mlx.video.engine._VIDEO_ENGINE_FACTORY` to a callable
-taking the requested `model` id and returning the engine. The route then
-goes live with no handler change.
+assign `vllm_mlx.video.engine._VIDEO_ENGINE_FACTORY` to a callable taking
+the requested `model` id and returning the engine. Add a `register()` to
+`_autoregister()` in that module so the lane self-configures.
+
+Two conventions worth following, both of which the route relies on:
+
+* Raise `ValueError` for anything the CALLER can fix that the generic
+  schema can't express (a frame count your model rejects, a resolution
+  ceiling). The route maps it to `400 invalid_video_request`. Raise
+  `ImportError` when your optional dependency is missing — that becomes
+  `503` with your message, not a `500`.
+* Expose `native_frame_rate` if your model can't vary fps. The route
+  reports it instead of echoing the requested `frame_rate`, so the
+  response describes the clip that actually came out. Backends that do
+  honour arbitrary fps simply omit the attribute.
 
 ### curl
 
 ```bash
-# Text-to-video (returns 501 today).
+# Text-to-video. 49 frames = 2.0 s at Wan2.2's native 24 fps.
 curl -s http://localhost:8000/v1/video/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $RAPID_MLX_API_KEY" \
   -d '{
-        "model": "ltx-2.3",
         "prompt": "a red fox trotting through fresh snow, cinematic",
-        "height": 704,
-        "width": 1216,
-        "num_frames": 97,
-        "frame_rate": 25
+        "height": 480,
+        "width": 832,
+        "num_frames": 49,
+        "steps": 8
       }'
 
 # Image-to-video (i2v) — condition on a first frame.

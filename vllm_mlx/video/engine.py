@@ -3,24 +3,27 @@
 
 This is the fourth generation lane alongside ``TTSEngine`` (text→speech),
 ``STTEngine`` (speech→text) and ``MusicEngine`` (text→music/SFX):
-``VideoEngine`` does text→video AND image→video, targeted at an
-MLX-native LTX-2.3 backend on Apple Silicon.
+``VideoEngine`` does text→video AND image→video on Apple Silicon.
 
-CONTRACT-ONLY: there is **no** concrete backend wired yet. This module
-defines the :class:`VideoEngine` interface a future LTX-2.3
-implementation must satisfy and a :func:`resolve_video_engine` factory
-that raises :class:`NotImplementedError` until one is registered. The
-``/v1/video/generations`` route calls the factory so the day a backend
-lands the route goes live with zero handler changes.
+This module owns only the INTERFACE and the factory. Concrete backends
+live beside it — currently :mod:`vllm_mlx.video.wan` (Wan 2.1 / 2.2 via
+mlx-video). The ``/v1/video/generations`` route depends on the Protocol
+alone, so adding or swapping a backend never touches the route.
 
-See ``docs/content_farm_api.md`` for the wire contract and the
-backend-integration task.
+The lane stays contract-only (HTTP 501, full request validation) until an
+operator configures a backend, which keeps ``/v1/video/generations``
+discoverable and developable-against on a text-only server.
+
+See ``docs/content_farm_api.md`` for the wire contract.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -73,24 +76,65 @@ class VideoEngine(Protocol):
 # Registry hook: a concrete backend assigns this to a callable taking the
 # requested ``model`` id and returning a :class:`VideoEngine` (that is the
 # signature :func:`resolve_video_engine` invokes it with). Left ``None``
-# while the lane is contract-only so the resolver fails loudly.
+# until a backend claims the lane so the resolver fails loudly.
 _VIDEO_ENGINE_FACTORY = None
+
+#: Guards :func:`_autoregister` so a lane with no configured backend
+#: doesn't re-probe the environment on every request.
+_AUTOREGISTER_DONE = False
+
+
+def _autoregister() -> None:
+    """Give known backends a chance to claim the lane, once.
+
+    Called from :func:`resolve_video_engine` rather than at import time so
+    that merely importing ``vllm_mlx.video`` never touches the
+    environment or pulls a heavy optional dependency — the route module is
+    mounted unconditionally in ``server.py``, including on text-only
+    servers that will never serve a video request.
+
+    A backend that isn't configured returns ``False`` and leaves the lane
+    unclaimed, which keeps the contract-only 501 as the default answer.
+    """
+    global _AUTOREGISTER_DONE
+    if _AUTOREGISTER_DONE:
+        return
+    _AUTOREGISTER_DONE = True
+    try:
+        from .wan import register as _register_wan
+
+        if _register_wan():
+            logger.info("Video lane: Wan backend registered")
+    except Exception:  # noqa: BLE001 — never let a backend break the route
+        logger.exception("Video backend auto-registration failed")
 
 
 def resolve_video_engine(model: str) -> VideoEngine:
     """Return a :class:`VideoEngine` for ``model`` — or raise if none exists.
 
-    CONTRACT-ONLY: no backend is registered yet, so this always raises
-    :class:`NotImplementedError`. The route surfaces that as a clean
-    HTTP 501 so colleagues see the exact request/response contract and
-    the interface to implement LTX-2.3 behind.
+    Resolution order:
 
-    A future backend registers itself by setting
-    :data:`_VIDEO_ENGINE_FACTORY`; this resolver then hands the route a
-    ready engine with no other route change.
+    1. an explicitly-installed :data:`_VIDEO_ENGINE_FACTORY` (tests, or a
+       future backend that registers itself at startup), else
+    2. auto-registration of the built-in backends (currently Wan 2.1/2.2
+       via mlx-video, active only when the operator has pointed
+       ``$RAPID_MLX_WAN_MODEL_DIR`` at a converted checkpoint).
+
+    Raises:
+        NotImplementedError: no backend is configured. The route turns
+            this into HTTP 501 — the request/response contract is still
+            fully validated, so clients can develop against it.
+        ImportError: a backend IS configured but its runtime dependency
+            is missing or is the wrong package. The route turns this into
+            a 503 carrying the install instruction, which is a materially
+            different problem from "no backend exists".
     """
     if _VIDEO_ENGINE_FACTORY is None:
+        _autoregister()
+    if _VIDEO_ENGINE_FACTORY is None:
         raise NotImplementedError(
-            "video backend not yet integrated; see docs/content_farm_api.md"
+            "no video backend configured. Set $RAPID_MLX_WAN_MODEL_DIR to a "
+            "converted MLX Wan 2.1/2.2 checkpoint to serve this route; see "
+            "docs/content_farm_api.md"
         )
     return _VIDEO_ENGINE_FACTORY(model)

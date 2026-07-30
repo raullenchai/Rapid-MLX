@@ -195,6 +195,7 @@ jobs:
             tests/test_no_mllm_flag.py \
             tests/test_content_farm_routes.py \
             tests/test_server_auth_ordering.py \
+            tests/test_wan_video_backend.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"
