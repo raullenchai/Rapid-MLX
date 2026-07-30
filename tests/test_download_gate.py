@@ -1163,6 +1163,64 @@ def test_is_weightless_stub_true_for_partial_text_download(tmp_path, monkeypatch
     assert gate.is_weightless_stub("mlx-community/gemma-4-27b-it-4bit") is True
 
 
+def test_is_weightless_stub_true_for_incomplete_text_with_aux_weight(
+    tmp_path, monkeypatch
+):
+    """Regression guard (codex MAJOR): a multimodal TEXT repo can carry an
+    auxiliary ``.safetensors`` (e.g. a vision tower) that isn't
+    ``model*.safetensors``. That aux file must NOT mask an incomplete text
+    shard set — the ``model.safetensors.index.json`` text-layout signal makes
+    is_repo_cached the sole authority, so a missing shard still fires the
+    notice. Without the text-layout guard, the aux weight would wrongly
+    suppress it."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--some-vlm-4bit"
+    sha = "2222222222222222222222222222222222222222"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors",'
+        ' "b": "model-00002-of-00002.safetensors"}}'
+    )
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"s" * 4096)
+    # shard 2/2 is MISSING; but an auxiliary weight IS present.
+    (snap / "vision_model.safetensors").write_bytes(b"v" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert gate._snapshot_has_alt_layout_weights("mlx-community/some-vlm-4bit") is False
+    assert gate.is_repo_cached("mlx-community/some-vlm-4bit") is False
+    assert gate.is_weightless_stub("mlx-community/some-vlm-4bit") is True
+
+
+def test_is_weightless_stub_ignores_adapter_only_safetensors(tmp_path, monkeypatch):
+    """A config + ``adapter_model.safetensors`` cache (no base weights) is not
+    a fully-weighted model — the adapter sidecar must NOT be counted as
+    alt-layout weights, so the stub notice still fires (behaviour unchanged
+    from before this fix)."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--some--lora-adapter"
+    sha = "3333333333333333333333333333333333333333"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "adapter_model.safetensors").write_bytes(b"a" * 4096)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    import huggingface_hub.file_download as _fd
+
+    monkeypatch.setattr(_fd, "HF_HUB_CACHE", str(cache_root), raising=False)
+
+    assert gate._snapshot_has_alt_layout_weights("some/lora-adapter") is False
+    assert gate.is_weightless_stub("some/lora-adapter") is True
+
+
 def test_weightless_stub_notice_is_size_free_and_no_extra_hf_call(monkeypatch):
     """The notice names the repo and says config cached / weights missing —
     and is deliberately SIZE-FREE. Computing a byte figure here would fire a

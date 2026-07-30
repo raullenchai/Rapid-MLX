@@ -439,8 +439,9 @@ def is_repo_cached(repo_id: str) -> bool:
 
 
 def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
-    """True if the resolved snapshot holds non-empty ``.safetensors`` weights
-    that mlx-lm's text ``model*.safetensors`` root-glob does NOT pick up.
+    """True if the resolved snapshot is a NON-text model whose weights are
+    present in a layout mlx-lm's text ``model*.safetensors`` root-glob can't
+    see.
 
     Non-text models don't lay their weights out the way :func:`is_repo_cached`
     (which mirrors mlx-lm's text loader) expects. Video-gen repos ship
@@ -454,11 +455,28 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
     :func:`is_weightless_stub` cry wolf ("config cached, weights missing —
     will download ~N GB") on every serve of an already-downloaded video model.
 
-    A partial *text* download (``model-00001-of-00002.safetensors`` present,
-    a later shard still missing) is deliberately NOT matched: its shard names
-    begin with ``model`` at the snapshot root, so they're treated as the text
-    loader's own weights and skipped here — leaving that repo to flow through
-    to the stub notice, which is exactly finding ⑥'s original intent.
+    Text-model guard (codex-caught regression): a TEXT / multimodal repo can
+    ALSO carry auxiliary ``.safetensors`` (a ``vision_model.safetensors``
+    tower, an adapter, a neighbour of a half-downloaded shard). If we counted
+    those, an *incomplete* text cache — one whose ``model-*`` shards are still
+    missing — could get its stub notice wrongly suppressed. So when the
+    snapshot shows a text-layout signal (a ``model.safetensors.index.json`` or
+    ANY root ``model*.safetensors``), this is a text model and its
+    completeness is :func:`is_repo_cached`'s sole call; we bail with ``False``.
+    That also keeps the finding-⑥ intent for a partial text download intact.
+
+    Adapter / LoRA sidecars (``adapter*.safetensors``) aren't a model's
+    primary weights, so a repo shipping only those is not "weighted" for
+    serve and doesn't count. Cache-hygiene: only a ``.safetensors`` whose
+    realpath stays inside this repo's own cache dir counts (HF snapshots
+    symlink into ``<repo_root>/blobs/``); a symlink escaping to an unrelated
+    file must not suppress the notice.
+
+    Scope note: this establishes weights are *present*, not that a non-text
+    cache is *complete* (component-completeness would need each loader's
+    manifest, which we don't have here). An interrupted video pull may thus
+    skip the notice — acceptable, since it's purely cosmetic and the download
+    path still fetches whatever is missing.
 
     Mirrors :func:`is_repo_cached`'s snapshot resolution (``refs/main`` →
     pinned sha) so both read the same on-disk snapshot. Returns ``False`` on
@@ -477,20 +495,40 @@ def _snapshot_has_alt_layout_weights(repo_id: str) -> bool:
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
         if not os.path.isdir(snap_dir):
             return False
-        snap_real = os.path.realpath(snap_dir)
+
+        # Text-layout signal → this is is_repo_cached's job alone; never let
+        # an auxiliary weight mask an incomplete text shard set.
+        if os.path.exists(os.path.join(snap_dir, "model.safetensors.index.json")):
+            return False
+        try:
+            root_entries = os.listdir(snap_dir)
+        except OSError:
+            return False
+        if any(
+            _is_model_weight_filename(name)
+            and os.path.isfile(os.path.join(snap_dir, name))
+            for name in root_entries
+        ):
+            return False
+
+        repo_root_real = os.path.realpath(repo_root)
         for dirpath, _dirnames, filenames in os.walk(snap_dir):
-            at_root = os.path.realpath(dirpath) == snap_real
             for fname in filenames:
                 if not fname.endswith(".safetensors"):
                     continue
-                # A text-loader weight is ``model*.safetensors`` AT the
-                # snapshot root; that's is_repo_cached's job, not ours.
-                # Anything else — a component file, or a nested shard — is
-                # an alt-layout weight the text glob can't see.
-                if at_root and _is_model_weight_filename(fname):
+                # Adapter / LoRA sidecars aren't primary weights.
+                if fname.lower().startswith("adapter"):
+                    continue
+                fpath = os.path.join(dirpath, fname)
+                # Only count a file whose real target lives inside this repo's
+                # cache dir (snapshots symlink into ``<repo_root>/blobs/``).
+                real = os.path.realpath(fpath)
+                if real != repo_root_real and not real.startswith(
+                    repo_root_real + os.sep
+                ):
                     continue
                 try:
-                    if os.path.getsize(os.path.join(dirpath, fname)) > 0:
+                    if os.path.getsize(fpath) > 0:
                         return True
                 except OSError:
                     continue
