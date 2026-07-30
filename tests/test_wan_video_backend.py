@@ -87,6 +87,35 @@ def _reset_video_lane():
     engine_mod._AUTOREGISTER_DONE = saved_done
 
 
+import contextlib
+import logging as _logging
+
+
+@contextlib.contextmanager
+def caplog_at(level):
+    """Collect log records at ``level`` without pytest's caplog fixture.
+
+    Needed where the assertion lives inside a ``try/finally`` that also
+    restores global state, which makes the fixture's scoping awkward.
+    """
+    records: list[_logging.LogRecord] = []
+
+    class _Collector(_logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collector(level=level)
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    prev = root.level
+    root.setLevel(level)
+    try:
+        yield records
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(prev)
+
+
 def _mount_video_app() -> tuple[TestClient, callable]:
     from vllm_mlx.config import get_config
     from vllm_mlx.routes import video as video_route
@@ -640,13 +669,21 @@ class TestServedModelReporting:
 
         assert WanVideoEngine(_write_ckpt(tmp_path, **cfg)).served_model == expected
 
-    def test_falls_back_to_directory_name(self, tmp_path):
+    def test_does_not_leak_the_directory_name(self, tmp_path):
+        """The fallback must be generic, not filesystem-derived.
+
+        This value goes to every API caller, and a checkpoint directory is
+        named by the operator — it can carry a customer name, an internal
+        project, a home-path fragment. Callers gain nothing from it, so the
+        fallback is a flat ``"wan"``. Same reasoning as keeping the model
+        path out of the 503 body.
+        """
         from vllm_mlx.video.wan import WanVideoEngine
 
-        d = tmp_path / "my-wan-build"
+        d = tmp_path / "acme-corp-secret-project"
         d.mkdir()
         (d / "model.safetensors").write_bytes(b"stub")
-        assert WanVideoEngine(d).served_model == "my-wan-build"
+        assert WanVideoEngine(d).served_model == "wan"
 
     def test_route_echoes_the_real_model_not_the_schema_default(
         self, tmp_path, monkeypatch
@@ -1533,7 +1570,7 @@ class TestMalformedConfigJson:
         eng = WanVideoEngine(d)  # must not raise
         assert eng.native_frame_rate is None
         assert eng.max_area == 0
-        assert eng.served_model == "weird"
+        assert eng.served_model == "wan"
 
     def test_route_does_not_500_on_a_malformed_config(self, tmp_path, monkeypatch):
         _install_fake_mlx_video(monkeypatch)
@@ -1648,3 +1685,126 @@ class TestFrameCountHintStaysSubmittable:
         with pytest.raises(InvalidVideoRequestError) as ei:
             eng.generate("x", tmp_path / "o.mp4", num_frames=50)
         assert "49" in str(ei.value) and "53" in str(ei.value)
+
+
+class TestNonFiniteCheckpointMetadata:
+    @pytest.mark.parametrize("bad", ["inf", "-inf", "nan", float("inf"), float("nan")])
+    def test_non_finite_sample_fps_is_unusable(self, tmp_path, bad):
+        """`value > 0` alone lets `inf` through — and inf breaks JSON.
+
+        `float("inf") > 0` is True, so an infinite fps reached the response
+        where serialisation rejects it, AFTER a multi-minute render. The
+        request schema already guards NaN/inf on `frame_rate` and `seconds`;
+        checkpoint metadata is equally untrusted input and needs the same
+        guard.
+        """
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path, sample_fps=bad))
+        assert eng.native_frame_rate is None
+
+    def test_route_serialises_valid_json_for_such_a_checkpoint(
+        self, tmp_path, monkeypatch
+    ):
+        import json as _json
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path, sample_fps="inf")))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "x", "width": 832, "height": 480, "num_frames": 49},
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        # Must be strict-JSON parseable — `Infinity` is not valid JSON.
+        parsed = _json.loads(r.text)
+        assert parsed["data"][0]["frame_rate"] is None
+
+
+class TestForeignImportErrorIsSanitized:
+    def test_native_extension_paths_do_not_reach_the_client(self, monkeypatch):
+        """An ImportError we didn't author can embed absolute dylib paths.
+
+        Our own probe/config messages are safe and stay verbatim — they're
+        the actionable part. Anything else gets logged and replaced.
+        """
+        import logging
+
+        from vllm_mlx.video import engine as engine_mod
+
+        def _explode():
+            raise ImportError(
+                "dlopen(/opt/homebrew/Cellar/secret-thing/lib/libfoo.dylib): "
+                "symbol not found"
+            )
+
+        import vllm_mlx.video.wan as wan_mod
+
+        monkeypatch.setattr(wan_mod, "register", _explode)
+        client, restore = _mount_video_app()
+        try:
+            with caplog_at(logging.ERROR) as records:
+                r = client.post(
+                    "/v1/video/generations",
+                    json={
+                        "prompt": "x",
+                        "width": 832,
+                        "height": 480,
+                        "num_frames": 49,
+                    },
+                )
+        finally:
+            restore()
+            engine_mod._AUTOREGISTER_ERROR = None
+        assert r.status_code == 503, r.text
+        assert "libfoo.dylib" not in r.text, f"internal path leaked: {r.text}"
+        assert "/opt/homebrew" not in r.text, f"internal path leaked: {r.text}"
+        assert "server log" in r.json()["detail"]["error"]["message"]
+        assert any("libfoo.dylib" in rec.getMessage() for rec in records), (
+            "the real reason should be logged"
+        )
+
+
+class TestLoraPathWithTrailingNumber:
+    def test_a_path_ending_in_a_large_number_is_not_split(self):
+        """`/models/run:2026` is a path, not strength 2026.
+
+        LoRA scales are conventionally 0..2, so a trailing number outside
+        that range is far more likely a date or port in a directory name.
+        Pre-fix this silently became ``/models/run`` at strength 2026.
+        """
+        from vllm_mlx.video.wan import _parse_loras
+
+        assert _parse_loras("/models/run:2026") == [("/models/run:2026", 1.0)]
+
+    @pytest.mark.parametrize("s", ["0", "0.5", "1", "1.0", "2", "4"])
+    def test_plausible_strengths_still_parse(self, s):
+        from vllm_mlx.video.wan import _parse_loras
+
+        assert _parse_loras(f"/a/x.safetensors:{s}") == [("/a/x.safetensors", float(s))]
+
+
+class TestPinIsAFullSha:
+    def test_pin_is_immutable_not_an_abbreviation(self):
+        """A 7-char prefix can go ambiguous as upstream accumulates objects."""
+        from vllm_mlx.video.wan import MLX_VIDEO_PIN
+
+        assert len(MLX_VIDEO_PIN) == 40, MLX_VIDEO_PIN
+        assert all(c in "0123456789abcdef" for c in MLX_VIDEO_PIN), MLX_VIDEO_PIN
+
+    def test_ci_installs_the_same_pin(self):
+        """CI, runtime hint and docs must not drift apart."""
+        import pathlib
+
+        from vllm_mlx.video.wan import MLX_VIDEO_PIN
+
+        repo = pathlib.Path(__file__).resolve().parents[1]
+        ci = (repo / ".github/workflows/ci.yml").read_text()
+        assert MLX_VIDEO_PIN in ci, "ci.yml does not install the pinned commit"
+        docs = (repo / "docs/content_farm_api.md").read_text()
+        assert MLX_VIDEO_PIN in docs, "docs do not document the pinned commit"

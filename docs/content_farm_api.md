@@ -251,7 +251,7 @@ The `501` body:
 
 ```bash
 # Pinned to the commit this backend was developed and verified against.
-pip install 'git+https://github.com/Blaizzy/mlx-video.git@87db56a'
+pip install 'git+https://github.com/Blaizzy/mlx-video.git@87db56a51758fefb748a359b90a5283bb8ba4837'
 ```
 
 Pinning matters more than usual here: because the PyPI name is taken by an

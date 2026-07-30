@@ -140,18 +140,36 @@ async def create_video(request: VideoGenerationRequest = Body(...)):
                 }
             },
         )
-    except (ImportError, VideoBackendUnavailableError) as e:
-        # A backend IS configured but its runtime dependency is missing or
-        # is the WRONG package (the `mlx-video` PyPI name belongs to an
-        # unrelated project — see vllm_mlx/video/wan.py). That is an
-        # operator-fixable install problem, not "no video support", so it
-        # gets a 503 carrying the actual install command rather than the
-        # 501 above.
+    except VideoBackendUnavailableError as e:
+        # A backend IS configured but can't run — missing or wrong package,
+        # bad config. Operator-fixable, not "no video support", so a 503
+        # rather than the 501 above. These messages are ones WE author (the
+        # dependency probe's install instructions, the config errors), so
+        # they're safe to return verbatim and are the actionable part.
         raise HTTPException(
             status_code=503,
             detail={
                 "error": {
                     "message": str(e),
+                    "type": "api_error",
+                    "code": "video_backend_unavailable",
+                    "param": None,
+                }
+            },
+        )
+    except ImportError as e:
+        # Same 503 class, but the text is NOT ours: a native-extension
+        # import failure routinely embeds absolute dylib paths and other
+        # environment detail. Log it for the operator, return a pointer.
+        logger.error("Video backend dependency failed to import: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "message": (
+                        "the video backend's dependencies could not be "
+                        "imported; see the server log for the failing module"
+                    ),
                     "type": "api_error",
                     "code": "video_backend_unavailable",
                     "param": None,

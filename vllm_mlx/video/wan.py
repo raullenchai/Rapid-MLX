@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from pathlib import Path
 
@@ -99,6 +100,12 @@ def _validated_choice(
     return value
 
 
+#: Largest value ``_parse_loras`` will read as a strength rather than as part
+#: of the path. LoRA scales are conventionally 0..2; anything larger in a
+#: trailing ``:N`` is much more likely to be a date or port in a directory
+#: name.
+_MAX_LORA_STRENGTH = 4.0
+
 #: Wan's latent temporal stride is 4, so a clip's frame count must be
 #: ``4n+1`` — one anchor frame plus n groups of 4. Anything else makes
 #: mlx-video raise deep in latent packing.
@@ -144,10 +151,25 @@ def _parse_loras(spec: str | None) -> list[tuple[str, float]] | None:
         path, sep, tail = part.rpartition(":")
         if sep and path:
             try:
-                out.append((path, float(tail)))
-                continue
+                strength = float(tail)
             except ValueError:
                 pass  # ':' was part of the path, not a strength
+            else:
+                # Bound it: LoRA strengths are conventionally 0..2, so a
+                # trailing number outside that range is far more likely to be
+                # part of the path (``/models/run:2026``, a port, a date) than
+                # a scale factor. Without this, that path silently becomes
+                # ``/models/run`` at strength 2026.
+                if 0.0 <= strength <= _MAX_LORA_STRENGTH:
+                    out.append((path, strength))
+                    continue
+                logger.warning(
+                    "Treating %r as part of the LoRA path: %s is outside the "
+                    "0..%g strength range",
+                    part,
+                    tail,
+                    _MAX_LORA_STRENGTH,
+                )
         out.append((part, 1.0))
     return out or None
 
@@ -157,7 +179,7 @@ def _parse_loras(spec: str | None) -> list[tuple[str, float]] | None:
 #: depend on and an unpinned ``main`` could change ``generate_video``'s
 #: signature under a working install. Kept in one place so the docs and
 #: every runtime message agree — they drifted once already.
-MLX_VIDEO_PIN = "87db56a"
+MLX_VIDEO_PIN = "87db56a51758fefb748a359b90a5283bb8ba4837"
 MLX_VIDEO_INSTALL = (
     f"pip install 'git+https://github.com/Blaizzy/mlx-video.git@{MLX_VIDEO_PIN}'"
 )
@@ -514,7 +536,15 @@ class WanVideoEngine:
         except (TypeError, ValueError):
             logger.warning("Checkpoint declares a non-numeric sample_fps: %r", fps)
             return None
-        return value if value > 0 else None
+        # ``> 0`` alone lets inf through (``float("inf") > 0`` is True), and an
+        # infinite fps reaches the response where JSON serialisation rejects
+        # it — *after* a multi-minute render. Same non-finite guard the request
+        # schema already applies to ``frame_rate`` and ``seconds``; it belongs
+        # on checkpoint metadata too, which is equally untrusted input.
+        if not math.isfinite(value) or value <= 0:
+            logger.warning("Checkpoint declares an unusable sample_fps: %r", fps)
+            return None
+        return value
 
     @property
     def served_model(self) -> str:
@@ -534,7 +564,12 @@ class WanVideoEngine:
             return f"wan{version}-{kind}"
         if version:
             return f"wan{version}"
-        return self.model_dir.name
+        # NOT the directory name. This value is returned to every API caller,
+        # and a checkpoint dir is named by the operator — it can carry a
+        # customer name, an internal project, a home path fragment. Callers
+        # gain nothing from it. Same reasoning as keeping the model path out
+        # of the 503 body.
+        return "wan"
 
     @property
     def max_area(self) -> int:

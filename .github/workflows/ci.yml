@@ -167,7 +167,7 @@ jobs:
           # silently skipping (it asserts the kwargs we pass still exist
           # upstream, which is the only guard against an unpinned-branch
           # signature change breaking production).
-          pip install 'git+https://github.com/Blaizzy/mlx-video.git@87db56a'
+          pip install 'git+https://github.com/Blaizzy/mlx-video.git@87db56a51758fefb748a359b90a5283bb8ba4837'
 
       - name: Verify Apple Silicon
         run: |
