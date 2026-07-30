@@ -453,11 +453,23 @@ the requested `model` id and returning the engine. Add a `register()` to
 
 Two conventions worth following, both of which the route relies on:
 
-* Raise `ValueError` for anything the CALLER can fix that the generic
-  schema can't express (a frame count your model rejects, a resolution
-  ceiling). The route maps it to `400 invalid_video_request`. Raise
-  `ImportError` when your optional dependency is missing — that becomes
-  `503` with your message, not a `500`.
+* Raise **`vllm_mlx.video.engine.InvalidVideoRequestError`** for anything
+  the CALLER can fix that the generic schema can't express (a frame count
+  your model rejects, a resolution ceiling). The route maps it to
+  `400 invalid_video_request`. It subclasses `ValueError`, but the route
+  catches only the dedicated type on purpose — a bare `except ValueError`
+  would also swallow corrupt weights, a bad LoRA and scheduler faults and
+  report those as "your request is invalid", so raising plain `ValueError`
+  gets you a `500`, not a `400`.
+* Raise **`VideoBackendUnavailableError`** (or `ImportError`) for
+  OPERATOR-fixable faults — missing dependency, a model directory that
+  doesn't exist, a checkpoint that won't load. Those become `503
+  video_backend_unavailable` with your message. Note this must be raised
+  from your factory too, not just from `generate`: the route resolves the
+  engine outside the generation error mapping.
+* Anything else you raise is treated as an internal fault and becomes a
+  generic `500 video_generation_failed` with the traceback in the operator
+  log and no detail leaked to the client.
 * Expose `native_frame_rate` if your model can't vary fps. The route
   reports it instead of echoing the requested `frame_rate`, so the
   response describes the clip that actually came out. Backends that do

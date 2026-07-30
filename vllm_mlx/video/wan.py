@@ -116,6 +116,76 @@ def _parse_loras(spec: str | None) -> list[tuple[str, float]] | None:
     return out or None
 
 
+#: Canonical install target. Pinned because ``mlx-video``'s PyPI name
+#: belongs to an unrelated project, so there is no versioned release to
+#: depend on and an unpinned ``main`` could change ``generate_video``'s
+#: signature under a working install. Kept in one place so the docs and
+#: every runtime message agree — they drifted once already.
+MLX_VIDEO_PIN = "87db56a"
+MLX_VIDEO_INSTALL = (
+    f"pip install 'git+https://github.com/Blaizzy/mlx-video.git@{MLX_VIDEO_PIN}'"
+)
+
+#: Magic-byte prefixes for the raster formats PIL will open. Used instead of
+#: ``PIL.Image.open`` because Pillow lives in the ``[vision]`` extra and this
+#: check must work on a base install.
+_IMAGE_MAGIC: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"BM",  # BMP
+    b"II*\x00",  # TIFF little-endian
+    b"MM\x00*",  # TIFF big-endian
+)
+
+
+def _looks_like_image(raw: bytes) -> bool:
+    """True if ``raw`` starts with a known raster-image signature."""
+    if any(raw.startswith(sig) for sig in _IMAGE_MAGIC):
+        return True
+    # WebP: 'RIFF' <4-byte size> 'WEBP'
+    return len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+
+
+def _decode_error(raw: bytes) -> str | None:
+    """Return why ``raw`` isn't loadable image data, or ``None`` if it is.
+
+    A signature check alone is not enough: a TRUNCATED PNG has a perfectly
+    valid 8-byte header and then fails inside PIL's chunk reader, which
+    surfaced as a `500 video_generation_failed` — blaming the server for a
+    corrupt upload. Decoding here moves that to a `400`.
+
+    Uses PIL when importable and falls back to the signature check when it
+    isn't. Pillow lives in the ``[vision]`` extra, but mlx-video (this
+    backend's own runtime dependency) requires it, so in any environment
+    that can actually render, the strong check is the one that runs.
+    """
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return (
+            None
+            if _looks_like_image(raw)
+            else (
+                "image payload decoded successfully but is not a recognised "
+                "image format (expected PNG, JPEG, GIF, BMP, TIFF or WebP)"
+            )
+        )
+
+    try:
+        # verify() checks structure without decoding pixels, but it leaves
+        # the file object unusable — so re-open to force a full load, which
+        # is what actually catches truncation.
+        Image.open(io.BytesIO(raw)).verify()
+        Image.open(io.BytesIO(raw)).load()
+    except Exception as e:  # noqa: BLE001 — PIL raises many types here
+        return f"image payload is not loadable image data: {e}"
+    return None
+
+
 def _materialise_image(image: str) -> tuple[str, bool]:
     """Turn a contract ``image`` value into a local file path for mlx-video.
 
@@ -170,6 +240,14 @@ def _materialise_image(image: str) -> tuple[str, bool]:
         ) from e
     if not raw:
         raise InvalidVideoRequestError("image decoded to zero bytes")
+    # Valid base64 is not the same as loadable image data: `aGVsbG8=`
+    # decodes cleanly to b"hello", and a truncated PNG has a perfectly
+    # valid header. Both used to reach mlx-video and come back as a 500
+    # video_generation_failed — blaming the server for a caller-fixable
+    # input.
+    problem = _decode_error(raw)
+    if problem is not None:
+        raise InvalidVideoRequestError(problem)
 
     # Suffix matters: PIL sniffs content, but a sensible extension keeps the
     # temp file legible in logs and to anything else that inspects it.
@@ -195,7 +273,7 @@ def probe_mlx_video() -> str | None:
         return (
             "mlx-video is not installed. Install the video-generation "
             "package from git:\n"
-            "    pip install git+https://github.com/Blaizzy/mlx-video.git\n"
+            f"    {MLX_VIDEO_INSTALL}\n"
             "NOTE: do NOT `pip install mlx-video` — that PyPI name is an "
             "unrelated video-loading utility, not the generation package."
         )
@@ -220,8 +298,7 @@ def probe_mlx_video() -> str | None:
             f"(`mlx_video.models.wan_2`): {e}. The PyPI package named "
             "`mlx-video` is an unrelated video-loading utility; this "
             "backend needs Prince Canuma's generation package:\n"
-            "    pip uninstall mlx-video && "
-            "pip install git+https://github.com/Blaizzy/mlx-video.git"
+            f"    pip uninstall mlx-video && {MLX_VIDEO_INSTALL}"
         )
     return None
 

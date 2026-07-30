@@ -781,14 +781,43 @@ class TestAutoregistrationFailureHandling:
         assert engine_mod._AUTOREGISTER_DONE is True
 
 
-def _png_bytes() -> bytes:
-    """A minimal valid 1x1 PNG."""
-    import base64
+def _png_bytes(width: int = 4, height: int = 4) -> bytes:
+    """A real, loadable PNG — CONSTRUCTED, not transcribed.
 
-    return base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4"
-        "DwABAQEAGn0nsQAAAABJRU5ErkJggg=="
+    An earlier version of this helper carried a hand-copied base64 blob that
+    turned out to be a truncated PNG. The hermetic tests passed anyway
+    (the fake generate_video never opens the file), and only on-device
+    verification caught it — as a 500 from inside PIL's chunk reader. Build
+    the bytes so the fixture can't be silently wrong.
+    """
+    import struct
+    import zlib
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    scanlines = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(scanlines))
+        + _chunk(b"IEND", b"")
     )
+
+
+def test_png_fixture_is_actually_loadable():
+    """Pin the fixture itself — a corrupt one silently passes every other test."""
+    import io
+
+    Image = pytest.importorskip("PIL.Image", reason="Pillow not installed")
+    img = Image.open(io.BytesIO(_png_bytes()))
+    img.load()
+    assert img.size == (4, 4)
 
 
 class TestImageToVideoMaterialisation:
@@ -1048,12 +1077,28 @@ class TestUpstreamSignatureCompatibility:
     )
 
     def test_generate_video_still_accepts_every_kwarg_we_pass(self):
+        import importlib
         import inspect
+        import os
 
-        real = pytest.importorskip(
-            "mlx_video.models.wan_2.generate",
-            reason="real mlx-video not installed (hermetic fakes are used elsewhere)",
-        )
+        # Drop any fake a sibling test installed — this one needs the REAL
+        # package or it proves nothing.
+        for mod in [k for k in list(sys.modules) if k.startswith("mlx_video")]:
+            if not hasattr(sys.modules[mod], "__file__"):
+                del sys.modules[mod]
+        try:
+            real = importlib.import_module("mlx_video.models.wan_2.generate")
+        except ImportError as e:
+            # In CI the pinned commit IS installed (see ci.yml), so an import
+            # failure there means the guard silently stopped guarding — which
+            # is the exact failure mode this test exists to prevent. Only a
+            # dev machine without the optional package may skip.
+            if os.environ.get("CI"):
+                pytest.fail(
+                    f"real mlx-video must be installed in CI for the signature "
+                    f"guard to mean anything, but importing it failed: {e}"
+                )
+            pytest.skip("real mlx-video not installed on this dev machine")
         sig = inspect.signature(real.generate_video)
         accepts_var_kw = any(
             p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
@@ -1066,3 +1111,135 @@ class TestUpstreamSignatureCompatibility:
             f"WanVideoEngine.generate passes these; update the call and the "
             f"pinned commit in docs/content_farm_api.md together."
         )
+
+
+class TestImagePayloadMustActuallyBeAnImage:
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "aGVsbG8=",  # b"hello" — valid base64, not an image
+            "AAAAAAAAAAAAAAAAAAAAAAAA",  # zero bytes, well-formed base64
+            "PHN2Zz48L3N2Zz4=",  # "<svg></svg>" — not a raster format
+        ],
+    )
+    def test_valid_base64_that_is_not_an_image_is_400(
+        self, tmp_path, monkeypatch, payload
+    ):
+        """Decodable != an image.
+
+        `aGVsbG8=` decodes cleanly to b"hello". Without a content check that
+        reaches PIL and returns `500 video_generation_failed`, blaming the
+        server for what is squarely a caller-fixable input.
+        """
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path))
+        with pytest.raises(InvalidVideoRequestError):
+            eng.generate("x", tmp_path / "o.mp4", image=payload, num_frames=49)
+
+    def test_a_real_loadable_image_is_accepted(self, tmp_path, monkeypatch):
+        import base64
+
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        WanVideoEngine(_write_ckpt(tmp_path)).generate(
+            "x",
+            tmp_path / "ok.mp4",
+            image=base64.b64encode(_png_bytes()).decode(),
+            num_frames=49,
+            width=832,
+            height=480,
+        )
+
+    def test_truncated_image_is_400_not_500(self, tmp_path, monkeypatch):
+        """A valid signature followed by garbage is still the caller's problem.
+
+        This is the case a magic-byte check alone misses: PIL opens the
+        header fine and then raises inside its chunk reader, which showed up
+        in on-device verification as `500 video_generation_failed`.
+        """
+        import base64
+
+        pytest.importorskip("PIL.Image", reason="needs Pillow for the strong check")
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        truncated = _png_bytes()[:40]  # header + partial IHDR
+        eng = WanVideoEngine(_write_ckpt(tmp_path))
+        with pytest.raises(InvalidVideoRequestError, match="not loadable"):
+            eng.generate(
+                "x",
+                tmp_path / "o.mp4",
+                image=base64.b64encode(truncated).decode(),
+                num_frames=49,
+            )
+
+    def test_magic_fallback_when_pillow_is_absent(self, monkeypatch):
+        """Without Pillow the signature check is the best we can do."""
+        import builtins
+
+        from vllm_mlx.video.wan import _decode_error
+
+        real_import = builtins.__import__
+
+        def _no_pil(name, *a, **kw):
+            if name == "PIL" or name.startswith("PIL."):
+                raise ImportError("no PIL")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _no_pil)
+        assert _decode_error(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32) is None
+        assert _decode_error(b"hello") is not None
+
+    def test_route_reports_it_as_400_not_500(self, tmp_path, monkeypatch):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={
+                    "prompt": "x",
+                    "width": 832,
+                    "height": 480,
+                    "num_frames": 49,
+                    "image": "aGVsbG8gdGhlcmUgZnJpZW5kcyBoZWxsbw==",
+                },
+            )
+        finally:
+            restore()
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"]["code"] == "invalid_video_request"
+
+
+class TestInstallHintIsPinned:
+    def test_probe_messages_use_the_pinned_commit(self, monkeypatch):
+        """The runtime hint and the docs must not drift apart.
+
+        They did once: docs pinned @87db56a while both probe messages told
+        the operator to install unpinned `main` — which is precisely the
+        situation the pin exists to prevent.
+        """
+        import builtins
+
+        from vllm_mlx.video.wan import MLX_VIDEO_PIN, probe_mlx_video
+
+        for stale in [k for k in list(sys.modules) if k.startswith("mlx_video")]:
+            monkeypatch.delitem(sys.modules, stale, raising=False)
+        real_import = builtins.__import__
+
+        def _blocked(name, *a, **kw):
+            if name == "mlx_video" or name.startswith("mlx_video."):
+                raise ImportError("no mlx_video")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+        msg = probe_mlx_video()
+        assert MLX_VIDEO_PIN in msg, msg
+        assert "mlx-video.git'" not in msg, "unpinned URL leaked into the hint"

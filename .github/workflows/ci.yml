@@ -158,6 +158,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[vision]"
           pip install pytest pytest-asyncio
+          # mlx-video (the Wan video backend's runtime dep) can NOT be a pip
+          # extra: the `mlx-video` name on PyPI belongs to an unrelated
+          # project, and the real package is git-only — which PyPI forbids as
+          # a direct reference in published metadata. Installed here, at the
+          # pin the backend was verified against, so
+          # TestUpstreamSignatureCompatibility actually runs instead of
+          # silently skipping (it asserts the kwargs we pass still exist
+          # upstream, which is the only guard against an unpinned-branch
+          # signature change breaking production).
+          pip install 'git+https://github.com/Blaizzy/mlx-video.git@87db56a'
 
       - name: Verify Apple Silicon
         run: |
