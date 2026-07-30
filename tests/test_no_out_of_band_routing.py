@@ -412,6 +412,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # structurally masked. Read only by
         # ``routes/chat.py::_tool_grammar_eligible``.
         "RAPID_MLX_CONSTRAIN_TOOLS",
+        # #1312/#1314 Kokoro espeak self-test path overrides. When set, they
+        # redirect the phonemizer's espeak-ng shared library / data directory
+        # at a system install (used to repair a broken bundled dylib); absent,
+        # the self-test exercises whatever ``misaki`` wired up at import. Read
+        # ONLY by ``audio/probe.py``'s child-process espeak self-test — pure
+        # filesystem path knobs for a TTS dependency; never select a model,
+        # parser, or routing tier.
+        "RAPID_MLX_ESPEAK_LIB",
+        "RAPID_MLX_ESPEAK_DATA",
     }
 )
 
