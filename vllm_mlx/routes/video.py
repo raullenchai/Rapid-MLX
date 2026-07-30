@@ -222,9 +222,13 @@ async def _render_and_serialize(
                     }
                 },
             )
-        except (ImportError, VideoBackendUnavailableError) as e:
-            # Dependency probe can also fire here (the engine re-checks at
-            # call time), same 503 reasoning as in create_video.
+        except VideoBackendUnavailableError as e:
+            # The engine re-probes its dependency at call time and raises
+            # this on failure, so the 503 reasoning from create_video
+            # applies. Deliberately NOT catching bare ImportError here:
+            # mlx-video does lazy imports mid-render, and one of those
+            # failing is an internal fault whose raw message must not reach
+            # the client — that falls through to the sanitized 500 below.
             raise HTTPException(
                 status_code=503,
                 detail={

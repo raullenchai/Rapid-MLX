@@ -108,13 +108,22 @@ _FRAME_MULTIPLE = 4
 #: env override can't smuggle in a value the HTTP contract would reject.
 _MAX_STEPS = 500
 
+#: Mirrors ``VideoGenerationRequest.num_frames``' ceiling, so the "nearest
+#: valid frame count" hint never suggests a value the schema would reject.
+_MAX_FRAMES = 4096
 
-def _valid_frame_counts_around(n: int) -> tuple[int, int]:
-    """Nearest valid ``4n+1`` frame counts at or below / above ``n``."""
+
+def _valid_frame_counts_around(n: int) -> tuple[int, int | None]:
+    """Nearest valid ``4n+1`` frame counts at or below / above ``n``.
+
+    The upper suggestion is ``None`` when it would exceed the request
+    schema's own ceiling — recommending 4097 to a caller whose request can
+    never carry more than 4096 is advice they cannot take.
+    """
     k = max(0, (n - 1) // _FRAME_MULTIPLE)
     lower = k * _FRAME_MULTIPLE + 1
     upper = (k + 1) * _FRAME_MULTIPLE + 1
-    return lower, upper
+    return lower, (upper if upper <= _MAX_FRAMES else None)
 
 
 def _parse_loras(spec: str | None) -> list[tuple[str, float]] | None:
@@ -459,10 +468,23 @@ class WanVideoEngine:
             return {}
         try:
             with open(path) as fh:
-                return json.load(fh)
+                loaded = json.load(fh)
         except (OSError, json.JSONDecodeError) as e:
             logger.warning("Could not read %s: %s", path, e)
             return {}
+        if not isinstance(loaded, dict):
+            # Valid JSON is not necessarily a config: `[]`, `null` and bare
+            # scalars all decode fine and then blow up on `.get()` during
+            # engine resolution — outside the route's error mapping, so the
+            # operator would see an unstructured 500.
+            logger.warning(
+                "%s is valid JSON but not an object (%s); ignoring it and "
+                "falling back to weight-shape auto-detection",
+                path,
+                type(loaded).__name__,
+            )
+            return {}
+        return loaded
 
     @property
     def native_frame_rate(self) -> float | None:
@@ -480,7 +502,9 @@ class WanVideoEngine:
         alone (both ship a 14B variant), so a default would be wrong half
         the time — and asserting a wrong rate is worse than admitting we
         don't know, which is the whole reason this property exists. The
-        route falls back to the requested value when it gets ``None``.
+        route serialises ``None`` as a ``null`` ``frame_rate``; it does NOT
+        substitute the requested value, since Wan never honoured that
+        either.
         """
         fps = self._config.get("sample_fps")
         if fps is None:
@@ -564,14 +588,19 @@ class WanVideoEngine:
         """
         err = probe_mlx_video()
         if err is not None:
-            raise ImportError(err)
+            # The OPERATOR-fault type, not bare ImportError: the route's
+            # render-time handler must not treat every ImportError as
+            # "your install is wrong". mlx-video does lazy imports during
+            # rendering, and one of those failing is an internal fault whose
+            # raw message should not reach the client.
+            raise VideoBackendUnavailableError(err)
 
         if num_frames % _FRAME_MULTIPLE != 1:
             lower, upper = _valid_frame_counts_around(num_frames)
+            hint = f"{lower} or {upper}" if upper is not None else str(lower)
             raise InvalidVideoRequestError(
                 f"num_frames must be 4n+1 for Wan (latent temporal stride "
-                f"is 4); got {num_frames}. Nearest valid values: "
-                f"{lower} or {upper}."
+                f"is 4); got {num_frames}. Nearest valid: {hint}."
             )
 
         area_cap = self.max_area

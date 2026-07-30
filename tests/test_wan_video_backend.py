@@ -1511,3 +1511,140 @@ class TestSchedulerAndTilingValidation:
             restore()
         assert r.status_code == 503, r.text
         assert r.json()["detail"]["error"]["code"] == "video_backend_unavailable"
+
+
+class TestMalformedConfigJson:
+    @pytest.mark.parametrize("body", ["[]", "null", "42", '"a string"', "[1,2,3]"])
+    def test_valid_json_that_is_not_an_object_is_ignored(self, tmp_path, body):
+        """Valid JSON != a config.
+
+        `[]`, `null` and bare scalars all decode fine and then blow up on
+        `.get()` during engine RESOLUTION — outside the route's error
+        mapping, so the operator would see an unstructured 500. Fall back to
+        weight-shape auto-detection instead, which is the documented
+        no-config behaviour anyway.
+        """
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        d = tmp_path / "weird"
+        d.mkdir()
+        (d / "config.json").write_text(body)
+        (d / "model.safetensors").write_bytes(b"stub")
+        eng = WanVideoEngine(d)  # must not raise
+        assert eng.native_frame_rate is None
+        assert eng.max_area == 0
+        assert eng.served_model == "weird"
+
+    def test_route_does_not_500_on_a_malformed_config(self, tmp_path, monkeypatch):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        d = tmp_path / "weird2"
+        d.mkdir()
+        (d / "config.json").write_text("[]")
+        (d / "model.safetensors").write_bytes(b"stub")
+        monkeypatch.setenv(ENV_MODEL_DIR, str(d))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "x", "width": 832, "height": 480, "num_frames": 49},
+            )
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+
+
+class TestRenderTimeImportErrorIsNotA503:
+    def test_lazy_import_failure_mid_render_is_a_sanitized_500(
+        self, tmp_path, monkeypatch
+    ):
+        """mlx-video lazy-imports during rendering.
+
+        One of those failing is an INTERNAL fault, not "your install is
+        wrong" — and its raw message (which can name modules and paths) must
+        not reach the client. Only the dependency probe's own failure maps to
+        503.
+        """
+        _install_fake_mlx_video(monkeypatch)
+
+        def _lazy_boom(**kwargs):
+            raise ImportError("cannot import name 'foo' from 'some.internal.thing'")
+
+        sys.modules["mlx_video.models.wan_2.generate"].generate_video = _lazy_boom
+
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "x", "width": 832, "height": 480, "num_frames": 49},
+            )
+        finally:
+            restore()
+        assert r.status_code == 500, r.text
+        err = r.json()["detail"]["error"]
+        assert err["code"] == "video_generation_failed"
+        assert "some.internal.thing" not in r.text, "internal detail leaked"
+
+    def test_probe_failure_is_still_a_503(self, tmp_path, monkeypatch):
+        """The probe's own verdict remains operator-fixable."""
+        import builtins
+
+        from vllm_mlx.video.wan import ENV_MODEL_DIR
+
+        monkeypatch.setenv(ENV_MODEL_DIR, str(_write_ckpt(tmp_path)))
+        for stale in [k for k in list(sys.modules) if k.startswith("mlx_video")]:
+            monkeypatch.delitem(sys.modules, stale, raising=False)
+        real_import = builtins.__import__
+
+        def _blocked(name, *a, **kw):
+            if name == "mlx_video" or name.startswith("mlx_video."):
+                raise ImportError("no mlx_video")
+            return real_import(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+        client, restore = _mount_video_app()
+        try:
+            r = client.post(
+                "/v1/video/generations",
+                json={"prompt": "x", "width": 832, "height": 480, "num_frames": 49},
+            )
+        finally:
+            restore()
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"]["error"]["code"] == "video_backend_unavailable"
+
+
+class TestFrameCountHintStaysSubmittable:
+    def test_hint_never_exceeds_the_schema_ceiling(self):
+        """Suggesting 4097 to a caller capped at 4096 is unusable advice."""
+        from vllm_mlx.video.wan import _MAX_FRAMES, _valid_frame_counts_around
+
+        lower, upper = _valid_frame_counts_around(_MAX_FRAMES)
+        assert lower <= _MAX_FRAMES
+        assert upper is None, f"suggested {upper}, over the {_MAX_FRAMES} cap"
+
+    def test_hint_omits_the_impossible_value_in_the_message(
+        self, tmp_path, monkeypatch
+    ):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import _MAX_FRAMES, WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path, max_area=0))
+        with pytest.raises(InvalidVideoRequestError) as ei:
+            eng.generate("x", tmp_path / "o.mp4", num_frames=_MAX_FRAMES)
+        assert "4097" not in str(ei.value), ei.value
+
+    def test_normal_case_still_offers_both(self, tmp_path, monkeypatch):
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.engine import InvalidVideoRequestError
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        eng = WanVideoEngine(_write_ckpt(tmp_path))
+        with pytest.raises(InvalidVideoRequestError) as ei:
+            eng.generate("x", tmp_path / "o.mp4", num_frames=50)
+        assert "49" in str(ei.value) and "53" in str(ei.value)
