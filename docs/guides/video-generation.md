@@ -1,10 +1,62 @@
-# CogVideoX-Fun video generation
+# Video generation
+
+Rapid-MLX exposes LTX-2.3, CogVideoX-Fun and Wan through the asynchronous
+OpenAI-compatible Videos API.
+
+## Wan 2.1 / 2.2
+
+Wan uses the `mlx-video-with-audio` runtime included in the video extra. Four
+converted Wan 2.2 checkpoints are registered; the 5B Q8 TI2V checkpoint is the
+recommended starting point and supports both text-to-video and
+image-to-video.
+
+```bash
+pip install 'rapid-mlx[video]'
+brew install ffmpeg
+rapid-mlx serve wan2.2-ti2v-5b-q8
+```
+
+Create a one-second text-to-video job:
+
+```bash
+curl http://127.0.0.1:8000/v1/videos \
+  -F model=wan2.2-ti2v-5b-q8 \
+  -F 'prompt=a fox running through fresh snow, cinematic tracking shot' \
+  -F seconds=1 \
+  -F size=832x512 \
+  -F seed=42
+```
+
+Add `-F input_reference=@start.png` for image-to-video when the served
+checkpoint is TI2V or I2V. Poll and download the result through the same
+`GET /v1/videos/{id}` and `GET /v1/videos/{id}/content` endpoints shown
+below.
+
+The backend reads the checkpoint's native frame rate (16 fps for Wan 2.1,
+24 fps for Wan 2.2), enforces Wan's `4n+1` temporal shape and honors the
+checkpoint's pixel-area ceiling. Converted local Wan 2.1/2.2 checkpoints can
+override the selected Wan alias with `RAPID_MLX_WAN_MODEL_DIR`.
+
+Optional process-level tuning:
+
+```bash
+RAPID_MLX_WAN_STEPS=8 \
+RAPID_MLX_WAN_SCHEDULER=unipc \
+RAPID_MLX_WAN_TILING=auto \
+rapid-mlx serve wan2.2-ti2v-5b-q8
+```
+
+LoRAs use `path[:strength]` entries through `RAPID_MLX_WAN_LORA`; dual-model
+checkpoints additionally accept `RAPID_MLX_WAN_LORA_HIGH` and
+`RAPID_MLX_WAN_LORA_LOW`.
+
+## CogVideoX-Fun
 
 Rapid-MLX can serve CogVideoX-Fun as an experimental, single-worker video
 generation backend on Apple Silicon. The MVP supports one-second,
 672×384 text-to-video jobs.
 
-## Install
+### Install
 
 The CogVideoX MLX port is currently source-only:
 
@@ -25,7 +77,7 @@ rapid-mlx serve cogvideox-fun-5b-q4 --port 8000
 The pipeline and weights load on the first job. The q4 checkpoint uses about
 14.5 GB peak RSS; a Mac with at least 24 GB unified memory is recommended.
 
-## Create and download a video
+### Create and download a video
 
 ```bash
 curl http://127.0.0.1:8000/v1/videos \

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MLX-native LTX-2.3 video-generation lane."""
+"""MLX-native LTX-2.3, CogVideoX-Fun and Wan video-generation lane."""
 
 from __future__ import annotations
 
@@ -18,8 +18,35 @@ class VideoRuntimeError(RuntimeError):
 _PROCESS_GENERATION_LOCK = threading.Lock()
 
 
+def validate_video_request(
+    engine,
+    *,
+    width: int,
+    height: int,
+    num_frames: int,
+    image: Path | None,
+) -> None:
+    """Run family-specific validation before a video job is queued."""
+    wan_engine = getattr(engine, "_wan_engine", None)
+    if wan_engine is not None:
+        wan_engine.validate_request(
+            width=width,
+            height=height,
+            num_frames=num_frames,
+            image=image,
+        )
+
+
 def _is_cogvideox_name(model_name: str | None) -> bool:
     return bool(model_name and "cogvideox" in model_name.casefold())
+
+
+def _is_wan_name(model_name: str | None) -> bool:
+    if not model_name:
+        return False
+    from ..video.wan import is_wan_model
+
+    return is_wan_model(model_name)
 
 
 def require_video_runtime_or_exit(model_name: str | None = None) -> None:
@@ -39,8 +66,14 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
             for module, label in cogvideox_modules.items()
             if importlib.util.find_spec(module) is None
         )
-    elif importlib.util.find_spec("mlx_video") is None:
-        missing.append("the `rapid-mlx[video]` Python extra")
+    else:
+        mlx_video_available = importlib.util.find_spec("mlx_video") is not None
+        wan_available = not _is_wan_name(model_name) or (
+            mlx_video_available
+            and importlib.util.find_spec("mlx_video.generate_wan") is not None
+        )
+        if not mlx_video_available or not wan_available:
+            missing.append("the `rapid-mlx[video]` Python extra")
     if shutil.which("ffmpeg") is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
     if missing:
@@ -65,13 +98,20 @@ class VideoEngine:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
         self.video_family = (
-            "cogvideox-fun" if _is_cogvideox_name(model_name) else "ltx-2.3"
+            "cogvideox-fun"
+            if _is_cogvideox_name(model_name)
+            else ("wan" if _is_wan_name(model_name) else "ltx-2.3")
         )
         self._cog_engine = None
+        self._wan_engine = None
         if self.video_family == "cogvideox-fun":
             from ..video.engine import VideoGenerationEngine
 
             self._cog_engine = VideoGenerationEngine(model_name)
+        elif self.video_family == "wan":
+            from ..video.wan import WanVideoEngine
+
+            self._wan_engine = WanVideoEngine(model_name)
         # Shared across engine instances and app lifespans. A bounded shutdown
         # may detach an old daemon worker; an in-process restart must not run a
         # second Metal graph concurrently with that still-draining worker.
@@ -91,6 +131,31 @@ class VideoEngine:
         output_width: int | None = None,
         output_height: int | None = None,
     ) -> None:
+        if self._wan_engine is not None:
+            from ..video.wan import WanBackendError
+
+            try:
+                with self._generation_lock:
+                    self._wan_engine.generate(
+                        prompt=prompt,
+                        output_path=output_path,
+                        width=width,
+                        height=height,
+                        num_frames=num_frames,
+                        seed=seed,
+                        image=image,
+                    )
+            except WanBackendError as exc:
+                raise VideoRuntimeError(str(exc)) from exc
+            self._crop_generated_output(
+                output_path=output_path,
+                width=width,
+                height=height,
+                output_width=output_width,
+                output_height=output_height,
+                family="Wan",
+            )
+            return
         if self._cog_engine is not None:
             if image is not None:
                 raise VideoRuntimeError(
@@ -141,6 +206,25 @@ class VideoEngine:
             raise VideoRuntimeError(
                 "LTX-2.3 generation completed without an MP4 output."
             )
+        self._crop_generated_output(
+            output_path=output_path,
+            width=width,
+            height=height,
+            output_width=output_width,
+            output_height=output_height,
+            family="LTX-2.3",
+        )
+
+    @staticmethod
+    def _crop_generated_output(
+        *,
+        output_path: Path,
+        width: int,
+        height: int,
+        output_width: int | None,
+        output_height: int | None,
+        family: str,
+    ) -> None:
         requested_width = output_width or width
         requested_height = output_height or height
         if (requested_width, requested_height) != (width, height):
@@ -175,11 +259,17 @@ class VideoEngine:
                 subprocess.TimeoutExpired,
             ) as exc:
                 raise VideoRuntimeError(
-                    "LTX-2.3 generated video but could not crop it to the "
+                    f"{family} generated video but could not crop it to the "
                     "requested OpenAI-compatible size."
                 ) from exc
             finally:
                 cropped.unlink(missing_ok=True)
+
+    @property
+    def native_fps(self) -> int:
+        if self._wan_engine is not None:
+            return self._wan_engine.native_fps
+        return 5 if self._cog_engine is not None else 24
 
     def generate_warmup(self) -> None:
         """Video weights load lazily; startup must not trigger a 40+ GB pull."""

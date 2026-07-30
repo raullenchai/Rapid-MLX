@@ -393,6 +393,8 @@ async def _run_job(
     output = _jobs_root / job.id / "output.mp4"
     generation_gate = _generation_gate_for_current_loop()
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
+    is_wan = getattr(engine, "video_family", "") == "wan"
+    native_fps = 5 if is_cogvideox else getattr(engine, "native_fps", 24)
     generation_width = width if is_cogvideox else ((width + 63) // 64) * 64
     generation_height = height if is_cogvideox else ((height + 63) // 64) * 64
 
@@ -413,8 +415,12 @@ async def _run_job(
                 output_path=output,
                 width=generation_width,
                 height=generation_height,
-                num_frames=5 if is_cogvideox else _frame_count(seconds),
-                fps=5 if is_cogvideox else 24,
+                num_frames=(
+                    5
+                    if is_cogvideox
+                    else _frame_count(seconds, native_fps if is_wan else 24)
+                ),
+                fps=native_fps,
                 seed=seed,
                 image=image_path,
                 output_width=width,
@@ -484,6 +490,7 @@ async def create_video(
 ):
     engine = _video_engine()
     is_cogvideox = getattr(engine, "video_family", "") == "cogvideox-fun"
+    is_wan = getattr(engine, "video_family", "") == "wan"
     with _jobs_lock:
         if not _accepting_jobs:
             raise HTTPException(status_code=503, detail="video server is shutting down")
@@ -491,11 +498,10 @@ async def create_video(
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt must not be blank")
     allowed_models = {engine.model_name}
-    if is_cogvideox:
-        profile = resolve_profile(model)
-        if profile is not None and profile.hf_path == engine.model_name:
-            allowed_models.add(model)
-    else:
+    profile = resolve_profile(model)
+    if profile is not None and profile.hf_path == engine.model_name:
+        allowed_models.add(model)
+    if not (is_cogvideox or is_wan):
         allowed_models.add("ltx-2.3-mlx-q4")
     if model not in allowed_models:
         raise HTTPException(
@@ -526,16 +532,19 @@ async def create_video(
         width, height = _parse_size(size)
     generation_width = ((width + 63) // 64) * 64
     generation_height = ((height + 63) // 64) * 64
+    request_frames = _frame_count(
+        seconds_int, getattr(engine, "native_fps", 24) if is_wan else 24
+    )
     if (
         not is_cogvideox
-        and generation_width * generation_height * _frame_count(seconds_int)
-        > _MAX_PIXEL_FRAMES
+        and generation_width * generation_height * request_frames > _MAX_PIXEL_FRAMES
     ):
+        family = "Wan" if is_wan else "LTX-2.3 Q4"
         raise HTTPException(
             status_code=400,
             detail=(
-                "requested video exceeds the safe LTX-2.3 Q4 workload limit "
-                "(768x512 at 4 seconds); reduce size or duration"
+                f"requested video exceeds the safe {family} workload limit; "
+                "reduce size or duration"
             ),
         )
 
@@ -568,9 +577,28 @@ async def create_video(
                 await asyncio.to_thread(target.close)
             await asyncio.to_thread(_validate_reference_image, image_path)
 
+        num_frames = 5 if is_cogvideox else request_frames
+        if is_wan:
+            from ..runtime.video_lane import validate_video_request
+
+            try:
+                validate_video_request(
+                    engine,
+                    width=generation_width,
+                    height=generation_height,
+                    num_frames=num_frames,
+                    image=image_path,
+                )
+            except ValueError as exc:
+                from ..video.wan import WanRequestError
+
+                if not isinstance(exc, WanRequestError):
+                    raise
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         job = _VideoJob(
             id=job_id,
-            model=model if is_cogvideox else "ltx-2.3-mlx-q4",
+            model=model if (is_cogvideox or is_wan) else "ltx-2.3-mlx-q4",
             prompt=prompt,
             seconds=str(seconds_int),
             size=f"{width}x{height}",

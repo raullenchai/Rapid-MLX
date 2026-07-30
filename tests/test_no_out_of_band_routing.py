@@ -421,6 +421,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # parser, or routing tier.
         "RAPID_MLX_ESPEAK_LIB",
         "RAPID_MLX_ESPEAK_DATA",
+        # Wan generation tuning. These are read only after aliases.json has
+        # selected the audited video-gen lane; none can alter LLM routing.
+        "RAPID_MLX_WAN_MODEL_DIR",
+        "RAPID_MLX_WAN_STEPS",
+        "RAPID_MLX_WAN_SCHEDULER",
+        "RAPID_MLX_WAN_TILING",
+        "RAPID_MLX_WAN_LORA",
+        "RAPID_MLX_WAN_LORA_HIGH",
+        "RAPID_MLX_WAN_LORA_LOW",
     }
 )
 

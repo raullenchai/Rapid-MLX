@@ -2275,10 +2275,14 @@ def serve_command(args):
     _serve_profile = _resolve_serve_profile(
         getattr(args, "_original_alias", None) or getattr(args, "model", "")
     )
+    _is_wan_video = False
     if _serve_profile is not None and _serve_profile.modality == "video-gen":
         from .runtime.video_lane import require_video_runtime_or_exit
+        from .video.wan import is_wan_model
 
-        if "cogvideox" in args.model.casefold():
+        model_folded = args.model.casefold()
+        _is_wan_video = is_wan_model(args.model)
+        if "cogvideox" in model_folded or _is_wan_video:
             require_video_runtime_or_exit(args.model)
         else:
             require_video_runtime_or_exit()
@@ -2477,7 +2481,12 @@ def serve_command(args):
     # skips the mirror entirely (#651). ``_ensure_model_downloaded`` is a
     # no-op on local paths and on fully-cached repos, so this is free on
     # the warm path.
-    _ensure_model_downloaded(args.model)
+    # WanVideoEngine resolves registered repositories at an audited pinned
+    # revision (or uses RAPID_MLX_WAN_MODEL_DIR). The generic prefetch has no
+    # revision parameter and could otherwise download repository HEAD first,
+    # duplicating tens of gigabytes before the pinned snapshot is loaded.
+    if not _is_wan_video:
+        _ensure_model_downloaded(args.model)
 
     # Import unified server
     from . import server
