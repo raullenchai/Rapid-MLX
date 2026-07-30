@@ -189,7 +189,7 @@ class TestMusicRoute:
         call = _FakeMusicEngine.last_call
         assert (call["dit"], call["decoder"]) == ("sm-music", "same-s")
 
-    def test_unknown_model_falls_back_to_defaults(self, _stub_music_engine):
+    def test_unknown_model_is_rejected(self, _stub_music_engine):
         client, restore = _mount_audio_app()
         try:
             r = client.post(
@@ -198,11 +198,10 @@ class TestMusicRoute:
             )
         finally:
             restore()
-        assert r.status_code == 200, r.text
-        call = _FakeMusicEngine.last_call
-        assert (call["dit"], call["decoder"]) == ("medium", "same-l")
-        # seconds default honoured.
-        assert call["seconds"] == 30.0
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["error"]["code"] == "invalid_model"
+        assert r.json()["detail"]["error"]["param"] == "model"
+        assert _FakeMusicEngine.last_call is None
 
     def test_blank_input_is_422(self, _stub_music_engine):
         client, restore = _mount_audio_app()
@@ -449,30 +448,18 @@ class TestMusicConcurrencyShape:
         assert resp.body[:4] == b"RIFF", resp.body[:16]
         assert observed["engine_thread"] != observed["loop_thread"], observed
 
-    def test_lock_is_an_asyncio_lock_not_a_thread_lock(self):
-        """Renders serialise on the LOOP, not inside the worker.
-
-        ``asyncio.to_thread`` dispatches to the shared default executor,
-        so a ``threading.Lock`` held inside the worker would pin one
-        executor thread per queued request for up to the 900 s render
-        ceiling — starving every other ``to_thread`` user in the process
-        (prefix-cache save, tool-grammar warmup, the diffusion lane).
-        Pin the type so a future refactor can't quietly swap it.
-        """
+    def test_lock_can_be_reused_across_event_loops(self):
+        """A process-global lane remains usable when request loops change."""
         import asyncio
 
         from vllm_mlx.routes import audio as audio_route
 
-        async def _get():
-            return audio_route._get_music_lock()
+        async def _take_once():
+            async with audio_route._get_music_lock():
+                await asyncio.sleep(0)
 
-        saved = audio_route._music_lock
-        try:
-            audio_route._music_lock = None
-            lock = asyncio.run(_get())
-            assert isinstance(lock, asyncio.Lock), type(lock)
-        finally:
-            audio_route._music_lock = saved
+        asyncio.run(_take_once())
+        asyncio.run(_take_once())
 
     def test_cancellation_drains_the_worker_before_unwinding(self):
         """A client disconnect must not free the lock / temp file early.

@@ -257,6 +257,51 @@ def _mount(monkeypatch):
 
 
 class TestQwen3TTSRoute:
+    def test_synthesis_does_not_block_event_loop(self, monkeypatch):
+        """Weight loading, generation, and encoding run in a worker."""
+        import asyncio
+        import time
+
+        from vllm_mlx.api.models import AudioSpeechRequest
+        from vllm_mlx.audio import tts as tts_mod
+        from vllm_mlx.routes import audio as audio_route
+
+        _mount(monkeypatch)
+
+        class _SlowEngine(_RecordingEngine):
+            def generate(self, *args, **kwargs):
+                time.sleep(0.15)
+                return super().generate(*args, **kwargs)
+
+        monkeypatch.setattr(tts_mod, "TTSEngine", _SlowEngine)
+        monkeypatch.setattr(audio_route, "_tts_engine", None)
+
+        async def _drive():
+            ticks = 0
+            done = False
+
+            async def ticker():
+                nonlocal ticks
+                while not done:
+                    ticks += 1
+                    await asyncio.sleep(0.01)
+
+            ticker_task = asyncio.create_task(ticker())
+            try:
+                response = await audio_route.create_speech(
+                    AudioSpeechRequest(
+                        model="qwen3-tts", input="测试。", voice="Serena"
+                    )
+                )
+            finally:
+                done = True
+                await ticker_task
+            return response, ticks
+
+        response, ticks = asyncio.run(_drive())
+        assert response.body[:4] == b"RIFF"
+        assert ticks >= 5, f"event loop stalled during synthesis: {ticks=}"
+
     def test_speech_forwards_instructions_as_instruct(self, monkeypatch):
         client = _mount(monkeypatch)
         resp = client.post(

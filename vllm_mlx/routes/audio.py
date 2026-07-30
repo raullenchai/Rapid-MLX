@@ -1441,8 +1441,7 @@ async def _run_stt_request(
 #:
 #: Note this does not change how ASR EXECUTES: it still runs inline, so
 #: taking the lock around it only makes explicit the serialisation it
-#: already had. Moving ASR (and TTS) off the loop is a separate change —
-#: ``main`` currently has zero ``to_thread`` calls in this module.
+#: already had. TTS, alignment, and music run in workers.
 #:
 #: An ``asyncio.Lock`` acquired ON THE EVENT LOOP, deliberately not a
 #: ``threading.Lock`` held inside the worker. ``asyncio.to_thread`` uses
@@ -1456,10 +1455,10 @@ async def _run_stt_request(
 class _CrossLoopAsyncLock:
     """Process-wide lock that never occupies the shared asyncio executor."""
 
-    def __init__(self) -> None:
+    def __init__(self, thread_name_prefix: str = "rapid-mlx-audio-lock") -> None:
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="rapid-mlx-stt-lock"
+            max_workers=1, thread_name_prefix=thread_name_prefix
         )
 
     async def __aenter__(self):
@@ -1492,12 +1491,24 @@ class _CrossLoopAsyncLock:
         self._lock.release()
 
 
-_stt_lane_lock = _CrossLoopAsyncLock()
+_stt_lane_lock = _CrossLoopAsyncLock("rapid-mlx-stt-lock")
+_tts_lane_lock = _CrossLoopAsyncLock("rapid-mlx-tts-lock")
+_music_lock = _CrossLoopAsyncLock("rapid-mlx-music-lock")
 
 
 def _get_stt_lane_lock() -> _CrossLoopAsyncLock:
     """Return the process-wide STT-lane lock."""
     return _stt_lane_lock
+
+
+def _get_tts_lane_lock() -> _CrossLoopAsyncLock:
+    """Return the process-wide TTS-lane lock."""
+    return _tts_lane_lock
+
+
+def _get_music_lock() -> _CrossLoopAsyncLock:
+    """Return the process-wide music-lane lock."""
+    return _music_lock
 
 
 #: Signatures of the two ``ValueError``s :meth:`STTEngine.align` raises
@@ -2434,6 +2445,40 @@ def _is_clone_capable_model(model_name: str) -> bool:
     return is_qwen3 and "base" in tokens and "customvoice" not in tokens
 
 
+def _generate_speech_blocking(
+    model_name: str,
+    input_text: str,
+    response_format: str,
+    gen_kwargs: dict,
+    ref_bytes: bytes | None,
+    ref_text: str | None,
+) -> bytes:
+    """Load, synthesize, and encode speech without blocking the event loop."""
+    global _tts_engine
+
+    from ..audio.tts import TTSEngine
+
+    if _tts_engine is None or _tts_engine.model_name != model_name:
+        engine = TTSEngine(model_name)
+        engine.load()
+        _tts_engine = engine
+
+    kwargs = dict(gen_kwargs)
+    if ref_bytes is not None:
+        from .._tempfile_safe import managed_tempfile_path
+
+        with managed_tempfile_path(prefix="tts-ref-", suffix=".wav") as ref_path:
+            with open(ref_path, "wb") as ref_file:
+                ref_file.write(ref_bytes)
+            kwargs["ref_audio"] = ref_path.path
+            if ref_text is not None:
+                kwargs["ref_text"] = ref_text
+            audio = _tts_engine.generate(input_text, **kwargs)
+    else:
+        audio = _tts_engine.generate(input_text, **kwargs)
+    return _tts_engine.to_bytes(audio, format=response_format)
+
+
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
 async def create_speech(request: AudioSpeechRequest = Body(...)):
     """Generate speech from text (OpenAI TTS API compatible).
@@ -2493,7 +2538,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
 
     try:
         from ..audio.tts import (
-            TTSEngine,
             UnsupportedAudioFormatError,
             is_indextts_model,
         )
@@ -2686,10 +2730,6 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
 
             await run_in_threadpool(require_kokoro_runtime)
 
-        if _tts_engine is None or _tts_engine.model_name != model_name:
-            _tts_engine = TTSEngine(model_name)
-            _tts_engine.load()
-
         # Only forward ``instruct`` when the caller actually sent an
         # ``instructions`` field. Passing ``instruct=None`` is a no-op for
         # the real engine, but omitting the kwarg entirely keeps the call
@@ -2715,6 +2755,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # matching OpenAI's ignore-unsupported-styling behaviour.
         if exaggeration is not None:
             gen_kwargs["exaggeration"] = exaggeration
+        ref_bytes = None
         if ref_audio is not None:
             try:
                 ref_bytes = _decode_tts_ref_audio(ref_audio)
@@ -2730,19 +2771,17 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                         }
                     },
                 ) from exc
-            from .._tempfile_safe import managed_tempfile_path
-
-            with managed_tempfile_path(prefix="f5-ref-", suffix=".wav") as ref_path:
-                with open(ref_path, "wb") as ref_file:
-                    ref_file.write(ref_bytes)
-                gen_kwargs["ref_audio"] = ref_path.path
-                if ref_text is not None:
-                    gen_kwargs["ref_text"] = ref_text
-                audio = _tts_engine.generate(input_text, **gen_kwargs)
-        else:
-            audio = _tts_engine.generate(input_text, **gen_kwargs)
         try:
-            audio_bytes = _tts_engine.to_bytes(audio, format=response_format)
+            async with _get_tts_lane_lock():
+                audio_bytes = await run_to_completion(
+                    _generate_speech_blocking,
+                    model_name,
+                    input_text,
+                    response_format,
+                    gen_kwargs,
+                    ref_bytes,
+                    ref_text,
+                )
         except UnsupportedAudioFormatError as e:
             # R8-H5 (Bo 0.8.9 dogfood): the encoder couldn't produce the
             # requested format (no codec / unknown name). Surface a 400
@@ -2826,7 +2865,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
 # 3). OpenAI-flavored: JSON body in, WAV bytes out — the same
 # request-in / audio-bytes-out shape as ``/v1/audio/speech``. The
 # ``model`` field selects a DiT/decoder pairing via the alias table
-# below; unknown values fall back to the engine defaults.
+# below; unknown values are rejected as caller errors.
 # ---------------------------------------------------------------------------
 
 #: ``model`` alias → ``(dit, decoder)`` pairing for SA3. ``medium`` is
@@ -2844,7 +2883,7 @@ MUSIC_MODEL_ALIASES: dict[str, tuple[str, str]] = {
     "default": ("medium", "same-l"),
 }
 
-#: Fallback when ``model`` isn't a known music alias — the SA3 defaults.
+#: Defaults used when ``model`` is omitted or explicitly ``"default"``.
 DEFAULT_MUSIC_DIT_DECODER: tuple[str, str] = ("medium", "same-l")
 
 #: Serialises music generation. ``MusicEngine.generate`` shells out to the
@@ -2863,19 +2902,6 @@ DEFAULT_MUSIC_DIT_DECODER: tuple[str, str] = ("medium", "same-l")
 #: subsystems need. Waiting on the loop instead costs a coroutine, and
 #: only the request that actually runs ever occupies an executor slot.
 #:
-#: Lazily created because the module imports before any event loop exists
-#: and an ``asyncio.Lock`` must be bound to the running loop.
-_music_lock: asyncio.Lock | None = None
-
-
-def _get_music_lock() -> asyncio.Lock:
-    """Return the process-wide music lock, creating it on first use."""
-    global _music_lock
-    if _music_lock is None:
-        _music_lock = asyncio.Lock()
-    return _music_lock
-
-
 def _generate_music_blocking(
     dit: str,
     decoder: str,
@@ -2941,14 +2967,29 @@ def _resolve_music_model(model: str | None) -> tuple[str, str]:
     """Map a ``/v1/audio/music`` ``model`` alias to a ``(dit, decoder)`` pair.
 
     Recognises the :data:`MUSIC_MODEL_ALIASES` short names
-    (case-insensitively). ``None`` / ``""`` / ``"default"`` and any
-    unknown value fall back to :data:`DEFAULT_MUSIC_DIT_DECODER` (SA3's
-    own defaults) so an unfamiliar ``model`` still produces audio rather
-    than 404-ing — matching the TTS route's tolerant passthrough.
+    (case-insensitively). ``None`` / ``""`` / ``"default"`` select the
+    defaults. Unknown values are rejected so a typo cannot silently select
+    a different, substantially larger model.
     """
     if not model:
         return DEFAULT_MUSIC_DIT_DECODER
-    return MUSIC_MODEL_ALIASES.get(model.lower(), DEFAULT_MUSIC_DIT_DECODER)
+    alias = model.lower()
+    if alias not in MUSIC_MODEL_ALIASES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"Unknown music model {model!r}. Available: "
+                        f"{', '.join(sorted(MUSIC_MODEL_ALIASES))}."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "invalid_model",
+                    "param": "model",
+                }
+            },
+        )
+    return MUSIC_MODEL_ALIASES[alias]
 
 
 @router.post("/v1/audio/music", dependencies=[Depends(verify_api_key)])
