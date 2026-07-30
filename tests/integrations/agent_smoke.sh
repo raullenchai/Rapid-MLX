@@ -93,11 +93,19 @@ if curl -s -m 3 "$B/v1/models" >/dev/null 2>&1; then
 fi
 nohup "$RMLX" serve "$ALIAS" --port "$PORT" > "$LOG" 2>&1 &
 SERVE_PID=$!
-for i in $(seq 1 48); do
+# Serve-ready budget: 120 * 5s = 600s. The default gate model is a 35B hybrid
+# (Qwen3.6-35B-A3B, GatedDeltaNet/linear-attention). Its FIRST cold serve on the
+# Studio isn't just a weight load — it compiles the hybrid GatedDeltaNet Metal
+# kernels, which alone pushes cold start to ~240s (a warm shader cache serves the
+# same model in ~15s). The old 240s budget sat right on that cold-compile knee and
+# flaked the release gate by ~1-2s. 600s clears the cold compile with margin and
+# still leaves ample room under the 55-min job timeout for the four agent runs. A
+# genuine hang (never binds) still fails — it just gets a realistic deadline.
+for i in $(seq 1 120); do
   curl -s -m 3 "$B/v1/models" 2>/dev/null | grep -q '"id"' && { echo "serve READY (~$((i*5))s)"; break; }
   kill -0 "$SERVE_PID" 2>/dev/null || { tail -20 "$LOG"; fail "serve process died during boot"; }
   sleep 5
-  [ "$i" = 48 ] && { tail -20 "$LOG"; fail "serve not ready in 240s"; }
+  [ "$i" = 120 ] && { tail -20 "$LOG"; fail "serve not ready in 600s"; }
 done
 
 # ---- the task: a buggy factorial + a failing test the agent must fix -----
