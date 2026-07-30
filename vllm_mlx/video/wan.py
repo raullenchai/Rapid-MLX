@@ -59,6 +59,59 @@ logger = logging.getLogger(__name__)
 #: The operator names the directory they trust.
 ENV_MODEL_DIR = "RAPID_MLX_WAN_MODEL_DIR"
 
+#: Alias → converted MLX Wan checkpoint on the Hub, with a PINNED revision.
+#:
+#: Without this table the lane is unusable without hand-converting weights
+#: (download the PyTorch release, run mlx-video's ``convert.py``, point an
+#: env var at the output) — a bar high enough that nobody would.
+#:
+#: Every entry is pinned to an exact commit, which is the part that makes
+#: this defensible. These are COMMUNITY conversions, not first-party
+#: artifacts: Alibaba publishes PyTorch weights, mlx-video needs its own
+#: layout, and third parties did that work. A pin means an account cannot
+#: silently swap the bytes under a pinned rapid-mlx release, and it makes a
+#: download reproducible. Upgrading a pin is a reviewable diff.
+#:
+#: All entries are Apache-2.0 with ``base_model`` attribution to
+#: ``Wan-AI/*``, and the layout of each was verified against mlx-video's
+#: expected file set. Only ``wan2.2-ti2v-5b`` has been rendered end-to-end
+#: by us (M3 Ultra, real weights) — the others are structurally verified,
+#: not quality-verified, and the table says which is which.
+WAN_ALIASES: dict[str, dict[str, str]] = {
+    # VERIFIED end-to-end on an M3 Ultra: t2v and i2v both render.
+    "wan2.2-ti2v-5b": {
+        "repo": "Anes1032/Wan2.2-TI2V-5B-mlx-q8",
+        "revision": "9624723c94ddf509832555c45e223a035baa7d1c",
+        "size": "18 GB",
+        "notes": "8-bit, 720p/24fps, single-model. Verified end-to-end.",
+    },
+    "wan2.2-ti2v-5b-bf16": {
+        "repo": "rickylin20260522/Wan2.2-TI2V-5B-mlx",
+        "revision": "592b2473f27cd6f466cdd9f2c0f5750a77b37b59",
+        "size": "23 GB",
+        "notes": "bf16, 720p/24fps, single-model. Layout verified.",
+    },
+    "wan2.2-i2v-a14b": {
+        "repo": "Anes1032/Wan2.2-I2V-A14B-mlx-q8",
+        "revision": "633f50fc3e16e7faf76713dcf07b0bea730f02c9",
+        "size": "40 GB",
+        "notes": "8-bit dual-model MoE, image-to-video. Layout verified.",
+    },
+    "wan2.2-t2v-a14b": {
+        "repo": "rickylin20260522/Wan2.2-T2V-A14B-mlx",
+        "revision": "225358452f995a6807acaebff9dfc4976c39c8c8",
+        "size": "64 GB",
+        "notes": "bf16 dual-model MoE, text-to-video. Layout verified.",
+    },
+}
+
+#: Env var naming an alias from :data:`WAN_ALIASES`, or a bare HF repo id
+#: (optionally ``repo@revision``). Downloaded on first use into the normal
+#: HuggingFace cache. Mutually exclusive with :data:`ENV_MODEL_DIR`, which
+#: still takes a local directory and wins when both are set.
+ENV_MODEL = "RAPID_MLX_WAN_MODEL"
+
+
 #: Optional generation overrides. Unset → the checkpoint's own config
 #: defaults (Wan2.1: 50 steps / shift 5.0 / guide 5.0; Wan2.2: 40 steps /
 #: shift 12.0 / guide 3.0,4.0; TI2V-5B: 40 / 5.0 / 5.0).
@@ -488,24 +541,38 @@ class WanVideoEngine:
                 self.model_dir,
             )
             return {}
+        # A PRESENT-but-broken config.json is fatal, not ignorable.
+        #
+        # Ignoring it here was wrong: mlx-video reads the same file from the
+        # same directory, and its fallback to weight-shape auto-detection
+        # only triggers when config.json is ABSENT. So "ignore and carry on"
+        # meant we sailed past a file that would crash the loader seconds
+        # later — and the fake-backed tests stayed green because the fake
+        # never reads it. Fail here, at construction, with something the
+        # operator can act on.
         try:
             with open(path) as fh:
                 loaded = json.load(fh)
         except (OSError, json.JSONDecodeError) as e:
-            logger.warning("Could not read %s: %s", path, e)
-            return {}
+            logger.error("Unreadable Wan config.json at %s: %s", path, e)
+            raise VideoBackendUnavailableError(
+                "the checkpoint's config.json is present but unreadable "
+                f"({type(e).__name__}); repair or remove it. mlx-video "
+                "auto-detects the variant from weight shapes when the file "
+                "is absent, but cannot recover from a malformed one."
+            ) from e
         if not isinstance(loaded, dict):
-            # Valid JSON is not necessarily a config: `[]`, `null` and bare
-            # scalars all decode fine and then blow up on `.get()` during
-            # engine resolution — outside the route's error mapping, so the
-            # operator would see an unstructured 500.
-            logger.warning(
-                "%s is valid JSON but not an object (%s); ignoring it and "
-                "falling back to weight-shape auto-detection",
+            # `[]`, `null` and bare scalars all decode as valid JSON and then
+            # blow up on `.get()` — here and, identically, inside mlx-video.
+            logger.error(
+                "Wan config.json at %s is valid JSON but not an object (%s)",
                 path,
                 type(loaded).__name__,
             )
-            return {}
+            raise VideoBackendUnavailableError(
+                "the checkpoint's config.json is valid JSON but not an object "
+                f"(got {type(loaded).__name__}); repair or remove it."
+            )
         return loaded
 
     @property
@@ -727,6 +794,55 @@ class WanVideoEngine:
             )
 
 
+def resolve_checkpoint(spec: str) -> str:
+    """Resolve an alias / repo id / ``repo@revision`` to a local directory.
+
+    Downloads into the ordinary HuggingFace cache on first use, so a second
+    request is free and the operator can pre-warm with ``hf download``.
+
+    An alias always carries a pinned revision (see :data:`WAN_ALIASES`). A
+    bare repo id the operator typed themselves is downloaded at its current
+    ``main`` unless they pinned it with ``@revision``; that is their call to
+    make, and it is logged either way so the resolved source is auditable.
+    """
+    entry = WAN_ALIASES.get(spec)
+    if entry is not None:
+        repo, revision = entry["repo"], entry["revision"]
+        logger.info(
+            "Wan alias %r -> %s @ %s (%s)", spec, repo, revision[:12], entry["size"]
+        )
+    elif "@" in spec:
+        repo, _, revision = spec.rpartition("@")
+        logger.info("Wan checkpoint %s @ %s (operator-pinned)", repo, revision[:12])
+    else:
+        repo, revision = spec, None
+        logger.warning(
+            "Wan checkpoint %s requested without a revision — resolving to "
+            "current main. Pin it as '%s@<sha>' for reproducible downloads.",
+            repo,
+            repo,
+        )
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:  # pragma: no cover - hub ships with the engine
+        raise VideoBackendUnavailableError(
+            f"huggingface_hub is required to resolve {spec!r}: {e}"
+        ) from e
+
+    try:
+        return snapshot_download(repo, revision=revision)
+    except Exception as e:
+        # Network, auth, gated repo, wrong revision — all operator-fixable,
+        # and the repo id is public information so it's safe to name.
+        logger.error("Could not download Wan checkpoint %s: %s", repo, e)
+        raise VideoBackendUnavailableError(
+            f"could not download the Wan checkpoint {repo!r}: "
+            f"{type(e).__name__}. Check network access and that the "
+            f"repo/revision exists."
+        ) from e
+
+
 def build_engine_from_env(model: str) -> WanVideoEngine:
     """Construct a :class:`WanVideoEngine` from environment configuration.
 
@@ -735,12 +851,19 @@ def build_engine_from_env(model: str) -> WanVideoEngine:
     serves one model per process, matching how the LLM lane works. The
     served checkpoint is whatever ``$RAPID_MLX_WAN_MODEL_DIR`` names.
     """
+    # A local directory wins: an operator who converted their own weights
+    # should not have that silently overridden by a stale alias setting.
     model_dir = os.environ.get(ENV_MODEL_DIR)
     if not model_dir:
+        spec = os.environ.get(ENV_MODEL)
+        if spec:
+            model_dir = resolve_checkpoint(spec)
+    if not model_dir:
         raise NotImplementedError(
-            f"no video backend configured. Set ${ENV_MODEL_DIR} to a "
-            "converted MLX Wan checkpoint directory to serve "
-            "/v1/video/generations. See docs/content_farm_api.md."
+            f"no video backend configured. Set ${ENV_MODEL} to one of "
+            f"{', '.join(sorted(WAN_ALIASES))} (downloaded on first use), or "
+            f"${ENV_MODEL_DIR} to a locally-converted MLX Wan checkpoint. "
+            "See docs/content_farm_api.md."
         )
     steps_raw = os.environ.get(ENV_STEPS)
     steps = None
@@ -786,7 +909,7 @@ def register() -> bool:
     """
     from . import engine as engine_mod
 
-    if not os.environ.get(ENV_MODEL_DIR):
+    if not (os.environ.get(ENV_MODEL_DIR) or os.environ.get(ENV_MODEL)):
         return False
     engine_mod._VIDEO_ENGINE_FACTORY = build_engine_from_env
     return True

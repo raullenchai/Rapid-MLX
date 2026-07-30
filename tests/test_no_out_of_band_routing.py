@@ -168,6 +168,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # follow-up, not a routing bypass — adding a video CLI flag needs
         # its own review against the SOP-§10 flag gate.
         "RAPID_MLX_WAN_MODEL_DIR",
+        # Names an alias from WAN_ALIASES (each pinned to an exact commit) or
+        # a bare HF repo id, downloaded on first use. Same lane, same
+        # reasoning as MODEL_DIR above: video-model selection, unable to
+        # touch any ROUTING_ATTRS member.
+        "RAPID_MLX_WAN_MODEL",
         # Generation-quality/perf knobs, all forwarded straight to
         # mlx-video's sampler. Bounded and validated at engine construction
         # (steps 1..500 mirroring the request schema; scheduler and tiling

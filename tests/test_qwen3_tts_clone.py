@@ -27,8 +27,15 @@ class _CloneCapturingModel:
         self.calls: list[dict] = []
 
     def generate(
-        self, *, text, voice=None, speed=1.0, lang_code=None,
-        instruct=_UNSET, ref_audio=_UNSET, ref_text=_UNSET,
+        self,
+        *,
+        text,
+        voice=None,
+        speed=1.0,
+        lang_code=None,
+        instruct=_UNSET,
+        ref_audio=_UNSET,
+        ref_text=_UNSET,
     ):
         rec = {"text": text, "voice": voice, "lang_code": lang_code}
         if instruct is not _UNSET:
@@ -38,9 +45,13 @@ class _CloneCapturingModel:
         if ref_text is not _UNSET:
             rec["ref_text"] = ref_text
         self.calls.append(rec)
-        return iter([types.SimpleNamespace(
-            audio=np.zeros(240, dtype=np.float32), sample_rate=24000
-        )])
+        return iter(
+            [
+                types.SimpleNamespace(
+                    audio=np.zeros(240, dtype=np.float32), sample_rate=24000
+                )
+            ]
+        )
 
 
 def _clone_engine():

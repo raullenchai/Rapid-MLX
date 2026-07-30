@@ -269,12 +269,44 @@ present, so drift fails a test instead of a production request.
 > which PyPI forbids as a direct reference in published metadata. The
 > backend probes at runtime and tells you if the wrong one is installed.
 
-**Step 2 — point the server at a converted MLX checkpoint.**
+**Step 2 — pick a checkpoint.**
 
-mlx-video needs weights in its own MLX layout (`model.safetensors` or
-`{high,low}_noise_model.safetensors`, plus `t5_encoder.safetensors`,
-`vae.safetensors`, `config.json`). Either convert the official PyTorch
-release yourself:
+The quick way — name an alias and it downloads on first use:
+
+```bash
+export RAPID_MLX_WAN_MODEL=wan2.2-ti2v-5b
+rapid-mlx serve <your-llm> --port 8000
+```
+
+| alias | size | notes |
+| --- | --- | --- |
+| `wan2.2-ti2v-5b` | 18 GB | 8-bit, 720p/24fps, text **and** image to video. **Verified end-to-end by us** on an M3 Ultra. |
+| `wan2.2-ti2v-5b-bf16` | 23 GB | Same model at bf16. Layout verified, quality not benchmarked by us. |
+| `wan2.2-i2v-a14b` | 40 GB | 8-bit dual-model MoE, image-to-video. Layout verified. |
+| `wan2.2-t2v-a14b` | 64 GB | bf16 dual-model MoE, text-to-video. Layout verified. |
+
+Every alias is **pinned to an exact commit**. These are *community*
+conversions — Alibaba publishes PyTorch weights, mlx-video needs its own
+layout, and third parties did that work. All are Apache-2.0 with
+`base_model` attribution to `Wan-AI/*`, and each layout was checked against
+mlx-video's expected file set. The pin is what makes depending on them
+reasonable: an account cannot swap the bytes under a pinned rapid-mlx
+release, downloads are reproducible, and upgrading a pin is a reviewable
+diff. Only `wan2.2-ti2v-5b` has actually been rendered end-to-end by us; the
+rest are structurally verified, not quality-verified.
+
+You can also name any HF repo directly, pinned yourself:
+
+```bash
+export RAPID_MLX_WAN_MODEL='some-org/their-wan-mlx@<full-sha>'
+```
+
+Unpinned (`some-org/their-wan-mlx`) works but logs a warning — you're
+resolving to whatever `main` is at that moment.
+
+**Or convert it yourself.** mlx-video needs weights in its own MLX layout
+(`model.safetensors` or `{high,low}_noise_model.safetensors`, plus
+`t5_encoder.safetensors`, `vae.safetensors`, `config.json`):
 
 ```bash
 huggingface-cli download Wan-AI/Wan2.2-TI2V-5B --local-dir ./Wan2.2-TI2V-5B
@@ -283,16 +315,19 @@ python -m mlx_video.models.wan_2.convert \
     --quantize --bits 8 --group-size 64
 ```
 
-…or use a pre-converted community upload (several exist on the Hub with
-the exact layout above, ~18 GB for TI2V-5B at 8-bit). **We deliberately do
-not ship an alias table pointing at those**: silently fetching multi-GB
-weights from an unvetted third-party account on a user's first request is a
-supply-chain decision, not a convenience. Name the directory you trust.
-
 ```bash
 export RAPID_MLX_WAN_MODEL_DIR=/path/to/wan22-ti2v-5b-mlx
 rapid-mlx serve <your-llm> --port 8000
 ```
+
+`RAPID_MLX_WAN_MODEL_DIR` takes precedence over `RAPID_MLX_WAN_MODEL`, so a
+locally-converted checkpoint is never silently overridden by a stale alias
+left in the environment.
+
+A malformed `config.json` in a checkpoint directory is a hard error
+(`503`), not something to work around: mlx-video reads the same file, and
+its fallback to weight-shape auto-detection only applies when the file is
+**absent**. Remove it or fix it.
 
 **Optional tuning** (unset → the checkpoint's own defaults):
 

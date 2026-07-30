@@ -202,9 +202,29 @@ def resolve_video_engine(model: str) -> VideoEngine:
             f"video backend failed to initialise: {_AUTOREGISTER_ERROR}"
         ) from _AUTOREGISTER_ERROR
     if _VIDEO_ENGINE_FACTORY is None:
-        raise NotImplementedError(
-            "no video backend configured. Set $RAPID_MLX_WAN_MODEL_DIR to a "
-            "converted MLX Wan 2.1/2.2 checkpoint to serve this route; see "
-            "docs/content_farm_api.md"
-        )
+        # Build the message from the backend's own alias table rather than
+        # hardcoding it here: a 501 whose whole job is "here is how to turn
+        # this on" is useless the moment the two drift apart, and they did
+        # once already when aliases landed.
+        raise NotImplementedError(_unconfigured_message())
+
     return _VIDEO_ENGINE_FACTORY(model)
+
+
+def _unconfigured_message() -> str:
+    """The 501 body: how to enable the lane, from the live alias table."""
+    try:
+        from .wan import ENV_MODEL, ENV_MODEL_DIR, WAN_ALIASES
+
+        aliases = ", ".join(sorted(WAN_ALIASES))
+        return (
+            f"no video backend configured. Set ${ENV_MODEL} to one of "
+            f"{aliases} (downloaded on first use), or ${ENV_MODEL_DIR} to a "
+            "locally-converted MLX Wan checkpoint. See "
+            "docs/content_farm_api.md."
+        )
+    except Exception:  # noqa: BLE001 — the 501 must never itself fail
+        return (
+            "no video backend configured; see docs/content_farm_api.md for "
+            "how to enable /v1/video/generations."
+        )

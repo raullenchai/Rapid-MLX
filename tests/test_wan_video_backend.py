@@ -291,13 +291,17 @@ class TestNativeFrameRate:
         (d / "model.safetensors").write_bytes(b"stub")
         assert WanVideoEngine(d).native_frame_rate is None
 
-    def test_unreadable_config_does_not_break_construction(self, tmp_path):
+    def test_unreadable_config_is_fatal(self, tmp_path):
+        """Covered in depth by TestMalformedConfigJson — pinned here too
+        because this class is where the fps contract lives."""
+        from vllm_mlx.video.engine import VideoBackendUnavailableError
         from vllm_mlx.video.wan import WanVideoEngine
 
         d = tmp_path / "broken"
         d.mkdir()
         (d / "config.json").write_text("{not json")
-        assert WanVideoEngine(d).native_frame_rate is None
+        with pytest.raises(VideoBackendUnavailableError):
+            WanVideoEngine(d)
 
     @pytest.mark.parametrize("bad", [0, -1, "abc", None])
     def test_nonsense_sample_fps_is_unknown_not_propagated(self, tmp_path, bad):
@@ -1551,28 +1555,42 @@ class TestSchedulerAndTilingValidation:
 
 
 class TestMalformedConfigJson:
-    @pytest.mark.parametrize("body", ["[]", "null", "42", '"a string"', "[1,2,3]"])
-    def test_valid_json_that_is_not_an_object_is_ignored(self, tmp_path, body):
-        """Valid JSON != a config.
+    @pytest.mark.parametrize(
+        "body", ["[]", "null", "42", '"a string"', "[1,2,3]", "{not json", ""]
+    )
+    def test_present_but_broken_config_is_fatal(self, tmp_path, body):
+        """A malformed config.json must fail HERE, not later inside mlx-video.
 
-        `[]`, `null` and bare scalars all decode fine and then blow up on
-        `.get()` during engine RESOLUTION — outside the route's error
-        mapping, so the operator would see an unstructured 500. Fall back to
-        weight-shape auto-detection instead, which is the documented
-        no-config behaviour anyway.
+        The previous behaviour — ignore it and claim a fallback to
+        weight-shape auto-detection — was false: mlx-video reads the same
+        file from the same directory, and its own fallback only triggers when
+        config.json is ABSENT. So we sailed past a file that crashes the
+        loader seconds later, and the fake-backed tests stayed green because
+        the fake never reads it. That false green is exactly what codex
+        round 8 caught.
         """
+        from vllm_mlx.video.engine import VideoBackendUnavailableError
         from vllm_mlx.video.wan import WanVideoEngine
 
         d = tmp_path / "weird"
         d.mkdir()
         (d / "config.json").write_text(body)
         (d / "model.safetensors").write_bytes(b"stub")
-        eng = WanVideoEngine(d)  # must not raise
+        with pytest.raises(VideoBackendUnavailableError, match="config.json"):
+            WanVideoEngine(d)
+
+    def test_absent_config_is_still_fine(self, tmp_path):
+        """ABSENT is the case mlx-video genuinely recovers from."""
+        from vllm_mlx.video.wan import WanVideoEngine
+
+        d = tmp_path / "bare"
+        d.mkdir()
+        (d / "model.safetensors").write_bytes(b"stub")
+        eng = WanVideoEngine(d)
         assert eng.native_frame_rate is None
-        assert eng.max_area == 0
         assert eng.served_model == "wan"
 
-    def test_route_does_not_500_on_a_malformed_config(self, tmp_path, monkeypatch):
+    def test_route_maps_a_broken_config_to_503(self, tmp_path, monkeypatch):
         _install_fake_mlx_video(monkeypatch)
         from vllm_mlx.video.wan import ENV_MODEL_DIR
 
@@ -1589,7 +1607,8 @@ class TestMalformedConfigJson:
             )
         finally:
             restore()
-        assert r.status_code == 200, r.text
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"]["error"]["code"] == "video_backend_unavailable"
 
 
 class TestRenderTimeImportErrorIsNotA503:
@@ -1808,3 +1827,132 @@ class TestPinIsAFullSha:
         assert MLX_VIDEO_PIN in ci, "ci.yml does not install the pinned commit"
         docs = (repo / "docs/content_farm_api.md").read_text()
         assert MLX_VIDEO_PIN in docs, "docs do not document the pinned commit"
+
+
+class TestCheckpointAliases:
+    """Aliases are what make the lane usable without hand-converting weights."""
+
+    def test_every_alias_is_pinned_to_a_full_commit(self):
+        """A pin is the whole reason a third-party alias is defensible.
+
+        These are community conversions — Alibaba ships PyTorch, mlx-video
+        needs its own layout, third parties did that work. An exact revision
+        means an account cannot swap the bytes under a pinned rapid-mlx
+        release, and upgrading is a reviewable diff.
+        """
+        from vllm_mlx.video.wan import WAN_ALIASES
+
+        assert WAN_ALIASES, "the table must not be empty"
+        for name, entry in WAN_ALIASES.items():
+            rev = entry["revision"]
+            assert len(rev) == 40, f"{name}: revision {rev!r} is not a full SHA"
+            assert all(c in "0123456789abcdef" for c in rev), f"{name}: {rev!r}"
+            assert "/" in entry["repo"], f"{name}: repo must be org/name"
+            assert entry.get("notes"), f"{name}: needs a notes string"
+            assert entry.get("size"), f"{name}: needs a size hint"
+
+    def test_alias_resolves_to_its_pinned_revision(self, monkeypatch):
+        from vllm_mlx.video import wan as wan_mod
+
+        seen = {}
+
+        def _fake_snapshot(repo, revision=None):
+            seen["repo"], seen["revision"] = repo, revision
+            return "/tmp/fake-snapshot"
+
+        import huggingface_hub
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot)
+        out = wan_mod.resolve_checkpoint("wan2.2-ti2v-5b")
+        assert out == "/tmp/fake-snapshot"
+        assert seen["repo"] == WAN_EXPECTED_REPO
+        assert seen["revision"] == wan_mod.WAN_ALIASES["wan2.2-ti2v-5b"]["revision"]
+
+    def test_operator_pinned_repo_spec_is_honoured(self, monkeypatch):
+        from vllm_mlx.video import wan as wan_mod
+
+        seen = {}
+        import huggingface_hub
+
+        monkeypatch.setattr(
+            huggingface_hub,
+            "snapshot_download",
+            lambda repo, revision=None: (
+                seen.update(repo=repo, revision=revision) or "/tmp/x"
+            ),
+        )
+        wan_mod.resolve_checkpoint("some-org/some-wan-mlx@abc123")
+        assert seen == {"repo": "some-org/some-wan-mlx", "revision": "abc123"}
+
+    def test_unpinned_repo_warns_but_works(self, monkeypatch, caplog):
+        import logging
+
+        import huggingface_hub
+
+        from vllm_mlx.video import wan as wan_mod
+
+        monkeypatch.setattr(
+            huggingface_hub, "snapshot_download", lambda repo, revision=None: "/tmp/x"
+        )
+        with caplog.at_level(logging.WARNING):
+            wan_mod.resolve_checkpoint("some-org/unpinned")
+        assert any("without a revision" in r.getMessage() for r in caplog.records)
+
+    def test_download_failure_is_a_503_not_a_crash(self, monkeypatch):
+        import huggingface_hub
+
+        from vllm_mlx.video import wan as wan_mod
+        from vllm_mlx.video.engine import VideoBackendUnavailableError
+
+        def _boom(repo, revision=None):
+            raise OSError("network unreachable")
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", _boom)
+        with pytest.raises(VideoBackendUnavailableError, match="could not download"):
+            wan_mod.resolve_checkpoint("wan2.2-ti2v-5b")
+
+    def test_local_dir_wins_over_an_alias(self, tmp_path, monkeypatch):
+        """An operator who converted their own weights must not be overridden
+        by a stale alias setting left in the environment."""
+        _install_fake_mlx_video(monkeypatch)
+        from vllm_mlx.video.wan import (
+            ENV_MODEL,
+            ENV_MODEL_DIR,
+            build_engine_from_env,
+        )
+
+        ckpt = _write_ckpt(tmp_path)
+        monkeypatch.setenv(ENV_MODEL_DIR, str(ckpt))
+        monkeypatch.setenv(ENV_MODEL, "wan2.2-ti2v-5b")
+
+        import huggingface_hub
+
+        def _must_not_download(*a, **kw):  # pragma: no cover
+            raise AssertionError("should not download when a local dir is set")
+
+        monkeypatch.setattr(huggingface_hub, "snapshot_download", _must_not_download)
+        eng = build_engine_from_env("wan")
+        assert eng.model_dir == ckpt
+
+    def test_alias_registers_the_lane(self, monkeypatch):
+        """Setting only the alias var must claim the lane (not stay 501)."""
+        from vllm_mlx.video.wan import ENV_MODEL, ENV_MODEL_DIR, register
+
+        monkeypatch.delenv(ENV_MODEL_DIR, raising=False)
+        monkeypatch.setenv(ENV_MODEL, "wan2.2-ti2v-5b")
+        assert register() is True
+
+    def test_unconfigured_message_lists_the_aliases(self, monkeypatch):
+        """The 501 has to tell the caller how to enable the lane."""
+        from vllm_mlx.video.engine import resolve_video_engine
+        from vllm_mlx.video.wan import ENV_MODEL, ENV_MODEL_DIR, WAN_ALIASES
+
+        monkeypatch.delenv(ENV_MODEL_DIR, raising=False)
+        monkeypatch.delenv(ENV_MODEL, raising=False)
+        with pytest.raises(NotImplementedError) as ei:
+            resolve_video_engine("x")
+        for name in WAN_ALIASES:
+            assert name in str(ei.value), f"{name} missing from the 501 message"
+
+
+WAN_EXPECTED_REPO = "Anes1032/Wan2.2-TI2V-5B-mlx-q8"
