@@ -7,6 +7,7 @@ import importlib.util
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -243,8 +244,17 @@ class VideoEngine:
     @staticmethod
     def _remove_audio_track(output_path: Path) -> None:
         """Remux an audio-less LTX generation as a video-only MP4."""
-        video_only = output_path.with_name(f"{output_path.stem}.video-only.mp4")
+        video_only: Path | None = None
         try:
+            with tempfile.NamedTemporaryFile(
+                dir=output_path.parent,
+                prefix=f".{output_path.stem}.",
+                suffix=".video-only.mp4",
+                delete=False,
+            ) as temporary:
+                video_only = Path(temporary.name)
+            if video_only is None:  # pragma: no cover - assigned by the context manager
+                raise OSError("could not create a video-only temporary file")
             subprocess.run(
                 [
                     "ffmpeg",
@@ -276,7 +286,8 @@ class VideoEngine:
                 "be removed."
             ) from exc
         finally:
-            video_only.unlink(missing_ok=True)
+            if video_only is not None:
+                video_only.unlink(missing_ok=True)
 
     @staticmethod
     def _crop_generated_output(

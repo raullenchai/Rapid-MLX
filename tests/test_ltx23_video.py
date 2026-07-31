@@ -376,6 +376,8 @@ def test_video_only_remux_failure_is_actionable(
 ) -> None:
     output = tmp_path / "result.mp4"
     output.write_bytes(b"mp4-with-silent-audio")
+    sibling = tmp_path / "result.video-only.mp4"
+    sibling.write_bytes(b"unrelated-artifact")
 
     def fail(*args, **kwargs):
         raise subprocess.CalledProcessError(1, "ffmpeg")
@@ -386,7 +388,8 @@ def test_video_only_remux_failure_is_actionable(
         VideoEngine._remove_audio_track(output)
 
     assert output.read_bytes() == b"mp4-with-silent-audio"
-    assert not (tmp_path / "result.video-only.mp4").exists()
+    assert sibling.read_bytes() == b"unrelated-artifact"
+    assert not list(tmp_path.glob(".result.*.video-only.mp4"))
 
 
 def test_video_engines_share_process_generation_lock() -> None:
