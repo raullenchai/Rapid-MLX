@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import stat
 import subprocess
 import sys
 import threading
@@ -328,7 +329,9 @@ def test_video_engine_calls_mlx_native_pipeline(
         image_strength=1.0,
     ) -> None:
         captured.update(locals())
-        Path(output_path).write_bytes(b"mp4")
+        generated = Path(output_path)
+        generated.write_bytes(b"mp4")
+        generated.chmod(0o640)
 
     fake.generate_video_with_audio = generate_video_with_audio
     monkeypatch.setitem(sys.modules, "mlx_video", fake)
@@ -359,6 +362,7 @@ def test_video_engine_calls_mlx_native_pipeline(
     )
 
     assert output.read_bytes() == b"video-only-mp4"
+    assert stat.S_IMODE(output.stat().st_mode) == 0o640
     assert captured["model_repo"] == "notapalindrome/ltx23-mlx-av-q4"
     assert captured["num_frames"] == 97
     assert captured["image"] == str(reference)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -275,6 +276,7 @@ class VideoEngine:
             )
             if not video_only.is_file() or video_only.stat().st_size == 0:
                 raise OSError("ffmpeg completed without a video-only MP4")
+            video_only.chmod(stat.S_IMODE(output_path.stat().st_mode))
             video_only.replace(output_path)
         except (
             OSError,
