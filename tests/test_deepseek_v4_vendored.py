@@ -112,6 +112,35 @@ def test_deepseek_v4_rope_honors_explicit_yarn_attention_factor():
     assert mx.allclose(half_output, expected_half_output, atol=1e-6).item()
 
 
+def test_deepseek_v4_rope_applies_per_row_integer_offsets():
+    """Continuous batches may contain caches at different positions."""
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
+
+    rope = DeepseekV4RoPE(dims=4, base=10000.0)
+    x = mx.arange(48, dtype=mx.float32).reshape(2, 2, 3, 4) / 10
+    offsets = mx.array([3, 11], dtype=mx.int32)
+
+    actual = rope(x, offsets)
+    expected = mx.concatenate([rope(x[:1], 3), rope(x[1:], 11)], axis=0)
+    mx.eval(actual, expected)
+
+    assert mx.allclose(actual, expected, atol=1e-6).item()
+
+
+def test_deepseek_v4_rope_rejects_offset_batch_mismatch():
+    import mlx.core as mx
+
+    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
+
+    rope = DeepseekV4RoPE(dims=4, base=10000.0)
+    x = mx.zeros((2, 1, 3, 4))
+
+    with pytest.raises(ValueError, match="one offset per batch row"):
+        rope(x, mx.array([3], dtype=mx.int32))
+
+
 def test_tiny_model_forward_pass():
     """Smoke test the full forward path on a CPU-sized synthetic config.
 
@@ -155,6 +184,53 @@ def test_tiny_model_forward_pass():
     mx.eval(logits, [c.state for c in cache])
 
     assert logits.shape == (1, 8, args.vocab_size)
+
+
+def test_tiny_model_decodes_merged_caches_with_different_offsets():
+    """Regression for mixed-length continuous batching on compressed layers."""
+    import mlx.core as mx
+
+    from vllm_mlx.models import deepseek_v4
+
+    args = deepseek_v4.ModelArgs(
+        model_type="deepseek_v4",
+        vocab_size=128,
+        hidden_size=64,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        q_lora_rank=16,
+        o_lora_rank=8,
+        o_groups=2,
+        head_dim=16,
+        qk_rope_head_dim=4,
+        sliding_window=16,
+        compress_ratios=[0, 0, 4, 0],
+        index_n_heads=4,
+        index_head_dim=8,
+        index_topk=4,
+        moe_intermediate_size=16,
+        n_routed_experts=4,
+        n_shared_experts=1,
+        num_experts_per_tok=2,
+        num_hash_layers=1,
+        hc_mult=2,
+        hc_sinkhorn_iters=2,
+    )
+    model = deepseek_v4.Model(args)
+    short_cache = model.make_cache()
+    long_cache = model.make_cache()
+    model(mx.array([[1, 2, 3, 4]]), cache=short_cache)
+    model(mx.array([[1, 2, 3, 4, 5, 6, 7, 8]]), cache=long_cache)
+    mx.eval([cache.state for cache in short_cache + long_cache])
+
+    merged_cache = [
+        type(short).merge([short, long]) for short, long in zip(short_cache, long_cache)
+    ]
+    logits = model(mx.array([[9], [10]]), cache=merged_cache)
+    mx.eval(logits, [cache.state for cache in merged_cache])
+
+    assert logits.shape == (2, 1, args.vocab_size)
 
 
 if __name__ == "__main__":

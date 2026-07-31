@@ -260,6 +260,25 @@ class DeepseekV4RoPE(nn.Module):
     ) -> mx.array:
         head_dim = x.shape[-1]
         freqs = self._get_freqs(head_dim, inverse, freq_scale)
+        if isinstance(offset, mx.array) and offset.ndim > 0:
+            offsets = [int(value) for value in offset.tolist()]
+            if len(offsets) != x.shape[0]:
+                raise ValueError(
+                    "DeepSeek-V4 RoPE needs one offset per batch row; "
+                    f"got {len(offsets)} offsets for batch size {x.shape[0]}"
+                )
+            return mx.concatenate(
+                [
+                    self(
+                        x[index : index + 1],
+                        row_offset,
+                        inverse=inverse,
+                        freq_scale=freq_scale,
+                    )
+                    for index, row_offset in enumerate(offsets)
+                ],
+                axis=0,
+            )
         offset = offset // freq_scale if freq_scale != 1 else offset
         if self.attention_factor != 1.0:
             x = x[...]
@@ -1119,11 +1138,11 @@ class DeepseekV4Cache:
         state["buffer_lengths"] = buffer_lengths
         state["_new_pooled_lengths"] = [usable // ratio for usable in usable_lengths]
 
-        prev_lengths = mx.array(buf_lengths, dtype=mx.float32)
+        prev_lengths = mx.array(buf_lengths, dtype=mx.int32)
         if isinstance(start_pos, mx.array):
-            pool_base = mx.maximum(start_pos, 0).astype(mx.float32)
+            pool_base = mx.maximum(start_pos, 0).astype(mx.int32)
         else:
-            pool_base = mx.full((B,), max(0, start_pos), dtype=mx.float32)
+            pool_base = mx.full((B,), max(0, start_pos), dtype=mx.int32)
         return ready_kv, ready_gate, pool_base - prev_lengths
 
     def update_pool(self, new_pooled: mx.array, state_key: str) -> mx.array:
