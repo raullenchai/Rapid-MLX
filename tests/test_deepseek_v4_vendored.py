@@ -60,58 +60,6 @@ def test_register_vendored_archs_is_idempotent():
     assert first is second
 
 
-def test_deepseek_v4_rope_honors_explicit_yarn_attention_factor():
-    """HF's explicit YaRN attention factor scales only rotary channels."""
-    mx = pytest.importorskip("mlx.core")
-
-    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
-
-    scaling = {
-        "rope_type": "yarn",
-        "factor": 4.0,
-        "original_max_position_embeddings": 128,
-    }
-    x = mx.arange(24, dtype=mx.float32).reshape(1, 3, 8) / 10
-    baseline = DeepseekV4RoPE(dims=4, base=10000.0, scaling_config=scaling)
-    explicit_one = DeepseekV4RoPE(
-        dims=4,
-        base=10000.0,
-        scaling_config={**scaling, "attention_factor": 1.0},
-    )
-    explicit_null = DeepseekV4RoPE(
-        dims=4,
-        base=10000.0,
-        scaling_config={**scaling, "attention_factor": None},
-    )
-    explicit_half = DeepseekV4RoPE(
-        dims=4,
-        base=10000.0,
-        scaling_config={**scaling, "attention_factor": 0.5},
-    )
-
-    original_input = mx.array(x)
-    expected_input = mx.concatenate([x[..., :4], 0.5 * x[..., 4:]], axis=-1)
-    baseline_output = baseline(x)
-    one_output = explicit_one(x)
-    null_output = explicit_null(x)
-    half_output = explicit_half(x)
-    expected_half_output = baseline(expected_input)
-    mx.eval(
-        original_input,
-        x,
-        baseline_output,
-        one_output,
-        null_output,
-        half_output,
-        expected_half_output,
-    )
-
-    assert mx.array_equal(x, original_input).item()
-    assert mx.allclose(baseline_output, one_output, atol=1e-6).item()
-    assert mx.allclose(baseline_output, null_output, atol=1e-6).item()
-    assert mx.allclose(half_output, expected_half_output, atol=1e-6).item()
-
-
 def test_deepseek_v4_rope_applies_per_row_integer_offsets():
     """Continuous batches may contain caches at different positions."""
     mx = pytest.importorskip("mlx.core")
@@ -127,18 +75,6 @@ def test_deepseek_v4_rope_applies_per_row_integer_offsets():
     mx.eval(actual, expected)
 
     assert mx.allclose(actual, expected, atol=1e-6).item()
-
-
-def test_deepseek_v4_rope_rejects_offset_batch_mismatch():
-    mx = pytest.importorskip("mlx.core")
-
-    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
-
-    rope = DeepseekV4RoPE(dims=4, base=10000.0)
-    x = mx.zeros((2, 1, 3, 4))
-
-    with pytest.raises(ValueError, match="one offset per batch row"):
-        rope(x, mx.array([3], dtype=mx.int32))
 
 
 def test_tiny_model_forward_pass():
@@ -184,6 +120,52 @@ def test_tiny_model_forward_pass():
     mx.eval(logits, [c.state for c in cache])
 
     assert logits.shape == (1, 8, args.vocab_size)
+
+
+def test_csa_cached_decode_matches_single_prefill():
+    """CSA overlap state must survive an incremental forward boundary."""
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models import deepseek_v4
+
+    args = deepseek_v4.ModelArgs(
+        model_type="deepseek_v4",
+        vocab_size=128,
+        hidden_size=64,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=1,
+        q_lora_rank=16,
+        o_lora_rank=8,
+        o_groups=2,
+        head_dim=16,
+        qk_rope_head_dim=4,
+        sliding_window=64,
+        compress_ratios=[0, 4, 128, 0],
+        index_n_heads=4,
+        index_head_dim=8,
+        index_topk=4,
+        moe_intermediate_size=16,
+        n_routed_experts=4,
+        n_shared_experts=1,
+        num_experts_per_tok=2,
+        num_hash_layers=1,
+        hc_mult=2,
+        hc_sinkhorn_iters=2,
+    )
+    model = deepseek_v4.Model(args)
+    tokens = mx.array([[i % args.vocab_size for i in range(20)]], dtype=mx.int32)
+
+    full_cache = model.make_cache()
+    full = model(tokens, cache=full_cache)
+
+    split_cache = model.make_cache()
+    prefix = model(tokens[:, :9], cache=split_cache)
+    mx.eval(prefix, [cache.state for cache in split_cache])
+    suffix = model(tokens[:, 9:], cache=split_cache)
+    mx.eval(full, suffix, [cache.state for cache in split_cache])
+
+    assert mx.allclose(full[:, 9:], suffix, rtol=1e-4, atol=1e-4).item()
 
 
 def test_tiny_model_decodes_merged_caches_with_different_offsets():

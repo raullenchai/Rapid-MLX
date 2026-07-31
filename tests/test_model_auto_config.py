@@ -197,6 +197,14 @@ class TestDetectModelConfig:
         assert config.is_hybrid is False
         assert config.supports_spec_decode is True
 
+    def test_deepseek_v4_flash_0731_direct_path(self):
+        """A local 0731 snapshot must retain the alias' dedicated wire format."""
+        cfg = detect_model_config("/Volumes/models/DeepSeek-V4-Flash-0731-MXFP4-MLX")
+        assert cfg.tool_call_parser == "deepseek_v4_0731"
+        assert cfg.reasoning_parser == "deepseek_r1"
+        assert cfg.is_hybrid is False
+        assert cfg.supports_spec_decode is False
+
     # DeepSeek-Coder-V2 / V2-Lite — despite the ``V2`` version tag these
     # checkpoints ship the DeepSeek-V3 chat template and emit the V3
     # fenced-JSON tool-call body, so they must route to the dedicated
@@ -368,6 +376,7 @@ class TestDetectModelConfig:
         # Granite 4 does NOT emit <think>...</think> reasoning. Setting
         # a reasoning parser would route all output into reasoning_content.
         assert cfg.reasoning_parser is None
+
         assert cfg.is_hybrid is True
         assert cfg.supports_spec_decode is False
 

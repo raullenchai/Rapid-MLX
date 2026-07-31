@@ -78,6 +78,19 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # (the lfm2*/lfm2.5* entries carry ``tool_call_parser="lfm"``), per
     # the "do NOT add new regex entries here" migration rule above. New
     # LFM variants should be added to aliases.json, not this table.
+    # DeepSeek V4 Flash 0731 ships a dedicated DSML tool wire format and
+    # pre-fills ``<think>`` in its Python chat encoder.  Keep this before the
+    # generic V4 rule so direct HF paths and local snapshot directories get
+    # the same parsers/capability gates as the named alias.
+    (
+        re.compile(r"deepseek.*v4.*flash.*0731", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="deepseek_v4_0731",
+            reasoning_parser="deepseek_r1",
+            is_hybrid=False,
+            supports_spec_decode=False,
+        ),
+    ),
     # DeepSeek V4 / V4-Flash — sparse MoE with sliding-window attention
     # (RotatingKVCache). Pure-attention so spec decode is safe; tool
     # parser inherits the standard DeepSeek format. Upstream chat

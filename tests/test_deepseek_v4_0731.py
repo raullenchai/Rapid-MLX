@@ -28,6 +28,10 @@ def test_alias_points_at_0731_mxfp4_with_ultra_memory_floor():
     assert profile.is_moe is True
     assert profile.min_memory_gb == 192
     assert profile.supports_spec_decode is False
+    assert dict(profile.recommended_sampling or ()) == {
+        "temperature": 1.0,
+        "top_p": 1.0,
+    }
 
 
 def test_official_prompt_shape_bypasses_missing_jinja_template():

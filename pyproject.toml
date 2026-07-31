@@ -451,7 +451,7 @@ extend-exclude = [
 # Vendored upstream files — keep formatting identical to the source PR
 # so future syncs produce a clean diff.
 exclude = [
-    "vllm_mlx/models/deepseek_v4.py",
+    "vllm_mlx/models/deepseek_v4*.py",
     "vllm_mlx/models/gemma4_vendored/*.py",
     "vllm_mlx/models/hy_v3.py",
     # Vendored Stability AI MLX Stable Audio 3 (models + scripts). Keep
@@ -492,7 +492,7 @@ ignore = [
 # Vendored from ml-explore/mlx-lm PR #1192 (Blaizzy). Keep as-is so
 # upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
 # ships native deepseek_v4 support and we delete the vendored copy.
-"vllm_mlx/models/deepseek_v4.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+"vllm_mlx/models/deepseek_v4*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Vendored from Blaizzy/mlx-vlm 0.6.3 for the Gemma 4 text-only
 # fresh-install regression fix (#1017, closes 0.10.0 dead-end). Keep
 # lint quiet on the copy so upstream diffs stay clean. Sync policy

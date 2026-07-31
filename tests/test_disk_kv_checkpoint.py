@@ -169,6 +169,32 @@ def test_roundtrip_bf16_kv_cache_byte_identical(root: str):
     assert mx.array_equal(v_in, v_out).item()
 
 
+def test_unregistered_vendored_cache_is_skipped_without_writer_error(
+    root: str, monkeypatch
+):
+    """Custom model caches cannot round-trip through mlx-lm's class registry."""
+
+    class VendoredPoolingCache:
+        state = (mx.array([1]), None)
+        meta_state = ()
+
+    def unexpected_writer(*_args, **_kwargs):
+        raise AssertionError("unsupported cache reached save_prompt_cache")
+
+    import mlx_lm.models.cache as mlx_cache
+
+    monkeypatch.setattr(mlx_cache, "save_prompt_cache", unexpected_writer)
+    path = _dkc.write_checkpoint(
+        [VendoredPoolingCache()],
+        root=root,
+        req_hash="vendored-cache",
+        token_offset=256,
+    )
+
+    assert path is None
+    assert not Path(root).exists()
+
+
 def test_roundtrip_int4_quantized_kv_cache(root: str):
     """Write a QuantizedKVCache to disk, reload, assert state matches.
 

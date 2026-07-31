@@ -491,6 +491,30 @@ def write_checkpoint(
     if cache is None or not cache:
         return None
 
+    # ``mlx_lm.load_prompt_cache`` reconstructs every cache by looking up its
+    # class name in ``mlx_lm.models.cache``. Vendored architectures can carry
+    # custom cache classes (DeepSeek V4 pooling caches are the first example),
+    # which may even make the upstream writer fail with ``std::bad_cast`` when
+    # their state includes optional buffers. Reject those shapes before doing
+    # filesystem work; the scheduler marks the request checkpoint-disabled
+    # after this clean ``None`` result instead of retrying or logging a scary
+    # serialization traceback while inference itself remains healthy.
+    try:
+        import mlx_lm.models.cache as _mlx_cache
+
+        pending = list(cache)
+        while pending:
+            item = pending.pop()
+            if getattr(_mlx_cache, type(item).__name__, None) is not type(item):
+                logger.debug(
+                    "[disk_kv_checkpoint] unsupported cache class %s; skipping",
+                    type(item).__name__,
+                )
+                return None
+            pending.extend(getattr(item, "caches", ()) or ())
+    except Exception:
+        return None
+
     with _DISK_LOCK:
         try:
             from mlx_lm.models.cache import save_prompt_cache

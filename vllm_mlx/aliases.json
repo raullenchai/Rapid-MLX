@@ -413,7 +413,11 @@
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false,
-    "min_memory_gb": 192
+    "min_memory_gb": 192,
+    "recommended_sampling": {
+      "temperature": 1.0,
+      "top_p": 1.0
+    }
   },
   "qwen3-0.6b-4bit": {
     "hf_path": "mlx-community/Qwen3-0.6B-4bit",
