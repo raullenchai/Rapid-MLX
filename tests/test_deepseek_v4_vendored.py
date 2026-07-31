@@ -114,7 +114,7 @@ def test_deepseek_v4_rope_honors_explicit_yarn_attention_factor():
 
 def test_deepseek_v4_rope_applies_per_row_integer_offsets():
     """Continuous batches may contain caches at different positions."""
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
 
     from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
 
@@ -130,7 +130,7 @@ def test_deepseek_v4_rope_applies_per_row_integer_offsets():
 
 
 def test_deepseek_v4_rope_rejects_offset_batch_mismatch():
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
 
     from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
 
@@ -188,7 +188,7 @@ def test_tiny_model_forward_pass():
 
 def test_tiny_model_decodes_merged_caches_with_different_offsets():
     """Regression for mixed-length continuous batching on compressed layers."""
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
 
     from vllm_mlx.models import deepseek_v4
 
