@@ -2672,6 +2672,9 @@ class AudioSpeechRequest(BaseModel):
     # rejected up front with the standard envelope rather than ballooning
     # the generation.
     instructions: str | None = Field(default=None, max_length=4096)
+    # Rapid-MLX VoiceDesign extension. Reusing the same description and seed
+    # deterministically reproduces the designed speaker across calls.
+    voice_seed: StrictInt | None = Field(default=None, ge=0, le=4_294_967_295)
     # Rapid-MLX extension for F5-TTS zero-shot cloning. Audio is base64
     # rather than a server-local path so remote clients cannot make the
     # service read arbitrary files. 14 MB base64 ~= 10 MB decoded audio.

@@ -449,6 +449,9 @@ Generate speech from text (OpenAI TTS API compatible).
   the TTS model's native rate (commonly 24 kHz).
 - `channels`: Optional output channel count, `1` or `2`. Omit to keep the
   model's native channel count (commonly mono).
+- `voice_seed`: Optional unsigned 32-bit seed for
+  `qwen3-tts-voicedesign`. Reuse the same `instructions` and seed to lock a
+  designed voice across calls. The response echoes it in `X-Voice-Seed`.
 
 MP3 accepts standard MPEG rates from 8–48 kHz; Opus accepts 8, 12, 16, 24,
 or 48 kHz. WAV, PCM, FLAC, and Ogg/Vorbis accept any integer in the documented

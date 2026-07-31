@@ -518,6 +518,7 @@ class TTSEngine:
         speed: float = 1.0,
         lang_code: str = "a",
         instruct: str | None = None,
+        voice_seed: int | None = None,
         ref_audio: str | None = None,
         ref_text: str | None = None,
         exaggeration: float | None = None,
@@ -544,6 +545,10 @@ class TTSEngine:
                 arg is never missing. Other families ignore it (they have no
                 emotion-control surface), so passing it is a no-op there
                 rather than an error.
+            voice_seed: Optional deterministic seed for Qwen3-TTS VoiceDesign.
+                Reusing the same ``instruct`` and seed reproduces the same
+                designed voice across calls. Rejected for other families by
+                the API route.
             ref_audio: Optional path to a reference audio clip for zero-shot
                 voice cloning. Used by the F5-TTS ``f5`` family to clone the
                 clip's timbre; by the Chatterbox family (optional — clones the
@@ -649,18 +654,32 @@ class TTSEngine:
                 else:
                     gen_kwargs["lang_code"] = lang_code
 
-            for result in self.model.generate(**gen_kwargs):
-                audio_data = result.audio
-                if hasattr(result, "sample_rate"):
-                    sample_rate = result.sample_rate
+            random_state = None
+            if voice_seed is not None:
+                if not self._is_qwen3_voicedesign():
+                    raise ValueError(
+                        "voice_seed is supported only by Qwen3-TTS VoiceDesign"
+                    )
+                random_state = list(mx.random.state)
+                mx.random.seed(voice_seed)
+            try:
+                for result in self.model.generate(**gen_kwargs):
+                    audio_data = result.audio
+                    if hasattr(result, "sample_rate"):
+                        sample_rate = result.sample_rate
 
-                # Convert mlx array to numpy
-                if isinstance(audio_data, mx.array) or hasattr(audio_data, "tolist"):
-                    audio_np = np.array(audio_data.tolist(), dtype=np.float32)
-                else:
-                    audio_np = np.array(audio_data, dtype=np.float32)
+                    # Convert mlx array to numpy
+                    if isinstance(audio_data, mx.array) or hasattr(
+                        audio_data, "tolist"
+                    ):
+                        audio_np = np.array(audio_data.tolist(), dtype=np.float32)
+                    else:
+                        audio_np = np.array(audio_data, dtype=np.float32)
 
-                audio_chunks.append(audio_np)
+                    audio_chunks.append(audio_np)
+            finally:
+                if random_state is not None:
+                    mx.random.state = random_state
 
             if not audio_chunks:
                 raise RuntimeError("No audio generated")

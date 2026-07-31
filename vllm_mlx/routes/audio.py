@@ -2554,6 +2554,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     sample_rate = request.sample_rate
     channels = request.channels
     instructions = request.instructions
+    voice_seed = request.voice_seed
     ref_audio = request.ref_audio
     ref_text = request.ref_text
     exaggeration = request.exaggeration
@@ -2570,6 +2571,23 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
         # handler body.
         model_name = _resolve_tts_model(model)
+        from ..audio.tts import is_qwen3_voicedesign_model
+
+        if voice_seed is not None and not is_qwen3_voicedesign_model(model_name):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "voice_seed is supported only by "
+                            "Qwen3-TTS VoiceDesign models"
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_voice_seed",
+                        "param": "voice_seed",
+                    }
+                },
+            )
 
         # Zero-shot cloning from an inline ``ref_audio`` reference clip is
         # only wired for the clone-capable families (F5-TTS, Chatterbox, and
@@ -2769,6 +2787,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         )
         if instructions:
             gen_kwargs["instruct"] = instructions
+        if voice_seed is not None:
+            gen_kwargs["voice_seed"] = voice_seed
         # Only forward ``exaggeration`` when the caller actually sent it, so
         # the engine's own default holds otherwise. Like ``instruct`` it is
         # a no-op keyword for every non-Chatterbox family (``generate``
@@ -2834,13 +2854,16 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         content_type = _TTS_CONTENT_TYPES.get(
             response_format.lower(), "application/octet-stream"
         )
+        headers = {
+            "X-Audio-Sample-Rate": str(output_rate),
+            "X-Audio-Channels": str(output_channels),
+        }
+        if voice_seed is not None:
+            headers["X-Voice-Seed"] = str(voice_seed)
         return Response(
             content=audio_bytes,
             media_type=content_type,
-            headers={
-                "X-Audio-Sample-Rate": str(output_rate),
-                "X-Audio-Channels": str(output_channels),
-            },
+            headers=headers,
         )
 
     except HTTPException:

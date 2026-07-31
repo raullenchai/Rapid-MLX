@@ -320,6 +320,34 @@ class TestVoiceDesignEngine:
         assert call["instruct"] == "a warm, low female narrator, calm and measured"
         assert call["lang_code"] == "auto"
 
+    def test_voice_seed_is_deterministic_and_restores_mlx_rng(self):
+        import mlx.core as mx
+        import numpy as np
+
+        class _RandomVoiceDesignModel:
+            def generate(
+                self, *, text, instruct, voice=None, speed=1.0, lang_code=None
+            ):
+                del text, instruct, voice, speed, lang_code
+                yield types.SimpleNamespace(
+                    audio=mx.random.uniform(shape=(32,)), sample_rate=24000
+                )
+
+        engine = _voicedesign_engine()
+        engine.model = _RandomVoiceDesignModel()
+        before = [np.array(value) for value in mx.random.state]
+
+        first = engine.generate(
+            "第一句。", instruct="a warm narrator", voice_seed=20260731
+        )
+        second = engine.generate(
+            "第二句。", instruct="a warm narrator", voice_seed=20260731
+        )
+
+        np.testing.assert_array_equal(first.audio, second.audio)
+        for expected, actual in zip(before, mx.random.state, strict=True):
+            np.testing.assert_array_equal(expected, np.array(actual))
+
 
 # ---------------------------------------------------------------------------
 # C) Route — voice surface + instructions plumbing
@@ -356,11 +384,19 @@ class _RecordingEngine:
     def load(self):
         pass
 
-    def generate(self, text, voice="af_heart", speed=1.0, instruct=None):
+    def generate(
+        self, text, voice="af_heart", speed=1.0, instruct=None, voice_seed=None
+    ):
         import numpy as np
 
         self.generate_calls.append(
-            {"text": text, "voice": voice, "speed": speed, "instruct": instruct}
+            {
+                "text": text,
+                "voice": voice,
+                "speed": speed,
+                "instruct": instruct,
+                "voice_seed": voice_seed,
+            }
         )
         from vllm_mlx.audio.tts import AudioOutput
 
@@ -404,6 +440,15 @@ def _mount(monkeypatch):
 
 
 class TestVoiceDesignRoute:
+    @pytest.mark.parametrize("seed", [-1, 4_294_967_296, True, "7"])
+    def test_voice_seed_schema_rejects_invalid_values(self, seed):
+        from pydantic import ValidationError
+
+        from vllm_mlx.api.models import AudioSpeechRequest
+
+        with pytest.raises(ValidationError):
+            AudioSpeechRequest(input="hello", voice_seed=seed)
+
     def test_voices_route_lists_describe_sentinel(self, monkeypatch):
         """``GET /v1/audio/voices`` for a VoiceDesign model advertises the
         ``describe`` sentinel — NOT the CustomVoice speakers."""
@@ -429,6 +474,42 @@ class TestVoiceDesignRoute:
         assert engine.model_name == VOICEDESIGN_BF16
         (call,) = engine.generate_calls
         assert call["instruct"] == "a hoarse elderly male storyteller, slow and grave"
+
+    def test_speech_forwards_and_echoes_voice_seed(self, monkeypatch):
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "qwen3-tts-voicedesign",
+                "input": "第一章。",
+                "instructions": "a warm, low narrator",
+                "voice_seed": 8675309,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.headers["x-voice-seed"] == "8675309"
+        (engine,) = _RecordingEngine.instances
+        (call,) = engine.generate_calls
+        assert call["voice_seed"] == 8675309
+
+    def test_voice_seed_is_rejected_for_non_voicedesign_model(self, monkeypatch):
+        client = _mount(monkeypatch)
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "qwen3-tts",
+                "input": "Hello.",
+                "voice": "Serena",
+                "voice_seed": 7,
+            },
+        )
+
+        assert resp.status_code == 400, resp.text
+        error = resp.json()["error"]
+        assert error["code"] == "unsupported_voice_seed"
+        assert error["param"] == "voice_seed"
+        assert _RecordingEngine.instances == []
 
     @pytest.mark.parametrize(
         "body",
