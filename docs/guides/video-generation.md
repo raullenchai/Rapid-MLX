@@ -84,6 +84,30 @@ LoRAs use `path[:strength]` entries through `RAPID_MLX_WAN_LORA`; dual-model
 checkpoints additionally accept `RAPID_MLX_WAN_LORA_HIGH` and
 `RAPID_MLX_WAN_LORA_LOW`.
 
+## LTX-2.3
+
+MLX-native LTX-2.3 with an audio-video checkpoint — it emits synchronized audio
+alongside the frames, which the other two backends do not. The Q4 checkpoint is
+a 22.8 GB download and wants at least 24 GB of unified memory; 32 GB or more is
+comfortable.
+
+```bash
+pip install 'rapid-mlx[video]'
+brew install ffmpeg
+rapid-mlx serve ltx-2.3-mlx-q4
+```
+
+```bash
+curl http://localhost:8000/v1/videos \
+  -F model=ltx-2.3-mlx-q4 \
+  -F 'prompt=A fox running through fresh snow, cinematic tracking shot' \
+  -F seconds=4 \
+  -F size=768x512
+```
+
+LTX honours the `fps`, `frames` and `conditioning_strength` controls described
+above; `frames` must satisfy LTX's own frame-count rule.
+
 ## CogVideoX-Fun
 
 Rapid-MLX can serve CogVideoX-Fun as an experimental, single-worker video

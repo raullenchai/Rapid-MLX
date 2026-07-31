@@ -96,33 +96,37 @@ rapid-mlx launch claude-code
 
 With a server running (step 3), this patches Claude Code's local config (`~/.config/claude/settings.json`) to route at `http://localhost:8000` — no manual env vars, no editing JSON by hand. You get a fully local Claude Code: `$0` per token, nothing leaves your Mac. Swap in `cursor`, `cline`, or `continue-dev` for the other IDE clients, or run `rapid-mlx launch list` to see what's detected on this machine.
 
-> **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio, LTX-2.3 video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
+> **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio (TTS, STT, voice cloning), video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
 > **Not into the terminal?** [**Rapid-MLX Desktop**](https://rapidmlx.com/desktop) bundles the same engine inside a one-click Mac app.
 
 ---
 
-## LTX-2.3 video generation
+## Video generation
 
-Run text-to-video or image-to-video locally with synchronized audio through
-the OpenAI-compatible Videos API. The default MLX Q4 checkpoint is a 22.8 GB
-download and needs at least 24 GB unified memory; 32 GB or more is recommended.
-`ffmpeg` is required for the final MP4 mux.
+Run text-to-video or image-to-video locally through the OpenAI-compatible
+Videos API. Three backends ship — **Wan 2.1 / 2.2**, **CogVideoX-Fun** and
+**LTX-2.3** — across 8 registered checkpoints. `wan2.2-ti2v-5b-q8` is the
+recommended starting point: smallest of the Wan set, and TI2V means one
+checkpoint does both text-to-video and image-to-video.
+
+Requires Python 3.11+ (the video runtime does not support 3.10; core text and
+audio still do) and `ffmpeg` for the final MP4 mux.
 
 ```bash
 pip install 'rapid-mlx[video]'
 brew install ffmpeg
-rapid-mlx serve ltx-2.3-mlx-q4
+rapid-mlx serve wan2.2-ti2v-5b-q8
 ```
 
-Create and download a four-second video:
+Create and download a clip:
 
 ```bash
 curl http://localhost:8000/v1/videos \
-  -F model=ltx-2.3-mlx-q4 \
+  -F model=wan2.2-ti2v-5b-q8 \
   -F 'prompt=A fox running through fresh snow, cinematic tracking shot' \
-  -F seconds=4 \
-  -F size=768x512
+  -F seconds=1 \
+  -F size=832x512
 
 # Poll until GET /v1/videos/VIDEO_ID reports "status": "completed", then:
 curl http://localhost:8000/v1/videos/VIDEO_ID/content -o output.mp4
@@ -131,6 +135,54 @@ curl http://localhost:8000/v1/videos/VIDEO_ID/content -o output.mp4
 The create call returns a job immediately. Poll `GET /v1/videos/VIDEO_ID`
 until `status` is `completed`. Add `-F input_reference=@start.png` for
 image-to-video.
+
+Generation is serialized — one clip at a time — because two diffusion
+pipelines resident at once will exhaust unified memory. Expect minutes of
+compute per second of footage, not real time.
+
+→ [Every checkpoint, RAM requirement and tuning knob](https://rapidmlx.com/docs/models/families/video.html)
+
+---
+
+## Audio: speech, transcription, voice cloning
+
+41 audio aliases behind the OpenAI-compatible `/v1/audio/*` endpoints — any
+OpenAI SDK works unchanged.
+
+```bash
+pip install 'rapid-mlx[audio]'
+
+# Text to speech
+rapid-mlx serve kokoro
+curl http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"kokoro","input":"hello from rapid-mlx"}' --output hello.wav
+
+# Transcription (Whisper / Parakeet / SenseVoice)
+rapid-mlx serve whisper-large-v3-turbo
+curl http://localhost:8000/v1/audio/transcriptions \
+  -F file=@hello.wav -F model=whisper-large-v3-turbo
+```
+
+Beyond the basics, three things you may not expect to run locally:
+
+- **Zero-shot voice cloning** from a reference clip. `indextts` is the only
+  one that takes the clip alone; `qwen3-tts-clone`, `f5-tts-zh` and
+  `chatterbox` all require `ref_text` (the clip's exact transcript) paired
+  with `ref_audio`, and the request is rejected before generation if it is
+  missing.
+- **Voice design** — `qwen3-tts-voicedesign` has no named speakers at all.
+  Describe the voice you want in natural language via `instructions`
+  (timbre, gender, age, accent, emotion, prosody) and it synthesises it.
+- **Forced alignment** — `qwen3-aligner` takes audio *plus the transcript you
+  already have* and returns per-character timings. It never guesses at the
+  words, so it cannot mis-hear them; that is what karaoke captions and
+  beat-synced editing need.
+
+Also: word-level timestamps on transcription, and local text-to-music at
+`/v1/audio/music`.
+
+→ [All 41 aliases across 12 families](https://rapidmlx.com/docs/models/families/audio.html)
 
 ---
 
@@ -189,7 +241,7 @@ The installer's RAM detector picks a sensible default. If you want to shop the f
 | **96 GB+** Mac Studio / Pro | `gpt-oss-120b-mxfp4-q8` | `rapid-mlx serve gpt-oss-120b-mxfp4-q8` |
 
 → [Full RAM tier map + serve flags per tier](https://rapidmlx.com/docs/hardware-tiers.html)
-→ [Every alias, quant, and family (165+ text aliases + 26 audio across 30+ families)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
+→ [Every alias, quant, and family (165 text + 41 audio + 8 video aliases, 214 total)](https://rapidmlx.com/docs/aliases.html) · interactive at [models.rapidmlx.com](https://models.rapidmlx.com/)
 
 ---
 
