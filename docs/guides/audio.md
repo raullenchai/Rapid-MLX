@@ -2,8 +2,10 @@
 
 rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
-- **STT (Speech-to-Text)**: Whisper, Parakeet
-- **TTS (Text-to-Speech)**: Kokoro, Chatterbox, IndexTTS, VibeVoice, VoxCPM, Dia
+- **STT (Speech-to-Text)**: Whisper, Parakeet, SenseVoice
+- **Forced alignment**: Qwen3-ForcedAligner (timings against a known transcript)
+- **TTS (Text-to-Speech)**: Kokoro, Qwen3-TTS, Chatterbox, IndexTTS, VibeVoice, VoxCPM, F5-TTS, Dia
+- **Zero-shot voice cloning**: IndexTTS, Qwen3-TTS Base, F5-TTS, Chatterbox
 - **Audio Processing**: SAM-Audio (voice separation)
 
 ## Supported Aliases (R10-C1)
@@ -21,11 +23,24 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 | `voxcpm` | TTS | `mlx-community/VoxCPM1.5` |
 | `dia` | TTS | `mlx-community/Dia-1.6B-4bit` |
 | `indextts` / `indextts-1.5` | TTS voice cloning | `mlx-community/IndexTTS-1.5` |
+| `qwen3-tts` / `qwen3-tts-customvoice` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` |
+| `qwen3-tts-6bit` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit` |
+| `qwen3-tts-4bit` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit` |
+| `qwen3-tts-voicedesign` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` |
+| `qwen3-tts-voicedesign-8bit` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit` |
+| `qwen3-tts-voicedesign-4bit` | TTS | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-4bit` |
+| `qwen3-tts-clone` | TTS voice cloning | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` |
+| `f5-tts-zh` | TTS voice cloning | `lucasnewman/f5-tts-mlx` |
 | `whisper` / `whisper-1` / `whisper-large-v3` | STT | `mlx-community/whisper-large-v3-mlx` |
 | `whisper-large-v3-turbo` | STT | `mlx-community/whisper-large-v3-turbo` |
-| `whisper-medium` / `-small` / `-base` / `-tiny` | STT | `mlx-community/whisper-{size}-mlx` |
-| `parakeet` / `parakeet-tdt-0.6b` | STT | `mlx-community/parakeet-tdt-0.6b-v2` |
+| `whisper-medium` | STT | `mlx-community/whisper-medium-mlx` |
+| `whisper-small` | STT | `mlx-community/whisper-small-mlx` |
+| `whisper-base` | STT | `mlx-community/whisper-base-mlx` |
+| `whisper-tiny` | STT | `mlx-community/whisper-tiny-mlx` |
+| `parakeet` / `parakeet-tdt-0.6b` / `parakeet-tdt-0.6b-v2` | STT | `mlx-community/parakeet-tdt-0.6b-v2` |
 | `parakeet-v3` / `parakeet-tdt-0.6b-v3` | STT | `mlx-community/parakeet-tdt-0.6b-v3` |
+| `sensevoice` / `sensevoice-small` | STT | `mlx-community/SenseVoiceSmall` |
+| `qwen3-aligner` / `qwen3-forced-aligner` | Forced alignment | `mlx-community/Qwen3-ForcedAligner-0.6B-8bit` |
 
 Run `rapid-mlx models` to see the full live list (the section header reads "Audio models" with `[audio:tts]` / `[audio:stt]` tags).
 
@@ -69,6 +84,116 @@ curl -s http://localhost:8000/v1/audio/speech \
   -d "{\"model\":\"indextts\",\"input\":\"Hello in the cloned voice.\",\"ref_audio\":\"$REF_AUDIO\"}" \
   --output cloned.wav
 ```
+
+### Qwen3-TTS: named speakers, described voices, or cloning
+
+Qwen3-TTS ships as three checkpoints that behave differently enough to be worth
+choosing between deliberately:
+
+| Variant | Alias | How you control the voice |
+| --- | --- | --- |
+| CustomVoice | `qwen3-tts` | Pick a named speaker via `voice`; modulate emotion/style via `instructions` |
+| VoiceDesign | `qwen3-tts-voicedesign` | Describe the whole voice in `instructions`; omit `voice` (only `describe` is accepted) |
+| Base | `qwen3-tts-clone` | Clone from `ref_audio` + `ref_text`; no predefined speakers |
+
+CustomVoice speakers are matched case-insensitively — Chinese: `Vivian`,
+`Serena`, `Uncle_Fu`, `Dylan`, `Eric`; English: `Ryan`, `Aiden`; Japanese:
+`Ono_Anna`; Korean: `Sohee`.
+
+```bash
+rapid-mlx serve qwen3-tts
+
+curl -s http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3-tts","input":"欢迎收听。","voice":"Serena","instructions":"warm and unhurried"}' \
+  --output narration.wav
+```
+
+VoiceDesign has **no named speakers at all** — the entire voice (timbre, gender,
+age, accent, emotion, prosody) comes from `instructions`. Omit `voice`: the
+endpoint validates it against the model's allowlist *before* generating, and for
+VoiceDesign that allowlist is the single sentinel `describe`, so sending a speaker
+name like `Serena` is rejected with `400 invalid_voice` rather than ignored.
+
+```bash
+rapid-mlx serve qwen3-tts-voicedesign
+
+curl -s http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3-tts-voicedesign","input":"Chapter one.",
+       "instructions":"a warm, low female narrator, calm and measured"}' \
+  --output designed.wav
+```
+
+Base is the cloning variant. Unlike IndexTTS it needs the reference transcript
+as well as the clip, which is what lets it hold one consistent branded narrator
+across a whole channel:
+
+```bash
+rapid-mlx serve qwen3-tts-clone
+
+REF_AUDIO=$(base64 < reference.wav | tr -d '\n')
+curl -s http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"qwen3-tts-clone\",\"input\":\"新的一集开始了。\",\"ref_audio\":\"$REF_AUDIO\",\"ref_text\":\"参考音频的逐字文本\"}" \
+  --output cloned.wav
+```
+
+### F5-TTS Chinese cloning
+
+F5-TTS is pure MLX (no torch) and does EN+ZH zero-shot cloning from a 24 kHz
+reference clip plus its transcript. It exists to fill the Chinese expressive gap:
+Qwen3-TTS CustomVoice reads flat in Chinese, and Chatterbox cloning is
+English-only. With no reference it falls back to a packaged default voice.
+
+```bash
+rapid-mlx serve f5-tts-zh
+
+REF_AUDIO=$(base64 < reference_24k.wav | tr -d '\n')
+curl -s http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"f5-tts-zh\",\"input\":\"这是克隆出来的声音。\",\"ref_audio\":\"$REF_AUDIO\",\"ref_text\":\"参考音频的逐字文本\"}" \
+  --output f5.wav
+```
+
+### SenseVoice — fast Asian-language ASR
+
+SenseVoice Small (~234M, non-autoregressive CTC) is the strongest STT in the
+registry for Chinese, Cantonese, Japanese and Korean.
+
+The model itself also produces per-segment emotion and audio-event labels, but
+`/v1/audio/transcriptions` does not currently surface them: the `json` envelope
+returns `text`/`language`/`duration`, and `verbose_json` segments carry
+`id`/`start`/`end`/`text` only. Expect a plain transcript from the HTTP API.
+
+```bash
+rapid-mlx serve sensevoice
+
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@speech.wav \
+  -F model=sensevoice
+```
+
+### Forced alignment (Qwen3-ForcedAligner)
+
+Forced alignment is **not** recognition. You supply audio *and* the transcript
+you already have, and get per-character start/end times back. Because it never
+guesses at the words, it cannot mis-hear them — which is exactly what karaoke
+captions and beat-synced editing need.
+
+Pass a `text` field to the transcription endpoint to switch from recognition to
+alignment:
+
+```bash
+rapid-mlx serve qwen3-aligner
+
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F file=@speech.wav \
+  -F model=qwen3-aligner \
+  -F text="the exact transcript of that audio"
+```
+
+From Python, the same path is `STTEngine.align(audio, text, language)`.
 
 If `mlx-audio` is missing, the boot guard exits with rc=2 and the install hint:
 
@@ -197,10 +322,13 @@ python examples/audio_separation_example.py examples/rock_get_ready.mp3 \
 | `mlx-community/whisper-small-mlx` | `whisper-small` | 99+ | Very Fast | OK |
 | `mlx-community/parakeet-tdt-0.6b-v2` | `parakeet` | English | Fastest | Great |
 | `mlx-community/parakeet-tdt-0.6b-v3` | `parakeet-v3` | English | Fastest | Best |
+| `mlx-community/SenseVoiceSmall` | `sensevoice` | zh, yue, ja, ko, en | Fastest | Great (Asian) |
 
 **Recommendation:**
 - Multilingual: `whisper-large-v3`
 - English only: `parakeet` (3x faster)
+- Chinese / Cantonese / Japanese / Korean: `sensevoice`
+- You already have the transcript and need timings: `qwen3-aligner` (see Forced alignment below)
 
 ### TTS Models (Text-to-Speech)
 
