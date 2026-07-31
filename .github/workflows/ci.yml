@@ -199,17 +199,29 @@ jobs:
     # there for $0; its ~7GB RAM caps it at small models, not the 35B self-hosted
     # Studio (L2) tier. Runs on every PR to catch GROSS engine breakage BEFORE
     # the expensive Studio gate: garbage-from-first-token (#1234 doubled-norm
-    # class, via the #1247 GOLDEN gate) and tool-call parser regressions. A
-    # 4B-4bit model (~2.2GB) fits the runner and clears the GOLDEN set in <1min;
-    # 4B is fine for a coherence/parser gate — it is not a chat-quality eval.
+    # class, via the #1247 GOLDEN gate) and tool-call parser regressions.
+    #
+    # Matrix over two SMALL models from DIFFERENT families so the tool-call
+    # FORMAT check exercises two distinct parser paths — Qwen -> hermes and
+    # Llama -> the `<function=name>` LlamaToolParser — catching family-specific
+    # chat-template / parser breakage that a single-family smoke would miss. Each
+    # model runs on its own runner (parallel), so ~7GB RAM holds one ~2GB model
+    # comfortably. A 3-4B model is fine for a coherence/parser gate — it is not a
+    # chat-quality eval, which stays on the 35B L2 tier.
     #
     # Kept a standalone check (NOT folded into the required ``tests`` aggregate)
     # so it can prove itself green on real PRs before a maintainer marks it a
     # required check in branch protection — prove before enforce.
     runs-on: macos-14
     timeout-minutes: 20
-    env:
-      L1_MODEL: qwen3.5-4b-4bit
+    strategy:
+      # Don't cancel the Llama leg if the Qwen leg fails (or vice versa) — we
+      # want to see which family regressed, not just the first failure.
+      fail-fast: false
+      matrix:
+        model:
+          - qwen3.5-4b-4bit  # hermes tool-call parser
+          - llama3-3b-4bit  # llama `<function=name>` tool-call parser
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -234,15 +246,15 @@ jobs:
           python -c "import platform; assert platform.machine() == 'arm64', platform.machine()"
           python -c "import mlx.core as mx; d=str(mx.default_device()); assert 'gpu' in d.lower(), d; print('GPU OK:', d)"
 
-      - name: Prefetch L1 model
-        # Download weights up front so the serve boot inside the smoke is fast
-        # and its 180s boot window is not spent on a cold ~2.2GB download.
-        run: rapid-mlx pull "$L1_MODEL"
+      - name: Prefetch model (${{ matrix.model }})
+        # rapid-mlx pull uses the R2 mirror (fast — ~40MB/s), so weights are on
+        # disk before the serve boot; no actions/cache needed.
+        run: rapid-mlx pull "${{ matrix.model }}"
 
       - name: L1 smoke (coherence + tool-call format)
         env:
           RAPID_MLX_PORT: "8123"
-        run: bash scripts/l1_smoke.sh "$L1_MODEL"
+        run: bash scripts/l1_smoke.sh "${{ matrix.model }}"
 
   tests:
     needs: [test-matrix, test-apple-silicon]
