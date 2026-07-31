@@ -65,7 +65,17 @@ fi
 # ---- boot serve ----------------------------------------------------------
 # --no-thinking: the coherence gate measures answer coherence, not think-mode
 # behavior (its no-think-leak case still asserts no raw <think> tag leaks).
-nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-thinking > "$LOG" 2>&1 &
+#
+# --no-mllm: force the text-only mlx-lm lane. This gate only exercises the
+# TEXT coherence + tool-call parser paths, never vision, so the LM backbone is
+# all we need. It is a no-op for text-only models, but for a small model that
+# is *detected* as multimodal (Gemma nano, Ministral-3-2512) it (a) skips the
+# ``[vision]`` / mlx-vlm requirement so a lean ``pip install -e .`` suffices,
+# and (b) avoids the mlx-vlm text-generation path, which returns incoherent
+# output / hangs for these models (measured 2026-07-31: gemma-4-e2b 0/6 golden,
+# Ministral-3 request-hang under mlx-vlm 0.6.3). ``resolve_serving_lane`` maps
+# ``--no-mllm`` -> ``force_text`` -> the text lane, matching engine semantics.
+nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-thinking --no-mllm > "$LOG" 2>&1 &
 SERVE_PID=$!
 for i in $(seq 1 60); do
   curl -s -m 3 "$B/v1/models" 2>/dev/null | grep -q '"id"' && { echo "serve READY (~$((i * 3))s)"; break; }
