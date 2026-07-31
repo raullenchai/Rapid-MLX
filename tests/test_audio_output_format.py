@@ -57,6 +57,9 @@ def test_music_stereo_can_be_resampled_and_downmixed_to_mono() -> None:
         assert result.getframerate() == 24_000
         assert result.getnchannels() == 1
         assert result.getnframes() == 24_000
+        samples = np.frombuffer(result.readframes(result.getnframes()), dtype="<i2")
+    assert samples.mean() == pytest.approx(2_000, abs=20)
+    assert samples.std() < 20
     assert sample_rate == 24_000
     assert channels == 1
 
@@ -81,6 +84,21 @@ def test_music_omitted_output_format_preserves_wav_bytes() -> None:
     assert converted is source
     assert sample_rate == 44_100
     assert channels == 2
+
+
+def test_requested_conversion_normalizes_int16_pcm() -> None:
+    source = np.array([0, 16_384, -16_384, 32_767, -32_768], dtype=np.int16)
+
+    converted, sample_rate, channels = convert_audio_output(source, 24_000, channels=2)
+
+    assert sample_rate == 24_000
+    assert channels == 2
+    np.testing.assert_allclose(
+        converted[:, 0],
+        [0.0, 0.5, -0.5, 32_767 / 32_768, -1.0],
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(converted[:, 0], converted[:, 1])
 
 
 @pytest.mark.parametrize(

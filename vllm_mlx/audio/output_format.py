@@ -38,10 +38,27 @@ def convert_audio_output(
         # dtype, object identity, out-of-range floats, and backend layout.
         return audio, source_rate, source_channels
 
-    # MLX arrays do not expose NumPy's buffer protocol consistently across
-    # releases, but their public ``tolist`` bridge is stable.
-    source = audio.tolist() if hasattr(audio, "tolist") else audio
-    value = np.asarray(source, dtype=np.float32)
+    # NumPy is the hot path for music and most TTS engines; never turn a
+    # multi-million-sample array into an equally large Python object graph.
+    # Some MLX releases lack a working NumPy buffer bridge, so only those
+    # array types fall back to their stable public ``tolist`` method.
+    original = np.asarray(audio) if isinstance(audio, np.ndarray) else None
+    if original is None:
+        try:
+            original = np.asarray(audio)
+        except (TypeError, ValueError):
+            source = audio.tolist() if hasattr(audio, "tolist") else audio
+            original = np.asarray(source)
+    if np.issubdtype(original.dtype, np.signedinteger):
+        scale = float(
+            max(abs(np.iinfo(original.dtype).min), np.iinfo(original.dtype).max)
+        )
+        value = original.astype(np.float32) / scale
+    elif np.issubdtype(original.dtype, np.unsignedinteger):
+        midpoint = float(np.iinfo(original.dtype).max + 1) / 2
+        value = (original.astype(np.float32) - midpoint) / midpoint
+    else:
+        value = original.astype(np.float32, copy=False)
     if value.ndim == 1:
         value = value[:, None]
     elif value.ndim == 2:
