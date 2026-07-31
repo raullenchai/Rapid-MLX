@@ -2486,9 +2486,13 @@ def _generate_speech_blocking(
         sample_rate=sample_rate,
         channels=channels,
     )
-    audio.audio = converted
-    audio.sample_rate = output_rate
-    audio.duration = len(converted) / output_rate
+    if sample_rate is not None or channels is not None:
+        # Converted output is normalized to sample-first layout. A no-op
+        # preserves the backend object and its duration metadata verbatim,
+        # including channel-first arrays where len(audio) is channel count.
+        audio.audio = converted
+        audio.sample_rate = output_rate
+        audio.duration = len(converted) / output_rate
     return (
         _tts_engine.to_bytes(audio, format=response_format),
         output_rate,
