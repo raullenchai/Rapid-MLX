@@ -86,10 +86,14 @@ checkpoints additionally accept `RAPID_MLX_WAN_LORA_HIGH` and
 
 ## LTX-2.3
 
-MLX-native LTX-2.3 with an audio-video checkpoint — it emits synchronized audio
-alongside the frames, which the other two backends do not. The Q4 checkpoint is
-a 22.8 GB download and wants at least 24 GB of unified memory; 32 GB or more is
-comfortable.
+MLX-native LTX-2.3. The Q4 checkpoint is a 22.8 GB download and wants at least
+24 GB of unified memory; 32 GB or more is comfortable.
+
+The checkpoint is an audio-video one and the pipeline runs
+`generate_video_with_audio`, but the track it produces is silent. Rapid-MLX
+remuxes it away, so **the MP4 you get back is video-only** — a silent audio
+track is worse than none, since it makes downstream tools believe the clip has
+sound. Expect no audio from any of the three backends.
 
 ```bash
 pip install 'rapid-mlx[video]'
