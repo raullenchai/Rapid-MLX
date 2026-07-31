@@ -324,29 +324,40 @@ class TestVoiceDesignEngine:
         import mlx.core as mx
         import numpy as np
 
+        globals()["categorical_sampling"] = lambda logits, temperature: (
+            mx.random.categorical(logits * (1 / temperature))
+        )
+
         class _RandomVoiceDesignModel:
             def generate(
                 self, *, text, instruct, voice=None, speed=1.0, lang_code=None
             ):
                 del text, instruct, voice, speed, lang_code
+                logits = mx.zeros((32, 16))
                 yield types.SimpleNamespace(
-                    audio=mx.random.uniform(shape=(32,)), sample_rate=24000
+                    audio=globals()["categorical_sampling"](logits, 1.0).astype(
+                        mx.float32
+                    ),
+                    sample_rate=24000,
                 )
 
         engine = _voicedesign_engine()
         engine.model = _RandomVoiceDesignModel()
         before = [np.array(value) for value in mx.random.state]
 
-        first = engine.generate(
-            "第一句。", instruct="a warm narrator", voice_seed=20260731
-        )
-        second = engine.generate(
-            "第二句。", instruct="a warm narrator", voice_seed=20260731
-        )
+        try:
+            first = engine.generate(
+                "第一句。", instruct="a warm narrator", voice_seed=20260731
+            )
+            second = engine.generate(
+                "第二句。", instruct="a warm narrator", voice_seed=20260731
+            )
 
-        np.testing.assert_array_equal(first.audio, second.audio)
-        for expected, actual in zip(before, mx.random.state, strict=True):
-            np.testing.assert_array_equal(expected, np.array(actual))
+            np.testing.assert_array_equal(first.audio, second.audio)
+            for expected, actual in zip(before, mx.random.state, strict=True):
+                np.testing.assert_array_equal(expected, np.array(actual))
+        finally:
+            globals().pop("categorical_sampling", None)
 
 
 # ---------------------------------------------------------------------------

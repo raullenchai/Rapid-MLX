@@ -10,16 +10,55 @@ Supports:
 - VoxCPM (Chinese/English, high quality)
 """
 
+import importlib
 import io
 import json
 import logging
+import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+_QWEN_SAMPLER_PATCH_LOCK = threading.RLock()
+
+
+@contextmanager
+def _qwen_seeded_sampling(model, seed: int | None):
+    """Give one Qwen generation a request-local RNG without global seeding."""
+    if seed is None:
+        yield
+        return
+
+    import mlx.core as mx
+
+    module = importlib.import_module(type(model).__module__)
+    original = module.categorical_sampling
+    owner_thread = threading.get_ident()
+    key = mx.random.key(seed)
+
+    def dispatch(logits, temperature):
+        nonlocal key
+        if threading.get_ident() != owner_thread:
+            return original(logits, temperature)
+        keys = mx.random.split(key, 2)
+        key, sample_key = keys[0], keys[1]
+        return mx.random.categorical(logits * (1 / temperature), key=sample_key)
+
+    # The public route already serializes TTS, while this lock also protects
+    # callers embedding TTSEngine directly. Other inference threads may enter
+    # the dispatcher concurrently; they fall through to the untouched sampler.
+    with _QWEN_SAMPLER_PATCH_LOCK:
+        module.categorical_sampling = dispatch
+        try:
+            yield
+        finally:
+            module.categorical_sampling = original
+
 
 # Default models
 DEFAULT_TTS_MODEL = "mlx-community/Kokoro-82M-bf16"
@@ -654,15 +693,12 @@ class TTSEngine:
                 else:
                     gen_kwargs["lang_code"] = lang_code
 
-            random_state = None
             if voice_seed is not None:
                 if not self._is_qwen3_voicedesign():
                     raise ValueError(
                         "voice_seed is supported only by Qwen3-TTS VoiceDesign"
                     )
-                random_state = list(mx.random.state)
-                mx.random.seed(voice_seed)
-            try:
+            with _qwen_seeded_sampling(self.model, voice_seed):
                 for result in self.model.generate(**gen_kwargs):
                     audio_data = result.audio
                     if hasattr(result, "sample_rate"):
@@ -675,11 +711,7 @@ class TTSEngine:
                         audio_np = np.array(audio_data.tolist(), dtype=np.float32)
                     else:
                         audio_np = np.array(audio_data, dtype=np.float32)
-
                     audio_chunks.append(audio_np)
-            finally:
-                if random_state is not None:
-                    mx.random.state = random_state
 
             if not audio_chunks:
                 raise RuntimeError("No audio generated")
