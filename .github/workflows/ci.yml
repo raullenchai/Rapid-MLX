@@ -201,13 +201,15 @@ jobs:
     # the expensive Studio gate: garbage-from-first-token (#1234 doubled-norm
     # class, via the #1247 GOLDEN gate) and tool-call parser regressions.
     #
-    # Matrix over two SMALL models from DIFFERENT families so the tool-call
-    # FORMAT check exercises two distinct parser paths — Qwen -> hermes and
-    # Llama -> the `<function=name>` LlamaToolParser — catching family-specific
-    # chat-template / parser breakage that a single-family smoke would miss. Each
-    # model runs on its own runner (parallel), so ~7GB RAM holds one ~2GB model
-    # comfortably. A 3-4B model is fine for a coherence/parser gate — it is not a
-    # chat-quality eval, which stays on the 35B L2 tier.
+    # Matrix over four SMALL models from DIFFERENT families so the tool-call
+    # FORMAT check exercises four distinct parser paths — Qwen -> hermes,
+    # Llama -> the `<function=name>` LlamaToolParser, Gemma -> Gemma4ToolParser,
+    # and Mistral -> the `[TOOL_CALLS]` MistralToolParser — catching
+    # family-specific chat-template / parser breakage that a single-family smoke
+    # would miss. Each model runs on its own runner (parallel), so ~7GB RAM holds
+    # one small (<=2.6GB) model comfortably. A 2-4B model is fine for a
+    # coherence/parser gate — it is not a chat-quality eval, which stays on the
+    # 35B L2 tier.
     #
     # Kept a standalone check (NOT folded into the required ``tests`` aggregate)
     # so it can prove itself green on real PRs before a maintainer marks it a
@@ -215,13 +217,15 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 20
     strategy:
-      # Don't cancel the Llama leg if the Qwen leg fails (or vice versa) — we
-      # want to see which family regressed, not just the first failure.
+      # Don't cancel the other legs when one family fails — we want to see
+      # which families regressed, not just the first failure.
       fail-fast: false
       matrix:
         model:
           - qwen3.5-4b-4bit  # hermes tool-call parser
           - llama3-3b-4bit  # llama `<function=name>` tool-call parser
+          - gemma-4-e2b-4bit  # gemma4 tool-call parser (nano, smallest gemma)
+          - ministral-3b-4bit  # mistral `[TOOL_CALLS]` tool-call parser
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -233,7 +237,13 @@ jobs:
       - name: Install project
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          # ".[vision]" (not plain ".") because some small models here are
+          # detected as multimodal and refuse to load text-only without the
+          # vision extra (e.g. Ministral-3-2512, the Gemma nano models). The
+          # test-apple-silicon job installs the same extra on this runner, so
+          # it is proven to build on macos-14. A coherence/tool-call smoke only
+          # exercises the text path, but the loader still requires the deps.
+          pip install -e ".[vision]"
           # coherence_gate.py + l1_toolcall_check.py drive the server over HTTP;
           # httpx is not a runtime dependency of rapid-mlx itself.
           pip install httpx
