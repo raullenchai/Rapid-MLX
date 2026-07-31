@@ -200,11 +200,15 @@ class DeepseekV4RoPE(nn.Module):
         super().__init__()
         self.dims = dims
         self.freq_scale = freq_scale
+        self.attention_factor = 1.0
 
         inv_freq = 1.0 / (base ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims))
         rope_type = None
         if scaling_config is not None:
             rope_type = scaling_config.get("type") or scaling_config.get("rope_type")
+            attention_factor = scaling_config.get("attention_factor")
+            if attention_factor is not None:
+                self.attention_factor = float(attention_factor)
 
         if rope_type in ("yarn", "deepseek_yarn"):
             factor = scaling_config["factor"]
@@ -261,6 +265,15 @@ class DeepseekV4RoPE(nn.Module):
         head_dim = x.shape[-1]
         freqs = self._get_freqs(head_dim, inverse)
         offset = offset // self.freq_scale if self.freq_scale != 1 else offset
+        if self.attention_factor != 1.0:
+            # NOPE channels precede the rotary channels in DeepSeek-V4.
+            x = mx.concatenate(
+                [
+                    x[..., : -self.dims],
+                    self.attention_factor * x[..., -self.dims :],
+                ],
+                axis=-1,
+            )
         return mx.fast.rope(
             x,
             head_dim,
@@ -515,7 +528,6 @@ class DeepseekV4MoE(nn.Module):
 
 
 class Compressor(nn.Module):
-
     def __init__(self, config: ModelArgs, compress_ratio: int, head_dim: int):
         super().__init__()
         self.compress_ratio = compress_ratio
@@ -631,7 +643,9 @@ class Indexer(nn.Module):
         pmask = (
             pool_cache.make_mask(L, offset)
             if pool_cache is not None
-            else _pooled_mask(L, pooled.shape[1], self.compressor.compress_ratio, offset)
+            else _pooled_mask(
+                L, pooled.shape[1], self.compressor.compress_ratio, offset
+            )
         )
         if pmask is not None:
             scores = mx.where(

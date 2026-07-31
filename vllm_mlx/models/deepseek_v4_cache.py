@@ -231,7 +231,7 @@ class BatchPoolingCache(_BaseCache):
         return mx.array(self._pool_lengths, dtype=mx.int32)
 
     def prepare(self, *, lengths=None, right_padding=None, left_padding=None):
-        if left_padding is not None:
+        if left_padding is not None and any(p != 0 for p in left_padding):
             raise RuntimeError("BatchPoolingCache does not support left padding")
         if lengths is not None:
             self._lengths = [p + l for p, l in zip(self._processed, lengths)]
@@ -366,7 +366,7 @@ class BatchPoolingCache(_BaseCache):
                 self._buf[i, pl : pl + nc] = px[i, :nc]
                 self._pool_lengths[i] = pl + nc
 
-        self.pooled = self._buf[:, :max(self._pool_lengths)]
+        self.pooled = self._buf[:, : max(self._pool_lengths)]
         return self.pooled
 
     def make_mask(self, L: int = 1, offset=0):
@@ -412,6 +412,10 @@ class BatchPoolingCache(_BaseCache):
     @meta_state.setter
     def meta_state(self, v):
         self.ratio, self.remainder, self._pool_lengths, self._processed = v
+        # ``_BaseCache.from_state`` restores metadata before tensor state.
+        # Length limits are request-local and are reset after every batch, so
+        # reconstruct their neutral value rather than checkpointing them.
+        self._lengths = [2**31] * len(self._pool_lengths)
 
     def is_trimmable(self):
         return self.pooled is None
@@ -632,11 +636,7 @@ class DeepseekV4PoolingCache(PoolingCache):
         self.overlap_gate = overlap_gate
 
     def empty(self):
-        return (
-            super().empty()
-            and self.overlap_kv is None
-            and self.overlap_gate is None
-        )
+        return super().empty() and self.overlap_kv is None and self.overlap_gate is None
 
     @property
     def nbytes(self):
@@ -698,11 +698,7 @@ class BatchDeepseekV4PoolingCache(BatchPoolingCache):
         self.overlap_gate = overlap_gate
 
     def empty(self):
-        return (
-            super().empty()
-            and self.overlap_kv is None
-            and self.overlap_gate is None
-        )
+        return super().empty() and self.overlap_kv is None and self.overlap_gate is None
 
     @property
     def nbytes(self):
@@ -756,9 +752,7 @@ class BatchDeepseekV4PoolingCache(BatchPoolingCache):
         B = len(caches)
         R, D = template.overlap_kv.shape[1:]
         overlap_kv = mx.zeros((B, R, D), dtype=template.overlap_kv.dtype)
-        overlap_gate = mx.full(
-            (B, R, D), -mx.inf, dtype=template.overlap_gate.dtype
-        )
+        overlap_gate = mx.full((B, R, D), -mx.inf, dtype=template.overlap_gate.dtype)
         for i, c in enumerate(caches):
             if c.overlap_kv is not None:
                 overlap_kv[i] = c.overlap_kv[0]

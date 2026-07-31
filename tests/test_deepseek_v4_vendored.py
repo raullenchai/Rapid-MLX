@@ -77,6 +77,60 @@ def test_deepseek_v4_rope_applies_per_row_integer_offsets():
     assert mx.allclose(actual, expected, atol=1e-6).item()
 
 
+def test_deepseek_v4_rope_attention_factor_scales_only_rotary_channels():
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4 import DeepseekV4RoPE
+
+    scaling = {
+        "rope_type": "yarn",
+        "factor": 4.0,
+        "original_max_position_embeddings": 4096,
+        "attention_factor": 0.5,
+    }
+    baseline = DeepseekV4RoPE(
+        dims=4,
+        base=10000.0,
+        scaling_config={**scaling, "attention_factor": 1.0},
+    )
+    scaled = DeepseekV4RoPE(dims=4, base=10000.0, scaling_config=scaling)
+    x = mx.arange(16, dtype=mx.float32).reshape(1, 1, 2, 8) / 10
+    expected_input = mx.concatenate([x[..., :4], 0.5 * x[..., 4:]], axis=-1)
+
+    actual = scaled(x, offset=7)
+    expected = baseline(expected_input, offset=7)
+    mx.eval(actual, expected)
+
+    assert mx.allclose(actual, expected, atol=1e-6).item()
+
+
+def test_batch_pooling_cache_restores_neutral_lengths_and_accepts_zero_padding():
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+
+    cache = BatchPoolingCache(ratio=4, left_padding=[0, 0])
+    cache.prepare(lengths=[3, 3], left_padding=[0, 0])
+    kv = mx.zeros((2, 3, 4))
+    gate = mx.zeros((2, 3, 2))
+    cache.accumulate_windows(kv, gate, 0)
+
+    restored = BatchPoolingCache.from_state(cache.state, cache.meta_state)
+    assert restored._lengths == [2**31, 2**31]
+    restored.prepare(lengths=[1, 1], left_padding=[0, 0])
+    restored.accumulate_windows(mx.zeros((2, 1, 4)), mx.zeros((2, 1, 2)), 3)
+
+
+def test_batch_pooling_cache_rejects_nonzero_left_padding():
+    pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+
+    cache = BatchPoolingCache(ratio=4, left_padding=[0, 0])
+    with pytest.raises(RuntimeError, match="does not support left padding"):
+        cache.prepare(left_padding=[0, 1])
+
+
 def test_tiny_model_forward_pass():
     """Smoke test the full forward path on a CPU-sized synthetic config.
 
