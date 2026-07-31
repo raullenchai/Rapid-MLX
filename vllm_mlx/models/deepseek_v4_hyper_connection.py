@@ -238,6 +238,7 @@ class HyperConnection(nn.Module):
 
         use_ops = (
             self.training
+            or self.hc_mult != 4
             or mx.default_device() != mx.gpu
             or not mx.metal.is_available()
         )

@@ -131,6 +131,62 @@ def test_batch_pooling_cache_rejects_nonzero_left_padding():
         cache.prepare(left_padding=[0, 1])
 
 
+def test_extend_mask_preserves_pooled_mask_without_local_mask():
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4 import _extend_mask
+
+    pooled = mx.array([[[True, False]]])
+    actual = _extend_mask(None, pooled, N=5)
+    mx.eval(actual)
+
+    assert actual.shape == (1, 1, 1, 5)
+    assert actual.tolist() == [[[[True, True, True, True, False]]]]
+
+
+def test_extend_mask_converts_boolean_pool_mask_to_additive_semantics():
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4 import _extend_mask
+
+    local = mx.zeros((1, 1, 1, 3), dtype=mx.float32)
+    pooled = mx.array([[[True, False]]])
+    actual = _extend_mask(local, pooled, N=5)
+    mx.eval(actual)
+
+    assert actual.shape == (1, 1, 1, 5)
+    assert actual[0, 0, 0, 3].item() == 0
+    assert actual[0, 0, 0, 4].item() < -1e30
+
+
+def test_hyper_connection_uses_ops_for_non_four_way_multiplicity(monkeypatch):
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models import deepseek_v4_hyper_connection as hc
+
+    class Config:
+        hc_mult = 2
+        hc_sinkhorn_iters = 1
+        hc_eps = 1e-6
+        rms_norm_eps = 1e-6
+        hidden_size = 4
+
+    layer = hc.HyperConnection(Config())
+    called = {"ops": False}
+    original = hc._hc_ops
+
+    def tracked_ops(*args, **kwargs):
+        called["ops"] = True
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(hc, "_hc_ops", tracked_ops)
+    monkeypatch.setattr(hc.mx, "default_device", lambda: hc.mx.gpu)
+    monkeypatch.setattr(hc.mx.metal, "is_available", lambda: True)
+    layer(mx.zeros((1, 1, 2, 4)))
+
+    assert called["ops"]
+
+
 def test_tiny_model_forward_pass():
     """Smoke test the full forward path on a CPU-sized synthetic config.
 

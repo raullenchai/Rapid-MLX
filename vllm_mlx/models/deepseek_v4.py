@@ -294,19 +294,35 @@ def _apply_score_mask(scores: mx.array, mask: Optional[mx.array]) -> mx.array:
 
 
 def _extend_mask(mask: Optional[mx.array], pool_mask: Optional[mx.array], N: int):
-    if mask is None:
+    if mask is None and pool_mask is None:
         return None
 
-    if mask.ndim == 2:
+    if pool_mask is not None:
+        if pool_mask.ndim == 2:
+            pool_mask = pool_mask[None, None]
+        elif pool_mask.ndim == 3:
+            pool_mask = pool_mask[:, None]
+
+    if mask is None:
+        B, H, L, P = pool_mask.shape
+        mask = mx.ones((B, H, L, N - P), dtype=mx.bool_)
+    elif mask.ndim == 2:
         mask = mask[None, None]
     B, H, L, S = mask.shape
 
     if pool_mask is None:
         pool_mask = mx.ones((B, H, L, N - S), dtype=mx.bool_)
-    elif pool_mask.ndim == 2:
+    else:
         pool_mask = mx.broadcast_to(pool_mask, (B, H, L, N - S))
-    elif pool_mask.ndim == 3:
-        pool_mask = mx.broadcast_to(pool_mask[:, None], (B, H, L, N - S))
+
+    if mask.dtype != mx.bool_ and pool_mask.dtype == mx.bool_:
+        pool_mask = mx.where(
+            pool_mask,
+            mx.array(0, dtype=mask.dtype),
+            mx.array(mx.finfo(mask.dtype).min, dtype=mask.dtype),
+        )
+    else:
+        pool_mask = pool_mask.astype(mask.dtype)
 
     full_mask = mx.concatenate([mask, pool_mask], axis=-1)
 
