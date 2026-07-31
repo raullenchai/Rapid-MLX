@@ -406,6 +406,15 @@
     "is_hybrid": false,
     "supports_spec_decode": true
   },
+  "deepseek-v4-flash-0731-mxfp4": {
+    "hf_path": "Vontra/DeepSeek-V4-Flash-0731-MXFP4-MLX",
+    "tool_call_parser": "deepseek_v4_0731",
+    "reasoning_parser": "deepseek_r1",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "min_memory_gb": 192
+  },
   "qwen3-0.6b-4bit": {
     "hf_path": "mlx-community/Qwen3-0.6B-4bit",
     "tool_call_parser": "hermes",

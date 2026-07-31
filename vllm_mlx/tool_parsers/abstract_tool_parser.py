@@ -83,6 +83,7 @@ class ExtractedToolCallInformation:
 #   seed_oss_native       — Seed-OSS specific (TBD; placeholder)
 #   deepseek_native       — DeepSeek V3 specific
 #   deepseek_v31_native   — DeepSeek V3.1 / R1-0528 specific
+#   deepseek_v4_dsml      — DeepSeek V4 0731 DSML invoke/parameter blocks
 #   qwen3_coder_xml_named — Qwen3-Coder XML variant with named function tags
 #   function_xml_named    — <function><name>NAME</name><arguments>JSON
 #                           </arguments></function>  VibeThinker auto-emit
@@ -121,6 +122,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "seed_oss_native",
         "deepseek_native",
         "deepseek_v31_native",
+        "deepseek_v4_dsml",
         "qwen3_coder_xml_named",
         "ui_tars_action",
         "hy3_native",

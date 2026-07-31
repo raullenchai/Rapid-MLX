@@ -233,6 +233,20 @@ PARITY_FIXTURES: list = [
         'Checking. [get_current_weather(location="Paris", unit="celsius")]',
         [("get_current_weather", {"location": "Paris", "unit": "celsius"})],
     ),
+    # DeepSeek V4 0731 — DSML invoke/parameter wire format.
+    (
+        "deepseek_v4_0731",
+        "deepseek_v4_dsml",
+        (
+            "<｜DSML｜tool_calls>\n"
+            '<｜DSML｜invoke name="read_file">\n'
+            '<｜DSML｜parameter name="path" string="true">'
+            "/etc/hostname</｜DSML｜parameter>\n"
+            "</｜DSML｜invoke>\n"
+            "</｜DSML｜tool_calls>"
+        ),
+        [("read_file", {"path": "/etc/hostname"})],
+    ),
 ]
 
 

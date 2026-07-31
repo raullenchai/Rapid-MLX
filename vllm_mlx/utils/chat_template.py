@@ -1031,6 +1031,19 @@ def apply_chat_template(
         )
         tools = _baseline_sanitize_tools(tools)
 
+    # DeepSeek-V4-Flash-0731 intentionally ships a Python encoder instead of
+    # a Jinja template.  Route by model identity before the generic tokenizer
+    # fallback (which would otherwise silently apply ChatML).
+    from .deepseek_v4_0731 import encode_messages, is_deepseek_v4_0731
+
+    if is_deepseek_v4_0731(model_name):
+        return encode_messages(
+            messages,
+            tools=tools,
+            enable_thinking=enable_thinking is not False,
+            add_generation_prompt=add_generation_prompt,
+        )
+
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
         # Inject tools into the system prompt so the model still sees

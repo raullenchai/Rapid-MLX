@@ -54,6 +54,7 @@ from .abstract_tool_parser import (
 from .auto_tool_parser import AutoToolParser
 from .deepseek_tool_parser import DeepSeekToolParser
 from .deepseek_v3_tool_parser import DeepSeekV3ToolParser
+from .deepseek_v4_0731_tool_parser import DeepSeekV40731ToolParser
 from .deepseekv31_tool_parser import DeepSeekV31ToolParser
 from .functionary_tool_parser import FunctionaryToolParser
 from .gemma4_tool_parser import Gemma4ToolParser
@@ -101,6 +102,7 @@ __all__ = [
     "MiniMaxToolParser",
     "SeedOssToolParser",
     "DeepSeekV3ToolParser",
+    "DeepSeekV40731ToolParser",
     "DeepSeekV31ToolParser",
     "Qwen3CoderToolParser",
     "UiTarsToolParser",
