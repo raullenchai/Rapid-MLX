@@ -77,6 +77,13 @@ patch_port() { [ -f "$1" ] && perl -pi -e "s#localhost:8000/v1#localhost:$PORT/v
 
 cleanup() {
   [ -n "$SERVE_PID" ] && kill -9 "$SERVE_PID" 2>/dev/null
+  # The ssh-localhost launch (see boot-serve block) runs serve outside this
+  # script's process tree, so if the tracked pid ever misses a re-fork also reap
+  # the listener on OUR port. We verified $PORT was free before we started, so
+  # any listener here is the one we started — never a server we did not start.
+  if [ -n "${PORT:-}" ]; then
+    for _p in $(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null); do kill -9 "$_p" 2>/dev/null; done
+  fi
   restore_cfg "$CODEX_CFG"
   restore_cfg "$HERMES_CFG"
   rm -rf "$WORK" "$LOG"
@@ -118,8 +125,40 @@ fi
 # by the release_check_m3 coding gate (which also runs --no-thinking). Forcing
 # enable_thinking=False bounds each turn's output, so agents finish deterministically
 # well inside budget and the gate tolerates moderate GPU contention with headroom.
-nohup "$RMLX" serve "$ALIAS" --port "$PORT" --disable-prefix-cache --no-thinking > "$LOG" 2>&1 &
-SERVE_PID=$!
+# macOS GPU perf-state gotcha (self-hosted runner). When serve is spawned inside
+# a launchd XPC-service context — the Actions runner is a LaunchAgent, so
+# $XPC_SERVICE_NAME is set for everything it launches — macOS pins the process to
+# a BACKGROUND GPU performance state. The GPU still pegs at ~99% util but its
+# effective throughput craters ~100x, so the 35B hybrid's large-context (25-38k
+# token) prefill never returns inside an agent's budget: serve flips READY, then
+# every agent stalls and the gate times out. A LOGIN-session process (ssh /
+# Terminal) is exempt from that throttle. Verified on the Studio: an identical
+# 30k-token prompt returns in ~4s when serve runs in a login session vs >60s
+# (unbounded stall) when spawned directly under the LaunchAgent. So when we detect
+# the XPC context AND passwordless ssh-to-localhost works, we launch serve THROUGH
+# ssh localhost, which reparents it into a login session with full GPU perf state.
+# ssh localhost runs on THIS host, so the echoed `$!` is a valid LOCAL pid we
+# track and kill in cleanup exactly like a direct launch. Any other context
+# (dev machine, interactive `run.sh`, ssh unavailable) falls back to a direct
+# launch and is unaffected.
+SERVE_PID=""
+if [ -n "${XPC_SERVICE_NAME:-}" ] \
+   && command -v ssh >/dev/null 2>&1 \
+   && ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=5 localhost true >/dev/null 2>&1; then
+  echo "serve: launchd XPC-service context (\$XPC_SERVICE_NAME=$XPC_SERVICE_NAME) — launching via ssh localhost for full GPU perf state"
+  SERVE_PID=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=no localhost \
+    "nohup '$RMLX' serve '$ALIAS' --port '$PORT' --disable-prefix-cache --no-thinking > '$LOG' 2>&1 & echo \$!" 2>/dev/null | tail -1)
+  case "$SERVE_PID" in
+    ''|*[!0-9]*) SERVE_PID=""; echo "serve: ssh-localhost launch returned no pid — falling back to direct launch (WARNING: large-ctx prefill may be GPU-throttled under launchd)";;
+    *) echo "serve: launched via ssh localhost, pid=$SERVE_PID";;
+  esac
+elif [ -n "${XPC_SERVICE_NAME:-}" ]; then
+  echo "serve: WARNING — launchd XPC-service context but ssh-localhost unusable; direct launch will be GPU-throttled (~100x slower large-ctx prefill). Enable Remote Login + passwordless localhost ssh, or run the runner from a login session."
+fi
+if [ -z "$SERVE_PID" ]; then
+  nohup "$RMLX" serve "$ALIAS" --port "$PORT" --disable-prefix-cache --no-thinking > "$LOG" 2>&1 &
+  SERVE_PID=$!
+fi
 # Serve-ready budget: 120 * 5s = 600s. The default gate model is a 35B hybrid
 # (Qwen3.6-35B-A3B, GatedDeltaNet/linear-attention). Its FIRST cold serve on the
 # Studio isn't just a weight load — it compiles the hybrid GatedDeltaNet Metal
