@@ -557,10 +557,10 @@ class TTSEngine:
         speed: float = 1.0,
         lang_code: str = "a",
         instruct: str | None = None,
-        voice_seed: int | None = None,
         ref_audio: str | None = None,
         ref_text: str | None = None,
         exaggeration: float | None = None,
+        voice_seed: int | None = None,
     ) -> AudioOutput:
         """
         Generate speech from text.
