@@ -89,6 +89,12 @@ MATRIX_EXEMPT: dict[str, str] = {
     "deepseek": "TODO: add DeepSeek-V2 / R1-distill model to golden_models",
     "deepseek_v3": "TODO: add DeepSeek-V3 / R1-0528-Qwen3-8B model to golden_models (R12-5)",
     "deepseek_v31": "TODO: add DeepSeek-V3.1 thinking-channel model to golden_models",
+    "deepseek_v4_0731": (
+        "TODO: add DeepSeek-V4-Flash-0731 when CI has a 192 GB+ Ultra slot; "
+        "the 156 GB MXFP4 checkpoint cannot run in the standard matrix. "
+        "Official prompt fixtures, DSML parser tests, streaming parity, and "
+        "a local-wheel run on 256 GB Apple Silicon cover it meanwhile."
+    ),
     "functionary": "TODO: add Functionary-medium model to golden_models",
     "xlam": "TODO: add xLAM model to golden_models",
     "seed_oss": "TODO: add Seed-OSS model to golden_models",
