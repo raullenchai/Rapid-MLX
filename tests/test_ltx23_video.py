@@ -392,6 +392,32 @@ def test_video_only_remux_failure_is_actionable(
     assert not list(tmp_path.glob(".result.*.video-only.mp4"))
 
 
+def test_video_only_cleanup_failure_does_not_mask_remux_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "result.mp4"
+    output.write_bytes(b"mp4-with-silent-audio")
+    original_unlink = Path.unlink
+    temporary_paths = []
+
+    def fail_remux(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "ffmpeg")
+
+    def fail_cleanup(path: Path, *args, **kwargs) -> None:
+        temporary_paths.append(path)
+        raise PermissionError("cleanup denied")
+
+    monkeypatch.setattr("subprocess.run", fail_remux)
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+
+    with pytest.raises(VideoRuntimeError, match="silent audio track") as exc:
+        VideoEngine._remove_audio_track(output)
+
+    assert isinstance(exc.value.__cause__, subprocess.CalledProcessError)
+    assert len(temporary_paths) == 1
+    original_unlink(temporary_paths[0], missing_ok=True)
+
+
 def test_video_engines_share_process_generation_lock() -> None:
     first = VideoEngine("one/model")
     second = VideoEngine("two/model")

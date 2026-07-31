@@ -287,7 +287,12 @@ class VideoEngine:
             ) from exc
         finally:
             if video_only is not None:
-                video_only.unlink(missing_ok=True)
+                try:
+                    video_only.unlink(missing_ok=True)
+                except OSError:
+                    # Cleanup must not mask either a successful atomic replace
+                    # or the actionable remux error raised above.
+                    pass
 
     @staticmethod
     def _crop_generated_output(
