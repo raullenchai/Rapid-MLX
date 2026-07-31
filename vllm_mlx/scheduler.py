@@ -5435,6 +5435,12 @@ class Scheduler:
             )
             request._kv_checkpoint_state = state
 
+        # A serializer failure is cache-shape specific and will not recover on
+        # the next decode token.  Retrying every step would repeatedly walk a
+        # potentially huge cache and flood logs for the rest of the request.
+        if state.disabled:
+            return
+
         if not _dkc.should_checkpoint(num_tokens, state.last_checkpoint_at, interval):
             return
 
@@ -5480,6 +5486,9 @@ class Scheduler:
             model_name=state.model_name,
         )
         state.last_checkpoint_at = new_offset
+        if _path is None:
+            state.disabled = True
+            return
 
         # Cheap disk-cap check: only fires when bytes actually moved.
         # The enforce_disk_cap helper is itself lock-guarded so racing

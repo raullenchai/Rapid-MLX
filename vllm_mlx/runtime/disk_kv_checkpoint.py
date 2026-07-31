@@ -904,6 +904,7 @@ class RequestCheckpointState:
     req_hash: str
     interval: int = DEFAULT_CHECKPOINT_INTERVAL
     last_checkpoint_at: int = 0
+    disabled: bool = False
     requires_full_checkpoint: bool = False
     kv_dtype: str = "bf16"
     model_name: str | None = None

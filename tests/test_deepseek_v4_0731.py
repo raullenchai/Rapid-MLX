@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from pathlib import Path
 
 from vllm_mlx.model_aliases import list_profiles
 from vllm_mlx.tool_parsers import ToolParserManager
 from vllm_mlx.utils.chat_template import apply_chat_template
 from vllm_mlx.utils.deepseek_v4_0731 import ASSISTANT, BOS, THINK_END, THINK_START, USER
+from vllm_mlx.utils.tokenizer import (
+    _deepseek_v4_quantization_override,
+    _special_token_text,
+)
 
 
 class _TokenizerWithoutTemplate:
@@ -169,3 +174,46 @@ def test_dsml_streaming_holds_split_opener_and_emits_calls_once():
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "weather"
     assert duplicate is None
+
+
+def test_0731_quantization_paths_are_translated_for_vendored_model(tmp_path: Path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "deepseek_v4",
+                "quantization": {
+                    "group_size": 32,
+                    "bits": 4,
+                    "mode": "mxfp4",
+                    "layers.0.attn.wq_a": {
+                        "group_size": 32,
+                        "bits": 8,
+                        "mode": "mxfp8",
+                    },
+                    "layers.0.ffn.shared_experts.w1": {
+                        "group_size": 32,
+                        "bits": 8,
+                        "mode": "mxfp8",
+                    },
+                    "embed": False,
+                },
+            }
+        )
+    )
+    override = _deepseek_v4_quantization_override(tmp_path)
+    quantization = override["quantization"]
+    assert quantization["model.layers.0.attn.wq_a"]["mode"] == "mxfp8"
+    assert (
+        quantization["model.layers.0.ffn.shared_experts.gate_proj"]["mode"] == "mxfp8"
+    )
+    assert quantization["model.embed_tokens"] is False
+
+
+def test_hf_added_token_metadata_is_normalized():
+    token = {
+        "__type": "AddedToken",
+        "content": "<｜begin▁of▁sentence｜>",
+        "normalized": True,
+    }
+    assert _special_token_text(token, "<s>") == "<｜begin▁of▁sentence｜>"
+    assert _special_token_text(None, "<unk>") == "<unk>"

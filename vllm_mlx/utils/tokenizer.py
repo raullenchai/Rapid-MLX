@@ -53,6 +53,15 @@ def _needs_tokenizer_fallback(model_name: str) -> bool:
     return any(pattern.lower() in model_lower for pattern in FALLBACK_MODELS)
 
 
+def _special_token_text(value, default: str | None) -> str | None:
+    """Normalize tokenizer_config special tokens across HF representations."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and isinstance(value.get("content"), str):
+        return value["content"]
+    return default
+
+
 # Attribute name used to stash the union of ``generation_config.json``
 # EOS ids on raw HF tokenizers (mlx-vlm processors). Read by
 # ``Scheduler._get_stop_tokens`` and ``MLLMScheduler._get_stop_tokens``
@@ -1013,8 +1022,15 @@ def _load_with_tokenizer_fallback(model_name: str):
 
         model_path = Path(snapshot_download(model_name))
 
+    # The published 0731 MXFP checkpoint's quantization paths match its
+    # standalone model (``layers.*``).  Our mlx-lm-compatible vendored model
+    # nests the transformer under ``model`` and renames shared-expert
+    # projections, so mlx-lm would otherwise apply the global MXFP4 default to
+    # MXFP8 attention tensors and reject their packed shapes.
+    model_config = _deepseek_v4_quantization_override(model_path)
+
     # Load model
-    model, _ = load_model(model_path)
+    model, _ = load_model(model_path, model_config=model_config)
 
     # Try to load tokenizer from tokenizer.json directly
     tokenizer_json = model_path / "tokenizer.json"
@@ -1030,14 +1046,16 @@ def _load_with_tokenizer_fallback(model_name: str):
         bos_token = "<s>"
         eos_token = "</s>"
         unk_token = "<unk>"
+        pad_token = "<pad>"
         chat_template = None
 
         if tokenizer_config_path.exists():
             with open(tokenizer_config_path) as f:
                 config = json.load(f)
-                bos_token = config.get("bos_token", bos_token)
-                eos_token = config.get("eos_token", eos_token)
-                unk_token = config.get("unk_token", unk_token)
+                bos_token = _special_token_text(config.get("bos_token"), bos_token)
+                eos_token = _special_token_text(config.get("eos_token"), eos_token)
+                unk_token = _special_token_text(config.get("unk_token"), unk_token)
+                pad_token = _special_token_text(config.get("pad_token"), pad_token)
                 chat_template = config.get("chat_template")
 
         tokenizer = PreTrainedTokenizerFast(
@@ -1045,7 +1063,7 @@ def _load_with_tokenizer_fallback(model_name: str):
             bos_token=bos_token,
             eos_token=eos_token,
             unk_token=unk_token,
-            pad_token="<pad>",
+            pad_token=pad_token,
         )
 
         # Set chat template if available. Sidecar fallback (.jinja then
@@ -1068,6 +1086,45 @@ def _load_with_tokenizer_fallback(model_name: str):
 
         repair_byte_level_decoder(tokenizer)
         logger.info("Tokenizer loaded via fallback successfully")
-        return model, tokenizer
     else:
         raise ValueError(f"No tokenizer.json found in {model_path}")
+    return model, tokenizer
+
+
+def _deepseek_v4_quantization_override(model_path: Path) -> dict | None:
+    """Translate standalone DeepSeek-V4 quantization paths for mlx-lm.
+
+    Returns a ``model_config`` overlay only for ``model_type=deepseek_v4``.
+    Older mlx-community V4 checkpoints already use the vendored module paths;
+    translating is idempotent for those keys.
+    """
+    config_path = model_path / "config.json"
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if config.get("model_type") != "deepseek_v4":
+        return None
+    quantization = config.get("quantization")
+    if not isinstance(quantization, dict):
+        return None
+
+    scalar_keys = {"group_size", "bits", "mode"}
+    translated = {k: v for k, v in quantization.items() if k in scalar_keys}
+    projection_names = {"w1": "gate_proj", "w2": "down_proj", "w3": "up_proj"}
+    for path, value in quantization.items():
+        if path in scalar_keys:
+            continue
+        new_path = path
+        if new_path.startswith("layers."):
+            new_path = "model." + new_path
+        elif new_path == "embed":
+            new_path = "model.embed_tokens"
+        elif new_path == "head":
+            new_path = "lm_head"
+        for old, new in projection_names.items():
+            new_path = new_path.replace(
+                f".ffn.shared_experts.{old}", f".ffn.shared_experts.{new}"
+            )
+        translated[new_path] = value
+    return {"quantization": translated}

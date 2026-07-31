@@ -215,6 +215,29 @@ def test_scheduler_hook_no_op_when_interval_disabled(isolated_root: Path) -> Non
     assert not list(isolated_root.rglob("*.safetensors"))
 
 
+def test_scheduler_disables_checkpoint_after_serializer_failure(
+    isolated_root: Path, monkeypatch
+) -> None:
+    """An incompatible cache must not retry serialization every token."""
+    sched = _make_scheduler(interval=256)
+    req = _make_request(num_tokens=260)
+    _attach_stub_batch_generator(sched, req)
+    calls = 0
+
+    def _fail(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return 0, None
+
+    monkeypatch.setattr(_dkc, "maybe_write_checkpoint", _fail)
+    sched._maybe_disk_checkpoint(req, response=SimpleNamespace())
+    req.num_prompt_tokens = 261
+    sched._maybe_disk_checkpoint(req, response=SimpleNamespace())
+
+    assert calls == 1
+    assert req._kv_checkpoint_state.disabled is True
+
+
 # ---------------------------------------------------------------------------
 # 3) No-batch-generator early-return (expected skip path)
 # ---------------------------------------------------------------------------
