@@ -26,7 +26,9 @@ def convert_audio_output(
     if len(shape) == 1:
         source_channels = 1
     elif len(shape) == 2:
-        source_channels = shape[0] if shape[0] in (1, 2) and shape[1] > 2 else shape[1]
+        # The public contract is sample-first, matching scipy.wavfile,
+        # soundfile, and TTSEngine.to_bytes: (samples, channels).
+        source_channels = shape[1]
     else:
         raise ValueError(f"audio must be one- or two-dimensional, got {len(shape)}D")
     if source_channels not in (1, 2):
@@ -61,12 +63,7 @@ def convert_audio_output(
         value = original.astype(np.float32, copy=False)
     if value.ndim == 1:
         value = value[:, None]
-    elif value.ndim == 2:
-        # TTS backends are not uniform: most return sample-first arrays,
-        # while a few return the channel-first shape used by ML models.
-        if value.shape[0] in (1, 2) and value.shape[1] > 2:
-            value = value.T
-    else:  # pragma: no cover - shape validation above owns this branch
+    elif value.ndim != 2:  # pragma: no cover - shape validation owns this branch
         raise ValueError(f"audio must be one- or two-dimensional, got {value.ndim}D")
     if value.shape[1] not in (1, 2):
         raise ValueError(f"audio must be mono or stereo, got {value.shape[1]} channels")

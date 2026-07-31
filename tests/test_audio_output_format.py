@@ -102,6 +102,22 @@ def test_requested_conversion_normalizes_int16_pcm() -> None:
 
 
 @pytest.mark.parametrize(
+    ("source", "channels"),
+    [
+        (np.zeros((1, 1), dtype=np.float32), 1),
+        (np.zeros((1, 2), dtype=np.float32), 2),
+        (np.zeros((2, 1), dtype=np.float32), 1),
+        (np.zeros((2, 2), dtype=np.float32), 2),
+    ],
+)
+def test_short_sample_first_audio_has_unambiguous_channels(source, channels) -> None:
+    converted, _, detected_channels = convert_audio_output(source, 24_000)
+
+    assert converted is source
+    assert detected_channels == channels
+
+
+@pytest.mark.parametrize(
     ("request_type", "payload"),
     [
         (AudioSpeechRequest, {"input": "hello", "sample_rate": 7_999}),

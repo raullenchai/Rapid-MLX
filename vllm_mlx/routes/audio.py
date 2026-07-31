@@ -2488,8 +2488,7 @@ def _generate_speech_blocking(
     )
     if sample_rate is not None or channels is not None:
         # Converted output is normalized to sample-first layout. A no-op
-        # preserves the backend object and its duration metadata verbatim,
-        # including channel-first arrays where len(audio) is channel count.
+        # preserves the backend object and its duration metadata verbatim.
         audio.audio = converted
         audio.sample_rate = output_rate
         audio.duration = len(converted) / output_rate
