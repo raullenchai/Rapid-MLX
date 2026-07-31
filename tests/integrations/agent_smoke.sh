@@ -141,35 +141,75 @@ done
 # warm ~23). Paying that here, untimed, keeps a cold shader cache from pushing
 # the first agent past its per-agent budget. Best-effort — never fatal.
 #
-# Two-stage, because these kernels are effectively SHAPE-SPECIALIZED: a short
-# prompt only compiles the small-sequence kernel. The real agents (claude first)
-# open with a ~25-38k-token system+tools prompt, which hits a DIFFERENT cold
-# path — the large-context / chunked-prefill GatedDeltaNet kernel. On a cold
-# shader cache that first compile can exceed the server's 300s in-flight abort,
-# so the first agent request gets force-aborted at 0 tokens and the agent flaps —
-# exactly how the 0.11.4 gate hung (short warmup finished in 0.3s, then the first
-# 25k agent request stalled 300s with 0 tokens). Warming a large-context prompt
-# here pays that compile untimed, so the first agent request lands on warm kernels.
-echo "warming kernels (small + large context, untimed)…"
+# Shape-specialized: a short prompt only compiles the small-sequence kernel; the
+# real agents (claude first) open with a ~25-38k-token system+tools prompt that
+# hits a DIFFERENT cold path — the large-context / chunked-prefill GatedDeltaNet
+# kernel. That cold compile is what hung the 0.11.4 gate. On a cold Studio shader
+# cache it ran long enough that the first agent's HTTP client timed out and
+# disconnected; ``disconnect_guard`` then aborts the request at 0 tokens, the
+# agent retried, re-hit the cold path and thrashed through its whole per-agent
+# budget — four agents deep, that overran even the (old 55-min) job cap before any
+# RESULT printed. It is NOT a product regression: a WARM box serves the same 25k
+# request in 3-10s (measured), and the engine is byte-identical to the shipped
+# 0.11.3 on every serving path. It is purely one-time cold-compile latency.
+#
+# So warm the LARGE-context kernels here, untimed, on BOTH routes the agents use
+# (/v1/chat/completions for codex/hermes/aider, /v1/messages for claude), and
+# RETRY until a request returns fast — a fast return proves the cold compile is
+# fully paid and cached before any timed agent starts. Generous per-request
+# timeout so the compile completes untimed; best-effort, never fatal.
+echo "warming kernels (small + large context, both routes, untimed)…"
 curl -s -m 60 "$B/v1/chat/completions" -H 'Content-Type: application/json' \
   -d "{\"model\":\"$ALIAS\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}],\"max_tokens\":16,\"temperature\":0}" \
   >/dev/null 2>&1 || true
 python3 - "$B" "$ALIAS" <<'PY' 2>&1 || true
-import json, sys, urllib.request
+import json, sys, time, urllib.request
 B, alias = sys.argv[1], sys.argv[2]
-# ~25k-token prompt (~11 tok/line * 2600) so the large-context Metal kernels the
-# agents actually hit are compiled here, not inside a timed per-agent budget.
-prompt = "The quick brown fox jumps over the lazy dog. " * 2600
-body = json.dumps({"model": alias,
-                   "messages": [{"role": "user", "content": prompt + "\nReply with the single word OK."}],
-                   "max_tokens": 16, "temperature": 0}).encode()
-req = urllib.request.Request(B + "/v1/chat/completions", data=body,
-                            headers={"Content-Type": "application/json"})
-try:
-    urllib.request.urlopen(req, timeout=290).read()
-    print("large-context kernels warmed")
-except Exception as e:  # best-effort — a cold compile that overruns still lets agents (with retries) proceed
-    print("large-context warmup note (non-fatal):", e)
+# Hard wall-clock budget for ALL warmup (both routes, all attempts). Bounds the
+# step so a degraded box can't let the warmup itself eat into the job cap: the
+# realistic cold path is one ~4-min compile then fast confirms (~7 min total),
+# and this caps the pathological tail at ~10 min. Best-effort — on exhaustion we
+# just fall through to the agents (their own retries absorb any residual cold).
+DEADLINE = time.time() + 600
+# ~30k-token prompt (~11 tok/line * 3000) — covers the agents' 25-38k opening
+# prompts so the large-context / chunked-prefill Metal kernels compile HERE, not
+# inside a timed per-agent budget.
+prompt = "The quick brown fox jumps over the lazy dog. " * 3000 + "\nReply with the single word OK."
+
+def warm(route, headers, body, label):
+    # Attempt 1 pays the cold compile (untimed within the budget); attempt 2
+    # confirms warm. "warm" == returned under 45s → stop early. Bounded by the
+    # shared DEADLINE so total warmup can't overrun. Never fatal.
+    data = json.dumps(body).encode()
+    for attempt in (1, 2):
+        remaining = int(DEADLINE - time.time())
+        if remaining <= 1:
+            print(f"{label}: warmup budget exhausted, deferring to agent retries")
+            return
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(B + route, data=data, headers=headers)
+            urllib.request.urlopen(req, timeout=min(480, remaining)).read()
+            dt = time.time() - t0
+            print(f"{label}: attempt {attempt} completed in {dt:.0f}s")
+            if dt < 45:
+                return
+        except Exception as e:
+            print(f"{label}: attempt {attempt} note (non-fatal): {e}")
+
+# OpenAI route (codex / hermes / aider)
+warm("/v1/chat/completions",
+     {"Content-Type": "application/json"},
+     {"model": alias, "messages": [{"role": "user", "content": prompt}],
+      "max_tokens": 16, "temperature": 0},
+     "large-ctx /v1/chat/completions")
+# Anthropic route (claude — the first agent, the one that hung on 0.11.4). Shares
+# the same prefill kernels, so this is usually already warm and returns fast.
+warm("/v1/messages",
+     {"Content-Type": "application/json", "anthropic-version": "2023-06-01"},
+     {"model": alias, "max_tokens": 16, "temperature": 0,
+      "messages": [{"role": "user", "content": prompt}]},
+     "large-ctx /v1/messages")
 PY
 
 # ---- the task: a buggy factorial + a failing test the agent must fix -----

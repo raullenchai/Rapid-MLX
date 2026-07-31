@@ -140,7 +140,16 @@ jobs:
     needs: detect
     if: needs.detect.outputs.should_release == 'true' && needs.detect.outputs.force != 'true'
     runs-on: [self-hosted, macOS, rapidmlx-studio]
-    timeout-minutes: 55
+    # 90, not 55: the four Tier-1 agents run SERIALLY against a 35B hybrid, each
+    # with retries and a per-agent budget. Worst case = claude+codex+aider at
+    # 2x480s each (2880s) + hermes at 3x600s (1800s) = 4680s ~= 78 min. On a cold
+    # Studio shader cache the first large-context request of each agent also pays
+    # a one-time Metal-kernel compile. 55 min guillotined the run mid-agent (the
+    # job was "cancelled" before any RESULT could print). The step warms kernels
+    # untimed up front (hard-bounded to ~10 min) so the healthy path finishes in
+    # minutes; 90 min is headroom so a slow-but-passing cold run reaches a verdict
+    # instead of being killed. A genuine hang still fails on the per-agent budgets.
+    timeout-minutes: 90
     # Serialize with the manual agent-gate.yml so two runs never contend for the
     # single runner / the serve port.
     concurrency:
