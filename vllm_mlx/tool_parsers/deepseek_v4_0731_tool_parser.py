@@ -31,6 +31,29 @@ class DeepSeekV40731ToolParser(ToolParser):
         re.DOTALL,
     )
 
+    def reset(self) -> None:
+        super().reset()
+        self._stream_calls_emitted = False
+
+    @classmethod
+    def _safe_content_prefix(cls, text: str) -> str:
+        """Hold any suffix that could grow into the DSML opener."""
+        start = text.find(cls.START)
+        if start >= 0:
+            return text[:start]
+        max_prefix = min(len(text), len(cls.START) - 1)
+        for size in range(max_prefix, 0, -1):
+            if cls.START.startswith(text[-size:]):
+                return text[:-size]
+        return text
+
+    def has_pending_tool_call(self, text: str) -> bool:
+        return self.START in text or self._safe_content_prefix(text) != text
+
+    def flush_held_content(self, full_text: str) -> str:
+        safe = self._safe_content_prefix(full_text)
+        return full_text[len(safe) :] if self.START not in full_text else ""
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ):
@@ -71,13 +94,21 @@ class DeepSeekV40731ToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        if not hasattr(self, "_stream_calls_emitted"):
+            self.reset()
+        if self._stream_calls_emitted:
+            return None
         if self.START not in current_text:
-            return {"content": delta_text}
+            previous_safe = self._safe_content_prefix(previous_text)
+            current_safe = self._safe_content_prefix(current_text)
+            newly_safe = current_safe[len(previous_safe) :]
+            return {"content": newly_safe} if newly_safe else None
         if self.END not in current_text:
             return None
         result = self.extract_tool_calls(current_text, request)
         if not result.tools_called:
             return None
+        self._stream_calls_emitted = True
         return {
             "tool_calls": [
                 {

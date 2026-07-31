@@ -44,6 +44,11 @@ _CHAT_TEMPLATE_ROLE_MARKERS = (
     "<|fim_begin|>",
     "<|fim_hole|>",
     "<|fim_end|>",
+    "<｜begin▁of▁sentence｜>",
+    "<｜end▁of▁sentence｜>",
+    "<｜User｜>",
+    "<｜Assistant｜>",
+    "<｜latest_reminder｜>",
     # Mistral / Anthropic-style
     "[INST]",
     "[/INST]",
