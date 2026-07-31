@@ -187,6 +187,40 @@ def test_hyper_connection_uses_ops_for_non_four_way_multiplicity(monkeypatch):
     assert called["ops"]
 
 
+def test_batch_pooling_cache_empty_batch_is_a_noop():
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4_cache import BatchPoolingCache
+
+    cache = BatchPoolingCache(ratio=4, left_padding=[])
+    kv = mx.zeros((0, 2, 3), dtype=mx.float16)
+    gate = mx.zeros((0, 2, 2), dtype=mx.float32)
+    out_kv, out_gate, base = cache.accumulate_windows(kv, gate, 0)
+    mx.eval(out_kv, out_gate, base)
+
+    assert out_kv.shape == kv.shape
+    assert out_gate.shape == gate.shape
+    assert base.shape == (0,)
+
+
+def test_batch_pooling_cache_merge_preserves_projection_dtypes():
+    mx = pytest.importorskip("mlx.core")
+
+    from vllm_mlx.models.deepseek_v4_cache import (
+        BatchPoolingCache,
+        PoolingCache,
+    )
+
+    cache = PoolingCache(ratio=4)
+    cache.buf_kv = mx.ones((1, 4, 3), dtype=mx.float16)
+    cache.buf_gate = mx.ones((1, 4, 2), dtype=mx.float32)
+    cache.remainder = 2
+    merged = BatchPoolingCache.merge([cache])
+
+    assert merged.buf_kv.dtype == mx.float16
+    assert merged.buf_gate.dtype == mx.float32
+
+
 def test_tiny_model_forward_pass():
     """Smoke test the full forward path on a CPU-sized synthetic config.
 

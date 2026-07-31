@@ -244,6 +244,9 @@ class BatchPoolingCache(_BaseCache):
         _, _, D2 = gate.shape
         ratio = self.ratio
 
+        if B == 0:
+            return kv, gate, mx.array([], dtype=mx.int32)
+
         if self.buf_kv is None:
             self.buf_kv = mx.zeros((B, ratio, D1), dtype=kv.dtype)
             self.buf_gate = mx.zeros((B, ratio, D2), dtype=gate.dtype)
@@ -591,9 +594,10 @@ class BatchPoolingCache(_BaseCache):
         if has_buf:
             D1 = next(c.buf_kv.shape[2] for c in caches if c.buf_kv is not None)
             D2 = next(c.buf_gate.shape[2] for c in caches if c.buf_gate is not None)
-            dt = next(c.buf_kv.dtype for c in caches if c.buf_kv is not None)
-            buf_kv = mx.zeros((B, ratio, D1), dtype=dt)
-            buf_gate = mx.zeros((B, ratio, D2), dtype=dt)
+            kv_dt = next(c.buf_kv.dtype for c in caches if c.buf_kv is not None)
+            gate_dt = next(c.buf_gate.dtype for c in caches if c.buf_gate is not None)
+            buf_kv = mx.zeros((B, ratio, D1), dtype=kv_dt)
+            buf_gate = mx.zeros((B, ratio, D2), dtype=gate_dt)
             for i, c in enumerate(caches):
                 if c.buf_kv is not None and c.remainder > 0:
                     buf_kv[i, : c.remainder] = c.buf_kv[0, : c.remainder]

@@ -513,6 +513,10 @@ def write_checkpoint(
                 return None
             pending.extend(getattr(item, "caches", ()) or ())
     except Exception:
+        logger.warning(
+            "[disk_kv_checkpoint] cache compatibility check failed; skipping",
+            exc_info=True,
+        )
         return None
 
     with _DISK_LOCK:
