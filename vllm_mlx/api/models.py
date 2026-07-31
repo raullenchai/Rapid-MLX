@@ -2656,6 +2656,11 @@ class AudioSpeechRequest(BaseModel):
     # matches the documented contract.
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
     response_format: str = "wav"
+    # Rapid-MLX extensions for callers mixing speech with other audio lanes.
+    # Omitted values preserve the model's native output (commonly 24 kHz
+    # mono); explicit values resample/rechannel after synthesis.
+    sample_rate: StrictInt | None = Field(default=None, ge=8_000, le=96_000)
+    channels: Literal[1, 2] | None = None
     # OpenAI ``gpt-4o-mini-tts`` accepts an ``instructions`` field that
     # steers the emotional delivery / speaking style ("Speak in a cheerful
     # and positive tone."). We honour the same field name for spec
@@ -2853,6 +2858,9 @@ class AudioMusicRequest(BaseModel):
     negative_prompt: str | None = Field(default=None, max_length=4096)
     seed: int | None = None
     response_format: str = "wav"
+    # Omitted values preserve SA3's native 44.1 kHz stereo output.
+    sample_rate: StrictInt | None = Field(default=None, ge=8_000, le=96_000)
+    channels: Literal[1, 2] | None = None
 
     @field_validator("input")
     @classmethod

@@ -2452,7 +2452,9 @@ def _generate_speech_blocking(
     gen_kwargs: dict,
     ref_bytes: bytes | None,
     ref_text: str | None,
-) -> bytes:
+    sample_rate: int | None,
+    channels: int | None,
+) -> tuple[bytes, int, int]:
     """Load, synthesize, and encode speech without blocking the event loop."""
     global _tts_engine
 
@@ -2476,7 +2478,22 @@ def _generate_speech_blocking(
             audio = _tts_engine.generate(input_text, **kwargs)
     else:
         audio = _tts_engine.generate(input_text, **kwargs)
-    return _tts_engine.to_bytes(audio, format=response_format)
+    from ..audio.output_format import convert_audio_output
+
+    converted, output_rate, output_channels = convert_audio_output(
+        audio.audio,
+        audio.sample_rate,
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+    audio.audio = converted
+    audio.sample_rate = output_rate
+    audio.duration = len(converted) / output_rate
+    return (
+        _tts_engine.to_bytes(audio, format=response_format),
+        output_rate,
+        output_channels,
+    )
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
@@ -2531,6 +2548,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     voice = request.voice
     speed = request.speed
     response_format = request.response_format
+    sample_rate = request.sample_rate
+    channels = request.channels
     instructions = request.instructions
     ref_audio = request.ref_audio
     ref_text = request.ref_text
@@ -2773,7 +2792,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                 ) from exc
         try:
             async with _get_tts_lane_lock():
-                audio_bytes = await run_to_completion(
+                audio_bytes, output_rate, output_channels = await run_to_completion(
                     _generate_speech_blocking,
                     model_name,
                     input_text,
@@ -2781,6 +2800,8 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
                     gen_kwargs,
                     ref_bytes,
                     ref_text,
+                    sample_rate,
+                    channels,
                 )
         except UnsupportedAudioFormatError as e:
             # R8-H5 (Bo 0.8.9 dogfood): the encoder couldn't produce the
@@ -2810,7 +2831,14 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         content_type = _TTS_CONTENT_TYPES.get(
             response_format.lower(), "application/octet-stream"
         )
-        return Response(content=audio_bytes, media_type=content_type)
+        return Response(
+            content=audio_bytes,
+            media_type=content_type,
+            headers={
+                "X-Audio-Sample-Rate": str(output_rate),
+                "X-Audio-Channels": str(output_channels),
+            },
+        )
 
     except HTTPException:
         # Preserve probe-emitted 503 (and any other explicit status)
@@ -2964,6 +2992,47 @@ def _wav_has_audio_frames(payload: bytes) -> bool:
         return False
 
 
+def _convert_music_wav(
+    payload: bytes,
+    *,
+    sample_rate: int | None,
+    channels: int | None,
+) -> tuple[bytes, int, int]:
+    """Convert SA3's PCM WAV while preserving its native format by default."""
+    with wave.open(io.BytesIO(payload), "rb") as source:
+        source_rate = source.getframerate()
+        source_channels = source.getnchannels()
+    if sample_rate is None and channels is None:
+        # Keep the backend's byte-for-byte output, including any metadata
+        # chunks a future SA3 encoder adds. Conversion is strictly opt-in.
+        return payload, source_rate, source_channels
+
+    import scipy.io.wavfile as wav
+
+    from ..audio.output_format import convert_audio_output
+
+    decoded_rate, encoded = wav.read(io.BytesIO(payload))
+    if encoded.dtype == "int16":
+        audio = encoded.astype("float32") / 32768.0
+    elif encoded.dtype == "float32":
+        audio = encoded
+    else:
+        raise ValueError(f"unsupported music WAV sample type: {encoded.dtype}")
+    converted, output_rate, output_channels = convert_audio_output(
+        audio,
+        int(decoded_rate),
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+    output = io.BytesIO()
+    wav.write(
+        output,
+        output_rate,
+        (converted * 32767.0).round().astype("int16"),
+    )
+    return output.getvalue(), output_rate, output_channels
+
+
 def _resolve_music_model(model: str | None) -> tuple[str, str]:
     """Map a ``/v1/audio/music`` ``model`` alias to a ``(dit, decoder)`` pair.
 
@@ -3048,9 +3117,22 @@ async def create_music(request: AudioMusicRequest = Body(...)):
                 f"{len(audio_bytes)} bytes)"
             )
 
+        audio_bytes, output_rate, output_channels = _convert_music_wav(
+            audio_bytes,
+            sample_rate=request.sample_rate,
+            channels=request.channels,
+        )
+
         # SA3 emits WAV; ``response_format`` is validated to ``wav`` by
         # the request model, so the Content-Type is always ``audio/wav``.
-        return Response(content=audio_bytes, media_type="audio/wav")
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={
+                "X-Audio-Sample-Rate": str(output_rate),
+                "X-Audio-Channels": str(output_channels),
+            },
+        )
 
     except HTTPException:
         raise

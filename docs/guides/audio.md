@@ -443,13 +443,18 @@ Generate speech from text (OpenAI TTS API compatible).
 - `model`: Model name or alias
 - `input`: Text to synthesize
 - `voice`: Voice ID
-- `speed`: Speech speed (0.5 to 2.0)
-- `response_format`: `wav`, `mp3`
+- `speed`: Speech speed (`0.25` to `4.0`)
+- `response_format`: `wav`, `pcm`, `mp3`, `flac`, `ogg`, or `opus`
+- `sample_rate`: Optional output rate (`8000` to `96000` Hz). Omit to keep
+  the TTS model's native rate (commonly 24 kHz).
+- `channels`: Optional output channel count, `1` or `2`. Omit to keep the
+  model's native channel count (commonly mono).
 
 **Example:**
 ```bash
 curl http://localhost:8000/v1/audio/speech \
-  -d '{"model": "kokoro", "input": "Hello world", "voice": "af_heart"}' \
+  -d '{"model": "kokoro", "input": "Hello world", "voice": "af_heart",
+       "sample_rate": 44100, "channels": 2}' \
   -H "Content-Type: application/json" \
   --output speech.wav
 ```
@@ -472,8 +477,12 @@ the same shape as `/v1/audio/speech`.
 | `negative_prompt` | string \| null | `null` | CFG negative branch (e.g. `"vocals, singing"`). Max 4096 chars. |
 | `seed` | integer \| null | `null` | Fixed seed for reproducibility. |
 | `response_format` | string | `"wav"` | Only `wav` is supported (SA3 renders WAV natively). |
+| `sample_rate` | integer \| null | `null` | Output rate, `8000..96000` Hz. Omit to preserve SA3's native 44.1 kHz. |
+| `channels` | `1` \| `2` \| null | `null` | Output channel count. Omit to preserve SA3's native stereo output. |
 
 **Response:** `200 OK`, `Content-Type: audio/wav` — the raw WAV bytes.
+Speech and music responses also include `X-Audio-Sample-Rate` and
+`X-Audio-Channels`, which are especially useful for headerless PCM speech.
 
 Errors: `400` for schema violations (blank or over-4096-char `input`,
 `seconds > 47`, unsupported `response_format`); `500`
@@ -504,7 +513,9 @@ curl http://localhost:8000/v1/audio/music \
         "seconds": 20,
         "steps": 8,
         "negative_prompt": "vocals, singing",
-        "seed": 42
+        "seed": 42,
+        "sample_rate": 24000,
+        "channels": 1
       }' \
   --output bgm.wav
 ```
