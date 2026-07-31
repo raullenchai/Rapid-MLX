@@ -238,6 +238,45 @@ class VideoEngine:
             output_height=output_height,
             family="LTX-2.3",
         )
+        self._remove_audio_track(output_path)
+
+    @staticmethod
+    def _remove_audio_track(output_path: Path) -> None:
+        """Remux an audio-less LTX generation as a video-only MP4."""
+        video_only = output_path.with_name(f"{output_path.stem}.video-only.mp4")
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(output_path),
+                    "-map",
+                    "0:v:0",
+                    "-c:v",
+                    "copy",
+                    "-an",
+                    str(video_only),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+            if not video_only.is_file() or video_only.stat().st_size == 0:
+                raise OSError("ffmpeg completed without a video-only MP4")
+            video_only.replace(output_path)
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ) as exc:
+            raise VideoRuntimeError(
+                "LTX-2.3 generated video but its silent audio track could not "
+                "be removed."
+            ) from exc
+        finally:
+            video_only.unlink(missing_ok=True)
 
     @staticmethod
     def _crop_generated_output(

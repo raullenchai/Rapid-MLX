@@ -306,6 +306,7 @@ def test_video_engine_calls_mlx_native_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured = {}
+    ffmpeg_calls = []
     fake = ModuleType("mlx_video")
 
     def generate_video_with_audio(
@@ -333,6 +334,12 @@ def test_video_engine_calls_mlx_native_pipeline(
     monkeypatch.setitem(sys.modules, "mlx_video", fake)
     monkeypatch.setattr("shutil.which", lambda _: "/opt/homebrew/bin/ffmpeg")
 
+    def remux_video_only(command, **kwargs) -> None:
+        ffmpeg_calls.append(command)
+        Path(command[-1]).write_bytes(b"video-only-mp4")
+
+    monkeypatch.setattr("subprocess.run", remux_video_only)
+
     output = tmp_path / "result.mp4"
     reference = tmp_path / "reference.png"
     Image.new("RGB", (64, 64), "blue").save(reference)
@@ -351,13 +358,35 @@ def test_video_engine_calls_mlx_native_pipeline(
         conditioning_strength=0.25,
     )
 
-    assert output.read_bytes() == b"mp4"
+    assert output.read_bytes() == b"video-only-mp4"
     assert captured["model_repo"] == "notapalindrome/ltx23-mlx-av-q4"
     assert captured["num_frames"] == 97
     assert captured["image"] == str(reference)
     assert captured["negative_prompt"] == "static"
     assert captured["cfg_scale"] == 4.5
     assert captured["image_strength"] == 0.25
+    assert len(ffmpeg_calls) == 1
+    assert ffmpeg_calls[0][ffmpeg_calls[0].index("-map") + 1] == "0:v:0"
+    assert "-an" in ffmpeg_calls[0]
+    assert ffmpeg_calls[0][ffmpeg_calls[0].index("-c:v") + 1] == "copy"
+
+
+def test_video_only_remux_failure_is_actionable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "result.mp4"
+    output.write_bytes(b"mp4-with-silent-audio")
+
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "ffmpeg")
+
+    monkeypatch.setattr("subprocess.run", fail)
+
+    with pytest.raises(VideoRuntimeError, match="silent audio track"):
+        VideoEngine._remove_audio_track(output)
+
+    assert output.read_bytes() == b"mp4-with-silent-audio"
+    assert not (tmp_path / "result.video-only.mp4").exists()
 
 
 def test_video_engines_share_process_generation_lock() -> None:
