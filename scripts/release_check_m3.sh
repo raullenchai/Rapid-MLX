@@ -85,11 +85,39 @@ if lsof -i ":$PORT" >/dev/null 2>&1; then
   exit 2
 fi
 
+# Pre-flight: refuse if ANOTHER rapid-mlx serve / pr_validate is running on this
+# box. A serve-based gauntlet needs EXCLUSIVE GPU + ports. A concurrent workload
+# will (a) fight over ports — its own :8000 port-management can SIGTERM this
+# server mid-gate — and (b) GPU-contend every request, inflating latency enough
+# to false-fail the timeout-sensitive agentic gates. The `lsof -i :$PORT` check
+# above MISSES this: a concurrent server still LOADING its model hasn't bound the
+# port yet, so the port reads false-free at our start, then the two collide once
+# it binds. Detect the processes directly. (A real contamination that wasted a
+# full validation cycle — see knowledge/release-check-m3-tuning-backlog §E.)
+# Override with RAPID_MLX_ALLOW_CONCURRENT=1 if you are certain the other
+# workload won't touch the GPU or our ports.
+if [ "${RAPID_MLX_ALLOW_CONCURRENT:-0}" != "1" ]; then
+  _concurrent=$(ps -Ao pid,command 2>/dev/null \
+    | grep -E 'vllm_mlx\.cli (serve|bench)|scripts\.pr_validate' \
+    | grep -Ev 'grep|release_check_m3|coherence_sweep|wait-then-validate' || true)
+  if [ -n "$_concurrent" ]; then
+    echo "ERROR: another rapid-mlx serve / pr_validate is running on this box." >&2
+    echo "  The release gauntlet needs EXCLUSIVE GPU + ports: a concurrent run will" >&2
+    echo "  SIGTERM this server mid-gate and GPU-contend every request (false fails)." >&2
+    echo "  Stop it first, or set RAPID_MLX_ALLOW_CONCURRENT=1 to override. Found:" >&2
+    echo "$_concurrent" | sed 's/^/    /' >&2
+    exit 2
+  fi
+fi
+
 cleanup() {
   if [ -f "$PIDFILE" ]; then
     kill "$(cat "$PIDFILE")" 2>/dev/null || true
     rm -f "$PIDFILE"
   fi
+  # The concurrent correctness cluster stages per-gate logs/rc under a
+  # mktemp dir; remove it too so an abort mid-cluster doesn't leak /tmp.
+  [ -n "${CLUSTER_WORK:-}" ] && rm -rf "$CLUSTER_WORK"
 }
 trap cleanup EXIT INT TERM
 
@@ -118,6 +146,14 @@ echo "→ Starting server (background)…"
 # on chained-tool tests confuses the final-answer turn (qwen3.5-9b-4bit
 # re-narrates the problem after the second tool result). Thinking
 # coverage belongs to a separate evaluation suite, not the release gate.
+#
+# NOTE: prefix cache is left ENABLED (engine default). Disabling it here was
+# tried to fix serve-readiness creep (a large persisted cache loads synchronously
+# at startup before /v1/models flips ready), but that also forces the heavy
+# multi-turn agentic gate (G7b hermes) to reprocess its growing per-test contexts
+# and risks false timeouts. The readiness-creep fix belongs in the engine — defer
+# the disk load off the readiness path (tracked in #1350) so it benefits all serve
+# users without slowing the gates.
 $PY -m vllm_mlx.cli serve "$MODEL" --port "$PORT" --no-thinking > "$LOG" 2>&1 &
 echo $! > "$PIDFILE"
 
@@ -157,189 +193,207 @@ echo "  G5 — make stress (8 scenarios incl. tool storm)"
 line
 "$PY" scripts/dev_test.py stress --port "$PORT"
 
-#-------------------- G7 SDK integration --------------------------
-# Fail-loud assertion: G7 SDK tests read the target endpoint from
-# ``RAPID_MLX_BASE_URL`` (see issue #974). If the top-of-script export
-# is ever regressed / clobbered downstream / disabled, bail out here
-# rather than silently pointing G7 at whatever server the default URL
-# lands on (typically the operator's production 8000).
+#============ G7 + G7b + G6 — concurrent correctness cluster =======
+# These three sections are all output-CORRECTNESS gates: every assertion
+# is per-request-local (SDK response shape, /v1/responses event ordering,
+# a single-request parallel-cap count), not a wall-clock/latency or
+# whole-server-state measurement. So they are safe to run CONCURRENTLY
+# against the one already-booted batching server — BatchedEngine merges
+# their requests on the single GPU, and a request merely waiting its turn
+# changes none of the assertions. Serially they cost ~sum; concurrently
+# they collapse to ~max, which is G7b's `bench --tier harness` (the hermes
+# profile runs 20+ serial agentic tests, ~740s — the long pole every other
+# cluster gate hides under).
+#
+# Kept OUT of this cluster on purpose: G0b runs serial FIRST (coherence
+# fail-fast — #1247), and G5 stress / G9 latency stay SOLO because their
+# verdicts depend on an uncontended server. G8 (parser microbench) is a
+# pure-CPU timing-threshold gate and stays serial too, so background CPU
+# contention can't inflate its us/call.
+#
+# Concurrency mechanics (mirrors tests/integrations/agent_smoke.sh):
+#   - each gate runs as a background job writing its stdout+stderr to its
+#     own log and its exit status to its own .rc under $CLUSTER_WORK
+#     (background subshells can't export vars back to the parent);
+#   - the gate BODIES are byte-for-byte the serial versions, wrapped in an
+#     inner `( set -e … )` subshell so they still fail-fast internally
+#     exactly as before; the outer function runs `set +e` so capturing the
+#     rc is never itself aborted;
+#   - we `wait` on the FIVE explicit agent PIDs, never a bare `wait` — a
+#     bare `wait` would also block on the still-running background serve
+#     ($PIDFILE) and hang the gauntlet forever after the gates finish.
+
+# Fail-loud assertion (issue #974): every cluster gate that resolves its
+# endpoint from ``RAPID_MLX_BASE_URL`` must hit the gauntlet's own server.
+# If the top-of-script export is ever regressed / clobbered / disabled,
+# bail out here rather than silently pointing the SDK tests at whatever
+# server the default URL lands on (typically the operator's production
+# 8000). Checked once, before launch, since it guards all cluster gates.
 _expected_base="http://127.0.0.1:${PORT}/v1"
 if [ "${RAPID_MLX_BASE_URL:-}" != "$_expected_base" ]; then
-  echo "ERROR: G7 env mismatch — RAPID_MLX_BASE_URL='${RAPID_MLX_BASE_URL:-}' expected '$_expected_base'." >&2
-  echo "  This means G7 SDK tests would hit a different server than the gauntlet booted." >&2
+  echo "ERROR: cluster env mismatch — RAPID_MLX_BASE_URL='${RAPID_MLX_BASE_URL:-}' expected '$_expected_base'." >&2
+  echo "  This means the G7 SDK tests would hit a different server than the gauntlet booted." >&2
   exit 1
 fi
 
-line
-echo "  G7 — Anthropic SDK"
-line
-"$PY" tests/integrations/test_anthropic_sdk.py
+CLUSTER_WORK="$(mktemp -d)"
 
-line
-echo "  G7 — pydantic_ai"
-line
-"$PY" tests/integrations/test_pydantic_ai_full.py
-
+# --- G7 SDK integration (three tests, each its own job) ---
+run_g7_anthropic() {
+  set +e
+  ( set -e; "$PY" tests/integrations/test_anthropic_sdk.py ) \
+    > "$CLUSTER_WORK/g7_anthropic.log" 2>&1
+  echo $? > "$CLUSTER_WORK/g7_anthropic.rc"
+}
+run_g7_pydantic() {
+  set +e
+  ( set -e; "$PY" tests/integrations/test_pydantic_ai_full.py ) \
+    > "$CLUSTER_WORK/g7_pydantic.log" 2>&1
+  echo $? > "$CLUSTER_WORK/g7_pydantic.rc"
+}
 # smolagents — tests 3+4 will 422 by design under tool_choice=required
-# strict enforcement (PR #518 behavior). Test 1+2 are CodeAgent format
+# strict enforcement (PR #518 behavior). Tests 1+2 are CodeAgent format
 # expectations that small models hallucinate. Run for the contract
-# coverage but DON'T fail the gauntlet on its expected failures —
-# document the expected behavior instead.
-line
-echo "  G7 — smolagents (informational; expected partial fail on 4B)"
-line
-"$PY" tests/integrations/test_smolagents_full.py || true
+# coverage but DON'T fail the gauntlet on its expected failures — the
+# `|| true` keeps it informational.
+run_g7_smol() {
+  set +e
+  ( "$PY" tests/integrations/test_smolagents_full.py || true ) \
+    > "$CLUSTER_WORK/g7_smol.log" 2>&1
+  echo $? > "$CLUSTER_WORK/g7_smol.rc"
+}
 
-#-------------------- G7b agent harness layer ---------------------
+# --- G7b agent harness layer (the long pole) ---
 # Two-part gate.
 #
-# Part A — `rapid-mlx agents <name> --test`: smoke-tests
-# `/v1/chat/completions` parser/router for the five first-class
-# harnesses. Doesn't touch `/v1/responses` (the runner only knows
-# Chat Completions today). The five gated harnesses:
-#   - codex     (Codex CLI, /v1/responses workhorse — Part B covers
-#                the responses route directly)
-#   - opencode  (OpenCode, Hermes-parser path)
-#   - hermes    (Hermes Agent; specific_tests run the 62-tool stress)
-#   - aider     (no CLI dep; API-level smoke only)
-#   - langchain (specific_tests: tests/integrations/test_langchain.py;
-#                pip-installs langchain-openai on the runner)
-# Other registered profiles need third-party CLIs on PATH and are
-# environmentally flaky for a release gate, OR are pure-interactive
-# (cline = VSCode extension, openhands/openclaude = interactive
-# query_cmd=null) and would false-positive PASS on the API-level
-# default plan without exercising the actual agent workflow.
+# Part A — `bench --tier harness`: smoke-tests `/v1/chat/completions`
+# parser/router for the five first-class harnesses (codex / opencode /
+# hermes / aider / langchain). Doesn't touch `/v1/responses` (the runner
+# only knows Chat Completions today). Consolidated in PR #2 of the
+# bench-tier series: a single `bench --tier harness` call replaces the
+# prior five sequential `agents <name> --test` invocations — same
+# coverage, one process, one summary block. `--base-url` attaches it to
+# the gauntlet's already-booted server on $PORT instead of booting its
+# own (which would conflict on port + waste model-load time). Exit-code
+# contract: exits 1 iff any test failed or errored, so the inner
+# `set -e` aborts this gate on the first failure. Don't `|| true` it; a
+# quiet skip means a missed release gate.
 #
-# Part B — direct `/v1/responses` curl probes: AgentTestRunner has
-# zero coverage of the Responses shim (added in v0.7.10 for Codex).
-# A single non-stream probe + a single SSE probe is enough to catch
-# route-level regressions (missing event, wrong status, broken
-# usage payload). If the shim regresses, Codex CLI users get
-# "stream closed before response.completed" with no other signal.
-#
-# Exit-code contract for Part A: `rapid-mlx agents <name> --test`
-# exits 1 iff any test failed or errored (vllm_mlx/cli.py:
-# sys.exit(0 if success else 1), wrapping
-# AgentTestRunner.print_summary's `failed == 0 and errored == 0`
-# at vllm_mlx/agents/testing.py:130). `set -e` aborts the gauntlet
-# on the first failure — series-fail-fast matches G7's pattern.
-# Don't `|| true` these; a quiet skip means a missed release gate.
-line
-echo "  G7b — agent harness layer (codex / opencode / hermes / aider / langchain + /v1/responses probe)"
-line
+# Part B — direct `/v1/responses` curl probes: AgentTestRunner has zero
+# coverage of the Responses shim (added in v0.7.10 for Codex). A
+# non-stream probe + two SSE probes catch route-level regressions
+# (missing event, wrong status, broken usage payload, developer-role
+# passthrough, suppressed function_call). If the shim regresses, Codex
+# CLI users get "stream closed before response.completed" with no other
+# signal.
+run_g7b() {
+  set +e
+  (
+    set -e
+    echo "  Part A: bench --tier harness (chat-completions smoke for all 5 first-class harnesses)"
+    "$PY" -m vllm_mlx.cli bench "$MODEL" --tier harness \
+      --base-url "http://127.0.0.1:$PORT"
 
-echo "  Part A: bench --tier harness (chat-completions smoke for all 5 first-class harnesses)"
-# Consolidated in PR #2 of the bench-tier series: a single
-# `bench --tier harness` call replaces the prior five sequential
-# `agents <name> --test` invocations. Same coverage, one process,
-# one summary block. We pass --base-url so the tier runner attaches
-# to the gauntlet's already-booted server on $PORT instead of booting
-# its own (which would conflict on port + waste model-load time).
-"$PY" -m vllm_mlx.cli bench "$MODEL" --tier harness \
-  --base-url "http://127.0.0.1:$PORT"
+    echo
+    echo "  Part B: /v1/responses curl probe (non-stream + SSE)"
 
-echo
-echo "  Part B: /v1/responses curl probe (non-stream + SSE)"
+    # Non-stream — verifies route reachable, response shape correct.
+    ns_body=$(curl -sf -X POST "http://127.0.0.1:$PORT/v1/responses" \
+      -H 'Content-Type: application/json' \
+      -d '{"model": "gpt-5", "input": "Reply with the single word: ok", "stream": false, "max_output_tokens": 16}')
+    if ! echo "$ns_body" | grep -q '"object":"response"'; then
+      echo "G7b non-stream FAIL: missing response object" >&2
+      echo "  body: $ns_body" >&2
+      exit 1
+    fi
+    if ! echo "$ns_body" | grep -qE '"status":"(completed|incomplete)"'; then
+      echo "G7b non-stream FAIL: missing completed/incomplete status" >&2
+      echo "  body: $ns_body" >&2
+      exit 1
+    fi
+    echo "    non-stream: OK"
 
-# Non-stream — verifies route reachable, response shape correct.
-ns_body=$(curl -sf -X POST "http://127.0.0.1:$PORT/v1/responses" \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "gpt-5", "input": "Reply with the single word: ok", "stream": false, "max_output_tokens": 16}')
-if ! echo "$ns_body" | grep -q '"object":"response"'; then
-  echo "G7b non-stream FAIL: missing response object" >&2
-  echo "  body: $ns_body" >&2
-  exit 1
-fi
-if ! echo "$ns_body" | grep -qE '"status":"(completed|incomplete)"'; then
-  echo "G7b non-stream FAIL: missing completed/incomplete status" >&2
-  echo "  body: $ns_body" >&2
-  exit 1
-fi
-echo "    non-stream: OK"
-
-# SSE — verifies the 7 events Codex parses fire in the right order
-# (response.created → ... → response.completed). The event Codex
-# treats as hardest failure is missing `response.completed`.
-sse=$(mktemp)
-curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "gpt-5", "input": "Reply with the single word: ok", "stream": true, "max_output_tokens": 16}' > "$sse"
-for evt in "response.created" "response.completed"; do
-  if ! grep -q "event: $evt" "$sse"; then
-    echo "G7b SSE FAIL: missing event '$evt'" >&2
-    head -20 "$sse" >&2
+    # SSE — verifies the events Codex parses fire in the right order
+    # (response.created → ... → response.completed). The event Codex
+    # treats as hardest failure is missing `response.completed`.
+    sse=$(mktemp)
+    curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
+      -H 'Content-Type: application/json' \
+      -d '{"model": "gpt-5", "input": "Reply with the single word: ok", "stream": true, "max_output_tokens": 16}' > "$sse"
+    for evt in "response.created" "response.completed"; do
+      if ! grep -q "event: $evt" "$sse"; then
+        echo "G7b SSE FAIL: missing event '$evt'" >&2
+        head -20 "$sse" >&2
+        rm -f "$sse"
+        exit 1
+      fi
+    done
+    # Verify completed lands AFTER created (basic ordering sanity).
+    created_line=$(grep -n "event: response.created" "$sse" | head -1 | cut -d: -f1)
+    completed_line=$(grep -n "event: response.completed" "$sse" | head -1 | cut -d: -f1)
+    if [ -z "$created_line" ] || [ -z "$completed_line" ] || [ "$completed_line" -le "$created_line" ]; then
+      echo "G7b SSE FAIL: response.completed not after response.created (created@$created_line, completed@$completed_line)" >&2
+      exit 1
+    fi
     rm -f "$sse"
-    exit 1
-  fi
-done
-# Verify completed lands AFTER created (basic ordering sanity).
-created_line=$(grep -n "event: response.created" "$sse" | head -1 | cut -d: -f1)
-completed_line=$(grep -n "event: response.completed" "$sse" | head -1 | cut -d: -f1)
-if [ -z "$created_line" ] || [ -z "$completed_line" ] || [ "$completed_line" -le "$created_line" ]; then
-  echo "G7b SSE FAIL: response.completed not after response.created (created@$created_line, completed@$completed_line)" >&2
-  exit 1
-fi
-rm -f "$sse"
-echo "    SSE: OK (response.created → response.completed)"
+    echo "    SSE: OK (response.created → response.completed)"
 
-# Part B.2 — codex-shape SSE: input[] + developer role + tool definition.
-# The bare-string `input` probe above only exercises the easy code path
-# (`input` → single user message) and missed THREE production regressions
-# at once on Codex CLI 0.136.0:
-#   1. `developer`-role items passed through verbatim → Qwen template
-#      raised `Unexpected message role.`
-#   2. After role mapping, multiple system messages tripped Qwen's
-#      "System message must be at the beginning." check
-#   3. tool_call XML was suppressed by tool_filter but the post-loop
-#      parser was reading the FILTERED text, so no `response.function_call`
-#      event ever emitted — Codex's agent loop terminated silently
-#
-# This probe exercises the codex-shape input + asserts a function_call
-# item gets emitted (the hardest signal — covers all three regressions
-# at once because a missing event 0 / 1 / 2 all result in zero items).
-sse2=$(mktemp)
-# Wrap in `if !` so `set -e` doesn't kill the script on a transport
-# failure before the diagnostic block + cleanup can run. Without this
-# wrapper, an HTTP 5xx or connection drop would exit the gauntlet with
-# zero context and a stale temp file (codex_review NIT).
-if ! curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "gpt-5",
-    "stream": true,
-    "max_output_tokens": 64,
-    "instructions": "You are a helpful agent.",
-    "input": [
-      {"type": "message", "role": "user", "content": "Call get_weather with city=SF"},
-      {"type": "message", "role": "developer", "content": "Always use the tool when asked."}
-    ],
-    "tools": [
-      {"type": "function", "name": "get_weather", "description": "Get the weather for a city",
-       "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
-    ],
-    "tool_choice": "required"
-  }' > "$sse2"; then
-  echo "G7b codex-shape SSE FAIL: curl to /v1/responses errored — server crashed or rejected the codex-shape request" >&2
-  head -30 "$sse2" >&2
-  rm -f "$sse2"
-  exit 1
-fi
-for evt in "response.created" "response.output_item.added" "response.completed"; do
-  if ! grep -q "event: $evt" "$sse2"; then
-    echo "G7b codex-shape SSE FAIL: missing event '$evt' — codex agent loop would silently terminate" >&2
-    head -30 "$sse2" >&2
-    rm -f "$sse2"
-    exit 1
-  fi
-done
-# Function-call item is the strongest signal — without it Codex sees a
-# turn.completed with zero items and the agent loop ends with no output.
-# Parse SSE properly: pair each `event:` line with its `data:` payload
-# and assert at least one `response.output_item.added` carries an item
-# with `type == "function_call"`. Whole-file grep is unsafe — a text
-# delta containing the literal string `"type":"function_call"` would
-# spuriously pass without any function-call item ever being emitted.
-if ! python3 - "$sse2" <<'PY'
+    # Part B.2 — codex-shape SSE: input[] + developer role + tool definition.
+    # The bare-string `input` probe above only exercises the easy code path
+    # (`input` → single user message) and missed THREE production regressions
+    # at once on Codex CLI 0.136.0:
+    #   1. `developer`-role items passed through verbatim → Qwen template
+    #      raised `Unexpected message role.`
+    #   2. After role mapping, multiple system messages tripped Qwen's
+    #      "System message must be at the beginning." check
+    #   3. tool_call XML was suppressed by tool_filter but the post-loop
+    #      parser was reading the FILTERED text, so no `response.function_call`
+    #      event ever emitted — Codex's agent loop terminated silently
+    #
+    # This probe exercises the codex-shape input + asserts a function_call
+    # item gets emitted (the hardest signal — covers all three regressions
+    # at once because a missing event 0 / 1 / 2 all result in zero items).
+    sse2=$(mktemp)
+    # Wrap in `if !` so `set -e` doesn't kill the gate on a transport
+    # failure before the diagnostic block + cleanup can run.
+    if ! curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
+      -H 'Content-Type: application/json' \
+      -d '{
+        "model": "gpt-5",
+        "stream": true,
+        "max_output_tokens": 64,
+        "instructions": "You are a helpful agent.",
+        "input": [
+          {"type": "message", "role": "user", "content": "Call get_weather with city=SF"},
+          {"type": "message", "role": "developer", "content": "Always use the tool when asked."}
+        ],
+        "tools": [
+          {"type": "function", "name": "get_weather", "description": "Get the weather for a city",
+           "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
+        ],
+        "tool_choice": "required"
+      }' > "$sse2"; then
+      echo "G7b codex-shape SSE FAIL: curl to /v1/responses errored — server crashed or rejected the codex-shape request" >&2
+      head -30 "$sse2" >&2
+      rm -f "$sse2"
+      exit 1
+    fi
+    for evt in "response.created" "response.output_item.added" "response.completed"; do
+      if ! grep -q "event: $evt" "$sse2"; then
+        echo "G7b codex-shape SSE FAIL: missing event '$evt' — codex agent loop would silently terminate" >&2
+        head -30 "$sse2" >&2
+        rm -f "$sse2"
+        exit 1
+      fi
+    done
+    # Function-call item is the strongest signal — without it Codex sees a
+    # turn.completed with zero items and the agent loop ends with no output.
+    # Parse SSE properly: pair each `event:` line with its `data:` payload
+    # and assert at least one `response.output_item.added` carries an item
+    # with `type == "function_call"`. Whole-file grep is unsafe — a text
+    # delta containing the literal string `"type":"function_call"` would
+    # spuriously pass without any function-call item ever being emitted.
+    if ! python3 - "$sse2" <<'PY'
 import json, sys
 path = sys.argv[1]
 event = None
@@ -361,38 +415,130 @@ for raw in open(path, encoding="utf-8", errors="replace"):
         event = None
 sys.exit(0 if ok else 1)
 PY
-then
-  echo "G7b codex-shape SSE FAIL: no response.output_item.added with item.type=function_call — codex agent loop would terminate with zero items" >&2
-  head -30 "$sse2" >&2
-  rm -f "$sse2"
-  exit 1
-fi
-rm -f "$sse2"
-echo "    SSE (codex-shape): OK (function_call item emitted)"
+    then
+      echo "G7b codex-shape SSE FAIL: no response.output_item.added with item.type=function_call — codex agent loop would terminate with zero items" >&2
+      head -30 "$sse2" >&2
+      rm -f "$sse2"
+      exit 1
+    fi
+    rm -f "$sse2"
+    echo "    SSE (codex-shape): OK (function_call item emitted)"
+  ) > "$CLUSTER_WORK/g7b.log" 2>&1
+  echo $? > "$CLUSTER_WORK/g7b.rc"
+}
 
-#-------------------- G6 fix-path repro ---------------------------
+# --- G6 parallel_tool_calls=false cap (PR #518 fix path) ---
+run_g6() {
+  set +e
+  (
+    set -e
+    tmp_indices=$(mktemp)
+    curl -sf -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
+      -H 'Content-Type: application/json' \
+      -d "{
+        \"model\": \"$MODEL\",
+        \"stream\": true,
+        \"parallel_tool_calls\": false,
+        \"tool_choice\": \"required\",
+        \"messages\": [{\"role\": \"user\", \"content\": \"Get weather for SF AND NY\"}],
+        \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}]
+      }" | grep -oE '"index":[0-9]+' | sort -u > "$tmp_indices"
+    distinct=$(wc -l < "$tmp_indices")
+    echo "  distinct tool_call indices: $distinct"
+    if [ "$distinct" -ne 1 ]; then
+      echo "G6 FAIL: parallel cap leaked $distinct tool_calls (expected 1)" >&2
+      cat "$tmp_indices" >&2
+      rm -f "$tmp_indices"
+      exit 1
+    fi
+    rm -f "$tmp_indices"
+  ) > "$CLUSTER_WORK/g6.log" 2>&1
+  echo $? > "$CLUSTER_WORK/g6.rc"
+}
+
 line
-echo "  G6 — parallel_tool_calls=false cap (PR #518 fix path)"
+echo "  G7 + G6 — light correctness cluster (concurrent on the one :$PORT server)"
+echo "    running: Anthropic SDK · pydantic_ai · smolagents · parallel-cap"
+echo "    (per-request shape/count assertions — contention-insensitive, safe to overlap)"
 line
-tmp_indices=$(mktemp)
-curl -sf -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
-  -H 'Content-Type: application/json' \
-  -d "{
-    \"model\": \"$MODEL\",
-    \"stream\": true,
-    \"parallel_tool_calls\": false,
-    \"tool_choice\": \"required\",
-    \"messages\": [{\"role\": \"user\", \"content\": \"Get weather for SF AND NY\"}],
-    \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}]
-  }" | grep -oE '"index":[0-9]+' | sort -u > "$tmp_indices"
-distinct=$(wc -l < "$tmp_indices")
-echo "  distinct tool_call indices: $distinct"
-if [ "$distinct" -ne 1 ]; then
-  echo "G6 FAIL: parallel cap leaked $distinct tool_calls (expected 1)" >&2
-  cat "$tmp_indices" >&2
+
+run_g7_anthropic & _p_g7a=$!
+run_g7_pydantic  & _p_g7p=$!
+run_g7_smol      & _p_g7s=$!
+run_g6           & _p_g6=$!
+
+# Wait ONLY on the four LIGHT cluster jobs (never a bare `wait`; see header). The
+# `|| true` keeps `set -e` from aborting on a failed job before the per-gate
+# diagnostics below run — the real verdict of each gate is in its .rc file.
+wait "$_p_g7a" "$_p_g7p" "$_p_g7s" "$_p_g6" || true
+
+# G7b (bench --tier harness) runs SOLO on an uncontended GPU. Its per-test
+# assertions are TIMEOUT-based multi-step agentic round-trips, so overlapping it
+# with other GPU consumers slows each request past its timeout and false-fails
+# (observed on a clean box: codex e2e_file_read + hermes code_with_tests TIMEOUT
+# under 5-way contention, G7b 1359s vs ~740s solo). The four gates above assert
+# only per-request response shape/count, which contention cannot change, so they
+# overlap safely; G7b cannot. Run it after the light cluster releases the GPU.
+#
+# Call in a subshell: run_g7b flips `set +e` (like every gate fn). The four light
+# gates are backgrounded with `&`, which already subshells them, so their `set +e`
+# never escapes; a FOREGROUND run_g7b would instead leak `set +e` into the
+# post-cluster gates (G9 latency / G8 parser / G12) and silently disable their
+# fail-fast. `( … )` isolates the option change, matching the `&` gates' semantics.
+( run_g7b )
+
+_rc() { cat "$CLUSTER_WORK/$1.rc" 2>/dev/null || echo 1; }
+cluster_fail=0
+
+# G7b — the long pole; always surface its full output (the harness summary
+# + /v1/responses probe results are informative even on PASS).
+line
+echo "  G7b — agent harness layer (codex / opencode / hermes / aider / langchain + /v1/responses probe)"
+line
+cat "$CLUSTER_WORK/g7b.log"
+if [ "$(_rc g7b)" = 0 ]; then
+  echo "  ✓ G7b PASS"
+else
+  echo "  ✗ G7b FAIL (rc=$(_rc g7b))"
+  cluster_fail=1
+fi
+
+echo
+if [ "$(_rc g7_anthropic)" = 0 ]; then
+  echo "  ✓ G7 Anthropic SDK PASS"
+else
+  echo "  ✗ G7 Anthropic SDK FAIL — full output:"
+  cat "$CLUSTER_WORK/g7_anthropic.log"
+  cluster_fail=1
+fi
+
+if [ "$(_rc g7_pydantic)" = 0 ]; then
+  echo "  ✓ G7 pydantic_ai PASS"
+else
+  echo "  ✗ G7 pydantic_ai FAIL — full output:"
+  cat "$CLUSTER_WORK/g7_pydantic.log"
+  cluster_fail=1
+fi
+
+# smolagents is informational (expected partial fail on small models) —
+# always show its output, never fail the gauntlet on it.
+echo "  • G7 smolagents (informational; expected partial fail on 4B) — output:"
+cat "$CLUSTER_WORK/g7_smol.log"
+
+if [ "$(_rc g6)" = 0 ]; then
+  echo "  ✓ G6 parallel_tool_calls=false cap PASS"
+else
+  echo "  ✗ G6 parallel_tool_calls=false cap FAIL — full output:"
+  cat "$CLUSTER_WORK/g6.log"
+  cluster_fail=1
+fi
+
+rm -rf "$CLUSTER_WORK"
+CLUSTER_WORK=""
+if [ "$cluster_fail" != 0 ]; then
+  echo "ERROR: correctness-cluster gate(s) failed — see per-gate output above." >&2
   exit 1
 fi
-rm -f "$tmp_indices"
 
 #-------------------- G9 latency 10-seq ---------------------------
 line
