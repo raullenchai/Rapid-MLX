@@ -2994,7 +2994,6 @@ def _wav_has_audio_frames(payload: bytes) -> bool:
 
 def _convert_music_wav(
     payload: bytes,
-    *,
     sample_rate: int | None,
     channels: int | None,
 ) -> tuple[bytes, int, int]:
@@ -3117,10 +3116,11 @@ async def create_music(request: AudioMusicRequest = Body(...)):
                 f"{len(audio_bytes)} bytes)"
             )
 
-        audio_bytes, output_rate, output_channels = _convert_music_wav(
+        audio_bytes, output_rate, output_channels = await run_to_completion(
+            _convert_music_wav,
             audio_bytes,
-            sample_rate=request.sample_rate,
-            channels=request.channels,
+            request.sample_rate,
+            request.channels,
         )
 
         # SA3 emits WAV; ``response_format`` is validated to ``wav`` by

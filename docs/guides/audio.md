@@ -450,6 +450,10 @@ Generate speech from text (OpenAI TTS API compatible).
 - `channels`: Optional output channel count, `1` or `2`. Omit to keep the
   model's native channel count (commonly mono).
 
+MP3 accepts standard MPEG rates from 8–48 kHz; Opus accepts 8, 12, 16, 24,
+or 48 kHz. WAV, PCM, FLAC, and Ogg/Vorbis accept any integer in the documented
+8–96 kHz range. Invalid codec/rate combinations are rejected before synthesis.
+
 **Example:**
 ```bash
 curl http://localhost:8000/v1/audio/speech \

@@ -2766,6 +2766,32 @@ class AudioSpeechRequest(BaseModel):
             raise ValueError("ref_text must not be blank")
         return self
 
+    @model_validator(mode="after")
+    def _validate_codec_sample_rate(self):
+        if self.sample_rate is None:
+            return self
+        codec_rates = {
+            "mp3": {
+                8_000,
+                11_025,
+                12_000,
+                16_000,
+                22_050,
+                24_000,
+                32_000,
+                44_100,
+                48_000,
+            },
+            "opus": {8_000, 12_000, 16_000, 24_000, 48_000},
+        }
+        allowed = codec_rates.get(self.response_format)
+        if allowed is not None and self.sample_rate not in allowed:
+            values = ", ".join(str(value) for value in sorted(allowed))
+            raise ValueError(
+                f"sample_rate for {self.response_format} must be one of: {values}"
+            )
+        return self
+
     @field_validator("input")
     @classmethod
     def _input_must_be_non_blank(cls, v: str) -> str:

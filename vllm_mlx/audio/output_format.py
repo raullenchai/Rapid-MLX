@@ -19,6 +19,25 @@ def convert_audio_output(
     if source_rate <= 0:
         raise ValueError("source sample rate must be positive")
 
+    raw_shape = getattr(audio, "shape", None)
+    if raw_shape is None:
+        raw_shape = np.shape(audio)
+    shape = tuple(int(part) for part in raw_shape)
+    if len(shape) == 1:
+        source_channels = 1
+    elif len(shape) == 2:
+        source_channels = shape[0] if shape[0] in (1, 2) and shape[1] > 2 else shape[1]
+    else:
+        raise ValueError(f"audio must be one- or two-dimensional, got {len(shape)}D")
+    if source_channels not in (1, 2):
+        raise ValueError(
+            f"audio must be mono or stereo, got {source_channels} channels"
+        )
+    if sample_rate is None and channels is None:
+        # A missing output preference is a strict compatibility no-op: keep
+        # dtype, object identity, out-of-range floats, and backend layout.
+        return audio, source_rate, source_channels
+
     # MLX arrays do not expose NumPy's buffer protocol consistently across
     # releases, but their public ``tolist`` bridge is stable.
     source = audio.tolist() if hasattr(audio, "tolist") else audio
@@ -30,7 +49,7 @@ def convert_audio_output(
         # while a few return the channel-first shape used by ML models.
         if value.shape[0] in (1, 2) and value.shape[1] > 2:
             value = value.T
-    else:
+    else:  # pragma: no cover - shape validation above owns this branch
         raise ValueError(f"audio must be one- or two-dimensional, got {value.ndim}D")
     if value.shape[1] not in (1, 2):
         raise ValueError(f"audio must be mono or stereo, got {value.shape[1]} channels")
