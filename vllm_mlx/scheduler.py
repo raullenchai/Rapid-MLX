@@ -49,6 +49,7 @@ from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E40
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
+from .repetition_guard import detect_repeated_token_suffix
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.decode import IncrementalDecoder
 from .utils.mamba_cache import ensure_mamba_support
@@ -2162,6 +2163,10 @@ class Scheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # Agent-only safety stop for exact token loops.  This remains separate
+        # from normal completed-request accounting so operators can distinguish
+        # healthy EOS stops from model degeneration.
+        self.num_repetition_loop_stops = 0
         # PFlash observability (M-02 reframe). When PFlash compresses a
         # prompt the request bypasses the prefix-cache fetch + store
         # paths entirely (positional-fiction safety; see comment block
@@ -5295,6 +5300,32 @@ class Scheduler:
             # layer without tokenizer-family-specific casing.
             finish_reason = response.finish_reason
             stop_trimmed = False
+            # Agent models can occasionally enter a perfectly periodic decode
+            # loop after a tool interaction.  Once streamed, those deltas cannot
+            # be retracted, so stop it in the scheduler before thousands of
+            # useless tokens consume minutes of wall time.  Restrict this to
+            # tool-bearing requests and exact, long token repetition: ordinary
+            # chat/creative completions keep their historical semantics.
+            repetition_match = None
+            if (
+                finish_reason is None
+                and request.has_tools
+                and request.num_output_tokens % 8 == 0
+            ):
+                repetition_match = detect_repeated_token_suffix(
+                    request.output_token_ids
+                )
+                if repetition_match is not None:
+                    finish_reason = "stop"
+                    self.num_repetition_loop_stops += 1
+                    logger.warning(
+                        "Stopping agent request %s after exact token loop "
+                        "(period_tokens=%d repeats=%d completion_tokens=%d)",
+                        request_id,
+                        repetition_match.period_tokens,
+                        repetition_match.repeats,
+                        request.num_output_tokens,
+                    )
             stop_params = request.sampling_params.stop or []
             if finish_reason is None and stop_params:
                 decoder = getattr(request, "_decoder", None)
@@ -6178,6 +6209,7 @@ class Scheduler:
             "num_waiting": len(self.waiting),
             "num_running": len(self.running),
             "num_requests_processed": self.num_requests_processed,
+            "num_repetition_loop_stops": self.num_repetition_loop_stops,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
             # M-02: PFlash observability counters. ``bypass_count`` is

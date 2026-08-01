@@ -111,6 +111,7 @@ _FULL_STATS = {
     "num_waiting": 2,
     "num_running": 3,
     "num_requests_processed": 17,
+    "num_repetition_loop_stops": 3,
     "total_prompt_tokens": 1234,
     "total_completion_tokens": 5678,
     "steps_executed": 99,
@@ -141,6 +142,7 @@ def test_metrics_exposes_all_expected_series(metrics_client):
     expected_names = [
         "rapid_mlx_build_info",
         "rapid_mlx_requests_processed_total",
+        "rapid_mlx_repetition_loop_stops_total",
         "rapid_mlx_prompt_tokens_total",
         "rapid_mlx_completion_tokens_total",
         "rapid_mlx_requests_running",
@@ -168,6 +170,7 @@ def test_metrics_values_match_get_stats(metrics_client):
     body = metrics_client.client.get("/metrics").text
 
     assert "rapid_mlx_requests_processed_total 17" in body
+    assert "rapid_mlx_repetition_loop_stops_total 3" in body
     assert "rapid_mlx_prompt_tokens_total 1234" in body
     assert "rapid_mlx_completion_tokens_total 5678" in body
     assert "rapid_mlx_requests_running 3" in body
