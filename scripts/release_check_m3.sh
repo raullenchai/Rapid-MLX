@@ -96,9 +96,23 @@ fi
 # full validation cycle — see knowledge/release-check-m3-tuning-backlog §E.)
 # Override with RAPID_MLX_ALLOW_CONCURRENT=1 if you are certain the other
 # workload won't touch the GPU or our ports.
+#
+# Detection must catch BOTH invocation forms a concurrent serve can take:
+#   * ``python -m vllm_mlx.cli serve`` — the ``-m`` module form (the gauntlet's
+#     own subprocesses use this; excluded via the release_check_m3 filter below).
+#   * ``.../bin/rapid-mlx serve`` — the installed console-script entry point. A
+#     real DeepSeek serve running as ``.venv/bin/rapid-mlx serve ... --port 8765``
+#     slipped past the old ``vllm_mlx\.cli``-only pattern and GPU-contended a
+#     gauntlet into a false-failed G12 (2026-07-30). Match the console form too.
+#
+# The console pattern is anchored ``(^|[ /])rapid-mlx`` so it matches whether the
+# entry point sits at a path (``.venv/bin/rapid-mlx``) or at the very start of the
+# ``ps`` row (a bare ``rapid-mlx serve``). ``ps -Aww -o pid=,command=`` is used
+# (not ``-o pid,command``) so long argv/env lines are not truncated — a serve
+# hidden behind a long wrapper/env prefix would otherwise defeat this safety gate.
 if [ "${RAPID_MLX_ALLOW_CONCURRENT:-0}" != "1" ]; then
-  _concurrent=$(ps -Ao pid,command 2>/dev/null \
-    | grep -E 'vllm_mlx\.cli (serve|bench)|scripts\.pr_validate' \
+  _concurrent=$(ps -Aww -o pid=,command= 2>/dev/null \
+    | grep -E 'vllm_mlx\.cli (serve|bench)|(^|[ /])rapid-mlx (serve|bench)|scripts\.pr_validate' \
     | grep -Ev 'grep|release_check_m3|coherence_sweep|wait-then-validate' || true)
   if [ -n "$_concurrent" ]; then
     echo "ERROR: another rapid-mlx serve / pr_validate is running on this box." >&2
