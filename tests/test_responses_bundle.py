@@ -107,7 +107,11 @@ class _Engine:
         """Emit a tiny synthetic stream: three text chunks then EOS, with
         optional reasoning_text and tool_calls on the final chunk."""
         self.stream_calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
-        chunks = self._stream_chunks or ["Hello", " from", " rapid"]
+        chunks = (
+            self._stream_chunks
+            if self._stream_chunks is not None
+            else ["Hello", " from", " rapid"]
+        )
         for i, c in enumerate(chunks):
             yield _GenerationOutput(
                 text="".join(chunks[: i + 1]),
@@ -388,7 +392,7 @@ class TestDeepSeekV4ResponsesStreaming:
 
         wire_chunks = [
             "<｜DS",
-            "ML｜tool_calls>\n<｜DSML｜invoke name=\"exec_command\">\n",
+            'ML｜tool_calls>\n<｜DSML｜invoke name="exec_command">\n',
             '<｜DSML｜parameter name="cmd" string="true">pwd && ls',
             "</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_",
             "calls>",
@@ -447,9 +451,7 @@ class TestDeepSeekV4ResponsesStreaming:
         assert json.loads(argument_deltas) == {"cmd": "pwd && ls"}
 
         completed = [
-            event["response"]
-            for name, event in events
-            if name == "response.completed"
+            event["response"] for name, event in events if name == "response.completed"
         ]
         assert len(completed) == 1
         assert all("DSML" not in json.dumps(item) for item in completed[0]["output"])

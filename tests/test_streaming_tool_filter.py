@@ -296,7 +296,7 @@ class TestDeepSeekV4StreamingToolFilter(unittest.TestCase):
         f = StreamingToolCallFilter()
         chunks = [
             "before <｜DS",
-            "ML｜tool_calls>\n<｜DSML｜invoke name=\"exec_command\">\n",
+            'ML｜tool_calls>\n<｜DSML｜invoke name="exec_command">\n',
             '<｜DSML｜parameter name="cmd" string="true">pwd && ls',
             "</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_",
             "calls> after",
