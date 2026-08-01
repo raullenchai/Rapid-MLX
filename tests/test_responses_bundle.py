@@ -80,6 +80,7 @@ class _Engine:
         reasoning_text: str = "",
         tool_calls: list | None = None,
         finish_reason: str = "stop",
+        stream_chunks: list[str] | None = None,
     ):
         self.calls: list[SimpleNamespace] = []
         self.stream_calls: list[SimpleNamespace] = []
@@ -88,6 +89,7 @@ class _Engine:
         self._reasoning_text = reasoning_text
         self._tool_calls = tool_calls
         self._finish_reason = finish_reason
+        self._stream_chunks = stream_chunks
 
     async def chat(self, messages, **kwargs):
         self.calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
@@ -105,7 +107,7 @@ class _Engine:
         """Emit a tiny synthetic stream: three text chunks then EOS, with
         optional reasoning_text and tool_calls on the final chunk."""
         self.stream_calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
-        chunks = ["Hello", " from", " rapid"]
+        chunks = self._stream_chunks or ["Hello", " from", " rapid"]
         for i, c in enumerate(chunks):
             yield _GenerationOutput(
                 text="".join(chunks[: i + 1]),
@@ -188,6 +190,7 @@ def _make_client(monkeypatch, engine: _Engine) -> SimpleNamespace:
     return SimpleNamespace(
         client=TestClient(app),
         engine=engine,
+        cfg=cfg,
         previous_modules=previous_modules,
         previous_attrs=previous_attrs,
         reset_config=reset_config,
@@ -372,6 +375,89 @@ class TestR10CrossLaneReasoningParity:
 # ---------------------------------------------------------------------------
 # Yuki F6 — tool_choice enforcement on /v1/responses
 # ---------------------------------------------------------------------------
+
+
+class TestDeepSeekV4ResponsesStreaming:
+    """Raw DSML must not be duplicated into Codex-visible text deltas."""
+
+    def test_split_dsml_is_only_emitted_as_a_structured_function_call(
+        self, make_responses_client
+    ):
+        # Import registers the model-specific parser with ToolParserManager.
+        import vllm_mlx.tool_parsers.deepseek_v4_0731_tool_parser  # noqa: F401
+
+        wire_chunks = [
+            "<｜DS",
+            "ML｜tool_calls>\n<｜DSML｜invoke name=\"exec_command\">\n",
+            '<｜DSML｜parameter name="cmd" string="true">pwd && ls',
+            "</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_",
+            "calls>",
+        ]
+        state = make_responses_client(
+            stream_chunks=wire_chunks,
+            finish_reason="tool_calls",
+        )
+        state.cfg.enable_auto_tool_choice = True
+        state.cfg.tool_call_parser = "deepseek_v4_0731"
+
+        with state.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(
+                stream=True,
+                tools=[
+                    {
+                        "type": "function",
+                        "name": "exec_command",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"cmd": {"type": "string"}},
+                            "required": ["cmd"],
+                        },
+                    }
+                ],
+            ),
+            headers=_AUTH,
+        ) as resp:
+            assert resp.status_code == 200, resp.text
+            body = "".join(resp.iter_text())
+
+        events = _parse_sse(body)
+        visible_text = "".join(
+            event.get("delta", "")
+            for name, event in events
+            if name == "response.output_text.delta"
+        )
+        assert "DSML" not in visible_text
+        assert visible_text == ""
+
+        calls = [
+            event["item"]
+            for name, event in events
+            if name == "response.output_item.added"
+            and event.get("item", {}).get("type") == "function_call"
+        ]
+        assert len(calls) == 1, events
+        assert calls[0]["name"] == "exec_command"
+        argument_deltas = "".join(
+            event.get("delta", "")
+            for name, event in events
+            if name == "response.function_call_arguments.delta"
+        )
+        assert json.loads(argument_deltas) == {"cmd": "pwd && ls"}
+
+        completed = [
+            event["response"]
+            for name, event in events
+            if name == "response.completed"
+        ]
+        assert len(completed) == 1
+        assert all("DSML" not in json.dumps(item) for item in completed[0]["output"])
+        completed_calls = [
+            item for item in completed[0]["output"] if item["type"] == "function_call"
+        ]
+        assert len(completed_calls) == 1
+        assert json.loads(completed_calls[0]["arguments"]) == {"cmd": "pwd && ls"}
 
 
 class TestF6ToolChoiceEnforcement:

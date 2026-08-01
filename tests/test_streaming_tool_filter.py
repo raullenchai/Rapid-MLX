@@ -284,6 +284,28 @@ class TestToolCallTagsRegistry(unittest.TestCase):
             "by default (issue #686 regression)."
         )
 
+    def test_deepseek_v4_dsml_pair_registered(self):
+        from vllm_mlx.api.utils import get_tool_call_tags
+
+        tags = get_tool_call_tags()
+        assert ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>") in tags
+
+
+class TestDeepSeekV4StreamingToolFilter(unittest.TestCase):
+    def test_split_dsml_envelope_is_suppressed_without_losing_plain_text(self):
+        f = StreamingToolCallFilter()
+        chunks = [
+            "before <｜DS",
+            "ML｜tool_calls>\n<｜DSML｜invoke name=\"exec_command\">\n",
+            '<｜DSML｜parameter name="cmd" string="true">pwd && ls',
+            "</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_",
+            "calls> after",
+        ]
+
+        result = "".join(f.process(chunk) for chunk in chunks) + f.flush()
+
+        assert result == "before  after"
+
 
 if __name__ == "__main__":
     unittest.main()
