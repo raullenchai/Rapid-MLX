@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import ceil
 
 
 @dataclass(frozen=True)
@@ -25,16 +26,18 @@ def detect_repeated_token_suffix(
     *,
     min_period_tokens: int = 6,
     max_period_tokens: int = 128,
-    required_repeats: int = 6,
+    required_repeats: int = 3,
     min_repeated_tokens: int = 72,
     max_window_tokens: int = 768,
 ) -> RepetitionMatch | None:
     """Return an exact periodic-suffix match, or ``None``.
 
-    The defaults require six adjacent copies and at least 72 repeated tokens.
-    One-token stutters (punctuation, newlines, or intentional ``ha ha`` output)
-    therefore cannot trip the guard.  Work is bounded to the most recent 768
-    tokens and callers are expected to invoke it only every few decode steps.
+    The defaults require at least three adjacent copies and at least 72 repeated
+    tokens.  The effective repeat count is adaptive: a 12-token sentence needs
+    six copies, while a 61-token paragraph needs only three.  One-token stutters
+    (punctuation, newlines, or intentional ``ha ha`` output) therefore cannot
+    trip the guard.  Work is bounded to the most recent 768 tokens and callers
+    are expected to invoke it only every few decode steps.
     """
 
     if required_repeats < 2 or min_period_tokens < 1:
@@ -43,8 +46,9 @@ def detect_repeated_token_suffix(
     tokens = token_ids[-max_window_tokens:]
     max_period = min(max_period_tokens, len(tokens) // required_repeats)
     for period in range(min_period_tokens, max_period + 1):
-        repeated_tokens = period * required_repeats
-        if repeated_tokens < min_repeated_tokens:
+        repeats = max(required_repeats, ceil(min_repeated_tokens / period))
+        repeated_tokens = period * repeats
+        if repeated_tokens > len(tokens):
             continue
         suffix = tokens[-repeated_tokens:]
         pattern = suffix[:period]
@@ -59,5 +63,5 @@ def detect_repeated_token_suffix(
             suffix[offset : offset + period] == pattern
             for offset in range(period, repeated_tokens, period)
         ):
-            return RepetitionMatch(period_tokens=period, repeats=required_repeats)
+            return RepetitionMatch(period_tokens=period, repeats=repeats)
     return None

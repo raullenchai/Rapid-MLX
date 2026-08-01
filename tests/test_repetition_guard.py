@@ -23,6 +23,15 @@ def test_detects_long_exact_periodic_suffix():
     assert match.repeats == 6
 
 
+def test_long_loop_period_stops_after_three_copies():
+    pattern = list(range(61))
+    assert detect_repeated_token_suffix(pattern * 2) is None
+    match = detect_repeated_token_suffix(pattern * 3)
+    assert match is not None
+    assert match.period_tokens == 61
+    assert match.repeats == 3
+
+
 def test_ignores_short_stutter_and_near_repeat():
     assert detect_repeated_token_suffix([7] * 200) is None
     pattern = list(range(12))
