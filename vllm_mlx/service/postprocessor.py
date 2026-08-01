@@ -1458,6 +1458,13 @@ class StreamingPostProcessor:
         the live delta handy; those sites use the strict
         accumulated-buffer signal (sufficient post-first-chunk).
         """
+        # Some formats are unconditionally reasoning-wrapped by their
+        # checkpoint chat template. Cohere North, for example, always places
+        # ``<|START_THINKING|>`` in the prompt and has no per-request
+        # ``enable_thinking`` switch. Its parser must stay active even when
+        # the generic request resolver defaults that optional flag to False.
+        if getattr(self.reasoning_parser, "always_route", False) is True:
+            return True
         if self.enable_thinking is not False:
             return True
         if self._explicit_think_seen:

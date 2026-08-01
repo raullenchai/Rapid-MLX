@@ -628,6 +628,20 @@ def _register_vendored_archs() -> None:
         except Exception as e:
             logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
 
+    if "mlx_lm.models.cohere2_moe" not in sys.modules:
+        try:
+            from ..models import cohere2_moe as _cohere2_moe
+
+            sys.modules.setdefault("mlx_lm.models.cohere2_moe", _cohere2_moe)
+        except Exception as e:
+            logger.warning(
+                "cohere2_moe vendored module failed to register; North-Mini-Code "
+                "will not load until resolved: %s",
+                e,
+            )
+        else:
+            _VENDORED_MODEL_TYPES.add("cohere2_moe")
+
     if "mlx_lm.models.hy_v3" not in sys.modules:
         # If mlx-lm ever ships native ``hy_v3`` support (upstream PR #1211
         # merges into 0.32+), defer to their copy so we don't shadow real
