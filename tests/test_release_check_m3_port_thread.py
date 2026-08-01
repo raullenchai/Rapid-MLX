@@ -109,29 +109,99 @@ def test_prelude_default_port_matches_hardcoded_probes() -> None:
     assert "URL=http://127.0.0.1:8000/v1" in result.stdout, result.stdout
 
 
+def _find_g7_guard(text: str) -> int:
+    """Return the index of the fail-loud ``RAPID_MLX_BASE_URL`` guard, or
+    -1 if absent.
+
+    The guard is the ``if [ "${RAPID_MLX_BASE_URL:-}" != "$_expected_base" ]``
+    block that bails out (``exit 1``) when the env var no longer points at
+    the gauntlet's own port. We anchor on this semantic shape rather than on
+    any banner text so harmless banner-format changes never break the test.
+    """
+    match = re.search(
+        r'if\s+\[\s*"\$\{RAPID_MLX_BASE_URL[^]]*"\s*!=\s*"\$_expected_base"',
+        text,
+    )
+    return match.start() if match else -1
+
+
+def _find_g7_invocation(text: str) -> int:
+    """Return the index of the first ``test_anthropic_sdk.py`` invocation,
+    or -1 if absent. This is the stable semantic anchor for the G7 SDK
+    integration block.
+
+    We match the actual invocation shape (``"$PY" tests/integrations/
+    test_anthropic_sdk.py``) rather than the bare filename so a comment
+    that merely mentions the test does not masquerade as the real call.
+    """
+    match = re.search(r'"\$PY"\s+tests/integrations/test_anthropic_sdk\.py', text)
+    return match.start() if match else -1
+
+
 def test_script_asserts_g7_env_matches_port() -> None:
     """The G7 block MUST include a fail-loud assertion that
     ``RAPID_MLX_BASE_URL`` still points at the gauntlet PORT. Without
     this, a downstream ``unset RAPID_MLX_BASE_URL`` or an unrelated
-    clobber would silently reopen the issue #974 hole."""
+    clobber would silently reopen the issue #974 hole.
+
+    We locate the guard and the first G7 test invocation by their stable
+    semantic shapes (the ``RAPID_MLX_BASE_URL`` vs ``_expected_base``
+    comparison, and the ``test_anthropic_sdk.py`` call) rather than by the
+    exact section banner, whose dash count / spacing is cosmetic and has
+    changed before (issue #1370)."""
     text = SCRIPT.read_text()
-    # Locate the G7 SDK integration section header (the ``#---…``
-    # banner, not a mere comment reference elsewhere in the script).
-    marker = "#-------------------- G7 SDK integration"
-    idx = text.find(marker)
-    assert idx != -1, "'G7 SDK integration' section banner vanished"
-    # The assertion should live between the section header and the first
-    # test invocation (`test_anthropic_sdk.py`). Look for the fail-loud
-    # shape in that slice.
-    invocation_idx = text.find("tests/integrations/test_anthropic_sdk.py", idx)
+    invocation_idx = _find_g7_invocation(text)
     assert invocation_idx != -1, "G7 no longer runs test_anthropic_sdk.py"
-    g7_block = text[idx:invocation_idx]
-    assert "RAPID_MLX_BASE_URL" in g7_block, (
-        "G7 block should reference RAPID_MLX_BASE_URL in an assertion"
+    guard_idx = _find_g7_guard(text)
+    assert guard_idx != -1, (
+        "G7 block should include a fail-loud RAPID_MLX_BASE_URL guard"
     )
-    assert "G7 env mismatch" in g7_block, (
-        "G7 assertion should print a distinctive 'G7 env mismatch' error"
+    # The guard must run before the first G7 test invocation so the SDK
+    # tests never silently target a non-gauntlet server.
+    assert guard_idx < invocation_idx, (
+        "G7 RAPID_MLX_BASE_URL guard must run before test_anthropic_sdk.py"
     )
+    # The guard must be fail-loud: it must bail out (exit) on mismatch,
+    # not merely log a warning and continue.
+    guard_slice = text[guard_idx:invocation_idx]
+    assert re.search(r"\bexit\s+1\b", guard_slice), (
+        "G7 RAPID_MLX_BASE_URL guard must exit 1 on mismatch"
+    )
+
+
+def test_g7_section_located_by_semantic_marker_regardless_of_banner() -> None:
+    """Regression for issue #1370: the G7 section must be locatable by its
+    semantic content (the ``RAPID_MLX_BASE_URL`` guard and the
+    ``test_anthropic_sdk.py`` invocation), not by the exact banner
+    formatting. Harmless banner-spacing changes (dash count, spacing,
+    trailing text) must not break the guard."""
+    guard = (
+        '_expected_base="http://127.0.0.1:${PORT}/v1"\n'
+        'if [ "${RAPID_MLX_BASE_URL:-}" != "$_expected_base" ]; then\n'
+        '  echo "ERROR: cluster env mismatch" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+    )
+    invocation = (
+        'run_g7_anthropic() {\n  "$PY" tests/integrations/test_anthropic_sdk.py\n}\n'
+    )
+    # A range of banner formats that have appeared or could plausibly
+    # appear. None of them should hide the guard or the invocation, and
+    # the guard must stay before the invocation.
+    banners = [
+        "#-------------------- G7 SDK integration",
+        "# --- G7 SDK integration (three tests, each its own job) ---",
+        "# G7 SDK integration",
+        "#  G7 SDK integration  ",
+        "# G7 SDK integration tests",
+    ]
+    for banner in banners:
+        text = guard + banner + "\n" + invocation
+        invocation_idx = _find_g7_invocation(text)
+        assert invocation_idx != -1, f"banner {banner!r} hides invocation"
+        guard_idx = _find_g7_guard(text)
+        assert guard_idx != -1, f"banner {banner!r} hides guard"
+        assert guard_idx < invocation_idx, f"banner {banner!r} reorders guard"
 
 
 def test_every_integration_base_url_env_is_covered() -> None:
