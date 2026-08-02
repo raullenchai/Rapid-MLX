@@ -30,19 +30,33 @@ def test_install_id_is_stable_across_calls(tmp_path, monkeypatch) -> None:
     assert upload.install_id() == first, "the id must persist, not be re-minted"
 
 
-def test_install_id_is_not_derived_from_hardware(tmp_path, monkeypatch) -> None:
-    """Two fresh installs must not collide.
+def test_install_id_comes_from_the_csprng_not_the_machine(
+    tmp_path, monkeypatch
+) -> None:
+    """The privacy claim is about *derivation*, so test derivation.
+
+    An earlier version of this test only checked that two different home
+    directories produced different ids — which an implementation hashing
+    IOPlatformUUID together with the home path would also satisfy. Controlling
+    the randomness and asserting the id IS that randomness is what actually
+    pins the claim.
 
     oMLX derives its owner_hash from IOPlatformUUID, which makes every public
-    row traceable to a machine. Ours is random per install; the test that
-    proves it is that a second install on the SAME machine gets a different
-    id.
+    row traceable to a specific machine. Ours must not.
     """
-    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path / "a"))
-    a = upload.install_id()
-    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path / "b"))
-    b = upload.install_id()
-    assert a != b
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setattr(upload.secrets, "token_hex", lambda n: "0" * (2 * n))
+    assert upload.peek_install_id() == "0" * 12
+
+    # And nothing machine-identifying is consulted along the way.
+    import subprocess
+
+    def _forbidden(*a, **k):  # pragma: no cover - only runs on regression
+        raise AssertionError(f"install id must not shell out: {a!r}")
+
+    monkeypatch.setattr(subprocess, "run", _forbidden)
+    monkeypatch.setattr(subprocess, "check_output", _forbidden)
+    assert upload.peek_install_id() == "0" * 12
 
 
 def test_install_id_survives_an_unwritable_home(tmp_path, monkeypatch) -> None:

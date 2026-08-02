@@ -75,6 +75,15 @@ def board_url() -> str:
     if not override:
         return DEFAULT_BOARD_URL
     parsed = urllib.parse.urlparse(override)
+    # The resolved target is printed on the consent screen and repeated in
+    # error messages, so embedded credentials would land in terminals and CI
+    # logs. Refuse rather than redact: a URL needing userinfo to reach the
+    # board is not a configuration we want to support silently.
+    if parsed.username or parsed.password:
+        raise SubmitError(
+            f"{BOARD_URL_ENV} must not embed credentials in the URL — the "
+            f"destination is displayed and logged."
+        )
     if parsed.scheme == "https":
         return override
     if parsed.scheme == "http" and (parsed.hostname or "") in {

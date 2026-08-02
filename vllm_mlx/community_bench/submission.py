@@ -246,7 +246,9 @@ def _ask_consent(
         f"that is sent \u2014 nothing is added on the way out. Your prompts, "
         f"your files and your IP address are not in it, and neither is any "
         f"hardware serial: the id attached to your submission is random per "
-        f"install and resettable by deleting ~/.rapid-mlx/bench-install-id.",
+        f"install and resettable by deleting ~/.rapid-mlx/bench-install-id. "
+        f"(If another run on this machine registers an id first, that one "
+        f"is used instead and the change is printed.)",
         file=out,
     )
     print("Press [Enter] to cancel.", file=out)
