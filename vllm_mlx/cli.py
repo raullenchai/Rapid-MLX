@@ -4155,17 +4155,40 @@ def _run_submit_flow(
         # Standardized config: B=1, no batching, prefix-cache off so the
         # numbers reflect cold prefill on each round (which is what the
         # tg/pp metrics are supposed to measure).
+        # The spec-decode arm is the ONE comparability knob --submit lets the
+        # caller move, because the whole point of the A/B is to measure it.
+        # Everything else stays locked.
+        _arm = getattr(args, "spec_decode", "none") or "none"
         scheduler_config = SchedulerConfig(
             max_num_seqs=1,
             max_concurrent_requests=1,
             prefill_batch_size=1,
             completion_batch_size=1,
             enable_prefix_cache=False,
+            spec_decode=_arm,
         )
         engine_config = EngineConfig(
             model_name=hf_path,
             scheduler_config=scheduler_config,
         )
+        _spec_payload = (
+            None
+            if _arm == "none"
+            else {
+                "method": _arm,
+                "num_speculative_tokens": getattr(scheduler_config, "mtp_max_k", None),
+            }
+        )
+        import re as _re
+
+        _run_group = getattr(args, "run_group", None) or None
+        if _run_group is not None and not _re.fullmatch(r"[0-9a-f]{12}", _run_group):
+            print(
+                "  Error: --run-group must be exactly 12 lowercase hex chars "
+                f"(got {_run_group!r}). Generate one with: "
+                "python3 -c 'import secrets;print(secrets.token_hex(6))'"
+            )
+            return 2
 
         print("  Collecting hardware fingerprint…")
         hardware, software = collect_hw()
@@ -4242,6 +4265,8 @@ def _run_submit_flow(
                     tier=tier,
                     smoke_result=smoke_result,
                     harness_result=harness_result,
+                    spec_decode=_spec_payload,
+                    run_group=_run_group,
                 )
                 rc = submit_interactive(payload, repo_root)
                 if rc != 0:
@@ -8335,9 +8360,33 @@ Examples:
         "--submit",
         action="store_true",
         help=(
-            "Run the standardized B=1 community benchmark and open a PR to "
-            "community-benchmarks/. Locks every comparability knob; ignores "
-            "the freeform --num-prompts / --max-tokens / --max-num-seqs args."
+            "Run the standardized B=1 community benchmark and submit it to "
+            "the community board at rapidmlx.com. Asks for consent first and "
+            "saves a local copy either way. Locks every comparability knob; "
+            "ignores the freeform --num-prompts / --max-tokens / "
+            "--max-num-seqs args."
+        ),
+    )
+    bench_parser.add_argument(
+        "--spec-decode",
+        type=str,
+        default="none",
+        choices=["none", "mtp"],
+        help=(
+            "Speculative-decoding arm for --submit. 'none' (default) is the "
+            "baseline. Run the same model twice with a shared --run-group to "
+            "put a same-machine A/B on the board."
+        ),
+    )
+    bench_parser.add_argument(
+        "--run-group",
+        type=str,
+        default=None,
+        metavar="HEX12",
+        help=(
+            "12 hex chars linking the arms of one A/B. The board only reports "
+            "a speedup for two arms that share this AND ran on one machine; "
+            "without it the runs are published as independent rows."
         ),
     )
     bench_parser.add_argument(

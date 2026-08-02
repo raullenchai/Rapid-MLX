@@ -455,7 +455,11 @@ def _reset_peak_ram() -> None:
         return
 
 
-def standardized_config_dict(sampling: str, prompt_hash: str) -> dict:
+def standardized_config_dict(
+    sampling: str,
+    prompt_hash: str,
+    spec_decode: dict | None = None,
+) -> dict:
     """Build the ``config`` block for the JSON submission.
 
     Mirrors ``schema.json#/properties/config`` exactly — every field
@@ -478,6 +482,11 @@ def standardized_config_dict(sampling: str, prompt_hash: str) -> dict:
             },
         },
         "prompt_hash": prompt_hash,
+        # Which speculative-decoding arm produced these numbers. Omitted
+        # entirely when the run was a plain baseline, so a v1/v2 row and a
+        # v3 baseline row are the same bytes and the board can bucket both
+        # into the "none" arm without a migration.
+        **({"spec_decode": spec_decode} if spec_decode else {}),
     }
 
 

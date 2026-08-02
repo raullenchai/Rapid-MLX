@@ -167,6 +167,7 @@ jobs:
             tests/test_microbench_parsers.py \
             tests/test_telemetry_emit.py \
             tests/test_telemetry_consent.py \
+            tests/test_community_bench_upload.py \
             tests/test_music_engine.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
