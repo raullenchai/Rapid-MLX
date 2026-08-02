@@ -78,9 +78,11 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
     helper reaches the loader (the success-path smoke check).
 
     Pin the call shape too: ``load_fn`` is invoked with the resolved
-    embedding-model name as a positional arg and ``lock=True`` kw —
-    the boot path always locks the engine so the H-09 route guard
-    has a non-None ``embedding_model_locked`` to consult.
+    embedding-model name as a positional arg, ``lock=True``, and the
+    embedding input-length settings (issue #1381) — which default to
+    ``max_length="auto"`` / ``overflow_policy="truncate"`` when the CLI
+    flags are omitted. The boot path always locks the engine so the H-09
+    route guard has a non-None ``embedding_model_locked`` to consult.
     """
     from vllm_mlx.cli import _load_embedding_model_or_exit
 
@@ -88,9 +90,11 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
 
     captured: dict = {}
 
-    def _fake_loader(name, *, lock):
+    def _fake_loader(name, *, lock, max_length="auto", overflow_policy="truncate"):
         captured["name"] = name
         captured["lock"] = lock
+        captured["max_length"] = max_length
+        captured["overflow_policy"] = overflow_policy
 
     args = SimpleNamespace(embedding_model="mlx-community/some-embed-model")
     _load_embedding_model_or_exit(args, _fake_loader)
@@ -98,6 +102,8 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
     assert captured == {
         "name": "mlx-community/some-embed-model",
         "lock": True,
+        "max_length": "auto",
+        "overflow_policy": "truncate",
     }
 
 

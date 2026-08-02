@@ -29,7 +29,7 @@ router = APIRouter()
 )
 async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     """Create embeddings for the given input text(s)."""
-    from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT
+    from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT, EmbeddingInputTooLongError
     from ..server import load_embedding_model
 
     cfg = get_config()
@@ -175,16 +175,42 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             )
 
         start_time = time.perf_counter()
-        if token_batches is not None:
-            # count_tokens for pre-tokenized: trust the caller's count
-            # (capped at 512 same as embed_tokens does).
-            prompt_tokens = sum(min(len(b), 512) for b in token_batches)
-            embeddings = cfg.embedding_engine.embed_tokens(token_batches)
-            n_inputs = len(token_batches)
-        else:
-            prompt_tokens = cfg.embedding_engine.count_tokens(texts)
-            embeddings = cfg.embedding_engine.embed(texts)
-            n_inputs = len(texts)
+        # Report the tokens actually embedded — capped at the engine's
+        # resolved effective limit rather than a hardcoded 512 (issue #1381).
+        eff_limit = getattr(cfg.embedding_engine, "effective_max_length", None)
+        if not isinstance(eff_limit, int) or eff_limit <= 0:
+            eff_limit = 512
+        try:
+            if token_batches is not None:
+                prompt_tokens = sum(min(len(b), eff_limit) for b in token_batches)
+                embeddings = cfg.embedding_engine.embed_tokens(token_batches)
+                n_inputs = len(token_batches)
+            else:
+                prompt_tokens = cfg.embedding_engine.count_tokens(texts)
+                embeddings = cfg.embedding_engine.embed(texts)
+                n_inputs = len(texts)
+        except EmbeddingInputTooLongError as exc:
+            # overflow_policy == "error": reject with the observed/allowed
+            # token counts so the caller can react instead of silently
+            # indexing a truncated vector.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            f"Input {exc.index} has {exc.observed_tokens} tokens, "
+                            f"which exceeds the embedding model's configured max "
+                            f"input length of {exc.allowed_tokens}. Shorten the "
+                            f"input, or restart the server with a higher "
+                            f"--embedding-max-length (or "
+                            f"--embedding-overflow-policy truncate)."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "input_too_long",
+                        "param": "input",
+                    }
+                },
+            )
         elapsed = time.perf_counter() - start_time
         logger.info(
             f"Embeddings: {n_inputs} inputs, {prompt_tokens} tokens in {elapsed:.2f}s"

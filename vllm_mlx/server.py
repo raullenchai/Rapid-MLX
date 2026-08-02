@@ -231,6 +231,11 @@ _mcp_executor = None
 # Global embedding engine (lazy loaded)
 _embedding_engine = None
 _embedding_model_locked: str | None = None  # Set when --embedding-model is used
+# Operator embedding-length config (issue #1381). Set once from the CLI and
+# reused by route-triggered loads so both the pre-load and lazy paths build
+# the engine with the same limits.
+_embedding_max_length: int | str = "auto"
+_embedding_overflow_policy: str = "truncate"
 
 # API key authentication
 _api_key: str | None = None
@@ -1314,12 +1319,26 @@ def load_embedding_model(
     *,
     lock: bool = False,
     reuse_existing: bool = True,
+    max_length: int | str | None = None,
+    overflow_policy: str | None = None,
 ) -> None:
-    """Load or reuse the embedding model engine when configured."""
+    """Load or reuse the embedding model engine when configured.
+
+    ``max_length`` / ``overflow_policy`` (issue #1381) are remembered in
+    module globals when provided (the CLI passes them once at startup), so
+    route-triggered lazy loads — which call this without them — build the
+    engine with the same operator-configured limits.
+    """
     global _embedding_engine, _embedding_model_locked
+    global _embedding_max_length, _embedding_overflow_policy
 
     if not model_name:
         return
+
+    if max_length is not None:
+        _embedding_max_length = max_length
+    if overflow_policy is not None:
+        _embedding_overflow_policy = overflow_policy
 
     if lock:
         _embedding_model_locked = model_name
@@ -1333,7 +1352,11 @@ def load_embedding_model(
 
     from .embedding import EmbeddingEngine
 
-    _embedding_engine = EmbeddingEngine(model_name)
+    _embedding_engine = EmbeddingEngine(
+        model_name,
+        max_length=_embedding_max_length,
+        overflow_policy=_embedding_overflow_policy,
+    )
     _embedding_engine.load()
 
     # Sync into config for route modules

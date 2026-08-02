@@ -870,9 +870,27 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
     # safetensors mid-load, Metal OOM, schema mismatch) surface with
     # their real trace — pr_validate codex r1 NIT closure (the prior
     # ``"not found"`` substring match was too loose).
+    # Validate the embedding input-length setting up front so a bad value
+    # is a clean usage error (exit 2), not a mid-load crash (issue #1381).
+    from .embedding import normalize_max_length_setting
+
+    try:
+        max_length = normalize_max_length_setting(
+            getattr(args, "embedding_max_length", "auto")
+        )
+    except ValueError as exc:
+        print(f"error: --embedding-max-length {exc}", file=sys.stderr)
+        sys.exit(2)
+    overflow_policy = getattr(args, "embedding_overflow_policy", "truncate")
+
     not_found_exc_classes = _embedding_not_found_exception_classes()
     try:
-        load_fn(args.embedding_model, lock=True)
+        load_fn(
+            args.embedding_model,
+            lock=True,
+            max_length=max_length,
+            overflow_policy=overflow_policy,
+        )
     except not_found_exc_classes as exc:
         print(
             f"\n  Error: --embedding-model '{original_embed}' could not "
@@ -8126,6 +8144,37 @@ Examples:
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/embeddinggemma-300m-6bit). Requires the "
             "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+        ),
+    )
+    # Embedding input-length controls (issue #1381). Prevents silent
+    # 512-token truncation: derive a model-aware limit and make overflow
+    # observable / configurable.
+    serve_parser.add_argument(
+        "--embedding-max-length",
+        type=str,
+        default="auto",
+        metavar="TOKENS",
+        help=(
+            "Max input length (tokens) for --embedding-model. 'auto' "
+            "(default) derives it from the model's declared maximum "
+            "(config.max_position_embeddings, else tokenizer.model_max_length); "
+            "or pass a positive integer to set a lower operational ceiling. "
+            "Inputs above the effective limit are handled per "
+            "--embedding-overflow-policy (never truncated silently)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--embedding-overflow-policy",
+        type=str,
+        choices=["truncate", "error"],
+        default="truncate",
+        help=(
+            "How to handle embedding inputs longer than "
+            "--embedding-max-length: 'truncate' (default) discards the tail "
+            "but logs a warning and increments the "
+            "rapid_mlx_embedding_truncations_total metric (never silent); "
+            "'error' rejects the request with a 400 carrying the observed "
+            "and allowed token counts."
         ),
     )
     # Parent-PID watchdog (rapid-desktop issue #449). When set, the

@@ -907,6 +907,22 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # Embedding truncations (issue #1381). Non-silent signal: how many
+    # inputs had their tail discarded for exceeding the effective max input
+    # length under the ``truncate`` overflow policy. Only emitted when an
+    # embedding model is loaded.
+    _embedding_engine = getattr(cfg, "embedding_engine", None)
+    if _embedding_engine is not None:
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_embedding_truncations_total",
+                "counter",
+                "Embedding inputs whose tail was discarded for exceeding the "
+                "max input length.",
+                int(getattr(_embedding_engine, "num_truncations", 0) or 0),
+            )
+        )
+
     # R15 #300: KV cache dtype as a labeled gauge. Operators need to see
     # the EFFECTIVE dtype the resolver picked (post-safelist + post-
     # reasoning-pin), not just the requested flag value. Emitted as
