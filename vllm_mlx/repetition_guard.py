@@ -49,9 +49,7 @@ def detect_repeated_token_suffix(
     tokens = token_ids[-max_window_tokens:]
     max_period = min(max_period_tokens, len(tokens) // required_repeats)
     for period in range(min_period_tokens, max_period + 1):
-        repeated_floor = (
-            min_short_period_tokens if period < 6 else min_repeated_tokens
-        )
+        repeated_floor = min_short_period_tokens if period < 6 else min_repeated_tokens
         repeats = max(required_repeats, ceil(repeated_floor / period))
         repeated_tokens = period * repeats
         if repeated_tokens > len(tokens):
@@ -62,8 +60,7 @@ def detect_repeated_token_suffix(
         # single token would masquerade as a 6-token pattern and inherit the
         # lower long-period threshold.
         if any(
-            period % smaller == 0
-            and pattern == pattern[:smaller] * (period // smaller)
+            period % smaller == 0 and pattern == pattern[:smaller] * (period // smaller)
             for smaller in range(1, period)
         ):
             continue

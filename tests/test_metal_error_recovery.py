@@ -240,9 +240,7 @@ def test_scheduler_generation_error_is_not_reported_as_normal_length_finish():
     had failed.
     """
     tokenizer = MagicMock()
-    scheduler = Scheduler(
-        MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=2)
-    )
+    scheduler = Scheduler(MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=2))
     req = Request("metal-resource-limit", "prompt", SamplingParams(max_tokens=32768))
     req.status = RequestStatus.RUNNING
     scheduler.running[req.request_id] = req
@@ -257,5 +255,7 @@ def test_scheduler_generation_error_is_not_reported_as_normal_length_finish():
     assert len(output.outputs) == 1
     terminal = output.outputs[0]
     assert terminal.finished is True
+    assert terminal.finish_reason == "abort"
+    assert terminal.finish_reason != "length"
     assert terminal.error is not None
     assert "Resource limit" in terminal.error
