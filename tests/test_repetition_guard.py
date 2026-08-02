@@ -39,6 +39,20 @@ def test_ignores_short_stutter_and_near_repeat():
     assert detect_repeated_token_suffix(pattern * 5 + pattern[:-1] + [999]) is None
 
 
+def test_stops_sustained_single_token_loop_before_resource_exhaustion():
+    """DeepSeek can collapse into a one-token CJK loop (for example 商店).
+
+    Keep the threshold high enough to tolerate intentional short stutters, but
+    stop the production failure well before it reaches ten thousand tokens and
+    exhausts Metal resource handles.
+    """
+    assert detect_repeated_token_suffix([7] * 255) is None
+    match = detect_repeated_token_suffix([7] * 256)
+    assert match is not None
+    assert match.period_tokens == 1
+    assert match.repeats == 256
+
+
 def _drive_repeating_request(*, has_tools: bool):
     scheduler = _scheduler()
     pattern = list(range(12))
@@ -73,3 +87,52 @@ def test_scheduler_does_not_change_plain_chat_semantics():
     assert req.status == RequestStatus.RUNNING
     assert output.finished is False
     assert scheduler.num_repetition_loop_stops == 0
+
+
+def test_scheduler_stops_single_token_loop_for_tool_request():
+    scheduler = _scheduler()
+    req = Request("repeat-short", "prompt", SamplingParams(max_tokens=20_000))
+    req.status = RequestStatus.RUNNING
+    req.has_tools = True
+    req.output_token_ids = [42] * 255
+    scheduler.running[req.request_id] = req
+    scheduler.uid_to_request_id[1] = req.request_id
+
+    response = MagicMock(uid=1, token=42, finish_reason=None, logprobs=None)
+    del response.prompt_cache
+    outputs, finished = scheduler._process_batch_responses([response])
+
+    assert finished == {req.request_id}
+    assert outputs[0].finished is True
+    assert scheduler.num_repetition_loop_stops == 1
+
+
+def test_long_diverse_stream_stress_has_no_false_positive():
+    """Exercise more tokens than the production failure with bounded scans."""
+    tokens: list[int] = []
+    for i in range(20_000):
+        # Deterministic, non-periodic-enough agent-like stream containing
+        # punctuation/newline stutters but no exact repeated suffix.
+        tokens.append((i * i + 31 * i + (i % 97) * 13) % 32_749)
+        if len(tokens) % 8 == 0:
+            assert detect_repeated_token_suffix(tokens) is None
+
+
+def test_guard_only_reads_bounded_suffix_under_large_history():
+    class _BoundedSequence:
+        def __init__(self, size: int):
+            self.size = size
+            self.requested_slice = None
+
+        def __len__(self):
+            return self.size
+
+        def __getitem__(self, key):
+            self.requested_slice = key
+            assert isinstance(key, slice)
+            assert key.start == -768 and key.stop is None
+            return list(range(768))
+
+    history = _BoundedSequence(1_000_000)
+    assert detect_repeated_token_suffix(history) is None
+    assert history.requested_slice == slice(-768, None, None)

@@ -25,7 +25,14 @@ import pytest
 
 from vllm_mlx.engine_core import EngineConfig, EngineCore
 from vllm_mlx.output_collector import RequestOutputCollector
-from vllm_mlx.request import InferenceAbortedError, RequestOutput
+from vllm_mlx.request import (
+    InferenceAbortedError,
+    Request,
+    RequestOutput,
+    RequestStatus,
+    SamplingParams,
+)
+from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def _make_engine() -> EngineCore:
@@ -223,3 +230,32 @@ def test_metal_message_detection_patterns():
         assert any(
             n in s for n in ("Metal", "MTL", "command buffer", "gpu::check_error")
         ), f"{s!r} no longer matches any Metal heuristic"
+
+
+def test_scheduler_generation_error_is_not_reported_as_normal_length_finish():
+    """Regression for the 12k-step DeepSeek Metal resource-limit failure.
+
+    Scheduler-local recovery used to return ``finish_reason=length`` without
+    an error, causing Responses to emit ``response.completed`` after the GPU
+    had failed.
+    """
+    tokenizer = MagicMock()
+    scheduler = Scheduler(
+        MagicMock(), tokenizer, SchedulerConfig(max_num_seqs=2)
+    )
+    req = Request("metal-resource-limit", "prompt", SamplingParams(max_tokens=32768))
+    req.status = RequestStatus.RUNNING
+    scheduler.running[req.request_id] = req
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.next.side_effect = RuntimeError(
+        "[metal::malloc] Resource limit (499000) exceeded"
+    )
+
+    output = scheduler.step()
+
+    assert output.finished_request_ids == {req.request_id}
+    assert len(output.outputs) == 1
+    terminal = output.outputs[0]
+    assert terminal.finished is True
+    assert terminal.error is not None
+    assert "Resource limit" in terminal.error

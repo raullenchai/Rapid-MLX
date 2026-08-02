@@ -6356,6 +6356,10 @@ class Scheduler:
             except Exception as e:
                 import traceback
 
+                abort_error = (
+                    "Inference aborted after generation error: "
+                    f"{type(e).__name__}: {e}"
+                )
                 logger.error(
                     f"Error in batch generation step: {e}\n{traceback.format_exc()}"
                 )
@@ -6375,6 +6379,7 @@ class Scheduler:
                             # ``RequestOutput.error`` still see the abort
                             # details. (#v0.6.63 onboarding sweep)
                             finish_reason="length",
+                            error=abort_error,
                         )
                     )
                 output.finished_request_ids = aborted_ids

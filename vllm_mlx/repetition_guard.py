@@ -24,20 +24,23 @@ class RepetitionMatch:
 def detect_repeated_token_suffix(
     token_ids: Sequence[int],
     *,
-    min_period_tokens: int = 6,
+    min_period_tokens: int = 1,
     max_period_tokens: int = 128,
     required_repeats: int = 3,
     min_repeated_tokens: int = 72,
+    min_short_period_tokens: int = 256,
     max_window_tokens: int = 768,
 ) -> RepetitionMatch | None:
     """Return an exact periodic-suffix match, or ``None``.
 
     The defaults require at least three adjacent copies and at least 72 repeated
     tokens.  The effective repeat count is adaptive: a 12-token sentence needs
-    six copies, while a 61-token paragraph needs only three.  One-token stutters
-    (punctuation, newlines, or intentional ``ha ha`` output) therefore cannot
-    trip the guard.  Work is bounded to the most recent 768 tokens and callers
-    are expected to invoke it only every few decode steps.
+    six copies, while a 61-token paragraph needs only three.  Periods below six
+    tokens use the higher ``min_short_period_tokens`` threshold, tolerating
+    intentional stutters while still catching the sustained one-token CJK loop
+    that previously ran for 10k+ tokens and exhausted Metal resource handles.
+    Work is bounded to the most recent 768 tokens and callers are expected to
+    invoke it only every few decode steps.
     """
 
     if required_repeats < 2 or min_period_tokens < 1:
@@ -46,17 +49,22 @@ def detect_repeated_token_suffix(
     tokens = token_ids[-max_window_tokens:]
     max_period = min(max_period_tokens, len(tokens) // required_repeats)
     for period in range(min_period_tokens, max_period + 1):
-        repeats = max(required_repeats, ceil(min_repeated_tokens / period))
+        repeated_floor = (
+            min_short_period_tokens if period < 6 else min_repeated_tokens
+        )
+        repeats = max(required_repeats, ceil(repeated_floor / period))
         repeated_tokens = period * repeats
         if repeated_tokens > len(tokens):
             continue
         suffix = tokens[-repeated_tokens:]
         pattern = suffix[:period]
-        # Do not disguise a one-token/newline stutter as a longer period
-        # merely because the same token also repeats in 12-token chunks.
+        # Evaluate a loop at its primitive period.  Otherwise 200 copies of a
+        # single token would masquerade as a 6-token pattern and inherit the
+        # lower long-period threshold.
         if any(
-            period % smaller == 0 and pattern == pattern[:smaller] * (period // smaller)
-            for smaller in range(1, min_period_tokens)
+            period % smaller == 0
+            and pattern == pattern[:smaller] * (period // smaller)
+            for smaller in range(1, period)
         ):
             continue
         if all(
