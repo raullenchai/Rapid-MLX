@@ -608,15 +608,20 @@ class TestEmbeddingModelAliasResolution:
         monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
         captured: dict = {}
 
-        def _fake_loader(name, *, lock):
+        def _fake_loader(name, *, lock, **kwargs):
             captured["name"] = name
             captured["lock"] = lock
+            captured["kwargs"] = kwargs
 
         args = SimpleNamespace(embedding_model="embeddinggemma-300m-6bit")
         _load_embedding_model_or_exit(args, _fake_loader)
         # The loader must see the resolved HF path, not the alias.
         assert captured["name"] == "mlx-community/embeddinggemma-300m-6bit", captured
         assert captured["lock"] is True
+        assert captured["kwargs"] == {
+            "max_length": "auto",
+            "overflow_policy": "truncate",
+        }
         # And ``args.embedding_model`` is mutated to the resolved
         # form so downstream banner + config emits the canonical id.
         assert args.embedding_model == "mlx-community/embeddinggemma-300m-6bit"
@@ -632,7 +637,7 @@ class TestEmbeddingModelAliasResolution:
         monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
         captured: dict = {}
 
-        def _fake_loader(name, *, lock):
+        def _fake_loader(name, *, lock, **_kwargs):
             captured["name"] = name
 
         args = SimpleNamespace(embedding_model="mlx-community/some-embed-7b")
@@ -667,7 +672,7 @@ class TestEmbeddingModelAliasResolution:
         except ImportError:
             exc_cls = FileNotFoundError
 
-        def _fake_loader(name, *, lock):
+        def _fake_loader(name, *, lock, **_kwargs):
             raise exc_cls(f"Model not found for path or HF repo: {name}.")
 
         args = SimpleNamespace(embedding_model="definitely-not-an-alias-xyz")
@@ -699,7 +704,7 @@ class TestEmbeddingModelAliasResolution:
         class CorruptSafetensorsError(RuntimeError):
             pass
 
-        def _fake_loader(name, *, lock):
+        def _fake_loader(name, *, lock, **_kwargs):
             raise CorruptSafetensorsError("header mismatch on tensor block 3")
 
         args = SimpleNamespace(embedding_model="mlx-community/foo")
@@ -720,7 +725,7 @@ class TestEmbeddingModelAliasResolution:
 
         monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
 
-        def _fake_loader(name, *, lock):
+        def _fake_loader(name, *, lock, **_kwargs):
             raise ValueError("config field 'rope_theta' not found in tensor map")
 
         args = SimpleNamespace(embedding_model="mlx-community/foo")

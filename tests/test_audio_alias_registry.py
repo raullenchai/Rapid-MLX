@@ -1098,8 +1098,8 @@ class TestAudioServeHonorsEmbeddingModel:
 
         calls = []
 
-        def _capture(name, lock=False):
-            calls.append((name, lock))
+        def _capture(name, lock=False, **kwargs):
+            calls.append((name, lock, kwargs))
 
         with (
             patch.object(cli, "_run_uvicorn"),
@@ -1120,6 +1120,10 @@ class TestAudioServeHonorsEmbeddingModel:
         # First positional arg is the model id; lock=True mirrors text mode.
         assert calls[0][0] == "mlx-community/all-MiniLM-L6-v2-4bit"
         assert calls[0][1] is True
+        assert calls[0][2] == {
+            "max_length": "auto",
+            "overflow_policy": "truncate",
+        }
 
     def test_audio_mode_without_embedding_does_not_call_loader(self):
         """No-regression: ``serve kokoro`` (no --embedding-model) must

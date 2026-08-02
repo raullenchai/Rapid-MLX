@@ -191,6 +191,7 @@ def test_truncate_policy_counts_each_over_input():
 
 def test_truncate_policy_no_overflow_is_silent(caplog):
     eng = make_engine(model_max=512, overflow_policy="truncate")
+    caplog.clear()
     with caplog.at_level(logging.WARNING):
         eng._enforce_overflow([100, 200, 511, 512])
     assert eng.num_truncations == 0
