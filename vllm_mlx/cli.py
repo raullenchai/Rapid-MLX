@@ -8361,8 +8361,10 @@ Examples:
         action="store_true",
         help=(
             "Run the standardized B=1 community benchmark and submit it to "
-            "the community board at rapidmlx.com. Asks for consent first and "
-            "saves a local copy either way. Locks every comparability knob; "
+            "the community board at rapidmlx.com. Asks for consent first; "
+            "declining writes and sends nothing. After consent a local copy "
+            "is saved before the upload, so a failed send is recoverable. "
+            "Locks every comparability knob; "
             "ignores the freeform --num-prompts / --max-tokens / "
             "--max-num-seqs args."
         ),

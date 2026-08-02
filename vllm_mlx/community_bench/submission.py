@@ -1101,36 +1101,57 @@ def submit_interactive(
     """
     out = stdout or sys.stdout
 
-    from .upload import SubmitError, board_url, install_id, post_submission
+    from .upload import (
+        SubmitError,
+        board_url,
+        commit_install_id,
+        peek_install_id,
+        post_submission,
+    )
 
-    # Attach the install id BEFORE consent. The consent screen promises that
-    # what it prints is what goes out; appending anything afterwards — even
-    # something as small as a random id — makes that promise false. Codex
-    # round 2 caught exactly that, in text written to fix the same class of
-    # bug one round earlier.
+    # Resolve the destination FIRST and inside the guarded region: an invalid
+    # RAPID_MLX_BENCH_BOARD_URL raises, and an uncaught traceback is not the
+    # documented "non-zero exit" contract.
+    try:
+        target = url or board_url()
+    except SubmitError as exc:
+        print(f"  Error: {exc}", file=out)
+        return 2
+
+    # Peek, do not persist. The consent screen shows the exact payload and
+    # says nothing has been written — so declining must leave no trace,
+    # including no id file.
+    candidate = peek_install_id()
     wire = dict(payload)
-    # install_id is a v3 field, and the schema explicitly forbids a payload
-    # that declares an older version from carrying newer fields — otherwise
-    # schema_version tells the aggregator nothing. The builder always emits
-    # SCHEMA_VERSION, so this only guards a caller that hand-rolled an older
-    # payload.
-    if int(wire.get("schema_version", SCHEMA_VERSION)) >= 3:
-        wire["install_id"] = install_id()
+    # install_id is a v3 field, and the schema forbids a payload that declares
+    # an older version from carrying newer fields — otherwise schema_version
+    # tells the aggregator nothing.
+    v3 = int(wire.get("schema_version", SCHEMA_VERSION)) >= 3
+    if v3:
+        wire["install_id"] = candidate
 
-    target = url or board_url()
     if not _ask_consent(wire, target=target, stdin=stdin, stdout=out):
         print("\n  Submission cancelled. Nothing was written or sent.", file=out)
         return 0
 
-    # The archive is the exact bytes that were sent, so a contributor can diff
-    # their copy against what the board shows.
+    # Consent given: now the id may be committed. If another process won the
+    # race we adopt its value, so one machine never reports as two installs.
+    if v3:
+        settled = commit_install_id(candidate)
+        wire["install_id"] = settled
+        if settled != candidate:
+            print(
+                f"  (another run on this machine registered first; your board "
+                f"id is {settled})",
+                file=out,
+            )
+
+    # The archive records the submission that was sent, so a contributor can
+    # compare their copy against what the board publishes.
     saved = _save_local_copy(wire)
     if saved is not None:
         print(f"\n  Saved a local copy to {saved}", file=out)
     else:
-        # The docstring promises a run survives an unreachable board. When the
-        # archive fails that promise does not hold, and saying so is better
-        # than letting the user discover it after a five-round sweep is gone.
         print(
             "\n  WARNING: could not save a local copy (is the disk full or "
             "read-only?). If the upload below fails, this run is lost and you "
@@ -1143,10 +1164,17 @@ def submit_interactive(
         resp = post_submission(wire, url=target)
     except SubmitError as exc:
         print(f"\n  Submission failed: {exc}", file=out)
+        # Recovery advice comes from here, where `saved` is actually known.
         if saved is not None:
             print(
                 f"  Your run is safe at {saved} — rerun the same command to "
                 f"retry; duplicate sends are ignored by the board.",
+                file=out,
+            )
+        else:
+            print(
+                "  No local copy was written, so this run is gone — rerun the "
+                "benchmark to try again.",
                 file=out,
             )
         return 1

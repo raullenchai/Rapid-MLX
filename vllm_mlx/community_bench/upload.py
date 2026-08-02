@@ -96,66 +96,91 @@ def _install_id_path() -> Path:
     return base / "bench-install-id"
 
 
-def install_id() -> str:
-    """Return this install's random id, minting one on first use.
+def peek_install_id() -> str:
+    """Return this install's id WITHOUT creating anything on disk.
 
-    Never raises: an unwritable home directory must not block a submission,
-    so we fall back to an ephemeral value. The only consequence is that the
-    server counts this run against a fresh per-install bucket.
+    Split from persistence deliberately. The consent screen shows the exact
+    payload and promises that nothing has been written yet — so the id has to
+    be knowable before the user says yes, and only committed after.
+
+    Never raises: an unreadable config dir must not block a submission.
     """
-    path = _install_id_path()
-    # UnicodeDecodeError is a ValueError, not an OSError: a corrupted or
-    # binary id file would have crashed the whole submission on read.
     try:
-        existing = path.read_text().strip()
-        if len(existing) == 12 and all(c in "0123456789abcdef" for c in existing):
+        existing = _install_id_path().read_text().strip()
+        if _valid_id(existing):
             return existing
+    # UnicodeDecodeError is a ValueError, not an OSError: a corrupted or
+    # binary id file would otherwise crash the whole submission on read.
     except (OSError, UnicodeError):
         pass
-    fresh = secrets.token_hex(6)
+    return secrets.token_hex(6)
+
+
+def commit_install_id(candidate: str) -> str:
+    """Persist ``candidate`` unless this install already has an id.
+
+    Returns the id that is now on disk — which may be another process's if it
+    won the race. Callers must use the return value, not their candidate.
+
+    The write is a fully-written temp file plus ``os.link``, not ``O_EXCL`` on
+    the destination: link is atomic and the file only ever becomes visible
+    already containing an id, so a concurrent reader can never observe an
+    empty file and mistake it for corruption.
+
+    Never raises. An unwritable home costs a stable identity, not a
+    submission; the only consequence is that the server counts this run
+    against a fresh per-install bucket.
+    """
+    path = _install_id_path()
+    try:
+        existing = path.read_text().strip()
+        if _valid_id(existing):
+            return existing
+        malformed = True
+    except (OSError, UnicodeError):
+        malformed = path.exists()
+
+    tmp = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Exclusive create, not write_text: two bench processes starting
-        # together would otherwise both miss the file, both mint, and both
-        # write — leaving each of them using an id the other overwrote, so
-        # one machine reports as two installs. The loser of the race reads
-        # the winner's value instead of its own.
-        #
-        # 0600 at creation: not a secret, but an identifier, and a
-        # world-readable one invites exactly the correlation we went to
-        # lengths to prevent.
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         try:
-            os.write(fd, (fresh + "\n").encode())
+            os.write(fd, (candidate + "\n").encode())
         finally:
             os.close(fd)
-        return fresh
-    except FileExistsError:
-        # Someone else won the create race — or the file is there but garbage.
-        try:
-            existing = path.read_text().strip()
-            if len(existing) == 12 and all(c in "0123456789abcdef" for c in existing):
-                return existing
-        except (OSError, UnicodeError):
-            pass
-        # Malformed. Without this branch O_EXCL fails forever, every call mints
-        # a fresh id that is never persisted, and the install has no stable
-        # identity at all — the per-install cap resets on every submission and
-        # the contributor's board name changes every run. Replace via a temp
-        # file + os.replace so a concurrent winner is never half-overwritten.
-        try:
-            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            try:
-                os.write(fd, (fresh + "\n").encode())
-            finally:
-                os.close(fd)
+
+        if malformed:
+            # Garbage on disk: replace it. Two processes both repairing will
+            # disagree on the id for this one run and agree from the next one
+            # onwards. Rarer and less harmful than the alternative, which is
+            # never repairing and re-minting on every single submission.
             os.replace(tmp, path)
-        except OSError:
-            pass
-    except OSError:
-        pass
-    return fresh
+            tmp = None
+            return candidate
+        try:
+            os.link(tmp, path)
+            return candidate
+        except FileExistsError:
+            winner = path.read_text().strip()
+            return winner if _valid_id(winner) else candidate
+    except (OSError, UnicodeError):
+        return candidate
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _valid_id(value: str) -> bool:
+    return len(value) == 12 and all(c in "0123456789abcdef" for c in value)
+
+
+def install_id() -> str:
+    """Read-or-create in one call. Kept for callers that do not need the split."""
+    return commit_install_id(peek_install_id())
 
 
 def new_run_group() -> str:
@@ -215,8 +240,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
             except json.JSONDecodeError:
                 raise SubmitError(
                     f"the board returned HTTP {status} but the body was not "
-                    f"JSON ({raw[:120]!r}). Your run was NOT submitted; it is "
-                    f"saved locally, so rerunning is safe."
+                    f"JSON ({raw[:120]!r}). Your run was NOT submitted."
                 ) from None
             if not isinstance(decoded, dict):
                 raise SubmitError(
@@ -249,10 +273,11 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
             _sleep_before_retry(attempt, getattr(exc, "headers", None))
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             if attempt == _MAX_ATTEMPTS:
-                raise SubmitError(
-                    f"could not reach {target}: {exc}. Your run was still saved "
-                    f"locally — see the path printed above."
-                ) from exc
+                # No persistence claim here: whether a local copy exists is
+                # something only the caller knows, and asserting it from this
+                # layer told users their run was safe when archiving had
+                # already failed and warned otherwise.
+                raise SubmitError(f"could not reach {target}: {exc}") from exc
             last = exc
             _sleep_before_retry(attempt, None)
 
@@ -264,7 +289,9 @@ __all__ = [
     "BOARD_URL_ENV",
     "SubmitError",
     "board_url",
+    "commit_install_id",
     "install_id",
+    "peek_install_id",
     "new_run_group",
     "post_submission",
 ]

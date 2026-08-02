@@ -143,18 +143,6 @@ def test_transient_transport_error_then_success(monkeypatch) -> None:
     assert len(calls) == 2
 
 
-def test_unreachable_board_mentions_the_local_copy(monkeypatch) -> None:
-    """The error text is the contributor's recovery instruction."""
-
-    def fake_open(req, timeout=None):
-        raise urllib.error.URLError("no route to host")
-
-    monkeypatch.setattr(upload.urllib.request, "urlopen", fake_open)
-    with pytest.raises(upload.SubmitError) as exc:
-        upload.post_submission({"a": 1}, url="https://x/api")
-    assert "saved" in str(exc.value).lower()
-
-
 def test_consent_text_describes_what_actually_happens() -> None:
     """A consent prompt that misdescribes the action is worse than none.
 
@@ -505,3 +493,90 @@ def test_loopback_http_is_allowed_for_local_development(monkeypatch) -> None:
     assert upload.board_url() == "http://127.0.0.1:8787/api/benchmarks"
     monkeypatch.setenv(upload.BOARD_URL_ENV, "https://staging.example/api")
     assert upload.board_url() == "https://staging.example/api"
+
+
+def test_peeking_an_id_never_touches_the_disk(tmp_path, monkeypatch) -> None:
+    """Declining consent must leave no trace, including no id file.
+
+    The consent screen says "nothing has been written yet". Minting the
+    identifier eagerly made that false for anyone who typed n.
+    """
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    got = upload.peek_install_id()
+    assert len(got) == 12
+    assert not (tmp_path / "bench-install-id").exists()
+    assert not list(tmp_path.glob("*"))
+
+
+def test_committing_adopts_a_concurrent_winner(tmp_path, monkeypatch) -> None:
+    """One machine must never report as two installs."""
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    winner = upload.commit_install_id("aaaaaaaaaaaa")
+    assert winner == "aaaaaaaaaaaa"
+    # A second process that peeked before the winner landed offers its own
+    # candidate and must adopt what is already on disk.
+    assert upload.commit_install_id("bbbbbbbbbbbb") == "aaaaaaaaaaaa"
+    assert not list(tmp_path.glob("*.tmp")), "no temp file may be left behind"
+
+
+def test_declining_consent_writes_nothing_at_all(tmp_path, monkeypatch) -> None:
+    import io
+
+    from vllm_mlx.community_bench import submission as sub
+
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    sent = []
+    monkeypatch.setattr(
+        "vllm_mlx.community_bench.upload.post_submission",
+        lambda *a, **k: sent.append(1) or {"ok": True},
+    )
+    rc = sub.submit_interactive(
+        {
+            "schema_version": 3,
+            "submission_id": "abcdef012345",
+            "hardware": {"chip": "Apple M2 Pro"},
+            "model": {"alias": "x"},
+        },
+        tmp_path,
+        stdin=io.StringIO("n\n"),
+        stdout=io.StringIO(),
+    )
+    assert rc == 0
+    assert sent == []
+    assert not list(tmp_path.rglob("*")), "declining must leave the disk untouched"
+
+
+def test_an_invalid_board_url_is_a_controlled_error(tmp_path, monkeypatch) -> None:
+    """Not a traceback: the documented contract is a non-zero return."""
+    import io
+
+    from vllm_mlx.community_bench import submission as sub
+
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setenv(upload.BOARD_URL_ENV, "http://evil.example/api")
+    out = io.StringIO()
+    rc = sub.submit_interactive(
+        {
+            "schema_version": 3,
+            "submission_id": "abcdef012345",
+            "hardware": {"chip": "Apple M2 Pro"},
+            "model": {"alias": "x"},
+        },
+        tmp_path,
+        stdin=io.StringIO("y\n"),
+        stdout=out,
+    )
+    assert rc == 2
+    assert "clear text" in out.getvalue()
+
+
+def test_transport_errors_do_not_claim_a_local_copy_exists(monkeypatch) -> None:
+    """Only the caller knows whether archiving worked."""
+
+    def boom(req, timeout=None):
+        raise urllib.error.URLError("no route to host")
+
+    monkeypatch.setattr(upload.urllib.request, "urlopen", boom)
+    with pytest.raises(upload.SubmitError) as exc:
+        upload.post_submission({"a": 1}, url="https://x/api")
+    assert "saved" not in str(exc.value).lower()
