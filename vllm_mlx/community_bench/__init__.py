@@ -17,7 +17,7 @@ Each layer can be unit-tested independently; nothing imports model
 weights or MLX state until ``runner`` runs.
 """
 
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 """Bump in lockstep with ``community-benchmarks/schema.json``'s
 ``schema_version`` enum. Submissions carry this so the aggregator can
 ignore rows from a schema it doesn't understand instead of failing.

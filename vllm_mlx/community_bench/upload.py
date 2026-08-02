@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -51,6 +52,10 @@ BOARD_URL_ENV = "RAPID_MLX_BENCH_BOARD_URL"
 
 _TIMEOUT_S = 20.0
 _MAX_ATTEMPTS = 3
+#: Base for exponential backoff between retries. Retrying a transient
+#: outage instantly just spends the whole budget inside the same failure
+#: window and adds load to an already-unhealthy service.
+_BACKOFF_BASE_S = 1.5
 
 
 def board_url() -> str:
@@ -81,11 +86,28 @@ def install_id() -> str:
     fresh = secrets.token_hex(6)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(fresh + "\n")
-        # 0600: it is not a secret, but it is an identifier, and a
-        # world-readable one invites correlation we just went to lengths
-        # to prevent.
-        os.chmod(path, 0o600)
+        # Exclusive create, not write_text: two bench processes starting
+        # together would otherwise both miss the file, both mint, and both
+        # write — leaving each of them using an id the other overwrote, so
+        # one machine reports as two installs. The loser of the race reads
+        # the winner's value instead of its own.
+        #
+        # 0600 at creation: not a secret, but an identifier, and a
+        # world-readable one invites exactly the correlation we went to
+        # lengths to prevent.
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, (fresh + "\n").encode())
+        finally:
+            os.close(fd)
+        return fresh
+    except FileExistsError:
+        try:
+            existing = path.read_text().strip()
+            if len(existing) == 12 and all(c in "0123456789abcdef" for c in existing):
+                return existing
+        except OSError:
+            pass
     except OSError:
         pass
     return fresh
@@ -94,6 +116,23 @@ def install_id() -> str:
 def new_run_group() -> str:
     """Mint an id linking the arms of one A/B so the board can pair them."""
     return secrets.token_hex(6)
+
+
+def _sleep_before_retry(attempt: int, headers) -> None:
+    """Back off before the next attempt, honouring ``Retry-After``.
+
+    Capped: a server asking us to wait an hour should not hang a CLI the
+    user is watching — we would rather fail and let them rerun.
+    """
+    delay = _BACKOFF_BASE_S * (2 ** (attempt - 1))
+    if headers is not None:
+        raw = headers.get("Retry-After") if hasattr(headers, "get") else None
+        if raw:
+            try:
+                delay = max(delay, float(str(raw).strip()))
+            except (TypeError, ValueError):
+                pass
+    time.sleep(min(delay, 10.0))
 
 
 class SubmitError(RuntimeError):
@@ -124,11 +163,26 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
         )
         try:
             with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
+                status = resp.status
                 raw = resp.read().decode("utf-8", "replace")
+            # A 2xx carrying something other than a JSON object is not an
+            # accepted submission — it is a proxy, a captive portal or a CDN
+            # error page. Reporting it as success would tell a contributor
+            # their run is on the board when it never arrived.
             try:
-                return json.loads(raw)
+                decoded = json.loads(raw)
             except json.JSONDecodeError:
-                return {"ok": True, "raw": raw[:500]}
+                raise SubmitError(
+                    f"the board returned HTTP {status} but the body was not "
+                    f"JSON ({raw[:120]!r}). Your run was NOT submitted; it is "
+                    f"saved locally, so rerunning is safe."
+                ) from None
+            if not isinstance(decoded, dict):
+                raise SubmitError(
+                    f"the board returned JSON that is not an object "
+                    f"({type(decoded).__name__}). Your run was NOT submitted."
+                )
+            return decoded
         except urllib.error.HTTPError as exc:
             detail = ""
             try:
@@ -140,6 +194,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
                     f"the board rejected this submission (HTTP {exc.code}). {detail}"
                 ) from exc
             last = exc
+            _sleep_before_retry(attempt, getattr(exc, "headers", None))
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             if attempt == _MAX_ATTEMPTS:
                 raise SubmitError(
@@ -147,6 +202,7 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
                     f"locally — see the path printed above."
                 ) from exc
             last = exc
+            _sleep_before_retry(attempt, None)
 
     raise SubmitError(str(last))
 

@@ -18,8 +18,12 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [1, 2],
-      "description": "Bump when the schema changes incompatibly. Aggregator skips rows it doesn't understand. v1 = speed buckets only. v2 = optional tier-tagged smoke + harness results alongside speed (when ``tier == 'smoke'|'harness'|'all'``); a v2 submission with no new fields is the SAME wire shape as v1 minus the version integer."
+      "enum": [
+        1,
+        2,
+        3
+      ],
+      "description": "Bump when the schema changes incompatibly. Aggregator skips rows it doesn't understand. v1 = speed buckets only. v2 = optional tier-tagged smoke + harness results alongside speed (when ``tier == 'smoke'|'harness'|'all'``); a v2 submission with no new fields is the SAME wire shape as v1 minus the version integer. v3 = adds the speculative-decoding axis (config.spec_decode) and the run_group/session_id that lets the aggregator pair the two arms of one same-machine A/B. A v3 submission with neither field is byte-identical to v2."
     },
     "submission_id": {
       "type": "string",
@@ -34,7 +38,11 @@
     "hardware": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["chip", "ram_gb", "cpu_cores"],
+      "required": [
+        "chip",
+        "ram_gb",
+        "cpu_cores"
+      ],
       "properties": {
         "chip": {
           "type": "string",
@@ -54,7 +62,10 @@
           "description": "From `sysctl -n hw.ncpu`."
         },
         "gpu_cores": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 1,
           "maximum": 256,
           "description": "Extracted from `system_profiler SPDisplaysDataType`'s 'Total Number of Cores' line. null if the probe failed (don't block submission for it)."
@@ -64,7 +75,12 @@
     "software": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["macos", "rapid_mlx", "mlx", "python"],
+      "required": [
+        "macos",
+        "rapid_mlx",
+        "mlx",
+        "python"
+      ],
       "properties": {
         "macos": {
           "type": "string",
@@ -93,7 +109,10 @@
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["alias", "hf_path"],
+      "required": [
+        "alias",
+        "hf_path"
+      ],
       "properties": {
         "alias": {
           "type": "string",
@@ -132,30 +151,54 @@
         },
         "sampling": {
           "type": "string",
-          "enum": ["greedy", "sampled"],
+          "enum": [
+            "greedy",
+            "sampled"
+          ],
           "description": "'greedy' = temp=0, top_p=1 (apples-to-apples vs llama-bench/TGI/MLPerf). 'sampled' = temp=0.7, top_p=0.9 (real-world)."
         },
         "buckets_spec": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["short", "long"],
+          "required": [
+            "short",
+            "long"
+          ],
           "properties": {
             "short": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["prompt_tokens", "max_tokens"],
+              "required": [
+                "prompt_tokens",
+                "max_tokens"
+              ],
               "properties": {
-                "prompt_tokens": {"type": "integer", "const": 512},
-                "max_tokens": {"type": "integer", "const": 128}
+                "prompt_tokens": {
+                  "type": "integer",
+                  "const": 512
+                },
+                "max_tokens": {
+                  "type": "integer",
+                  "const": 128
+                }
               }
             },
             "long": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["prompt_tokens", "max_tokens"],
+              "required": [
+                "prompt_tokens",
+                "max_tokens"
+              ],
               "properties": {
-                "prompt_tokens": {"type": "integer", "const": 2048},
-                "max_tokens": {"type": "integer", "const": 512}
+                "prompt_tokens": {
+                  "type": "integer",
+                  "const": 2048
+                },
+                "max_tokens": {
+                  "type": "integer",
+                  "const": 512
+                }
               }
             }
           }
@@ -164,37 +207,94 @@
           "type": "string",
           "pattern": "^[0-9a-f]{16}$",
           "description": "SHA256 of the synthetic prompt seed used for both buckets, first 16 hex chars. Locked per schema_version so the aggregator can reject mismatches."
+        },
+        "spec_decode": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "method"
+          ],
+          "description": "v3. Which speculative-decoding arm produced these numbers. Omitted entirely for a plain baseline run, so a v1/v2 row and a v3 baseline row are the same bytes and both aggregate into the 'none' arm without a migration.",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "none",
+                "mtp",
+                "dspark",
+                "dflash",
+                "ddtree",
+                "suffix"
+              ],
+              "description": "Unknown methods are refused rather than bucketed as 'none', which would let an accelerated run masquerade as a baseline."
+            },
+            "num_speculative_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1,
+              "maximum": 32,
+              "description": "Draft tokens per verify step, when the method takes one."
+            }
+          }
         }
       }
     },
     "buckets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["short", "long"],
+      "required": [
+        "short",
+        "long"
+      ],
       "properties": {
-        "short": {"$ref": "#/$defs/bucketResult"},
-        "long": {"$ref": "#/$defs/bucketResult"}
+        "short": {
+          "$ref": "#/$defs/bucketResult"
+        },
+        "long": {
+          "$ref": "#/$defs/bucketResult"
+        }
       }
     },
     "notes": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "maxLength": 200,
-      "description": "Free-text contributor note (e.g. 'on battery', '4K external monitor connected', 'fresh boot'). Not parsed by the aggregator — shown in PR review to explain outliers."
+      "description": "Free-text contributor note (e.g. 'on battery', '4K external monitor connected', 'fresh boot'). Not parsed by the aggregator \u2014 shown in PR review to explain outliers."
     },
     "peak_ram_mb": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0,
       "description": "Max of `mx.metal.get_active_memory()` observed across all measured rounds, in MiB. null if unavailable."
     },
     "tier": {
       "type": "string",
-      "enum": ["speed", "smoke", "harness", "all"],
-      "description": "v2 only. Which bench tier produced this submission. ``speed`` (default if absent) = the historical short+long buckets — wire-shape identical to v1. ``smoke`` = single-prompt boot probe; populates ``smoke_result``. ``harness`` = adversarial CLI-harness gauntlet; populates ``harness_result``. ``all`` = all three. The aggregator decides which views to render off the tier tag; missing tier on a v2 payload is treated as ``speed`` for backwards compatibility with v1 submitters who just bumped the version integer."
+      "enum": [
+        "speed",
+        "smoke",
+        "harness",
+        "all"
+      ],
+      "description": "v2 only. Which bench tier produced this submission. ``speed`` (default if absent) = the historical short+long buckets \u2014 wire-shape identical to v1. ``smoke`` = single-prompt boot probe; populates ``smoke_result``. ``harness`` = adversarial CLI-harness gauntlet; populates ``harness_result``. ``all`` = all three. The aggregator decides which views to render off the tier tag; missing tier on a v2 payload is treated as ``speed`` for backwards compatibility with v1 submitters who just bumped the version integer."
     },
     "smoke_result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["boot_time_ms", "first_prompt_ok", "first_token_latency_ms", "response_excerpt"],
+      "required": [
+        "boot_time_ms",
+        "first_prompt_ok",
+        "first_token_latency_ms",
+        "response_excerpt"
+      ],
       "properties": {
         "boot_time_ms": {
           "type": "number",
@@ -213,7 +313,7 @@
         "response_excerpt": {
           "type": "string",
           "maxLength": 200,
-          "description": "First ≤200 chars of the smoke response. Truncated for privacy/size; the aggregator displays it verbatim for sanity review."
+          "description": "First \u2264200 chars of the smoke response. Truncated for privacy/size; the aggregator displays it verbatim for sanity review."
         }
       },
       "description": "v2 only. Boot + first-prompt smoke probe result. Required iff ``tier`` is ``smoke`` or ``all``; absent for tier=speed and tier=harness."
@@ -221,15 +321,46 @@
     "harness_result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["codex", "opencode", "hermes", "aider", "langchain"],
+      "required": [
+        "codex",
+        "opencode",
+        "hermes",
+        "aider",
+        "langchain"
+      ],
       "properties": {
-        "codex":     {"$ref": "#/$defs/harnessAdapterResult"},
-        "opencode":  {"$ref": "#/$defs/harnessAdapterResult"},
-        "hermes":    {"$ref": "#/$defs/harnessAdapterResult"},
-        "aider":     {"$ref": "#/$defs/harnessAdapterResult"},
-        "langchain": {"$ref": "#/$defs/harnessAdapterResult"}
+        "codex": {
+          "$ref": "#/$defs/harnessAdapterResult"
+        },
+        "opencode": {
+          "$ref": "#/$defs/harnessAdapterResult"
+        },
+        "hermes": {
+          "$ref": "#/$defs/harnessAdapterResult"
+        },
+        "aider": {
+          "$ref": "#/$defs/harnessAdapterResult"
+        },
+        "langchain": {
+          "$ref": "#/$defs/harnessAdapterResult"
+        }
       },
       "description": "v2 only. Per-adapter results from the agent-harness gauntlet. Required iff ``tier`` is ``harness`` or ``all``; absent for tier=speed and tier=smoke. Each entry carries a pass/fail flag, the round-trip duration, and a short error excerpt on failure (null on pass)."
+    },
+    "run_group": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$",
+      "description": "v3. Links the arms of one A/B. The board publishes a speedup only for two arms sharing this AND run on one machine \u2014 comparing medians across contributors is how a leaderboard ends up publishing numbers nobody can reproduce."
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$",
+      "description": "v3. All runs from one CLI invocation on one machine. Supersedes run_group: it derives the same pairing and additionally records that these runs shared thermal and background conditions."
+    },
+    "install_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}$",
+      "description": "v3. Random per install, attached at send time. Used for the server's per-install cap and to derive a stable contributor pseudonym. NOT derived from any hardware identifier, and reset by deleting ~/.rapid-mlx/bench-install-id."
     }
   },
   "allOf": [
@@ -237,35 +368,81 @@
       "comment": "v2 conditional: when tier requires smoke_result/harness_result, enforce presence. v1 submissions skip these branches entirely (the if-clause requires schema_version==2 AND the relevant tier value).",
       "if": {
         "properties": {
-          "schema_version": {"const": 2},
-          "tier": {"enum": ["smoke", "all"]}
+          "schema_version": {
+            "const": 2
+          },
+          "tier": {
+            "enum": [
+              "smoke",
+              "all"
+            ]
+          }
         },
-        "required": ["schema_version", "tier"]
+        "required": [
+          "schema_version",
+          "tier"
+        ]
       },
-      "then": {"required": ["smoke_result"]}
+      "then": {
+        "required": [
+          "smoke_result"
+        ]
+      }
     },
     {
       "if": {
         "properties": {
-          "schema_version": {"const": 2},
-          "tier": {"enum": ["harness", "all"]}
+          "schema_version": {
+            "const": 2
+          },
+          "tier": {
+            "enum": [
+              "harness",
+              "all"
+            ]
+          }
         },
-        "required": ["schema_version", "tier"]
+        "required": [
+          "schema_version",
+          "tier"
+        ]
       },
-      "then": {"required": ["harness_result"]}
+      "then": {
+        "required": [
+          "harness_result"
+        ]
+      }
     },
     {
       "comment": "v1 has none of the v2 fields. Reject v1 payloads that try to smuggle in tier/smoke_result/harness_result so the wire shape stays unambiguous.",
       "if": {
-        "properties": {"schema_version": {"const": 1}},
-        "required": ["schema_version"]
+        "properties": {
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
       },
       "then": {
         "not": {
           "anyOf": [
-            {"required": ["tier"]},
-            {"required": ["smoke_result"]},
-            {"required": ["harness_result"]}
+            {
+              "required": [
+                "tier"
+              ]
+            },
+            {
+              "required": [
+                "smoke_result"
+              ]
+            },
+            {
+              "required": [
+                "harness_result"
+              ]
+            }
           ]
         }
       }
@@ -282,9 +459,15 @@
         "rounds_raw"
       ],
       "properties": {
-        "decode_tps": {"$ref": "#/$defs/stat"},
-        "prefill_tps": {"$ref": "#/$defs/stat"},
-        "ttft_ms": {"$ref": "#/$defs/stat"},
+        "decode_tps": {
+          "$ref": "#/$defs/stat"
+        },
+        "prefill_tps": {
+          "$ref": "#/$defs/stat"
+        },
+        "ttft_ms": {
+          "$ref": "#/$defs/stat"
+        },
         "rounds_raw": {
           "type": "array",
           "minItems": 5,
@@ -292,11 +475,27 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["decode_tps", "prefill_tps", "ttft_ms"],
+            "required": [
+              "decode_tps",
+              "prefill_tps",
+              "ttft_ms"
+            ],
             "properties": {
-              "decode_tps": {"type": "number", "exclusiveMinimum": 0, "maximum": 5000},
-              "prefill_tps": {"type": "number", "exclusiveMinimum": 0, "maximum": 100000},
-              "ttft_ms": {"type": "number", "minimum": 0, "maximum": 600000}
+              "decode_tps": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 5000
+              },
+              "prefill_tps": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 100000
+              },
+              "ttft_ms": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 600000
+              }
             }
           },
           "description": "Per-round raw numbers (post-warmup). Aggregator uses these for median across all submissions; this column lets reviewers spot a single weird round."
@@ -306,18 +505,39 @@
     "stat": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["median", "min", "max", "stddev"],
+      "required": [
+        "median",
+        "min",
+        "max",
+        "stddev"
+      ],
       "properties": {
-        "median": {"type": "number", "minimum": 0},
-        "min": {"type": "number", "minimum": 0},
-        "max": {"type": "number", "minimum": 0},
-        "stddev": {"type": "number", "minimum": 0}
+        "median": {
+          "type": "number",
+          "minimum": 0
+        },
+        "min": {
+          "type": "number",
+          "minimum": 0
+        },
+        "max": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stddev": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
     "harnessAdapterResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["passed", "duration_s", "error_excerpt"],
+      "required": [
+        "passed",
+        "duration_s",
+        "error_excerpt"
+      ],
       "properties": {
         "passed": {
           "type": "boolean",
@@ -329,9 +549,12 @@
           "description": "Wall-clock duration of the adapter run in seconds. Recorded even on failure so reviewers can spot adapters that hang vs adapters that fail fast."
         },
         "error_excerpt": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "maxLength": 200,
-          "description": "First ≤200 chars of the adapter's error output. ``null`` on success; non-null short string on failure. Kept tight so a stack-trace-spammy adapter doesn't bloat the submission file."
+          "description": "First \u2264200 chars of the adapter's error output. ``null`` on success; non-null short string on failure. Kept tight so a stack-trace-spammy adapter doesn't bloat the submission file."
         }
       }
     }

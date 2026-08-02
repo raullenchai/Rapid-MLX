@@ -684,14 +684,22 @@ def test_ask_consent_yes() -> None:
     stdout = io.StringIO()
     assert _ask_consent({"key": "val"}, stdin=stdin, stdout=stdout) is True
     assert "[y]" in stdout.getvalue()
-    # Round-7 BLOCKING: consent text must disclose BOTH network ops,
-    # not just `gh pr create`. A user who just wanted to "open a PR"
-    # should know git push runs first.
+    # The original assertion here required the text to disclose `git fetch`,
+    # `git push`, fork creation and `gh pr create` — correct while submitting
+    # meant opening a pull request, and false the moment it became one POST.
+    # The contract is unchanged in spirit: name every network operation, and
+    # nothing that does not happen.
     text = stdout.getvalue()
-    assert "git push" in text
-    assert "git fetch" in text
-    assert "gh pr create" in text
-    assert "creating or reusing your fork" in text
+    assert "POST" in text
+    assert "rapidmlx.com" in text
+    for stale in ("git push", "git fetch", "gh pr create", "fork"):
+        assert stale not in text, f"consent text still promises {stale!r}"
+    # The payload is printed in full above this text, so the disclosure must
+    # not claim anything is withheld that is in fact on the wire — an earlier
+    # draft said "no model names beyond the alias" while hf_path was being
+    # sent.
+    assert "everything that is sent" in text
+    assert "bench-install-id" in text, "the reset path must be discoverable"
 
 
 def test_ask_consent_default_no() -> None:

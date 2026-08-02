@@ -16,6 +16,12 @@ import pytest
 from vllm_mlx.community_bench import upload
 
 
+@pytest.fixture(autouse=True)
+def _no_real_backoff(monkeypatch):
+    """Retries sleep; tests should not."""
+    monkeypatch.setattr(upload.time, "sleep", lambda _s: None)
+
+
 def test_install_id_is_stable_across_calls(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
     first = upload.install_id()
@@ -60,8 +66,9 @@ def test_board_url_env_override(monkeypatch) -> None:
 
 
 class _Resp:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, status: int = 200):
         self._body = body
+        self.status = status
 
     def read(self) -> bytes:
         return self._body
@@ -172,3 +179,96 @@ def test_consent_text_describes_what_actually_happens() -> None:
     assert "POST" in text
     assert "PUBLIC" in text
     assert "bench-install-id" in text, "the reset path must be discoverable"
+
+
+def test_builder_output_validates_against_the_repo_schema() -> None:
+    """The payload we generate must satisfy the schema we ship.
+
+    Codex round 1 on #1403 caught this: the PR added ``config.spec_decode``
+    and ``run_group`` while ``schema.json`` still declared
+    ``additionalProperties: false`` and ``schema_version`` in ``[1, 2]`` — so
+    the repository's own GHA validator would have rejected every payload the
+    new CLI produced. Unit tests on the builder alone cannot see that; only
+    checking the builder against the shipped schema can.
+    """
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    import jsonschema
+
+    from vllm_mlx.community_bench.submission import build_submission_payload
+
+    class _Stat:
+        def to_schema_dict(self):
+            return {
+                "decode_tps": {"median": 61.4, "min": 61.2, "max": 61.5, "stddev": 0.1},
+                "prefill_tps": {
+                    "median": 300.6,
+                    "min": 295.4,
+                    "max": 302.8,
+                    "stddev": 2.4,
+                },
+                "ttft_ms": {
+                    "median": 1779.8,
+                    "min": 1766.9,
+                    "max": 1811.3,
+                    "stddev": 14.7,
+                },
+                # Exactly 5, because the suite locks the round count and the
+                # schema enforces it — a fixture with fewer would pass a unit
+                # test while being unrepresentable on the wire.
+                "rounds_raw": [
+                    {"decode_tps": 61.2 + i, "prefill_tps": 295.4, "ttft_ms": 1811.3}
+                    for i in range(5)
+                ],
+            }
+
+    class _Bench:
+        sampling = "greedy"
+        prompt_hash = "abc123def4567890"
+        peak_ram_mb = 4014
+        short = _Stat()
+        long = _Stat()
+
+    from vllm_mlx.community_bench.hardware import Hardware, Software
+
+    hw = Hardware(chip="Apple M2 Pro", ram_gb=32, cpu_cores=10, gpu_cores=16)
+    sw = Software(macos="26.5.2", rapid_mlx="0.11.9", mlx="0.31.2", python="3.12.13")
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "community-benchmarks" / "schema.json"
+        ).read_text()
+    )
+
+    for spec, group in [
+        (None, None),  # v3 baseline == v2 bytes
+        ({"method": "mtp", "num_speculative_tokens": 3}, "abcdefabcdef"),
+    ]:
+        payload = build_submission_payload(
+            hardware=hw,
+            software=sw,
+            alias="qwen3.5-4b-4bit",
+            hf_path="mlx-community/Qwen3.5-4B-MLX-4bit",
+            bench=_Bench(),
+            notes=None,
+            now=datetime(2026, 8, 2, tzinfo=timezone.utc),
+            spec_decode=spec,
+            run_group=group,
+        )
+        jsonschema.validate(payload, schema)
+
+    # A baseline v3 payload must not smuggle in an empty spec_decode key —
+    # that is what keeps it byte-comparable with the v1/v2 corpus.
+    baseline = build_submission_payload(
+        hardware=hw,
+        software=sw,
+        alias="qwen3.5-4b-4bit",
+        hf_path="mlx-community/Qwen3.5-4B-MLX-4bit",
+        bench=_Bench(),
+        notes=None,
+        now=datetime(2026, 8, 2, tzinfo=timezone.utc),
+    )
+    assert "spec_decode" not in baseline["config"]
+    assert "run_group" not in baseline

@@ -237,10 +237,12 @@ def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
     )
     print(
         "Pressing [y] does two things: saves a copy under ~/.rapid-mlx/ and "
-        "sends one HTTPS POST to rapidmlx.com. No prompts, no file contents, "
-        "no model names beyond the alias above, and no hardware serial — the "
-        "id attached to your submission is random per install and resettable "
-        "by deleting ~/.rapid-mlx/bench-install-id.",
+        "sends one HTTPS POST to rapidmlx.com. What you see above is "
+        "everything that is sent \u2014 nothing is added on the way out. Your "
+        "prompts, your files and your IP address are not in it, and neither "
+        "is any hardware serial: the id attached to your submission is random "
+        "per install and resettable by deleting "
+        "~/.rapid-mlx/bench-install-id.",
         file=out,
     )
     print("Press [Enter] to cancel.", file=out)
@@ -1125,10 +1127,23 @@ def submit_interactive(
             )
         return 1
 
-    if resp.get("already"):
+    if isinstance(resp, dict) and resp.get("already"):
         print("  Already on the board (duplicate submission ignored).", file=out)
     else:
         print("  Accepted.", file=out)
+
+    # The board derives a stable pseudonym from the install id and echoes it
+    # here. We print what the SERVER said rather than deriving it locally:
+    # two word lists in two languages would eventually drift, and the first
+    # drift makes this line announce a name that is not on the board.
+    who = (resp.get("contributor") if isinstance(resp, dict) else None) or {}
+    if who.get("name"):
+        tag = who.get("tag")
+        print(
+            f"  You appear on the board as: {who['name']}"
+            + (f"\u00b7{tag}" if tag else ""),
+            file=out,
+        )
 
     _print_thanks(payload, stdout=out)
     return 0
