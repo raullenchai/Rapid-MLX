@@ -27,6 +27,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Issue #1359 — bound how many bytes the streaming tool-call parser may
+# suppress while inside an unclosed tool-call block before we give up and
+# release the withheld text as content. Without a bound,
+# ``extract_tool_calls_streaming`` returns ``None`` for every delta as long as
+# the block stays open, so a block that never closes (a literal
+# ``<tool_call>``/``<function=`` in generated code that skews the open/close
+# balance, oversized/degenerate arguments, or a repetition loop) suppresses
+# content forever — the client then sees only SSE keepalives and no client
+# timeout can ever fire. 64 KB is far above any legitimate tool call (a few
+# hundred bytes; incremental-argument parsers emit tool_call deltas well
+# before this, which also trips the ``_tool_calls_emitted_to_wire`` guard) yet
+# bounds the stall to ~16 K tokens.
+_MAX_TOOL_SUPPRESSION_BYTES = 65536
+
 
 def _find_json_start(text: str) -> int:
     """Find the first `{` or `[` that is NOT inside `<think>...</think>` tags.
@@ -374,6 +388,15 @@ class StreamingPostProcessor:
         # site (channel-routed, reasoning, standard) AND in
         # ``_build_tool_call_event``. Read by ``_compute_finish_reason``.
         self._tool_calls_emitted_to_wire: int = 0
+        # Issue #1359 — bound tool-call streaming suppression.
+        # ``_tool_suppressed_buffer`` accumulates only the deltas the parser
+        # withheld (returned ``None``) while inside an unclosed tool-call block;
+        # if it passes ``_MAX_TOOL_SUPPRESSION_BYTES`` before any tool call has
+        # reached the wire, we release it as content and latch
+        # ``_tool_suppression_released`` so the rest of the turn streams as
+        # plain content instead of wedging behind SSE keepalives.
+        self._tool_suppressed_buffer: str = ""
+        self._tool_suppression_released: bool = False
         self.tool_markup_possible = False
         # R10-C8 (Mira r10-R1): tool-prose-prefix hold-back. When the
         # request declares ``tools`` and the model emits a UI-TARS-style
@@ -2309,6 +2332,10 @@ class StreamingPostProcessor:
         # prior turn's emitted-count into a new stream and lie to
         # ``_compute_finish_reason`` about the wire state.
         self._tool_calls_emitted_to_wire = 0
+        # Issue #1359 — clear the suppression-release latch/buffer so a re-used
+        # processor doesn't carry a prior turn's released state into a new stream.
+        self._tool_suppressed_buffer = ""
+        self._tool_suppression_released = False
         self.tool_markup_possible = False
         # R10-C8: clear the tool-prose hold-back so a re-used processor
         # doesn't ship the prior turn's buffered preamble bytes.
@@ -3542,6 +3569,9 @@ class StreamingPostProcessor:
             self.tool_parser
             and _fallback_text
             and not self.tool_calls_detected
+            # Issue #1359 — once the suppression budget released the block as
+            # content, don't re-surface it as a tool call at finalize.
+            and not self._tool_suppression_released
             and _has_plausible_markup
         ):
             result = self.tool_parser.extract_tool_calls(
@@ -3813,6 +3843,13 @@ class StreamingPostProcessor:
         Returns {"tool_calls": [...]} if tool calls detected.
         Returns {"content": "..."} for normal content pass-through.
         """
+        if self._tool_suppression_released:
+            # Issue #1359 — a prior unclosed tool-call block blew the
+            # suppression budget; tool detection is disabled for the rest of
+            # this turn so content streams instead of wedging behind keepalives.
+            self.tool_accumulated_text += content
+            return {"content": content}
+
         if not self.tool_markup_possible and "<" not in content and "[" not in content:
             # The hardcoded ``<``/``[`` heuristic catches every parser
             # whose wire markers open with one of those chars. The
@@ -3857,7 +3894,35 @@ class StreamingPostProcessor:
         )
 
         if tool_result is None:
+            # Inside an (as yet) unclosed tool-call block — normally suppressed.
+            # Bound the suppression (issue #1359): if the block never closes,
+            # returning ``None`` for every delta wedges the stream behind SSE
+            # keepalives with no client timeout able to fire. Once we've
+            # withheld more than the budget WITHOUT any tool call reaching the
+            # wire, give up on tool detection for this turn and release the
+            # buffered text as content so the stream makes visible progress.
+            # Only the withheld (``None``) deltas are buffered here, so nothing
+            # already emitted as content is re-sent; the ``emitted_to_wire``
+            # guard leaves genuine (incrementally-streamed) tool calls alone.
+            if self._tool_calls_emitted_to_wire == 0:
+                self._tool_suppressed_buffer += content
+                if len(self._tool_suppressed_buffer) > _MAX_TOOL_SUPPRESSION_BYTES:
+                    released = self._tool_suppressed_buffer
+                    self._tool_suppression_released = True
+                    self._tool_suppressed_buffer = ""
+                    logger.warning(
+                        "Tool-call streaming suppression exceeded %d bytes "
+                        "without a closing tag; releasing buffered content as "
+                        "text and disabling tool detection for this request "
+                        "(issue #1359).",
+                        _MAX_TOOL_SUPPRESSION_BYTES,
+                    )
+                    return {"content": released}
             return None  # inside tool markup
+
+        # Parser made progress (emitted content or resolved the block) — drop
+        # any partial suppression buffer so a later block is bounded afresh.
+        self._tool_suppressed_buffer = ""
 
         if "tool_calls" in tool_result:
             self.tool_calls_detected = True
