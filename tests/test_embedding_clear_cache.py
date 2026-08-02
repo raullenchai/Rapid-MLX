@@ -33,7 +33,12 @@ def _mock_engine() -> EmbeddingEngine:
     )
     tok = MagicMock()
     tok._tokenizer = inner_tok
+    # A real pad token id (0). Both attrs are set because embed_tokens'
+    # pad-id resolver falls through ``pad_token_id or _tokenizer.pad_token_id
+    # or 0`` — a bare MagicMock on the inner tokenizer would be treated as a
+    # truthy pad id and break mx.array() on the padded batch.
     tok.pad_token_id = 0
+    inner_tok.pad_token_id = 0
     eng._tokenizer = tok
     return eng
 
