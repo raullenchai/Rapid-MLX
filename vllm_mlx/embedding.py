@@ -334,7 +334,19 @@ class EmbeddingEngine:
         embeds: mx.array = output.text_embeds
 
         # Convert to Python lists for JSON serialization
-        return embeds.tolist()
+        result = embeds.tolist()
+
+        # Release the Metal buffers this pass allocated (issue #1380). MLX
+        # keeps freed buffers in its allocator pool keyed by size, and the
+        # ``padding=True`` above makes the batch's sequence length vary from
+        # request to request — so nearly every batch asks for a size the pool
+        # has never seen and cannot reuse. Without this the pool only grows
+        # (measured: ~70 MB retained per input text, 2.3 GB → 24 GB over 320
+        # texts). Mirrors every LLM path in this engine, which already clear
+        # the cache after a forward.
+        mx.clear_cache()
+
+        return result
 
     def embed_tokens(self, token_batches: list[list[int]]) -> list[list[float]]:
         """Embed pre-tokenized inputs (OpenAI spec input formats 3 and 4).
@@ -392,7 +404,11 @@ class EmbeddingEngine:
 
         output = self._model(input_ids, attention_mask=attention_mask)
         embeds: mx.array = output.text_embeds
-        return embeds.tolist()
+        result = embeds.tolist()
+        # Same allocator-pool release as embed() (issue #1380): drop the
+        # per-batch Metal buffers now that the vectors are Python lists.
+        mx.clear_cache()
+        return result
 
     def count_tokens(self, texts: str | list[str]) -> int:
         """Token count for usage reporting.
