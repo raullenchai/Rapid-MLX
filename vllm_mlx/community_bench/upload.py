@@ -42,6 +42,7 @@ import os
 import secrets
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -58,9 +59,35 @@ _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_S = 1.5
 
 
+class SubmitError(RuntimeError):
+    """Raised when the board refused or could not be reached."""
+
+
 def board_url() -> str:
-    """Resolve the submission endpoint."""
-    return os.environ.get(BOARD_URL_ENV, "").strip() or DEFAULT_BOARD_URL
+    """Resolve the submission endpoint.
+
+    The override exists for local development, but the consent screen promises
+    an *HTTPS* POST — so a plain-http target would send the payload and the
+    persistent install id in clear text while telling the user otherwise.
+    Loopback is exempt because that is what a local worker actually is.
+    """
+    override = os.environ.get(BOARD_URL_ENV, "").strip()
+    if not override:
+        return DEFAULT_BOARD_URL
+    parsed = urllib.parse.urlparse(override)
+    if parsed.scheme == "https":
+        return override
+    if parsed.scheme == "http" and (parsed.hostname or "") in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }:
+        return override
+    raise SubmitError(
+        f"{BOARD_URL_ENV} must be an https:// URL (or http:// on loopback for "
+        f"local development); got {override!r}. Refusing to send your "
+        f"submission in clear text."
+    )
 
 
 def _install_id_path() -> Path:
@@ -104,11 +131,27 @@ def install_id() -> str:
             os.close(fd)
         return fresh
     except FileExistsError:
+        # Someone else won the create race — or the file is there but garbage.
         try:
             existing = path.read_text().strip()
             if len(existing) == 12 and all(c in "0123456789abcdef" for c in existing):
                 return existing
         except (OSError, UnicodeError):
+            pass
+        # Malformed. Without this branch O_EXCL fails forever, every call mints
+        # a fresh id that is never persisted, and the install has no stable
+        # identity at all — the per-install cap resets on every submission and
+        # the contributor's board name changes every run. Replace via a temp
+        # file + os.replace so a concurrent winner is never half-overwritten.
+        try:
+            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+            fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, (fresh + "\n").encode())
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+        except OSError:
             pass
     except OSError:
         pass
@@ -135,10 +178,6 @@ def _sleep_before_retry(attempt: int, headers) -> None:
             except (TypeError, ValueError):
                 pass
     time.sleep(min(delay, 10.0))
-
-
-class SubmitError(RuntimeError):
-    """Raised when the board refused or could not be reached."""
 
 
 def post_submission(payload: dict, *, url: str | None = None) -> dict:

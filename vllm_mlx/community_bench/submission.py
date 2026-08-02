@@ -1109,7 +1109,13 @@ def submit_interactive(
     # round 2 caught exactly that, in text written to fix the same class of
     # bug one round earlier.
     wire = dict(payload)
-    wire["install_id"] = install_id()
+    # install_id is a v3 field, and the schema explicitly forbids a payload
+    # that declares an older version from carrying newer fields — otherwise
+    # schema_version tells the aggregator nothing. The builder always emits
+    # SCHEMA_VERSION, so this only guards a caller that hand-rolled an older
+    # payload.
+    if int(wire.get("schema_version", SCHEMA_VERSION)) >= 3:
+        wire["install_id"] = install_id()
 
     target = url or board_url()
     if not _ask_consent(wire, target=target, stdin=stdin, stdout=out):

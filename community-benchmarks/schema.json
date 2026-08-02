@@ -463,6 +463,18 @@
               "required": [
                 "install_id"
               ]
+            },
+            {
+              "properties": {
+                "config": {
+                  "required": [
+                    "spec_decode"
+                  ]
+                }
+              },
+              "required": [
+                "config"
+              ]
             }
           ]
         }
@@ -496,6 +508,18 @@
             {
               "required": [
                 "install_id"
+              ]
+            },
+            {
+              "properties": {
+                "config": {
+                  "required": [
+                    "spec_decode"
+                  ]
+                }
+              },
+              "required": [
+                "config"
               ]
             }
           ]

@@ -819,10 +819,15 @@ def test_submit_interactive_saves_local_copy_before_sending(
     assert "abcdef012345" in json.loads(saved[0].read_text())["submission_id"]
 
 
-def test_the_archived_copy_is_byte_identical_to_what_was_sent(
+def test_the_archived_copy_is_the_submission_that_was_sent(
     tmp_path, monkeypatch
 ) -> None:
     """The archive has to BE the submission, not a redacted version of it.
+
+    Content, not bytes: the archive is pretty-printed for a human to read
+    while the wire body is compact. An earlier revision of this test claimed
+    byte-identity and compared parsed dicts, so it asserted something weaker
+    than its own name — codex round 4 caught the gap.
 
     An earlier revision attached install_id after consent so the archived copy
     would be "the run, not the run plus an identifier". Codex round 2 pointed
@@ -856,7 +861,7 @@ def test_the_archived_copy_is_byte_identical_to_what_was_sent(
     saved = list((tmp_path / "bench-submissions").glob("*.json"))
     assert len(saved) == 1
     archived = json.loads(saved[0].read_text())
-    assert archived == sent, "the archive must equal the bytes that were sent"
+    assert archived == sent, "the archive must equal the submission that was sent"
 
     # The consent screen printed the id, so the promise it makes is true.
     assert sent["install_id"] in out.getvalue()

@@ -468,3 +468,40 @@ def test_consent_names_the_actual_destination(tmp_path, monkeypatch) -> None:
     text = out.getvalue()
     assert "elsewhere.example" in text, "consent must name where the data is going"
     assert "rapidmlx.com" not in text, "and must not name a host it is not going to"
+
+
+def test_a_malformed_id_file_is_replaced_not_re_minted_forever(
+    tmp_path, monkeypatch
+) -> None:
+    """A corrupted id file must not cost the install its identity.
+
+    With O_EXCL alone the create always raises FileExistsError, the garbage is
+    never replaced, and every call returns a fresh unpersisted id — so the
+    per-install cap resets on every submission and the contributor's board
+    name changes every run.
+    """
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    path = tmp_path / "bench-install-id"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("obviously not a hex id\n")
+
+    first = upload.install_id()
+    assert len(first) == 12
+    assert upload.install_id() == first, "identity must stabilise after one repair"
+    assert path.read_text().strip() == first
+    assert not list(tmp_path.glob("*.tmp")), "no temp file may be left behind"
+
+
+def test_a_plain_http_override_is_refused(monkeypatch) -> None:
+    """The consent text promises HTTPS; the resolver has to mean it."""
+    monkeypatch.setenv(upload.BOARD_URL_ENV, "http://evil.example/api")
+    with pytest.raises(upload.SubmitError) as exc:
+        upload.board_url()
+    assert "clear text" in str(exc.value)
+
+
+def test_loopback_http_is_allowed_for_local_development(monkeypatch) -> None:
+    monkeypatch.setenv(upload.BOARD_URL_ENV, "http://127.0.0.1:8787/api/benchmarks")
+    assert upload.board_url() == "http://127.0.0.1:8787/api/benchmarks"
+    monkeypatch.setenv(upload.BOARD_URL_ENV, "https://staging.example/api")
+    assert upload.board_url() == "https://staging.example/api"
