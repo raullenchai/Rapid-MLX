@@ -369,7 +369,10 @@
       "if": {
         "properties": {
           "schema_version": {
-            "const": 2
+            "enum": [
+              2,
+              3
+            ]
           },
           "tier": {
             "enum": [
@@ -393,7 +396,10 @@
       "if": {
         "properties": {
           "schema_version": {
-            "const": 2
+            "enum": [
+              2,
+              3
+            ]
           },
           "tier": {
             "enum": [
@@ -414,7 +420,7 @@
       }
     },
     {
-      "comment": "v1 has none of the v2 fields. Reject v1 payloads that try to smuggle in tier/smoke_result/harness_result so the wire shape stays unambiguous.",
+      "comment": "v1 has none of the v2/v3 fields. Reject v1 payloads that try to smuggle in tier/smoke_result/harness_result or the v3 pairing fields so the wire shape stays unambiguous.",
       "if": {
         "properties": {
           "schema_version": {
@@ -441,6 +447,55 @@
             {
               "required": [
                 "harness_result"
+              ]
+            },
+            {
+              "required": [
+                "run_group"
+              ]
+            },
+            {
+              "required": [
+                "session_id"
+              ]
+            },
+            {
+              "required": [
+                "install_id"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "comment": "v2 predates the pairing fields. Same principle as the v1 rule: a row that declares an older version must not carry a newer version's fields, or the aggregator cannot trust schema_version to tell it what to expect.",
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": 2
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "run_group"
+              ]
+            },
+            {
+              "required": [
+                "session_id"
+              ]
+            },
+            {
+              "required": [
+                "install_id"
               ]
             }
           ]

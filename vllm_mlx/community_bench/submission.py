@@ -1097,21 +1097,35 @@ def submit_interactive(
     """
     out = stdout or sys.stdout
 
-    if not _ask_consent(payload, stdin=stdin, stdout=out):
+    from .upload import SubmitError, board_url, install_id, post_submission
+
+    # Attach the install id BEFORE consent. The consent screen promises that
+    # what it prints is what goes out; appending anything afterwards — even
+    # something as small as a random id — makes that promise false. Codex
+    # round 2 caught exactly that, in text written to fix the same class of
+    # bug one round earlier.
+    wire = dict(payload)
+    wire["install_id"] = install_id()
+
+    if not _ask_consent(wire, stdin=stdin, stdout=out):
         print("\n  Submission cancelled. Nothing was written or sent.", file=out)
         return 0
 
-    from .upload import SubmitError, board_url, install_id, post_submission
-
-    saved = _save_local_copy(payload)
+    # The archive is the exact bytes that were sent, so a contributor can diff
+    # their copy against what the board shows.
+    saved = _save_local_copy(wire)
     if saved is not None:
         print(f"\n  Saved a local copy to {saved}", file=out)
-
-    # Attach the per-install id at send time rather than at build time so
-    # ``build_submission_payload`` stays pure and the archived copy above is
-    # the run, not the run plus an identifier.
-    wire = dict(payload)
-    wire["install_id"] = install_id()
+    else:
+        # The docstring promises a run survives an unreachable board. When the
+        # archive fails that promise does not hold, and saying so is better
+        # than letting the user discover it after a five-round sweep is gone.
+        print(
+            "\n  WARNING: could not save a local copy (is the disk full or "
+            "read-only?). If the upload below fails, this run is lost and you "
+            "will have to rerun the benchmark.",
+            file=out,
+        )
 
     target = url or board_url()
     print(f"  Submitting to {target} …", file=out)

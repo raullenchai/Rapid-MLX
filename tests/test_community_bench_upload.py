@@ -272,3 +272,166 @@ def test_builder_output_validates_against_the_repo_schema() -> None:
     )
     assert "spec_decode" not in baseline["config"]
     assert "run_group" not in baseline
+
+
+def test_schema_still_couples_tier_to_its_result_block_at_v3() -> None:
+    """Bumping the version enum must not switch the tier conditionals off.
+
+    Codex round 2 on #1403: the smoke/harness presence rules were gated on
+    ``schema_version == 2``. Adding 3 to the enum silently disabled them, so a
+    v3 row could claim ``tier="harness"`` while carrying no harness_result at
+    all — the exact "we never ran it but the board says it failed" ambiguity
+    the tier coupling exists to prevent.
+    """
+    import json
+    from pathlib import Path
+
+    import jsonschema
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "community-benchmarks" / "schema.json"
+        ).read_text()
+    )
+    base = {
+        "schema_version": 3,
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-08-02T10:00:00+00:00",
+        "hardware": {"chip": "Apple M2 Pro", "ram_gb": 32, "cpu_cores": 10},
+        "software": {
+            "macos": "26.5.2",
+            "rapid_mlx": "0.11.9",
+            "mlx": "0.31.2",
+            "python": "3.12.13",
+        },
+        "model": {
+            "alias": "qwen3.5-4b-4bit",
+            "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
+        },
+        "config": {
+            "rounds": 5,
+            "warmup_rounds": 1,
+            "sampling": "greedy",
+            "buckets_spec": {
+                "short": {"prompt_tokens": 512, "max_tokens": 128},
+                "long": {"prompt_tokens": 2048, "max_tokens": 512},
+            },
+            "prompt_hash": "abc123def4567890",
+        },
+        "buckets": {
+            k: {
+                "decode_tps": {"median": 60.0, "min": 59.0, "max": 61.0, "stddev": 0.5},
+                "prefill_tps": {
+                    "median": 300.0,
+                    "min": 295.0,
+                    "max": 305.0,
+                    "stddev": 2.0,
+                },
+                "ttft_ms": {
+                    "median": 1700.0,
+                    "min": 1690.0,
+                    "max": 1710.0,
+                    "stddev": 5.0,
+                },
+                "rounds_raw": [
+                    {"decode_tps": 60.0, "prefill_tps": 300.0, "ttft_ms": 1700.0}
+                ]
+                * 5,
+            }
+            for k in ("short", "long")
+        },
+    }
+    jsonschema.validate(base, schema)  # speed-only v3 is fine
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**base, "tier": "harness"}, schema)
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**base, "tier": "smoke"}, schema)
+
+
+def test_an_older_declared_version_cannot_smuggle_newer_fields() -> None:
+    """schema_version has to mean something to the aggregator."""
+    import json
+    from pathlib import Path
+
+    import jsonschema
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "community-benchmarks" / "schema.json"
+        ).read_text()
+    )
+    minimal = {
+        "schema_version": 2,
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-08-02T10:00:00+00:00",
+        "hardware": {"chip": "Apple M2 Pro", "ram_gb": 32, "cpu_cores": 10},
+        "software": {
+            "macos": "26.5.2",
+            "rapid_mlx": "0.11.9",
+            "mlx": "0.31.2",
+            "python": "3.12.13",
+        },
+        "model": {
+            "alias": "qwen3.5-4b-4bit",
+            "hf_path": "mlx-community/Qwen3.5-4B-MLX-4bit",
+        },
+        "config": {
+            "rounds": 5,
+            "warmup_rounds": 1,
+            "sampling": "greedy",
+            "buckets_spec": {
+                "short": {"prompt_tokens": 512, "max_tokens": 128},
+                "long": {"prompt_tokens": 2048, "max_tokens": 512},
+            },
+            "prompt_hash": "abc123def4567890",
+        },
+        "buckets": {
+            k: {
+                "decode_tps": {"median": 60.0, "min": 59.0, "max": 61.0, "stddev": 0.5},
+                "prefill_tps": {
+                    "median": 300.0,
+                    "min": 295.0,
+                    "max": 305.0,
+                    "stddev": 2.0,
+                },
+                "ttft_ms": {
+                    "median": 1700.0,
+                    "min": 1690.0,
+                    "max": 1710.0,
+                    "stddev": 5.0,
+                },
+                "rounds_raw": [
+                    {"decode_tps": 60.0, "prefill_tps": 300.0, "ttft_ms": 1700.0}
+                ]
+                * 5,
+            }
+            for k in ("short", "long")
+        },
+    }
+    jsonschema.validate(minimal, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**minimal, "run_group": "abcdefabcdef"}, schema)
+
+
+def test_a_2xx_that_is_not_an_acceptance_is_an_error(monkeypatch) -> None:
+    """A 200 is the transport talking, not the board accepting."""
+
+    def fake_open(req, timeout=None):
+        return _Resp(b'{"ok": false, "error": "rejected"}')
+
+    monkeypatch.setattr(upload.urllib.request, "urlopen", fake_open)
+    with pytest.raises(upload.SubmitError) as exc:
+        upload.post_submission({"a": 1}, url="https://x/api")
+    assert "rejected" in str(exc.value)
+    assert "NOT submitted" in str(exc.value)
+
+
+def test_a_corrupted_id_file_does_not_crash_the_run(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    path = tmp_path / "bench-install-id"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xff\xfe\x00 not utf-8 at all")
+    got = upload.install_id()  # UnicodeDecodeError is a ValueError, not OSError
+    assert len(got) == 12

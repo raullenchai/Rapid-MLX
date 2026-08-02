@@ -819,13 +819,17 @@ def test_submit_interactive_saves_local_copy_before_sending(
     assert "abcdef012345" in json.loads(saved[0].read_text())["submission_id"]
 
 
-def test_submit_interactive_attaches_install_id_but_not_to_the_archive(
-    tmp_path: Path, monkeypatch
+def test_the_archived_copy_is_byte_identical_to_what_was_sent(
+    tmp_path, monkeypatch
 ) -> None:
-    """install_id is a transport concern, not part of the measurement.
+    """The archive has to BE the submission, not a redacted version of it.
 
-    It is attached at send time so the archived copy is the run itself, and
-    so ``build_submission_payload`` stays pure.
+    An earlier revision attached install_id after consent so the archived copy
+    would be "the run, not the run plus an identifier". Codex round 2 pointed
+    out the cost: the consent screen promises that what it prints is what goes
+    out, and appending anything afterwards makes that promise false. The
+    identifier is now attached before consent, which also makes the archive
+    diffable against what the board publishes.
     """
     from vllm_mlx.community_bench import submission as sub
 
@@ -842,13 +846,20 @@ def test_submit_interactive_attaches_install_id_but_not_to_the_archive(
         "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
         "model": {"alias": "qwen3.5-9b-4bit"},
     }
-    sub.submit_interactive(
-        payload, tmp_path, stdin=io.StringIO("y\n"), stdout=io.StringIO()
-    )
+    out = io.StringIO()
+    rc = sub.submit_interactive(payload, tmp_path, stdin=io.StringIO("y\n"), stdout=out)
+    assert rc == 0, out.getvalue()
+
     assert len(sent["install_id"]) == 12
     assert "install_id" not in payload, "the caller's payload must not be mutated"
+
     saved = list((tmp_path / "bench-submissions").glob("*.json"))
-    assert "install_id" not in json.loads(saved[0].read_text())
+    assert len(saved) == 1
+    archived = json.loads(saved[0].read_text())
+    assert archived == sent, "the archive must equal the bytes that were sent"
+
+    # The consent screen printed the id, so the promise it makes is true.
+    assert sent["install_id"] in out.getvalue()
 
 
 def test_find_upstream_remote_accepts_ssh_and_https(

@@ -77,11 +77,13 @@ def install_id() -> str:
     server counts this run against a fresh per-install bucket.
     """
     path = _install_id_path()
+    # UnicodeDecodeError is a ValueError, not an OSError: a corrupted or
+    # binary id file would have crashed the whole submission on read.
     try:
         existing = path.read_text().strip()
         if len(existing) == 12 and all(c in "0123456789abcdef" for c in existing):
             return existing
-    except OSError:
+    except (OSError, UnicodeError):
         pass
     fresh = secrets.token_hex(6)
     try:
@@ -106,7 +108,7 @@ def install_id() -> str:
             existing = path.read_text().strip()
             if len(existing) == 12 and all(c in "0123456789abcdef" for c in existing):
                 return existing
-        except OSError:
+        except (OSError, UnicodeError):
             pass
     except OSError:
         pass
@@ -181,6 +183,17 @@ def post_submission(payload: dict, *, url: str | None = None) -> dict:
                 raise SubmitError(
                     f"the board returned JSON that is not an object "
                     f"({type(decoded).__name__}). Your run was NOT submitted."
+                )
+            # A 2xx is the transport saying "I delivered it", not the board
+            # saying "I accepted it". Without this check a body like
+            # ``{"ok": false, "error": "rejected"}`` prints "Accepted" and
+            # exits 0, which is the worst possible failure mode: the
+            # contributor believes their run is on the board.
+            if decoded.get("ok") is not True:
+                why = decoded.get("error") or decoded.get("field") or "no reason given"
+                raise SubmitError(
+                    f"the board did not accept this submission ({why}). "
+                    f"Your run was NOT submitted."
                 )
             return decoded
         except urllib.error.HTTPError as exc:
