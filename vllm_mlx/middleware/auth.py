@@ -153,7 +153,8 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
         return None
-    return token
+    token = token.strip()
+    return token or None
 
 
 def _bucket_id(raw: str) -> str:
@@ -194,8 +195,17 @@ def _rate_limit_client_id(request: Request) -> str:
     authorization = request.headers.get("Authorization")
     if authorization:
         bearer_key = _extract_bearer_token(authorization)
-        raw = bearer_key or authorization
-        return _bucket_id(raw)
+        if bearer_key is not None:
+            return _bucket_id(bearer_key)
+        # A recognized ``Bearer`` scheme carrying an empty / whitespace-only
+        # token is not a real credential — fall through to subnet/unknown
+        # bucketing so a client can't mint a fresh rate-limit bucket per
+        # request by padding the header with varying whitespace (#1291). A
+        # non-Bearer scheme (e.g. ``Basic``) still buckets by the raw header
+        # so it keeps a stable per-credential identity.
+        scheme = authorization.split(" ", 1)[0].lower()
+        if scheme != "bearer":
+            return _bucket_id(authorization)
 
     if request.client and request.client.host:
         return _subnet_bucket(request.client.host)

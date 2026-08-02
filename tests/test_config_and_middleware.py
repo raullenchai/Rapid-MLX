@@ -370,6 +370,88 @@ class TestRateLimitClientId:
             f"got {bearer_id!r} != {x_api_id!r}"
         )
 
+    def test_extract_bearer_token_whitespace_normalization(self):
+        """_extract_bearer_token strips leading, trailing, and tab/newline whitespace."""
+        from vllm_mlx.middleware.auth import _extract_bearer_token
+
+        assert _extract_bearer_token("Bearer    my-token") == "my-token"
+        assert _extract_bearer_token("Bearer \t my-token \n") == "my-token"
+        assert _extract_bearer_token("Bearer my-token   ") == "my-token"
+        assert _extract_bearer_token("Bearer   ") is None
+
+    def test_rate_limit_bearer_whitespace_variants_share_bucket(self):
+        """Auth-equivalent Bearer values must resolve to one rate-limit bucket.
+
+        This pins the security *contract* (not just the helper): the bug being
+        fixed is bucket fragmentation — the same secret sent with extra
+        surrounding whitespace used to hash to a different client id, letting a
+        client dodge its own rate limit simply by padding the header. All of
+        these carry the identical token ``test-secret`` and must share a bucket.
+        """
+        from starlette.requests import Request
+
+        from vllm_mlx.middleware.auth import _rate_limit_client_id
+
+        def client_id(auth_value: str) -> str:
+            scope = {
+                "type": "http",
+                "headers": [(b"authorization", auth_value.encode())],
+                "client": ("192.0.2.1", 12345),
+            }
+            return _rate_limit_client_id(Request(scope))
+
+        canonical = client_id("Bearer test-secret")
+        for variant in (
+            "Bearer  test-secret",
+            "Bearer test-secret ",
+            "Bearer \t test-secret \n",
+        ):
+            assert client_id(variant) == canonical, (
+                f"whitespace-padded {variant!r} must share the bucket of "
+                f"'Bearer test-secret', got {client_id(variant)!r} != {canonical!r}"
+            )
+
+    def test_rate_limit_empty_bearer_falls_through_to_subnet(self):
+        """An empty/whitespace-only Bearer token can't mint fresh buckets.
+
+        Without a real credential (auth disabled), a client sending
+        ``Authorization: Bearer`` with varying trailing whitespace must NOT get
+        a distinct bucket per padding — otherwise the padding itself becomes a
+        rate-limit evasion. All such headers collapse to the caller's subnet
+        bucket (#1291).
+        """
+        from starlette.requests import Request
+
+        from vllm_mlx.middleware.auth import _rate_limit_client_id, _subnet_bucket
+
+        def client_id(auth_value: str) -> str:
+            scope = {
+                "type": "http",
+                "headers": [(b"authorization", auth_value.encode())],
+                "client": ("192.0.2.7", 443),
+            }
+            return _rate_limit_client_id(Request(scope))
+
+        subnet = _subnet_bucket("192.0.2.7")
+        for empty in ("Bearer", "Bearer ", "Bearer  ", "Bearer \t \n"):
+            assert client_id(empty) == subnet, (
+                f"empty Bearer {empty!r} must fall through to the subnet bucket, "
+                f"got {client_id(empty)!r} != {subnet!r}"
+            )
+
+    def test_rate_limit_non_bearer_scheme_still_buckets_by_header(self):
+        """Non-Bearer auth (e.g. Basic) keeps a stable per-credential bucket."""
+        from starlette.requests import Request
+
+        from vllm_mlx.middleware.auth import _bucket_id, _rate_limit_client_id
+
+        scope = {
+            "type": "http",
+            "headers": [(b"authorization", b"Basic dXNlcjpwYXNz")],
+            "client": ("192.0.2.7", 443),
+        }
+        assert _rate_limit_client_id(Request(scope)) == _bucket_id("Basic dXNlcjpwYXNz")
+
 
 # ======================================================================
 # configure_cors — Fetch-spec-compliant defaults (#190)
