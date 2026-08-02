@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import stat
 import subprocess
@@ -18,6 +19,31 @@ class VideoRuntimeError(RuntimeError):
 
 
 _PROCESS_GENERATION_LOCK = threading.Lock()
+
+_FFMPEG_FALLBACK_PATHS = (
+    Path("/opt/homebrew/bin/ffmpeg"),
+    Path("/usr/local/bin/ffmpeg"),
+    Path("/usr/bin/ffmpeg"),
+)
+
+
+def _resolve_ffmpeg() -> str | None:
+    """Resolve the ffmpeg binary consistently across the video lane."""
+    override = os.environ.get("FFMPEG_BINARY", "").strip()
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.is_file() and os.access(override_path, os.X_OK):
+            return str(override_path)
+        if override_path.name == override:
+            return shutil.which(override)
+        return None
+    resolved = shutil.which("ffmpeg")
+    if resolved:
+        return resolved
+    for candidate in _FFMPEG_FALLBACK_PATHS:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def validate_video_request(
@@ -86,7 +112,7 @@ def require_video_runtime_or_exit(model_name: str | None = None) -> None:
         )
         if not mlx_video_available or not wan_available:
             missing.append("the `rapid-mlx[video]` Python extra")
-    if shutil.which("ffmpeg") is None:
+    if _resolve_ffmpeg() is None:
         missing.append("ffmpeg (`brew install ffmpeg`)")
     if missing:
         print(
@@ -191,7 +217,7 @@ class VideoEngine:
                     guidance_scale=(6.0 if guidance_scale is None else guidance_scale),
                 )
             return
-        if shutil.which("ffmpeg") is None:
+        if _resolve_ffmpeg() is None:
             raise VideoRuntimeError(
                 "LTX-2.3 video generation requires ffmpeg. "
                 "Install it with `brew install ffmpeg`."
@@ -256,9 +282,12 @@ class VideoEngine:
                 video_only = Path(temporary.name)
             if video_only is None:  # pragma: no cover - assigned by the context manager
                 raise OSError("could not create a video-only temporary file")
+            ffmpeg = _resolve_ffmpeg()
+            if ffmpeg is None:
+                raise OSError("ffmpeg not found")
             subprocess.run(
                 [
-                    "ffmpeg",
+                    ffmpeg,
                     "-y",
                     "-i",
                     str(output_path),
@@ -311,9 +340,12 @@ class VideoEngine:
         if (requested_width, requested_height) != (width, height):
             cropped = output_path.with_name(f"{output_path.stem}.cropped.mp4")
             try:
+                ffmpeg = _resolve_ffmpeg()
+                if ffmpeg is None:
+                    raise OSError("ffmpeg not found")
                 subprocess.run(
                     [
-                        "ffmpeg",
+                        ffmpeg,
                         "-y",
                         "-i",
                         str(output_path),
