@@ -71,12 +71,14 @@ def _drive_repeating_request(*, has_tools: bool):
     return scheduler, req, outputs[0], finished
 
 
-def test_scheduler_stops_exact_loop_for_tool_request():
+def test_scheduler_fails_exact_loop_for_tool_request():
     scheduler, req, output, finished = _drive_repeating_request(has_tools=True)
     assert finished == {req.request_id}
-    assert req.status == RequestStatus.FINISHED_STOPPED
+    assert req.status == RequestStatus.FINISHED_ABORTED
     assert output.finished is True
-    assert output.finish_reason == "stop"
+    assert output.finish_reason == "abort"
+    assert output.error is not None
+    assert "repetition" in output.error.lower()
     assert scheduler.num_repetition_loop_stops == 1
     assert scheduler.get_stats()["num_repetition_loop_stops"] == 1
 
@@ -89,7 +91,7 @@ def test_scheduler_does_not_change_plain_chat_semantics():
     assert scheduler.num_repetition_loop_stops == 0
 
 
-def test_scheduler_stops_single_token_loop_for_tool_request():
+def test_scheduler_fails_single_token_loop_for_tool_request():
     scheduler = _scheduler()
     req = Request("repeat-short", "prompt", SamplingParams(max_tokens=20_000))
     req.status = RequestStatus.RUNNING
@@ -104,6 +106,8 @@ def test_scheduler_stops_single_token_loop_for_tool_request():
 
     assert finished == {req.request_id}
     assert outputs[0].finished is True
+    assert outputs[0].finish_reason == "abort"
+    assert outputs[0].error is not None
     assert scheduler.num_repetition_loop_stops == 1
 
 

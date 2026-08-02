@@ -5671,6 +5671,7 @@ class Scheduler:
             # tool-bearing requests and exact, long token repetition: ordinary
             # chat/creative completions keep their historical semantics.
             repetition_match = None
+            repetition_error: str | None = None
             if (
                 finish_reason is None
                 and request.has_tools
@@ -5680,7 +5681,13 @@ class Scheduler:
                     request.output_token_ids
                 )
                 if repetition_match is not None:
-                    finish_reason = "stop"
+                    finish_reason = "abort"
+                    repetition_error = (
+                        "Model generation aborted: exact repetition loop "
+                        "detected "
+                        f"(period_tokens={repetition_match.period_tokens}, "
+                        f"repeats={repetition_match.repeats})"
+                    )
                     self.num_repetition_loop_stops += 1
                     logger.warning(
                         "Stopping agent request %s after exact token loop "
@@ -5773,9 +5780,12 @@ class Scheduler:
                     request.set_finished(RequestStatus.FINISHED_STOPPED)
                 elif response.finish_reason == "length":
                     request.set_finished(RequestStatus.FINISHED_LENGTH_CAPPED)
+                elif response.finish_reason == "abort":
+                    request.set_finished(RequestStatus.FINISHED_ABORTED)
 
                 output.finished = True
                 output.finish_reason = response.finish_reason
+                output.error = repetition_error
                 finished_ids.add(request_id)
 
                 if stop_trimmed:
