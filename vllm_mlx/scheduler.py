@@ -5785,7 +5785,8 @@ class Scheduler:
 
                 output.finished = True
                 output.finish_reason = response.finish_reason
-                output.error = repetition_error
+                if repetition_error is not None:
+                    output.error = repetition_error
                 finished_ids.add(request_id)
 
                 if stop_trimmed:
