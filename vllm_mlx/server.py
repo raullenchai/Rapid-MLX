@@ -191,6 +191,11 @@ _model_registry = ModelRegistry()
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
+# Background prefix-cache load scheduled after the readiness flip (#1350). Held
+# at module scope so ``asyncio`` doesn't garbage-collect the task mid-flight and
+# so shutdown can await a still-running load to completion before the shutdown
+# save and engine teardown.
+_prefix_cache_load_task = None  # asyncio.Task | None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
 # Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
@@ -334,6 +339,52 @@ async def _shutdown_save_prefix_cache() -> None:
     if _engine is None or not hasattr(_engine, "save_cache_to_disk"):
         return
     await asyncio.to_thread(_save_prefix_cache_to_disk)
+
+
+async def _deferred_load_prefix_cache() -> None:
+    """Lifespan startup step: warm the prefix cache off the readiness path.
+
+    Mirror of :func:`_shutdown_save_prefix_cache` for the load side (#1350).
+    The synchronous ``_load_prefix_cache_from_disk`` streams hundreds of MB
+    off disk under the GIL; running it inline in the lifespan handler — before
+    ``_cfg.ready = True`` — kept ``/health/ready`` and ``/v1/models`` at 503
+    for the entire load. It is a pure warm-start optimization, so the lifespan
+    now flips readiness first and schedules THIS coroutine as a background
+    task. Extracted (rather than inlined as a closure) so a regression test can
+    pin the ``asyncio.to_thread`` wrapper at its production callsite: if anyone
+    later replaces the wrapped call below with a direct one, the loop-starves-
+    during-load regression fires. Failures are non-fatal — a cold cache only
+    costs a few early prefix recomputes, never a wedged server.
+    """
+    if _engine is None or not hasattr(_engine, "load_cache_from_disk"):
+        return
+    try:
+        await asyncio.to_thread(_load_prefix_cache_from_disk)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(f"[lifespan] deferred prefix-cache load failed: {_e}")
+
+
+async def _drain_deferred_prefix_cache_load() -> None:
+    """Lifespan shutdown step: let the deferred prefix-cache load FINISH (#1350).
+
+    We AWAIT the background load task rather than cancel it. ``Task.cancel()``
+    only unblocks us from awaiting the ``asyncio.to_thread`` wrapper — the
+    worker thread keeps running ``_load_prefix_cache_from_disk``, which reads
+    the on-disk cache and calls into the engine. Running the shutdown save or
+    ``_engine.stop()`` underneath a still-live loader would race the cache
+    files and the engine's own state. Awaiting is bounded by the load duration
+    (the same cost the old synchronous on-startup load always paid) and is only
+    ever non-instant in the rare case shutdown arrives mid-load; in the common
+    case the task is already done and this returns immediately. The load
+    coroutine swallows its own errors, so the guard here is belt-and-suspenders.
+    """
+    task = _prefix_cache_load_task
+    if task is None:
+        return
+    try:
+        await task
+    except Exception as _e:  # noqa: BLE001
+        logger.debug(f"[lifespan] deferred prefix-cache load cleanup: {_e}")
 
 
 def _do_tool_grammar_warmup(tokenizer, parser_cls) -> bool:
@@ -584,9 +635,12 @@ async def lifespan(app: FastAPI):
         except Exception as _e:
             logger.debug(f"Tool-grammar warmup failed (non-fatal): {_e}")
 
-    # Load persisted cache from disk (AFTER engine start — AsyncEngineCore must exist)
-    if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
-        _load_prefix_cache_from_disk()
+    # Prefix-cache load is deferred OFF the readiness path (#1359 follow-up
+    # #1350): a large persisted cache used to block here — between engine
+    # start and ``_cfg.ready = True`` — so ``/health/ready`` and ``/v1/models``
+    # stayed 503 for the whole (potentially multi-second) disk load. It is a
+    # pure warm-start optimization, so it is now scheduled as a background
+    # task AFTER the readiness flip below; see ``_prefix_cache_load_task``.
 
     # Initialize MCP if config provided. VLLM_MLX_MCP_CONFIG is the
     # deprecated pre-rename alias. Prefer the first var that points to an
@@ -655,6 +709,16 @@ async def lifespan(app: FastAPI):
     start_video_jobs()
     _cfg.ready = True
 
+    # Now that readiness is flipped, warm the prefix cache from disk in the
+    # background (#1350). The memory-aware cache installs each imported entry
+    # as a single atomic bulk-swap under its own lock, so a request that
+    # arrives mid-load either misses (recompute — always correct) or hits the
+    # fully-installed cache, never a partially-populated one. Worst case a few
+    # early requests recompute their prefix; they never see a wedged server.
+    if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
+        global _prefix_cache_load_task
+        _prefix_cache_load_task = asyncio.create_task(_deferred_load_prefix_cache())
+
     # Print the real "Ready:" banner now — only here is the port truly
     # accepting connections AND the engine warmed up. The CLI's earlier
     # "Starting server …" line is replaced by this. If neither the
@@ -706,6 +770,12 @@ async def lifespan(app: FastAPI):
         from .routes.video import shutdown_video_jobs
 
         await shutdown_video_jobs()
+
+        # Let the deferred prefix-cache load (#1350) finish before we save or
+        # tear down the engine — see the helper's docstring for why we await
+        # rather than cancel.
+        await _drain_deferred_prefix_cache_load()
+
         await _shutdown_save_prefix_cache()
 
         # Shutdown: Close MCP connections and stop engine
