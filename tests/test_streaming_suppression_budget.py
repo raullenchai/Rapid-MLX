@@ -171,3 +171,46 @@ def test_legit_short_tool_call_not_released():
     pp.process_chunk(_make_output("</tool_call>"))
     assert pp._tool_suppression_released is False
     assert pp.tool_calls_detected is True
+
+
+def test_no_release_once_a_tool_call_reached_the_wire():
+    """The ``_tool_calls_emitted_to_wire == 0`` guard: once a tool call has
+    streamed to the wire, a large following buffered block is a legitimate
+    continuation (e.g. a second call whose args stream), not a wedge — the
+    budget must NOT release, and nothing is accumulated into the suppression
+    buffer at all."""
+
+    class _EmitThenBufferParser(_NeverClosingToolParser):
+        def __init__(self):
+            super().__init__()
+            self._emitted = False
+
+        def extract_tool_calls_streaming(
+            self, previous_text, current_text, delta_text, request=None
+        ):
+            if "<tool_call>" in current_text and not self._emitted:
+                self._emitted = True
+                return {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ]
+                }
+            if self._emitted:
+                return None  # now buffering a large second block forever
+            return {"content": delta_text}
+
+    pp = StreamingPostProcessor(_make_cfg())
+    pp.reset()
+    pp.tool_parser = _EmitThenBufferParser()
+    pp.tool_markup_possible = True
+
+    pp.process_chunk(_make_output("<tool_call>"))
+    assert pp._tool_calls_emitted_to_wire > 0
+    pp.process_chunk(_make_output("z" * (_MAX_TOOL_SUPPRESSION_BYTES + 100)))
+    assert pp._tool_suppression_released is False  # guard held
+    assert pp._tool_suppressed_buffer == ""  # never accumulated past the guard
