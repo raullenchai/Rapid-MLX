@@ -41,7 +41,7 @@ def _resolve_ffmpeg() -> str | None:
         return None
     resolved = shutil.which("ffmpeg")
     if resolved:
-        return resolved
+        return str(Path(resolved).absolute())
     for candidate in _FFMPEG_FALLBACK_PATHS:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)

@@ -111,6 +111,16 @@ def test_ffmpeg_resolver_makes_relative_override_absolute(
     assert _resolve_ffmpeg() == str(override)
 
 
+def test_ffmpeg_resolver_makes_relative_path_result_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("FFMPEG_BINARY", raising=False)
+    monkeypatch.setattr(video_lane.shutil, "which", lambda _: "bin/ffmpeg")
+
+    assert _resolve_ffmpeg() == str(tmp_path / "bin" / "ffmpeg")
+
+
 def test_video_remux_uses_resolved_ffmpeg_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
