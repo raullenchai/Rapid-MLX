@@ -33,7 +33,9 @@ def _resolve_ffmpeg() -> str | None:
     if override:
         override_path = Path(override).expanduser()
         if override_path.is_file() and os.access(override_path, os.X_OK):
-            return str(override_path)
+            # Keep symlinks valid while preventing a relative override such as
+            # ``./ffmpeg`` from becoming the PATH-searched argv[0] ``ffmpeg``.
+            return str(override_path.absolute())
         if override_path.name == override:
             return shutil.which(override)
         return None

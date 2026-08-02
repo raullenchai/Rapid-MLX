@@ -99,6 +99,18 @@ def test_ffmpeg_resolver_honors_executable_override(
     assert _resolve_ffmpeg() == str(override)
 
 
+def test_ffmpeg_resolver_makes_relative_override_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = tmp_path / "custom-ffmpeg"
+    override.write_bytes(b"#!/bin/sh\n")
+    override.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FFMPEG_BINARY", "./custom-ffmpeg")
+
+    assert _resolve_ffmpeg() == str(override)
+
+
 def test_video_remux_uses_resolved_ffmpeg_absolute_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
