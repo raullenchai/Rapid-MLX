@@ -507,7 +507,13 @@ class TestStreamSynthForcedToolChoice:
                         "parameters": {
                             "type": "object",
                             "properties": {"location": {"type": "string"}},
-                            "required": ["location"],
+                            # No ``required`` here on purpose: #1256 makes the
+                            # forced-choice synth REFUSE to fabricate a call
+                            # whose empty ``"{}"`` args miss required fields.
+                            # This #447 test asserts the synth-fires invariant,
+                            # so it uses a schema an empty call satisfies. The
+                            # required-field refusal has its own coverage in
+                            # tests/test_1256_forced_toolchoice_empty_args.py.
                         },
                     },
                 }

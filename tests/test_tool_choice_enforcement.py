@@ -123,6 +123,14 @@ def _make_client(
     return TestClient(app)
 
 
+# These fixtures deliberately omit ``required``: the tests below exercise
+# wire-leak scrubbing, forced-prefix wiring, and prose preservation when the
+# forced-choice fallback SYNTHESISES a call (mock models return no usable
+# arguments). #1256 makes that synth REFUSE (422 / drop) when a schema declares
+# required fields the empty ``"{}"`` args miss — so a required schema here would
+# turn every synth-fires assertion into a 422 and conflate two orthogonal
+# concerns. The required-field refusal has dedicated coverage in
+# tests/test_1256_forced_toolchoice_empty_args.py.
 _SOLO_TOOL = [
     {
         "type": "function",
@@ -134,7 +142,6 @@ _SOLO_TOOL = [
                     "a": {"type": "integer"},
                     "b": {"type": "integer"},
                 },
-                "required": ["a", "b"],
             },
         },
     },
@@ -152,7 +159,6 @@ _WEATHER_TOOL = [
                     "city": {"type": "string"},
                     "units": {"type": "string", "enum": ["c", "f"]},
                 },
-                "required": ["city"],
             },
         },
     },

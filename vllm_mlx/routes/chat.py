@@ -2762,6 +2762,89 @@ def _synthesize_forced_tool_call(
     )
 
 
+def _forced_synth_schema_error(name: str, arguments: str | None, tools) -> str | None:
+    """Return an error string when a synthesized forced ``tool_choice`` fallback
+    call would violate the target tool's schema, else ``None`` (#1256).
+
+    Forced ``tool_choice`` synthesises a placeholder call — empty ``"{}"`` or
+    arguments recovered from the model's raw text — when the text parser
+    surfaced no call (see ``_synthesize_forced_tool_call``). If the target
+    tool's JSON schema declares ``required`` properties the synthesised
+    arguments don't provide, that call is schema-invalid: a client reading
+    ``finish_reason="tool_calls"`` would ``json.loads`` the arguments and
+    execute a broken call, trusting a guarantee the server cannot make. Callers
+    fail EXPLICITLY on a non-``None`` return — 422 on the non-stream paths;
+    drop-the-synth (the turn finishes with its real terminal reason,
+    ``stop``/``length``, never a fabricated ``tool_calls``) / ``response.failed``
+    on the streaming paths — rather than shipping the bad call.
+
+    Returns ``None`` (synth allowed) when the tool has no constraints the
+    synthesised arguments violate, the schema can't be resolved, or the
+    (possibly recovered) arguments already satisfy the schema.
+    """
+    if not tools:
+        return None
+    schema = None
+    for tool in tools:
+        fn = getattr(tool, "function", None)
+        if not isinstance(fn, dict) and isinstance(tool, dict):
+            fn = tool.get("function")
+        if not isinstance(fn, dict) or fn.get("name") != name:
+            continue
+        schema = fn.get("parameters")
+        break
+    if not isinstance(schema, dict):
+        return None
+    # Validate the ACTUAL decoded value against the schema. Only genuinely
+    # absent or unparseable synthesised arguments fall back to an empty object
+    # (the synth's ``"{}"`` default). Coercing a real decoded value would both
+    # false-reject (``[]`` against an array schema) and false-accept (``[]`` or
+    # literal ``null`` against an object schema) — so a SUCCESSFUL parse always
+    # uses its result verbatim, including a JSON ``null`` (codex r2/r3 MAJOR).
+    if not arguments:
+        instance = {}
+    else:
+        try:
+            instance = json.loads(arguments)
+        except (ValueError, TypeError):
+            instance = {}
+
+    # Validate the synthesised arguments against the tool's parameter schema
+    # with a DRAFT-AWARE ``jsonschema`` validator — the single source of truth,
+    # so the check honours exactly what the schema declares under its own draft:
+    # top-level AND composed (``allOf`` / ``$ref`` / ``if-then``) ``required``,
+    # ``enum`` / ``type`` / ranges, and per-draft quirks (e.g. Draft-7 ignores
+    # keywords sibling to ``$ref``). Hand-rolling a top-level ``required`` check
+    # alongside this would diverge from those semantics and false-reject valid
+    # calls, so we don't. ``check_schema`` runs first so a malformed tool schema
+    # fails OPEN. Fail OPEN on anything we can't evaluate — jsonschema missing
+    # (a hard dep), a malformed schema, an unresolved ``$ref`` — so a synth we
+    # can't judge is allowed through exactly as the model-emitted path is; we
+    # never block a valid call on our validator's limitations. The import shares
+    # this block so ``ValidationError`` is referenced only after it succeeds.
+    try:
+        from jsonschema import ValidationError
+        from jsonschema.validators import validator_for
+
+        validator_cls = validator_for(schema)
+        validator_cls.check_schema(schema)
+    except Exception:
+        return None
+    try:
+        validator_cls(schema).validate(instance)
+    except ValidationError as ve:
+        detail = getattr(ve, "message", str(ve))
+        return (
+            f'tool_choice forced a call to "{name}" but the synthesised '
+            f"arguments do not satisfy its schema: {detail}; refusing to "
+            "synthesize a schema-invalid tool call (#1256). Retry with a more "
+            'concrete user message or use tool_choice="auto".'
+        )
+    except Exception:
+        return None
+    return None
+
+
 def _normalize_ui_tars_tcs_for_chat(tool_calls: list | None) -> list | None:
     """Apply UI-TARS Computer-Use spec keys to a streaming-shaped tool_calls list.
 
@@ -5328,6 +5411,15 @@ async def _create_chat_completion_impl(
                             raw_text=output.raw_text or output.text,
                         )
                     ]
+                    # #1256: never report a successful forced call whose
+                    # synthesised arguments fail the tool's ``required`` schema.
+                    _synth_err = _forced_synth_schema_error(
+                        _solo_name,
+                        tool_calls[0].function.arguments,
+                        request.tools,
+                    )
+                    if _synth_err:
+                        raise HTTPException(status_code=422, detail=_synth_err)
             if not tool_calls:
                 raise HTTPException(
                     status_code=422,
@@ -5396,6 +5488,15 @@ async def _create_chat_completion_impl(
                             raw_text=output.raw_text or output.text,
                         )
                     ]
+                    # #1256: refuse a synthesised pinned call whose arguments
+                    # fail the pinned tool's ``required`` schema.
+                    _synth_err = _forced_synth_schema_error(
+                        _target,
+                        tool_calls[0].function.arguments,
+                        request.tools,
+                    )
+                    if _synth_err:
+                        raise HTTPException(status_code=422, detail=_synth_err)
                 elif not _names and not _target_is_submitted:
                     # Codex R1 BLOCKING (#675): named tool_choice points
                     # at a function that is not in ``request.tools`` —
@@ -6249,38 +6350,60 @@ async def stream_chat_completion(
                 _synth_call = _synthesize_forced_tool_call(
                     _synth_target, raw_text=_raw_text
                 )
-                # Convert the ``ToolCall`` pydantic object into the
-                # streaming-shape dict the terminal-merge path expects
-                # (``{"index","id","type","function":{"name","arguments"}}``)
-                # so it serializes identically to the parser-emitted
-                # deltas. ``index=0`` is the canonical singleton-call
-                # index used elsewhere in the streaming postprocessor.
-                fallback_tool_calls.append(
-                    {
-                        "index": 0,
-                        "id": _synth_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": _synth_call.function.name,
-                            "arguments": _synth_call.function.arguments,
-                        },
-                    }
+                # #1256: on the streaming surface headers are already on the
+                # wire so we cannot 422 mid-flight. If the synthesised call's
+                # arguments fail the target tool's schema, DON'T fabricate it —
+                # leave ``fallback_tool_calls`` empty so the turn finishes with
+                # its REAL terminal reason (``stop`` normally, or ``length`` if
+                # the model truncated — we deliberately don't mask that) instead
+                # of shipping a ``tool_calls`` chunk the client would execute as
+                # a broken call. Mirrors the non-stream 422 in spirit within the
+                # route's "no mid-stream 422" constraint.
+                _synth_err = _forced_synth_schema_error(
+                    _synth_target, _synth_call.function.arguments, request.tools
                 )
-                # Codex r1 NIT #1 (PR #948): bump the wire-truth counter
-                # so the PR #859 "finish_reason=tool_calls ⇒ ≥1 tool_call
-                # delta on the wire" invariant holds — the terminal merge
-                # at chat.py:~4280 IS about to emit a ``delta.tool_calls``
-                # chunk for this synth, so the counter must reflect that
-                # for any downstream gate / log that reads it.
-                processor._tool_calls_emitted_to_wire += 1
-                logger.info(
-                    "[SSE-FORCED-SYNTH-#447] forced tool_choice produced no "
-                    "tool_call deltas; synthesizing terminal call to %r "
-                    "(args recovered from raw text where possible) to honor "
-                    "the OpenAI tool_call-guaranteed contract — mirrors the "
-                    "non-stream synthesis path.",
-                    _synth_target,
-                )
+                if _synth_err:
+                    logger.warning(
+                        "[SSE-FORCED-SYNTH-#1256] refusing to synthesize a "
+                        "schema-invalid forced call to %r: %s; finishing "
+                        "without a fabricated tool_call (real terminal reason "
+                        "preserved).",
+                        _synth_target,
+                        _synth_err,
+                    )
+                else:
+                    # Convert the ``ToolCall`` pydantic object into the
+                    # streaming-shape dict the terminal-merge path expects
+                    # (``{"index","id","type","function":{"name","arguments"}}``)
+                    # so it serializes identically to the parser-emitted
+                    # deltas. ``index=0`` is the canonical singleton-call
+                    # index used elsewhere in the streaming postprocessor.
+                    fallback_tool_calls.append(
+                        {
+                            "index": 0,
+                            "id": _synth_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": _synth_call.function.name,
+                                "arguments": _synth_call.function.arguments,
+                            },
+                        }
+                    )
+                    # Codex r1 NIT #1 (PR #948): bump the wire-truth counter
+                    # so the PR #859 "finish_reason=tool_calls ⇒ ≥1 tool_call
+                    # delta on the wire" invariant holds — the terminal merge
+                    # at chat.py:~4280 IS about to emit a ``delta.tool_calls``
+                    # chunk for this synth, so the counter must reflect that
+                    # for any downstream gate / log that reads it.
+                    processor._tool_calls_emitted_to_wire += 1
+                    logger.info(
+                        "[SSE-FORCED-SYNTH-#447] forced tool_choice produced no "
+                        "tool_call deltas; synthesizing terminal call to %r "
+                        "(args recovered from raw text where possible) to honor "
+                        "the OpenAI tool_call-guaranteed contract — mirrors the "
+                        "non-stream synthesis path.",
+                        _synth_target,
+                    )
 
         # Emit the terminal chunk. Three cases:
         #   (a) Streaming parser already emitted tool_calls during the

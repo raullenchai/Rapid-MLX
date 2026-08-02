@@ -470,13 +470,18 @@ class TestF6ToolChoiceEnforcement:
     choice, synthesise a stub call so the OpenAI guarantee holds.
     """
 
+    # No ``required`` on purpose: these tests assert the forced-choice SYNTH
+    # fires (and, for streaming, that the synth suppresses the message item).
+    # #1256 makes the synth REFUSE (422) when a required field can't be filled
+    # from an empty synthesised call — a required schema here would turn the
+    # synth-fires assertions into 422s. The required-field refusal is covered
+    # by tests/test_1256_forced_toolchoice_empty_args.py.
     _PING_TOOL = {
         "type": "function",
         "name": "ping",
         "parameters": {
             "type": "object",
             "properties": {"msg": {"type": "string"}},
-            "required": ["msg"],
         },
     }
 

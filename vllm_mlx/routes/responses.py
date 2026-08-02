@@ -196,7 +196,10 @@ def _enforce_responses_tool_choice(
         synthesise a call to X
       * ``auto`` / ``none`` / unrecognised shapes → pass through.
     """
-    from ..routes.chat import _synthesize_forced_tool_call
+    from ..routes.chat import (
+        _forced_synth_schema_error,
+        _synthesize_forced_tool_call,
+    )
 
     tc = responses_request.tool_choice
     if tc is None or not openai_request.tools:
@@ -251,7 +254,26 @@ def _enforce_responses_tool_choice(
                     "guaranteed contract (Yuki F6).",
                     name,
                 )
-                return [_synthesize_forced_tool_call(name)]
+                _synth = _synthesize_forced_tool_call(name)
+                # #1256: fail explicitly rather than return a schema-invalid
+                # synthesised call. On the streaming surface this 422 is caught
+                # and re-emitted as a ``response.failed`` event (see caller).
+                _synth_err = _forced_synth_schema_error(
+                    name, _synth.function.arguments, openai_request.tools
+                )
+                if _synth_err:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": {
+                                "message": _synth_err,
+                                "type": "invalid_request_error",
+                                "code": "tool_choice_required_unsynthesizable",
+                                "param": "tool_choice",
+                            }
+                        },
+                    )
+                return [_synth]
         # Multi-tool ``required`` with no model call — local inference
         # cannot guess which of N tools the user intended. Chat.py
         # raises 422 in the same situation (~L1891-1902); mirror that
@@ -292,7 +314,25 @@ def _enforce_responses_tool_choice(
                 "(Yuki F6).",
                 target,
             )
-            return [_synthesize_forced_tool_call(target)]
+            _synth = _synthesize_forced_tool_call(target)
+            # #1256: a pinned tool whose schema requires fields can't be
+            # satisfied by an empty synthesised call — fail explicitly.
+            _synth_err = _forced_synth_schema_error(
+                target, _synth.function.arguments, openai_request.tools
+            )
+            if _synth_err:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": {
+                            "message": _synth_err,
+                            "type": "invalid_request_error",
+                            "code": "tool_choice_named_unsynthesizable",
+                            "param": "tool_choice",
+                        }
+                    },
+                )
+            return [_synth]
     return tool_calls
 
 
