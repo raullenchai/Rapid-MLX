@@ -23,9 +23,9 @@ from vllm_mlx.model_aliases import resolve_profile
 from vllm_mlx.routes import video
 from vllm_mlx.runtime import video_lane
 from vllm_mlx.runtime.video_lane import (
-    _resolve_ffmpeg,
     VideoEngine,
     VideoRuntimeError,
+    _resolve_ffmpeg,
     require_video_runtime_or_exit,
 )
 
@@ -119,6 +119,20 @@ def test_ffmpeg_resolver_makes_relative_path_result_absolute(
     monkeypatch.setattr(video_lane.shutil, "which", lambda _: "bin/ffmpeg")
 
     assert _resolve_ffmpeg() == str(tmp_path / "bin" / "ffmpeg")
+
+
+def test_ffmpeg_resolver_does_not_treat_bare_override_as_local_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local_binary = tmp_path / "ffmpeg"
+    local_binary.write_bytes(b"#!/bin/sh\n")
+    local_binary.chmod(0o755)
+    safe_binary = "/trusted/bin/ffmpeg"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FFMPEG_BINARY", "ffmpeg")
+    monkeypatch.setattr(video_lane.shutil, "which", lambda _: safe_binary)
+
+    assert _resolve_ffmpeg() == safe_binary
 
 
 def test_video_remux_uses_resolved_ffmpeg_absolute_path(

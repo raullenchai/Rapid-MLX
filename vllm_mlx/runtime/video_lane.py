@@ -31,13 +31,19 @@ def _resolve_ffmpeg() -> str | None:
     """Resolve the ffmpeg binary consistently across the video lane."""
     override = os.environ.get("FFMPEG_BINARY", "").strip()
     if override:
+        has_path_separator = os.sep in override or bool(
+            os.altsep and os.altsep in override
+        )
+        if not has_path_separator:
+            resolved_override = shutil.which(override)
+            return (
+                str(Path(resolved_override).absolute()) if resolved_override else None
+            )
         override_path = Path(override).expanduser()
         if override_path.is_file() and os.access(override_path, os.X_OK):
             # Keep symlinks valid while preventing a relative override such as
             # ``./ffmpeg`` from becoming the PATH-searched argv[0] ``ffmpeg``.
             return str(override_path.absolute())
-        if override_path.name == override:
-            return shutil.which(override)
         return None
     resolved = shutil.which("ffmpeg")
     if resolved:
