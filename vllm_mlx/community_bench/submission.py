@@ -205,7 +205,9 @@ def _pretty(payload: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=False, ensure_ascii=False)
 
 
-def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
+def _ask_consent(
+    payload: dict, *, target: str | None = None, stdin=None, stdout=None
+) -> bool:
     """Show the payload and read a single y/N line.
 
     Default = N. Only ``y`` or ``yes`` (case-insensitive, stripped)
@@ -218,9 +220,9 @@ def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
     inp = stdin or sys.stdin
 
     print("", file=out)
+    dest = target or "https://rapidmlx.com/api/benchmarks"
     print(
-        "About to publish the following to the public community benchmark "
-        "board at rapidmlx.com:",
+        f"About to publish the following to the community benchmark board at {dest}:",
         file=out,
     )
     print("=" * 72, file=out)
@@ -235,14 +237,16 @@ def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
         "and RAM size. Nothing has left your machine yet.",
         file=out,
     )
+    # The destination is interpolated, never hardcoded: RAPID_MLX_BENCH_BOARD_URL
+    # can point this anywhere, and a consent screen that names a host the
+    # payload is not going to is worse than no consent screen at all.
     print(
-        "Pressing [y] does two things: saves a copy under ~/.rapid-mlx/ and "
-        "sends one HTTPS POST to rapidmlx.com. What you see above is "
-        "everything that is sent \u2014 nothing is added on the way out. Your "
-        "prompts, your files and your IP address are not in it, and neither "
-        "is any hardware serial: the id attached to your submission is random "
-        "per install and resettable by deleting "
-        "~/.rapid-mlx/bench-install-id.",
+        f"Pressing [y] does two things: saves a copy under ~/.rapid-mlx/ and "
+        f"sends one HTTPS POST to {dest}. What you see above is everything "
+        f"that is sent \u2014 nothing is added on the way out. Your prompts, "
+        f"your files and your IP address are not in it, and neither is any "
+        f"hardware serial: the id attached to your submission is random per "
+        f"install and resettable by deleting ~/.rapid-mlx/bench-install-id.",
         file=out,
     )
     print("Press [Enter] to cancel.", file=out)
@@ -1107,7 +1111,8 @@ def submit_interactive(
     wire = dict(payload)
     wire["install_id"] = install_id()
 
-    if not _ask_consent(wire, stdin=stdin, stdout=out):
+    target = url or board_url()
+    if not _ask_consent(wire, target=target, stdin=stdin, stdout=out):
         print("\n  Submission cancelled. Nothing was written or sent.", file=out)
         return 0
 
@@ -1127,7 +1132,6 @@ def submit_interactive(
             file=out,
         )
 
-    target = url or board_url()
     print(f"  Submitting to {target} …", file=out)
     try:
         resp = post_submission(wire, url=target)

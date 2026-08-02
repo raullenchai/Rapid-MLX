@@ -435,3 +435,36 @@ def test_a_corrupted_id_file_does_not_crash_the_run(tmp_path, monkeypatch) -> No
     path.write_bytes(b"\xff\xfe\x00 not utf-8 at all")
     got = upload.install_id()  # UnicodeDecodeError is a ValueError, not OSError
     assert len(got) == 12
+
+
+def test_consent_names_the_actual_destination(tmp_path, monkeypatch) -> None:
+    """A consent screen that names the wrong host is worse than none.
+
+    ``RAPID_MLX_BENCH_BOARD_URL`` can point the submission anywhere. The
+    prompt used to hardcode rapidmlx.com, so an overridden target would have
+    been disclosed as going somewhere it was not.
+    """
+    import io
+
+    from vllm_mlx.community_bench import submission as sub
+
+    monkeypatch.setenv("RAPID_MLX_HOME", str(tmp_path))
+    monkeypatch.setenv(upload.BOARD_URL_ENV, "https://elsewhere.example/api")
+    monkeypatch.setattr(
+        "vllm_mlx.community_bench.upload.post_submission",
+        lambda payload, **k: {"ok": True},
+    )
+    out = io.StringIO()
+    sub.submit_interactive(
+        {
+            "submission_id": "abcdef012345",
+            "hardware": {"chip": "Apple M2 Pro"},
+            "model": {"alias": "x"},
+        },
+        tmp_path,
+        stdin=io.StringIO("n\n"),
+        stdout=out,
+    )
+    text = out.getvalue()
+    assert "elsewhere.example" in text, "consent must name where the data is going"
+    assert "rapidmlx.com" not in text, "and must not name a host it is not going to"
