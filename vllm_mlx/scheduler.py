@@ -11,6 +11,7 @@ The scheduler follows vLLM's design with:
 - Continuous batching via BatchGenerator
 """
 
+import inspect
 import logging
 import os
 import threading
@@ -49,7 +50,10 @@ from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E40
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
-from .repetition_guard import detect_repeated_token_suffix
+from .repetition_guard import (
+    AgentRepetitionLogitsProcessor,
+    detect_repeated_token_suffix,
+)
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.decode import IncrementalDecoder
 from .utils.mamba_cache import ensure_mamba_support
@@ -1395,6 +1399,26 @@ def _replay_dspark_committed(
     return cache_snapshot
 
 
+def _adapt_dspark_depth(
+    current_depth: int,
+    max_depth: int,
+    accepted: int,
+    proposed: int,
+    low_accept_streak: int,
+) -> tuple[int, int, bool]:
+    """Adjust DSpark depth and report whether a baseline cooldown is due."""
+
+    if proposed > 0 and accepted == proposed:
+        return min(max_depth, current_depth + 1), 0, False
+    if accepted <= 1:
+        next_depth = max(1, current_depth - 1)
+        next_streak = low_accept_streak + 1
+        if next_streak >= 3:
+            return 1, 0, True
+        return next_depth, next_streak, False
+    return current_depth, 0, False
+
+
 def _install_dspark(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -1437,7 +1461,11 @@ def _install_dspark(
     # reached part-way through its accepted tokens. DeepSeek V4's pooling
     # caches are not trimmable, so exact replay is the only safe rollback.
     _pending_replay: dict[int, tuple[Any, mx.array]] = {}
-    _disabled_uids: set[int] = set()
+    _depths: dict[int, int] = {}
+    _cooldowns: dict[int, int] = {}
+    _supports_variable_depth = (
+        "max_draft_tokens" in inspect.signature(model.dspark_forward).parameters
+    )
     _stats = {
         "verify_steps": 0,
         "draft_tokens_proposed": 0,
@@ -1456,6 +1484,10 @@ def _install_dspark(
                 "draft_tokens_proposed": 0,
                 "tokens_accepted": 0,
                 "full_accept_rounds": 0,
+                "fallback_events": 0,
+                "low_accept_streak": 0,
+                "min_depth": draft_k,
+                "max_depth": draft_k,
             },
         )
 
@@ -1475,7 +1507,9 @@ def _install_dspark(
             return _orig_step()
         uid = gb.uids[0]
         uid_stats = _request_stats(uid)
-        if uid in _disabled_uids:
+        cooldown = _cooldowns.get(uid, 0)
+        if cooldown > 0:
+            _cooldowns[uid] = cooldown - 1
             _stats["fallthrough_steps"] += 1
             return _orig_step()
         if not _is_greedy(uid):
@@ -1491,9 +1525,18 @@ def _install_dspark(
             _stats["fallthrough_steps"] += 1
             return _orig_step()
         dspark_cache = _caches.setdefault(uid, model.make_dspark_cache())
+        current_k = _depths.setdefault(uid, draft_k)
         offsets_before = [cache.offset for cache in dspark_cache]
         try:
-            proposal = model.dspark_forward(inputs[:, None], hidden, dspark_cache)
+            if _supports_variable_depth:
+                proposal = model.dspark_forward(
+                    inputs[:, None],
+                    hidden,
+                    dspark_cache,
+                    max_draft_tokens=current_k,
+                )
+            else:
+                proposal = model.dspark_forward(inputs[:, None], hidden, dspark_cache)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[DSpark] draft failed; falling back: %r", exc)
             _stats["errors"] += 1
@@ -1503,7 +1546,7 @@ def _install_dspark(
             return _orig_step()
 
         output_ids, _ = proposal
-        draft = [int(v) for v in output_ids[0, 1 : draft_k + 1].tolist()]
+        draft = [int(v) for v in output_ids[0, 1 : current_k + 1].tolist()]
         K = len(draft)
         _stats["verify_steps"] += 1
         _stats["draft_tokens_proposed"] += K
@@ -1592,12 +1635,26 @@ def _install_dspark(
             _pending_replay[uid] = (target_cache_snapshot, verify_input)
         _stats["tokens_accepted"] += accepted
         uid_stats["tokens_accepted"] += accepted
-        rounds = int(uid_stats["verify_steps"])
-        average_accept = float(uid_stats["tokens_accepted"]) / float(rounds)
-        if (rounds >= 3 and average_accept < 1.5) or (
-            rounds >= 6 and average_accept < 2.0
-        ):
-            _disabled_uids.add(uid)
+        # oMLX's most important operational lesson is that a fixed speculative
+        # depth is wrong for coding agents: acceptance changes sharply across
+        # prose, JSON and tool-call boundaries.  Use a conservative AIMD-like
+        # controller here. Full accepts grow depth; weak rounds shrink it; three
+        # weak rounds take a short baseline cooldown and then probe again at K=1
+        # instead of permanently disabling DSpark for the rest of the request.
+        current_k, low_streak, needs_cooldown = _adapt_dspark_depth(
+            current_k,
+            draft_k,
+            accepted,
+            K,
+            int(uid_stats["low_accept_streak"]),
+        )
+        uid_stats["low_accept_streak"] = low_streak
+        _depths[uid] = current_k
+        uid_stats["min_depth"] = min(int(uid_stats["min_depth"]), current_k)
+        uid_stats["max_depth"] = max(int(uid_stats["max_depth"]), current_k)
+        if needs_cooldown:
+            _cooldowns[uid] = 16
+            uid_stats["fallback_events"] = int(uid_stats["fallback_events"]) + 1
         return [last_token], [primary_lp]
 
     def _finish_uid(uid: int) -> None:
@@ -1607,7 +1664,8 @@ def _install_dspark(
         rounds = int(request_stats.get("verify_steps", 0))
         logger.info(
             "[DSpark] completed uid=%s rounds=%d accepted=%d/%d "
-            "avg_accept=%.2f full_accept=%d/%d adaptive_fallback=%s",
+            "avg_accept=%.2f full_accept=%d/%d depth=%d..%d "
+            "fallback_events=%d",
             uid,
             rounds,
             accepts,
@@ -1615,12 +1673,15 @@ def _install_dspark(
             accepts / rounds if rounds else 0.0,
             int(request_stats.get("full_accept_rounds", 0)),
             rounds,
-            uid in _disabled_uids,
+            int(request_stats.get("min_depth", 0)),
+            int(request_stats.get("max_depth", 0)),
+            int(request_stats.get("fallback_events", 0)),
         )
         _pending.pop(uid, None)
         _pending_replay.pop(uid, None)
         _caches.pop(uid, None)
-        _disabled_uids.discard(uid)
+        _depths.pop(uid, None)
+        _cooldowns.pop(uid, None)
 
     def _dspark_next():
         responses = _orig_next()
@@ -2522,6 +2583,7 @@ class Scheduler:
         # from normal completed-request accounting so operators can distinguish
         # healthy EOS stops from model degeneration.
         self.num_repetition_loop_stops = 0
+        self.num_repetition_loop_breaks = 0
         # PFlash observability (M-02 reframe). When PFlash compresses a
         # prompt the request bypasses the prefix-cache fetch + store
         # paths entirely (positional-fiction safety; see comment block
@@ -5369,6 +5431,14 @@ class Scheduler:
             _glp = getattr(request, "grammar_logits_processor", None)
             if _glp is not None:
                 request_processors.append(_glp)
+            # Prevent an exact agent loop before it reaches the streaming
+            # hard-stop below.  The processor is deliberately tool-request
+            # only and masks a single predicted token only after the output is
+            # one full copy short of the conservative abort threshold.
+            if request.has_tools:
+                _loop_breaker = AgentRepetitionLogitsProcessor(request.output_token_ids)
+                request._repetition_logits_processor = _loop_breaker
+                request_processors.append(_loop_breaker)
             # Penalty knobs (#355) — only add the processor when at least
             # one penalty is non-default. mlx-lm's make_logits_processors
             # returns an empty list when all knobs are at defaults, but
@@ -5664,6 +5734,23 @@ class Scheduler:
             # layer without tokenizer-family-specific casing.
             finish_reason = response.finish_reason
             stop_trimmed = False
+            _loop_breaker = getattr(request, "_repetition_logits_processor", None)
+            if isinstance(_loop_breaker, AgentRepetitionLogitsProcessor):
+                _reported = getattr(request, "_reported_repetition_breaks", 0)
+                if _loop_breaker.interventions > _reported:
+                    _new_breaks = _loop_breaker.interventions - _reported
+                    self.num_repetition_loop_breaks += _new_breaks
+                    request._reported_repetition_breaks = _loop_breaker.interventions
+                    _match = _loop_breaker.last_match
+                    logger.warning(
+                        "Broke exact token loop for agent request %s "
+                        "before stream abort (period_tokens=%s repeats=%s "
+                        "interventions=%d)",
+                        request_id,
+                        getattr(_match, "period_tokens", "unknown"),
+                        getattr(_match, "repeats", "unknown"),
+                        _loop_breaker.interventions,
+                    )
             # Agent models can occasionally enter a perfectly periodic decode
             # loop after a tool interaction.  Once streamed, those deltas cannot
             # be retracted, so stop it in the scheduler before thousands of
@@ -6586,6 +6673,7 @@ class Scheduler:
             "num_running": len(self.running),
             "num_requests_processed": self.num_requests_processed,
             "num_repetition_loop_stops": self.num_repetition_loop_stops,
+            "num_repetition_loop_breaks": self.num_repetition_loop_breaks,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
             # M-02: PFlash observability counters. ``bypass_count`` is

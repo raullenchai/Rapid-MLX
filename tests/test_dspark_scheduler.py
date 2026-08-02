@@ -6,7 +6,22 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 
-from vllm_mlx.scheduler import _install_dspark, _replay_dspark_committed
+from vllm_mlx.scheduler import (
+    _adapt_dspark_depth,
+    _install_dspark,
+    _replay_dspark_committed,
+)
+
+
+def test_adaptive_depth_shrinks_cools_down_and_recovers() -> None:
+    depth, streak, cooldown = _adapt_dspark_depth(5, 5, 1, 5, 0)
+    assert (depth, streak, cooldown) == (4, 1, False)
+    depth, streak, cooldown = _adapt_dspark_depth(depth, 5, 0, 4, streak)
+    assert (depth, streak, cooldown) == (3, 2, False)
+    depth, streak, cooldown = _adapt_dspark_depth(depth, 5, 1, 3, streak)
+    assert (depth, streak, cooldown) == (1, 0, True)
+    # The post-cooldown K=1 probe can grow again after a full accept.
+    assert _adapt_dspark_depth(1, 5, 1, 1, 0) == (2, 0, False)
 
 
 class _Cache:

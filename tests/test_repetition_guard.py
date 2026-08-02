@@ -3,7 +3,13 @@
 
 from unittest.mock import MagicMock
 
-from vllm_mlx.repetition_guard import detect_repeated_token_suffix
+import mlx.core as mx
+
+from vllm_mlx.repetition_guard import (
+    AgentRepetitionLogitsProcessor,
+    detect_repeated_token_suffix,
+    predict_repeated_token_suffix,
+)
 from vllm_mlx.request import Request, RequestStatus, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
@@ -30,6 +36,34 @@ def test_long_loop_period_stops_after_three_copies():
     assert match is not None
     assert match.period_tokens == 61
     assert match.repeats == 3
+
+
+def test_predicts_only_the_token_that_would_extend_loop():
+    pattern = list(range(12))
+    # The hard guard needs six copies; the preventative path arms after five.
+    intervention = predict_repeated_token_suffix(pattern * 5)
+    assert intervention is not None
+    assert intervention.period_tokens == 12
+    assert intervention.repeats == 5
+    assert intervention.blocked_token_id == pattern[0]
+    assert predict_repeated_token_suffix(pattern * 4) is None
+
+
+def test_logits_processor_masks_predicted_token_once():
+    pattern = list(range(12))
+    processor = AgentRepetitionLogitsProcessor(pattern * 5)
+    logits = mx.zeros((1, 32))
+    processed = processor(mx.array([pattern[-1]]), logits)
+    mx.eval(processed)
+    assert float(processed[0, pattern[0]].item()) == float("-inf")
+    assert float(processed[0, pattern[1]].item()) == 0.0
+    assert processor.interventions == 1
+    # Speculative verification can invoke processors for several positions
+    # before the streamed history advances. Intervene only once per history.
+    second = processor(mx.array([pattern[-1]]), logits)
+    mx.eval(second)
+    assert float(second[0, pattern[0]].item()) == 0.0
+    assert processor.interventions == 1
 
 
 def test_ignores_short_stutter_and_near_repeat():

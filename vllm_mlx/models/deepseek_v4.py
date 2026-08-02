@@ -1280,6 +1280,7 @@ class Model(nn.Module):
         anchor_ids: mx.array,
         main_hidden: mx.array,
         cache: list[RotatingKVCache],
+        max_draft_tokens: int | None = None,
     ) -> tuple[mx.array, mx.array, mx.array] | None:
         if not self.mtp:
             return None
@@ -1292,6 +1293,8 @@ class Model(nn.Module):
             return None
 
         K = self.args.dspark_block_size
+        if max_draft_tokens is not None:
+            K = max(1, min(K, int(max_draft_tokens)))
         draft_ids = mx.full(
             (anchor_ids.shape[0], K),
             self.args.dspark_noise_token_id,

@@ -457,3 +457,15 @@ def test_deepseek_v4_dspark_drafts_checkpoint_block():
     mx.eval(output_ids, logits)
     assert output_ids.shape == (1, 6)
     assert logits.shape == (1, 5, 128)
+
+    short_proposal = model.dspark_forward(
+        mx.array([[4]], dtype=mx.int32),
+        model._last_dspark_hidden,
+        draft_cache,
+        max_draft_tokens=2,
+    )
+    assert short_proposal is not None
+    short_ids, short_logits = short_proposal
+    mx.eval(short_ids, short_logits)
+    assert short_ids.shape == (1, 3)
+    assert short_logits.shape == (1, 2, 128)

@@ -1007,6 +1007,14 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
+            "rapid_mlx_repetition_loop_breaks_total",
+            "counter",
+            "Agent generations steered away from an exact token loop before abort.",
+            int(_coerce_number(stats.get("num_repetition_loop_breaks"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
             "rapid_mlx_prompt_tokens_total",
             "counter",
             "Cumulative prompt tokens consumed across all requests.",
