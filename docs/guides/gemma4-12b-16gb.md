@@ -148,11 +148,22 @@ at **13221 tokens** (cache types `['KVCache', 'RotatingKVCache']`, peak
 [cache_persist] LOADED 5 entries from ~/.cache/rapid-mlx/prefix_cache/... (1921MB total)
 ```
 
-The prefix cache is restored at startup and consumes **1.9 GB before the
+The prefix cache is restored at startup and consumed **1.9 GB before the
 first request** — the bulk of the "steady state" you observe — and none
-of it is visible to the pre-flight memory warning. Against the gate's
-64 KB/token projection, that restored 1.9 GB is what pushes a 10k-token
-request past the Metal allocation.
+of it is visible to the pre-flight memory warning. Combined with the
+gate's 64 KB/token projection, that is what pushed a 10k-token request
+past the Metal allocation.
+
+**This was observed on the default cache budget, which is why
+`--cache-memory-mb 768` is in the recipe above.** With that flag set,
+`MemoryAwarePrefixCache.load_from_disk` stops staging once it would
+exceed the limit, so a 1.9 GB restore cannot happen in the first place —
+a reader following the recommended command should not hit this. It is
+recorded because the symptom (garbage output and a hard abort at ~10k
+tokens, on a run that works fine at 13k through `mlx_lm.generate`) is
+easy to misread as a context-length or quantization failure, and because
+the persisted cache survives restarts: a directory grown under earlier,
+looser settings is still on disk.
 
 Any one of these makes 10358 tokens pass:
 
