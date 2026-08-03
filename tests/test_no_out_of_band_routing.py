@@ -163,6 +163,11 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # hatch for sandboxed / read-only-home environments. Pure state-file
         # placement knob — never selects a model, parser, or routing tier.
         "RAPID_MLX_STATE_DIR",
+        # Community benchmark board endpoint and local archive root. These
+        # affect upload/storage destinations only; neither is read by model,
+        # parser, scheduler, or request-routing code.
+        "RAPID_MLX_BENCH_BOARD_URL",
+        "RAPID_MLX_HOME",
         # Override where DDTree writes its patched draft-config mirror.
         # This is a cache placement/testing knob; model routing and DDTree
         # enablement still come from explicit CLI flags and alias metadata.

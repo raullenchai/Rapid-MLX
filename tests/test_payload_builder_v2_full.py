@@ -83,7 +83,7 @@ def _build_full() -> dict:
 
 def test_full_payload_has_all_three_sections() -> None:
     payload = _build_full()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["tier"] == "all"
     assert payload["smoke_result"] == _SMOKE
     assert payload["harness_result"] == _HARNESS

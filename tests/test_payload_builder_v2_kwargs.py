@@ -9,7 +9,7 @@ it always did — modulo the version integer itself.
 This pins three properties:
 
 1. Default-kwargs ``build_submission_payload`` produces a payload
-   identical to a v1 payload except for ``schema_version`` (now 2).
+   identical to a v1 payload except for ``schema_version`` (now 3).
 2. ``tier="speed"`` produces a payload with ``"tier": "speed"`` added
    and nothing else changed.
 3. The payload still validates against the v2 schema.
@@ -93,7 +93,7 @@ def test_default_kwargs_match_v1_modulo_version() -> None:
     reconstruct here by mutating the version to 1).
     """
     payload = _build()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     # ``submission_id`` is uuid4-derived so it's not byte-stable across
     # runs; everything else IS deterministic given the frozen ``now``,
     # the hardcoded sampling, and the synthetic bench result.

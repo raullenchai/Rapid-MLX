@@ -329,7 +329,7 @@ def test_tier_all_submit_payload_shape():
 
     Locked invariants:
 
-    - ``schema_version == 2``
+    - ``schema_version == 3``
     - ``tier == 'all'``
     - ``smoke_result``, ``harness_result``, AND ``buckets`` all present
       (the schema requires ``buckets`` unconditionally — the speed
@@ -354,7 +354,7 @@ def test_tier_all_submit_payload_shape():
         harness_result=_HARNESS_PAYLOAD,
     )
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["tier"] == "all"
     assert payload["smoke_result"] == _SMOKE_PAYLOAD
     assert payload["harness_result"] == _HARNESS_PAYLOAD
