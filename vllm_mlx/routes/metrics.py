@@ -538,6 +538,7 @@ def _render_suffix_decode_counters(cfg: Any) -> list[str]:
         "no_draft",
         "cooldown",
         "non_trimmable_cache",
+        "error",
     ):
         out.append(
             f'rapid_mlx_suffix_decode_fallthrough_total{{family="{family}",'

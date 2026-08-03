@@ -2274,8 +2274,8 @@ def _install_suffix_decoding(
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] drafter error: {e!r}")
             _stats["errors"] += 1
-            _counter.record_error()
             _stats["fallthrough_steps"] += 1
+            _counter.record_error()
             return _orig_step()
 
         if not draft or len(draft) < min_draft_len:

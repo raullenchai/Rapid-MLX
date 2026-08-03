@@ -134,6 +134,7 @@ def test_every_fallthrough_reason_gets_a_series():
         "no_draft",
         "cooldown",
         "non_trimmable_cache",
+        "error",
     ):
         assert f'reason="{reason}"' in out, f"missing series for {reason}"
 
@@ -177,4 +178,23 @@ def test_error_counter_is_exported():
     out = _render()
     assert "rapid_mlx_suffix_decode_errors_total" in out
     assert 'method="suffix"} 2' in out
+    reset_global_counter()
+
+
+def test_error_fallback_also_counts_as_a_fallthrough_step():
+    """An error path still takes a plain forward. If it is not in the
+    breakdown, verify + fallthrough stops reconciling with actual decode
+    steps exactly when something is going wrong — which is when an
+    operator is reading these numbers."""
+    reset_global_counter()
+    c = get_global_counter()
+    c.record_verify(proposed=8, accepted=8)
+    c.record_fallthrough("cooldown")
+    c.record_error()
+    snap = c.snapshot()
+    assert snap["errors"] == 1
+    assert snap["ft_error"] == 1
+    # fallthrough_steps must equal the sum of its reasons.
+    reasons = sum(v for k, v in snap.items() if k.startswith("ft_"))
+    assert snap["fallthrough_steps"] == reasons == 2
     reset_global_counter()

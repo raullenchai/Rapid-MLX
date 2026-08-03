@@ -57,6 +57,11 @@ class SuffixAcceptCounter:
         "no_draft",
         "cooldown",
         "non_trimmable_cache",
+        # Drafter or verify-forward raised; the step still took a plain
+        # forward, so it must appear in the breakdown or verify +
+        # fallthrough stops reconciling with actual decode steps exactly
+        # when something is going wrong.
+        "error",
     )
 
     def __init__(self) -> None:
@@ -85,8 +90,11 @@ class SuffixAcceptCounter:
                 self._ft[reason] += 1
 
     def record_error(self) -> None:
+        """An error fallback IS a fallthrough step — count it as both."""
         with self._lock:
             self._errors += 1
+            self._fallthrough_steps += 1
+            self._ft["error"] += 1
 
     def record_cooldown_trip(self, level: int) -> None:
         with self._lock:
