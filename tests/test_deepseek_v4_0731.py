@@ -123,6 +123,21 @@ def test_dsml_tool_schema_and_tool_result_are_encoded():
     assert "<tool_result>sunny</tool_result>" in prompt
 
 
+def test_dsml_parser_normalizes_codex_prefix_rule_string_to_array():
+    parser = ToolParserManager.get_tool_parser("deepseek_v4_0731")(None)
+    wire = (
+        "<｜DSML｜tool_calls>\n"
+        '<｜DSML｜invoke name="exec_command">\n'
+        '<｜DSML｜parameter name="cmd" string="true">pwd</｜DSML｜parameter>\n'
+        '<｜DSML｜parameter name="prefix_rule" string="true">git status'
+        "</｜DSML｜parameter>\n"
+        "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+    )
+    result = parser.extract_tool_calls(wire)
+    arguments = json.loads(result.tool_calls[0]["arguments"])
+    assert arguments == {"cmd": "pwd", "prefix_rule": ["git status"]}
+
+
 def test_dsml_tool_schema_order_is_canonical_for_prefix_cache():
     messages = [
         {"role": "system", "content": "stable instructions"},
@@ -173,6 +188,40 @@ def test_dsml_tool_schema_order_is_canonical_for_prefix_cache():
         model_name="deepseek-v4-flash-0731-mxfp4",
     )
     assert first == second
+
+
+def test_dsml_prioritizes_core_agent_tools_without_losing_canonical_order():
+    messages = [{"role": "user", "content": "inspect the repository"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "aaa_connector", "parameters": {"type": "object"}},
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "exec_command",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                    "required": ["cmd"],
+                },
+            },
+        },
+    ]
+
+    prompt = apply_chat_template(
+        _TokenizerWithoutTemplate(),
+        messages,
+        tools=tools,
+        enable_thinking=True,
+        model_name="deepseek-v4-flash-0731-mxfp4",
+    )
+
+    assert prompt.index('"name": "exec_command"') < prompt.index(
+        '"name": "aaa_connector"'
+    )
+    assert "Never emit an empty invoke" in prompt
 
 
 def test_dsml_ignores_connector_access_preamble_for_prefix_cache():

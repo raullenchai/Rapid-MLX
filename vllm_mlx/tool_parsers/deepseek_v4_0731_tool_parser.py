@@ -73,6 +73,17 @@ class DeepSeekV40731ToolParser(ToolParser):
                     except json.JSONDecodeError:
                         value = raw
                 arguments[param.group("name")] = value
+            # DeepSeek occasionally serializes Codex's optional reusable
+            # approval prefix as one string even though its schema is an
+            # array of strings. The representations are unambiguous and the
+            # client semantics are identical, so normalize before strict
+            # post-generation schema validation rather than reconnecting the
+            # entire agent turn.
+            if (
+                match.group("name") == "exec_command"
+                and isinstance(arguments.get("prefix_rule"), str)
+            ):
+                arguments["prefix_rule"] = [arguments["prefix_rule"]]
             calls.append(
                 {
                     "id": f"call_{uuid.uuid4().hex[:8]}",

@@ -287,6 +287,18 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
             "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>"
             f"function<｜tool▁sep｜>{function_name}\n```json\n"
         )
+    if parser_name == "deepseek_v4_0731":
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(function_name):
+            return None
+        # V4-Flash-0731 uses the checkpoint's textual DSML envelope.  Stop
+        # after the named invoke opener rather than opening a parameter: the
+        # model still sees the selected tool's schema and must emit every
+        # required argument itself, while it can no longer spend the entire
+        # turn in a prose/reasoning preamble before choosing a tool.
+        return (
+            "<｜DSML｜tool_calls>\n"
+            f'<｜DSML｜invoke name="{function_name}">\n'
+        )
     # Channel-routed (harmony / gemma4) and parsers whose wire shape
     # we have NOT audited: no prefix injection. The post-parse
     # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).

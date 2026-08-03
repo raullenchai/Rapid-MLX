@@ -22,6 +22,26 @@ THINK_START = "<think>"
 THINK_END = "</think>"
 DSML = "｜DSML｜"
 
+# Keep the small, universal engineering surface near the beginning of large
+# agent tool catalogs.  Codex can submit well over one hundred connector and
+# plugin tools; sorting every name alphabetically buried ``exec_command`` deep
+# in that prompt even when the task explicitly asked the model to inspect the
+# repository.  The order remains canonical (and therefore prefix-cacheable),
+# but gives the model's most frequently needed local tools the strongest prompt
+# position.
+_CORE_AGENT_TOOL_ORDER = {
+    name: index
+    for index, name in enumerate(
+        (
+            "exec_command",
+            "write_stdin",
+            "apply_patch",
+            "view_image",
+            "request_user_input",
+        )
+    )
+}
+
 
 def _json(value: Any) -> str:
     # Match the checkpoint's published encoder, including its whitespace.
@@ -65,7 +85,14 @@ def _tool_schemas(tools: list[dict]) -> str:
     # keys) between turns.  Since the schemas live in the system prefix, that
     # turns a harmless wire-order change into a 30K-token prefix-cache miss.
     # Tool order has no semantic meaning, so canonicalise both levels.
-    definitions.sort(key=lambda item: str(item.get("name", "")))
+    definitions.sort(
+        key=lambda item: (
+            _CORE_AGENT_TOOL_ORDER.get(
+                str(item.get("name", "")), len(_CORE_AGENT_TOOL_ORDER)
+            ),
+            str(item.get("name", "")),
+        )
+    )
     schemas = "\n".join(
         json.dumps(item, ensure_ascii=False, sort_keys=True) for item in definitions
     )
@@ -94,6 +121,7 @@ Otherwise, output directly after {THINK_END} with tool calls or final response.
 {schemas}
 
 You MUST strictly follow the above defined tool name and parameter schemas to invoke tool calls.
+Before closing an invoke, emit every parameter listed in that tool schema's `required` array. Never emit an empty invoke for a tool that has required parameters.
 """
 
 
