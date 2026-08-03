@@ -208,8 +208,8 @@ gh run watch $(gh run list --workflow=rapid-mac-release.yml --limit=1 --json dat
 
 The app is distributed **only** as a direct `.dmg` download from GitHub
 Releases — there is no Homebrew cask. The `rapid-mlx` name is reserved for the
-engine (`pip install rapid-mlx`, and a future `brew install rapid-mlx`
-formula); the desktop app never claims it.
+engine (`pip install rapid-mlx` and `brew install rapid-mlx`, the latter
+already in homebrew-core); the desktop app never claims it.
 
 ## Open TODO(owner) items
 
