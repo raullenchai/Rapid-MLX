@@ -1485,7 +1485,7 @@ def test_codex_action_prefix_breaks_post_edit_search_loop():
         '{"cmd":"apply_patch <<PATCH\\n*** Update File: tests/test_x.py"}'
     )
     request = ResponsesRequest(model="m", input=items)
-    assert _codex_action_command_prefix(request).endswith(">python -m pytest")
+    assert _codex_action_command_prefix(request).endswith(">python3 -m pytest")
 
     items.extend(
         [
@@ -1503,7 +1503,11 @@ def test_codex_action_prefix_breaks_post_edit_search_loop():
         ]
     )
     request = ResponsesRequest(model="m", input=items)
-    assert _codex_action_command_prefix(request).endswith(">apply_patch")
+    assert _codex_action_command_prefix(request) is None
+
+    items[-1]["output"] = "zsh:1: command not found: python"
+    request = ResponsesRequest(model="m", input=items)
+    assert _codex_action_command_prefix(request) is None
 
 
 def test_deepseek_codex_implicit_temperature_uses_low_entropy_default(monkeypatch):

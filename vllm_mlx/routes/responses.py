@@ -302,6 +302,8 @@ def _codex_action_command_prefix(responses_request: ResponsesRequest) -> str | N
                             " FAILURES ",
                             "Traceback (most recent call last)",
                             " ERROR ",
+                            "command not found",
+                            "No such file or directory",
                         )
                     )
                     passed = bool(re.search(r"(?m)^\s*\d+\s+passed(?:\s|,|$)", output))
@@ -329,6 +331,11 @@ def _codex_action_command_prefix(responses_request: ResponsesRequest) -> str | N
     if has_edited:
         if has_successful_test and not has_unresolved_failure:
             return None
+        # Let the model diagnose a grounded tool failure. Prefixing another
+        # command here can force the exact unavailable interpreter forever
+        # (for example ``python`` on a macOS host exposing only ``python3``).
+        if has_unresolved_failure:
+            return None
         # Give the model room to review its diff, but stop the common semantic
         # loop where it varies the path/pattern of the same grep indefinitely.
         # If three post-edit tool turns pass without a regression-test edit,
@@ -337,7 +344,7 @@ def _codex_action_command_prefix(responses_request: ResponsesRequest) -> str | N
         if len(commands_after_edit) < 3:
             return None
         command = (
-            "python -m pytest"
+            "python3 -m pytest"
             if has_test_edit and not has_unresolved_failure
             else "apply_patch"
         )
