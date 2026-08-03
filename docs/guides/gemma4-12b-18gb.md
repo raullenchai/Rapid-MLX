@@ -191,8 +191,15 @@ rapid-mlx serve … --disable-prefix-cache
 rapid-mlx serve … --no-memory-aware-cache
 ```
 
-Clearing the persisted cache is the one to prefer — it keeps prefix
-reuse for the session and costs only a cold first request.
+Clearing the persisted cache unblocks the request in front of you at the
+cost of one cold prefill, but it is **not a durable fix**: under a loose
+budget `MemoryAwarePrefixCache.store()` grows the cache straight back and
+shutdown persists it again, so the next long request — or the next
+restart — can reproduce the abort. Treat `rm -rf` as the immediate
+unblock and `--cache-memory-mb 768` (already in the recipe above) as the
+fix that keeps it from recurring; `--disable-prefix-cache` is the
+belt-and-braces option if you would rather pay full prefill every turn
+than think about the budget.
 
 Note that the failure mode is a **process abort, not a 503**: MLX raises
 an uncaught C++ `std::runtime_error` on Metal OOM, so exceeding the real
