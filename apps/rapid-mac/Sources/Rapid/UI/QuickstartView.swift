@@ -505,35 +505,41 @@ Open the picker any time to switch models.
     /// state in full. Returns ``true`` when the Quickstart card
     /// should render in place of the normal chat-or-overlay tree.
     ///
-    /// Four gates, all must hold:
-    ///   1. ``hasAnyCachedAlias == false`` — #298: a user who already
-    ///      has at least one model cached on disk does NOT see
-    ///      Quickstart. Catches the upgrade-with-`defaults delete`
-    ///      shape where ``lastServedAlias`` is nil but ~/.cache/
-    ///      huggingface/hub/ holds GB of models from prior sessions.
-    ///      "磁盘有模型了 就不用 quickstart 导航" — if any model is on
-    ///      disk, no Quickstart card.
-    ///   2. ``done == false`` — the persistent one-shot guard
-    ///   3. ``lastServedAlias == nil`` — proxy for "no model has ever
-    ///      been served on this Mac" (a user who ever clicked Start
-    ///      and reached ``.ready`` would have persisted an alias)
-    ///   4. ``serverState`` is ``.idle`` or ``.stopped`` — anything
+    /// "First run" is decided from state THIS app owns — never from
+    /// the shared Hugging Face cache. #298 originally added a
+    /// ``hasAnyCachedAlias`` gate that scanned ``~/.cache/huggingface
+    /// /hub`` and suppressed Quickstart whenever ANY ``models--*``
+    /// directory existed. That over-reached: the HF cache is shared
+    /// across the whole MLX / transformers ecosystem, so a genuinely
+    /// new user who merely had a Whisper / VAD / forced-aligner model
+    /// from some other tool was denied onboarding and dumped into the
+    /// raw picker — exactly the worst first-touch Quickstart exists to
+    /// avoid. The gate is now app-owned only.
+    ///
+    /// Three gates, all must hold:
+    ///   1. ``done == false`` — the persistent one-shot guard
+    ///      (``rapid.quickstart.v1.done``). Set once the user completes
+    ///      OR dismisses Quickstart, so the card never returns.
+    ///   2. ``lastServedAlias == nil`` — our own "has this app ever
+    ///      served a model?" signal (``rapid.serve.lastAlias``, written
+    ///      by ``ServerManager`` on a successful serve). A user who
+    ///      ever reached a running model — via Quickstart OR the picker
+    ///      — is no longer new, so the card stays down.
+    ///   3. ``serverState`` is ``.idle`` or ``.stopped`` — anything
     ///      else means a model is already engaged (``.ready`` /
     ///      ``.starting`` / ``.crashed``) or the install overlay is
-    ///      already in charge (``.missing``)
+    ///      already in charge (``.missing``).
     ///
-    /// Why ``hasAnyCachedAlias`` is the FIRST guard: it's the only
-    /// gate that fires for the #298 upgrade-user repro (the other
-    /// three return ``true``). Putting it first also makes the
-    /// fuzz truth-table failure mode unambiguous — any disagreement
-    /// at ``hasAnyCachedAlias=true`` is a gate regression.
+    /// Both persisted signals live in ``UserDefaults`` and survive
+    /// relaunch, reinstall, and Migration Assistant — the only way to
+    /// re-trigger onboarding is to clear them (a deliberate developer
+    /// ``defaults delete``), which is the correct semantics for "reset
+    /// first-run", not something inferred from disk contents.
     static func isEligible(
         done: Bool,
         lastServedAlias: String?,
-        serverState: ServerState,
-        hasAnyCachedAlias: Bool
+        serverState: ServerState
     ) -> Bool {
-        guard !hasAnyCachedAlias else { return false }
         guard !done else { return false }
         guard lastServedAlias == nil else { return false }
         switch serverState {

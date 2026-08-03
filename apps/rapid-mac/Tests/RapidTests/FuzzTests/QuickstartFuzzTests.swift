@@ -13,20 +13,18 @@ struct QuickstartFuzzTests {
 
     // MARK: - Independent eligibility table
 
-    /// Independent expected-output: reproduces the agent's documented
-    /// rule ("hasAnyCachedAlias==false AND done==false AND
-    /// lastServed==nil AND server in {.idle,.stopped}"). Disagreement
-    /// → bug. ``hasAnyCachedAlias`` was added in #298 to suppress
-    /// Quickstart on upgrade-with-``defaults delete`` shapes — the
-    /// rule lives at the top because it short-circuits all four
-    /// other gates.
+    /// Independent expected-output: reproduces the documented rule
+    /// ("done==false AND lastServed==nil AND server in
+    /// {.idle,.stopped}"). Disagreement → bug. First-run is decided
+    /// from app-owned state ONLY — the shared HF cache was a gate
+    /// (#298) but was removed because unrelated ecosystem models
+    /// (Whisper / VAD / forced-aligner from other tools) wrongly
+    /// suppressed onboarding for genuinely new users.
     private func expectedEligible(
         done: Bool,
         lastServedAlias: String?,
-        serverState: ServerState,
-        hasAnyCachedAlias: Bool
+        serverState: ServerState
     ) -> Bool {
-        if hasAnyCachedAlias { return false }
         if done { return false }
         if lastServedAlias != nil { return false }
         switch serverState {
@@ -36,15 +34,9 @@ struct QuickstartFuzzTests {
     }
 
     /// Brute-force every combination: 2 done × 4 lastServed-shapes
-    /// × 7 server states × 2 hasAnyCachedAlias = 112 cases. Any
-    /// disagreement with the expected table is reported as a bug,
-    /// not a flaky assertion.
-    ///
-    /// #298: the ``hasAnyCachedAlias`` dimension was added so the
-    /// truth table provably covers the upgrade-with-``defaults
-    /// delete`` shape — every row where ``hasAnyCachedAlias==true``
-    /// must report not-eligible regardless of every other gate.
-    @Test("QuickstartCoordinator.isEligible: full truth table (112 combinations)")
+    /// × 7 server states = 56 cases. Any disagreement with the
+    /// expected table is reported as a bug, not a flaky assertion.
+    @Test("QuickstartCoordinator.isEligible: full truth table (56 combinations)")
     func eligibleFullTruthTable() {
         let dones = [false, true]
         let lastServeds: [String?] = [nil, "qwen3.5-4b", "gemma3-1b-qat-4bit", ""]
@@ -57,60 +49,22 @@ struct QuickstartFuzzTests {
             .missing,
             .ready(alias: QuickstartCoordinator.defaultChoice.alias),
         ]
-        let cachedFlags = [false, true]
         for done in dones {
             for last in lastServeds {
                 for state in states {
-                    for cached in cachedFlags {
-                        let actual = QuickstartCoordinator.isEligible(
-                            done: done,
-                            lastServedAlias: last,
-                            serverState: state,
-                            hasAnyCachedAlias: cached
-                        )
-                        let expected = expectedEligible(
-                            done: done,
-                            lastServedAlias: last,
-                            serverState: state,
-                            hasAnyCachedAlias: cached
-                        )
-                        #expect(
-                            actual == expected,
-                            "eligibility drift: done=\(done) last=\(last ?? "nil") state=\(state) cached=\(cached) actual=\(actual) expected=\(expected)"
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    /// #298 dedicated pin: every row with ``hasAnyCachedAlias=true``
-    /// MUST report not-eligible, no matter what the other gates say.
-    /// If this assertion ever flips, the upgrade-with-``defaults
-    /// delete`` repro from issue #298 has regressed.
-    @Test("#298: hasAnyCachedAlias=true always suppresses Quickstart")
-    func hasAnyCachedAliasAlwaysSuppresses() {
-        let dones = [false, true]
-        let lastServeds: [String?] = [nil, "qwen3.5-4b"]
-        let states: [ServerState] = [
-            .idle,
-            .stopped,
-            .ready(alias: "x"),
-            .starting(alias: "x"),
-            .crashed(alias: "x", message: "boom"),
-            .missing,
-        ]
-        for done in dones {
-            for last in lastServeds {
-                for state in states {
+                    let actual = QuickstartCoordinator.isEligible(
+                        done: done,
+                        lastServedAlias: last,
+                        serverState: state
+                    )
+                    let expected = expectedEligible(
+                        done: done,
+                        lastServedAlias: last,
+                        serverState: state
+                    )
                     #expect(
-                        !QuickstartCoordinator.isEligible(
-                            done: done,
-                            lastServedAlias: last,
-                            serverState: state,
-                            hasAnyCachedAlias: true
-                        ),
-                        "cached-alias gate failed: done=\(done) last=\(last ?? "nil") state=\(state)"
+                        actual == expected,
+                        "eligibility drift: done=\(done) last=\(last ?? "nil") state=\(state) actual=\(actual) expected=\(expected)"
                     )
                 }
             }

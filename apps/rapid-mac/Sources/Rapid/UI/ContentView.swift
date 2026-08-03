@@ -223,8 +223,10 @@ struct ContentView: View {
     }
 
     /// True when the Quickstart card should render in place of the chat
-    /// surface — brand-new user with no model on disk and the server
-    /// hasn't engaged a different alias.
+    /// surface — a user who hasn't completed onboarding, hasn't ever had
+    /// this app serve a model, and whose server hasn't engaged a
+    /// different alias. Eligibility keys on app-owned state only (see
+    /// ``QuickstartCoordinator.isEligible``), never the shared HF cache.
     private var quickstartVisible: Bool {
         guard !quickstartDismissedThisSession else { return false }
         if ContentView.serverEngagedWithDifferentAlias(
@@ -233,15 +235,10 @@ struct ContentView: View {
         ) {
             return false
         }
-        let hubCacheRoot = BundledModel.userHFCacheURL(
-            environment: ProcessInfo.processInfo.environment
-        )
-        let hasAnyCachedAlias = ModelCatalog.hasAnyCachedHFRepo(hubCacheRoot: hubCacheRoot)
         if QuickstartCoordinator.isEligible(
             done: quickstart.done,
             lastServedAlias: ServerManager.lastServedAlias(),
-            serverState: server.state,
-            hasAnyCachedAlias: hasAnyCachedAlias
+            serverState: server.state
         ) {
             return true
         }

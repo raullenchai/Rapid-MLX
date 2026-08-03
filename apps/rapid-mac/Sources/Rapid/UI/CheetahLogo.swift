@@ -71,7 +71,7 @@ struct CheetahLogo: View {
     ///     ``Bundle.module`` would compute, but probed
     ///     gracefully via ``Bundle(url:)`` so a miss returns
     ///     nil instead of crashing.
-    private static func load(forSize size: CGFloat) -> NSImage? {
+    static func load(forSize size: CGFloat) -> NSImage? {
         let name = size < 64 ? "cheetah-sm" : "cheetah"
 
         if let url = Bundle.main.url(forResource: name, withExtension: "png"),

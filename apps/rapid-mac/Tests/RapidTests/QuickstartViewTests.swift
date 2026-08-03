@@ -133,19 +133,17 @@ struct QuickstartViewTests {
 
     // MARK: - Eligibility predicate (the critical contract)
 
-    @Test("Eligible: fresh install — no done, no last-served, idle server, no cached alias")
+    @Test("Eligible: fresh install — no done, no last-served, idle server")
     func eligibleOnFreshInstall() {
         #expect(QuickstartCoordinator.isEligible(
             done: false,
             lastServedAlias: nil,
-            serverState: .idle,
-            hasAnyCachedAlias: false
+            serverState: .idle
         ))
         #expect(QuickstartCoordinator.isEligible(
             done: false,
             lastServedAlias: nil,
-            serverState: .stopped,
-            hasAnyCachedAlias: false
+            serverState: .stopped
         ))
     }
 
@@ -157,8 +155,7 @@ struct QuickstartViewTests {
         #expect(!QuickstartCoordinator.isEligible(
             done: true,
             lastServedAlias: nil,
-            serverState: .idle,
-            hasAnyCachedAlias: false
+            serverState: .idle
         ))
     }
 
@@ -171,8 +168,7 @@ struct QuickstartViewTests {
         #expect(!QuickstartCoordinator.isEligible(
             done: false,
             lastServedAlias: "qwen3.6-27b",
-            serverState: .idle,
-            hasAnyCachedAlias: false
+            serverState: .idle
         ))
     }
 
@@ -187,32 +183,25 @@ struct QuickstartViewTests {
             #expect(!QuickstartCoordinator.isEligible(
                 done: false,
                 lastServedAlias: nil,
-                serverState: state,
-                hasAnyCachedAlias: false
+                serverState: state
             ), "Expected not-eligible for state \(state)")
         }
     }
 
-    @Test("#298 not eligible: any cached alias on disk (upgrade-with-defaults-delete)")
-    func notEligibleWhenCachedAliasExists() {
-        // The bug: a user who has GB of cached models on disk gets
-        // hijacked by the Quickstart card after ``defaults delete``
-        // wipes ``lastServedAlias`` — even though Quickstart would
-        // download a 320 MB model on top of the existing pile.
-        // User confirmation: "磁盘有模型了 就不用 quickstart 导航".
-        // Pin every other gate at "eligible" so the only thing
-        // suppressing the card is ``hasAnyCachedAlias``.
-        #expect(!QuickstartCoordinator.isEligible(
+    @Test("Regression: unrelated HF-cached models no longer suppress Quickstart")
+    func eligibleEvenWithUnrelatedHFCache() {
+        // Regression for the over-broad #298 gate: the eligibility
+        // predicate must depend ONLY on app-owned state (done +
+        // lastServedAlias + serverState), never on the shared HF
+        // cache. A brand-new user whose ~/.cache/huggingface/hub holds
+        // Whisper / VAD / forced-aligner models from some OTHER tool
+        // has never used THIS app, so onboarding must still fire.
+        // There is deliberately no cache parameter to pass anymore —
+        // that this compiles and returns true IS the guarantee.
+        #expect(QuickstartCoordinator.isEligible(
             done: false,
             lastServedAlias: nil,
-            serverState: .idle,
-            hasAnyCachedAlias: true
-        ))
-        #expect(!QuickstartCoordinator.isEligible(
-            done: false,
-            lastServedAlias: nil,
-            serverState: .stopped,
-            hasAnyCachedAlias: true
+            serverState: .idle
         ))
     }
 
@@ -465,8 +454,7 @@ struct QuickstartViewTests {
         #expect(QuickstartCoordinator.isEligible(
             done: coord.done,
             lastServedAlias: nil,
-            serverState: .idle,
-            hasAnyCachedAlias: false
+            serverState: .idle
         ))
     }
 
@@ -583,16 +571,14 @@ struct QuickstartViewTests {
         #expect(!QuickstartCoordinator.isEligible(
             done: coord.done,
             lastServedAlias: nil,
-            serverState: .idle,
-            hasAnyCachedAlias: false
+            serverState: .idle
         ))
         // And of course the post-handoff server state (.ready with the
         // Quickstart alias) also pins not-eligible.
         #expect(!QuickstartCoordinator.isEligible(
             done: coord.done,
             lastServedAlias: QuickstartCoordinator.defaultChoice.alias,
-            serverState: .ready(alias: QuickstartCoordinator.defaultChoice.alias),
-            hasAnyCachedAlias: true
+            serverState: .ready(alias: QuickstartCoordinator.defaultChoice.alias)
         ))
     }
 }

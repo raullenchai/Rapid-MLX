@@ -64,42 +64,72 @@ final class MenuBarController: NSObject {
         button.toolTip = "Rapid-MLX"
     }
 
-    /// Render the ``RapidMark`` brand glyph (three speed streaks) into a
-    /// menu-bar image. Drawing the ``Shape``'s path straight into an
-    /// ``NSImage`` keeps the tray on the same single source of truth as
-    /// the in-app brand tile with zero new asset-catalog resources —
-    /// exactly the "code-drawn Shape renders as a menu-bar template"
-    /// contract ``RapidMark`` documents.
+    /// Render the brand cheetah into a menu-bar image so the tray icon
+    /// matches the app icon the user recognises — an Ollama-style
+    /// coloured mascot in the tray, the single source of truth being the
+    /// same vendored ``cheetah.png`` the in-app brand marks use.
+    ///
+    /// Issue #502 forced the tray onto ``NSStatusItem``; earlier
+    /// iterations shipped a lightning ``bolt.fill`` because a naively
+    /// shrunk cheetah read as a muddy blob and a code-drawn mark
+    /// rasterised transparent. Two things fix that here:
+    ///   * Render from the high-res master (``cheetah.png``, 440×390)
+    ///     with ``.high`` interpolation via a resolution-independent
+    ///     ``NSImage`` drawing handler, so AppKit redraws crisply at the
+    ///     bar's native backing scale instead of upscaling a tiny crop.
+    ///   * Keep it COLOURED (``isTemplate = false``). Template rendering
+    ///     would flatten the mascot to an unrecognisable silhouette.
+    ///
+    /// A waiting update is signalled by a small amber dot in the corner
+    /// rather than tinting the whole glyph (which would erase the
+    /// mascot). If the asset can't be resolved (corrupted .app) a
+    /// visible SF Symbol keeps the status item from collapsing to an
+    /// invisible slot.
     static func trayGlyph(hasUpdate: Bool) -> NSImage {
-        // Menu-bar content height. The cheetah keeps the brand identity
-        // the user recognises (Ollama-style coloured mascot in the tray);
-        // the SF Symbol fallback guarantees a *visible* glyph even if the
-        // asset can't be resolved. (The earlier code-drawn RapidMark
-        // rasterised to a transparent image → an invisible, collapsed
-        // status item — issue: user reported "no menu-bar icon".)
-        // A clean lightning bolt — the ⚡ the brand is associated with.
-        // Crisp at menu-bar size and template-rendered so it adapts to the
-        // light/dark bar (the earlier code-drawn RapidMark rasterised
-        // transparent → invisible item; a shrunk colour cheetah read as a
-        // muddy blob). Amber (non-template) signals a waiting update.
-        let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
-        let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Rapid-MLX")?
-            .withSymbolConfiguration(cfg)
-            ?? NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "Rapid-MLX")
-            ?? NSImage(size: NSSize(width: 16, height: 18))
-        if hasUpdate {
-            let tinted = NSImage(size: bolt.size)
-            tinted.lockFocus()
-            NSColor.systemOrange.set()
-            let r = NSRect(origin: .zero, size: bolt.size)
-            bolt.draw(in: r)
-            r.fill(using: .sourceAtop)
-            tinted.unlockFocus()
-            tinted.isTemplate = false
-            return tinted
+        // Menu-bar content height in points; the drawing handler is
+        // resolution-independent so AppKit fills it at 2x on Retina.
+        let height: CGFloat = 18
+        guard let source = CheetahLogo.load(forSize: 128) else {
+            let fallback = NSImage(
+                systemSymbolName: "hare.fill",
+                accessibilityDescription: "Rapid-MLX"
+            ) ?? NSImage(size: NSSize(width: height, height: height))
+            // Corrupted .app (asset missing): still signal a waiting
+            // update by tinting the fallback amber, mirroring the
+            // coloured-cheetah path's dot so the cue is never lost.
+            if hasUpdate {
+                let tinted = NSImage(size: fallback.size)
+                tinted.lockFocus()
+                NSColor.systemOrange.set()
+                let r = NSRect(origin: .zero, size: fallback.size)
+                fallback.draw(in: r)
+                r.fill(using: .sourceAtop)
+                tinted.unlockFocus()
+                tinted.isTemplate = false
+                return tinted
+            }
+            fallback.isTemplate = true
+            return fallback
         }
-        bolt.isTemplate = true
-        return bolt
+        let aspect = source.size.height > 0 ? source.size.width / source.size.height : 1
+        let target = NSSize(width: (height * aspect).rounded(), height: height)
+        let image = NSImage(size: target, flipped: false) { rect in
+            NSGraphicsContext.current?.imageInterpolation = .high
+            source.draw(
+                in: rect, from: .zero, operation: .sourceOver, fraction: 1.0
+            )
+            if hasUpdate {
+                let d = rect.height * 0.42
+                let dot = NSRect(
+                    x: rect.maxX - d, y: rect.maxY - d, width: d, height: d
+                )
+                NSColor.systemOrange.setFill()
+                NSBezierPath(ovalIn: dot).fill()
+            }
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 
     /// Re-render the glyph whenever an update becomes available (or is

@@ -350,61 +350,6 @@ enum ModelCatalog {
         return entries
     }
 
-    /// Synchronous "is there at least one HF-cached model on disk?"
-    /// probe used by the Quickstart eligibility gate (#298).
-    ///
-    /// Rationale: ``ContentView.quickstartVisible`` is a sync computed
-    /// property that fires on every render — we can't block it on the
-    /// async ``load(binary:)`` subprocess pair (which spawns
-    /// ``rapid-mlx models`` + ``rapid-mlx ls``, each 10-500ms with the
-    /// binary cold). The cheapest faithful proxy for "anything in
-    /// ``rapid-mlx ls``" is "does the HF hub cache root contain at
-    /// least one ``models--*`` directory?", since ``rapid-mlx ls``
-    /// itself derives its rows by walking that exact directory.
-    ///
-    /// Performance: ``contentsOfDirectory(atPath:)`` on the HF hub
-    /// root (typically <50 entries, even on a heavy user) is sub-
-    /// millisecond — safe to call from a SwiftUI body even though
-    /// callers can additionally cache the result in ``@State`` for
-    /// cheaper re-evaluation.
-    ///
-    /// Returns ``false`` when the cache root doesn't exist, can't
-    /// be read, or contains no ``models--*`` entries. ``false`` is
-    /// the "fresh install" answer — see ``QuickstartCoordinator
-    /// .isEligible`` for the consumer.
-    ///
-    /// Notes:
-    ///   * The check is "any ``models--*`` directory exists" — we do
-    ///     NOT inspect contents. A half-aborted ``rapid-mlx pull``
-    ///     can leave an empty ``models--…`` shell; that still counts
-    ///     as "user has tried to cache something" and Quickstart
-    ///     stays suppressed. Re-fetching the model from the picker
-    ///     is the in-app affordance for that state, not Quickstart.
-    ///   * Bundled-snapshot builds (``BUNDLE_MODEL=1``, currently
-    ///     dev-only) seed ``models--mlx-community--Qwen3-0.6B-4bit``
-    ///     on first launch — so the bundle counts as "model on disk"
-    ///     too. Production DMG ships with ``BUNDLE_MODEL=0`` so this
-    ///     is moot for shipped users.
-    ///   * Symbolic link entries to ``models--*`` count too — the HF
-    ///     cache layout uses symlinks for the bundled-snapshot path
-    ///     (``BundledModel.installBundledSnapshotSymlink``).
-    static func hasAnyCachedHFRepo(hubCacheRoot: URL?) -> Bool {
-        guard let hubCacheRoot else { return false }
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: hubCacheRoot.path, isDirectory: &isDir),
-              isDir.boolValue else {
-            return false
-        }
-        guard let entries = try? fm.contentsOfDirectory(atPath: hubCacheRoot.path) else {
-            return false
-        }
-        // HF cache layout: every cached repo lives at
-        // ``<root>/models--<owner>--<name>``. We only need to find one;
-        // a ``first(where:)`` exits as soon as a match lands.
-        return entries.first(where: { $0.hasPrefix("models--") }) != nil
-    }
-
     static func isSafeAlias(_ alias: String) -> Bool {
         guard !alias.isEmpty, alias.utf8.count <= maxAliasBytes else { return false }
         guard let first = alias.utf8.first, isASCIILetterOrDigit(first) else { return false }
