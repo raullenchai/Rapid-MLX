@@ -388,6 +388,48 @@ class TestInstallSuffixDecoding:
         assert "ft_non_trimmable_cache" in bg._suffix_stats
         assert bg._suffix_stats["ft_non_trimmable_cache"] == 0
 
+    def test_local_stats_have_a_reason_key_for_every_fallthrough(self):
+        """``_suffix_stats``'s documented invariant is that the ``ft_*``
+        breakdown sums to ``fallthrough_steps``.
+
+        The error paths bumped ``fallthrough_steps`` and ``errors`` but had
+        no ``ft_error`` bucket, so the breakdown stopped reconciling
+        precisely when something was failing — which is when an operator
+        reads it. Pinning the key set here rather than the arithmetic,
+        because the arithmetic is only reachable through a real verify
+        forward (covered by ``test_suffix_counter.py`` for the exported
+        counter).
+        """
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+
+        bg, _gb = self._make_fake_bg()
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        stats = bg._suffix_stats
+        for reason in (
+            "batch_size",
+            "uids_size",
+            "non_greedy",
+            "logits_processors",
+            "no_draft",
+            "cooldown",
+            "non_trimmable_cache",
+            "error",
+        ):
+            assert f"ft_{reason}" in stats, f"no local bucket for ft_{reason}"
+
     def test_drafter_pruned_when_primary_finishes(self):
         """Per-uid drafters must be dropped when the primary finishes.
 

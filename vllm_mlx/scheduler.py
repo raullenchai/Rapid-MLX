@@ -2057,6 +2057,12 @@ def _install_suffix_decoding(
         "ft_no_draft": 0,
         "ft_cooldown": 0,
         "ft_non_trimmable_cache": 0,
+        # Error fallbacks are fallthroughs too. Without this key the
+        # breakdown stops summing to ``fallthrough_steps`` exactly when
+        # something is going wrong — which is when the breakdown is being
+        # read. (The exported counter already tracks ``ft_error``; this is
+        # the local dict catching up.)
+        "ft_error": 0,
         # Backoff observability: how many times the skip window re-armed,
         # and the current level (0 = eager). A low-overlap request should
         # show a handful of trips and then go quiet; a high-overlap one
@@ -2305,6 +2311,7 @@ def _install_suffix_decoding(
             logger.debug(f"[SuffixDecoding] drafter error: {e!r}")
             _stats["errors"] += 1
             _stats["fallthrough_steps"] += 1
+            _stats["ft_error"] += 1
             _counter.record_error()
             return _orig_step()
 
@@ -2349,6 +2356,7 @@ def _install_suffix_decoding(
             logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
             _stats["errors"] += 1
             _stats["fallthrough_steps"] += 1
+            _stats["ft_error"] += 1
             # The attempt happened — ``_stats`` counted it above the forward
             # and the exported totals must agree, or a model that fails
             # verification repeatedly shows an attempt rate that quietly
