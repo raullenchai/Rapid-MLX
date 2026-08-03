@@ -381,10 +381,7 @@ def test_t2_deepseek_v3_alias_uses_same_prefix_as_r1_0528():
 
 def test_t2_deepseek_v4_0731_forced_prefix_opens_named_dsml_invoke():
     prefix = _forced_tool_call_prefix("deepseek_v4_0731", "exec_command")
-    assert prefix == (
-        "<｜DSML｜tool_calls>\n"
-        '<｜DSML｜invoke name="exec_command">\n'
-    )
+    assert prefix == ('<｜DSML｜tool_calls>\n<｜DSML｜invoke name="exec_command">\n')
 
 
 def test_t2_chat_route_wires_deepseek_v31_prefix_to_engine():

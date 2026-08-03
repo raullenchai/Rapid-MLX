@@ -295,10 +295,7 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
         # model still sees the selected tool's schema and must emit every
         # required argument itself, while it can no longer spend the entire
         # turn in a prose/reasoning preamble before choosing a tool.
-        return (
-            "<｜DSML｜tool_calls>\n"
-            f'<｜DSML｜invoke name="{function_name}">\n'
-        )
+        return f'<｜DSML｜tool_calls>\n<｜DSML｜invoke name="{function_name}">\n'
     # Channel-routed (harmony / gemma4) and parsers whose wire shape
     # we have NOT audited: no prefix injection. The post-parse
     # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).

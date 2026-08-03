@@ -135,7 +135,26 @@ def test_dsml_parser_normalizes_codex_prefix_rule_string_to_array():
     )
     result = parser.extract_tool_calls(wire)
     arguments = json.loads(result.tool_calls[0]["arguments"])
-    assert arguments == {"cmd": "pwd", "prefix_rule": ["git status"]}
+    assert arguments == {"cmd": "pwd", "prefix_rule": ["git", "status"]}
+
+
+def test_dsml_parser_preserves_quoted_prefix_rule_argument_boundaries():
+    parser = ToolParserManager.get_tool_parser("deepseek_v4_0731")(None)
+    output = (
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="exec_command">'
+        '<｜DSML｜parameter name="cmd" string="true">pwd'
+        '</｜DSML｜parameter><｜DSML｜parameter name="prefix_rule" string="true">'
+        'git commit -m "hello world"</｜DSML｜parameter>'
+        "</｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+
+    result = parser.extract_tool_calls(output)
+
+    arguments = json.loads(result.tool_calls[0]["arguments"])
+    assert arguments == {
+        "cmd": "pwd",
+        "prefix_rule": ["git", "commit", "-m", "hello world"],
+    }
 
 
 def test_dsml_tool_schema_order_is_canonical_for_prefix_cache():
