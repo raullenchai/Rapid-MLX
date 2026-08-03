@@ -484,7 +484,11 @@ def _render_suffix_decode_counters(cfg: Any) -> list[str]:
     # Escape: an alias carrying a quote / backslash / newline would emit
     # invalid exposition text and fail the whole scrape, not just this
     # series.
-    family = _escape_label_value(str(getattr(cfg, "model_alias", "") or "unknown"))
+    # Fall back to the model name/path when no alias was used, so direct-path
+    # deployments do not all collapse into family="unknown".
+    family = _escape_label_value(
+        str(getattr(cfg, "model_alias", "") or "") or _derive_mtp_family(cfg)
+    )
     lbl = f'{{family="{family}",method="suffix"}}'
 
     out = [

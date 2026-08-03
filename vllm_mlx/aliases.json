@@ -610,11 +610,6 @@
     "reasoning_parser": "gemma4",
     "is_hybrid": false,
     "is_moe": false,
-    "suffix_decoding_tier": "neutral",
-    "suffix_bench_speedup": {
-      "code_edit": 2.18,
-      "chat": 0.95
-    },
     "supports_spec_decode": true,
     "recommended_sampling": {
       "temperature": 1.0,
