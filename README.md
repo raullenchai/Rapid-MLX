@@ -282,6 +282,8 @@ If `pip install rapid-mlx` says "no matching distribution", your Python is too o
 
 For image-input / VLM models (Qwen-VL, true multimodal), install the vision extra: `pip install 'rapid-mlx[vision]'` — see [Optional extras](https://rapidmlx.com/docs/extras.html).
 
+For the complete feature set — vision, chat, embeddings, and audio — install the `[all]` extra: `pip install 'rapid-mlx[all]'`. Audio alone is `pip install 'rapid-mlx[audio]'`; see [Optional extras](https://rapidmlx.com/docs/extras.html).
+
 </details>
 
 ---

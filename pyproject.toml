@@ -209,7 +209,7 @@ chat = [
     "gradio>=4.0.0",
     "pytz>=2024.1",
 ]
-# All extras — union of vision + chat + embeddings.
+# All extras — union of vision + chat + embeddings + audio.
 # Expanded directly to avoid a self-dependency that breaks
 # pip install .[all] and editable installs.
 all = [
@@ -225,6 +225,21 @@ all = [
     # embeddings
     "mlx-embeddings>=0.1.0",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
+    # audio
+    "mlx-audio>=0.2.9,<0.4.4",
+    "f5-tts-mlx==0.2.6",
+    "sounddevice>=0.4.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.10.0",
+    "numba>=0.57.0",
+    "tiktoken>=0.5.0",
+    "misaki[zh,ja]>=0.5.0",
+    "spacy>=3.7.0",
+    "num2words>=0.5.0",
+    "loguru>=0.7.0",
+    "espeakng-loader>=0.2.0",
+    "phonemizer-fork>=3.3.0",
+    "cn2an>=0.5.0",
 ]
 # Test runtime — the *minimum* deps `pytest tests/` needs to import the
 # suite and collect every test without a plugin-missing error. Kept

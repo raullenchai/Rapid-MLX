@@ -227,7 +227,7 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
 
 
 def test_all_extra_includes_mlx_vlm() -> None:
-    """``[all]`` is documented as the union of vision + chat + embeddings.
+    """``[all]`` is documented as the union of vision + chat + embeddings + audio.
     A user who installs ``rapid-mlx[all]`` expecting "everything"
     must NOT discover at request-time that mlx-vlm isn't there."""
     py = _load_pyproject()
@@ -236,6 +236,17 @@ def test_all_extra_includes_mlx_vlm() -> None:
     assert "mlx-vlm" in names, (
         f"`[all]` extra is documented as union-of-everything but does "
         f"not include mlx-vlm. Got specs={all_specs!r}."
+    )
+
+
+def test_all_extra_contains_complete_audio_extra() -> None:
+    """Every dependency promised by ``[audio]`` is also supplied by ``[all]``."""
+    py = _load_pyproject()
+    audio_names = {_split_spec(s)[0].lower() for s in _extra_specs(py, "audio")}
+    all_names = {_split_spec(s)[0].lower() for s in _extra_specs(py, "all")}
+    assert audio_names <= all_names, (
+        "`[all]` is missing audio dependencies: "
+        f"{sorted(audio_names - all_names)}"
     )
 
 

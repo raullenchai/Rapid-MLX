@@ -21,6 +21,7 @@ Tests in ``tests/test_doctor_env_health.py`` cover each section's probe.
 from __future__ import annotations
 
 import importlib.metadata as _im
+import importlib.util as _iu
 import os
 import platform
 import shutil
@@ -118,6 +119,33 @@ OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
     ),
 ]
 
+# ``find_spec`` checks discoverability without importing heavyweight audio
+# packages such as scipy, numba, and spaCy.  Keep this aligned with the
+# runtime dependencies declared by the ``audio`` extra in pyproject.toml.
+_AUDIO_IMPORTS: tuple[tuple[str, str], ...] = (
+    ("mlx-audio", "mlx_audio"),
+    ("f5-tts-mlx", "f5_tts_mlx"),
+    ("sounddevice", "sounddevice"),
+    ("soundfile", "soundfile"),
+    ("scipy", "scipy"),
+    ("numba", "numba"),
+    ("tiktoken", "tiktoken"),
+    ("misaki", "misaki"),
+    ("spacy", "spacy"),
+    ("num2words", "num2words"),
+    ("loguru", "loguru"),
+    ("espeakng-loader", "espeakng_loader"),
+    ("phonemizer-fork", "phonemizer"),
+    ("cn2an", "cn2an"),
+)
+
+
+def _module_available(module: str) -> bool:
+    """Return whether *module* is discoverable, without importing it."""
+    try:
+        return _iu.find_spec(module) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
 
 # ---------------------------------------------------------------------------
 # Section: System
@@ -600,6 +628,24 @@ def section_optional_packages() -> Section:
                     ),
                 )
                 continue
+            if dist == "mlx-audio":
+                missing = [
+                    distribution
+                    for distribution, module in _AUDIO_IMPORTS
+                    if not _module_available(module)
+                ]
+                if missing:
+                    missing_text = ", ".join(missing)
+                    s.add(
+                        f"{label} {ver} incomplete — missing: {missing_text} "
+                        f"(`{hint}`)",
+                        CheckStatus.WARN,
+                        detail=(
+                            f"distribution={dist} version={ver} "
+                            f"missing={missing_text} hint={hint}"
+                        ),
+                    )
+                    continue
             # #1126: mlx-vlm imports Pillow (PIL) at load. A present
             # mlx-vlm with an absent PIL (Homebrew `pip install --no-deps
             # mlx-vlm`) is a FALSE positive — metadata says "installed" but

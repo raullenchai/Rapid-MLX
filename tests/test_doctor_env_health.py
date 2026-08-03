@@ -174,7 +174,10 @@ def test_missing_optional_package_marks_warning():
         # mlx-audio missing; the rest present.
         return None if dist == "mlx-audio" else "1.0.0"
 
-    with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
+    with (
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(eh, "_module_available", return_value=True),
+    ):
         section = eh.section_optional_packages()
 
     audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
@@ -203,11 +206,62 @@ def test_supported_mlx_audio_version_marks_ok():
     def fake_ver(dist: str) -> str | None:
         return "0.4.3" if dist == "mlx-audio" else None
 
-    with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
+    with (
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(eh, "_module_available", return_value=True),
+    ):
         section = eh.section_optional_packages()
 
     audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
     assert audio_row.status is eh.CheckStatus.OK
+
+
+def test_absent_audio_dependency_stack_marks_warning():
+    """An absent audio extra remains one concise optional-package warning."""
+    with mock.patch.object(eh, "_safe_version", return_value=None):
+        section = eh.section_optional_packages()
+
+    audio_rows = [c for c in section.checks if "mlx-audio" in c.label]
+    assert len(audio_rows) == 1
+    assert audio_rows[0].status is eh.CheckStatus.WARN
+
+
+def test_healthy_complete_audio_dependency_stack_marks_ok():
+    """When every audio dependency imports and mlx-audio is in range, all
+    audio rows are OK."""
+    with (
+        mock.patch.object(eh, "_safe_version", return_value="0.4.3"),
+        mock.patch.object(eh, "_module_available", return_value=True),
+    ):
+        section = eh.section_optional_packages()
+
+    audio_rows = [
+        c
+        for c in section.checks
+        if "audio" in c.label.lower() or "mlx-audio" in c.label
+    ]
+    assert audio_rows
+    assert all(c.status is eh.CheckStatus.OK for c in audio_rows), [
+        (c.label, c.status) for c in audio_rows
+    ]
+
+
+def test_incomplete_audio_dependency_import_stack_marks_warning():
+    """A present mlx-audio with a missing/broken audio dependency import is
+    WARN, not OK — the audio feature set is not actually usable."""
+    def fake_ver(dist: str) -> str | None:
+        return "0.4.3" if dist == "mlx-audio" else None
+
+    with (
+        mock.patch.object(eh, "_safe_version", side_effect=fake_ver),
+        mock.patch.object(
+            eh, "_module_available", side_effect=lambda module: module != "f5_tts_mlx"
+        ),
+    ):
+        section = eh.section_optional_packages()
+
+    broken = next(c for c in section.checks if "f5-tts-mlx" in c.label)
+    assert broken.status is eh.CheckStatus.WARN
 
 
 # ---------------------------------------------------------------------------
