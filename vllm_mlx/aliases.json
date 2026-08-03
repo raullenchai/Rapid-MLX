@@ -635,6 +635,7 @@
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_hybrid": false,
+    "is_moe": true,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
@@ -708,7 +709,7 @@
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_hybrid": false,
-    "is_moe": false,
+    "is_moe": true,
     "supports_spec_decode": true,
     "recommended_sampling": {
       "temperature": 1.0,
@@ -877,7 +878,7 @@
     "tool_call_parser": "gemma4",
     "reasoning_parser": "gemma4",
     "is_hybrid": false,
-    "is_moe": true,
+    "is_moe": false,
     "supports_spec_decode": false,
     "recommended_sampling": {
       "temperature": 1.0,
