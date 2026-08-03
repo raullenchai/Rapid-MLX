@@ -2094,6 +2094,11 @@ def _install_suffix_decoding(
                 "pending": [],
             }
             _uid_state[uid] = st
+            # Publish immediately. A request that only ever takes
+            # ``no_draft`` fallthroughs, or ends before its first successful
+            # verify, would otherwise leave the gauges showing the PREVIOUS
+            # request's width and backoff level.
+            _counter.set_state(_K_MIN, 0)
         return st
 
     # Backoff: each re-trip doubles the skip window, so a request whose

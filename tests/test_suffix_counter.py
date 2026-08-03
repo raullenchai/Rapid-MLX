@@ -198,3 +198,20 @@ def test_error_fallback_also_counts_as_a_fallthrough_step():
     reasons = sum(v for k, v in snap.items() if k.startswith("ft_"))
     assert snap["fallthrough_steps"] == reasons == 2
     reset_global_counter()
+
+
+def test_state_gauges_do_not_report_a_previous_requests_values():
+    """A request that never reaches a successful verify must still publish
+    its own state. Otherwise /metrics keeps showing the last request's
+    width and backoff level, which is exactly backwards when diagnosing a
+    request that is not drafting."""
+    reset_global_counter()
+    c = get_global_counter()
+    # Request A ran hot and finished wide.
+    c.set_state(current_k=8, backoff_level=3)
+    # Request B starts; publish at creation, before any verify.
+    c.set_state(current_k=2, backoff_level=0)
+    snap = c.snapshot()
+    assert snap["current_k"] == 2
+    assert snap["backoff_level"] == 0
+    reset_global_counter()
