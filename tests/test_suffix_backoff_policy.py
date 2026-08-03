@@ -312,3 +312,25 @@ def test_concurrent_requests_keep_independent_widths():
     assert p.state[2]["k"] == K_MIN
     assert p.state[1]["level"] == 0
     assert p.state[2]["level"] > 0
+
+
+def test_initial_width_clears_min_draft_len():
+    """MUTATION-KILL for the K floor: width only grows AFTER a verify, and
+    a draft shorter than ``min_draft_len`` is discarded before verifying.
+    Starting below it deadlocks at the floor — suffix decoding silently
+    does nothing for the whole request.
+    """
+    for min_draft_len, max_draft, expected in [
+        (2, 8, 2),
+        (3, 8, 3),  # the case that deadlocked
+        (5, 8, 5),
+        (4, 3, 3),  # cap wins — never issue wider than configured
+        (2, 1, 1),  # num_speculative_tokens=1 is accepted by the parser
+    ]:
+        k_min = min(max(2, min_draft_len), max_draft)
+        assert k_min == expected, (
+            f"min_draft_len={min_draft_len} max_draft={max_draft} "
+            f"-> {k_min}, expected {expected}"
+        )
+        if max_draft >= min_draft_len:
+            assert k_min >= min_draft_len, "floor cannot clear the length gate"

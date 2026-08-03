@@ -511,6 +511,10 @@ def _render_suffix_decode_counters(cfg: Any) -> list[str]:
         "draft tokens. 0.0 when nothing has been proposed.",
         "# TYPE rapid_mlx_suffix_decode_accept_ratio gauge",
         f"rapid_mlx_suffix_decode_accept_ratio{lbl} {snap['accept_ratio']:.4f}",
+        "# HELP rapid_mlx_suffix_decode_errors_total Drafter or verify-"
+        "forward failures that fell back to a plain step.",
+        "# TYPE rapid_mlx_suffix_decode_errors_total counter",
+        f"rapid_mlx_suffix_decode_errors_total{lbl} {snap['errors']}",
         "# HELP rapid_mlx_suffix_decode_cooldown_trips_total Times the "
         "backoff window re-armed after zero-acceptance verifies.",
         "# TYPE rapid_mlx_suffix_decode_cooldown_trips_total counter",

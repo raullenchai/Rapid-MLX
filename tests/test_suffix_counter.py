@@ -165,3 +165,16 @@ def test_label_value_is_escaped():
         s.labels["family"] for f in families for s in f.samples if "family" in s.labels
     }
     assert seen == {'we"ird\\alias'}, f"label round-tripped as {seen!r}"
+
+
+def test_error_counter_is_exported():
+    """MUTATION-KILL: ``record_error`` was collected but never rendered, so
+    the one fallthrough that indicates a real fault stayed invisible."""
+    reset_global_counter()
+    c = get_global_counter()
+    c.record_error()
+    c.record_error()
+    out = _render()
+    assert "rapid_mlx_suffix_decode_errors_total" in out
+    assert 'method="suffix"} 2' in out
+    reset_global_counter()

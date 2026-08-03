@@ -2133,10 +2133,14 @@ def _install_suffix_decoding(
     # accept drops K to just above what landed, which is the width that
     # would have been free.
     #
-    # Clamped to ``max_draft``: ``num_speculative_tokens`` accepts 1, and a
-    # floor of 2 would quietly issue two-token drafts against a configured
-    # cap of one.
-    _K_MIN = min(2, max_draft)
+    # The floor has to clear ``min_draft_len``: a draft shorter than that is
+    # discarded before it is ever verified, and width only grows AFTER a
+    # verify — so starting below it deadlocks at the floor and silently
+    # disables suffix decoding for the whole request. Clamped to
+    # ``max_draft`` on the other side, since ``num_speculative_tokens``
+    # accepts 1 and a floor of 2 would issue two-token drafts against a
+    # configured cap of one.
+    _K_MIN = min(max(2, min_draft_len), max_draft)
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Detect whether the request's sampler is effectively greedy.
@@ -2314,6 +2318,8 @@ def _install_suffix_decoding(
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
             _stats["errors"] += 1
+            _stats["fallthrough_steps"] += 1
+            _counter.record_error()
             # Cache was not advanced because the forward raised; safe to
             # retry via vanilla path below.
             return _orig_step()
