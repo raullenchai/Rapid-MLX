@@ -639,7 +639,9 @@
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
     "suffix_bench_speedup": {
-      "json_array": 0.203
+      "chat": 0.62,
+      "codegen": 0.53,
+      "code_edit": 1.12
     },
     "recommended_sampling": {
       "temperature": 1.0,
