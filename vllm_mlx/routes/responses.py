@@ -253,7 +253,18 @@ def _inject_codex_progress_reminder(
         )
     else:
         return messages
-    return [*messages, {"role": "developer", "content": reminder}]
+    return [
+        *messages,
+        {
+            "role": "developer",
+            "content": reminder,
+            # Server-only guidance is not returned in Responses output and the
+            # client therefore cannot replay it next turn. The batched engine
+            # removes this metadata before templating and snapshots only the
+            # stable message prefix preceding it.
+            "_rapid_mlx_transient_priming": True,
+        },
+    ]
 
 
 def _codex_action_command_prefix(responses_request: ResponsesRequest) -> str | None:

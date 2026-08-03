@@ -266,6 +266,74 @@ def test_prefix_boundary_prefers_latest_stable_message_boundary(monkeypatch):
     assert engine._compute_prefix_boundary(messages) == len(stable)
 
 
+def test_prefix_boundary_stops_before_transient_server_priming(monkeypatch):
+    """A server-only reminder is absent from the client's next request."""
+    engine, _ = _build_engine(monkeypatch)
+    engine._compute_prefix_boundary = BatchedEngine._compute_prefix_boundary.__get__(
+        engine, BatchedEngine
+    )
+    engine._tokenizer = _CharacterTokenizer()
+
+    def render(messages, tools=None, *, add_generation_prompt=True, **kwargs):
+        body = "|".join(
+            f"{message.get('role')}:{message.get('content')}" for message in messages
+        )
+        return body + ("|GEN" if add_generation_prompt else "")
+
+    monkeypatch.setattr(engine, "_apply_chat_template", render)
+    stable_messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "investigate"},
+        {"role": "assistant", "content": "prior work"},
+        {"role": "user", "content": "continue"},
+    ]
+    messages = [
+        *stable_messages,
+        {"role": "developer", "content": "temporary progress checkpoint"},
+    ]
+
+    boundary = engine._compute_prefix_boundary(
+        messages, transient_message_start=len(stable_messages)
+    )
+    real = render(messages)
+    future = render(
+        [
+            *stable_messages,
+            {"role": "assistant", "content": "__rapid_mlx_boundary_probe__"},
+        ],
+        add_generation_prompt=False,
+    )
+    expected = 0
+    for real_char, future_char in zip(real, future):
+        if real_char != future_char:
+            break
+        expected += 1
+
+    assert boundary == expected
+    assert boundary > 0
+    assert "temporary" not in real[:boundary]
+
+
+def test_transient_priming_marker_is_removed_before_chat_templating():
+    messages = [
+        {"role": "user", "content": "continue"},
+        {
+            "role": "developer",
+            "content": "server-only reminder",
+            "_rapid_mlx_transient_priming": True,
+        },
+    ]
+
+    cleaned, transient_start = BatchedEngine._prepare_cache_stable_messages(messages)
+
+    assert transient_start == 1
+    assert cleaned == [
+        {"role": "user", "content": "continue"},
+        {"role": "developer", "content": "server-only reminder"},
+    ]
+    assert messages[-1]["_rapid_mlx_transient_priming"] is True
+
+
 def test_prefix_boundary_falls_back_when_no_generation_form_is_not_prefix(
     monkeypatch,
 ):

@@ -1413,6 +1413,7 @@ def test_codex_progress_reminder_does_not_assume_five_reads_are_enough():
     reminded = _inject_codex_progress_reminder([], request)
     assert "Do not rerun the same tests" in reminded[-1]["content"]
     assert "provide the final answer" in reminded[-1]["content"]
+    assert reminded[-1]["_rapid_mlx_transient_priming"] is True
 
 
 def test_codex_progress_does_not_mistake_prose_passed_for_test_success():

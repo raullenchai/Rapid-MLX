@@ -2068,6 +2068,10 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        messages, transient_message_start = self._prepare_cache_stable_messages(
+            messages
+        )
+
         # Extract images/videos from messages (OpenAI multimodal format)
         # Note: We only use extracted media here, messages are already processed by server
         _, extracted_images, extracted_videos = extract_multimodal_content(messages)
@@ -2147,7 +2151,14 @@ class BatchedEngine(BaseEngine):
         # PR #435 was built to fix. Gating on ``is_hybrid`` keeps the fix
         # active where it's needed and inert where it broke things.
         if self._needs_prefix_boundary_snapshot():
-            prefix_boundary = self._compute_prefix_boundary(messages, tools)
+            if transient_message_start is None:
+                prefix_boundary = self._compute_prefix_boundary(messages, tools)
+            else:
+                prefix_boundary = self._compute_prefix_boundary(
+                    messages,
+                    tools,
+                    transient_message_start=transient_message_start,
+                )
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
 
@@ -2213,7 +2224,11 @@ class BatchedEngine(BaseEngine):
             return False
 
     def _compute_prefix_boundary(
-        self, messages: list[dict[str, Any]], tools: list[dict] | None = None
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        *,
+        transient_message_start: int | None = None,
     ) -> int:
         """Compute the latest prefix that is stable across the next turn.
 
@@ -2243,6 +2258,32 @@ class BatchedEngine(BaseEngine):
             real_prompt = self._apply_chat_template(
                 messages, template_tools, add_generation_prompt=True
             )
+            tokenizer = self.tokenizer
+            if hasattr(tokenizer, "tokenizer"):
+                tokenizer = tokenizer.tokenizer
+
+            real_tokens = tokenizer.encode(real_prompt)
+
+            if transient_message_start is not None:
+                future_prompt = self._apply_chat_template(
+                    [
+                        *messages[:transient_message_start],
+                        {
+                            "role": "assistant",
+                            "content": "__rapid_mlx_boundary_probe__",
+                        },
+                    ],
+                    template_tools,
+                    add_generation_prompt=False,
+                )
+                future_tokens = tokenizer.encode(future_prompt)
+                transient_lcp = 0
+                for real_token, future_token in zip(real_tokens, future_tokens):
+                    if real_token != future_token:
+                        break
+                    transient_lcp += 1
+                return transient_lcp
+
             stable_prompt = self._apply_chat_template(
                 messages, template_tools, add_generation_prompt=False
             )
@@ -2258,11 +2299,6 @@ class BatchedEngine(BaseEngine):
                 add_generation_prompt=False,
             )
 
-            tokenizer = self.tokenizer
-            if hasattr(tokenizer, "tokenizer"):
-                tokenizer = tokenizer.tokenizer
-
-            real_tokens = tokenizer.encode(real_prompt)
             stable_tokens = tokenizer.encode(stable_prompt)
             next_turn_tokens = tokenizer.encode(next_turn_prompt)
             stable_lcp = 0
@@ -2306,6 +2342,29 @@ class BatchedEngine(BaseEngine):
             return min(lcp, next_turn_lcp) if stable_lcp else lcp
         except Exception:
             return 0
+
+    @staticmethod
+    def _prepare_cache_stable_messages(
+        messages: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Strip internal priming metadata and locate its stable-prefix edge."""
+        transient_start = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.get("_rapid_mlx_transient_priming") is True
+            ),
+            None,
+        )
+        cleaned = [
+            {
+                key: value
+                for key, value in message.items()
+                if key != "_rapid_mlx_transient_priming"
+            }
+            for message in messages
+        ]
+        return cleaned, transient_start
 
     def _route_tokens_for_channels(
         self,
@@ -2657,6 +2716,10 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        messages, transient_message_start = self._prepare_cache_stable_messages(
+            messages
+        )
+
         # Extract images/videos from messages (OpenAI multimodal format)
         # Note: We only use extracted media here, messages are already processed by server
         _, extracted_images, extracted_videos = extract_multimodal_content(messages)
@@ -2705,7 +2768,14 @@ class BatchedEngine(BaseEngine):
         # must apply the same gating condition so a future change can't
         # silently regress one path while keeping the other green.
         if self._needs_prefix_boundary_snapshot():
-            prefix_boundary = self._compute_prefix_boundary(messages, tools)
+            if transient_message_start is None:
+                prefix_boundary = self._compute_prefix_boundary(messages, tools)
+            else:
+                prefix_boundary = self._compute_prefix_boundary(
+                    messages,
+                    tools,
+                    transient_message_start=transient_message_start,
+                )
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
 
