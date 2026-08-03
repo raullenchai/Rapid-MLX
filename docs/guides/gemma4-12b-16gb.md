@@ -1,8 +1,17 @@
-# Gemma 4 12B on a 16–18 GB Mac
+# Gemma 4 12B on an 18 GB Mac
 
 Measured on a MacBook Pro M3 Pro (12-core, 18 GB, macOS 15.6.1) against
 `mlx-community/gemma-4-12B-it-4bit` (6.3 GiB on disk), rapid-mlx 0.11.9,
 mlx 0.31.2, mlx-vlm 0.6.3. B=1, temperature 0, 3 reps, medians reported.
+
+**Not validated on 16 GB, and the numbers here argue against assuming it
+transfers.** The D-METAL-CAP admission cap scales from the device's
+`max_recommended_working_set_size`, so the 10.3 GB cap this guide works
+against becomes roughly 9.1 GB on a 16 GB machine — while the steady
+state recorded below is already 8.4–8.7 GB before a request's own KV
+projection is added. On 16 GB, expect to have to give something up
+(shorter contexts, a smaller cache budget, or `sudo sysctl
+iogpu.wired_limit_mb`); this recipe as written was not measured there.
 
 ## The command
 
@@ -116,9 +125,17 @@ to a few hundred MB regardless of how short the prompt was. With
 on a 2.1 GB projection against a 10.3 GB cap.
 
 Memory does **plateau** — five identical requests in a row held at
-8.60 GB, so this is a budgeting problem, not a leak. But on 18 GB the
-budget is tight enough that the default entry count spends headroom the
-admission gate then needs.
+8.60 GB, so this is a budgeting problem, not a leak.
+
+Note the direction: `gemma-4-12b-4bit` is `is_hybrid: false`, so
+`_resolve_hybrid_cache_entries` leaves the count at the parser default of
+**0**, and passing `--hybrid-cache-entries 2` *opts in* to retaining two
+otherwise non-trimmable entries. It buys prefix reuse across turns on a
+sliding-window model at the cost of some headroom — a trade, not a
+reduction from a wasteful default. 8 was measurably too many on 18 GB
+(the rejection above); 2 was the largest value that stayed clear of the
+cap on this machine. If you are not running repeat-prefix traffic, the
+default 0 is the cheaper choice.
 
 ### `--gpu-memory-utilization 0.85`
 
