@@ -2668,6 +2668,23 @@ def _install_suffix_decoding(
 
     _orig_remove = getattr(batch_gen, "remove", None)
 
+    def _departed(uid_list: list[int]) -> list[int]:
+        """Which of ``uid_list`` the generator no longer holds.
+
+        Only used on the ``remove`` failure path. When membership cannot
+        be established, report none: a leaked drafter is recoverable (the
+        BatchGenerator is rebuilt on the next model load), silently
+        discarding a live request's queued emits is not.
+        """
+        finder = getattr(batch_gen, "_find_uids", None)
+        if finder is None:
+            return []
+        try:
+            still_present = set(finder(uid_list))
+        except Exception:  # noqa: BLE001
+            return []
+        return [uid for uid in uid_list if uid not in still_present]
+
     def _suffix_remove(uids, return_prompt_caches=False):
         """Wrapped ``BatchGenerator.remove`` — the abort path's reap hook.
 
@@ -2681,17 +2698,28 @@ def _install_suffix_decoding(
         unread mlx arrays, i.e. live GPU buffers, on exactly the path a
         flaky or impatient client hits over and over.
 
-        Reaping in ``finally`` because a partially-applied ``remove`` still
-        leaves the uid gone from the batch: it will never be stepped again,
-        so keeping its state can only leak.
+        Deliberately NOT reaping in ``finally``. ``remove`` can raise
+        before the uid leaves the batch — with ``return_prompt_caches`` it
+        calls ``extract_cache`` first, and the index bookkeeping can fail
+        part-way through a multi-uid removal. Reaping a still-live uid is
+        worse than the leak this wrapper exists to fix: its ``pending``
+        entries are accepted draft tokens whose KV is already committed to
+        the cache, so dropping them loses output that was going to be
+        emitted and leaves the rebuilt drafter history disagreeing with
+        the cache. On failure we reap only what actually left.
         """
         uid_list = list(uids)
         try:
-            return _orig_remove(uid_list, return_prompt_caches=return_prompt_caches)
-        finally:
-            for uid in uid_list:
+            result = _orig_remove(uid_list, return_prompt_caches=return_prompt_caches)
+        except Exception:
+            for uid in _departed(uid_list):
                 _reap_uid(uid)
             _reset_state_gauges_if_idle()
+            raise
+        for uid in uid_list:
+            _reap_uid(uid)
+        _reset_state_gauges_if_idle()
+        return result
 
     gb._step = _suffix_step
     gb.next = _suffix_next

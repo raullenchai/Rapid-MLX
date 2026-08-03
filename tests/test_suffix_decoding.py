@@ -530,9 +530,9 @@ class TestInstallSuffixDecoding:
         )
         assert 9 in drafters and 9 in uid_state, "abort reaped an unrelated live uid"
 
-    def test_abort_reaps_even_if_remove_raises(self):
-        """A ``remove()`` that throws still leaves the uid unstepped, so
-        holding its state can only leak. The reap is in ``finally``."""
+    def _install_with_failing_remove(self, still_present):
+        """Fake whose ``remove`` raises, and whose ``_find_uids`` reports
+        ``still_present`` as surviving the failed call."""
         from unittest.mock import MagicMock
 
         from vllm_mlx.scheduler import _install_suffix_decoding
@@ -541,9 +541,10 @@ class TestInstallSuffixDecoding:
         bg, gb = self._make_fake_bg()
 
         def _boom(uids, return_prompt_caches=False):
-            raise KeyError("uid vanished mid-remove")
+            raise KeyError("removal failed part-way")
 
         bg.remove = _boom
+        bg._find_uids = lambda uids: {u: (2, 0) for u in uids if u in still_present}
 
         _install_suffix_decoding(
             bg,
@@ -562,11 +563,52 @@ class TestInstallSuffixDecoding:
             "level": 0,
             "zeros": 0,
             "k": 2,
-            "pending": [],
+            "pending": ["queued-emit"],
         }
+        return bg, gb
+
+    def test_failed_remove_still_reaps_a_uid_that_did_leave(self):
+        """``remove`` can raise part-way through a multi-uid call. A uid
+        that did leave the batch will never be stepped again, so its state
+        is pure leak — reap it."""
+        bg, gb = self._install_with_failing_remove(still_present=set())
 
         with pytest.raises(KeyError):
             bg.remove([3])
 
         assert 3 not in gb._suffix_drafters
         assert 3 not in gb._suffix_uid_state
+
+    def test_failed_remove_keeps_state_for_a_uid_still_in_the_batch(self):
+        """The inverse, and the more dangerous direction.
+
+        ``remove(return_prompt_caches=True)` calls ``extract_cache`` FIRST,
+        so a raise there leaves the uid fully live. Reaping it would throw
+        away ``pending`` — accepted draft tokens whose KV is already
+        committed to the cache — silently losing output and desyncing the
+        rebuilt drafter history from the cache. A leak is recoverable;
+        this is not.
+
+        MUTATION-KILL: reaping in a blanket ``finally`` fails here.
+        """
+        bg, gb = self._install_with_failing_remove(still_present={3})
+
+        with pytest.raises(KeyError):
+            bg.remove([3])
+
+        assert 3 in gb._suffix_drafters, "reaped a uid that is still in the batch"
+        assert gb._suffix_uid_state[3]["pending"] == ["queued-emit"], (
+            "dropped queued emits for a still-live uid"
+        )
+
+    def test_failed_remove_without_find_uids_keeps_state(self):
+        """No way to establish membership → assume live and leak rather
+        than risk discarding a live request's queued emits."""
+        bg, gb = self._install_with_failing_remove(still_present=set())
+        del bg._find_uids
+
+        with pytest.raises(KeyError):
+            bg.remove([3])
+
+        assert 3 in gb._suffix_drafters
+        assert 3 in gb._suffix_uid_state
