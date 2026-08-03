@@ -84,18 +84,26 @@ against a Metal cliff that aborts the process rather than raising. It is
 also why the flags below matter more on this model than the real
 footprint would suggest.
 
-A client that omits `max_tokens` (aider does — the server logs
-`max_tokens=None`) makes the D-METAL-CAP admission gate project the
-model's full output window at that 64 KB/token rate:
+The gate projects `(prompt_tokens + max_tokens) × 64 KB` plus a
+per-request sliding term, so both halves of that sum matter. With a
+client that omits `max_tokens` (aider does — the server logs
+`max_tokens=None`, and the server then substitutes its own default)
+every request was rejected before generating a token:
 
 ```
 503: Metal active 7.0GB + reserved KV 0.0GB + projected KV 5.7GB
      would exceed gpu_memory_utilization cap 10.3GB (D-METAL-CAP)
 ```
 
-— every request rejected before a token is generated. Bounding
-`--max-tokens` bounds the projection. 2048 is far above what edit traffic
-actually uses (the aider rounds above returned 341–583 tokens).
+Setting `--max-tokens 2048` was what turned that into a working server —
+measured, on the run this guide records. The exact arithmetic behind the
+5.7 GB figure is not reconstructed here: the projection also carries the
+prompt and the sliding term, and the server's own omitted-`max_tokens`
+default participates, so quoting a single cause for that number would be
+guesswork. What is reproducible is the shape — the projection scales with
+the token budget you let a request reserve, and bounding it fixes the
+rejections. 2048 is far above what edit traffic actually uses (the aider
+rounds above returned 341–583 tokens).
 
 ### `--hybrid-cache-entries 2` and `--cache-memory-mb 768` — budget, not leak
 
@@ -252,9 +260,15 @@ Two things follow for anyone tuning this:
   reports BF16 as the operating point and a *regression* at int4
   (60 → 45 tok/s at 41 % acceptance); the ~90 % aider-polyglot number is
   on nvfp4, so the payoff at 4-bit is unproven even once it works.
-- **`rapid-mlx bench` needs the `[vision]` extra.** The `gemma4_unified`
-  architecture classes live in mlx-vlm; a bare install cannot load any
-  `gemma-4-12b-*` alias.
+- **This guide was validated with the `[vision]` extra installed.** The
+  `gemma4_unified` architecture classes live in mlx-vlm and mlx-lm ships
+  no `gemma4_unified` module of its own, so that is the configuration
+  everything here was measured on. `load_gemma4_unified_text` does carry
+  a vendored fallback for installs without mlx-vlm, and `bench_command`
+  routes through `load_model_with_fallback` rather than binding
+  `mlx_lm.load` (#1408), so a bare install may well work — it simply was
+  not exercised here, so treat `[vision]` as the tested path rather than
+  a hard requirement.
 
 ## Reference points
 
