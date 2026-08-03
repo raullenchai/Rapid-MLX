@@ -3980,7 +3980,6 @@ def _run_submit_flow(
     from pathlib import Path
 
     from huggingface_hub.utils import RepositoryNotFoundError
-    from mlx_lm import load
 
     from .community_bench.hardware import collect as collect_hw
     from .community_bench.hardware import is_apple_silicon
@@ -3992,6 +3991,11 @@ def _run_submit_flow(
     from .engine_core import AsyncEngineCore, EngineConfig
     from .model_aliases import resolve_profile
     from .scheduler import SchedulerConfig
+
+    # Same gemma4 routing fix as ``bench_command``: ``mlx_lm.load`` cannot
+    # construct ``gemma4_unified``, so every ``gemma-4-12b-*`` alias failed
+    # to load here and could never be submitted to the community corpus.
+    from .utils.tokenizer import load_model_with_fallback as load
 
     if not is_apple_silicon():
         print(
@@ -4325,8 +4329,14 @@ def bench_command(args):
     if getattr(args, "submit", False):
         sys.exit(_run_submit_flow(args))
 
-    from mlx_lm import load
-
+    # Use the SAME loader ``serve`` uses, not the bare ``mlx_lm.load``.
+    # ``mlx_lm`` has no ``gemma4_unified`` architecture (the model classes
+    # live in mlx-vlm), so a bare ``load`` raises "Model type
+    # gemma4_unified not supported" for EVERY ``gemma-4-12b-*`` alias and
+    # bench can never run them — even though ``serve`` runs them fine.
+    # ``load_model_with_fallback`` carries the gemma4 router (plus the
+    # vendored-arch and tokenizer-fallback routes) and calls
+    # ``validate_local_model_file`` internally.
     from .engine_core import AsyncEngineCore, EngineConfig
     from .pflash import config_from_args as _pflash_config_from_args
     from .pflash import resolve_pflash_mode_default as _pflash_resolve_default
@@ -4334,6 +4344,7 @@ def bench_command(args):
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
     from .utils.model_file_guard import validate_local_model_file
+    from .utils.tokenizer import load_model_with_fallback as load
 
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(args.model)

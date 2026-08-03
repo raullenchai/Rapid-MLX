@@ -67,8 +67,12 @@ def _run_bench_capturing_scheduler_config(argv: list[str]) -> dict:
         mock.patch.object(cli, "_check_disk_space", lambda *a, **k: None),
         mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
         mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
-        # ``bench_command`` does ``from mlx_lm import load`` — patch at source.
-        mock.patch("mlx_lm.load", return_value=(object(), object())),
+        # ``bench_command`` binds ``load_model_with_fallback`` (the
+        # gemma4-aware router, not bare ``mlx_lm.load``) — patch at source.
+        mock.patch(
+            "vllm_mlx.utils.tokenizer.load_model_with_fallback",
+            return_value=(object(), object()),
+        ),
         # ``bench_command`` does ``from .scheduler import SchedulerConfig`` —
         # patch on the scheduler module so the local import binds the mock.
         mock.patch("vllm_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),

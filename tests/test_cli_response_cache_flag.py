@@ -68,7 +68,10 @@ def _capture_serve_scheduler_config(argv: list[str]) -> dict:
             "vllm_mlx._version_check.prompt_upgrade_if_available",
             return_value=False,
         ),
-        mock.patch("mlx_lm.load", return_value=(object(), object())),
+        mock.patch(
+            "vllm_mlx.utils.tokenizer.load_model_with_fallback",
+            return_value=(object(), object()),
+        ),
         mock.patch("vllm_mlx.scheduler.SchedulerConfig", _fake_scheduler_config),
         mock.patch.object(sys, "argv", ["rapid-mlx", *argv]),
         mock.patch.object(sys.stdin, "isatty", return_value=False),

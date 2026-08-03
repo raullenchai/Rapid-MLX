@@ -29,18 +29,25 @@ import pytest
 
 # ---------- shared helpers ---------------------------------------------------
 def _patch_mlx_lm_load(monkeypatch, fake_load) -> None:
-    """Patch ONLY the ``load`` attribute on the real ``mlx_lm`` module.
+    """Patch the loader ``bench`` actually calls.
 
-    ``bench_command`` and ``_run_submit_flow`` use ``from mlx_lm import
-    load`` at call time — that's ``getattr(sys.modules['mlx_lm'], 'load')``
-    resolved fresh each call. Replacing the whole module object would
-    break other imports (``mlx_lm.generate``, ``mlx_lm.utils``…) that
-    the engine's own imports trigger during ``bench_command`` setup.
-    Attribute patching leaves those intact.
+    ``bench_command`` and ``_run_submit_flow`` bind
+    ``from .utils.tokenizer import load_model_with_fallback as load`` at
+    call time — that's
+    ``getattr(sys.modules['vllm_mlx.utils.tokenizer'],
+    'load_model_with_fallback')`` resolved fresh each call. They used to
+    bind ``mlx_lm.load`` directly, but that loader has no
+    ``gemma4_unified`` architecture, so every ``gemma-4-12b-*`` alias
+    failed to load; the router in ``utils.tokenizer`` is what makes them
+    work. Patch that attribute rather than the module object so the other
+    imports (``mlx_lm.generate``, ``mlx_lm.utils``…) the engine triggers
+    during setup stay intact.
     """
-    import mlx_lm  # already loaded by the test-time environment
+    from vllm_mlx.utils import tokenizer as _tokenizer_mod
 
-    monkeypatch.setattr(mlx_lm, "load", fake_load, raising=True)
+    monkeypatch.setattr(
+        _tokenizer_mod, "load_model_with_fallback", fake_load, raising=True
+    )
 
 
 def _make_freeform_bench_args(model: str) -> argparse.Namespace:
