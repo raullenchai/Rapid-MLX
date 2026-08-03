@@ -220,7 +220,12 @@ class TestInstallSuffixDecoding:
         gb.next = lambda: []  # original next
 
         class _BG:
-            pass
+            def __init__(self):
+                self.removed = []
+
+            def remove(self, uids, return_prompt_caches=False):
+                self.removed.append(list(uids))
+                return {}
 
         bg = _BG()
         bg._generation_batch = gb
@@ -425,3 +430,101 @@ class TestInstallSuffixDecoding:
         assert 42 not in drafters, (
             "Drafter for finished uid was retained — _drafters leak"
         )
+
+    def test_abort_reaps_uid_state_and_drafter(self):
+        """An aborted uid never produces a Response, so ``next()``'s
+        finish sweep never sees it.
+
+        ``Scheduler._do_abort_request`` reaches the BatchGenerator through
+        ``remove()`` only. Before the ``remove()`` wrapper, every client
+        cancellation left behind that uid's drafter *and* its ``_uid_state``
+        entry — and the latter's ``pending`` list holds unread mlx arrays
+        (up to ``_COOLDOWN_MAX`` of them), i.e. live GPU buffers, on the
+        one path a disconnecting client hits repeatedly.
+
+        MUTATION-KILL: reverting to reaping only inside ``next()`` leaves
+        both dicts populated here.
+        """
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+
+        bg, gb = self._make_fake_bg()
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        drafters = gb._suffix_drafters
+        uid_state = gb._suffix_uid_state
+        # Mimic a request that drafted, backed off, and queued emits —
+        # then got cancelled mid-flight.
+        drafters[7] = SuffixDecodingDrafter()
+        uid_state[7] = {
+            "cooldown": 5,
+            "level": 2,
+            "zeros": 3,
+            "k": 4,
+            "pending": [1, 2],
+        }
+        # A second uid stays live; the abort must not touch it.
+        drafters[9] = SuffixDecodingDrafter()
+        uid_state[9] = {"cooldown": 0, "level": 0, "zeros": 0, "k": 2, "pending": []}
+
+        bg.remove([7])
+
+        assert bg.removed == [[7]], "wrapper must still delegate to the real remove()"
+        assert 7 not in drafters, "aborted uid's drafter leaked"
+        assert 7 not in uid_state, (
+            "aborted uid's _uid_state (and its queued arrays) leaked"
+        )
+        assert 9 in drafters and 9 in uid_state, "abort reaped an unrelated live uid"
+
+    def test_abort_reaps_even_if_remove_raises(self):
+        """A ``remove()`` that throws still leaves the uid unstepped, so
+        holding its state can only leak. The reap is in ``finally``."""
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.scheduler import _install_suffix_decoding
+        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+
+        bg, gb = self._make_fake_bg()
+
+        def _boom(uids, return_prompt_caches=False):
+            raise KeyError("uid vanished mid-remove")
+
+        bg.remove = _boom
+
+        _install_suffix_decoding(
+            bg,
+            model=MagicMock(),
+            profile=None,
+            max_draft=8,
+            max_suffix_len=4,
+            min_confidence=0.3,
+            requests={},
+            uid_to_request_id={},
+        )
+
+        gb._suffix_drafters[3] = SuffixDecodingDrafter()
+        gb._suffix_uid_state[3] = {
+            "cooldown": 0,
+            "level": 0,
+            "zeros": 0,
+            "k": 2,
+            "pending": [],
+        }
+
+        with pytest.raises(KeyError):
+            bg.remove([3])
+
+        assert 3 not in gb._suffix_drafters
+        assert 3 not in gb._suffix_uid_state

@@ -2097,6 +2097,17 @@ def _install_suffix_decoding(
         if not _uid_state:
             _counter.set_state(_K_MIN, 0)
 
+    def _reap_uid(uid: int) -> None:
+        """Drop every per-uid structure this installer owns.
+
+        One helper so the three exit paths (normal finish, synthetic-emit
+        finish, abort) cannot drift apart — the abort path was already
+        missing two of the three.
+        """
+        _pending_emits.pop(uid, None)
+        _drafters.pop(uid, None)
+        _uid_state.pop(uid, None)
+
     def _state_for(uid: int) -> dict:
         st = _uid_state.get(uid)
         if st is None:
@@ -2533,9 +2544,7 @@ def _install_suffix_decoding(
         if responses:
             for r in responses:
                 if r.finish_reason is not None:
-                    _pending_emits.pop(r.uid, None)
-                    _drafters.pop(r.uid, None)
-                    _uid_state.pop(r.uid, None)
+                    _reap_uid(r.uid)
             _reset_state_gauges_if_idle()
 
         if not _pending_emits or not responses:
@@ -2629,8 +2638,7 @@ def _install_suffix_decoding(
                     # Drop the drafter — sequence is done, its history
                     # would otherwise live in _drafters until the
                     # BatchGenerator itself is replaced.
-                    _drafters.pop(uid, None)
-                    _uid_state.pop(uid, None)
+                    _reap_uid(uid)
                     _reset_state_gauges_if_idle()
                     # No more pending to emit for this uid.
                     break
@@ -2650,8 +2658,45 @@ def _install_suffix_decoding(
 
         return augmented
 
+    _orig_remove = getattr(batch_gen, "remove", None)
+
+    def _suffix_remove(uids, return_prompt_caches=False):
+        """Wrapped ``BatchGenerator.remove`` — the abort path's reap hook.
+
+        Every ordinary exit runs through ``next()``, which reaps on
+        ``finish_reason``. An abort does not: ``Scheduler._do_abort_request``
+        calls ``remove()`` directly and the uid never produces a Response,
+        so the finish sweep never sees it. Without this, each client
+        cancellation leaks that uid's drafter (up to the suffix index's
+        full token history) plus its ``_uid_state`` entry — whose
+        ``pending`` list can be holding as many as ``_COOLDOWN_MAX``
+        unread mlx arrays, i.e. live GPU buffers, on exactly the path a
+        flaky or impatient client hits over and over.
+
+        Reaping in ``finally`` because a partially-applied ``remove`` still
+        leaves the uid gone from the batch: it will never be stepped again,
+        so keeping its state can only leak.
+        """
+        uid_list = list(uids)
+        try:
+            return _orig_remove(uid_list, return_prompt_caches=return_prompt_caches)
+        finally:
+            for uid in uid_list:
+                _reap_uid(uid)
+            _reset_state_gauges_if_idle()
+
     gb._step = _suffix_step
     gb.next = _suffix_next
+    if _orig_remove is not None:
+        batch_gen.remove = _suffix_remove
+    else:
+        # Not fatal: without ``remove`` there is no abort path to leak
+        # through. Logged rather than silent so a real version skew shows
+        # up as a named gap instead of as unexplained growth.
+        logger.warning(
+            "[SuffixDecoding] BatchGenerator has no remove(); abort-path "
+            "state reaping is not installed (mlx-lm version mismatch?)."
+        )
     # Telemetry attached to the BatchGenerator (where the rest of the
     # engine looks for it) and to gb for direct inspection.
     batch_gen._suffix_stats = _stats
