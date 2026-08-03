@@ -9,9 +9,10 @@ transfers.** The D-METAL-CAP admission cap scales from the device's
 `max_recommended_working_set_size`, so the 10.3 GB cap this guide works
 against becomes roughly 9.1 GB on a 16 GB machine — while the steady
 state recorded below is already 8.4–8.7 GB before a request's own KV
-projection is added. On 16 GB, expect to have to give something up
-(shorter contexts, a smaller cache budget, or `sudo sysctl
-iogpu.wired_limit_mb`); this recipe as written was not measured there.
+projection is added. On 16 GB, expect to have to give something up —
+shorter contexts, a smaller `--cache-memory-mb`, or dropping
+`--hybrid-cache-entries` back to its default 0. This recipe as written
+was not measured there.
 
 ## The command
 
