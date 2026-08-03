@@ -83,7 +83,9 @@ class DeepSeekV40731ToolParser(ToolParser):
                 arguments.get("prefix_rule"), str
             ):
                 try:
-                    arguments["prefix_rule"] = shlex.split(arguments["prefix_rule"])
+                    prefix_rule = shlex.split(arguments["prefix_rule"])
+                    if prefix_rule:
+                        arguments["prefix_rule"] = prefix_rule
                 except ValueError:
                     pass
             calls.append(

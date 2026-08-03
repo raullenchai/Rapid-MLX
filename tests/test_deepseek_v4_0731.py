@@ -157,6 +157,21 @@ def test_dsml_parser_preserves_quoted_prefix_rule_argument_boundaries():
     }
 
 
+def test_dsml_parser_does_not_normalize_empty_prefix_rule():
+    parser = ToolParserManager.get_tool_parser("deepseek_v4_0731")(None)
+    output = (
+        '<｜DSML｜tool_calls><｜DSML｜invoke name="exec_command">'
+        '<｜DSML｜parameter name="cmd" string="true">pwd'
+        '</｜DSML｜parameter><｜DSML｜parameter name="prefix_rule" string="true">'
+        "   </｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>"
+    )
+
+    result = parser.extract_tool_calls(output)
+
+    arguments = json.loads(result.tool_calls[0]["arguments"])
+    assert arguments == {"cmd": "pwd", "prefix_rule": "   "}
+
+
 def test_dsml_tool_schema_order_is_canonical_for_prefix_cache():
     messages = [
         {"role": "system", "content": "stable instructions"},
