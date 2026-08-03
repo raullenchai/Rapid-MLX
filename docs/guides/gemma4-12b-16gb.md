@@ -1,0 +1,247 @@
+# Gemma 4 12B on a 16–18 GB Mac
+
+Measured on a MacBook Pro M3 Pro (12-core, 18 GB, macOS 15.6.1) against
+`mlx-community/gemma-4-12B-it-4bit` (6.3 GiB on disk), rapid-mlx 0.11.9,
+mlx 0.31.2, mlx-vlm 0.6.3. B=1, temperature 0, 3 reps, medians reported.
+
+## The command
+
+```bash
+rapid-mlx serve gemma-4-12b-4bit \
+  --no-mllm \
+  --speculative-config '{"method":"suffix","num_speculative_tokens":8}' \
+  --hybrid-cache-entries 2 \
+  --cache-memory-mb 768 \
+  --max-tokens 2048 \
+  --gpu-memory-utilization 0.85
+```
+
+Result: **35.5 tok/s** on a code-edit workload (vs 16.3 tok/s with none of
+the flags), TTFT 0.54 s, steady-state Metal 8.4–8.7 GB, and five
+consecutive `aider` edit rounds landing clean with the project's test
+suite green after each.
+
+## Why each flag
+
+### `--no-mllm` — required, not optional
+
+`gemma-4-12b-*` ships `model_type: gemma4_unified` with vision *and*
+audio sub-configs, so auto-detection routes it to the MLLM lane
+(`BatchedEngine loaded: … (mllm=True)`). For text serving that lane costs
+you:
+
+- **PFlash is unavailable** — `validate_model_support` rejects the
+  MLLM/VLM lane outright.
+- **Prompts hard-cap at 8192 tokens** — `Total prompt tokens (21174)
+  exceeds the per-batch cap (8192 = prefill_step_size 8192 × 1
+  request(s))`, on a model advertising 262144 context.
+- **Higher TTFT** — 0.611 s vs 0.352 s on the same code-generation
+  prompt (−42 %).
+
+Pass `--no-mllm` unless you are actually sending images or audio.
+
+### `--speculative-config '{"method":"suffix",…}'` — workload-specific
+
+SuffixDecoding is a *workload* flag, not a model accelerator. Measured
+here:
+
+| workload | suffix off | suffix on | |
+|---|---:|---:|---|
+| code edit (re-emit a file with one change) | 16.3 tok/s | **35.5 tok/s** | 2.18× |
+| chat (distinct prompt per rep) | 17.9 tok/s | 16.7 tok/s | 0.93× |
+| pure generation | 17.8 tok/s | 17.4 tok/s | 0.98× |
+
+The same A/B on a Mac mini M2 Pro 32GB: code edit 19.6 → 22.2 (1.13×),
+chat 21.7 → 18.6 (0.86×). Acceptance is identical on both machines
+(0.823); the spread is entirely how the two chips scale a K-wide verify
+forward — 3.44× a 1-wide forward on M3 Pro, 7.07× on M2 Pro. Measure your
+own before assuming the M3 numbers transfer.
+
+Turn it on for agent / code-edit traffic, which re-emits most of its
+input. Leave it off for chat. This reproduces the split already recorded
+in [suffix_decoding_eligibility.md](../suffix_decoding_eligibility.md).
+
+### `--max-tokens 2048` — the one that makes OpenAI clients work
+
+Gemma 4 12B's KV cache is **~128 KB per token** — 8 full-attention layers
+× 8 KV heads × 512 `global_head_dim` × 2 (K+V) × 2 B. That is several
+times a same-class Llama/Qwen, and it dominates every memory decision
+below.
+
+A client that omits `max_tokens` (aider does — the server logs
+`max_tokens=None`) makes the D-METAL-CAP admission gate project the
+model's full output window. At 128 KB/token that is:
+
+```
+503: Metal active 7.0GB + reserved KV 0.0GB + projected KV 5.7GB
+     would exceed gpu_memory_utilization cap 10.3GB (D-METAL-CAP)
+```
+
+— every request rejected before a token is generated. Bounding
+`--max-tokens` bounds the projection. 2048 is far above what edit traffic
+actually uses (the aider rounds above returned 341–583 tokens).
+
+### `--hybrid-cache-entries 2` and `--cache-memory-mb 768` — budget, not leak
+
+Retained prefix-cache entries are not free at 128 KB/token. With
+`--hybrid-cache-entries 8`, steady-state Metal climbed from 7.0 GB to
+8.3 GB (≈8 entries × ~1.1k tokens × 128 KB), and the *next* request was
+then rejected on a 2.1 GB projection against a 10.3 GB cap.
+
+Memory does **plateau** — five identical requests in a row held at
+8.60 GB, so this is a budgeting problem, not a leak. But on 18 GB the
+budget is tight enough that the default entry count spends headroom the
+admission gate then needs.
+
+### `--gpu-memory-utilization 0.85`
+
+Leaves the cap above the ~8.6 GB plateau with room for the projection.
+Do not raise this much further on 18 GB: a long-context run was observed
+peaking at 17.19 GB of Metal, and Apple Silicon firmware can panic rather
+than raise OOM (issue #324).
+
+## The persisted prefix cache will break long requests
+
+Long prompts appeared to fail on their own — a needle-in-haystack at
+10358 tokens returned `'4yclycl+"'`, and later crashed the server
+outright with
+
+```
+libc++abi: [METAL] Command buffer execution failed: Insufficient Memory
+Fatal Python error: Aborted
+```
+
+It is not a context-length limit and not a quantization artifact. Driving
+the *same* checkpoint through `mlx_lm.generate` with a plain
+`make_prompt_cache` — no scheduler, no prefix cache — answers correctly
+at **13221 tokens** (cache types `['KVCache', 'RotatingKVCache']`, peak
+9.43 GB). The engine is what fails, and the cause is on disk:
+
+```
+[cache_persist] LOADED 5 entries from ~/.cache/rapid-mlx/prefix_cache/... (1921MB total)
+```
+
+The prefix cache is restored at startup and consumes **1.9 GB before the
+first request** — the bulk of the "steady state" you observe — and none
+of it is visible to the pre-flight memory warning. At 128 KB/token, that
+is what pushes a 10k-token request past the Metal allocation.
+
+Any one of these makes 10358 tokens pass:
+
+```bash
+rm -rf ~/.cache/rapid-mlx/prefix_cache/<model-dir>   # clear the persisted cache
+rapid-mlx serve … --disable-prefix-cache
+rapid-mlx serve … --no-memory-aware-cache
+```
+
+Clearing the persisted cache is the one to prefer — it keeps prefix
+reuse for the session and costs only a cold first request.
+
+Note that the failure mode is a **process abort, not a 503**: MLX raises
+an uncaught C++ `std::runtime_error` on Metal OOM, so exceeding the real
+allocation kills the server rather than degrading. The D-METAL-CAP
+admission gate is the only thing standing between you and that, which is
+why under-setting `--metal-cap-kv-bytes-per-token` is dangerous.
+
+## The admission gate models KV only, not the prefill working set
+
+This is the hardening gap worth knowing about, and it is easy to make
+worse rather than better.
+
+`_enforce_metal_cap_at_admission` projects a request's **KV cache** and
+compares it against the Metal cap. It does not model the transient
+working set of the prefill itself. On Gemma 4 12B — 48 layers,
+`global_head_dim` 512 — prefilling a few thousand tokens in one go
+allocates well beyond its own KV, and none of that is in the projection.
+
+There is also a dead band. `evict_prefix_cache_under_pressure` only fires
+above `metal_pressure_evict_fraction` (default 0.9) of the cap, but
+admission rejects as soon as `active + reserved + projected` reaches it.
+Measured here: after four aider rounds the server settled at active
+9.17 GB against a 10.6 GB cap — 0.865, *under* the 0.9 eviction trigger —
+and 503'd every request from then on. The eviction that would have made
+room never ran. Only a restart cleared it.
+
+**Closing the dead band naively makes things worse.** Evicting at
+admission and re-admitting was tried: it fired 7 times, correctly
+reclaimed memory (active 9.17 → 8.6 GB, cap 11.0 GB), admitted a
+4643-token request whose KV projected to well under the 2.4 GB of
+headroom — and the process died in prefill:
+
+```
+libc++abi: [METAL] Command buffer execution failed: Insufficient Memory
+Fatal Python error: Aborted
+```
+
+The conservative dead band was accidentally protective: by keeping
+`active` low it left slack that the unmodeled prefill spike happened to
+fit inside. Trading a recoverable 503 for a process abort is a bad trade,
+so that change was reverted. Making admission more permissive is only
+safe *after* the prefill working set is modelled — chunking the prefill
+and charging it per chunk would be the honest fix, and it is a real piece
+of work, not a flag.
+
+Two things follow for anyone tuning this:
+
+- Treat a rising `rapid_mlx_metal_active_memory_bytes` as the signal to
+  restart the server, not as headroom to spend.
+- Do not lower `--metal-cap-kv-bytes-per-token` to "recover" the
+  headroom a KV codec should have bought. The gate's over-estimate is
+  covering for the prefill it cannot see.
+
+## Other known limits
+
+- **TurboQuant runs, but does not buy you stability.** The fused Metal
+  kernel is available on mlx 0.31.2
+  (`rapid_mlx_turboquant_fused_kernel{status="available"}`; it reported
+  `fallback` on 0.32.0, so check the gauge rather than assuming). Four
+  consecutive aider rounds passed with `--kv-cache-turboquant k8v4` and
+  the test suite stayed green. But the codec is invisible to the
+  admission gate, which keeps projecting fp16 — so once Metal active
+  climbs, requests are rejected exactly as if the codec were off. The
+  soak ended with the server 503'ing a 4k-token needle it had served
+  minutes earlier. Compression you cannot spend at admission time is not
+  headroom. Note that MLX core has no
+  quantized-KV `scaled_dot_product_attention` (ml-explore/mlx#3404), so
+  every implementation is either a full dequant or custom Metal kernels.
+  For reference, `lovelacemadeline/gemma4-turboquant-mlx` gets PolarQuant
+  2-bit KV working on Gemma 4 by dispatching *per layer type* — a fused
+  polar MMA kernel on the D=256 sliding layers, and dequant into Apple's
+  `steel_attention` on the D=512 full-attention layers, which it reports
+  as ~6× faster than polar MMA at that dimension. Gemma 4's two head dims
+  appear to need two different kernels.
+- **MTP cannot be enabled on Gemma 4 at all.** Not "slower at 4-bit" —
+  the server refuses to start. Both
+  `--speculative-config '{"method":"mtp","model":"…-assistant-4bit",…}'`
+  and the same with `--force-spec-decode` exit with
+
+      error: MTP speculative-config requires either a Qwen3.5 / Qwen3.6
+      checkpoint with mtp_num_hidden_layers >= 1 in config.json.
+      Assistant sidecars are reserved for future validated support and do
+      not make this model eligible.
+
+  This is the fail-closed gate from `specdecoding.md` (cli.py), and no
+  flag bypasses it. Enabling MTP here is a feature to implement, not a
+  flag to set. Two upstream reference points for whoever does:
+  Google's design has the MTP head cross-attend the *main model's* KVs
+  and share its embedding table (not an independent sidecar, which is
+  what the failed rapid-mlx attempt used), and Ollama's implementation
+  (ollama/ollama#15980) calls out "changes to the rotating cache to be
+  able to handle MTP correctly" — Gemma 4's sliding-window cache is the
+  likely shape of the recorded greedy divergence. Note also that Ollama
+  reports BF16 as the operating point and a *regression* at int4
+  (60 → 45 tok/s at 41 % acceptance); the ~90 % aider-polyglot number is
+  on nvfp4, so the payoff at 4-bit is unproven even once it works.
+- **`rapid-mlx bench` needs the `[vision]` extra.** The `gemma4_unified`
+  architecture classes live in mlx-vlm; a bare install cannot load any
+  `gemma-4-12b-*` alias.
+
+## Reference points
+
+A well-optimized Gemma 12B on M2/M3-class hardware is generally reported
+in the 30–50 tok/s range, and Ollama's MLX multi-token-prediction work
+reports ~90 % faster generation on the aider polyglot benchmark for
+Gemma 4 12B nvfp4 on an M5 Max. The 36.0 tok/s here is within that band
+for an M3 Pro at 4-bit, reached with SuffixDecoding rather than MTP —
+rapid-mlx's Gemma 4 assistant-sidecar MTP path is documented as failing
+greedy-lossless validation and fails closed (see `specdecoding.md`).
