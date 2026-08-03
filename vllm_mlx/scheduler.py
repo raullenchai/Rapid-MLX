@@ -2319,6 +2319,11 @@ def _install_suffix_decoding(
             logger.debug(f"[SuffixDecoding] verify forward failed: {e!r}")
             _stats["errors"] += 1
             _stats["fallthrough_steps"] += 1
+            # The attempt happened — ``_stats`` counted it above the forward
+            # and the exported totals must agree, or a model that fails
+            # verification repeatedly shows an attempt rate that quietly
+            # understates the work being done.
+            _counter.record_verify(K, 0)
             _counter.record_error()
             # Cache was not advanced because the forward raised; safe to
             # retry via vanilla path below.
