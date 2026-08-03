@@ -17,6 +17,12 @@ struct ConnectToolsView: View {
     let bearer: String
     let alias: String
     var onClose: () -> Void
+    /// Whether to render the top-right dismiss "✕". True in sheet context
+    /// (the caller's ``onClose`` dismisses the sheet). False when embedded
+    /// as a navigation PAGE (the Launch sidebar section), where there is no
+    /// sheet to dismiss — showing a dead ✕ that does nothing was a real
+    /// papercut. The sidebar owns navigation, so it passes false.
+    var showsCloseButton: Bool = true
 
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
     private var anthropicBaseURL: String { "http://\(host):\(port)" }
@@ -59,15 +65,17 @@ struct ConnectToolsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.tertiary)
+            if showsCloseButton {
+                Button {
+                    onClose()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close")
         }
         .padding(20)
     }

@@ -1,6 +1,6 @@
-# Rapid Desktop — Third-Party Acknowledgements
+# Rapid-MLX Desktop — Third-Party Acknowledgements
 
-Rapid Desktop incorporates open-source software from the following
+Rapid-MLX Desktop incorporates open-source software from the following
 projects. Each is used under the terms of its original license. The
 full license texts are reproduced in the linked repositories.
 
@@ -23,7 +23,7 @@ full license texts are reproduced in the linked repositories.
   Delivery of feedback that a user explicitly submits from the app.
 
 _Sparkle is on the roadmap as the eventual auto-update framework
-(see [issue #16](https://github.com/machinefi/rapid-desktop/issues/16))
+(see [issue #16](https://github.com/raullenchai/Rapid-MLX/issues/16))
 but is not bundled in the current release stream. The shipped
 updater is the in-tree `Sources/Rapid/Updater/UpdateChecker.swift`
 + `Installer.swift` pair, which polls a Cloudflare Worker proxy of
@@ -39,13 +39,13 @@ Sparkle once it actually lands in `Package.resolved`._
 
 ## Server dependencies (informational)
 
-The `rapid-mlx` server that Rapid Desktop talks to is a separate
+The `rapid-mlx` server that Rapid-MLX Desktop talks to is a separate
 project licensed under Apache 2.0:
 https://github.com/raullenchai/Rapid-MLX
 
 It in turn vendors mlx-lm, mlx-vlm, and openai-harmony — each under
 their respective Apache 2.0 / MIT licenses. Those are NOT bundled
-inside Rapid Desktop and are installed separately via `pip` /
+inside Rapid-MLX Desktop and are installed separately via `pip` /
 `pipx` / `brew`.
 
 For the complete machine-readable resolution of pinned versions,

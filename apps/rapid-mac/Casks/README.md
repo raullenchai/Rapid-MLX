@@ -5,17 +5,16 @@ notarised `.dmg` attached to each GitHub Release cut by
 `.github/workflows/rapid-mac-release.yml` (tag prefix `rapid-mac-v*`,
 asset name `rapid-mlx-desktop.dmg`).
 
-> **TODO(owner):** the release/tap repo owner is UNRESOLVED
-> (`masonjames/Rapid-MLX` vs `raullenchai/Rapid-MLX`). Every `OWNER`
-> placeholder below and in `rapid-mlx.rb` must be replaced once the push
-> target is decided.
+> **Note:** the release/tap repo owner is `raullenchai`
+> (`raullenchai/Rapid-MLX`), used throughout the commands below and in
+> `rapid-mlx.rb`.
 
 ## End-user install
 
 Once the tap is published, users install with:
 
 ```bash
-brew tap OWNER/tap
+brew tap raullenchai/tap
 brew install --cask rapid-mlx
 ```
 
@@ -23,10 +22,10 @@ brew install --cask rapid-mlx
 
 Homebrew expects custom taps in a repo named `homebrew-<tapname>`:
 
-1. Create a new public GitHub repo at `OWNER/homebrew-tap`.
+1. Create a new public GitHub repo at `raullenchai/homebrew-tap`.
 2. Copy `Casks/rapid-mlx.rb` from this repo to `Casks/rapid-mlx.rb`
-   in `OWNER/homebrew-tap`.
-3. Push. End users can now `brew tap OWNER/tap` (Homebrew expands
+   in `raullenchai/homebrew-tap`.
+3. Push. End users can now `brew tap raullenchai/tap` (Homebrew expands
    that to the `homebrew-tap` repo).
 
 You can keep the canonical copy in this repo (`Casks/rapid-mlx.rb`)
@@ -41,7 +40,7 @@ After cutting a new tag (e.g. `rapid-mac-v0.11.0`):
 ```bash
 set -euo pipefail
 VERSION=0.11.0
-OWNER=OWNER   # TODO(owner): masonjames or raullenchai
+OWNER=raullenchai
 
 # 1. Pull the new DMG SHA from the GitHub Release
 SHA=$(curl -fsSL "https://github.com/${OWNER}/Rapid-MLX/releases/download/rapid-mac-v${VERSION}/rapid-mlx-desktop.dmg" \

@@ -128,11 +128,12 @@ struct LaunchView: View {
             port: server.activePort,
             bearer: server.activeBearer ?? "",
             alias: alias,
-            // In page context the close affordance isn't shown as a sheet
-            // dismissal; ConnectToolsView still renders its X — wire it to
-            // nothing here (the sidebar owns navigation). A dedicated
-            // page-mode header lands with the #1405 Launch redesign.
-            onClose: {}
+            // Page context: the sidebar owns navigation, so there is no sheet
+            // to dismiss. Hide the close ✕ (it used to render as a dead
+            // no-op button). A dedicated page-mode header lands with the
+            // #1405 Launch redesign.
+            onClose: {},
+            showsCloseButton: false
         )
     }
 }

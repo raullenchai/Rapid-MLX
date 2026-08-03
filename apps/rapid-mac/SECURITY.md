@@ -24,7 +24,7 @@ severity, 4 weeks for low severity).
 ## Supported versions
 
 The latest minor release on the
-[releases page](https://github.com/machinefi/rapid-desktop/releases/latest)
+[releases page](https://github.com/raullenchai/Rapid-MLX/releases/latest)
 is the only version receiving security updates. We do not backport
 fixes to older versions; please upgrade.
 

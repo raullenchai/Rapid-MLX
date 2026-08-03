@@ -228,7 +228,7 @@ distributions are out of scope but we will help triage.
     73WQ7ZGSWC"`, so a DMG signed by a *different* valid Developer
     ID team could also pass) is closed in practice by the HTTPS
     host-allowlist above and tracked by
-    [issue #16](https://github.com/machinefi/rapid-desktop/issues/16)
+    [issue #16](https://github.com/raullenchai/Rapid-MLX/issues/16)
     for permanent fix via Sparkle's EdDSA appcast signing.
   * **No per-artifact SHA-256 enforcement yet.** The worker v1
     schema does not surface one; worker v2 (planned) will add
@@ -236,7 +236,7 @@ distributions are out of scope but we will help triage.
     enforcing it as a one-line wiring change.
   * **Sparkle with EdDSA per-artifact signature verification is on
     the roadmap** as
-    [issue #16](https://github.com/machinefi/rapid-desktop/issues/16).
+    [issue #16](https://github.com/raullenchai/Rapid-MLX/issues/16).
     Migration triggers (per the issue) are concrete operational
     signals — telemetry showing repeat update failures, user-reported
     silent misses, or a need for delta updates / staged rollout — not
@@ -247,7 +247,7 @@ distributions are out of scope but we will help triage.
 
   If you want to side-step the in-app installer entirely you can
   download the DMG from the
-  [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases/latest)
+  [GitHub Releases page](https://github.com/raullenchai/Rapid-MLX/releases/latest)
   and verify its origin yourself before installing.
 * **Tool providers you configure** — when you call a search / file /
   web tool, your prompt content is sent directly to that provider

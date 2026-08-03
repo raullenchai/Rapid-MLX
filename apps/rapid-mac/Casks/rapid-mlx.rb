@@ -7,15 +7,11 @@ cask "rapid-mlx" do
   # verifying the wrong bytes.
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
-  # TODO(owner): the GitHub repo that hosts the tagged app releases is
-  # UNRESOLVED (masonjames/Rapid-MLX vs raullenchai/Rapid-MLX). Replace
-  # OWNER in BOTH the url and the verified: stanza once the push target is
-  # decided. The tag prefix is "rapid-mac-v" to match the release
-  # workflow (.github/workflows/rapid-mac-release.yml triggers on
-  # rapid-mac-v*), and the DMG asset name is "rapid-mlx-desktop.dmg" from
-  # scripts/dmg.sh.
-  url "https://github.com/OWNER/Rapid-MLX/releases/download/rapid-mac-v#{version}/rapid-mlx-desktop.dmg",
-      verified: "github.com/OWNER/Rapid-MLX/"
+  # The tag prefix is "rapid-mac-v" to match the release workflow
+  # (.github/workflows/rapid-mac-release.yml triggers on rapid-mac-v*), and
+  # the DMG asset name is "rapid-mlx-desktop.dmg" from scripts/dmg.sh.
+  url "https://github.com/raullenchai/Rapid-MLX/releases/download/rapid-mac-v#{version}/rapid-mlx-desktop.dmg",
+      verified: "github.com/raullenchai/Rapid-MLX/"
   name "Rapid-MLX"
   desc "Native SwiftUI Mac client for rapid-mlx local inference"
   homepage "https://rapidmlx.com/"

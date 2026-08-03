@@ -1,11 +1,11 @@
-# Releasing rapid-desktop: local dogfood + CI for public
+# Releasing Rapid-MLX Desktop: local dogfood + CI for public
 
 Two lanes, split by **who the build is for**. The expensive, frequent case
 (dogfood) runs on your Mac for $0; the rare, user-facing case (public) runs
 on GitHub CI, which owns the distribution layer (auto-update + landing page).
 
 ```
-                        rapid-desktop release
+                  Rapid-MLX Desktop release
                               │
                  ┌────────────┴─────────────┐
                  │  who is this build for?   │

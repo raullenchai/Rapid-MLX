@@ -209,10 +209,9 @@ gh run watch $(gh run list --workflow=rapid-mac-release.yml --limit=1 --json dat
 
 ## Open TODO(owner) items
 
-- **Release/tap repo owner is unresolved** (`masonjames/Rapid-MLX` vs
-  `raullenchai/Rapid-MLX`). `Casks/rapid-mlx.rb` and `Casks/README.md` carry
-  `OWNER` placeholders; the release-local `--publish` lane pushes to whatever
-  `origin` points at.
+- **Release/tap repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`).
+  `Casks/rapid-mlx.rb` and `Casks/README.md` use this owner; the
+  release-local `--publish` lane pushes to whatever `origin` points at.
 - **CDN mirror infra** (`RAPID_MAC_DIST_R2_BUCKET` / `RAPID_MAC_DIST_CDN_BASE`
   + Cloudflare secrets) only needs provisioning if you want a stable
   non-GitHub download URL. Optional.
