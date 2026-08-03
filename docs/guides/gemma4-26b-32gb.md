@@ -3,8 +3,8 @@
 `gemma-4-26b-4bit` is a 128-expert MoE: 25.2B total parameters, 3.8B active
 per token, 30 layers, 256K context, 14.3 GiB of weights. On a 32GB Apple
 Silicon machine it is faster than the dense 12B on **both** prefill and
-decode while using **less** KV per token, so on any Mac that can hold it
-there is no throughput reason to prefer the 12B.
+decode, so on any Mac that can hold it there is no throughput reason to
+prefer the 12B.
 
 Everything below was measured on a Mac mini M2 Pro / 32GB, macOS 26.5.2,
 mlx 0.31.2, single request, `temperature=0`, medians over 4-6 repetitions
@@ -46,15 +46,25 @@ anyone measured it. Measured, quantizing KV is a straight loss here:
 
 The reason is the architecture. Only 5 of the 30 layers use full attention
 (indices 5, 11, 17, 23, 29); the other 25 are sliding-window with a 1024
-window, so their cache is bounded. That puts the growing KV at
+window, so their cache is bounded and only those 5 grow with context. Note
+that full-attention layers use `num_global_key_value_heads` (2), **not** the
+`num_key_value_heads` (8) that the sliding layers use — see
+`gemma4_vendored/language.py`, where `attention_k_eq_v` selects the global
+count. So the growing KV is
 
 ```
-5 layers x 8 KV heads x 512 global_head_dim x 2 (K+V) x 2 B = 80 KB/token
+5 layers x 2 global KV heads x 512 global_head_dim x 2 (K+V) x 2 B
+    = 20 KB/token
 ```
 
-against ~128 KB/token for the dense 12B. KV simply is not the bandwidth
-bottleneck on this model, so quantizing it buys nothing and the
+which is tiny — a 32K context costs 640MB. KV is nowhere near the bandwidth
+bottleneck on this model, so quantizing it buys nothing measurable and the
 quantize/dequantize work is pure overhead.
+
+For comparison the dense 12B is **16 KB/token** (8 full-attention layers but
+`num_global_key_value_heads = 1`), so the 26B actually carries slightly
+*more* growing KV per token, not less. Its advantage is throughput, not
+cache footprint.
 
 Note the checkpoint's own `config.json` is the authority here — the model
 card on the Hub describes 4 full-attention layers, and there are 5.
@@ -99,9 +109,10 @@ Against `gemma-4-12b-4bit` on the same machine. Both models here run
 | 4K | **15.0s** | 37.9s | **38.0** | 19.4 |
 | 8K | **32.7s** | 81.8s | **32.8** | 17.6 |
 
-2.5x the prefill, 2x the decode, and 37% less KV per token, from a model
-with twice the parameters. That is the MoE trade working in your favour:
-only 3.8B parameters are active per token.
+2.5x the prefill and 2x the decode from a model with twice the parameters.
+That is the MoE trade working in your favour: only 3.8B parameters are
+active per token. It costs 8GB more resident weights and slightly more KV
+per token; everything else moves the right way.
 
 ## Limits worth knowing before you rely on it
 
