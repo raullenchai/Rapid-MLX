@@ -591,6 +591,39 @@ def _head_dim_from_args(args: Any) -> int | None:
     return None
 
 
+def _args_or_config(obj: Any) -> Any:
+    """The attention-dim config on ``obj``: ``.args`` first, then ``.config``.
+
+    mlx-lm models expose their config as ``.args``, but the mlx-vlm-derived
+    architectures expose it as ``.config`` — Gemma 4's ``Gemma4TextWrapper``
+    has no ``.args`` at all, and its ``.language_model`` (an mlx-vlm
+    ``LanguageModel``) carries a ``TextConfig`` on ``.config``. Probing only
+    ``.args`` therefore returned ``(None, None)`` for every ``gemma-4-12b-*``
+    alias, which disabled the live quantized KV cache outright:
+
+        [kv-cache] live KV quantization disabled: head_dim (K=None, V=None)
+        unknown or not divisible by any supported group_size (32/64/128)
+
+    even though Gemma 4's dims (``head_dim=256``, ``global_head_dim=512``)
+    are divisible by all three. That silent bf16 fallback is expensive on
+    this architecture specifically — Gemma 4 12B's KV runs ~128 KB/token.
+
+    ``.args`` keeps priority so every model that has one is byte-identical
+    to before; ``.config`` is consulted only when ``.args`` is missing or
+    carries no readable head dim. Returns whichever object exists when
+    neither is probeable, so callers still fail safe to bf16.
+    """
+    if obj is None:
+        return None
+    args = getattr(obj, "args", None)
+    if _head_dim_from_args(args) is not None:
+        return args
+    config = getattr(obj, "config", None)
+    if _head_dim_from_args(config) is not None:
+        return config
+    return args if args is not None else config
+
+
 def _text_attention_args(model: Any) -> Any:
     """The args object carrying the *language* model's attention dims.
 
@@ -616,8 +649,13 @@ def _text_attention_args(model: Any) -> Any:
     """
     args = getattr(model, "args", None)
     lm = getattr(model, "language_model", None)
-    lm_args = getattr(lm, "args", None) if lm is not None else None
+    lm_args = _args_or_config(lm)
     text_cfg = getattr(args, "text_config", None) if args is not None else None
+    if text_cfg is None:
+        # mlx-vlm-derived wrappers carry the nested text config under
+        # ``.config`` rather than ``.args`` (see _args_or_config).
+        top_cfg = getattr(model, "config", None)
+        text_cfg = getattr(top_cfg, "text_config", None) if top_cfg else None
 
     # Prefer a probeable language-specific config (multimodal wrappers).
     if _head_dim_from_args(lm_args) is not None:
