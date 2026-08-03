@@ -13,6 +13,27 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-08-03
+
+The first **signed + notarised** release — it installs and opens without the
+Gatekeeper "unverified developer" warning that the 0.12.0 internal build hit.
+Two dogfood fixes and the latest engine.
+
+### App
+
+- **First-run onboarding no longer depends on the shared Hugging Face cache.**
+  A brand-new user who happens to have unrelated models on disk (e.g. Whisper
+  from another tool) now still gets the one-click Quickstart instead of being
+  dropped into the raw model picker. Onboarding keys on the app's own state.
+- **The menu-bar icon is now the brand cheetah**, matching the app icon (it
+  was a lightning bolt).
+
+### Engine
+
+- Bundles the **Rapid-MLX 0.12.1** inference engine: agent / DeepSeek
+  stability, prefix-cache correctness, Gemma 4 fixes, a validated audio stack,
+  and community-benchmark submission over HTTP.
+
 ## [0.12.0] — 2026-08-02
 
 The first release of Rapid-MLX Desktop as an **open-source** app in the
