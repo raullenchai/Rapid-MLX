@@ -481,7 +481,10 @@ def _render_suffix_decode_counters(cfg: Any) -> list[str]:
         return []
 
     snap = get_global_counter().snapshot()
-    family = str(getattr(cfg, "model_alias", "") or "unknown")
+    # Escape: an alias carrying a quote / backslash / newline would emit
+    # invalid exposition text and fail the whole scrape, not just this
+    # series.
+    family = _escape_label_value(str(getattr(cfg, "model_alias", "") or "unknown"))
     lbl = f'{{family="{family}",method="suffix"}}'
 
     out = [

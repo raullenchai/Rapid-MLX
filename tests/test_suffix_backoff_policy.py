@@ -216,3 +216,99 @@ def test_weak_traffic_of_any_shape_stays_cheap(one_in):
     outcomes = [p.step(accepted) for _ in range(2000)]
     verify_share = outcomes.count("verify") / len(outcomes)
     assert verify_share < 0.25, f"drafting on {verify_share:.0%} of steps"
+
+
+# ── per-request isolation (the state must not be shared) ──────────────
+
+
+class MultiRequestPolicy:
+    """Two requests sharing one installed drafter hook.
+
+    Mirrors the production keying: state lives in a per-UID dict, created
+    on demand and dropped when the request finishes. The failure this
+    guards is concrete — with install-scoped state, a request that ends
+    mid-window hands the next one up to COOLDOWN_MAX skipped steps it
+    never earned, and the queued token history is flushed into the wrong
+    request's suffix tree.
+    """
+
+    def __init__(self):
+        self.state = {}
+
+    def _for(self, uid):
+        return self.state.setdefault(
+            uid, {"cooldown": 0, "level": 0, "zeros": 0, "k": K_MIN, "pending": []}
+        )
+
+    def step(self, uid, accepted_fn):
+        st = self._for(uid)
+        if st["cooldown"] > 0:
+            st["cooldown"] -= 1
+            st["pending"].append(f"tok-{uid}")
+            return "skip"
+        drained = list(st["pending"])
+        st["pending"].clear()
+        k = st["k"]
+        accepted = accepted_fn(k)
+        if accepted >= k:
+            st["k"] = min(k * 2, 8)
+        else:
+            st["k"] = max(K_MIN, min(accepted + 1, 8))
+        if accepted == 0:
+            st["zeros"] += 1
+            trigger = COOLDOWN_TRIGGER if st["level"] == 0 else 1
+            if st["zeros"] >= trigger:
+                st["level"] += 1
+                st["cooldown"] = min(
+                    COOLDOWN_BASE * (2 ** (st["level"] - 1)), COOLDOWN_MAX
+                )
+                st["zeros"] = 0
+        else:
+            st["zeros"] = 0
+            if st["level"]:
+                if accepted * 2 >= k:
+                    st["level"] = 0
+                elif accepted >= BACKOFF_DECAY_MIN_ACCEPT:
+                    st["level"] -= 1
+        return drained
+
+    def finish(self, uid):
+        self.state.pop(uid, None)
+
+
+def test_a_new_request_does_not_inherit_a_parked_predecessor():
+    """MUTATION-KILL for per-UID keying: request A parks itself deep in a
+    window, then finishes. B must draft from its first step."""
+    p = MultiRequestPolicy()
+    for _ in range(2000):
+        p.step(1, lambda k: 0)
+    assert p.state[1]["cooldown"] > 0, "A should be parked"
+    p.finish(1)
+    assert p.step(2, lambda k: k) == [], "B inherited A's window"
+    assert p.state[2]["level"] == 0
+
+
+def test_queued_history_never_crosses_requests():
+    """A's tokens queued during its window must never be drained into B's
+    drafter — that silently corrupts B's suffix history and its drafts."""
+    p = MultiRequestPolicy()
+    for _ in range(3):
+        p.step(1, lambda k: 0)  # arm A's window
+    for _ in range(5):
+        p.step(1, lambda k: 0)  # A queues tokens while skipping
+    assert p.state[1]["pending"], "A should have queued history"
+
+    drained = p.step(2, lambda k: k)
+    assert drained == [], f"B drained another request's tokens: {drained}"
+
+
+def test_concurrent_requests_keep_independent_widths():
+    """High-overlap A and low-overlap B must not drag each other's K."""
+    p = MultiRequestPolicy()
+    for _ in range(20):
+        p.step(1, lambda k: k)  # A: always accepts
+        p.step(2, lambda k: 0)  # B: never accepts
+    assert p.state[1]["k"] == 8
+    assert p.state[2]["k"] == K_MIN
+    assert p.state[1]["level"] == 0
+    assert p.state[2]["level"] > 0

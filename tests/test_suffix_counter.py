@@ -144,3 +144,24 @@ def test_reset_is_test_only_but_works():
     assert c.snapshot()["verify_steps"] >= 1
     reset_global_counter()
     assert c.snapshot()["verify_steps"] == 0
+
+
+def test_label_value_is_escaped():
+    """An alias containing a quote must not break the whole scrape — one
+    malformed line makes Prometheus reject the entire exposition, not
+    just that series. Validated by actually parsing it."""
+    text_parser = pytest.importorskip(
+        "prometheus_client.parser"
+    ).text_string_to_metric_families
+
+    reset_global_counter()
+    lines = _render_suffix_decode_counters(SimpleNamespace(model_alias='we"ird\\alias'))
+    out = "\n".join(lines)
+    assert 'family="we\\"ird\\\\alias"' in out
+
+    families = list(text_parser(out + "\n"))
+    assert families, "rendered block did not parse as exposition text"
+    seen = {
+        s.labels["family"] for f in families for s in f.samples if "family" in s.labels
+    }
+    assert seen == {'we"ird\\alias'}, f"label round-tripped as {seen!r}"
