@@ -147,6 +147,7 @@ def _module_available(module: str) -> bool:
     except (ImportError, AttributeError, ValueError):
         return False
 
+
 # ---------------------------------------------------------------------------
 # Section: System
 # ---------------------------------------------------------------------------

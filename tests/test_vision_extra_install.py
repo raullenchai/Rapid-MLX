@@ -245,8 +245,7 @@ def test_all_extra_contains_complete_audio_extra() -> None:
     audio_names = {_split_spec(s)[0].lower() for s in _extra_specs(py, "audio")}
     all_names = {_split_spec(s)[0].lower() for s in _extra_specs(py, "all")}
     assert audio_names <= all_names, (
-        "`[all]` is missing audio dependencies: "
-        f"{sorted(audio_names - all_names)}"
+        f"`[all]` is missing audio dependencies: {sorted(audio_names - all_names)}"
     )
 
 

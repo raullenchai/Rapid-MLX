@@ -249,6 +249,7 @@ def test_healthy_complete_audio_dependency_stack_marks_ok():
 def test_incomplete_audio_dependency_import_stack_marks_warning():
     """A present mlx-audio with a missing/broken audio dependency import is
     WARN, not OK — the audio feature set is not actually usable."""
+
     def fake_ver(dist: str) -> str | None:
         return "0.4.3" if dist == "mlx-audio" else None
 
