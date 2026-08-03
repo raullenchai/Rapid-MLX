@@ -449,6 +449,96 @@ def _derive_mtp_family(cfg: Any) -> str:
     return "unknown"
 
 
+def _render_suffix_decode_counters(cfg: Any) -> list[str]:
+    """Render the SuffixDecoding telemetry series.
+
+    The scheduler tracked all of this already but nothing read it —
+    ``_suffix_stats`` was write-only, so "I turned on suffix decoding and
+    nothing got faster" had no answer short of patching in a log line.
+    These are the series that answer it:
+
+    * ``rapid_mlx_suffix_decode_verify_steps_total`` /
+      ``..._fallthrough_steps_total`` — how often the drafter actually ran
+      versus took a plain forward.
+    * ``rapid_mlx_suffix_decode_draft_tokens_proposed_total`` /
+      ``..._accepted_total`` and the ``..._accept_ratio`` gauge — is the
+      drafter proposing anything the target agrees with? A HIGH ratio with
+      no speedup means the chip is not amortising the wider verify
+      forward, not that drafting is broken.
+    * ``rapid_mlx_suffix_decode_fallthrough_total{reason=...}`` — the
+      seven-way breakdown. ``reason="cooldown"`` dominating is the backoff
+      correctly parking a low-overlap request; ``reason="non_greedy"``
+      means the traffic is sampled and can never draft.
+    * ``rapid_mlx_suffix_decode_draft_width`` / ``..._backoff_level`` —
+      the adaptive drafter's current state.
+
+    Rendered unconditionally, zero-valued when suffix decoding is off, so
+    dashboards keep stable series across a restart.
+    """
+    try:
+        from ..speculative.suffix_counter import get_global_counter
+    except ImportError:
+        return []
+
+    snap = get_global_counter().snapshot()
+    family = str(getattr(cfg, "model_alias", "") or "unknown")
+    lbl = f'{{family="{family}",method="suffix"}}'
+
+    out = [
+        "# HELP rapid_mlx_suffix_decode_verify_steps_total Steps that ran a "
+        "SuffixDecoding verify forward.",
+        "# TYPE rapid_mlx_suffix_decode_verify_steps_total counter",
+        f"rapid_mlx_suffix_decode_verify_steps_total{lbl} {snap['verify_steps']}",
+        "# HELP rapid_mlx_suffix_decode_fallthrough_steps_total Steps that "
+        "took a plain forward instead of drafting.",
+        "# TYPE rapid_mlx_suffix_decode_fallthrough_steps_total counter",
+        "rapid_mlx_suffix_decode_fallthrough_steps_total"
+        f"{lbl} {snap['fallthrough_steps']}",
+        "# HELP rapid_mlx_suffix_decode_draft_tokens_proposed_total Draft "
+        "tokens proposed (sum of K over verify steps).",
+        "# TYPE rapid_mlx_suffix_decode_draft_tokens_proposed_total counter",
+        "rapid_mlx_suffix_decode_draft_tokens_proposed_total"
+        f"{lbl} {snap['draft_tokens_proposed']}",
+        "# HELP rapid_mlx_suffix_decode_draft_tokens_accepted_total Draft "
+        "tokens the target's greedy prediction agreed with.",
+        "# TYPE rapid_mlx_suffix_decode_draft_tokens_accepted_total counter",
+        "rapid_mlx_suffix_decode_draft_tokens_accepted_total"
+        f"{lbl} {snap['draft_tokens_accepted']}",
+        "# HELP rapid_mlx_suffix_decode_accept_ratio Accepted / proposed "
+        "draft tokens. 0.0 when nothing has been proposed.",
+        "# TYPE rapid_mlx_suffix_decode_accept_ratio gauge",
+        f"rapid_mlx_suffix_decode_accept_ratio{lbl} {snap['accept_ratio']:.4f}",
+        "# HELP rapid_mlx_suffix_decode_cooldown_trips_total Times the "
+        "backoff window re-armed after zero-acceptance verifies.",
+        "# TYPE rapid_mlx_suffix_decode_cooldown_trips_total counter",
+        f"rapid_mlx_suffix_decode_cooldown_trips_total{lbl} {snap['cooldown_trips']}",
+        "# HELP rapid_mlx_suffix_decode_draft_width Current adaptive draft width K.",
+        "# TYPE rapid_mlx_suffix_decode_draft_width gauge",
+        f"rapid_mlx_suffix_decode_draft_width{lbl} {snap['current_k']}",
+        "# HELP rapid_mlx_suffix_decode_backoff_level Current backoff level "
+        "(0 = drafting every step).",
+        "# TYPE rapid_mlx_suffix_decode_backoff_level gauge",
+        f"rapid_mlx_suffix_decode_backoff_level{lbl} {snap['backoff_level']}",
+        "# HELP rapid_mlx_suffix_decode_fallthrough_total Why a step did "
+        "not draft, by reason.",
+        "# TYPE rapid_mlx_suffix_decode_fallthrough_total counter",
+    ]
+    for reason in (
+        "batch_size",
+        "uids_size",
+        "non_greedy",
+        "logits_processors",
+        "no_draft",
+        "cooldown",
+        "non_trimmable_cache",
+    ):
+        out.append(
+            f'rapid_mlx_suffix_decode_fallthrough_total{{family="{family}",'
+            f'method="suffix",reason="{reason}"}} {snap[f"ft_{reason}"]}'
+        )
+    return out
+
+
 def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     """Render the R15-P1 #302 MTP speculative-decode counter triplet.
 
@@ -967,6 +1057,7 @@ def _render_prometheus(cfg: Any) -> str:
     # zero-valued series so dashboards see the metric names even at
     # cold start. Pre-engine the counter is naturally zero anyway.
     lines.extend(_render_spec_decode_mtp_counters(cfg))
+    lines.extend(_render_suffix_decode_counters(cfg))
 
     # R15 Phase 4 TurboQuant series — mode gauge, skip-list counter
     # (one per reason), and fused-kernel availability gauge. Surface

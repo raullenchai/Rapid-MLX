@@ -2001,6 +2001,7 @@ def _install_suffix_decoding(
     because chunked-batched verify isn't numerically equivalent to
     step-update on recurrent layers — see SUFFIX_POC_REPORT.md.
     """
+    from .speculative.suffix_counter import get_global_counter as _suffix_counter
     from .speculative.suffix_decoding import SuffixDecodingDrafter
 
     if profile is not None and not profile.supports_spec_decode:
@@ -2029,6 +2030,7 @@ def _install_suffix_decoding(
 
     # Per-uid drafter state. Lazy-init on first encounter (we need the
     # request's prompt_token_ids to seed the suffix index).
+    _counter = _suffix_counter()
     _drafters: dict[int, SuffixDecodingDrafter] = {}
     # When _step does a verify forward, it stashes the extra emitted
     # tokens here (one entry per accepted draft + bonus). The wrapped
@@ -2055,6 +2057,14 @@ def _install_suffix_decoding(
         "ft_no_draft": 0,
         "ft_cooldown": 0,
         "ft_non_trimmable_cache": 0,
+        # Backoff observability: how many times the skip window re-armed,
+        # and the current level (0 = eager). A low-overlap request should
+        # show a handful of trips and then go quiet; a high-overlap one
+        # should show zero.
+        "cooldown_trips": 0,
+        "cooldown_level": 0,
+        # Current adaptive draft width (see _current_k).
+        "k_current": 0,
     }
 
     # Cooldown state: when verify keeps producing 0-acceptance (e.g.,
@@ -2065,8 +2075,50 @@ def _install_suffix_decoding(
     # triggered. Chat hits ~90% skip → near regression-floor.
     _consecutive_zero_accepts = [0]
     _cooldown_remaining = [0]
+    # Backoff level: 0 = eager (draft every step). Each re-trip doubles the
+    # skip window, so a request whose traffic has no drafter signal stops
+    # paying verify overhead after a handful of probes instead of forever.
+    #
+    # The fixed-10 cooldown this replaces re-armed on a 3-miss trigger every
+    # time, so low-overlap traffic paid 3 wasted verifies per 13 steps —
+    # ~23% of steps, and a verify costs ~3.4x a plain forward on M3 Pro.
+    # Measured on gemma-4-12b-4bit: accept_ratio 0.044 on free-form
+    # generation, 12.6 vs 18.5 tok/s (-32%) with the cooldown "working".
+    _backoff_level = [0]
     _COOLDOWN_TRIGGER = 3
-    _COOLDOWN_LENGTH = 10
+    _COOLDOWN_BASE = 10
+    # Cap the window so a request that turns high-overlap late (a chat that
+    # starts emitting a big code block) still re-probes within a bounded
+    # number of tokens rather than never. Kept deliberately small: at one
+    # probe per window, a 320-step cap costs ~0.3% of steps, and a deeper
+    # cap made recovery too slow — a low-then-high request measured 22.8
+    # tok/s against 33.2 for the same work on a fresh drafter, because it
+    # could not climb out of the window it had entered.
+    _COOLDOWN_MAX = 320
+    # Minimum accepted draft tokens for a verify to count as "this traffic
+    # has drafter signal" and walk the backoff level down. 1-of-K is noise —
+    # crediting it kept low-overlap traffic oscillating back to eager.
+    _BACKOFF_DECAY_MIN_ACCEPT = 2
+
+    # Adaptive draft width. The cost of a verify is superlinear in K — on
+    # gemma-4-12b-4bit / M3 Pro a 9-wide forward costs 3.44x a 1-wide one —
+    # so a FIXED K=8 makes every probe expensive. That is what a short
+    # response pays and never amortises: backoff needs 3 misses to engage,
+    # 3 x 3.44 ~ 10 forward-equivalents, which on a 74-token answer is 13%
+    # before the window ever helps.
+    #
+    # So ramp instead: probe narrow, widen only once the traffic has proven
+    # it accepts. Full acceptance doubles K (2 -> 4 -> 8, reaching the cap
+    # within a few verifies on genuinely high-overlap traffic); a partial
+    # accept drops K to just above what landed, which is the width that
+    # would have been free.
+    _K_MIN = 2
+    _current_k = [_K_MIN]
+
+    # Tokens emitted while a cooldown window was skipping the drafter, held
+    # as unread mlx arrays so no device->host sync happens on those steps.
+    # Drained into the suffix tree when drafting resumes.
+    _pending_history: list = []
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Detect whether the request's sampler is effectively greedy.
@@ -2102,17 +2154,20 @@ def _install_suffix_decoding(
         if gb._next_tokens is None or gb._next_tokens.shape[0] != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
+            _counter.record_fallthrough("batch_size")
             return _orig_step()
 
         if len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_uids_size"] += 1
+            _counter.record_fallthrough("uids_size")
             return _orig_step()
 
         uid = gb.uids[0]
         if not _is_greedy_for_uid(uid):
             _stats["fallthrough_steps"] += 1
             _stats["ft_non_greedy"] += 1
+            _counter.record_fallthrough("non_greedy")
             return _orig_step()
 
         # Skip when logits_processors are set — applying them at every
@@ -2125,6 +2180,7 @@ def _install_suffix_decoding(
         if _lp and any(p for p in _lp if p):
             _stats["fallthrough_steps"] += 1
             _stats["ft_logits_processors"] += 1
+            _counter.record_fallthrough("logits_processors")
             return _orig_step()
 
         # Lazy-init drafter on first encounter for this uid.
@@ -2155,15 +2211,46 @@ def _install_suffix_decoding(
         # The token we're about to feed (= last step's sampled token).
         # Also the one ``_orig_step`` would return as ``inputs.tolist()``.
         inputs = gb._next_tokens
+
+        # Cooldown check FIRST — before anything that costs.
+        #
+        # Note what is NOT done here: ``int(inputs[0].item())``. That is a
+        # device->host sync, and mlx-lm's step loop is otherwise fully async
+        # (``async_eval`` overlaps device work with engine bookkeeping), so
+        # forcing a sync on EVERY step stalls the pipeline. It is the fixed
+        # per-step cost that kept low-overlap traffic ~13% slow even after
+        # the backoff had stopped both the verify forwards and the draft
+        # construction — the drafter's own CPU work is negligible by
+        # comparison (measured: 0.0006 ms/token for the tree insert,
+        # 0.008 ms for a draft, against a ~62 ms forward).
+        #
+        # Instead the array is queued unread and drained in one batch when
+        # the window ends, which is the only point the tree is needed.
+        if _cooldown_remaining[0] > 0:
+            _cooldown_remaining[0] -= 1
+            _pending_history.append(inputs)
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_cooldown"] += 1
+            _counter.record_fallthrough("cooldown")
+            return _orig_step()
+
+        # Coming out of a window (or never in one): bring the suffix tree up
+        # to date. One sync for the whole batch rather than one per step.
+        if _pending_history:
+            for arr in _pending_history:
+                drafter.add_generated_token(int(arr[0].item()))
+            _pending_history.clear()
         last_token = int(inputs[0].item())
         drafter.add_generated_token(last_token)
 
-        # Build draft.
+        # Build draft at the current adaptive width.
+        drafter.max_draft_tokens = _current_k[0]
         try:
             draft = drafter.get_draft()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[SuffixDecoding] drafter error: {e!r}")
             _stats["errors"] += 1
+            _counter.record_error()
             _stats["fallthrough_steps"] += 1
             return _orig_step()
 
@@ -2174,15 +2261,7 @@ def _install_suffix_decoding(
             # floor). Skip them.
             _stats["fallthrough_steps"] += 1
             _stats["ft_no_draft"] += 1
-            return _orig_step()
-
-        # Cooldown check: skip verify if we're in a cooldown window
-        # following several zero-accept verifies. This stops chat
-        # workloads from paying verify overhead they can't recoup.
-        if _cooldown_remaining[0] > 0:
-            _cooldown_remaining[0] -= 1
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_cooldown"] += 1
+            _counter.record_fallthrough("no_draft")
             return _orig_step()
 
         # Defense-in-depth: even though ``profile.supports_spec_decode``
@@ -2196,6 +2275,7 @@ def _install_suffix_decoding(
             ):
                 _stats["fallthrough_steps"] += 1
                 _stats["ft_non_trimmable_cache"] += 1
+                _counter.record_fallthrough("non_trimmable_cache")
                 return _orig_step()
 
         K = len(draft)
@@ -2229,13 +2309,60 @@ def _install_suffix_decoding(
         # Cooldown bookkeeping: track consecutive zero-accept verifies
         # so workloads with weak drafter signal (e.g., free-form chat)
         # automatically stop paying verify overhead.
+        #
+        # First trip needs ``_COOLDOWN_TRIGGER`` misses so a brief stumble in
+        # otherwise-accepting traffic doesn't cost a skip window. Once we
+        # HAVE backed off, a single miss re-arms: the previous window already
+        # established this traffic has no drafter signal, so waiting for two
+        # more misses just buys two more wasted verifies. Each re-trip
+        # doubles the window (10, 20, 40 … capped), so a low-overlap request
+        # converges to ~no drafting after a handful of probes.
+        # Adaptive width update. Full acceptance means the draft was too
+        # SHORT — we left tokens on the table — so double. A partial accept
+        # means we paid for K but only n landed; retarget just above n.
+        if n_accepted >= K:
+            _current_k[0] = min(_current_k[0] * 2, max_draft)
+        else:
+            _current_k[0] = max(_K_MIN, min(n_accepted + 1, max_draft))
+        _stats["k_current"] = _current_k[0]
+        _counter.set_state(_current_k[0], _backoff_level[0])
+
         if n_accepted == 0:
             _consecutive_zero_accepts[0] += 1
-            if _consecutive_zero_accepts[0] >= _COOLDOWN_TRIGGER:
-                _cooldown_remaining[0] = _COOLDOWN_LENGTH
+            trigger = _COOLDOWN_TRIGGER if _backoff_level[0] == 0 else 1
+            if _consecutive_zero_accepts[0] >= trigger:
+                _backoff_level[0] += 1
+                _cooldown_remaining[0] = min(
+                    _COOLDOWN_BASE * (2 ** (_backoff_level[0] - 1)),
+                    _COOLDOWN_MAX,
+                )
                 _consecutive_zero_accepts[0] = 0
+                _stats["cooldown_trips"] += 1
+                _stats["cooldown_level"] = _backoff_level[0]
+                _counter.record_cooldown_trip(_backoff_level[0])
         else:
             _consecutive_zero_accepts[0] = 0
+            # DECAY one level, don't reset to eager. A single lucky accept in
+            # otherwise-signalless traffic must not undo several levels of
+            # backoff — with a full reset, low-overlap traffic kept
+            # re-arming (measured: 8 trips, level back to 0, still -24%).
+            # Sustained acceptance walks the level back down within a few
+            # verifies, so a chat that starts emitting a repeated code block
+            # still reaches full speed quickly.
+            #
+            # A 1-of-K accept is noise, not signal: require at least
+            # ``_BACKOFF_DECAY_MIN_ACCEPT`` accepted draft tokens before
+            # crediting the traffic with having drafter signal.
+            if _backoff_level[0]:
+                if n_accepted * 2 >= K:
+                    # STRONG signal — at least half the draft landed. This is
+                    # unambiguously high-overlap traffic; go straight back to
+                    # eager rather than walking down one level per verify,
+                    # which a deep window gives too few chances to do.
+                    _backoff_level[0] = 0
+                elif n_accepted >= _BACKOFF_DECAY_MIN_ACCEPT:
+                    _backoff_level[0] -= 1
+                _stats["cooldown_level"] = _backoff_level[0]
 
         n_rejected = K - n_accepted
         if n_rejected > 0:
@@ -2297,6 +2424,7 @@ def _install_suffix_decoding(
             drafter.add_generated_token(tok)
         drafter.record_acceptance(n_accepted)
         _stats["tokens_accepted"] += n_accepted
+        _counter.record_verify(K, n_accepted)
 
         # Update gb state for the next _step call. Bonus becomes the
         # next step's primary input. async_eval overlaps device work
