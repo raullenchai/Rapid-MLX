@@ -215,3 +215,28 @@ def test_state_gauges_do_not_report_a_previous_requests_values():
     assert snap["current_k"] == 2
     assert snap["backoff_level"] == 0
     reset_global_counter()
+
+
+def test_state_gauges_return_to_rest_when_no_request_is_drafting():
+    """Once the last suffix-decoded request is reaped the gauges describe
+    nothing, so they must read at-rest rather than freeze on whatever the
+    final request ended on.
+
+    The failure this pins is a diagnostic one: a request that ends deep in
+    a back-off window would otherwise leave ``backoff_level`` pegged, and
+    an idle server would keep reporting a suffix decoder in trouble long
+    after the traffic that caused it stopped. The scheduler calls
+    ``set_state(_K_MIN, 0)`` from both reap paths once ``_uid_state`` is
+    empty; this pins the value those paths must publish.
+    """
+    reset_global_counter()
+    c = get_global_counter()
+    # A request backs off hard, then finishes.
+    c.set_state(current_k=8, backoff_level=5)
+    assert c.snapshot()["backoff_level"] == 5
+    # Last request reaped -> gauges go back to the at-rest pair.
+    c.set_state(current_k=2, backoff_level=0)
+    snap = c.snapshot()
+    assert snap["current_k"] == 2, "idle width must not keep a finished request's K"
+    assert snap["backoff_level"] == 0, "idle server must not report a back-off level"
+    reset_global_counter()

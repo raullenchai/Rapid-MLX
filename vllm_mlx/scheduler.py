@@ -2083,6 +2083,20 @@ def _install_suffix_decoding(
     # Cleared alongside ``_drafters`` when the request finishes.
     _uid_state: dict[int, dict] = {}
 
+    def _reset_state_gauges_if_idle() -> None:
+        """Return the state gauges to their at-rest values when no request
+        is left holding them.
+
+        ``draft_width`` and ``backoff_level`` describe the CURRENTLY
+        drafting request. Once the last ``_uid_state`` entry is reaped they
+        describe nothing, and a scrape taken while the server is idle would
+        otherwise keep reporting whatever the final request happened to end
+        on — a deeply backed-off value looks like a server still in trouble
+        long after the traffic that caused it stopped.
+        """
+        if not _uid_state:
+            _counter.set_state(_K_MIN, 0)
+
     def _state_for(uid: int) -> dict:
         st = _uid_state.get(uid)
         if st is None:
@@ -2506,6 +2520,7 @@ def _install_suffix_decoding(
                     _pending_emits.pop(r.uid, None)
                     _drafters.pop(r.uid, None)
                     _uid_state.pop(r.uid, None)
+            _reset_state_gauges_if_idle()
 
         if not _pending_emits or not responses:
             return responses
@@ -2600,6 +2615,7 @@ def _install_suffix_decoding(
                     # BatchGenerator itself is replaced.
                     _drafters.pop(uid, None)
                     _uid_state.pop(uid, None)
+                    _reset_state_gauges_if_idle()
                     # No more pending to emit for this uid.
                     break
 
