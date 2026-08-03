@@ -63,14 +63,30 @@ in [suffix_decoding_eligibility.md](../suffix_decoding_eligibility.md).
 
 ### `--max-tokens 2048` — the one that makes OpenAI clients work
 
-Gemma 4 12B's KV cache is **~128 KB per token** — 8 full-attention layers
-× 8 KV heads × 512 `global_head_dim` × 2 (K+V) × 2 B. That is several
-times a same-class Llama/Qwen, and it dominates every memory decision
-below.
+What matters here is not Gemma 4 12B's real KV footprint but the one the
+admission gate projects, and they differ by 4x.
+
+The real growing cost is **16 KB per token**: only 8 of 48 layers are
+full-attention, and those use `num_global_key_value_heads` (1) with
+`global_head_dim` (512), not the `num_key_value_heads` (8) /
+`head_dim` (256) the 40 sliding layers use. The sliding layers are
+window-bounded at 1024 tokens, so past that they stop growing entirely —
+per-token arithmetic overstates long contexts for this architecture.
+
+The gate charges **64 KB per token** instead. `kv_estimation.py` reads the
+global dims correctly and then clamps with
+`max(global_per_layer, uniform_per_layer)`, a floor meant to protect
+against configs whose global dims exceed the base. Gemma 4 is the inverse
+case — its global layers are *cheaper* per layer than its local ones — so
+the floor rounds 2048 B/layer up to 8192 B/layer. The projection is
+conservative by design and never under-counts, which is the right default
+against a Metal cliff that aborts the process rather than raising. It is
+also why the flags below matter more on this model than the real
+footprint would suggest.
 
 A client that omits `max_tokens` (aider does — the server logs
 `max_tokens=None`) makes the D-METAL-CAP admission gate project the
-model's full output window. At 128 KB/token that is:
+model's full output window at that 64 KB/token rate:
 
 ```
 503: Metal active 7.0GB + reserved KV 0.0GB + projected KV 5.7GB
@@ -83,10 +99,13 @@ actually uses (the aider rounds above returned 341–583 tokens).
 
 ### `--hybrid-cache-entries 2` and `--cache-memory-mb 768` — budget, not leak
 
-Retained prefix-cache entries are not free at 128 KB/token. With
+Retained prefix-cache entries are not free, and on this architecture the
+sliding layers dominate an entry rather than the per-token term: 40 of 48
+layers hold a 1024-slot window at 320 KB per slot, so an entry converges
+to a few hundred MB regardless of how short the prompt was. With
 `--hybrid-cache-entries 8`, steady-state Metal climbed from 7.0 GB to
-8.3 GB (≈8 entries × ~1.1k tokens × 128 KB), and the *next* request was
-then rejected on a 2.1 GB projection against a 10.3 GB cap.
+8.3 GB — measured, not derived — and the *next* request was then rejected
+on a 2.1 GB projection against a 10.3 GB cap.
 
 Memory does **plateau** — five identical requests in a row held at
 8.60 GB, so this is a budgeting problem, not a leak. But on 18 GB the
@@ -123,8 +142,9 @@ at **13221 tokens** (cache types `['KVCache', 'RotatingKVCache']`, peak
 
 The prefix cache is restored at startup and consumes **1.9 GB before the
 first request** — the bulk of the "steady state" you observe — and none
-of it is visible to the pre-flight memory warning. At 128 KB/token, that
-is what pushes a 10k-token request past the Metal allocation.
+of it is visible to the pre-flight memory warning. Against the gate's
+64 KB/token projection, that restored 1.9 GB is what pushes a 10k-token
+request past the Metal allocation.
 
 Any one of these makes 10358 tokens pass:
 
