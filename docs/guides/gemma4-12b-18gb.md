@@ -218,13 +218,26 @@ working set of the prefill itself. On Gemma 4 12B — 48 layers,
 `global_head_dim` 512 — prefilling a few thousand tokens in one go
 allocates well beyond its own KV, and none of that is in the projection.
 
-There is also a dead band. `evict_prefix_cache_under_pressure` only fires
-above `metal_pressure_evict_fraction` (default 0.9) of the cap, but
-admission rejects as soon as `active + reserved + projected` reaches it.
-Measured here: after four aider rounds the server settled at active
-9.17 GB against a 10.6 GB cap — 0.865, *under* the 0.9 eviction trigger —
-and 503'd every request from then on. The eviction that would have made
-room never ran. Only a restart cleared it.
+There is also a dead band, though it needs both triggers stated to be
+diagnosed correctly. `evict_prefix_cache_under_pressure` fires on
+*either* Metal active exceeding `metal_pressure_evict_fraction` (default
+0.9) of the cap, **or** the memory-aware cache ledger reaching 0.9 of its
+own budget — with `--cache-memory-mb 768` that second one trips near
+691 MiB, independent of the Metal ratio. Admission, meanwhile, rejects as
+soon as `active + reserved + projected` reaches the cap.
+
+So a server can sit in a band where admission refuses everything and
+neither eviction trigger has been reached. Measured here: after four
+aider rounds the server settled at active 9.17 GB against a 10.6 GB cap
+— 0.865, under the Metal trigger — and 503'd every request from then on.
+Only a restart cleared it.
+
+If you land in that state, check the cache ledger before concluding the
+eviction path cannot run: a cache well under its own budget is what puts
+you in the dead band, and a cache near it means something else is wrong.
+Widening the dead band is not the fix — an earlier attempt at exactly
+that is in the "what did not work" section below, and it traded a
+recoverable 503 for a process abort.
 
 **Closing the dead band naively makes things worse.** Evicting at
 admission and re-admitting was tried: it fired 7 times, correctly
