@@ -2411,7 +2411,13 @@ def _install_suffix_decoding(
             # and low-overlap traffic with the occasional 1-of-2 accept
             # would bounce back to eager drafting instead of converging.
             # That is precisely the regression the back-off exists to stop.
-            if st["level"] and n_accepted >= _BACKOFF_DECAY_MIN_ACCEPT:
+            # Clamped to the configured width, not absolute: with
+            # ``max_draft=1`` a 1-of-1 accept IS full acceptance, and an
+            # absolute floor of 2 would make that configuration unable to
+            # ever leave a back-off — every later isolated miss would arm a
+            # longer cooldown however well the drafts in between landed.
+            _decay_floor = min(_BACKOFF_DECAY_MIN_ACCEPT, K)
+            if st["level"] and n_accepted >= _decay_floor:
                 if n_accepted * 2 >= K:
                     # STRONG signal — at least half the draft landed. This is
                     # unambiguously high-overlap traffic; go straight back to

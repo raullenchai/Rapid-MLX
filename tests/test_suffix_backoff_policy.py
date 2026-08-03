@@ -70,7 +70,7 @@ class Policy:
                 self.trips += 1
         else:
             self.zeros = 0
-            if self.level and accepted >= BACKOFF_DECAY_MIN_ACCEPT:
+            if self.level and accepted >= min(BACKOFF_DECAY_MIN_ACCEPT, k):
                 if accepted * 2 >= k:
                     self.level = 0
                 else:
@@ -265,7 +265,7 @@ class MultiRequestPolicy:
                 st["zeros"] = 0
         else:
             st["zeros"] = 0
-            if st["level"] and accepted >= BACKOFF_DECAY_MIN_ACCEPT:
+            if st["level"] and accepted >= min(BACKOFF_DECAY_MIN_ACCEPT, k):
                 if accepted * 2 >= k:
                     st["level"] = 0
                 else:
