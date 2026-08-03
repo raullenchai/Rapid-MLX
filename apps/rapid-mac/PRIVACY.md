@@ -171,7 +171,7 @@ arbitrary `rapid-mlx` shadows on your `$PATH`.
 * **If you opted into a user-installed binary**, prefer the official
   Homebrew tap:
   `brew tap raullenchai/rapid-mlx && brew install raullenchai/rapid-mlx/rapid-mlx`.
-  Homebrew enforces the Cask checksum, so a tampered download
+  Homebrew enforces the formula's checksum, so a tampered download
   doesn't install silently.
 * **Source is open** at
   [github.com/raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX);

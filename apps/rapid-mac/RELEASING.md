@@ -205,12 +205,15 @@ gh run watch $(gh run list --workflow=rapid-mac-release.yml --limit=1 --json dat
 | Place `.p8` + write `~/.rapid-release.env` (Part C) | ✅ | |
 | Build / sign / notarise / staple / DMG | | ✅ scripts + CI |
 | Attach DMG to the GitHub Release | | ✅ CI |
-| Bump the Homebrew cask (`Casks/rapid-mlx.rb`) | | ✅ (see `Casks/README.md`) |
+
+The app is distributed **only** as a direct `.dmg` download from GitHub
+Releases — there is no Homebrew cask. The `rapid-mlx` name is reserved for the
+engine (`pip install rapid-mlx`, and a future `brew install rapid-mlx`
+formula); the desktop app never claims it.
 
 ## Open TODO(owner) items
 
-- **Release/tap repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`).
-  `Casks/rapid-mlx.rb` and `Casks/README.md` use this owner; the
+- **Release repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`). The
   release-local `--publish` lane pushes to whatever `origin` points at.
 - **CDN mirror infra** (`RAPID_MAC_DIST_R2_BUCKET` / `RAPID_MAC_DIST_CDN_BASE`
   + Cloudflare secrets) only needs provisioning if you want a stable

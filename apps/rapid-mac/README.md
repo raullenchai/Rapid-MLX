@@ -11,15 +11,14 @@ monorepo.
 
 ## Install
 
-```bash
-brew tap raullenchai/tap
-brew install --cask rapid-mlx
-```
+Download the latest `.dmg` from
+[GitHub Releases](https://github.com/raullenchai/Rapid-MLX/releases?q=rapid-mac),
+open it, and drag **Rapid-MLX Desktop** to Applications.
 
-Or download the latest signed + notarised `.dmg` from
-[GitHub Releases](https://github.com/raullenchai/Rapid-MLX/releases?q=rapid-mac).
-The Homebrew Cask manifest lives at [`Casks/rapid-mlx.rb`](Casks/rapid-mlx.rb) —
-see [`Casks/README.md`](Casks/README.md) for the publish flow.
+> The `rapid-mlx` name belongs to the **engine**, not this app:
+> `pip install rapid-mlx` (and, later, `brew install rapid-mlx`) install the
+> command-line inference server. The desktop app is distributed **only** as a
+> direct download — it bundles the engine, so there is nothing else to install.
 
 ## What it does
 
