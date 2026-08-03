@@ -2402,14 +2402,24 @@ def _install_suffix_decoding(
             # A 1-of-K accept is noise, not signal: require at least
             # ``_BACKOFF_DECAY_MIN_ACCEPT`` accepted draft tokens before
             # crediting the traffic with having drafter signal.
-            if st["level"]:
+            #
+            # The noise floor has to be checked BEFORE the strong-signal
+            # branch, not alongside it. After a back-off the adaptive width
+            # is ``_K_MIN`` (2), where a single accepted token satisfies
+            # ``n_accepted * 2 >= K`` — so without this guard the one
+            # outcome the policy calls noise would reset the whole level,
+            # and low-overlap traffic with the occasional 1-of-2 accept
+            # would bounce back to eager drafting instead of converging.
+            # That is precisely the regression the back-off exists to stop.
+            if st["level"] and n_accepted >= _BACKOFF_DECAY_MIN_ACCEPT:
                 if n_accepted * 2 >= K:
                     # STRONG signal — at least half the draft landed. This is
                     # unambiguously high-overlap traffic; go straight back to
                     # eager rather than walking down one level per verify,
                     # which a deep window gives too few chances to do.
                     st["level"] = 0
-                elif n_accepted >= _BACKOFF_DECAY_MIN_ACCEPT:
+                else:
+                    # Real but weak signal — walk down one level.
                     st["level"] -= 1
                 _stats["cooldown_level"] = st["level"]
 

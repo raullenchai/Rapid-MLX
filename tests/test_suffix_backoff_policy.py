@@ -70,10 +70,10 @@ class Policy:
                 self.trips += 1
         else:
             self.zeros = 0
-            if self.level:
+            if self.level and accepted >= BACKOFF_DECAY_MIN_ACCEPT:
                 if accepted * 2 >= k:
                     self.level = 0
-                elif accepted >= BACKOFF_DECAY_MIN_ACCEPT:
+                else:
                     self.level -= 1
         return "verify"
 
@@ -265,10 +265,10 @@ class MultiRequestPolicy:
                 st["zeros"] = 0
         else:
             st["zeros"] = 0
-            if st["level"]:
+            if st["level"] and accepted >= BACKOFF_DECAY_MIN_ACCEPT:
                 if accepted * 2 >= k:
                     st["level"] = 0
-                elif accepted >= BACKOFF_DECAY_MIN_ACCEPT:
+                else:
                     st["level"] -= 1
         return drained
 
@@ -334,3 +334,25 @@ def test_initial_width_clears_min_draft_len():
         )
         if max_draft >= min_draft_len:
             assert k_min >= min_draft_len, "floor cannot clear the length gate"
+
+
+def test_one_of_two_accept_cannot_reset_a_backoff():
+    """MUTATION-KILL for the noise floor at the width back-off produces.
+
+    After a back-off the adaptive width is ``_K_MIN`` (2), and at K=2 a
+    single accepted token satisfies the strong-signal test
+    ``accepted * 2 >= k``. Order the noise floor after that branch and the
+    one outcome the policy calls noise resets the whole level, so
+    low-overlap traffic landing the occasional 1-of-2 bounces back to
+    eager drafting forever. Invisible at any wider K, which is why it
+    survived the original round of tests.
+    """
+    p = Policy()
+    p.level = 3
+    p.zeros = 0
+    # A verify at the post-backoff width that accepts exactly one token.
+    p.step(lambda k: 1 if k == 2 else 0)
+    assert p.level == 3, (
+        f"a 1-of-{p.k} accept moved the back-off level 3 -> {p.level}; "
+        "the noise floor must gate the strong-signal reset, not sit after it"
+    )
