@@ -270,10 +270,13 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         )
 
     # Optional per-alias PFlash keep_ratio override. Absent → ``None`` →
-    # engine default 0.20. When present it must be a real fraction in
-    # (0, 1]; validated here so a typo fails loud at load time next to
-    # ``pflash_tier``. Only meaningful together with pflash_tier=verified
-    # (it certifies recall AT this ratio); harmless but inert otherwise.
+    # engine default 0.20. When present it must be a real fraction in (0, 1]
+    # AND the alias must be pflash_tier=verified — the field's ONLY purpose is
+    # to pin the ratio a verified alias was recall-validated at (the resolver
+    # applies it whenever PFlash runs, incl. an explicit ``--pflash always``,
+    # so allowing it on an unknown-tier alias would silently shift explicitly
+    # enabled PFlash behaviour). Both validated here so a typo / misuse fails
+    # loud at load time next to ``pflash_tier``.
     pflash_keep_ratio = value.get("pflash_keep_ratio")
     if pflash_keep_ratio is not None:
         if isinstance(pflash_keep_ratio, bool) or not isinstance(
@@ -285,6 +288,13 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             raise ValueError(
                 f"alias {alias!r}: pflash_keep_ratio={pflash_keep_ratio!r} "
                 "must be > 0.0 and <= 1.0"
+            )
+        if pflash_tier != "verified":
+            raise ValueError(
+                f"alias {alias!r}: pflash_keep_ratio is only valid with "
+                f"pflash_tier='verified' (got {pflash_tier!r}). The override "
+                "pins the ratio a VERIFIED alias was recall-validated at; it "
+                "has no meaning on an unbenched alias."
             )
 
     turboquant_tier = value.get("turboquant_tier", "unknown")

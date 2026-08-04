@@ -602,6 +602,28 @@ def test_pflash_keep_ratio_valid_value_is_accepted() -> None:
     assert isinstance(profile.pflash_keep_ratio, float)
 
 
+def test_pflash_keep_ratio_requires_verified_tier() -> None:
+    """A ``pflash_keep_ratio`` override on a non-verified alias must be rejected
+    at load time: the resolver applies the override whenever PFlash runs (incl.
+    an explicit ``--pflash always``), so allowing it on an unknown-tier alias
+    would silently shift explicitly-enabled PFlash behaviour (codex #1458 r2)."""
+    from vllm_mlx.model_aliases import _coerce
+
+    # default tier is "unknown"
+    with pytest.raises(ValueError, match="only valid with pflash_tier='verified'"):
+        _coerce("fake-alias", {"hf_path": "fake/Model", "pflash_keep_ratio": 0.5})
+    # explicit unknown is equally rejected
+    with pytest.raises(ValueError, match="only valid with pflash_tier='verified'"):
+        _coerce(
+            "fake-alias",
+            {
+                "hf_path": "fake/Model",
+                "pflash_tier": "unknown",
+                "pflash_keep_ratio": 0.5,
+            },
+        )
+
+
 # =============================================================================
 # DDTree speculative-decoding contract (issue #879)
 # =============================================================================
