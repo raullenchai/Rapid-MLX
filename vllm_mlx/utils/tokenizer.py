@@ -799,6 +799,120 @@ def load_model_with_fallback(
     return result
 
 
+# mlx-lm's tokenizer loader (``mlx_lm.tokenizer_utils.load``) imports a
+# chat-template / tool-parser module BY NAME whenever the model's
+# ``tokenizer_config.json`` declares one, with no guard:
+#     if chat_template_type := cfg.get("chat_template_type", False):
+#         importlib.import_module(f"mlx_lm.chat_templates.{chat_template_type}")
+#     if tool_parser_type := cfg.get("tool_parser_type", ...):
+#         importlib.import_module(f"mlx_lm.tool_parsers.{tool_parser_type}")
+# When the *bundled* mlx-lm doesn't ship that module the import raises
+# ``ModuleNotFoundError`` and the server dies at startup with NO fallback to
+# the model's on-disk ``chat_template.jinja``. #1420: mlx-lm 0.31.x dropped
+# ``mlx_lm/chat_templates/gemma4.py`` while ``mlx-community/gemma-4-26b-a4b-it-4bit``
+# still declares ``"chat_template_type": "gemma4"`` → every such Gemma 4
+# checkpoint 500s on ``rapid-mlx serve`` (regression vs 0.6.71, which
+# shipped the module). Weights load BEFORE the tokenizer in ``mlx_lm.load``,
+# so a catch-and-retry would re-load multi-GB weights — we neutralize the
+# offending field up front instead.
+_UNBUNDLED_TEMPLATE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("chat_template_type", "mlx_lm.chat_templates"),
+    ("tool_parser_type", "mlx_lm.tool_parsers"),
+)
+
+
+def _read_tokenizer_config_json(model_name: str) -> dict | None:
+    """Best-effort read of a model's ``tokenizer_config.json``.
+
+    Local dir → read directly. HF repo id → fetch ONLY that one small file
+    (never the weights) via the hub cache. Returns ``None`` on any failure
+    so the caller falls through to the unmodified load path — this is a
+    pre-load probe and must never itself break loading.
+    """
+    try:
+        local = Path(model_name)
+        if local.is_dir():
+            cfg_path = local / "tokenizer_config.json"
+            if not cfg_path.is_file():
+                return None
+        else:
+            from huggingface_hub import hf_hub_download
+
+            try:
+                # Cache-only first: a model that's already downloaded (the
+                # common case, and always so for the desktop app which pulls
+                # before it serves) resolves with NO network — we don't add a
+                # hub round-trip to every serve start, and stay functional
+                # offline.
+                cfg_path = Path(
+                    hf_hub_download(
+                        model_name, "tokenizer_config.json", local_files_only=True
+                    )
+                )
+            except Exception:
+                # Not cached yet (a fresh ``serve <repo-id>``): fetch just
+                # this one small file so a first load of a Gemma 4 checkpoint
+                # is guarded too. The weights download on the very next step.
+                cfg_path = Path(hf_hub_download(model_name, "tokenizer_config.json"))
+        with open(cfg_path) as f:
+            return json.load(f)
+    except Exception as e:  # noqa: BLE001 — a probe must not break loading
+        logger.debug("tokenizer_config.json probe failed for %s: %s", model_name, e)
+        return None
+
+
+def _neutralize_unbundled_template_types(
+    model_name: str, tokenizer_config: dict
+) -> dict:
+    """Guard against #1420: strip any ``chat_template_type`` /
+    ``tool_parser_type`` whose ``mlx_lm`` module the bundled mlx-lm doesn't
+    ship, so ``mlx_lm.load`` skips the crashing ``import_module`` and the
+    model boots from its ``chat_template.jinja`` sidecar instead.
+
+    Returns the original dict unchanged when there is nothing to neutralize
+    (the common case — no field declared, or its module IS bundled), so the
+    happy path pays only one small config read.
+    """
+    cfg = _read_tokenizer_config_json(model_name)
+    if not cfg:
+        return tokenizer_config
+
+    import importlib.util as _iu
+
+    patched: dict | None = None
+    for field, pkg in _UNBUNDLED_TEMPLATE_FIELDS:
+        # The caller's tokenizer_config override wins over the on-disk value
+        # in mlx-lm (kwargs → AutoTokenizer init_kwargs → the ``:= get()``
+        # branch), so if the caller has already specified this field — any
+        # value, truthy or falsy — it owns it: don't probe the on-disk value
+        # and don't clobber a deliberately-requested bundled template
+        # (codex r1 MAJOR: a truthy override was being overwritten to None).
+        if field in tokenizer_config:
+            continue
+        type_name = cfg.get(field)
+        if not type_name or not isinstance(type_name, str):
+            continue
+        module = f"{pkg}.{type_name}"
+        try:
+            spec = _iu.find_spec(module)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            if patched is None:
+                patched = dict(tokenizer_config)
+            patched[field] = None
+            logger.warning(
+                "%s declares %s=%r but bundled mlx-lm ships no %s — "
+                "neutralizing it so the model loads from its chat_template.jinja "
+                "sidecar rather than crashing at startup (#1420).",
+                model_name,
+                field,
+                type_name,
+                module,
+            )
+    return patched if patched is not None else tokenizer_config
+
+
 def _load_model_with_fallback_impl(
     model_name: str,
     tokenizer_config: dict = None,
@@ -812,6 +926,13 @@ def _load_model_with_fallback_impl(
 
     _register_vendored_archs()
     tokenizer_config = tokenizer_config or {}
+    # #1420: neutralize any declared chat-template / tool-parser type whose
+    # mlx-lm module isn't bundled, BEFORE any load() — covers the native
+    # Gemma 4 path, its legacy-wrapper fallback, and the general path, all of
+    # which feed this dict to ``mlx_lm.load`` / ``load_tokenizer``.
+    tokenizer_config = _neutralize_unbundled_template_types(
+        model_name, tokenizer_config
+    )
 
     # Check if model needs fallback (e.g., Nemotron)
     if _needs_tokenizer_fallback(model_name):
