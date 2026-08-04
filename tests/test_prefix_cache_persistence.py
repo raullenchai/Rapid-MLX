@@ -1373,6 +1373,62 @@ def test_save_to_disk_partial_commit_on_abort(tmp_path):
     assert entry.tokens == tuple(range(11))
 
 
+def test_shutdown_partial_commit_prioritizes_longest_prefix(tmp_path):
+    """A tiny bootstrap entry must not consume the only shutdown slot."""
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store([1], make_kvcache(num_tokens=1))
+    cache.store(list(range(100)), make_kvcache(num_tokens=100, fill=2.0))
+
+    calls = {"n": 0}
+
+    def predicate(predicted_sec=0.0):
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is True
+    loaded_cache = fresh_cache()
+    assert loaded_cache.load_from_disk(str(cache_dir)) == 1
+    entry = next(iter(loaded_cache._entries.values()))
+    assert entry.tokens == tuple(range(100))
+
+
+def test_deadline_save_skips_oversized_prefix_and_tries_smaller(tmp_path):
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store([1], make_kvcache(num_tokens=1))
+    cache.store(list(range(100)), make_kvcache(num_tokens=100, fill=2.0))
+    entry_sizes = sorted(entry.memory_bytes for entry in cache._entries.values())
+    threshold = sum(entry_sizes) / 2 / (150 * 1024 * 1024)
+
+    assert (
+        cache.save_to_disk(
+            str(cache_dir),
+            should_abort=lambda predicted_sec=0.0: predicted_sec > threshold,
+        )
+        is True
+    )
+    loaded_cache = fresh_cache()
+    assert loaded_cache.load_from_disk(str(cache_dir)) == 1
+    assert next(iter(loaded_cache._entries)) == (1,)
+
+
+def test_deadline_save_roundtrip_preserves_lru_eviction_order(tmp_path):
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store([1], make_kvcache(num_tokens=1))
+    cache.store(list(range(100)), make_kvcache(num_tokens=100, fill=2.0))
+
+    assert cache.save_to_disk(str(cache_dir), should_abort=lambda _seconds: False)
+    loaded_cache = fresh_cache()
+    assert loaded_cache.load_from_disk(str(cache_dir)) == 2
+    assert list(loaded_cache._entries) == [(1,), tuple(range(100))]
+
+    with loaded_cache._lock:
+        loaded_cache._evict_lru()
+    assert list(loaded_cache._entries) == [tuple(range(100))]
+
+
 def test_save_to_disk_aborts_before_first_entry_returns_false(tmp_path):
     """If the deadline already passed before the first write, ``should_abort``
     fires immediately, ``saved == 0``, and the staging dir is cleaned up
@@ -1762,9 +1818,9 @@ def test_save_to_disk_skips_entry_zero_when_predicted_exceeds_budget(tmp_path):
         return predicted_sec > 0  # trip on any forward-looking estimate
 
     assert cache.save_to_disk(str(cache_dir), should_abort=predicate) is False
-    assert len(seen_predicted) == 1, (
-        f"loop should abort on first predicate trip (entry 0), got "
-        f"{len(seen_predicted)} calls"
+    assert len(seen_predicted) == 2, (
+        f"loop should consider every candidate after a prediction rejects "
+        f"the largest, got {len(seen_predicted)} calls"
     )
     assert not (tmp_path / "snap").exists()
     assert not (tmp_path / "snap.new").exists()

@@ -2641,9 +2641,18 @@ class MemoryAwarePrefixCache:
         # docstring contract — auto-detect and adapt instead of
         # raising TypeError. Codex PR #667 round 3 BLOCKING-2.
         check_abort = _adapt_should_abort(should_abort)
+        entries_to_save = list(self._entries.items())
+        lru_rank = {tokens_key: rank for rank, tokens_key in enumerate(self._entries)}
+        saved_lru_rank: dict[int, int] = {}
+        if check_abort is not None:
+            # A deadline-limited snapshot should preserve the deepest reusable
+            # frontier first. LRU order may begin with a tiny bootstrap entry,
+            # which can otherwise consume the only guaranteed shutdown slot
+            # and skew the observed-throughput estimate with fixed fsync cost.
+            entries_to_save.sort(key=lambda item: len(item[0]), reverse=True)
         total_bytes_written = 0
         total_write_seconds = 0.0
-        for i, (tokens_key, entry) in enumerate(self._entries.items()):
+        for i, (tokens_key, entry) in enumerate(entries_to_save):
             if total_write_seconds > 0:
                 observed_bps = total_bytes_written / total_write_seconds
             else:
@@ -2665,10 +2674,10 @@ class MemoryAwarePrefixCache:
                     f"entry {i}/{total_entries} "
                     f"(predicted {predicted_sec * 1000:.0f}ms write at "
                     f"{observed_bps / _BYTES_PER_MB:.0f}MB/s "
-                    f"[{bps_label}]) — committing {saved} entries that "
-                    f"finished before deadline"
+                    f"[{bps_label}]) — skipping this candidate and "
+                    f"considering smaller entries"
                 )
-                break
+                continue
             entry_path, tokens_path = _entry_paths(i)
             entry_t0 = _time.monotonic()
             try:
@@ -2735,6 +2744,7 @@ class MemoryAwarePrefixCache:
                         "cache_types": cache_types,
                     }
                 )
+                saved_lru_rank[i] = lru_rank[tokens_key]
                 saved += 1
                 # Feed the throughput estimator. We measure including
                 # both the safetensors write and the tokens sidecar so
@@ -2862,6 +2872,10 @@ class MemoryAwarePrefixCache:
                 f"{len(verified)} that round-tripped cleanly"
             )
 
+        # Serialization priority is not cache recency. Restore the original
+        # LRU order in the committed index so load_from_disk reconstructs the
+        # same eviction order even when deadline-aware writes ran longest-first.
+        verified.sort(key=lambda entry: saved_lru_rank[entry["index"]])
         index["entries"] = verified
         # Always pin num_entries to the actually-verified count. The initial
         # value was ``total_entries`` (set before the save loop) which is
