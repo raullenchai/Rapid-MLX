@@ -16,6 +16,7 @@ from vllm_mlx.pflash import (
     compress_request_tokens,
     compress_tokens,
     config_from_args,
+    resolve_pflash_config,
     resolve_pflash_keep_ratio_default,
     resolve_pflash_mode_default,
     validate_model_support,
@@ -441,16 +442,52 @@ class TestResolvePFlashKeepRatioDefault:
         )
         assert ratio == 0.20
 
-    def test_bonsai_mode_and_ratio_resolve_together(self):
-        # End-to-end: the verified tier flips mode to "always" AND the override
-        # supplies 0.50 — the exact pair a bare ``serve bonsai-27b-2bit`` wires.
-        mode = resolve_pflash_mode_default(
-            SimpleNamespace(pflash=None), model_name="bonsai-27b-2bit"
+    def _full_ns(self, **overrides):
+        base = dict(
+            pflash=None,
+            pflash_keep_ratio=None,
+            pflash_threshold=32_768,
+            pflash_min_keep_tokens=2_048,
+            pflash_sink_tokens=256,
+            pflash_tail_tokens=2_048,
+            pflash_block_size=128,
+            pflash_query_window=512,
+            pflash_stride_blocks=8,
+            pflash_include_tools=False,
         )
-        ratio = resolve_pflash_keep_ratio_default(
-            self._ns(None), model_name="bonsai-27b-2bit"
-        )
-        assert (mode, ratio) == ("always", 0.5)
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    def test_resolve_pflash_config_wires_bonsai_mode_and_ratio_end_to_end(self):
+        # Guards the actual serve/bench WIRING, not just the resolvers: a bare
+        # ``serve bonsai-27b-2bit`` routes through resolve_pflash_config, which
+        # must resolve mode→"always" AND keep_ratio→0.5 from the alias and bake
+        # both into the built PFlashConfig. If either resolver call is dropped
+        # from the helper, one of these assertions fails (a test that called the
+        # resolvers directly would still pass — codex #1458 BLOCKING).
+        args = self._full_ns()
+        config = resolve_pflash_config(args, model_name="bonsai-27b-2bit")
+        assert config.mode == "always"
+        assert config.keep_ratio == 0.5
+        # The helper also materializes the resolved values back onto args so
+        # later readers (engine wiring) see them, not the None sentinels.
+        assert args.pflash == "always"
+        assert args.pflash_keep_ratio == 0.5
+
+    def test_resolve_pflash_config_explicit_keep_ratio_flag_wins(self):
+        # An explicit --pflash-keep-ratio must survive the shared wiring even
+        # when the alias pins its own override.
+        args = self._full_ns(pflash_keep_ratio=0.33)
+        config = resolve_pflash_config(args, model_name="bonsai-27b-2bit")
+        assert config.mode == "always"
+        assert config.keep_ratio == 0.33
+
+    def test_resolve_pflash_config_unknown_alias_stays_off_at_default(self):
+        # A non-verified alias: mode stays off and keep_ratio falls to 0.20.
+        args = self._full_ns()
+        config = resolve_pflash_config(args, model_name="qwen3-0.6b-4bit")
+        assert config.mode == "off"
+        assert config.keep_ratio == 0.20
 
 
 class TestCompressRequestTokens:

@@ -279,9 +279,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         if isinstance(pflash_keep_ratio, bool) or not isinstance(
             pflash_keep_ratio, (int, float)
         ):
-            raise ValueError(
-                f"alias {alias!r}: pflash_keep_ratio must be a number"
-            )
+            raise ValueError(f"alias {alias!r}: pflash_keep_ratio must be a number")
         pflash_keep_ratio = float(pflash_keep_ratio)
         if not (0.0 < pflash_keep_ratio <= 1.0):
             raise ValueError(

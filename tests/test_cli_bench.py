@@ -118,7 +118,7 @@ def test_bench_command_prefetches_via_mirror_before_hf_load(monkeypatch) -> None
     # detect_model_config). The order test doesn't depend on it.
     monkeypatch.setattr(
         "vllm_mlx.pflash.resolve_pflash_mode_default",
-        lambda args, *, model_name, is_multimodal=False: "off",
+        lambda args, *, model_name, is_multimodal=False, **_kw: "off",
     )
     # Route the ``from mlx_lm import load`` inside bench_command to
     # our mock. Patching ``mlx_lm.load`` on the module object makes
@@ -167,7 +167,7 @@ def test_bench_command_proceeds_when_mirror_prefetch_is_silent_noop(
     monkeypatch.setattr(cli, "_ensure_model_downloaded", _silent_prefetch)
     monkeypatch.setattr(
         "vllm_mlx.pflash.resolve_pflash_mode_default",
-        lambda args, *, model_name, is_multimodal=False: "off",
+        lambda args, *, model_name, is_multimodal=False, **_kw: "off",
     )
     _patch_mlx_lm_load(monkeypatch, _fake_load)
 
@@ -212,7 +212,7 @@ def test_bench_command_loads_weights_on_mlx_step_worker(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda name: None)
     monkeypatch.setattr(
         "vllm_mlx.pflash.resolve_pflash_mode_default",
-        lambda args, *, model_name, is_multimodal=False: "off",
+        lambda args, *, model_name, is_multimodal=False, **_kw: "off",
     )
     _patch_mlx_lm_load(monkeypatch, _fake_load)
 
@@ -236,7 +236,7 @@ def _capture_bench_lane_signals(monkeypatch, cli):
     engine boot. Returns the ``seen`` dict."""
     seen: dict[str, object] = {}
 
-    def _capture_default(args, *, model_name, is_multimodal=False):
+    def _capture_default(args, *, model_name, is_multimodal=False, **_kw):
         seen["default_is_multimodal"] = is_multimodal
         return "off"
 

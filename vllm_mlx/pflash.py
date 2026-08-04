@@ -163,8 +163,35 @@ def config_from_args(args: Any) -> PFlashConfig:
     ).validate()
 
 
+# Sentinel for "the caller has not pre-resolved the alias profile — detect it
+# yourself". Distinct from ``None``, which is the legitimate "detected, but this
+# path is not an alias" result. Lets ``resolve_pflash_config`` detect the
+# profile ONCE and hand it to both resolvers instead of each re-detecting on the
+# no-flag startup path (codex #1458 NIT: same metadata was detected twice).
+_DETECT = object()
+
+
+def _detect_or(model_name: str, pre: Any) -> Any:
+    """Return ``pre`` if the caller already resolved the profile, else detect it.
+
+    Detection import errors (broken/partial install) degrade to ``None`` — the
+    same conservative "no alias decision" both resolvers already fall back to.
+    """
+    if pre is not _DETECT:
+        return pre
+    try:
+        from .model_auto_config import detect_model_config
+    except ImportError:
+        return None
+    return detect_model_config(model_name)
+
+
 def resolve_pflash_mode_default(
-    args: Any, *, model_name: str, is_multimodal: bool = False
+    args: Any,
+    *,
+    model_name: str,
+    is_multimodal: bool = False,
+    _detected_config: Any = _DETECT,
 ) -> str:
     """Resolve ``args.pflash`` when the user passed nothing on the CLI.
 
@@ -204,23 +231,12 @@ def resolve_pflash_mode_default(
     """
     if args.pflash is not None:
         return args.pflash
-    # Late import: ``model_auto_config`` pulls in ``model_aliases``
-    # (which loads aliases.json) and regex compilation. Defer the
-    # cost so importing ``pflash`` stays cheap for callers that
-    # never resolve a default (e.g. ``compress_tokens`` users).
-    #
-    # Catch ImportError ONLY — it's the legitimate degenerate case
-    # (broken install, partial uninstall). A malformed ``aliases.json``
-    # raises ``ValueError`` from ``_coerce``; the user must see that.
-    # Letting it propagate here keeps codex r3 NIT honest: a
-    # blanket ``except Exception`` would silently default every alias
-    # to PFlash off on a real loader regression, hiding the bug on the
-    # one startup path where this helper is authoritative for defaults.
-    try:
-        from .model_auto_config import detect_model_config
-    except ImportError:
-        return "off"
-    cfg = detect_model_config(model_name)
+    # Resolve the alias profile (or reuse one ``resolve_pflash_config`` already
+    # detected). ``_detect_or`` does the late import so importing ``pflash``
+    # stays cheap for callers that never resolve a default, and degrades a
+    # broken install to ``None`` = PFlash off (a malformed ``aliases.json``
+    # still raises ValueError from ``_coerce`` — the user must see that).
+    cfg = _detect_or(model_name, _detected_config)
     if cfg is not None and cfg.pflash_tier == "verified":
         # A multimodal (MLLM/VLM) model can NOT run PFlash — the MLLM lane
         # is rejected outright by ``validate_model_support``. Auto-enabling
@@ -262,7 +278,9 @@ def resolve_pflash_mode_default(
     return "off"
 
 
-def resolve_pflash_keep_ratio_default(args: Any, *, model_name: str) -> float:
+def resolve_pflash_keep_ratio_default(
+    args: Any, *, model_name: str, _detected_config: Any = _DETECT
+) -> float:
     """Resolve ``args.pflash_keep_ratio`` when the user passed nothing on the CLI.
 
     Precedence (mirrors :func:`resolve_pflash_mode_default`):
@@ -283,16 +301,45 @@ def resolve_pflash_keep_ratio_default(args: Any, *, model_name: str) -> float:
     """
     if args.pflash_keep_ratio is not None:
         return args.pflash_keep_ratio
-    # Late import for the same reason as resolve_pflash_mode_default: keep
-    # importing ``pflash`` cheap for callers that never resolve a default.
-    try:
-        from .model_auto_config import detect_model_config
-    except ImportError:
-        return 0.20
-    cfg = detect_model_config(model_name)
+    cfg = _detect_or(model_name, _detected_config)
     if cfg is not None and cfg.pflash_keep_ratio is not None:
         return cfg.pflash_keep_ratio
     return 0.20
+
+
+def resolve_pflash_config(
+    args: Any, *, model_name: str, is_multimodal: bool = False
+) -> PFlashConfig:
+    """Resolve BOTH per-alias PFlash defaults (mode + keep_ratio) and build the
+    validated :class:`PFlashConfig`. This is the single wiring shared by the
+    ``serve`` and ``bench`` commands so the two never drift — and so the
+    end-to-end alias→config path is testable in one call (a test that asserts
+    both effective values here fails if either resolver is unwired, which a
+    test calling the resolvers directly would not catch).
+
+    Mutates ``args.pflash`` and ``args.pflash_keep_ratio`` in place (both were
+    the CLI None-sentinels until now) so any later reader sees the resolved
+    values, then returns the built config. ``validate_model_support`` is left
+    to the caller because its ``is_mllm`` verdict and error handling differ
+    between the two commands.
+    """
+    # Detect the alias profile ONCE and share it with both resolvers (each
+    # would otherwise re-detect on the no-flag path). Skip detection entirely
+    # when the user pinned both flags — neither resolver would consult it.
+    if args.pflash is None or args.pflash_keep_ratio is None:
+        detected = _detect_or(model_name, _DETECT)
+    else:
+        detected = _DETECT
+    args.pflash = resolve_pflash_mode_default(
+        args,
+        model_name=model_name,
+        is_multimodal=is_multimodal,
+        _detected_config=detected,
+    )
+    args.pflash_keep_ratio = resolve_pflash_keep_ratio_default(
+        args, model_name=model_name, _detected_config=detected
+    )
+    return config_from_args(args)
 
 
 def validate_model_support(

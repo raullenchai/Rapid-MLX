@@ -596,8 +596,7 @@ def test_pflash_keep_ratio_valid_value_is_accepted() -> None:
 
     profile = _coerce(
         "fake-alias",
-        {"hf_path": "fake/Model", "pflash_tier": "verified",
-         "pflash_keep_ratio": 0.5},
+        {"hf_path": "fake/Model", "pflash_tier": "verified", "pflash_keep_ratio": 0.5},
     )
     assert profile.pflash_keep_ratio == 0.5
     assert isinstance(profile.pflash_keep_ratio, float)
