@@ -630,21 +630,83 @@ def mtp_generate_step(
         )
     else:
         # ``disable_auto_k`` keeps the pre-0.9.13 fixed-K=1 A/B-bench
-        # behavior — no controller, no chain-of-K, verbatim chain-of-1.
+        # behavior — verbatim chain-of-1, no chain-of-K, and no depth
+        # SELECTION.
+        #
+        # The controller is still created, and still observes, because
+        # fixed-K is precisely the mode an operator measures in: with
+        # auto-K the acceptance rate is pooled across every depth the
+        # controller sampled, so it describes no particular K. Dropping
+        # the controller here would leave the ``k_cost_ms`` series empty
+        # in the one configuration where the per-K numbers are
+        # unambiguous — telling operators to disable the thing that
+        # records the metric they are being told to read.
+        #
+        # ``_select_k`` below is what gates behavior. ``pick_k`` is never
+        # called in this mode, so nothing the controller learns can
+        # change what this generator does.
+        #
+        # ``authoritative=False``: the registry is process-global and
+        # normally keeps whatever ceiling the FIRST caller set. This mode
+        # has no business fixing that ceiling — seeding the configured
+        # ``max_k`` (3 by default) could let a later auto-K run exceed a
+        # clamp it needs, and seeding the 1 this mode can actually reach
+        # would cap a later auto-K run at chain-of-1 forever. Marking it
+        # provisional lets the first run that really selects depth set
+        # the real ceiling.
         max_k_effective = 1
-        _controller = None
+        _controller = get_or_create_controller(
+            model_id or "__default__",
+            max_k=max_k_effective,
+            authoritative=False,
+        )
+
+    # Whether the controller CHOOSES the depth (as opposed to merely
+    # observing cost/acceptance). False under ``disable_auto_k``.
+    _select_k = not disable_auto_k
 
     # next_k: the K the controller wants for the UPCOMING round. Determines
     # whether we generate a draft at end of the current round. Bootstrap
     # value is the controller's initial pick_k (0 if fresh, else the
     # scheduled depth from the previous request).
-    next_k = _controller.pick_k() if _controller is not None else 1
+    next_k = _controller.pick_k() if _select_k and _controller is not None else 1
+
+    # Wall time spent generating the drafts that the NEXT round will
+    # consume. Drafting happens at the tail of round N — after round N's
+    # timer has already been read — so without this carry the drafter's
+    # cost lands in no round at all: ``cost(K>=1)`` measures only the
+    # target's verify forward, and the EV comparator divides
+    # ``committed(K) / cost(K)`` by a cost that omits the one term that
+    # most distinguishes K>=1 from K=0. The controller therefore
+    # systematically under-prices drafting.
+    #
+    # Charged to the round that CONSUMES the drafts rather than the one
+    # that produced them, because that is the round whose depth the cost
+    # describes. Drafts produced and then dropped (request hits
+    # max_tokens or EOS first) are simply never charged.
+    pending_draft_ms = 0.0
+
+    def _draft_chain_timed(*args, **kwargs):
+        """``_step_mtp_chain`` with its wall time held for the next round."""
+        nonlocal pending_draft_ms
+        _t0 = time.perf_counter()
+        result = _step_mtp_chain(*args, **kwargs)
+        pending_draft_ms = (time.perf_counter() - _t0) * 1000.0
+        return result
 
     def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
-        """Fold a round outcome into the controller (if enabled)."""
+        """Fold a round outcome into the controller (if enabled).
+
+        ``round_wall_ms`` is the caller's target-forward measurement; the
+        drafting cost carried over from the previous round is added here
+        so exactly one place owns the accounting.
+        """
+        nonlocal pending_draft_ms
+        charged = round_wall_ms + pending_draft_ms
+        pending_draft_ms = 0.0
         if _controller is None:
             return
-        _controller.record(k_used, round_wall_ms, accepts)
+        _controller.record(k_used, charged, accepts)
 
     while ntoks < max_tokens:
         round_start_perf = time.perf_counter()
@@ -667,13 +729,15 @@ def mtp_generate_step(
                 return
 
             # Decide K for the NEXT round.
-            next_k = _controller.pick_k() if _controller is not None else 1
+            next_k = (
+                _controller.pick_k() if _select_k and _controller is not None else 1
+            )
 
             hidden_at_main = hidden[:, -1:, :]
             if next_k >= 1:
                 # Chain-of-K: generate ``next_k`` drafts cascaded via
                 # MTP. next_k==1 is the plain single-draft path.
-                d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
+                d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
                     hidden_at_main, main_tok, prev_tokens, next_k
                 )
                 pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
@@ -901,7 +965,9 @@ def mtp_generate_step(
 
             # Decide K for the next round BEFORE generating the
             # next chain (a park decision skips drafter cost).
-            next_k = _controller.pick_k() if _controller is not None else 1
+            next_k = (
+                _controller.pick_k() if _select_k and _controller is not None else 1
+            )
             if next_k >= 1:
                 # Chain-carry: on all-accept the mtp_cache must
                 # advance by one extra position for the just-accepted
@@ -927,7 +993,7 @@ def mtp_generate_step(
                 else:
                     cache_commit = None
                 last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
-                d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
+                d_toks, d_lps, d_alps, d_xtcs = _draft_chain_timed(
                     last_committed_hidden,
                     last_committed_tok,
                     prev_tokens,

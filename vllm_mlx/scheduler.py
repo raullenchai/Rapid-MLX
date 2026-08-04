@@ -386,6 +386,21 @@ class SchedulerConfig:
     adaptive_prefill: bool = True
     adaptive_prefill_min_tokens: int = 32_768
     adaptive_prefill_min_chunk_size: int = 256
+
+    # APPENDED AT THE END DELIBERATELY: this dataclass is constructed
+    # positionally by external callers, so a field inserted mid-list
+    # silently rebinds every argument after it (see the note above
+    # ``mtp_sidecar``).
+    #
+    # Checkpoint identity for the MTP depth-controller registry, which is
+    # process-global and survives a model swap. Without it the key falls
+    # back to the model's SHAPE, and two checkpoints that share an
+    # architecture, quantization and MTP-head size — different weights,
+    # different acceptance profiles — collapse onto one controller, so
+    # one model's observations steer the other's depth selection. Also
+    # published as the ``model_id`` label on
+    # ``rapid_mlx_spec_decode_k_cost_ms``.
+    model_name: str | None = None
     # The ordinary Metal free-cache limit is intentionally generous for
     # decode throughput. During a very long prefill that same cache competes
     # with growing KV state and the current forward's transient allocations.
@@ -568,6 +583,24 @@ def _install_dense_sampler_fastpath(batch_gen: "BatchGenerator") -> None:
     logger.info("[dense_sampler_fastpath] installed on BatchGenerator")
 
 
+def _mtp_controller_key(model_name: str | None, sidecar: str | None) -> str | None:
+    """Combine target and drafter identity into one controller key.
+
+    The depth controller learns an acceptance profile, and acceptance is
+    a property of the target/drafter PAIR — the same target served with a
+    different sidecar head accepts differently. The registry is
+    process-global and is never reset in production, so keying on the
+    target alone would let the first sidecar's profile drive depth
+    selection for a second one after a reload.
+
+    ``None`` when there is no target name, which hands the caller over to
+    the shape-derived fallback rather than keying on a bare sidecar path.
+    """
+    if not model_name:
+        return None
+    return f"{model_name}+mtp:{sidecar}" if sidecar else model_name
+
+
 def _install_mtp_vendored(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -660,6 +693,7 @@ def _install_mtp_vendored(
     # Lazy import — the generator module pulls in mlx-lm's sample_utils and
     # patches ArraysCache; keep the import off the scheduler boot path so a
     # non-MTP build has zero cost.
+    from .spec_decode.mtp.draft_k_controller_v2 import derive_controller_key
     from .spec_decode.mtp.generator import mtp_generate_step
 
     _orig_step = gb._step
@@ -1186,7 +1220,18 @@ def _install_mtp_vendored(
                     prompt_cache=gb.prompt_cache,
                     temp=0.0,
                     # 0.9.13 PR-B: EV depth controller.
-                    model_id=controller_key or f"mtp-model-{id(mtp_model)}",
+                    # Fallback key derived from the model's SHAPE, not
+                    # its address. ``SchedulerConfig`` carries no model
+                    # name, so this path is the common one, not an edge
+                    # case. It has to satisfy two things at once: stable
+                    # across restarts (the string is published as the
+                    # ``model_id`` label on
+                    # ``rapid_mlx_spec_decode_k_cost_ms``, and
+                    # ``id(mtp_model)`` would mint a new series every
+                    # boot) and distinct between different models (equal
+                    # keys share one DepthController, so a collision lets
+                    # one model's learned costs drive another's depth).
+                    model_id=controller_key or derive_controller_key(mtp_model),
                     max_k=max_k,
                     disable_auto_k=disable_auto_k,
                     # 0.9.13 PR-C: EOS holdout — feed the
@@ -3550,10 +3595,20 @@ class Scheduler:
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
-                    controller_key=getattr(self, "_model_name", None)
-                    or getattr(self.model_config, "name", None)
-                    if getattr(self, "model_config", None) is not None
-                    else None,
+                    # Preferred (named) identity for the controller
+                    # registry. The previous spelling ended in a bare
+                    # conditional, and Python binds that loosest, so
+                    # ``a or b if c else None`` collapsed the whole
+                    # expression to ``None`` whenever ``model_config`` was
+                    # absent. ``None`` here is not fatal —
+                    # ``_install_mtp_vendored`` derives a structural key —
+                    # but it discarded the good name whenever one existed.
+                    controller_key=_mtp_controller_key(
+                        getattr(self, "_model_name", None)
+                        or getattr(getattr(self, "model_config", None), "name", None)
+                        or getattr(self.config, "model_name", None),
+                        getattr(self.config, "mtp_sidecar", None),
+                    ),
                 )
 
         if getattr(self.config, "spec_decode", "none") == "dspark":

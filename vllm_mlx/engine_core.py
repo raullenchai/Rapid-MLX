@@ -13,6 +13,7 @@ The design follows vLLM's engine architecture adapted for MLX.
 
 import asyncio
 import concurrent.futures
+import copy
 import logging
 import os
 import sys
@@ -115,6 +116,25 @@ class EngineConfig:
     no_spec_decode: bool = False
 
 
+def _resolve_model_identity(engine_config: Any, configured: str | None) -> str | None:
+    """Which checkpoint this engine is serving, for the MTP controller key.
+
+    The engine's own loaded checkpoint wins over ``configured``: a
+    ``SchedulerConfig`` may be shared across engines, so a previously
+    written name is stale rather than authoritative. ``configured`` is
+    only a fallback for engines that carry no model identity at all.
+
+    Idempotent — calling it again with the same engine yields the same
+    answer, which is what makes reuse of a config object safe.
+    """
+    return (
+        getattr(engine_config, "model_name", None)
+        or getattr(engine_config, "model_path", None)
+        or configured
+        or None
+    )
+
+
 class EngineCore:
     """
     Core engine for rapid-mlx inference with continuous batching.
@@ -162,6 +182,26 @@ class EngineCore:
 
         # Create scheduler
         scheduler_config = self.config.scheduler_config or SchedulerConfig()
+        # The engine knows which checkpoint it loaded; the scheduler did
+        # not, and its MTP depth-controller registry is process-global and
+        # outlives a model swap. Without a name the registry key falls
+        # back to the model's shape, so two same-shaped checkpoints share
+        # one controller and one model's learned costs steer the other's
+        # depth selection.
+        #
+        # Written to a COPY. A ``SchedulerConfig`` instance can be shared
+        # across engines, and writing an inferred name back into it would
+        # make that inference indistinguishable from an operator's
+        # explicit setting on the next engine: a second, unnamed engine
+        # would read the first engine's checkpoint name and be keyed as
+        # the first model, inheriting its controller — the exact failure
+        # this identity exists to prevent. Copying keeps the caller's
+        # object pristine, so every engine resolves from the same starting
+        # point.
+        scheduler_config = copy.copy(scheduler_config)
+        scheduler_config.model_name = _resolve_model_identity(
+            self.config, scheduler_config.model_name
+        )
         # D-METAL-CAP: propagate the engine-level ``gpu_memory_utilization``
         # to the scheduler so its admission gate can enforce the same cap
         # that ``mx.set_memory_limit`` only treats as a hint. Skip when the

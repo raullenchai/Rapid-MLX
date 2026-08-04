@@ -720,12 +720,15 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             "rapid_mlx_spec_decode_park_total",
             "counter",
             (
-                "MTP rounds where the EV depth controller picked K=0 "
-                "(plain-decode park). Non-zero on prose workloads where "
-                "drafter cost dominates acceptance — the operator-visible "
-                "signal that the controller is actively avoiding the "
-                "drafter cost, not silently stuck at K=1. Zero when "
-                "--mtp-disable-auto-k is set."
+                "MTP rounds that ran at K=0 (plain decode, no drafter). "
+                "Non-zero on prose workloads where drafter cost dominates "
+                "acceptance — the operator-visible signal that the "
+                "controller is actively avoiding the drafter cost, not "
+                "silently stuck at K=1. Under --mtp-disable-auto-k the "
+                "controller never selects a depth, so this counts only "
+                "the cold-start round each request opens with (one per "
+                "request), which is what gives k_cost_ms a K=0 reference "
+                "in that mode."
             ),
             int(park_total),
             labels=common_labels,
@@ -786,6 +789,65 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             labels=common_labels,
         )
     )
+
+    # Per-K round cost curve. ``park_total`` above says the controller is
+    # choosing K=0; this says whether K=0 is actually cheaper, which is
+    # the premise that choice rests on. Without it a high park rate is
+    # unfalsifiable from outside the process — and on at least one
+    # measured target (Qwen3.6-35B-A3B, M2 Pro) MTP was a net throughput
+    # loss *while* parking the majority of rounds.
+    #
+    # Carries its own ``model_id`` label rather than folding into the
+    # config-derived ``family``: the controller registry is keyed per
+    # target+drafter combination and a cost curve describes exactly one
+    # of them, so a process serving two would otherwise publish a blended
+    # ratio under a label naming only one. Cardinality is bounded by the
+    # number of models the process has actually served.
+    #
+    # Gauge, not counter: an EWMA is a current estimate that moves in
+    # both directions.
+    try:
+        from ..spec_decode.mtp.draft_k_controller_v2 import (
+            cost_curves_by_controller,
+        )
+
+        cost_curves = cost_curves_by_controller()
+    except Exception:  # noqa: BLE001
+        cost_curves = {}
+
+    if cost_curves:
+        out.append(
+            "# HELP rapid_mlx_spec_decode_k_cost_ms Wall time in "
+            "milliseconds for one MTP round at draft depth K (0=park, no "
+            "drafter), as the EV depth controller's EWMA: the target "
+            "forward plus the drafting that produced the K drafts it "
+            'consumed. Compare k_cost_ms{k="1"} against k_cost_ms{k="0"} '
+            "for what speculation costs on this hardware. Identified by "
+            "model_id rather than family: the controller registry outlives "
+            "a model swap, so a family label taken from the current route "
+            "config would misattribute a previous model's curve — or a "
+            "second concurrently-served model's — to whatever is loaded now."
+        )
+        out.append("# TYPE rapid_mlx_spec_decode_k_cost_ms gauge")
+        for model_id in sorted(cost_curves):
+            curve = cost_curves[model_id]
+            for k_val in sorted(curve):
+                # No ``family``: this series is per-controller, and
+                # ``family`` describes the CURRENT route config. The two
+                # disagree the moment the process has served more than one
+                # model. ``model_id`` already identifies the curve.
+                k_labels = {
+                    "method": "mtp",
+                    "model_id": model_id,
+                    "k": str(int(k_val)),
+                }
+                label_str = ",".join(
+                    f'{name}="{_escape_label_value(str(val))}"'
+                    for name, val in k_labels.items()
+                )
+                out.append(
+                    f"rapid_mlx_spec_decode_k_cost_ms{{{label_str}}} {curve[k_val]:.3f}"
+                )
     return out
 
 

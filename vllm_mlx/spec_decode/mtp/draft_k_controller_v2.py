@@ -39,6 +39,8 @@ import bisect
 import logging
 import threading
 from collections import deque
+from collections.abc import Mapping
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +208,17 @@ class CostModel:
         """Diagnostics: ``"0:12ms 1:18ms 2:24ms"``."""
         return " ".join(f"{d}:{self._ewma[d]:.0f}ms" for d in self._depths)
 
+    def samples(self) -> dict[int, tuple[float, int]]:
+        """``{K: (ewma_ms, visits)}`` for every sampled depth.
+
+        The machine-readable form of :meth:`sample_string`. Exists so
+        ``/metrics`` can export the curve: ``park_total`` alone tells an
+        operator that the controller is choosing K=0, but not whether
+        K=0 is actually cheaper than K=1 on their hardware, and that is
+        the only question the park counter is ever asked.
+        """
+        return {d: (self._ewma[d], self._visits.get(d, 0)) for d in self._depths}
+
 
 # ---------------------------------------------------------------------------
 # AcceptanceModel — per-position conditional acceptance-rate EWMA.
@@ -370,6 +383,11 @@ class DepthController:
         # Last EV pick observed by the starvation probe (separate from
         # ``_last_selected`` above, which tracks the outward-probe cadence).
         self._round_probe_last_sel = 0
+        # Whether ``max_k`` came from a caller that actually SELECTS
+        # depth. An observer-only run (``--mtp-disable-auto-k``) seeds a
+        # provisional ceiling that the first selecting caller replaces —
+        # see :func:`get_or_create_controller`.
+        self.ceiling_is_authoritative = True
         # Rolling window of the K's actually consumed by the target
         # forward. Bounded at ``DEPTH_PROBE_INTERVAL_MAX`` so the memory
         # footprint stays fixed regardless of run length; the argmin
@@ -645,6 +663,8 @@ _lock = threading.Lock()
 def get_or_create_controller(
     model_id: str,
     max_k: int = DEFAULT_MAX_K,
+    *,
+    authoritative: bool = True,
 ) -> DepthController:
     """Return the process-global :class:`DepthController` for ``model_id``,
     creating it on first access. Thread-safe.
@@ -658,17 +678,48 @@ def get_or_create_controller(
             different ``max_k`` are ignored (a warning is logged) —
             reconfiguring an in-flight controller mid-request would
             invalidate its learned frontier.
+        authoritative: whether this caller's ``max_k`` is a real
+            configuration or merely the ceiling an observer happened to
+            be able to reach. An observer (``--mtp-disable-auto-k``,
+            which records but never calls :meth:`DepthController.pick_k`)
+            must not fix the ceiling for whoever selects depth later:
+            seeding the configured value could let a subsequent auto-K
+            run exceed a clamp it needs, and seeding the reachable value
+            (1) would silently cap a later auto-K run at chain-of-1
+            forever. So an observer's ceiling is provisional, and the
+            first authoritative caller replaces it.
     """
     with _lock:
         ctrl = _controllers.get(model_id)
         if ctrl is None:
             ctrl = DepthController(max_k=max_k)
+            ctrl.ceiling_is_authoritative = authoritative
             _controllers[model_id] = ctrl
             logger.info(
-                "[MTP-controller] created DepthController for model_id=%r max_k=%d",
+                "[MTP-controller] created DepthController for model_id=%r "
+                "max_k=%d (%s)",
                 model_id,
                 max_k,
+                "configured" if authoritative else "provisional, observer-only",
             )
+        elif not authoritative:
+            # Observers never move an existing ceiling in either direction.
+            pass
+        elif not getattr(ctrl, "ceiling_is_authoritative", True):
+            # First real configuration to arrive replaces an observer's
+            # provisional ceiling. No warning: this is the handoff the
+            # provisional flag exists for, not a conflict.
+            if ctrl.max_k != max_k:
+                logger.info(
+                    "[MTP-controller] adopting configured max_k=%d for "
+                    "model_id=%r (was provisional max_k=%d from an "
+                    "observer-only run)",
+                    max_k,
+                    model_id,
+                    ctrl.max_k,
+                )
+            ctrl.max_k = max(0, max_k)
+            ctrl.ceiling_is_authoritative = True
         elif ctrl.max_k != max_k:
             logger.warning(
                 "[MTP-controller] ignoring max_k=%d for existing controller "
@@ -713,3 +764,170 @@ def sum_across_controllers() -> tuple[int, int, dict[int, int]]:
             for k, count in ctrl.k_histogram.items():
                 hist[k] = hist.get(k, 0) + count
         return round_total, park_total, hist
+
+
+"""Config fields that distinguish two models' forward cost. Deliberately
+structural: the controller learns a cost curve and an acceptance profile,
+and those are properties of the shape of the compute, not of which
+checkpoint's weights are loaded."""
+_KEY_FIELDS = (
+    "model_type",
+    "num_hidden_layers",
+    "hidden_size",
+    "vocab_size",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "num_experts",
+    # Not shape, but decisive for cost: two quantizations of one
+    # architecture are byte-identical in every field above and differ
+    # substantially in what a forward costs. Read from config when it
+    # survives there; ``_quantization_signature`` covers the (normal)
+    # case where it does not.
+    "quantization",
+)
+
+
+def _quantization_signature(model: Any) -> str | None:
+    """``"4b/g64"``-style summary read off the INSTANTIATED modules.
+
+    The checkpoint's ``quantization`` config block does not survive
+    ``TextModelArgs.from_dict()``, so a config-only lookup finds nothing
+    on exactly the models that matter. The quantized layers themselves
+    always carry it.
+
+    Returns every distinct ``(bits, group_size)`` pair, sorted, so a
+    mixed-precision build is described rather than reduced to whichever
+    layer happened to come first. ``None`` for an unquantized model or
+    anything that does not expose mlx's module tree.
+    """
+    named_modules = getattr(model, "named_modules", None)
+    if not callable(named_modules):
+        return None
+    found: set[tuple[Any, Any]] = set()
+    try:
+        for _name, module in named_modules():
+            bits = getattr(module, "bits", None)
+            group_size = getattr(module, "group_size", None)
+            if bits is not None and group_size is not None:
+                found.add((bits, group_size))
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        return None
+    if not found:
+        return None
+    return "+".join(f"{b}b/g{g}" for b, g in sorted(found))
+
+
+def derive_controller_key(model: Any) -> str:
+    """Stable registry key for ``model`` when no name is available.
+
+    Used only as a fallback — a served model's alias is a better key when
+    the caller has one. The point is that it must be **stable across
+    restarts**: this string reaches ``/metrics`` as the ``model_id`` label
+    on the cost curve, and a key built from ``id(model)`` mints a fresh
+    time series for the same model on every boot.
+
+    It must also stay **distinct between different models**, because the
+    registry hands back a shared :class:`DepthController` for equal keys —
+    two unnamed models collapsing onto one key would let costs learned for
+    one target drive the other's depth selection.
+
+    Architecture, size and quantization are all folded in, so the cases
+    that actually differ in cost stay apart.
+
+    **Known limit.** Two checkpoints identical in all of those but with
+    differently-trained weights — most plausibly two MTP sidecars of the
+    same shape against the same target — still collide, and would blend
+    acceptance profiles even though their cost curves genuinely match.
+    Separating them needs checkpoint identity (a path or a weight hash),
+    which this function does not have and cannot cheaply compute. Callers
+    holding a checkpoint name should pass it as ``model_id`` rather than
+    relying on this.
+    """
+    parts = [type(model).__name__]
+
+    # Config fields live at different depths depending on whether the
+    # caller handed us a VLM wrapper, its inner text model, or a plain
+    # text model. Qwen3.5/3.6's outer ``ModelArgs`` carries only
+    # ``model_type`` and a nested ``text_config`` — searching just the
+    # top level yields a key so coarse that every model of that family
+    # collides, which is the failure this function exists to prevent.
+    candidates = []
+    for attr in ("args", "config"):
+        cfg = getattr(model, attr, None)
+        if cfg is None:
+            continue
+        candidates.append(cfg)
+        for nested_attr in ("text_config", "language_config"):
+            nested = getattr(cfg, nested_attr, None)
+            if nested is not None:
+                candidates.append(nested)
+    for name in _KEY_FIELDS:
+        for cfg in candidates:
+            # ``text_config`` arrives as a plain dict on Qwen3.5/3.6,
+            # while the outer args is a dataclass — read both shapes or
+            # the nested fields silently never resolve.
+            value = (
+                cfg.get(name) if isinstance(cfg, Mapping) else getattr(cfg, name, None)
+            )
+            if value is not None:
+                # ``quantization`` is itself a mapping; render it in a
+                # fixed order so the key does not depend on dict
+                # iteration order across loads.
+                if isinstance(value, Mapping):
+                    value = ",".join(f"{k}={value[k]}" for k in sorted(value))
+                parts.append(f"{name}={value}")
+                break
+
+    # Structural backstop: depth is the single most discriminating
+    # property of forward cost, and it is readable off the module tree
+    # even when no config surface is exposed at all.
+    for path in (
+        ("layers",),
+        ("model", "layers"),
+        ("language_model", "model", "layers"),
+    ):
+        node = model
+        for step in path:
+            node = getattr(node, step, None)
+            if node is None:
+                break
+        if node:
+            parts.append(f"depth={len(node)}")
+            break
+
+    quant = _quantization_signature(model)
+    if quant is not None:
+        parts.append(f"quant={quant}")
+
+    drafter = getattr(model, "mtp", None)
+    if drafter is not None:
+        layers = getattr(drafter, "layers", None)
+        n_layers = len(layers) if layers is not None else "?"
+        parts.append(f"mtp={type(drafter).__name__}:{n_layers}")
+    return "|".join(parts)
+
+
+def cost_curves_by_controller() -> dict[str, dict[int, float]]:
+    """``{model_id: {K: round wall ms}}`` for every registered controller.
+
+    This is the curve the EV comparator actually divides by, so exporting
+    it lets an operator check the controller's premise instead of taking
+    it on faith: if ``K=0`` and ``K=1`` cost the same, parking is buying
+    nothing and the drafter is not what is slow.
+
+    Deliberately NOT aggregated across controllers. The registry is keyed
+    per target+drafter combination, and a cost curve is a property of one
+    such combination on one machine — averaging two of them yields a
+    cost ratio that belongs to neither, and the busier model would
+    dominate a number the operator reads as describing the model they
+    are looking at. Controllers with no sampled depth are omitted.
+    """
+    with _lock:
+        out: dict[str, dict[int, float]] = {}
+        for model_id, ctrl in _controllers.items():
+            curve = {
+                k: ms for k, (ms, visits) in ctrl.cost.samples().items() if visits > 0
+            }
+            if curve:
+                out[model_id] = curve
+        return out

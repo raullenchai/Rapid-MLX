@@ -27,6 +27,10 @@ because Stage B Viterbi is currently holding the device).
 
 from __future__ import annotations
 
+import copy
+import dataclasses
+import types
+
 import pytest
 
 mx = pytest.importorskip("mlx.core")
@@ -909,6 +913,100 @@ def test_metrics_includes_park_and_k_chosen_counters():
         'rapid_mlx_spec_decode_k_chosen_rounds_total{family="gemma-4-12b-4bit",method="mtp"} 0'
         in body
     )
+
+
+def test_metrics_k_cost_curve_absent_cold_then_present_after_rounds():
+    """``rapid_mlx_spec_decode_k_cost_ms`` exports the controller's
+    per-depth cost EWMA — the premise ``park_total`` rests on.
+
+    Unlike the park/k_chosen series this one is NOT emitted at cold
+    start: a zero-valued cost would read as "a round is free" rather
+    than "no round has been measured", and a dashboard dividing by it
+    would show an infinite speedup. Absence is the honest cold state.
+    """
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        get_or_create_controller,
+        reset_controllers,
+    )
+
+    reset_global_counter_for_tests()
+    reset_controllers()
+
+    class _Cfg:
+        model_alias = "gemma-4-12b-4bit"
+
+    assert "rapid_mlx_spec_decode_k_cost_ms" not in "\n".join(
+        _render_spec_decode_mtp_counters(_Cfg())
+    )
+
+    ctrl = get_or_create_controller("test-model", max_k=1)
+    ctrl.cost.observe(0, 20.0)
+    ctrl.cost.observe(1, 30.0)
+
+    body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+    assert "# TYPE rapid_mlx_spec_decode_k_cost_ms gauge" in body
+    assert (
+        'rapid_mlx_spec_decode_k_cost_ms{method="mtp",'
+        'model_id="test-model",k="0"} 20.000' in body
+    )
+    assert (
+        'rapid_mlx_spec_decode_k_cost_ms{method="mtp",'
+        'model_id="test-model",k="1"} 30.000' in body
+    )
+    reset_controllers()
+
+
+def test_cost_curves_are_not_blended_across_controllers():
+    """Two target+drafter combinations must stay separate series.
+
+    Averaging them yields a cost ratio belonging to neither, published
+    under a ``family`` label naming only one — an operator reading it
+    would attribute the busier model's curve to whichever model they
+    happened to be looking at.
+    """
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        cost_curves_by_controller,
+        get_or_create_controller,
+        reset_controllers,
+    )
+
+    reset_global_counter_for_tests()
+    reset_controllers()
+    a = get_or_create_controller("model-a", max_k=1)
+    b = get_or_create_controller("model-b", max_k=1)
+    # Lopsided sample counts: under any visit-weighted blend "model-a"
+    # would swallow "model-b" entirely.
+    for _ in range(50):
+        a.cost.observe(0, 10.0)
+    b.cost.observe(0, 40.0)
+
+    curves = cost_curves_by_controller()
+    assert set(curves) == {"model-a", "model-b"}
+    assert curves["model-a"][0] == pytest.approx(10.0)
+    assert curves["model-b"][0] == pytest.approx(40.0)
+
+    class _Cfg:
+        model_alias = "gemma-4-12b-4bit"
+
+    body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+    assert 'model_id="model-a",k="0"} 10.000' in body
+    assert 'model_id="model-b",k="0"} 40.000' in body
+    # The per-controller series must NOT carry the route config's family:
+    # neither of these controllers is the "gemma-4-12b-4bit" the renderer
+    # was handed, and labelling them so would attribute one model's costs
+    # to another on any family-filtered dashboard.
+    for line in body.splitlines():
+        if line.startswith("rapid_mlx_spec_decode_k_cost_ms{"):
+            assert "family=" not in line, line
+    reset_controllers()
 
 
 def test_metrics_route_includes_spec_decode_series_at_cold_start():
@@ -2411,3 +2509,476 @@ def test_generator_records_counter_on_accept_and_reject():
     assert snap.accepts == 2, f"expected 2 accepts; got {snap}"
     assert snap.tokens_saved == 2
     assert snap.accept_ratio == pytest.approx(2 / 3)
+
+
+def test_drafter_wall_time_is_charged_to_the_round_that_consumes_it():
+    """``cost(K>=1)`` must include the drafting that produced the K drafts.
+
+    Drafting happens at the tail of round N, after round N's timer has
+    already been read, so a naive implementation charges it to nobody:
+    ``cost(1)`` measures only the target's verify forward. The EV
+    comparator then divides ``committed(K) / cost(K)`` by a cost missing
+    the one term that most distinguishes K>=1 from K=0, and systematically
+    under-prices drafting.
+
+    Driven by a virtual clock that advances only when the model is
+    called, so the recorded costs are exact rather than thresholded. A
+    real ``time.sleep`` would make this a wall-clock race: a loaded host
+    or MLX first-touch initialization can inflate the K=0 forward past
+    any absolute cutoff, and the cost EWMA's innovation clamp would keep
+    it there for the rest of the test.
+    """
+    import time as _time
+
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        get_or_create_controller,
+        reset_controllers,
+    )
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    FORWARD_S = 0.010  # every backbone forward
+    DRAFT_S = 0.050  # every drafter call, deliberately the larger term
+
+    clock = {"t": 0.0}
+
+    class _ClockedModel(_MockedQwen35Model):
+        def __call__(self, *args, **kwargs):
+            clock["t"] += FORWARD_S
+            return super().__call__(*args, **kwargs)
+
+        def mtp_forward(self, *args, **kwargs):
+            clock["t"] += DRAFT_S
+            return super().mtp_forward(*args, **kwargs)
+
+    reset_controllers()
+    # Long enough for the controller's bootstrap to seed both K=0 and
+    # K=1; every draft matches its verify position so drafting is always
+    # accepted and K=1 rounds keep being chosen.
+    backbone = [7] + [11, 13] * 40
+    model = _ClockedModel(backbone, [11] * 80)
+    prompt = mx.array([1], dtype=mx.uint32)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_time, "perf_counter", lambda: clock["t"])
+        list(
+            mtp_generate_step(
+                prompt,
+                model,
+                max_tokens=40,
+                accept_counter=MTPAcceptCounter(),
+                model_id="slow-drafter",
+                max_k=1,
+            )
+        )
+
+    curve = get_or_create_controller("slow-drafter", max_k=1).cost.samples()
+    assert 0 in curve and 1 in curve, f"controller never sampled both depths: {curve}"
+    park_ms, _ = curve[0]
+    draft_ms, _ = curve[1]
+
+    # A park round is one backbone forward and consumes no drafts.
+    assert park_ms == pytest.approx(FORWARD_S * 1000.0), (
+        f"K=0 cost {park_ms:.1f}ms != the one forward it ran "
+        f"({FORWARD_S * 1000.0:.0f}ms) — drafting is being charged to a "
+        "round that consumed no drafts"
+    )
+    # A K=1 round is one verify forward PLUS the drafting that produced
+    # the draft it consumed. Without the carry this is FORWARD_S alone.
+    assert draft_ms == pytest.approx((FORWARD_S + DRAFT_S) * 1000.0), (
+        f"K=1 cost {draft_ms:.1f}ms != forward + drafter "
+        f"({(FORWARD_S + DRAFT_S) * 1000.0:.0f}ms) — the drafter is not "
+        "being charged to the round that consumed its output"
+    )
+    reset_controllers()
+
+
+def test_fixed_k_mode_still_records_the_cost_curve():
+    """``disable_auto_k=True`` must keep OBSERVING even though it stops
+    the controller from CHOOSING.
+
+    Fixed-K is the mode an operator measures in — under auto-K the
+    acceptance ratio is pooled across every depth the controller sampled,
+    so it describes no particular K. If fixed-K dropped the controller
+    entirely, ``k_cost_ms`` would be empty in exactly the configuration
+    the docs tell operators to measure with.
+
+    Behaviour must not change: K stays pinned at 1, so no round parks.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        get_or_create_controller,
+        reset_controllers,
+    )
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    reset_controllers()
+    backbone = [7] + [11, 13] * 20
+    model = _MockedQwen35Model(backbone, [11] * 40)
+
+    list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            model,
+            max_tokens=20,
+            accept_counter=MTPAcceptCounter(),
+            model_id="fixed-k-model",
+            max_k=1,
+            disable_auto_k=True,
+        )
+    )
+
+    ctrl = get_or_create_controller("fixed-k-model", max_k=1)
+    curve = ctrl.cost.samples()
+    assert 1 in curve, f"fixed-K recorded no cost for K=1: {curve}"
+    assert curve[1][1] > 0, "K=1 sampled zero times"
+    # The controller never CHOSE a depth, so the only K=0 round is the
+    # cold-start one every request begins with (no drafts exist yet).
+    # That single sample is not an accident to be suppressed — it is the
+    # denominator the fixed-K decision rule needs, and there is exactly
+    # one per request.
+    assert ctrl.park_count == 1, (
+        f"expected exactly the one cold-start K=0 round, got "
+        f"{ctrl.park_count} — the controller is selecting depth when it "
+        "must only observe"
+    )
+    assert set(ctrl.k_histogram) == {0, 1}, (
+        f"fixed-K ran depths {sorted(ctrl.k_histogram)}, expected the "
+        "cold-start K=0 plus pinned K=1"
+    )
+    assert 0 in curve, (
+        "no K=0 reference recorded — the fixed-K decision rule has no "
+        "denominator to divide by"
+    )
+    reset_controllers()
+
+
+def test_derive_controller_key_is_stable_and_discriminating():
+    """The fallback registry key must be stable across restarts AND
+    distinct between different models.
+
+    Both halves are load-bearing. It reaches ``/metrics`` as the
+    ``model_id`` label, so an ``id()``-derived key would mint a fresh
+    series every boot; and equal keys share one ``DepthController``, so a
+    collision between different models would let one model's learned
+    costs drive the other's depth selection.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        derive_controller_key,
+    )
+
+    class _Args:
+        model_type = "qwen3_5_moe"
+        num_hidden_layers = 40
+        hidden_size = 4096
+        vocab_size = 151936
+
+    class _Model:
+        args = _Args()
+
+    a, b = _Model(), _Model()
+    key = derive_controller_key(a)
+
+    # Stable: two distinct instances of the same model shape agree, so a
+    # restart reproduces the key.
+    assert derive_controller_key(b) == key
+    # Carries no address.
+    assert hex(id(a))[2:] not in key and str(id(a)) not in key
+    assert "qwen3_5_moe" in key and "num_hidden_layers=40" in key
+
+    # Discriminating: a different shape must not collide.
+    class _OtherArgs(_Args):
+        num_hidden_layers = 64
+
+    class _OtherModel:
+        args = _OtherArgs()
+
+    assert derive_controller_key(_OtherModel()) != key
+
+    # The drafter's shape is folded in, so the same target with a
+    # different-sized head is a different key.
+    class _Head:
+        layers = [object(), object()]
+
+    class _WithHead(_Model):
+        mtp = _Head()
+
+    assert derive_controller_key(_WithHead()) != key
+
+    # Nested dict config: Qwen3.5/3.6's outer args carries only
+    # ``model_type`` plus a plain-dict ``text_config``. Reading just the
+    # top level as an object yields "model_type=qwen3_5_moe" and nothing
+    # else — every model of the family would then share one controller.
+    class _NestedArgs:
+        model_type = "qwen3_5_moe"
+        text_config = {"num_hidden_layers": 40, "hidden_size": 2048}
+
+    class _NestedModel:
+        args = _NestedArgs()
+
+    nested_key = derive_controller_key(_NestedModel())
+    assert "num_hidden_layers=40" in nested_key, (
+        f"nested dict config did not resolve: {nested_key}"
+    )
+    assert "hidden_size=2048" in nested_key
+
+    class _NestedArgsWider(_NestedArgs):
+        text_config = {"num_hidden_layers": 40, "hidden_size": 5120}
+
+    class _WiderModel:
+        args = _NestedArgsWider()
+
+    assert derive_controller_key(_WiderModel()) != nested_key
+
+    # Quantization is not shape, but two quantizations of one
+    # architecture differ substantially in what a forward costs — sharing
+    # a cost curve between them would be a real mis-attribution.
+    class _Q4:
+        model_type = "qwen3_5"
+        num_hidden_layers = 64
+        quantization = {"bits": 4, "group_size": 64}
+
+    class _Q8(_Q4):
+        quantization = {"bits": 8, "group_size": 64}
+
+    # One class, swapped args — the key opens with the model's class name,
+    # so two differently-named test classes would differ for that reason
+    # rather than for the one under test.
+    class _Quantized:
+        def __init__(self, args):
+            self.args = args
+
+    assert derive_controller_key(_Quantized(_Q4())) != derive_controller_key(
+        _Quantized(_Q8())
+    )
+
+    # Rendered in a fixed order so dict iteration cannot perturb the key.
+    class _Q4Reordered(_Q4):
+        quantization = {"group_size": 64, "bits": 4}
+
+    assert derive_controller_key(_Quantized(_Q4Reordered())) == derive_controller_key(
+        _Quantized(_Q4())
+    )
+
+    # Degrades without raising when the model exposes no config at all.
+    class _Bare:
+        pass
+
+    assert derive_controller_key(_Bare())
+
+
+def test_derive_controller_key_reads_quantization_off_the_modules():
+    """Quantization must come from the instantiated layers, not config.
+
+    mlx-lm's ``TextModelArgs.from_dict()`` drops the checkpoint's
+    ``quantization`` block, so a config-only lookup finds nothing on
+    exactly the quantized models this needs to tell apart — leaving a
+    4-bit and an 8-bit build of one architecture sharing a cost curve.
+    The quantized modules themselves always carry it.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        derive_controller_key,
+    )
+
+    class _Layer:
+        def __init__(self, bits, group_size):
+            self.bits = bits
+            self.group_size = group_size
+
+    class _Model:
+        """No config surface at all — mirrors the post-``from_dict`` state."""
+
+        def __init__(self, layers):
+            self._layers = layers
+
+        def named_modules(self):
+            return [(str(i), m) for i, m in enumerate(self._layers)]
+
+    k4 = derive_controller_key(_Model([_Layer(4, 64), _Layer(4, 64)]))
+    k8 = derive_controller_key(_Model([_Layer(8, 64), _Layer(8, 64)]))
+    assert "quant=4b/g64" in k4
+    assert "quant=8b/g64" in k8
+    assert k4 != k8
+
+    # A mixed-precision build is described, not reduced to whichever
+    # layer happened to be visited first — and the order it is visited
+    # in must not change the key.
+    mixed_a = derive_controller_key(_Model([_Layer(4, 64), _Layer(8, 64)]))
+    mixed_b = derive_controller_key(_Model([_Layer(8, 64), _Layer(4, 64)]))
+    assert mixed_a == mixed_b
+    assert "quant=4b/g64+8b/g64" in mixed_a
+    assert mixed_a != k4
+
+    # Unquantized: no marker rather than a misleading one.
+    class _Plain:
+        def named_modules(self):
+            return [("0", object())]
+
+    assert "quant=" not in derive_controller_key(_Plain())
+
+
+def test_engine_core_threads_checkpoint_name_into_scheduler_config():
+    """The engine knows which checkpoint it loaded; the scheduler must
+    learn it, because the MTP controller registry is process-global.
+
+    Without a name the registry key falls back to the model's shape, and
+    two checkpoints sharing an architecture, quantization and MTP-head
+    size collapse onto one ``DepthController`` — one model's observed
+    costs then drive the other's depth selection.
+    """
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    assert "model_name" in {f.name for f in dataclasses.fields(SchedulerConfig)}, (
+        "SchedulerConfig lost the model_name field the controller key "
+        "resolution chain depends on"
+    )
+    assert SchedulerConfig().model_name is None
+
+    from vllm_mlx.engine_core import _resolve_model_identity
+
+    engine_a = types.SimpleNamespace(model_name="engine/a", model_path=None)
+    engine_b = types.SimpleNamespace(model_name="engine/b", model_path=None)
+
+    # A blank config takes the engine's checkpoint.
+    cfg = SchedulerConfig()
+    cfg.model_name = _resolve_model_identity(engine_a, cfg.model_name)
+    assert cfg.model_name == "engine/a"
+
+    # THE RELOAD CASE: the same config object reused by a second engine
+    # must pick up the SECOND checkpoint. A fill-a-blank guard would
+    # leave "engine/a" here and hand the new model the old model's
+    # process-global controller.
+    cfg.model_name = _resolve_model_identity(engine_b, cfg.model_name)
+    assert cfg.model_name == "engine/b"
+
+    # And the engine must not write inference back into a config it does
+    # not own: a shared SchedulerConfig stays pristine, so a second,
+    # UNNAMED engine cannot mistake the first engine's inferred name for
+    # its own explicit configuration.
+    shared = SchedulerConfig()
+    for engine in (engine_a, engine_b):
+        local = copy.copy(shared)
+        local.model_name = _resolve_model_identity(engine, local.model_name)
+        assert local.model_name == engine.model_name
+    assert shared.model_name is None
+    anonymous = types.SimpleNamespace(model_name=None, model_path=None)
+    local = copy.copy(shared)
+    local.model_name = _resolve_model_identity(anonymous, local.model_name)
+    assert local.model_name is None, (
+        "an unnamed engine inherited a previous engine's identity and "
+        "would be keyed as that model"
+    )
+
+    # Idempotent: re-resolving with the same engine does not drift.
+    assert _resolve_model_identity(engine_b, cfg.model_name) == "engine/b"
+
+    # An engine with no identity of its own falls back to the config.
+    anon = types.SimpleNamespace(model_name=None, model_path=None)
+    assert _resolve_model_identity(anon, "configured/name") == "configured/name"
+    assert _resolve_model_identity(anon, None) is None
+
+    # ``model_path`` serves when ``model_name`` is absent.
+    pathy = types.SimpleNamespace(model_name=None, model_path="/models/foo")
+    assert _resolve_model_identity(pathy, None) == "/models/foo"
+
+
+def test_mtp_controller_key_separates_sidecars():
+    """The controller learns an ACCEPTANCE profile, and acceptance is a
+    property of the target/drafter pair, not the target alone.
+
+    The registry is process-global and never reset in production, so a
+    key ignoring the sidecar would let the first head's profile drive
+    depth selection for a different head after a reload.
+    """
+    from vllm_mlx.scheduler import _mtp_controller_key
+
+    base = _mtp_controller_key("qwen3.6-35b", None)
+    a = _mtp_controller_key("qwen3.6-35b", "mlx-community/Head-A")
+    b = _mtp_controller_key("qwen3.6-35b", "mlx-community/Head-B")
+
+    assert base == "qwen3.6-35b"
+    assert a != b
+    assert a != base and b != base
+    assert "qwen3.6-35b" in a and "Head-A" in a
+
+    # A different target with the same head is still distinct.
+    assert _mtp_controller_key("qwen3.6-27b", "mlx-community/Head-A") != a
+
+    # No target name -> None, so the caller falls through to the
+    # shape-derived key rather than keying on a bare sidecar path.
+    assert _mtp_controller_key(None, "mlx-community/Head-A") is None
+    assert _mtp_controller_key("", "mlx-community/Head-A") is None
+
+
+def test_scheduler_config_model_name_is_the_last_field():
+    """``SchedulerConfig`` is constructed positionally by external
+    callers, so a field added mid-list silently rebinds every argument
+    after it. ``model_name`` must stay at the end.
+    """
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    names = [f.name for f in dataclasses.fields(SchedulerConfig)]
+    assert names[-1] == "model_name", (
+        f"model_name must be the last field to preserve positional "
+        f"construction; it is at index {names.index('model_name')} of "
+        f"{len(names)}"
+    )
+
+
+def test_fixed_k_observer_leaves_the_ceiling_to_whoever_selects_depth():
+    """An observer-only fixed-K run must not fix ``max_k`` for later runs.
+
+    The registry normally keeps whatever ceiling the FIRST caller set.
+    That makes an observer's ceiling a trap in both directions: seeding
+    the configured value (3 by default) would let a later auto-K run —
+    one an SSM cache forces to clamp to 1 — inherit 3 and select past its
+    clamp; seeding the 1 this mode can actually reach would cap a later
+    auto-K run at chain-of-1 forever. So the observer's ceiling is
+    provisional and the first selecting caller replaces it.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        get_or_create_controller,
+        reset_controllers,
+    )
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    def _observe_only(max_k):
+        """Run a fixed-K generation, which records but never selects."""
+        reset_controllers()
+        list(
+            mtp_generate_step(
+                mx.array([1], dtype=mx.uint32),
+                _MockedQwen35Model([7] + [11, 13] * 20, [11] * 40),
+                max_tokens=12,
+                accept_counter=MTPAcceptCounter(),
+                model_id="ceiling-model",
+                max_k=max_k,
+                disable_auto_k=True,
+            )
+        )
+        # Peek without adopting — an authoritative read would itself set
+        # the ceiling this test is trying to observe.
+        return get_or_create_controller("ceiling-model", max_k=99, authoritative=False)
+
+    # The observer only ever ran K in {0, 1}, and says so provisionally.
+    ctrl = _observe_only(max_k=3)
+    assert ctrl.max_k == 1
+    assert ctrl.ceiling_is_authoritative is False
+    assert ctrl.pick_k() <= 1
+
+    # A later auto-K run clamped to 1 (the SSM case) keeps 1.
+    ctrl = _observe_only(max_k=3)
+    assert get_or_create_controller("ceiling-model", max_k=1).max_k == 1
+
+    # A later auto-K run configured for 3 gets 3 — the observer must not
+    # have capped it.
+    ctrl = _observe_only(max_k=3)
+    adopted = get_or_create_controller("ceiling-model", max_k=3)
+    assert adopted.max_k == 3
+    assert adopted.ceiling_is_authoritative is True
+
+    # Once authoritative, the pre-existing "first config wins" rule is
+    # unchanged: a conflicting later ceiling is ignored.
+    assert get_or_create_controller("ceiling-model", max_k=2).max_k == 3
+    reset_controllers()

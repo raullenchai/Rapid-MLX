@@ -76,6 +76,91 @@ into the same config path.
 | `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |
 
+#### MTP is not free — measure before you enable it
+
+MTP is **opt-in and should stay opt-in**. A high draft acceptance rate is
+not sufficient for it to pay, and on at least one otherwise-recommended
+model it is a large net loss.
+
+The speedup ceiling for chain-of-K MTP is
+
+```
+speedup <= (1 + K * accept) / cost_ratio(K + 1)
+```
+
+where `cost_ratio(N)` is what an `N`-position forward costs relative to a
+1-position decode forward on **your** hardware. The numerator is what
+speculation wins; the denominator is what verifying costs. Acceptance is
+a property of the drafter, `cost_ratio` is a property of the chip and the
+architecture, and only their ratio decides the outcome. Neither number
+transfers between machines: the same model and byte-identical acceptance
+measured +118% on one host and +13% on another.
+
+Worked example — `qwen3.6-35b-4bit` with `Qwen3.6-35B-A3B-MTP-4bit`,
+Mac mini M2 Pro / 32GB, `temperature=0`, medians over 4 repetitions:
+
+| | |
+|---|---|
+| draft acceptance | **0.857** — the drafter is excellent |
+| `cost_ratio(2)` | **1.70** — a 2-position forward costs 1.70x a decode forward |
+| predicted ceiling | `1.857 / 1.70` = **1.09x** |
+| measured, MTP on, fixed K=1 | 47.4 tok/s |
+| measured, MTP on, auto-K | 47.6 tok/s — the controller cannot rescue it |
+| measured, MTP off | 59.0 tok/s — **MTP is 20% slower** |
+
+(Acceptance and the fixed-K throughput are from the same run, so they
+describe the same work; the auto-K row is a separate run of the same
+protocol.)
+
+An 86% acceptance rate buys a 9% ceiling here, and per-round overhead
+consumes it. The architecture is why: this is a linear-attention hybrid,
+and its forward does not amortize a second position the way a
+pure-attention model's does. Enabling MTP on it costs a fifth of your
+throughput.
+
+To check your own combination, pin the depth and run a representative
+workload:
+
+```bash
+rapid-mlx serve <your-model> \
+  --speculative-config '{"method":"mtp","model":"<head>","disable_auto_k":true}'
+```
+
+then read off `/metrics`:
+
+```
+rapid_mlx_spec_decode_k_cost_ms{k="0",model_id="..."}   # park round, no drafter
+rapid_mlx_spec_decode_k_cost_ms{k="1",model_id="..."}   # drafting + verify round
+rapid_mlx_spec_decode_accept_ratio                      # acceptance
+```
+
+`disable_auto_k` is what makes the acceptance term meaningful:
+`accept_ratio` is a single number pooled over every depth the controller
+sampled, and deeper positions accept less often than shallow ones, so
+under auto-K it belongs to no particular K. Pinning the depth makes it
+belong to the K you are evaluating. The controller keeps measuring in
+this mode — it just stops choosing.
+
+The `k="0"` sample in fixed-K mode comes from the cold-start round each
+request opens with, so send enough requests (a dozen is plenty) for it to
+settle before reading the ratio.
+
+Each `k_cost_ms` bucket is a whole round — the target forward plus the
+drafting that produced the drafts that round consumed — so the two are
+directly comparable. A K=1 round emits `1 + accept` tokens on average
+against a park round's 1, which makes the decision rule:
+
+```
+enable MTP only if   (1 + K * accept)  >  k_cost_ms{k=K} / k_cost_ms{k=0}
+```
+
+The left side is what depth K wins you; the right side is what it costs.
+On `qwen3.6-35b-4bit` the left side is 1.857 and the right side is larger,
+which is the whole story. Note that both buckets carry MTP's own
+per-round overhead, so clearing this bar is necessary but not sufficient
+— a marginal result should be confirmed against a real MTP-off A/B before
+you turn it on.
+
 #### MTP sidecar heads are not standalone models
 
 The `*-mtp-4bit` aliases — `qwen3.6-27b-mtp-4bit`
