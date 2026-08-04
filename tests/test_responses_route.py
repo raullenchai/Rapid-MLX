@@ -6,6 +6,7 @@ Same lightweight-engine harness shape as ``test_anthropic_route_auth.py``
 """
 
 import json
+import math
 import sys
 import types
 from dataclasses import dataclass, field
@@ -1602,3 +1603,202 @@ def test_deepseek_codex_implicit_temperature_uses_low_entropy_default(monkeypatc
     assert (
         _resolved_responses_sampling_kwargs(chat, responses, None)["temperature"] == 0.7
     )
+
+
+def test_deepseek_thinking_false_suppresses_reopened_think_token(monkeypatch):
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+
+    monkeypatch.setattr(
+        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        lambda _tokenizer, _parser: (17, 18),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
+    )
+    kwargs = {}
+    _attach_deepseek_no_think_suppression(
+        SimpleNamespace(tokenizer=object()),
+        SimpleNamespace(reasoning_parser_name="deepseek_v4"),
+        None,
+        True,
+        kwargs,
+    )
+
+    logits = kwargs["suppressed_tokens_logits_processor"](
+        mx.array([1, 2]), mx.zeros((1, 32))
+    )
+    mx.eval(logits)
+    assert logits[0, 17].item() == -math.inf
+    assert logits[0, 18].item() == 0.0
+
+
+def test_no_think_suppression_is_deepseek_and_explicit_false_only(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+
+    monkeypatch.setattr(
+        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        lambda _tokenizer, _parser: (17, 18),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
+    )
+    engine = SimpleNamespace(tokenizer=object())
+
+    for cfg, explicit_no_thinking in (
+        (SimpleNamespace(reasoning_parser_name="deepseek_v4"), False),
+        (SimpleNamespace(reasoning_parser_name="qwen3"), True),
+    ):
+        kwargs = {}
+        _attach_deepseek_no_think_suppression(
+            engine, cfg, None, explicit_no_thinking, kwargs
+        )
+        assert "suppressed_tokens_logits_processor" not in kwargs
+
+
+def test_auto_disabled_thinking_does_not_activate_explicit_suppression(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+    from vllm_mlx.service.helpers import _extract_thinking_from_request
+
+    request = ChatCompletionRequest(
+        model="m", messages=[{"role": "user", "content": "hello"}]
+    )
+    explicit_no_thinking = _extract_thinking_from_request(request) is False
+    request.chat_template_kwargs = {"enable_thinking": False}
+
+    kwargs = {}
+    _attach_deepseek_no_think_suppression(
+        SimpleNamespace(tokenizer=object()),
+        SimpleNamespace(reasoning_parser_name="deepseek_v4"),
+        None,
+        explicit_no_thinking,
+        kwargs,
+    )
+    assert "suppressed_tokens_logits_processor" not in kwargs
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "no_think_fields",
+    [{"enable_thinking": False}, {"reasoning_effort": "none"}],
+)
+@pytest.mark.parametrize(
+    ("selected_model", "expect_suppression"),
+    [("deepseek-agent", True), ("qwen-default", False)],
+)
+def test_no_think_suppression_follows_requested_registry_model(
+    responses_client,
+    monkeypatch,
+    stream,
+    no_think_fields,
+    selected_model,
+    expect_suppression,
+):
+    from vllm_mlx.config import get_config
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+
+    cfg = get_config()
+    qwen_engine = _Engine()
+    deepseek_engine = _Engine()
+    registry = ModelRegistry()
+    registry.add(
+        ModelEntry(
+            engine=qwen_engine,
+            model_name="qwen-default",
+            model_path="qwen-default",
+            reasoning_parser="qwen3",
+        ),
+        is_default=True,
+    )
+    registry.add(
+        ModelEntry(
+            engine=deepseek_engine,
+            model_name="deepseek-agent",
+            model_path="DeepSeek-V4-Flash-0731",
+            reasoning_parser="deepseek_v4",
+        )
+    )
+    cfg.engine = qwen_engine
+    cfg.model_name = "qwen-default"
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.model_registry = registry
+    monkeypatch.setattr(
+        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        lambda _tokenizer, _parser: (17, 18),
+    )
+
+    response = responses_client.client.post(
+        "/v1/responses",
+        json=_payload(model=selected_model, stream=stream, **no_think_fields),
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    selected_engine = (
+        deepseek_engine if selected_model == "deepseek-agent" else qwen_engine
+    )
+    other_engine = (
+        qwen_engine if selected_engine is deepseek_engine else deepseek_engine
+    )
+    calls = selected_engine.stream_calls if stream else selected_engine.calls
+    assert len(calls) == 1
+    assert (
+        "suppressed_tokens_logits_processor" in calls[0].kwargs
+    ) is expect_suppression
+    assert not other_engine.calls and not other_engine.stream_calls
+
+
+def test_explicit_thinking_true_wins_over_reasoning_effort_none(responses_client):
+    response = responses_client.client.post(
+        "/v1/responses",
+        json=_payload(enable_thinking=True, reasoning_effort="none"),
+        headers={"Authorization": "Bearer test-secret"},
+    )
+
+    assert response.status_code == 200
+    kwargs = responses_client.engine.calls[-1].kwargs
+    assert kwargs["enable_thinking"] is True
+    assert "suppressed_tokens_logits_processor" not in kwargs
+
+
+def test_registry_engine_mismatch_fails_closed(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx.routes.responses import _attach_deepseek_no_think_suppression
+
+    selected_engine = SimpleNamespace(tokenizer=object())
+    stale_entry = SimpleNamespace(
+        engine=SimpleNamespace(tokenizer=object()),
+        reasoning_parser="deepseek_v4",
+        model_path="DeepSeek-V4-Flash-0731",
+        model_name="deepseek-agent",
+    )
+    cfg = SimpleNamespace(
+        model_registry=SimpleNamespace(get_entry=lambda _name: stale_entry),
+        reasoning_parser_name="deepseek_v4",
+        model_path="DeepSeek-V4-Flash-0731",
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.api.reasoning_budget.resolve_think_token_ids",
+        lambda _tokenizer, _parser: (17, 18),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 32
+    )
+
+    kwargs = {}
+    _attach_deepseek_no_think_suppression(
+        selected_engine, cfg, "deepseek-agent", True, kwargs
+    )
+    assert "suppressed_tokens_logits_processor" not in kwargs

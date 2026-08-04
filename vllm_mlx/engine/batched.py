@@ -1726,6 +1726,9 @@ class BatchedEngine(BaseEngine):
         reasoning_budget_logits_processor = kwargs.pop(
             "reasoning_budget_logits_processor", None
         )
+        suppressed_tokens_logits_processor = kwargs.pop(
+            "suppressed_tokens_logits_processor", None
+        )
         if output_router_seed is None and isinstance(prompt, str):
             # ``build_prompt(enable_thinking=False)`` is part of the public
             # engine contract and returns the prepared Harmony string. A
@@ -1751,6 +1754,7 @@ class BatchedEngine(BaseEngine):
             requires_prompt_integrity=requires_prompt_integrity,
             grammar_logits_processor=grammar_logits_processor,
             reasoning_budget_logits_processor=reasoning_budget_logits_processor,
+            suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
         )
 
         if assistant_text_prefix:
@@ -1943,6 +1947,9 @@ class BatchedEngine(BaseEngine):
         reasoning_budget_logits_processor = kwargs.pop(
             "reasoning_budget_logits_processor", None
         )
+        suppressed_tokens_logits_processor = kwargs.pop(
+            "suppressed_tokens_logits_processor", None
+        )
         request_id = await self._engine.add_request(
             prompt=prompt,
             sampling_params=sampling_params,
@@ -1951,6 +1958,7 @@ class BatchedEngine(BaseEngine):
             requires_prompt_integrity=requires_prompt_integrity,
             grammar_logits_processor=grammar_logits_processor,
             reasoning_budget_logits_processor=reasoning_budget_logits_processor,
+            suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
         )
         # C-01 force-abort: publish the scheduler request id (text path)
         # so the route's disconnect_guard can call abort_request directly

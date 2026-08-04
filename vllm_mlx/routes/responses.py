@@ -436,6 +436,55 @@ def _resolved_responses_sampling_kwargs(
     return out
 
 
+def _attach_deepseek_no_think_suppression(
+    engine: BaseEngine,
+    cfg,
+    model_name: str | None,
+    explicit_no_thinking: bool,
+    chat_kwargs: dict,
+) -> None:
+    """Keep an explicitly non-thinking DeepSeek request out of ``<think>``."""
+    if not explicit_no_thinking:
+        return
+
+    model_cfg = cfg
+    registry = getattr(cfg, "model_registry", None)
+    if registry is not None:
+        try:
+            entry = registry.get_entry(model_name)
+        except KeyError:
+            return
+        if getattr(entry, "engine", None) is not engine:
+            return
+        from types import SimpleNamespace
+
+        model_cfg = SimpleNamespace(
+            reasoning_parser_name=getattr(entry, "reasoning_parser", None),
+            reasoning_parser=None,
+            model_path=getattr(entry, "model_path", None),
+            model_name=getattr(entry, "model_name", None),
+        )
+    if not _uses_deepseek_v4_reasoning(model_cfg):
+        return
+
+    from ..api.reasoning_budget import (
+        SuppressTokensLogitsProcessor,
+        resolve_think_token_ids,
+    )
+    from .chat import _engine_output_vocab_size
+
+    start_id, _end_id = resolve_think_token_ids(
+        getattr(engine, "tokenizer", None),
+        getattr(model_cfg, "reasoning_parser_name", None),
+    )
+    vocab_size = _engine_output_vocab_size(engine)
+    if start_id is None or vocab_size is None or not 0 <= start_id < vocab_size:
+        return
+    chat_kwargs["suppressed_tokens_logits_processor"] = SuppressTokensLogitsProcessor(
+        [start_id]
+    )
+
+
 def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
     """Thin wrapper over the shared
     ``service.helpers._should_start_in_thinking`` predicate.
@@ -750,6 +799,13 @@ async def create_response(request: Request):
                 preserve_developer_role=(
                     cfg_for_adapter.tool_call_parser == "deepseek_v4_0731"
                 ),
+            )
+            # Capture the client's preference before server defaults and the
+            # automatic tool/schema heuristics may mutate the adapted request.
+            _explicit_thinking = _extract_thinking_from_request(openai_request)
+            explicit_no_thinking = _explicit_thinking is False or (
+                _explicit_thinking is None
+                and getattr(openai_request, "reasoning_effort", None) == "none"
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -1134,6 +1190,7 @@ async def create_response(request: Request):
                         engine,
                         openai_request,
                         responses_request,
+                        explicit_no_thinking=explicit_no_thinking,
                         request_id_holder=_resp_rid_holder,
                         heartbeat_state=_resp_heartbeat_state,
                     ),
@@ -1152,7 +1209,13 @@ async def create_response(request: Request):
                 headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
 
-        return await _non_stream(engine, openai_request, responses_request, request)
+        return await _non_stream(
+            engine,
+            openai_request,
+            responses_request,
+            request,
+            explicit_no_thinking=explicit_no_thinking,
+        )
     finally:
         _release_admission_unless_committed(engine, _admission_committed)
 
@@ -1233,6 +1296,8 @@ async def _non_stream(
     openai_request: ChatCompletionRequest,
     responses_request: ResponsesRequest,
     request: Request,
+    *,
+    explicit_no_thinking: bool = False,
 ) -> Response:
     cfg = get_config()
     created_at = int(time.time())
@@ -1290,6 +1355,13 @@ async def _non_stream(
     resolved_thinking = _resolve_enable_thinking(openai_request)
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+    _attach_deepseek_no_think_suppression(
+        engine,
+        cfg,
+        responses_request.model,
+        explicit_no_thinking,
+        chat_kwargs,
+    )
 
     start_time = time.perf_counter()
     timeout = cfg.default_timeout
@@ -2100,6 +2172,7 @@ async def _stream_responses(
     openai_request: ChatCompletionRequest,
     responses_request: ResponsesRequest,
     *,
+    explicit_no_thinking: bool = False,
     request_id_holder: list | None = None,
     heartbeat_state: dict[str, object] | None = None,
 ) -> AsyncIterator[str]:
@@ -2242,6 +2315,13 @@ async def _stream_responses(
         resolved_thinking = _resolve_enable_thinking(openai_request)
         if resolved_thinking is not None:
             chat_kwargs["enable_thinking"] = resolved_thinking
+        _attach_deepseek_no_think_suppression(
+            engine,
+            cfg,
+            responses_request.model,
+            explicit_no_thinking,
+            chat_kwargs,
+        )
         # C-01: thread the request_id holder so disconnect_guard can
         # force-call scheduler.abort_request on client RST.
         if request_id_holder is not None:

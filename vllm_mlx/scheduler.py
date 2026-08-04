@@ -2866,6 +2866,9 @@ class Scheduler:
         # processor is still handled: ``_forget_uid_grammar`` tombstones it, and
         # the tombstone re-arms the guard for the scrub tick.
         self._uids_with_reasoning_budget: dict[int, Any] = {}
+        # Stateless, but still a hard per-request invariant: positional slot
+        # desync must never leak a suppression mask to another request/model.
+        self._uids_with_suppressed_tokens: dict[int, Any] = {}
         # Identity set of every STATEFUL per-request processor currently in
         # flight (by ``id()``) — a grammar OR a reasoning-budget force-close.
         # Lets a slot be scrubbed of ANY such processor before its uid's
@@ -5587,6 +5590,11 @@ class Scheduler:
             # scrubbing tick.
             self._known_stateful_processors.add(id(_rblp))
             self._stateful_processor_objs[id(_rblp)] = _rblp
+        _stlp = getattr(request, "suppressed_tokens_logits_processor", None)
+        if _stlp is not None:
+            self._uids_with_suppressed_tokens[uid] = _stlp
+            self._known_stateful_processors.add(id(_stlp))
+            self._stateful_processor_objs[id(_stlp)] = _stlp
 
     def _forget_uid_grammar(self, uid: int) -> None:
         """Drop #558 PR-3 per-uid processor state for a uid leaving the batch.
@@ -5606,6 +5614,7 @@ class Scheduler:
         """
         self._uids_with_grammar.discard(uid)
         self._uids_with_reasoning_budget.pop(uid, None)
+        self._uids_with_suppressed_tokens.pop(uid, None)
         procs = self.uid_to_request_processors.pop(uid, None)
         if not procs:
             return
@@ -5650,6 +5659,7 @@ class Scheduler:
         return bool(
             self._uids_with_grammar
             or self._stateful_tombstones
+            or self._uids_with_suppressed_tokens
             or any(
                 not getattr(p, "_ended", False)
                 for p in self._uids_with_reasoning_budget.values()
@@ -6103,6 +6113,9 @@ class Scheduler:
             _rblp = getattr(request, "reasoning_budget_logits_processor", None)
             if _rblp is not None:
                 request_processors.append(_rblp)
+            _stlp = getattr(request, "suppressed_tokens_logits_processor", None)
+            if _stlp is not None:
+                request_processors.append(_stlp)
             request_logits_processors = (
                 [request_processors] if request_processors else None
             )

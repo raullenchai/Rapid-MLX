@@ -25,11 +25,38 @@ import mlx.core as mx
 from vllm_mlx.api import reasoning_budget as rb
 from vllm_mlx.api.reasoning_budget import (
     ReasoningBudgetLogitsProcessor,
+    SuppressTokensLogitsProcessor,
     build_reasoning_budget_processor,
 )
 
 THINK_END = 99
 THINK_START = 50
+
+
+def test_suppress_tokens_processor_masks_only_valid_requested_ids():
+    processor = SuppressTokensLogitsProcessor([2, 2, -1, 99])
+    logits = processor(mx.array([1]), mx.zeros((1, 5)))
+    mx.eval(logits)
+
+    values = logits.tolist()[0]
+    assert values[2] == -math.inf
+    assert all(value == 0.0 for index, value in enumerate(values) if index != 2)
+
+
+def test_suppress_tokens_processor_reuses_width_mask(monkeypatch):
+    calls = 0
+    original_arange = mx.arange
+
+    def counted_arange(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_arange(*args, **kwargs)
+
+    monkeypatch.setattr(mx, "arange", counted_arange)
+    processor = SuppressTokensLogitsProcessor([2])
+    processor(mx.array([1]), mx.zeros((1, 5)))
+    processor(mx.array([1, 2]), mx.zeros((1, 5)))
+    assert calls == 1
 
 
 def _feed(proc: ReasoningBudgetLogitsProcessor, seq: list[int]) -> str:

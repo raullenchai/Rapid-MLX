@@ -42,6 +42,7 @@ def _make_scheduler_stub():
         uid_to_request_processors={},
         _uids_with_grammar=set(),
         _uids_with_reasoning_budget={},
+        _uids_with_suppressed_tokens={},
         _known_stateful_processors=set(),
         _stateful_processor_objs={},
         _stateful_tombstones=set(),
@@ -61,7 +62,7 @@ def _make_scheduler_stub():
     return stub
 
 
-def _register(stub, uid, processors, grammar=None, budget=None):
+def _register(stub, uid, processors, grammar=None, budget=None, suppression=None):
     """Register a uid through the PRODUCTION bookkeeping helper.
 
     Delegates to ``Scheduler._register_uid_processors`` (the exact method the
@@ -74,7 +75,10 @@ def _register(stub, uid, processors, grammar=None, budget=None):
     same stateful set/tombstone machinery as grammar — a leaked force-close
     processor must be scrubbed from a foreign slot exactly like a grammar (codex).
     """
-    request = SimpleNamespace(reasoning_budget_logits_processor=budget)
+    request = SimpleNamespace(
+        reasoning_budget_logits_processor=budget,
+        suppressed_tokens_logits_processor=suppression,
+    )
     stub._register_uid_processors(
         uid, request, list(processors) if processors else None, grammar
     )
@@ -111,6 +115,22 @@ def test_realign_two_uids_grammar_not_leaked():
     lp = stub.batch_generator._generation_batch.logits_processors
     assert lp[0] == [glp], "uid 7 must keep its grammar processor"
     assert lp[1] == [], "uid 9 must NOT carry another uid's grammar processor"
+
+
+def test_realign_scrubs_finished_token_suppression_from_plain_request():
+    suppression = object()
+    stub = _make_scheduler_stub()
+    _register(stub, 7, [suppression], suppression=suppression)
+    assert stub._realign_guard_armed()
+
+    stub._forget_uid_grammar(7)
+    assert id(suppression) in stub._stateful_tombstones
+    stub.batch_generator = _FakeBatchGen(uids=[9], logits_processors=[[suppression]])
+
+    stub._realign_grammar_logits_processors()
+
+    assert stub.batch_generator._generation_batch.logits_processors == [[]]
+    assert id(suppression) not in stub._known_stateful_processors
 
 
 def test_realign_preserves_penalties_on_grammar_uid():

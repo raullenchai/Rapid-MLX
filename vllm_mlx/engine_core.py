@@ -752,6 +752,7 @@ class EngineCore:
         requires_prompt_integrity: bool = False,
         grammar_logits_processor: Any | None = None,
         reasoning_budget_logits_processor: Any | None = None,
+        suppressed_tokens_logits_processor: Any | None = None,
     ) -> str:
         """
         Add a request for processing.
@@ -788,6 +789,7 @@ class EngineCore:
             requires_prompt_integrity=requires_prompt_integrity,
             grammar_logits_processor=grammar_logits_processor,
             reasoning_budget_logits_processor=reasoning_budget_logits_processor,
+            suppressed_tokens_logits_processor=suppressed_tokens_logits_processor,
         )
 
         # Throttle requests for hybrid models (GatedDeltaNet + Transformer).

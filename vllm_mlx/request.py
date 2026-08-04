@@ -186,6 +186,10 @@ class Request:
     # -> the post-hoc reasoning cap in the postprocessor owns the request.
     reasoning_budget_logits_processor: Any | None = None
 
+    # Structural-token suppression for requests that must not re-enter a
+    # parser state after the prompt has explicitly closed it.
+    suppressed_tokens_logits_processor: Any | None = None
+
     # PFlash prompt compression state. When pflash_metadata["compressed"]
     # is True, prompt_token_ids is the compressed list and
     # original_prompt_token_ids holds the pre-compression sequence so

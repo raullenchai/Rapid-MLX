@@ -40,6 +40,34 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class SuppressTokensLogitsProcessor:
+    """Statelessly prevent a small set of structural tokens from decoding."""
+
+    def __init__(self, token_ids: list[int] | tuple[int, ...]) -> None:
+        self._token_ids = tuple(dict.fromkeys(int(token_id) for token_id in token_ids))
+        self._masks: dict[int, Any | None] = {}
+
+    def __call__(self, _token_ids: Any, logits: Any) -> Any:
+        import mlx.core as mx
+
+        width = int(logits.shape[-1])
+        if width not in self._masks:
+            valid = tuple(
+                token_id for token_id in self._token_ids if 0 <= token_id < width
+            )
+            if valid:
+                suppressed = mx.array(valid)
+                self._masks[width] = mx.any(
+                    mx.arange(width)[:, None] == suppressed[None, :], axis=1
+                )
+            else:
+                self._masks[width] = None
+        mask = self._masks[width]
+        if mask is None:
+            return logits
+        return mx.where(mask[None, :], -mx.inf, logits)
+
+
 class ReasoningBudgetLogitsProcessor:
     """Force ``</think>`` once a per-request thinking-token budget is spent.
 
