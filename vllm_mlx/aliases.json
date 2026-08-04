@@ -1333,7 +1333,9 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "pflash_tier": "verified",
+    "pflash_keep_ratio": 0.5
   },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",

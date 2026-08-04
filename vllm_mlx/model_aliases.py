@@ -58,6 +58,12 @@ VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "a
 # - ``unknown``:  not benched / no decision (default, engine keeps PFlash off)
 # - ``verified``: bench-validated speedup + recall on this alias; engine
 #                 defaults PFlash to ``always`` unless the user overrides
+#
+# The recall validation is AT the keep_ratio the alias will actually run:
+# by default 0.20, or the per-alias ``pflash_keep_ratio`` override when set.
+# Some arches (e.g. Ternary-Bonsai-27B) collapse mid-prompt recall at 0.20
+# (1/5 needle) but pass 5/5 at 0.50 — such an alias is verified *with* a
+# ``pflash_keep_ratio`` pin, never bare at the lossy default.
 VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 
 # Canonical enum for ``turboquant_tier``. ``"k8v4_verified"`` flips the
@@ -163,6 +169,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "min_memory_gb",
             "recommended_sampling",
             "pflash_tier",
+            "pflash_keep_ratio",
             "turboquant_tier",
         }
     )
@@ -261,6 +268,26 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: pflash_tier={pflash_tier!r} not in "
             f"{sorted(VALID_PFLASH_TIERS)}"
         )
+
+    # Optional per-alias PFlash keep_ratio override. Absent → ``None`` →
+    # engine default 0.20. When present it must be a real fraction in
+    # (0, 1]; validated here so a typo fails loud at load time next to
+    # ``pflash_tier``. Only meaningful together with pflash_tier=verified
+    # (it certifies recall AT this ratio); harmless but inert otherwise.
+    pflash_keep_ratio = value.get("pflash_keep_ratio")
+    if pflash_keep_ratio is not None:
+        if isinstance(pflash_keep_ratio, bool) or not isinstance(
+            pflash_keep_ratio, (int, float)
+        ):
+            raise ValueError(
+                f"alias {alias!r}: pflash_keep_ratio must be a number"
+            )
+        pflash_keep_ratio = float(pflash_keep_ratio)
+        if not (0.0 < pflash_keep_ratio <= 1.0):
+            raise ValueError(
+                f"alias {alias!r}: pflash_keep_ratio={pflash_keep_ratio!r} "
+                "must be > 0.0 and <= 1.0"
+            )
 
     turboquant_tier = value.get("turboquant_tier", "unknown")
     if not isinstance(turboquant_tier, str):
@@ -474,6 +501,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         ddtree_tree_budget=ddtree_tree_budget,
         recommended_sampling=recommended_sampling,
         pflash_tier=pflash_tier,
+        pflash_keep_ratio=pflash_keep_ratio,
         turboquant_tier=turboquant_tier,
         min_memory_gb=min_memory_gb,
     )

@@ -202,6 +202,13 @@ class ModelProfile:
     # families per #287). Explicit CLI ``--pflash {off,auto,always}``
     # still wins; this only changes the no-flag default.
     pflash_tier: str = "unknown"
+    # Per-alias PFlash keep_ratio override (#287 follow-up). ``None`` means
+    # "use the engine default 0.20". Set to a float in (0, 1] when an alias
+    # is verified at a keep_ratio OTHER than the engine default — e.g. a
+    # ternary-quant arch whose mid-prompt recall only survives at a laxer
+    # ratio. ``pflash_tier="verified"`` then certifies recall AT THIS ratio,
+    # not at 0.20. Explicit ``--pflash-keep-ratio`` on the CLI still wins.
+    pflash_keep_ratio: float | None = None
     # TurboQuant K8V4 default-on tier. See ``VALID_TURBOQUANT_TIERS``.
     turboquant_tier: str = "unknown"
     # DDTree speculative-decoding eligibility (#879). Intentionally

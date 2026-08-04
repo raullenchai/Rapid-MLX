@@ -140,10 +140,19 @@ def config_from_args(args: Any) -> PFlashConfig:
     not *opt-in by accident anywhere else*.
     """
     mode = args.pflash if args.pflash is not None else "off"
+    # ``pflash_keep_ratio`` mirrors ``pflash`` (mode): the CLI sentinel default
+    # is ``None`` and :func:`resolve_pflash_keep_ratio_default` materializes it
+    # (explicit flag > per-alias override > engine default 0.20) before we get
+    # here. Fall back to 0.20 if that resolver never ran (unit tests that build
+    # a bare SimpleNamespace, or the ``--enable-dflash`` path that skips PFlash
+    # resolution) so a forgotten resolve never fails validation with ``None``.
+    keep_ratio = args.pflash_keep_ratio
+    if keep_ratio is None:
+        keep_ratio = 0.20
     return PFlashConfig(
         mode=mode,
         threshold=args.pflash_threshold,
-        keep_ratio=args.pflash_keep_ratio,
+        keep_ratio=keep_ratio,
         min_keep_tokens=args.pflash_min_keep_tokens,
         sink_tokens=args.pflash_sink_tokens,
         tail_tokens=args.pflash_tail_tokens,
@@ -251,6 +260,39 @@ def resolve_pflash_mode_default(
         )
         return "always"
     return "off"
+
+
+def resolve_pflash_keep_ratio_default(args: Any, *, model_name: str) -> float:
+    """Resolve ``args.pflash_keep_ratio`` when the user passed nothing on the CLI.
+
+    Precedence (mirrors :func:`resolve_pflash_mode_default`):
+
+    * If ``args.pflash_keep_ratio`` is already a number (user passed
+      ``--pflash-keep-ratio``), it wins — return it unchanged.
+    * Else if the model's alias profile pins a ``pflash_keep_ratio``, use it.
+      This is how an alias verified at a NON-default ratio (e.g. a ternary
+      arch whose mid-prompt recall only survives at 0.50) gets its safe
+      ratio applied whenever PFlash auto-enables — without it, a bare
+      ``pflash_tier=verified`` would run the lossy 0.20 default.
+    * Else the engine default 0.20.
+
+    Returns the float to assign back to ``args.pflash_keep_ratio`` before
+    :func:`config_from_args`. Kept separate from construction so unit tests
+    can build a ``SimpleNamespace`` with ``pflash_keep_ratio=None`` and assert
+    the resolved value directly.
+    """
+    if args.pflash_keep_ratio is not None:
+        return args.pflash_keep_ratio
+    # Late import for the same reason as resolve_pflash_mode_default: keep
+    # importing ``pflash`` cheap for callers that never resolve a default.
+    try:
+        from .model_auto_config import detect_model_config
+    except ImportError:
+        return 0.20
+    cfg = detect_model_config(model_name)
+    if cfg is not None and cfg.pflash_keep_ratio is not None:
+        return cfg.pflash_keep_ratio
+    return 0.20
 
 
 def validate_model_support(

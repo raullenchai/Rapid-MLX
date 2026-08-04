@@ -78,6 +78,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "min_memory_gb",
         "recommended_sampling",
         "pflash_tier",
+        "pflash_keep_ratio",
         "turboquant_tier",
     }
 )
@@ -276,16 +277,25 @@ def test_alias_pflash_tier_value_is_in_enum(alias: str) -> None:
     )
 
 
+# Aliases outside the Qwen3.5 / Qwen3.6 family that have been bench-validated
+# for pflash_tier=verified. Each MUST pin a ``pflash_keep_ratio`` override at
+# the ratio it was validated for — see the enforcement below. Ternary-Bonsai-27B
+# collapses mid-prompt recall at the 0.20 default (1/5 needle) but passes 5/5 at
+# 0.50, so it is verified WITH ``pflash_keep_ratio: 0.5``, never bare.
+_PFLASH_VERIFIED_NON_QWEN35_36 = frozenset({"bonsai-27b-2bit"})
+
+
 def test_pflash_verified_aliases_are_qwen35_or_qwen36() -> None:
-    """``pflash_tier="verified"`` is reserved for the Qwen3.5 / Qwen3.6
-    family — the only architectures we've bench-validated for the
-    keep_ratio=0.20 default (PR #649: 3.87x-8.5x TTFT speedup with 100%
-    needle recall across tested cells). Promoting a non-Qwen3.5/3.6 alias
-    to ``"verified"`` should be a deliberate review-blocking change: it
-    flips the engine's default ``--pflash`` mode to ``"always"`` for that
-    alias, which silently shifts the quality/speed tradeoff for every
-    user who hadn't passed an explicit flag. Keep the gate tight until
-    there's matching bench evidence on a new family.
+    """``pflash_tier="verified"`` is reserved for the Qwen3.5 / Qwen3.6 family
+    (bench-validated at the keep_ratio=0.20 default in PR #649) PLUS an explicit
+    allowlist of other families we've since benched. Promoting a new alias to
+    ``"verified"`` should be a deliberate review-blocking change: it flips the
+    engine's default ``--pflash`` mode to ``"always"``, silently shifting the
+    quality/speed tradeoff for every user who hadn't passed an explicit flag.
+    A non-Qwen3.5/3.6 verified alias MUST also pin a ``pflash_keep_ratio``
+    override — bench evidence showed at least one such arch (Ternary-Bonsai-27B)
+    is NOT recall-safe at the 0.20 default, so bare-verifying it would ship a
+    silent mid-prompt-recall regression.
     """
     profiles = list_profiles()
     verified = sorted(a for a, p in profiles.items() if p.pflash_tier == "verified")
@@ -300,12 +310,27 @@ def test_pflash_verified_aliases_are_qwen35_or_qwen36() -> None:
         a
         for a in verified
         if not (a.startswith("qwen3.5-") or a.startswith("qwen3.6-"))
+        and a not in _PFLASH_VERIFIED_NON_QWEN35_36
     ]
     assert not offenders, (
         f"Aliases tagged pflash_tier=verified outside the Qwen3.5 / "
-        f"Qwen3.6 family: {offenders}. Either bench the family and "
-        "extend the allowlist in this test, or reset the tier to "
+        f"Qwen3.6 family: {offenders}. Either bench the arch and add it to "
+        "_PFLASH_VERIFIED_NON_QWEN35_36 in this test, or reset the tier to "
         "'unknown'."
+    )
+    # Enforce the recall-safety contract for the non-Qwen allowlist: each such
+    # alias must pin a keep_ratio override (proving it was validated at a
+    # specific, deliberately-chosen ratio rather than defaulting to 0.20).
+    missing_override = [
+        a
+        for a in _PFLASH_VERIFIED_NON_QWEN35_36
+        if a in profiles and profiles[a].pflash_keep_ratio is None
+    ]
+    assert not missing_override, (
+        f"Non-Qwen verified aliases without a pflash_keep_ratio pin: "
+        f"{missing_override}. A bench-validated non-Qwen arch must pin the "
+        "keep_ratio it was validated at (bonsai-27b-2bit is only 5/5 at 0.50; "
+        "1/5 at the 0.20 default) — bare-verifying ships a silent regression."
     )
 
 
@@ -538,6 +563,44 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
             "fake-alias",
             {"hf_path": "fake/Model", "supports_dflash": True},
         )
+
+
+def test_pflash_keep_ratio_out_of_range_is_rejected() -> None:
+    """A ``pflash_keep_ratio`` outside (0, 1] must fail loud at load time."""
+    from vllm_mlx.model_aliases import _coerce
+
+    for bad in (0.0, -0.1, 1.5, 2):
+        with pytest.raises(ValueError, match="pflash_keep_ratio"):
+            _coerce(
+                "fake-alias",
+                {"hf_path": "fake/Model", "pflash_keep_ratio": bad},
+            )
+
+
+def test_pflash_keep_ratio_non_number_is_rejected() -> None:
+    """A non-numeric ``pflash_keep_ratio`` (incl. bool) must be rejected —
+    ``True`` is an int subclass in Python and would otherwise slip through."""
+    from vllm_mlx.model_aliases import _coerce
+
+    for bad in ("0.5", True, [0.5]):
+        with pytest.raises(ValueError, match="pflash_keep_ratio"):
+            _coerce(
+                "fake-alias",
+                {"hf_path": "fake/Model", "pflash_keep_ratio": bad},
+            )
+
+
+def test_pflash_keep_ratio_valid_value_is_accepted() -> None:
+    """A valid override coerces onto the profile as a float."""
+    from vllm_mlx.model_aliases import _coerce
+
+    profile = _coerce(
+        "fake-alias",
+        {"hf_path": "fake/Model", "pflash_tier": "verified",
+         "pflash_keep_ratio": 0.5},
+    )
+    assert profile.pflash_keep_ratio == 0.5
+    assert isinstance(profile.pflash_keep_ratio, float)
 
 
 # =============================================================================

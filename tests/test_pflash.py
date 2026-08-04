@@ -16,6 +16,7 @@ from vllm_mlx.pflash import (
     compress_request_tokens,
     compress_tokens,
     config_from_args,
+    resolve_pflash_keep_ratio_default,
     resolve_pflash_mode_default,
     validate_model_support,
 )
@@ -205,6 +206,27 @@ class TestPFlashConfig:
         # behaviour is the conservative skip.
         assert config.skip_when_tools is False
 
+    def test_config_from_args_none_keep_ratio_falls_back_to_default(self):
+        # The CLI default for --pflash-keep-ratio is now a None sentinel
+        # (resolved to an alias override or 0.20 before construction). If the
+        # resolver never ran (bare SimpleNamespace, or the --enable-dflash
+        # path that skips PFlash resolution), config_from_args must fall back
+        # to 0.20 rather than fail PFlashConfig.validate on ``None``.
+        args = SimpleNamespace(
+            pflash="always",
+            pflash_threshold=1024,
+            pflash_keep_ratio=None,
+            pflash_min_keep_tokens=128,
+            pflash_sink_tokens=16,
+            pflash_tail_tokens=64,
+            pflash_block_size=32,
+            pflash_query_window=128,
+            pflash_stride_blocks=4,
+            pflash_include_tools=False,
+        )
+        config = config_from_args(args)
+        assert config.keep_ratio == 0.20
+
     def test_validate_rejects_multimodal_models(self):
         config = PFlashConfig(mode="auto")
         try:
@@ -372,6 +394,63 @@ class TestResolvePFlashModeDefault:
         )
         config = config_from_args(args)
         assert config.mode == "off"
+
+
+class TestResolvePFlashKeepRatioDefault:
+    """Per-alias ``pflash_keep_ratio`` override (#287 follow-up).
+
+    Contract mirrors the mode resolver:
+    * explicit ``--pflash-keep-ratio`` (args value not None) wins;
+    * else the alias's ``pflash_keep_ratio`` if it pins one;
+    * else the engine default 0.20.
+    """
+
+    def _ns(self, keep_ratio):
+        return SimpleNamespace(pflash_keep_ratio=keep_ratio)
+
+    def test_alias_override_applies_when_no_flag(self):
+        # bonsai-27b-2bit is verified BUT only recall-safe at 0.50 (1/5 needle
+        # at the 0.20 default); it pins pflash_keep_ratio=0.5 in aliases.json.
+        ratio = resolve_pflash_keep_ratio_default(
+            self._ns(None), model_name="bonsai-27b-2bit"
+        )
+        assert ratio == 0.5
+
+    def test_explicit_flag_wins_over_alias_override(self):
+        ratio = resolve_pflash_keep_ratio_default(
+            self._ns(0.33), model_name="bonsai-27b-2bit"
+        )
+        assert ratio == 0.33
+
+    def test_verified_alias_without_override_uses_engine_default(self):
+        # qwen3.5-4b-4bit is verified at the default 0.20 and pins no override.
+        ratio = resolve_pflash_keep_ratio_default(
+            self._ns(None), model_name="qwen3.5-4b-4bit"
+        )
+        assert ratio == 0.20
+
+    def test_unknown_alias_without_override_uses_engine_default(self):
+        ratio = resolve_pflash_keep_ratio_default(
+            self._ns(None), model_name="qwen3-0.6b-4bit"
+        )
+        assert ratio == 0.20
+
+    def test_unrecognized_model_path_uses_engine_default(self):
+        ratio = resolve_pflash_keep_ratio_default(
+            self._ns(None), model_name="/no/such/model-xyz"
+        )
+        assert ratio == 0.20
+
+    def test_bonsai_mode_and_ratio_resolve_together(self):
+        # End-to-end: the verified tier flips mode to "always" AND the override
+        # supplies 0.50 — the exact pair a bare ``serve bonsai-27b-2bit`` wires.
+        mode = resolve_pflash_mode_default(
+            SimpleNamespace(pflash=None), model_name="bonsai-27b-2bit"
+        )
+        ratio = resolve_pflash_keep_ratio_default(
+            self._ns(None), model_name="bonsai-27b-2bit"
+        )
+        assert (mode, ratio) == ("always", 0.5)
 
 
 class TestCompressRequestTokens:
