@@ -45,10 +45,13 @@ from typing import Any
 
 import mlx.core as mx
 
-# Force the ArraysCache rollback_state patch on first import — the
-# generator references ``cache.rollback_state`` directly inside
-# ``_rollback_draft``, and the patch lifts that attribute from a
-# missing-class-attr to a class-default-None.
+# Force the ArraysCache rollback-slot patch on first import. The
+# multi-slot ``rollback_states`` dict (and the SSM detection via
+# ``hasattr(c, "rollback_states")``) is installed by
+# ``patch_gated_delta_net_for_mtp`` during ``inject_mtp_support``, which
+# always runs before generation; the import-time patch here keeps the
+# legacy single-slot ``rollback_state`` attribute present for any code
+# still probing it.
 from .accept_counter import get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
 from .draft_k_controller_v2 import DepthController, get_or_create_controller
@@ -343,45 +346,56 @@ def mtp_generate_step(
 
     def _clear_rollback():
         for c in model_cache:
-            if hasattr(c, "rollback_state"):
-                c.rollback_state = None
+            if hasattr(c, "rollback_recompute"):
+                c.rollback_recompute = None
 
     def _rollback_draft(n_to_drop: int = 1):
         """Restore caches by dropping the last ``n_to_drop`` draft tokens.
 
-        SSM layers (ArraysCache): restore the conv/ssm snapshot saved
-        by GatedDeltaNet at the confirmed boundary. The snapshot is
-        taken at a SINGLE offset (``n_confirmed`` positions from end),
-        so ``n_to_drop`` MUST match that offset — chain-of-K with
-        partial accept is not representable in the current one-snapshot
-        model. The generator prevents this by clamping ``max_k`` to 1
-        when any SSM cache is present (see ``_has_ssm_cache`` at
-        decode-loop start); callers that reach this path with
-        ``n_to_drop > 1`` on an SSM cache trip an assertion because a
-        silent partial-rollback would corrupt the SSM state and break
-        the lossless contract.
+        SSM layers (ArraysCache): call the rollback closure the single-pass
+        verify forward stashed on the cache (``cache.rollback_recompute``).
+        It recomputes the (conv, ssm) state after the first
+        ``S - n_to_drop`` verify positions from the pre-window anchor with
+        one short ``gated_delta_update`` — byte-exact with the true
+        ``(S - n_to_drop)``-token recurrent state — so partial accept at any
+        depth on chain-of-K is representable without per-round snapshotting.
 
         Attention layers (KVCache): trim the last ``n_to_drop`` draft
         entries.
         """
         for c in model_cache:
-            if hasattr(c, "rollback_state") and c.rollback_state is not None:
-                # SSM path: single-snapshot rollback, only n_to_drop==1
-                # is representable in the current on-disk snapshot slot.
-                # The controller-side clamp keeps chain-of-K away from
-                # this branch; assert here as a defense in depth in case
-                # a caller wires K>=2 without adjusting the SSM cache.
-                if n_to_drop != 1:
+            # SSM / linear-attention layers carry the ``rollback_recompute``
+            # slot (patched onto ArraysCache); KVCache does not.
+            if hasattr(c, "rollback_recompute"):
+                recompute = c.rollback_recompute
+                if recompute is None:
+                    # No closure recorded — the single-pass path bailed (e.g.
+                    # a tensor-parallel target, or S < 2). Drafting on such a
+                    # target should have been disabled upstream
+                    # (``_ssm_is_tp``); fail loudly rather than leave the
+                    # recurrent state silently un-rolled-back.
                     raise AssertionError(
-                        f"_rollback_draft(n_to_drop={n_to_drop}) on SSM "
-                        "cache: only single-token rollback is supported. "
-                        "Chain-of-K on SSM-hybrid targets is not wired "
-                        "yet — the generator should have clamped max_k=1."
+                        "SSM cache has no rollback closure (single-pass verify "
+                        "did not stash one, e.g. tensor-parallel target). MTP "
+                        "speculative rollback is unsupported here; drafting "
+                        "should have been disabled."
                     )
-                conv_snap, ssm_snap = c.rollback_state
-                c[0] = conv_snap
-                c[1] = ssm_snap
-                c.rollback_state = None
+                conv_keep, ssm_keep = recompute(n_to_drop)
+                c[0] = conv_keep
+                c[1] = ssm_keep
+                # Rewind the position the forward advanced via
+                # ``cache.advance(S)``. ``ArraysCache.advance`` is a plain
+                # ``lengths -= N`` / ``left_padding -= N`` (no zero-clamp), so
+                # adding back ``n_to_drop`` recovers the EXACT boundary metadata
+                # for the restored (S - n_to_drop)-token state. Both are ``None``
+                # in the single-request greedy path MTP runs in (advance is a
+                # no-op there); this keeps the SSM rollback symmetric with the
+                # KVCache.trim(n) path for any future batched use.
+                if getattr(c, "lengths", None) is not None:
+                    c.lengths = c.lengths + n_to_drop
+                if getattr(c, "left_padding", None) is not None:
+                    c.left_padding = c.left_padding + n_to_drop
+                c.rollback_recompute = None
             elif c.is_trimmable():
                 c.trim(n_to_drop)
 
@@ -530,24 +544,25 @@ def mtp_generate_step(
                 cache_commit=cur_commit,
                 want_hidden=_mtp_supports_hidden and K >= 2,
             )
-            # Materialize before chaining — the next iteration needs
-            # ``prev_tok.item()`` inside ``_step_mtp`` (via reshape,
-            # not .item(), but the MLX graph needs the value pinned).
-            mx.eval(d_tok)
+            # Lean-Python (b''): DON'T host-sync per cascade step. d_tok /
+            # d_hidden feed the next iteration only as MLX arrays (lazy
+            # gather in embed_tokens + the head's hidden slot) — no Python
+            # int is needed mid-chain. The whole cascade builds one lazy
+            # graph and is materialized together at the verify's single
+            # ``mx.eval`` (below). Removes 2*K host round-trips/round.
             draft_toks.append(d_tok)
             draft_lps.append(d_lp)
             draft_accept_lps.append(d_alp)
             xtc_draws.append(d_xtc)
             prev_tok = d_tok
-            # Drafter-hidden cascade: swap in the drafter's own
-            # ``post_projection(h)`` for the next iteration's hidden
-            # slot when available. Falls back to holding
-            # ``hidden_last`` constant on injects that don't expose
-            # ``return_hidden`` (Qwen 3.5 today).
+            # Drafter-hidden cascade: swap in the drafter's own refined
+            # hidden for the next iteration when available.
             if d_hidden is not None:
-                mx.eval(d_hidden)
                 cur_hidden = d_hidden
             cur_commit = None
+        # No sync here — the whole cascade stays lazy and materializes at
+        # the verify path's single ``mx.eval`` (drafts_arr is stacked and
+        # evaluated there). Removes the last per-round cascade round-trip.
         return draft_toks, draft_lps, draft_accept_lps, xtc_draws
 
     def _prefill(yy, embeddings):
@@ -597,48 +612,58 @@ def mtp_generate_step(
     # When ``disable_auto_k=True``, the pre-PR-B chain-of-1 behavior
     # is preserved for A/B benching.
     #
-    # 0.9.13 PR-B Fix 3: K≥2 chain-of-K lifted. The verify path now
-    # accepts K sequential drafts with a single ``(K+1)``-position
-    # backbone forward, per Ollama's ``speculate.go::accept`` batching.
-    # The SSM-hybrid (ArraysCache) rollback is not compatible with the
-    # per-position snapshot Ollama uses, so any model whose cache list
-    # contains an SSM slot is clamped to K=1 at loop-start below —
-    # chain-of-K on SSM targets needs the ``PrepareSnapshots([offsets])``
-    # per-position machinery, which is a separate work item.
+    # 0.9.13 PR-B Fix 3: K≥2 chain-of-K. The verify path accepts K
+    # sequential drafts with a single ``(K+1)``-position backbone forward,
+    # per Ollama's ``speculate.go::accept`` batching. SSM-hybrid
+    # (ArraysCache) targets are supported: the GatedDeltaNet chunk-split
+    # records a multi-slot ``(conv, ssm)`` snapshot at every 1..K draft
+    # boundary (``cache_patch.py``), so ``_rollback_draft(n)`` restores to
+    # any accepted depth. The one exception is a tensor-parallel SSM
+    # backbone — the chunk-split cannot snapshot per-shard state, so MTP
+    # drafting is disabled there (``_ssm_is_tp`` below).
     # ------------------------------------------------------------------
-    # SSM detection: patched ArraysCache carries a ``rollback_state``
-    # class attribute (see ``cache_patch.py``); KVCache does not. This
-    # is the cheapest, most stable class-level signal for the SSM path
-    # available without importing the two cache classes here.
-    _has_ssm_cache = any(hasattr(c, "rollback_state") for c in model_cache)
+    # SSM detection: the patched ArraysCache carries a ``rollback_states``
+    # slot (see ``cache_patch.py``); KVCache does not. Cheapest stable
+    # signal for the linear-attention path without importing cache classes.
+    _has_ssm_cache = any(hasattr(c, "rollback_states") for c in model_cache)
+    # The GatedDeltaNet chunk-split CANNOT snapshot under tensor parallelism
+    # (it bails when ``sharding_group`` is set — per-shard recurrent state),
+    # so a rejected SSM draft would have nothing to roll back to. Detect a
+    # tensor-parallel SSM backbone and keep MTP from drafting on it; single-
+    # device targets are unaffected. ``_rollback_draft`` also hard-fails on a
+    # missing snapshot as defense-in-depth for the ``disable_auto_k`` path.
+    _ssm_is_tp = _has_ssm_cache and any(
+        getattr(getattr(layer, "linear_attn", None), "sharding_group", None) is not None
+        for layer in getattr(getattr(model, "model", None), "layers", None) or []
+    )
+    if _ssm_is_tp:
+        logger.warning(
+            "[MTP] tensor-parallel SSM/linear-attention target — the "
+            "GatedDeltaNet chunk-split cannot snapshot per-shard recurrent "
+            "state; MTP drafting disabled (K=0) to avoid an unrollbackable "
+            "reject."
+        )
     if not disable_auto_k:
-        # Chain-of-K on SSM targets not implemented; clamp to K=1 with
-        # a startup log (once per generator instance is cheap enough
-        # given ``mtp_generate_step`` is called per-request).
-        _max_k_hw = 1 if _has_ssm_cache else max(0, max_k)
-        if _has_ssm_cache and max_k > 1:
-            logger.info(
-                "[MTP-chain-of-K] SSM cache detected in model_cache — "
-                "clamping max_k from %d to 1 (chain-of-K on SSM-hybrid "
-                "targets needs per-position snapshots not yet wired). "
-                "Set --mtp-max-k=1 to silence this log.",
-                max_k,
-            )
-        max_k_effective = _max_k_hw
+        # Chain-of-K on single-device SSM-hybrid targets is wired via the
+        # multi-slot GatedDeltaNet chunk-split (a (conv, ssm) snapshot at
+        # every 1..K draft boundary, keyed by n_from_end), so
+        # ``_rollback_draft(n)`` restores to any accepted depth.
+        max_k_effective = 0 if _ssm_is_tp else max(0, max_k)
         _controller: DepthController | None = get_or_create_controller(
             model_id or "__default__", max_k=max_k_effective
         )
     else:
         # ``disable_auto_k`` keeps the pre-0.9.13 fixed-K=1 A/B-bench
-        # behavior — no controller, no chain-of-K, verbatim chain-of-1.
-        max_k_effective = 1
+        # behavior — no controller, verbatim chain-of-1 (never on a TP SSM
+        # target: the rollback hard-fails there rather than corrupt state).
+        max_k_effective = 0 if _ssm_is_tp else 1
         _controller = None
 
     # next_k: the K the controller wants for the UPCOMING round. Determines
     # whether we generate a draft at end of the current round. Bootstrap
     # value is the controller's initial pick_k (0 if fresh, else the
     # scheduled depth from the previous request).
-    next_k = _controller.pick_k() if _controller is not None else 1
+    next_k = _controller.pick_k() if _controller is not None else max_k_effective
 
     def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
         """Fold a round outcome into the controller (if enabled)."""
@@ -667,7 +692,9 @@ def mtp_generate_step(
                 return
 
             # Decide K for the NEXT round.
-            next_k = _controller.pick_k() if _controller is not None else 1
+            next_k = (
+                _controller.pick_k() if _controller is not None else max_k_effective
+            )
 
             hidden_at_main = hidden[:, -1:, :]
             if next_k >= 1:
@@ -901,7 +928,9 @@ def mtp_generate_step(
 
             # Decide K for the next round BEFORE generating the
             # next chain (a park decision skips drafter cost).
-            next_k = _controller.pick_k() if _controller is not None else 1
+            next_k = (
+                _controller.pick_k() if _controller is not None else max_k_effective
+            )
             if next_k >= 1:
                 # Chain-carry: on all-accept the mtp_cache must
                 # advance by one extra position for the just-accepted

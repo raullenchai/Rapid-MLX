@@ -171,80 +171,66 @@ def patch_gated_delta_net_for_mtp() -> bool:
             )
             return False
 
-        # Add a class-default ``n_confirmed_for_mtp`` slot to
-        # ArraysCache so the layer can read it without an
-        # ``AttributeError`` on caches the wrapper hasn't tagged.
+        # Add class-default MTP slots to ArraysCache so the layer can
+        # read them without ``AttributeError`` on untagged caches.
+        # ``snapshot_offsets``: list of token-counts at which to snapshot
+        # the (conv, ssm) state during a verify forward (multi-slot for
+        # chain-of-K). ``rollback_states``: dict {n_from_end: (conv, ssm)}
+        # the generator's ``_rollback_draft(n)`` restores from.
+        # ``n_confirmed_for_mtp`` kept for backward-compat detection.
         if "n_confirmed_for_mtp" not in ArraysCache.__dict__:
             ArraysCache.n_confirmed_for_mtp = 0  # type: ignore[attr-defined]
+        if "snapshot_offsets" not in ArraysCache.__dict__:
+            ArraysCache.snapshot_offsets = None  # type: ignore[attr-defined]
+        if "rollback_states" not in ArraysCache.__dict__:
+            ArraysCache.rollback_states = None  # type: ignore[attr-defined]
+        # ``rollback_recompute``: a per-layer closure the single-pass verify
+        # forward stashes so ``_rollback_draft(n)`` can recompute the
+        # accepted-prefix (conv, ssm) state on the rare draft rejection —
+        # replaces the old materialized per-boundary snapshot dict.
+        if "rollback_recompute" not in ArraysCache.__dict__:
+            ArraysCache.rollback_recompute = None  # type: ignore[attr-defined]
 
         _orig_gated_delta_call = GatedDeltaNet.__call__
 
         def _patched_call(self, inputs, mask=None, cache=None):
             B, S, _ = inputs.shape
-            n_conf = 0
+            offsets = None
             if cache is not None:
-                n_conf = int(getattr(cache, "n_confirmed_for_mtp", 0) or 0)
-                # NOTE on per-layer scope: ``cache`` here is the
-                # PER-LAYER ArraysCache for this single GatedDeltaNet
-                # instance only. mlx-lm's prompt-cache machinery
-                # builds one cache entry per backbone layer; each
-                # ArraysCache instance has its own ``rollback_state``
-                # slot. Any write below (clear or set) affects ONLY
-                # this layer's cache. The consumer side
-                # (generator.py::_rollback_draft) walks every cache
-                # and restores each instance's own snapshot
-                # independently.
+                raw = getattr(cache, "snapshot_offsets", None)
+                if raw:
+                    offsets = sorted({int(o) for o in raw if 0 < int(o) < S})
 
-            # Fast path — no MTP boundary signaled, or chunk has 1
-            # token, or boundary is outside the range, or NO cache at
-            # all. Defer to the original implementation (byte-equal
-            # behavior). rollback_state is NOT touched on this path
-            # (see round-7 ordering fix below).
+            # Fast path — no MTP snapshot requested, S<2, no cache, or
+            # tensor-parallel (verify runs single-device). Byte-equal to
+            # the original forward; snapshot state left untouched.
+            if cache is None or not offsets or S < 2 or self.sharding_group is not None:
+                return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
+
+            # --- Single-pass forward + lazy recompute-on-reject ---
+            # ``cache`` is the PER-LAYER ArraysCache for this one
+            # GatedDeltaNet instance; writes below affect only it.
             #
-            # Codex round-5 BLOCKING defensive fix: ``cache is None``
-            # is explicitly in the guard. Today it's logically
-            # unreachable (we only set n_conf > 0 when cache is not
-            # None) — but if a future refactor changes that
-            # invariant, the chunk-split below would crash on
-            # ``cache[0]``. Guarding here makes the contract
-            # self-documenting.
-            if cache is None or n_conf <= 0 or n_conf >= S or S < 2:
-                return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
-
-            # --- Chunk-split path (n_confirmed in (0, S)) ---
-            if self.sharding_group is not None:
-                # The verify cycle only runs single-device; bail back
-                # to the unsplit path under tensor parallel (which the
-                # MTP generator doesn't drive anyway). rollback_state
-                # is NOT cleared on this path — see round-7 ordering
-                # fix: clearing only happens immediately before the
-                # chunk-split path writes a fresh snapshot.
-                return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
-
-            # ROUND-7 ordering fix: codex flagged that an earlier
-            # unconditional clear at function entry would wipe a
-            # previous chunk-split's snapshot if the next call
-            # bailed to fast-path or TP fallback (no replacement
-            # written). The clean fix is to clear ONLY immediately
-            # before the chunk-split path writes a new snapshot —
-            # making the lifecycle a single atomic write per
-            # chunk-split call. Round-3's stale-snapshot concern is
-            # still addressed because: (a) chunk-split always
-            # overwrites with a fresh snapshot, and (b) fast/TP
-            # paths leaving rollback_state intact is benign — the
-            # consumer (``_rollback_draft``) is only called after a
-            # chunk-split verify that produced drafts to reject,
-            # never after a fast-path call.
-            cache.rollback_state = None
-
-            # Steps 1-3: projections + conv prefix — identical to the
-            # original call. Build all derived tensors once.
+            # The verify window (S = K+1 tokens) is run as ONE fused
+            # ``gated_delta_update`` — byte-equal to the unsplit forward.
+            # The previous implementation split the scan into K+1 segments
+            # to materialize a (conv, ssm) snapshot at every draft boundary
+            # (K+1 kernel launches per GDN layer per verify round — measured
+            # as the dominant MTP cost, ~30% of throughput at K=2). Because
+            # ~90% of rounds accept every draft and never roll back, that
+            # snapshot work is wasted almost every round. Instead we run one
+            # fused scan and stash a cheap rollback CLOSURE; only on the rare
+            # rejection does ``_rollback_draft`` call it to recompute the
+            # accepted-prefix state with ONE short scan from the pre-window
+            # state. Since ``gated_delta_update`` is a pure sequential scan,
+            # rescanning ``[0:keep]`` from that anchor is byte-exact with the
+            # true keep-token state the old snapshot stored.
             qkv = self.in_proj_qkv(inputs)
             z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
             b = self.in_proj_b(inputs)
             a = self.in_proj_a(inputs)
 
-            if cache is not None and cache[0] is not None:
+            if cache[0] is not None:
                 conv_state = cache[0]
             else:
                 conv_state = mx.zeros(
@@ -256,14 +242,8 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 qkv = mx.where(mask[..., None], qkv, 0)
             conv_input = mx.concatenate([conv_state, qkv], axis=1)
             n_keep = self.conv_kernel_size - 1
-            # Conv state AT BOUNDARY (after processing n_conf tokens):
-            # the last n_keep entries of conv_input[:, : n_conf + n_keep].
-            # Equivalently conv_input[:, n_conf : n_conf + n_keep].
-            conv_snap = mx.contiguous(conv_input[:, n_conf : n_conf + n_keep, :])
-            # Conv state AT END (after processing all S tokens):
-            # last n_keep entries of conv_input.
-            conv_post = mx.contiguous(conv_input[:, -n_keep:, :])
-            cache[0] = conv_post
+            # Conv state after all S tokens (last n_keep of conv_input).
+            cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])
 
             conv_out = nn.silu(self.conv1d(conv_input))
 
@@ -276,67 +256,74 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 )
             ]
 
-            state = cache[1] if cache else None
+            # Pre-window SSM state (before this verify window) — the anchor
+            # every rollback recomputes from. ``cache[1]`` is overwritten
+            # with the post-scan state below, so keep a reference here.
+            pre_ssm = cache[1] if cache else None
             inv_scale = k.shape[-1] ** -0.5
             q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
             k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
 
-            # Chunk 1: [0:n_conf]
-            q1 = q[:, :n_conf]
-            k1 = k[:, :n_conf]
-            v1 = v[:, :n_conf]
-            a1 = a[:, :n_conf]
-            b1 = b[:, :n_conf]
-            mask1 = mask[:, :n_conf] if mask is not None else None
-            out1, state_at_boundary = gated_delta_update(
-                q1,
-                k1,
-                v1,
-                a1,
-                b1,
+            # Single fused scan over the whole verify window.
+            out, st = gated_delta_update(
+                q,
+                k,
+                v,
+                a,
+                b,
                 self.A_log,
                 self.dt_bias,
-                state,
-                mask1,
+                pre_ssm,
+                mask,
                 use_kernel=not self.training,
             )
 
-            # Snapshot conv state at boundary + ssm state at boundary.
-            # _rollback_draft restores (cache[0], cache[1]) from this.
-            cache.rollback_state = (conv_snap, state_at_boundary)
+            # Rollback closure: recompute (conv, ssm) after keeping the
+            # first ``S - n_to_drop`` positions, from the pre-window state.
+            # Captures the per-position tensors by default-arg so each GDN
+            # layer's closure is independent and evaluates lazily (q/k/v are
+            # already materialized by the verify sync, so this is just the
+            # short scan, no re-projection).
+            _use_kernel = not self.training
 
-            # Chunk 2: [n_conf:S]
-            q2 = q[:, n_conf:]
-            k2 = k[:, n_conf:]
-            v2 = v[:, n_conf:]
-            a2 = a[:, n_conf:]
-            b2 = b[:, n_conf:]
-            mask2 = mask[:, n_conf:] if mask is not None else None
-            out2, state_final = gated_delta_update(
-                q2,
-                k2,
-                v2,
-                a2,
-                b2,
-                self.A_log,
-                self.dt_bias,
-                state_at_boundary,
-                mask2,
-                use_kernel=not self.training,
-            )
+            def _recompute_boundary(
+                n_to_drop,
+                *,
+                _pre=pre_ssm,
+                _q=q,
+                _k=k,
+                _v=v,
+                _a=a,
+                _b=b,
+                _conv=conv_input,
+                _mask=mask,
+                _slen=S,
+                _nk=n_keep,
+                _alog=self.A_log,
+                _dt=self.dt_bias,
+                _uk=_use_kernel,
+            ):
+                keep = _slen - n_to_drop
+                ms = _mask[:, :keep] if _mask is not None else None
+                _, st_keep = gated_delta_update(
+                    _q[:, :keep],
+                    _k[:, :keep],
+                    _v[:, :keep],
+                    _a[:, :keep],
+                    _b[:, :keep],
+                    _alog,
+                    _dt,
+                    _pre,
+                    ms,
+                    use_kernel=_uk,
+                )
+                conv_keep = mx.contiguous(_conv[:, keep : keep + _nk, :])
+                return conv_keep, st_keep
 
-            out = mx.concatenate([out1, out2], axis=1)
-            cache[1] = state_final
-            # Advance the cache position by the FULL chunk length S —
-            # this exactly mirrors the upstream
-            # ``GatedDeltaNet.__call__`` (mlx_lm/models/qwen3_5.py
-            # line 196-198 in 0.31.3), which always calls
-            # ``cache.advance(S)`` when cache is non-None at end of
-            # forward. Our chunk-split path consumes the same S
-            # tokens, just in two sub-calls to gated_delta_update;
-            # the net advance is identical to the upstream single-
-            # call path. No double-advance: there is no other
-            # ``advance`` along this code path.
+            cache.rollback_recompute = _recompute_boundary
+
+            cache[1] = st
+            # Advance by the FULL S — mirrors upstream cache.advance(S).
             cache.advance(S)
 
             out = self.norm(out, z)

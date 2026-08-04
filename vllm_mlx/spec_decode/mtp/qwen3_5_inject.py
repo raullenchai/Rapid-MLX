@@ -830,10 +830,17 @@ def inject_mtp_support(
             # in the ``finally`` block so a later non-MTP forward
             # (mtp_forward, prefill, etc.) on the same cache list
             # doesn't accidentally re-trigger a split.
+            # Multi-slot snapshots: the verify forward processes
+            # ``[committed, d_1, ..., d_K]`` (K = n_confirmed drafts). Tag
+            # each ArraysCache to snapshot (conv, ssm) after tokens
+            # 1..K so ``_rollback_draft(n)`` can restore to any accepted
+            # count (chain-of-K on SSM-hybrid targets). KVCache slots
+            # ignore the tag (their rollback is c.trim(n)).
             if n_confirmed > 0:
+                _offsets = list(range(1, n_confirmed + 1))
                 for c in cache:
-                    if c is not None and hasattr(c, "rollback_state"):
-                        c.n_confirmed_for_mtp = n_confirmed
+                    if c is not None and hasattr(c, "rollback_states"):
+                        c.snapshot_offsets = _offsets
 
             try:
                 fa_mask = create_attention_mask(hidden_states, cache[inner_m.fa_idx])
@@ -844,8 +851,8 @@ def inject_mtp_support(
             finally:
                 if n_confirmed > 0:
                     for c in cache:
-                        if c is not None and hasattr(c, "n_confirmed_for_mtp"):
-                            c.n_confirmed_for_mtp = 0
+                        if c is not None and hasattr(c, "snapshot_offsets"):
+                            c.snapshot_offsets = None
 
             # Return PRE-norm hidden so MTP can apply its own
             # ``pre_fc_norm_hidden`` — matches PR #990's contract that
@@ -865,8 +872,21 @@ def inject_mtp_support(
             hidden_states,
             next_token_ids,
             mtp_cache,
+            return_hidden: bool = False,
         ):
-            """Run the MTP head and project through the shared lm_head."""
+            """Run the MTP head and project through the shared lm_head.
+
+            ``return_hidden=True`` also returns the head's pre-lm_head
+            output ``mtp_out`` (B, N, backbone_hidden). The generator's
+            chain-of-K path feeds that back as the next iteration's
+            ``hidden_states`` (drafter-hidden cascade) so each successive
+            draft is conditioned on the drafter's OWN refined hidden
+            rather than the target's frozen hidden — the frozen-hidden
+            fallback makes multi-token drafts degrade fast (measured
+            ~45% accept at K=3 vs ~89% at K=1). This is the autoregressive
+            MTP cascade (mirrors ``_MTPModule.__call__``: fuse
+            embed(tok)+hidden -> layer -> norm).
+            """
             mtp_out = self.mtp(
                 hidden_states,
                 next_token_ids,
@@ -874,8 +894,12 @@ def inject_mtp_support(
                 mtp_cache,
             )
             if self.args.tie_word_embeddings:
-                return self.model.embed_tokens.as_linear(mtp_out)
-            return self.lm_head(mtp_out)
+                logits = self.model.embed_tokens.as_linear(mtp_out)
+            else:
+                logits = self.lm_head(mtp_out)
+            if return_hidden:
+                return logits, mtp_out
+            return logits
 
         def make_mtp_cache(self):
             """Return fresh ``KVCache`` entries — one per MTP layer.
