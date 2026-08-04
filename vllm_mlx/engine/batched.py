@@ -27,6 +27,11 @@ from .base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
 
+# Tokenization can change across a message boundary once the following turn is
+# appended. Replay a negligible suffix so non-trimmable caches never snapshot
+# an optimistic boundary that the next request cannot reuse.
+_PREFIX_BOUNDARY_REPLAY_TOKENS = 8
+
 # Harmony's chat template ends its generation prompt immediately after
 # ``<|start|>assistant`` and expects the model to choose a channel. When
 # thinking is disabled, seed an empty analysis message followed by an open
@@ -2282,7 +2287,7 @@ class BatchedEngine(BaseEngine):
                     if real_token != future_token:
                         break
                     transient_lcp += 1
-                return transient_lcp
+                return max(0, transient_lcp - _PREFIX_BOUNDARY_REPLAY_TOKENS)
 
             stable_prompt = self._apply_chat_template(
                 messages, template_tools, add_generation_prompt=False
@@ -2319,7 +2324,7 @@ class BatchedEngine(BaseEngine):
                 and next_turn_lcp >= len(stable_tokens)
                 and stable_lcp < len(real_tokens)
             ):
-                return stable_lcp
+                return max(0, stable_lcp - _PREFIX_BOUNDARY_REPLAY_TOKENS)
 
             # Conservative fallback for templates whose no-generation form is
             # not a strict prefix of their generation form.
@@ -2339,7 +2344,8 @@ class BatchedEngine(BaseEngine):
                     break
                 lcp = j + 1
 
-            return min(lcp, next_turn_lcp) if stable_lcp else lcp
+            boundary = min(lcp, next_turn_lcp) if stable_lcp else lcp
+            return max(0, boundary - _PREFIX_BOUNDARY_REPLAY_TOKENS)
         except Exception:
             return 0
 

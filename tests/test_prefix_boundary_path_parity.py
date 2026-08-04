@@ -263,7 +263,7 @@ def test_prefix_boundary_prefers_latest_stable_message_boundary(monkeypatch):
     ]
     stable = render(messages, add_generation_prompt=False)
 
-    assert engine._compute_prefix_boundary(messages) == len(stable)
+    assert engine._compute_prefix_boundary(messages) == len(stable) - 8
 
 
 def test_prefix_boundary_stops_before_transient_server_priming(monkeypatch):
@@ -309,9 +309,31 @@ def test_prefix_boundary_stops_before_transient_server_priming(monkeypatch):
             break
         expected += 1
 
-    assert boundary == expected
+    assert boundary == expected - 8
     assert boundary > 0
     assert "temporary" not in real[:boundary]
+
+
+def test_prefix_boundary_replay_clamps_short_transient_prefix(monkeypatch):
+    engine, _ = _build_engine(monkeypatch)
+    engine._compute_prefix_boundary = BatchedEngine._compute_prefix_boundary.__get__(
+        engine, BatchedEngine
+    )
+    engine._tokenizer = _CharacterTokenizer()
+
+    monkeypatch.setattr(
+        engine,
+        "_apply_chat_template",
+        lambda messages, tools=None, **kwargs: (
+            "same:" + str(messages[-1].get("content", ""))
+        ),
+    )
+
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "developer", "content": "temporary"},
+    ]
+    assert engine._compute_prefix_boundary(messages, transient_message_start=1) == 0
 
 
 def test_transient_priming_marker_is_removed_before_chat_templating():
@@ -358,7 +380,7 @@ def test_prefix_boundary_falls_back_when_no_generation_form_is_not_prefix(
         {"role": "user", "content": "latest"},
     ]
 
-    assert engine._compute_prefix_boundary(messages) == len("shared-history|")
+    assert engine._compute_prefix_boundary(messages) == len("shared-history|") - 8
 
 
 def test_prefix_boundary_rejects_last_user_rewrite_on_next_turn(monkeypatch):
@@ -385,4 +407,4 @@ def test_prefix_boundary_rejects_last_user_rewrite_on_next_turn(monkeypatch):
 
     boundary = engine._compute_prefix_boundary(messages)
     assert boundary < len(render(messages, add_generation_prompt=False))
-    assert boundary == len("shared|TURN:system|")
+    assert boundary == len("shared|TURN:system|") - 8
