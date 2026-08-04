@@ -1,304 +1,134 @@
 import Testing
 @testable import Rapid
 
-/// Issue #163 — pin the RAM bracket → canonical alias mapping
-/// against the contract the landing page at
-/// ``rapidmlx.com/desktop`` publishes. Every bracket boundary plus
-/// representative interior values, so a future "let's add another
-/// bracket" PR can't silently shift the boundaries.
+/// Pin the RAM tier → recommended-pick table. v0.13 replaced the old
+/// 6-bucket × 5-role matrix with one primary pick per RAM tier (plus an
+/// optional faster alt on the smallest tier) and per-pick launch flags.
 ///
-/// Boundaries were re-tuned during codex r1 review on PR #165
-/// after the original 25-GB lower-bound on the 27B bracket
-/// produced ``.tooBig`` classifications for 32 GB Macs.
+/// The tiers are keyed by machine RAM and a Mac rounds DOWN to the
+/// nearest floor: a 20 GB Mac gets the 18 GB pick (which fits), not the
+/// 24 GB pick. Table (see ``RAMBucketedDefault`` docstring for the full
+/// numbers):
 ///
-/// v0.6.7 expanded each bucket from a single "default alias" to
-/// five role-anchored aliases (default / speed / quality / coding /
-/// multimodal) and split the 17–36 bucket into 17–24 + 25–36 so the
-/// default slot can graduate to gpt-oss-20b-mxfp4-q8 above 24 GB.
-/// New default-slot table:
+///   16 GB  → bonsai-27b-2bit   (+ fast lfm2.5-8b-a1b-4bit · Chat only)
+///   18 GB  → bonsai-27b-2bit   (mirrors 16 GB) (+ fast lfm2.5-8b-a1b-4bit)
+///   24 GB  → gemma-4-26b-4bit  (--no-mllm --kv-cache-dtype bf16 --cache-memory-mb 512)
+///   32 GB  → qwen3.6-35b-4bit
+///   64 GB  → qwen3.6-35b-8bit  (+ fast qwen3.6-35b-4bit)
+///   96 GB+ → qwen3.5-122b-mxfp4 (+ fast qwen3.6-35b-4bit)
 ///
-///   ≤ 16  → qwen3.5-4b-4bit
-///   17-24 → qwen3.5-9b-4bit
-///   25-36 → gpt-oss-20b-mxfp4-q8
-///   37-48 → qwen3.6-27b-4bit
-///   49-96 → qwen3.6-35b-4bit
-///   97+   → qwen3.6-35b-4bit
-///
-/// — chosen so the bucketed default is at most ``.borderline`` on
-/// the bottom edge of every bracket. The full 5-role table is
-/// covered by ``ModelRecommendationsTests``.
-///
-/// v0.6.1 collapsed the previous 128+ → 122B default into 49+ →
-/// 35B-A3B. Rationale lives in ``RAMBucketedDefault``'s docstring:
-/// 65 GB first-touch downloads were the #1 reason new users bounced
-/// before reaching the chat surface. 122B stays in the model picker
-/// as the ``quality`` slot at 97+ GB.
-@Suite("RAMBucketedDefault — landing-page contract (issue #163)")
+/// Note: the picks trust the maintainer's MEASURED footprints, which are
+/// smaller than ``ModelSizing``'s heuristic estimate for low-bit / MoE
+/// models — so there is deliberately NO ``ModelSizing.classify`` fit
+/// assertion here (that gate over-states these picks; the picker bypasses
+/// it for recommended picks via ``isRecommendedPick``).
+@Suite("RAMBucketedDefault — RAM tier → recommended pick")
 struct RAMBucketedDefaultTests {
 
-    // MARK: - Exact-boundary cases
+    // MARK: - Primary alias per RAM (rounds DOWN to nearest floor)
 
-    @Test("8 GB Mac (entry-tier MacBook Air) → 4B")
-    func eightGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 8) == "qwen3.5-4b-4bit")
+    @Test("Each RAM lands on the tier whose floor is the largest ≤ its RAM")
+    func aliasPerRAM() {
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 8) == "bonsai-27b-2bit")     // sub-16 clamps up
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 16) == "bonsai-27b-2bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 17) == "bonsai-27b-2bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 18) == "bonsai-27b-2bit")   // 18 mirrors 16
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 24) == "gemma-4-26b-4bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 32) == "qwen3.6-35b-4bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 48) == "qwen3.6-35b-4bit")   // 32 tier
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 64) == "qwen3.6-35b-8bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 96) == "qwen3.5-122b-mxfp4")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 256) == "qwen3.5-122b-mxfp4") // 96 tier
     }
 
-    @Test("16 GB Mac (default MacBook Air, top of smallest bracket) → 4B")
-    func sixteenGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 16) == "qwen3.5-4b-4bit")
+    @Test("A 20 GB Mac rounds DOWN to the 18 GB pick (fits), not up to 24 GB")
+    func roundsDownNotUp() {
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 20) == "bonsai-27b-2bit")   // 18 tier (mirrors 16)
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 30) == "gemma-4-26b-4bit")
     }
 
-    @Test("17 GB Mac (just above the 16 GB cap) → 9B")
-    func seventeenGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 17) == "qwen3.5-9b-4bit")
+    @Test("Pathological zero / negative RAM clamps to the smallest tier, no crash")
+    func degenerateRAM() {
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 0) == "bonsai-27b-2bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: -1) == "bonsai-27b-2bit")
     }
 
-    @Test("18 GB Mac (M3 Pro base) → 9B")
-    func eighteenGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 18) == "qwen3.5-9b-4bit")
+    // MARK: - Picks (primary + optional alt)
+
+    @Test("Each tier surfaces a smart pick + a fast alt where speed warrants it")
+    func smartAndFastPicks() {
+        // 16/18 GB: slow smart pick → a fast lfm2.5 alt (chat specialist).
+        let smallest = RAMBucketedDefault.picks(forPhysicalRAMGB: 16)
+        #expect(smallest.count == 2)
+        #expect(smallest[0].alias == "bonsai-27b-2bit")
+        #expect(smallest[1].alias == "lfm2.5-8b-a1b-4bit")
+        #expect(smallest[1].caveat == "Chat only")
+        // 18 GB mirrors 16 GB (bonsai smart + lfm2.5 fast).
+        let tier18 = RAMBucketedDefault.picks(forPhysicalRAMGB: 18)
+        #expect(tier18.count == 2)
+        #expect(tier18[0].alias == "bonsai-27b-2bit")
+        #expect(tier18[1].alias == "lfm2.5-8b-a1b-4bit")
+        // 24/32 GB: smart pick is already MoE-fast → stands alone.
+        #expect(RAMBucketedDefault.picks(forPhysicalRAMGB: 24).count == 1)
+        #expect(RAMBucketedDefault.picks(forPhysicalRAMGB: 32).count == 1)
+        // 64/96 GB: fast alt is the lighter 4-bit Qwen3.6-35B (no caveat).
+        let tier64 = RAMBucketedDefault.picks(forPhysicalRAMGB: 64)
+        #expect(tier64.count == 2)
+        #expect(tier64[1].alias == "qwen3.6-35b-4bit")
+        #expect(tier64[1].caveat == nil)
+        let tier96 = RAMBucketedDefault.picks(forPhysicalRAMGB: 96)
+        #expect(tier96.count == 2)
+        #expect(tier96[1].alias == "qwen3.6-35b-4bit")
     }
 
-    @Test("24 GB Mac (M3 Pro upgrade, top of 17–24 bracket) → 9B (default slot)")
-    func twentyFourGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 24) == "qwen3.5-9b-4bit")
+    // MARK: - Launch flags travel with the recommendation, gated by RAM
+
+    @Test("Flags apply only when the alias IS the pick for that Mac's RAM")
+    func launchFlagsAreRAMGated() {
+        #expect(RAMBucketedDefault.launchFlags(forAlias: "bonsai-27b-2bit", physicalRAMGB: 18).isEmpty)
+        #expect(RAMBucketedDefault.launchFlags(forAlias: "gemma-4-26b-4bit", physicalRAMGB: 24)
+            == ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"])
+        #expect(RAMBucketedDefault.launchFlags(forAlias: "qwen3.6-35b-4bit", physicalRAMGB: 32).isEmpty)
+        // Hand-picking gemma-26b on a 64 GB Mac (where it is NOT the pick)
+        // → no forced flags, so it keeps vision.
+        #expect(RAMBucketedDefault.launchFlags(forAlias: "gemma-4-26b-4bit", physicalRAMGB: 64).isEmpty)
+        #expect(RAMBucketedDefault.launchFlags(forAlias: "not-a-pick", physicalRAMGB: 32).isEmpty)
     }
 
-    @Test("25 GB Mac (just above the 24 GB cap) → gpt-oss-20b (default slot)")
-    func twentyFiveGB() {
-        // v0.6.7: the 17–36 bucket split into 17–24 + 25–36 so the
-        // default slot graduates to gpt-oss-20b above 24 GB, where
-        // mxfp4-q8 sizing (~12 GB weights) fits comfortably.
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 25) == "gpt-oss-20b-mxfp4-q8")
+    @Test("isRecommendedPick is true only for this Mac's primary or alt, and is floor-gated")
+    func isRecommendedPickContract() {
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 16))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-8b-a1b-4bit", physicalRAMGB: 16))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18))   // 18 mirrors 16
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "gemma-4-12b-4bit", physicalRAMGB: 18)) // dropped from picks
+        // Floor gate: an 8 GB Mac is SHOWN the 16 GB tier's picks but does
+        // NOT sit in that tier, so the picks stay subject to the .tooBig
+        // gate — bypassing it there would re-open the OOM hole.
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-8b-a1b-4bit", physicalRAMGB: 8))
+        // The fast alt is a recommended pick on its own tiers (64/96 GB),
+        // so it also skips the .tooBig gate there.
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 64))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 96))
     }
 
-    @Test("32 GB Mac (largest single-config cohort) → gpt-oss-20b (default slot)")
-    func thirtyTwoGB() {
-        // v0.6.7: was qwen3.5-9b-4bit pre-split. gpt-oss-20b-mxfp4-q8
-        // is a far better starting model on 32 GB and still safely
-        // under the .tooBig ceiling.
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 32) == "gpt-oss-20b-mxfp4-q8")
-    }
+    // MARK: - Table invariants
 
-    @Test("36 GB Mac (M3 Pro top, top of the 25–36 bracket) → gpt-oss-20b (default slot)")
-    func thirtySixGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 36) == "gpt-oss-20b-mxfp4-q8")
-    }
-
-    @Test("37 GB Mac (just above the 36 GB cap, bottom of the 27B bracket) → 27B (default slot)")
-    func thirtySevenGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 37) == "qwen3.6-27b-4bit")
-    }
-
-    @Test("48 GB Mac (M3 Max base, top of the 27B bracket) → 27B")
-    func fortyEightGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 48) == "qwen3.6-27b-4bit")
-    }
-
-    @Test("49 GB Mac (just above the 48 GB cap, bottom of the 35B bracket) → 35B-A3B")
-    func fortyNineGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 49) == "qwen3.6-35b-4bit")
-    }
-
-    @Test("64 GB Mac (M3 Max / Ultra entry) → 35B-A3B")
-    func sixtyFourGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 64) == "qwen3.6-35b-4bit")
-    }
-
-    @Test("96 GB Mac (M3 Max upgrade) → 35B-A3B")
-    func ninetySixGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 96) == "qwen3.6-35b-4bit")
-    }
-
-    @Test("128 GB Mac (M2 Ultra / M3 Ultra entry) → 35B-A3B (v0.6.1: was 122B)")
-    func oneTwentyEightGB() {
-        // v0.6.1 collapsed the 128+ bracket. 122B is still picker-
-        // selectable but no longer the first-touch default for
-        // 128 GB+ Macs — 65 GB download was the dominant
-        // first-touch UX failure surfaced by the v0.6.0 N2N walk.
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 128) == "qwen3.6-35b-4bit")
-    }
-
-    @Test("256 GB Mac (M3 Ultra full house) → 35B-A3B (v0.6.1: was 122B)")
-    func twoFiftySixGB() {
-        // Same v0.6.1 collapse rationale. ~18 GB download finishes
-        // in 3-5 min; user sees the chat respond, can then trade
-        // up to 122B from the picker if they want quality over
-        // bandwidth.
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 256) == "qwen3.6-35b-4bit")
-    }
-
-    @Test("1 TB Mac (hypothetical future Ultra) → 35B-A3B (last bucket is open-ended)")
-    func oneTerabyteGB() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 1024) == "qwen3.6-35b-4bit")
-    }
-
-    // MARK: - Fractional / edge cases
-
-    @Test("Boundary infinitesimally above 16 GB lands in the 9B bucket")
-    func justAboveSixteen() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 16.5) == "qwen3.5-9b-4bit")
-    }
-
-    @Test("Boundary infinitesimally below 16 GB still lands in the 4B bucket")
-    func justBelowSixteen() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 15.99) == "qwen3.5-4b-4bit")
-    }
-
-    @Test("Pathological zero RAM falls into the smallest bucket, not a crash")
-    func zeroRAM() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 0) == "qwen3.5-4b-4bit")
-    }
-
-    @Test("Negative input (impossible in practice) still routes to a real alias")
-    func negativeRAM() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: -1) == "qwen3.5-4b-4bit")
-    }
-
-    // MARK: - Bucket table invariants
-
-    @Test("Brackets are monotonically increasing — no overlap, no gap")
-    func bracketsAreSorted() {
-        let upperBounds = RAMBucketedDefault.buckets.map(\.upperGB)
-        for (a, b) in zip(upperBounds, upperBounds.dropFirst()) {
-            #expect(a < b, "Bucket upper bounds must be strictly increasing — got \(a) before \(b)")
+    @Test("Tier floors are strictly increasing so round-down is unambiguous")
+    func floorsAreSorted() {
+        let floors = RAMBucketedDefault.tiers.map(\.floorGB)
+        for (a, b) in zip(floors, floors.dropFirst()) {
+            #expect(a < b, "Tier floors must strictly increase — got \(a) before \(b)")
         }
     }
 
-    @Test("Last bucket is unbounded so callers never need a fallback")
-    func lastBucketIsInfinite() {
-        #expect(RAMBucketedDefault.buckets.last?.upperGB == .infinity)
-    }
-
-    @Test("Default-slot aliases follow a non-decreasing capability curve across brackets")
-    func defaultSlotIsMonotonic() {
-        // The 49–96 and 97+ buckets intentionally share the same
-        // ``default`` alias (qwen3.6-35b-4bit) because the only
-        // larger first-touch alternative is 122B and its 65 GB
-        // download is the v0.6.0 first-touch UX failure we
-        // explicitly closed. Asserting strict-uniqueness here would
-        // re-open that regression. Instead we verify the lineage is
-        // monotonically non-decreasing by parameter count so a future
-        // PR can't accidentally regress 49+ GB to a smaller default
-        // than the 25–36 bucket.
-        let paramCounts: [Double] = RAMBucketedDefault.buckets.map { bucket in
-            ModelSizing.estimate(alias: bucket.default).paramsBillions ?? 0
-        }
-        for (a, b) in zip(paramCounts, paramCounts.dropFirst()) {
-            #expect(a <= b, "Default-slot params must be non-decreasing across brackets — got \(a) before \(b)")
-        }
-    }
-
-    // MARK: - ModelSizing fit gate (codex r1 BLOCKING on #165)
-
-    /// Every bucketed alias must be at most ``.borderline`` (NOT
-    /// ``.tooBig``) on the smallest *practical* Mac in its bracket —
-    /// 16 GB for the 4B bracket (modern Air baseline; smaller Macs
-    /// are below the realistic LLM floor), and the bracket's actual
-    /// lower edge for every bracket above that. This is the
-    /// invariant codex r1 caught the previous table violating.
-    ///
-    /// Apple still sells 8 GB Macs but ModelSizing classifies 4B-4bit
-    /// on 8 GB as ``.tooBig`` (ratio 0.92 vs. the 0.75 cutoff). That's
-    /// a hardware limitation, not a table bug — the picker will still
-    /// default to 4B for those users (it's the smallest alias we
-    /// have) but the row will be flagged as borderline/.tooBig in the
-    /// UI. Tested separately below.
-    @Test("Every bucket's smallest-practical Mac gets a fit-safe default (not .tooBig)")
-    func everyBracketSmallestPracticalIsFitSafe() {
-        // (physical GB at floor of bracket on a Mac actually shipped
-        // in volume, expected default alias)
-        //
-        // Note: gpt-oss-20b-mxfp4-q8 (25–36 bucket default) is
-        // VERIFIED OK by ``ModelSizing`` only from 27 GB up. The
-        // mxfp4 footprint (~4 bits/param effective + quantized
-        // attention) is closer to 11 GB of weights, but the
-        // estimator treats the alias as 4-bit dense and lands at
-        // 16.2 GB total. At a 25 or 26 GB floor that's a ratio of
-        // 0.81 / 0.78 → .tooBig per ModelSizing's conservative
-        // 0.75 cutoff. The alias still ships in the 25-36 bucket
-        // because (a) operator testing on 32 GB Macs has confirmed
-        // it runs comfortably and (b) the next bracket boundary
-        // (37 GB) would be a worse mismatch. We probe 27 GB here
-        // instead of 25 to assert the practical safety floor
-        // without tightening the bucket schema. 25-26 GB Macs
-        // are quite rare in practice (no Apple Silicon SKU ships
-        // those exact configurations).
-        let floors: [(Double, String)] = [
-            (16,  "qwen3.5-4b-4bit"),       // M3 Air base
-            (17,  "qwen3.5-9b-4bit"),       // bottom of 17–24 bracket
-            (27,  "gpt-oss-20b-mxfp4-q8"),  // 25–36 bracket — see note above
-            (37,  "qwen3.6-27b-4bit"),      // bottom of 37–48 bracket
-            (49,  "qwen3.6-35b-4bit"),      // bottom of 49–96 bracket
-            (97,  "qwen3.6-35b-4bit"),      // bottom of 97+ bracket
-        ]
-        for (physicalGB, expectedAlias) in floors {
-            let actualAlias = RAMBucketedDefault.alias(forPhysicalRAMGB: physicalGB)
-            #expect(actualAlias == expectedAlias)
-            let host = MacHardware(
-                brandString: "Apple M3", family: .m3, tier: .pro,
-                physicalRAMBytes: UInt64(physicalGB) * 1024 * 1024 * 1024,
-                memoryBandwidthGBs: 150
-            )
-            let fit = ModelSizing.classify(ModelSizing.estimate(alias: actualAlias), on: host)
-            #expect(
-                fit != .tooBig,
-                "Bucket floor \(physicalGB) GB × \(actualAlias) was \(fit) — must be .recommended or .borderline"
-            )
-        }
-    }
-
-    /// The hardware-floor case: 8 GB Macs do still get *a* default
-    /// (the smallest alias we ship), even though ModelSizing flags
-    /// it as ``.tooBig``. Documenting this explicitly so a future PR
-    /// that tries to "fix" the .tooBig classification doesn't
-    /// accidentally remove the default for the entry-tier cohort.
-    @Test("8 GB Macs still get 4B-4bit as the default even though ModelSizing flags it .tooBig")
-    func eightGBStillGetsADefault() {
-        let alias = RAMBucketedDefault.alias(forPhysicalRAMGB: 8)
-        #expect(alias == "qwen3.5-4b-4bit")
-        let host = MacHardware(
-            brandString: "Apple M2", family: .m2, tier: .base,
-            physicalRAMBytes: 8 * 1024 * 1024 * 1024,
-            memoryBandwidthGBs: 100
-        )
-        let fit = ModelSizing.classify(ModelSizing.estimate(alias: alias), on: host)
-        // This is correct expected behaviour — 8 GB is below the
-        // practical LLM floor, but the bucket still returns an
-        // alias rather than nil so the picker has SOMETHING to show.
-        #expect(fit == .tooBig)
-    }
-
-    /// Counter-test: the pre-codex table's 32 GB × 27B is genuinely
-    /// ``.tooBig``, proving the table change was load-bearing (not
-    /// gratuitous reshuffling).
-    @Test("Pre-fix combo (32 GB × 27B-4bit) is .tooBig per ModelSizing — the table HAD to change")
-    func preFix32GBTimes27BIsTooBig() {
-        let host = MacHardware(
-            brandString: "Apple M3 Pro", family: .m3, tier: .pro,
-            physicalRAMBytes: 32 * 1024 * 1024 * 1024, memoryBandwidthGBs: 150
-        )
-        let fit = ModelSizing.classify(
-            ModelSizing.estimate(alias: "qwen3.6-27b-4bit"),
-            on: host
-        )
-        #expect(fit == .tooBig)
-    }
-
-    @Test("Comfortable middle of every bracket: bucketed alias is at most .borderline")
-    func bracketMiddlesFitSafe() {
-        // One value inside each bracket — covers all six v0.6.7
-        // buckets so a future bracket-add can't silently ship a
-        // .tooBig default.
-        let midPoints: [Double] = [12, 20, 30, 42, 64, 192]
-        for gb in midPoints {
-            let alias = RAMBucketedDefault.alias(forPhysicalRAMGB: gb)
-            let host = MacHardware(
-                brandString: "Apple M3 Pro", family: .m3, tier: .pro,
-                physicalRAMBytes: UInt64(gb) * 1024 * 1024 * 1024,
-                memoryBandwidthGBs: 150
-            )
-            let fit = ModelSizing.classify(ModelSizing.estimate(alias: alias), on: host)
-            #expect(fit != .tooBig, "\(gb) GB × \(alias) was \(fit)")
+    @Test("Capability % is a sane 0–100 for every pick")
+    func capabilityInRange() {
+        for tier in RAMBucketedDefault.tiers {
+            for pick in tier.picks {
+                #expect(pick.capabilityPct > 0 && pick.capabilityPct <= 100,
+                        "\(pick.alias) capability \(pick.capabilityPct) out of range")
+            }
         }
     }
 }
@@ -473,7 +303,7 @@ struct SafeDefaultFallbackTests {
 /// consults on every fresh-launch alias resolution. The headline
 /// case (the issue's smoking-gun screenshot) is the first test:
 /// a 256 GB Mac with the Quickstart model cached should land on
-/// ``bonsai-1.7b-2bit`` instead of the 4.4 GB bucketed default.
+/// ``bonsai-1.7b-2bit`` instead of the bucketed default.
 ///
 /// The remaining tests pin the contract preserved from the legacy
 /// path so a future "let's simplify the helper" PR can't silently
@@ -495,35 +325,24 @@ struct CacheAwareDefaultTests {
 
     // MARK: - Headline case (issue #436 repro)
 
-    @Test("256 GB Mac with Quickstart cached — picker defaults to cached bonsai-1.7b-2bit, not the bucketed 35B")
+    @Test("256 GB Mac with Quickstart cached — picker defaults to cached bonsai-1.7b-2bit, not the bucketed pick")
     func two56GBWithQuickstartCachedPrefersCached() {
-        // The exact pathology from the v0.8.13 dogfood screenshot:
-        // a 256 GB M3 Ultra lands in the 97+ bucket (default =
-        // qwen3.6-35b-4bit, ~4.4 GB download), but the user already
-        // pulled bonsai-1.7b-2bit via Quickstart. Pre-#436 the picker
-        // breadcrumb still read "qwen3.6-35b-4bit" and the Start CTA
-        // said "Download & start (~4.4 GB)" — exactly the UX cliff
-        // the issue documents.
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
-            entry("qwen3.6-35b-4bit", cached: false),
+            entry("qwen3.5-122b-mxfp4", cached: false),
         ]
         let pick = CacheAwareDefault.pick(
             catalog: catalog,
             hardware: host(gb: 256),
-            bucketedDefault: "qwen3.6-35b-4bit"
+            bucketedDefault: "qwen3.5-122b-mxfp4"
         )
         #expect(pick == "bonsai-1.7b-2bit")
     }
 
-    // MARK: - Step 1: bucketed is cached + fits → use it (preserve landing-page contract)
+    // MARK: - Step 1: bucketed is cached + fits → use it
 
-    @Test("Step 1: bucketed default already cached + fits — return bucketed (no change vs legacy)")
+    @Test("Step 1: bucketed default already cached + fits — return bucketed")
     func bucketedCachedAndFitsWins() {
-        // A user who's used the canonical pick before still gets it
-        // as the default — alphabetical tie-break in step 2 doesn't
-        // demote a high-quality cached canonical pick to a tiny
-        // cached neighbour just because the alias name sorts later.
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
             entry("qwen3.6-35b-4bit", cached: true),
@@ -540,12 +359,8 @@ struct CacheAwareDefaultTests {
 
     // MARK: - Step 2: cached-and-fits beats not-cached bucketed (the #436 fix)
 
-    @Test("Step 2: bucketed not cached, multiple cached candidates — alphabetical wins (mirrors AutoStartDecision)")
+    @Test("Step 2: bucketed not cached, multiple cached candidates — alphabetical wins")
     func multipleCachedAlphabeticalTieBreak() {
-        // 256 GB Mac, bucketed default isn't cached, two cached
-        // alternatives. Alphabetical via localizedStandardCompare —
-        // same tie-break as AutoStartDecision.resolveAlias so the
-        // picker breadcrumb and the AutoStart pick converge.
         let catalog = [
             entry("qwen3.6-35b-4bit", cached: false),       // bucketed default
             entry("gemma-4-12b-4bit", cached: true),        // alphabetical first
@@ -561,11 +376,6 @@ struct CacheAwareDefaultTests {
 
     @Test("Step 2: bucketed missing from catalog entirely — cached candidate wins")
     func bucketedMissingCachedWins() {
-        // Forward-compat skew: the desktop knows about a bucketed
-        // alias the bundled rapid-mlx hasn't onboarded yet. The
-        // pre-#436 path would have fallen straight through to
-        // SafeDefaultFallback and lost the cache preference; the
-        // step 2 check makes sure a cached-and-fits row wins first.
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
         ]
@@ -579,14 +389,9 @@ struct CacheAwareDefaultTests {
 
     @Test("Step 2: cached candidate must FIT — .tooBig cached alias gets skipped, falls to bucketed")
     func cachedButTooBigSkippedFallsToBucketed() {
-        // Pathology: a 256 GB cached 122B alias was rsync'd onto an
-        // 18 GB Mac. CacheAwareDefault must NOT promote it just
-        // because it's cached — the legacy SafeDefaultFallback
-        // logic from #165 still applies. With the bucketed 9B
-        // available + fits, step 3 fires and returns 9B.
         let catalog = [
             entry("qwen3.5-122b-mxfp4", cached: true),  // cached but .tooBig on 18 GB
-            entry("qwen3.5-9b-4bit", cached: false),    // bucketed default for 18 GB, fits
+            entry("qwen3.5-9b-4bit", cached: false),    // bucketed default, fits
         ]
         let pick = CacheAwareDefault.pick(
             catalog: catalog,
@@ -602,11 +407,6 @@ struct CacheAwareDefaultTests {
 
     @Test("Step 2: cached candidate with unparseable params — skipped (codex r3 #165 trap)")
     func cachedUnparseableSkipped() {
-        // Cached qwen3-coder-4bit has paramsBillions = nil; without
-        // the filter it would phantom-classify as .borderline and
-        // win step 2. The contract pins that step 2 never promotes
-        // an unparseable alias — same defensive partition as
-        // SafeDefaultFallback.pick.
         let catalog = [
             entry("qwen3-coder-4bit", cached: true),    // unparseable, must NOT win
             entry("qwen3.5-9b-4bit", cached: false),    // bucketed, fits
@@ -624,10 +424,6 @@ struct CacheAwareDefaultTests {
 
     @Test("Step 3: nothing cached — bucketed default wins (legacy parity)")
     func nothingCachedBucketedWins() {
-        // First-ever launch on a fresh Mac with no model on disk
-        // anywhere. Step 1 fails (bucketed isn't cached), step 2
-        // fails (nothing cached at all), step 3 returns the
-        // bucketed default — exactly the pre-#436 behaviour.
         let catalog = [
             entry("qwen3.6-35b-4bit", cached: false),
             entry("qwen3.5-9b-4bit", cached: false),
@@ -644,10 +440,6 @@ struct CacheAwareDefaultTests {
 
     @Test("Step 4: bucketed missing AND nothing cached fits — delegate to SafeDefaultFallback")
     func bucketedMissingNothingCachedFallback() {
-        // 8 GB Mac, no cached models, bucketed not in catalog.
-        // Falls through to SafeDefaultFallback whose step 2 picks
-        // the smallest fitting known alias — pinned identically
-        // here for parity with the pre-#436 fallthrough.
         let catalog = [
             entry("qwen3.5-9b-4bit", cached: false),
             entry("qwen3.5-4b-4bit", cached: false),
@@ -677,22 +469,16 @@ struct CacheAwareDefaultTests {
 
     @Test("Slim DMG fresh install (Quickstart only) — picker defaults to cached bonsai-1.7b-2bit")
     func slimDMGFreshInstallPrefersQuickstart() {
-        // Slim DMG bootstrapper pulls bonsai-1.7b-2bit. The user
-        // then lands on the chat surface and the picker should NOT
-        // demand another 4.4 GB pull for the bucketed default. This
-        // is the "first-touch UX after install" path the issue
-        // calls out as the worst case.
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
             entry("qwen3.5-4b-4bit", cached: false),
             entry("qwen3.5-9b-4bit", cached: false),
-            entry("qwen3.6-27b-4bit", cached: false),
             entry("qwen3.6-35b-4bit", cached: false),
         ]
         let pick = CacheAwareDefault.pick(
             catalog: catalog,
             hardware: host(gb: 256),
-            bucketedDefault: "qwen3.6-35b-4bit"
+            bucketedDefault: "qwen3.5-122b-mxfp4"
         )
         #expect(pick == "bonsai-1.7b-2bit")
     }

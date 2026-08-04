@@ -7,7 +7,7 @@ import SwiftUI
 ///
 /// A meter with `level == nil` (the author published no score for the
 /// axis) draws a single dashed empty track + an em-dash value — never a
-/// fabricated fill, matching ``ModelBenchTooltip``'s honesty rule.
+/// fabricated fill.
 ///
 /// Segmented blocks (not a continuous bar) are the deliberate style
 /// choice from the #507 design review: five discrete blocks read faster

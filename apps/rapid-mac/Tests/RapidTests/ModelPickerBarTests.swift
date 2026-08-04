@@ -123,95 +123,46 @@ struct ModelPickerBarTests {
 
     // MARK: - v0.6.9 menu-rendering fix (NSMenuItem collapses HStack)
 
-    @Test("Role row menu title folds role + alias into a single em-dash separated string")
-    func roleRowMenuTitleFormat() {
+    @Test("Recommended row menu title folds label + alias into a single em-dash string")
+    func recommendedRowMenuTitleFormat() {
         // SwiftUI Menu wraps each Button as an NSMenuItem and drops
-        // everything past the first Text inside the Button's label.
-        // The previous HStack(Text(role) + Text(alias)) shape rendered
-        // as just "Default" / "Speed" / … in the dropdown, losing the
-        // alias the user picked from. Folding both halves into a
-        // single Text() via this helper survives the NSMenu collapse;
-        // " — " em-dash matches the original two-column visual.
+        // everything past the first Text. Folding the label + alias into
+        // one Text() via this helper survives the NSMenu collapse; " — "
+        // em-dash anchors the "Recommended"/"Faster" label on the left.
         #expect(
-            ModelPickerBar.roleRowMenuTitle(role: "Default", alias: "qwen3.6-35b-4bit")
-                == "Default — qwen3.6-35b-4bit"
+            ModelPickerBar.recommendedRowMenuTitle(label: "Recommended", alias: "bonsai-27b-2bit")
+                == "Recommended — bonsai-27b-2bit"
         )
         #expect(
-            ModelPickerBar.roleRowMenuTitle(role: "Quality", alias: "qwen3.5-122b-mxfp4")
-                == "Quality — qwen3.5-122b-mxfp4"
+            ModelPickerBar.recommendedRowMenuTitle(label: "Faster", alias: "lfm2.5-8b-a1b-4bit")
+                == "Faster — lfm2.5-8b-a1b-4bit"
         )
     }
 
-    // MARK: - Collapsing roles that share one pick
-    //
-    // Dogfood report: on a 16 GB Mac the Recommended section listed
-    // "Default — qwen3.5-4b-4bit", "Speed — qwen3.5-4b-4bit" and
-    // "Coding — qwen3.5-4b-4bit" as three rows, all three checkmarked
-    // because the checkmark means "this row's alias is the selected
-    // one". The user read it as a glitch: same name three times, three
-    // ticks, no explanation.
+    @Test("Recommended tagline reflects the ACTUAL tier pick's capability + tok/s")
+    func recommendedTaglineCopy() {
+        // Pin against the real table, not synthetic picks, so a future
+        // edit to the 16 GB tier's numbers has to update this expectation.
+        let tier16 = RAMBucketedDefault.tier(forPhysicalRAMGB: 16)
+        // Literal expectations pin the actual curated numbers (86 / 17.1)
+        // AND the tagline format — a change to either the copy or the
+        // table's numbers must update this assertion.
+        let taglineP = ModelPickerBar.recommendedTagline(pick: tier16.primary, isPrimary: true)
+        #expect(taglineP == "Best pick for your Mac · 86% capability · ~17 tok/s")
 
-    @Test("Multi-role title lists every role the one pick covers")
-    func roleRowMenuTitleGrouped() {
-        #expect(
-            ModelPickerBar.roleRowMenuTitle(
-                roles: ["Default", "Speed", "Coding"],
-                alias: "qwen3.5-4b-4bit"
-            ) == "Default · Speed · Coding — qwen3.5-4b-4bit"
-        )
-        // A single role keeps reading exactly like the old one-role form.
-        #expect(
-            ModelPickerBar.roleRowMenuTitle(roles: ["Quality"], alias: "qwen3.5-9b-4bit")
-                == "Quality — qwen3.5-9b-4bit"
-        )
-        // Defensive: no roles ⇒ just the alias, never a dangling dash.
-        #expect(
-            ModelPickerBar.roleRowMenuTitle(roles: [], alias: "qwen3.5-9b-4bit")
-                == "qwen3.5-9b-4bit"
-        )
-    }
+        #expect(tier16.alt != nil, "16 GB tier carries a faster alternative")
+        if let alt = tier16.alt {
+            // The fast chat specialist shows its "Chat only" caveat in place
+            // of the blended 62 % (which understates conversation quality).
+            let taglineA = ModelPickerBar.recommendedTagline(pick: alt, isPrimary: false)
+            #expect(taglineA == "Faster, lighter alternative · ~117 tok/s · Chat only")
+        }
 
-    @Test("Roles sharing an alias collapse to one row, in table order")
-    func groupedRoleRowsCollapsesDuplicates() {
-        // The real 16 GB bucket shape.
-        let recs: [(RAMBucketedDefault.Role, String)] = [
-            (.default, "qwen3.5-4b-4bit"),
-            (.speed, "qwen3.5-4b-4bit"),
-            (.quality, "qwen3.5-9b-4bit"),
-            (.coding, "qwen3.5-4b-4bit"),
-        ]
-        let grouped = ModelPickerBar.groupedRoleRows(recs, alias: { $0 })
-
-        #expect(grouped.count == 2, "three roles share one alias, so two rows")
-        #expect(grouped[0].entry == "qwen3.5-4b-4bit")
-        // Coding is NOT adjacent to default/speed in the table, so this
-        // also pins that grouping is by alias across the whole list
-        // rather than a run-length collapse of neighbours.
-        #expect(grouped[0].roles == [.default, .speed, .coding])
-        #expect(grouped[1].entry == "qwen3.5-9b-4bit")
-        #expect(grouped[1].roles == [.quality])
-        // First-seen order is preserved: default's alias came first.
-        #expect(grouped.map(\.entry) == ["qwen3.5-4b-4bit", "qwen3.5-9b-4bit"])
-    }
-
-    @Test("Grouping is a no-op when every role has its own pick")
-    func groupedRoleRowsKeepsDistinctPicks() {
-        let recs: [(RAMBucketedDefault.Role, String)] = [
-            (.default, "a-4bit"),
-            (.speed, "b-4bit"),
-            (.quality, "c-4bit"),
-            (.coding, "d-4bit"),
-        ]
-        let grouped = ModelPickerBar.groupedRoleRows(recs, alias: { $0 })
-        #expect(grouped.count == 4)
-        #expect(grouped.allSatisfy { $0.roles.count == 1 })
-        #expect(grouped.map(\.entry) == ["a-4bit", "b-4bit", "c-4bit", "d-4bit"])
-    }
-
-    @Test("Grouping an empty recommendation list yields no rows")
-    func groupedRoleRowsEmpty() {
-        let recs: [(RAMBucketedDefault.Role, String)] = []
-        #expect(ModelPickerBar.groupedRoleRows(recs, alias: { $0 }).isEmpty)
+        // A tier with no local tok/s measurement (64 GB → 35b-8bit) omits
+        // the tok/s clause.
+        let noSpeed = RAMBucketedDefault.tier(forPhysicalRAMGB: 64).primary
+        #expect(noSpeed.tokensPerSec == nil)
+        #expect(!ModelPickerBar.recommendedTagline(pick: noSpeed, isPrimary: true).contains("tok/s"))
     }
 
     // MARK: - One download-state vocabulary
@@ -256,10 +207,10 @@ struct ModelPickerBarTests {
         // The leading image slot now carries download state, and
         // NSMenuItem honours only one image per row — so selection
         // moved into the title. A word also disambiguates what the old
-        // tick meant: "this is the current model", not "this role is on".
+        // tick meant: this is the current model.
         #expect(
-            ModelPickerBar.currentSelectionTitle("Default — qwen3.5-4b-4bit")
-                == "Default — qwen3.5-4b-4bit (current)"
+            ModelPickerBar.currentSelectionTitle("Best pick — bonsai-27b-2bit")
+                == "Best pick — bonsai-27b-2bit (current)"
         )
     }
 

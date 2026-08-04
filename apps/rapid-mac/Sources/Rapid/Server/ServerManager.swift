@@ -862,10 +862,24 @@ final class ServerManager {
         // an unprivileged local process can't read it, and the port is
         // passed as a plain ``--port <int>`` so the child binds via
         // the standard ``uvicorn`` shape.
+        // Per-recommendation launch flags, derived HERE so every start
+        // path funnels through one place — the composer's `ensureServing`,
+        // ContentView's switch/reload, and auto-respawn all reach `start`
+        // but none of them thread flags, so computing at the call sites
+        // (as an earlier revision did) silently dropped them. RAM-gated:
+        // `launchFlags` returns the flags only when this alias is the pick
+        // for this Mac's RAM tier (e.g. the --no-mllm + kv-cache trio for
+        // the 24 GB gemma-4-26b), so a hand-picked model that isn't the
+        // recommendation gets none.
+        let extraFlags = RAMBucketedDefault.launchFlags(
+            forAlias: trimmedAlias,
+            physicalRAMGB: MacHardware.detect().physicalRAMGB
+        )
         let arguments = Self.serveArguments(
             alias: trimmedAlias,
             host: host,
-            port: activePort
+            port: activePort,
+            extraFlags: extraFlags
         )
 
         // Issue #503: resolve the user's "Models folder" preference for
@@ -1925,7 +1939,8 @@ final class ServerManager {
     nonisolated internal static func serveArguments(
         alias: String,
         host: String,
-        port: Int
+        port: Int,
+        extraFlags: [String] = []
     ) -> [String] {
         // Defense in depth: ``start(alias:)`` already calls
         // ``isValidAlias`` before reaching here, but a future caller
@@ -1944,9 +1959,17 @@ final class ServerManager {
             // (``Access-Control-Allow-Origin: *``) on the user's
             // local-only LLM. ``--cors-origins`` uses ``nargs="+"`` so
             // the two URL values trail the flag and consume up to the
-            // next ``--``-prefixed flag (none follow here).
+            // next ``--``-prefixed flag.
             "--cors-origins", "http://127.0.0.1", "http://localhost",
         ]
+        // Per-recommendation launch flags (e.g. the gemma-4-26b KV-cache
+        // trio on the 24 GB tier). Appended AFTER ``--cors-origins`` so the
+        // leading ``--`` of the first flag terminates that flag's
+        // ``nargs="+"`` collection. ``start(alias:)`` derives ``extraFlags``
+        // centrally from ``RAMBucketedDefault.launchFlags`` — only non-empty
+        // when the alias is the recommended pick for THIS Mac's RAM — so a
+        // hand-picked model on a larger Mac keeps its full capabilities.
+        args.append(contentsOf: extraFlags)
         return args
     }
 

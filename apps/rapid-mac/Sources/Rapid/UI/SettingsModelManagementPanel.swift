@@ -99,9 +99,6 @@ struct SettingsModelManagementPanel: View {
             header
             modelsFolderSection
             controlsRow
-            if !catalog.isEmpty {
-                meterLegend
-            }
             if showRecommendedSection {
                 recommendedSection
             }
@@ -371,34 +368,22 @@ struct SettingsModelManagementPanel: View {
 
     // MARK: - Recommended (issue #507)
 
-    /// The role picks for this Mac, minus Vision. Rapid's vision support
-    /// is still weak, so we don't headline a VL model as a first-class
-    /// recommendation — vision models stay fully browsable + downloadable
-    /// in the "All models" table with a VISION badge. Result: 4 role
-    /// cards (Default / Speed / Quality / Coding).
-    private var recommendedRoles: [(RAMBucketedDefault.Role, String)] {
-        // ``bucketedRecommendations`` already excludes Vision (see its
-        // docstring) so we only dedupe by alias here, keeping the
-        // highest-priority role. On ≤16 GB Macs the bucket reuses the
-        // Default alias for Coding (no distinct coder fits) — showing
-        // two identical cards reads as a rendering bug (design review
-        // M3), so we collapse to one card per unique model. Bigger Macs
-        // keep all four.
-        var seen = Set<String>()
-        return hardware.bucketedRecommendations.filter { _, alias in
-            seen.insert(alias).inserted
+    /// The recommended picks for this Mac's RAM: the primary (index 0)
+    /// plus an optional faster alternative (only the smallest tier carries
+    /// one). One card per pick.
+    private var recommendedPicks: [(pick: RAMBucketedDefault.Pick, isPrimary: Bool)] {
+        hardware.recommendedPicks.enumerated().map { index, pick in
+            (pick, index == 0)
         }
     }
 
-    /// alias → the role it's recommended for, so an "All models" row can
-    /// carry a DEFAULT / SPEED / … badge. First role wins when an alias
-    /// fills two slots (a bucket may reuse the default alias for coding).
-    private var recommendedRoleByAlias: [String: RAMBucketedDefault.Role] {
-        var map: [String: RAMBucketedDefault.Role] = [:]
-        // ``bucketedRecommendations`` already excludes Vision, so the
-        // first role to claim an alias wins.
-        for (role, alias) in hardware.bucketedRecommendations where map[alias] == nil {
-            map[alias] = role
+    /// alias → the badge an "All models" row carries (RECOMMENDED for the
+    /// primary, FASTER for the alt). Primary wins if an alias somehow
+    /// appears twice.
+    private var recommendedBadgeByAlias: [String: String] {
+        var map: [String: String] = [:]
+        for (index, pick) in hardware.recommendedPicks.enumerated() where map[pick.alias] == nil {
+            map[pick.alias] = index == 0 ? "RECOMMENDED" : "FASTER"
         }
         return map
     }
@@ -421,31 +406,32 @@ struct SettingsModelManagementPanel: View {
                 .textCase(.uppercase)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("Settings.ModelManagement.RecommendedHeader")
-            ForEach(recommendedRoles, id: \.0) { role, alias in
-                recommendedCard(role: role, alias: alias)
+            ForEach(recommendedPicks, id: \.pick.alias) { entry in
+                recommendedCard(pick: entry.pick, isPrimary: entry.isPrimary)
             }
         }
     }
 
     @ViewBuilder
-    private func recommendedCard(role: RAMBucketedDefault.Role, alias: String) -> some View {
+    private func recommendedCard(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> some View {
+        let alias = pick.alias
         let entry = entry(forAlias: alias)
         let badge = ModelCacheActions.statusBadge(
             for: entry,
             downloadJob: downloads.jobs[entry.alias],
             servingAlias: server.servingAlias
         )
-        let isDefault = role == .default
         // Meters live UNDER the name/blurb (not as a fixed right column) so
         // the card fits the narrow Settings pane at the app's 720pt minimum
         // window — a fixed brand + meters + action row overflows and clips
         // the action button there (design review B1).
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Label(role.label, systemImage: Self.roleSymbol(role))
+                Label(isPrimary ? "Best pick" : "Faster",
+                      systemImage: isPrimary ? "star.fill" : "hare.fill")
                     .font(.caption.weight(.bold))
                     .labelStyle(.titleAndIcon)
-                if isDefault {
+                if isPrimary {
                     Text("BEST PICK")
                         .scaledSystemFont(9, weight: .bold)
                         .foregroundStyle(RapidTheme.brand)
@@ -464,13 +450,17 @@ struct SettingsModelManagementPanel: View {
                         .font(.body.weight(.semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(role.blurb(forSpeedAlias: alias))
+                    Text(Self.pickStatsLine(pick))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                metersView(alias: alias).frame(maxWidth: 320, alignment: .leading)
+                // No per-axis standard-benchmark meters here: the
+                // recommendation card shows only the curated capability /
+                // speed stats above (its single source of truth). The
+                // standard-bench bars live in the "All models" rows below,
+                // so a pick never shows two conflicting sets of numbers.
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -480,20 +470,41 @@ struct SettingsModelManagementPanel: View {
         .padding(13)
         .background(
             RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                .fill(isDefault ? RapidTheme.brandTint : RapidTheme.card)
+                .fill(isPrimary ? RapidTheme.brandTint : RapidTheme.card)
         )
         .overlay(
             RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                .stroke(isDefault ? RapidTheme.brand.opacity(0.35) : RapidTheme.hairline, lineWidth: 1)
+                .stroke(isPrimary ? RapidTheme.brand.opacity(0.35) : RapidTheme.hairline, lineWidth: 1)
         )
-        // #552 (§12 depth): lift the recommended role cards above the
-        // flush All-models table below them so the tier reads as a
-        // raised, more important surface — not the same elevation with
-        // only a tint to tell them apart. Same light shadow the
-        // onboarding wizard's centred card carries (QuickstartView).
+        // #552 (§12 depth): lift the recommended cards above the flush
+        // All-models table below them so the tier reads as a raised, more
+        // important surface. Same light shadow the onboarding wizard's
+        // centred card carries (QuickstartView).
         .shadow(color: Color.black.opacity(0.10), radius: 6, x: 0, y: 3)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("Settings.ModelManagement.Recommended.\(role.rawValue)")
+        .accessibilityIdentifier("Settings.ModelManagement.Recommended.\(isPrimary ? "primary" : "alt")")
+    }
+
+    /// Compact stats line under a recommended card's model name:
+    /// "7.6 GB · 86% capability · ~17 tok/s" (tok/s omitted when we have
+    /// no local measurement for that tier). When the pick carries a
+    /// ``caveat`` (e.g. a chat specialist), that word replaces the
+    /// capability % — "4.8 GB · ~117 tok/s · Chat only" — because the
+    /// blended score would understate conversation and overstate the rest.
+    static func pickStatsLine(_ pick: RAMBucketedDefault.Pick) -> String {
+        var parts = [String(format: "%.1f GB", pick.footprintGB)]
+        if let caveat = pick.caveat {
+            if let tps = pick.tokensPerSec {
+                parts.append("~\(Int(tps.rounded())) tok/s")
+            }
+            parts.append(caveat)
+        } else {
+            parts.append("\(pick.capabilityPct)% capability")
+            if let tps = pick.tokensPerSec {
+                parts.append("~\(Int(tps.rounded())) tok/s")
+            }
+        }
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -511,16 +522,6 @@ struct SettingsModelManagementPanel: View {
         }
     }
 
-    private static func roleSymbol(_ role: RAMBucketedDefault.Role) -> String {
-        switch role {
-        case .default:    return "bolt.fill"
-        case .speed:      return "hare.fill"
-        case .quality:    return "sparkles"
-        case .coding:     return "chevron.left.forwardslash.chevron.right"
-        case .multimodal: return "eye.fill"
-        }
-    }
-
     // MARK: - All models section
 
     @ViewBuilder
@@ -531,6 +532,11 @@ struct SettingsModelManagementPanel: View {
                 Text("· \(catalog.count)").font(.caption).foregroundStyle(.tertiary)
             }
             .foregroundStyle(.secondary)
+            // The meter legend belongs HERE — these are the only rows that
+            // render the Quality · Speed bars. The recommendation cards
+            // above show the curated capability / speed stats instead, so a
+            // top-of-panel legend misattributed them.
+            meterLegend
             columnHeader
             listSection
             if let footer = ModelCacheActions.diskUsageFooter(
@@ -545,10 +551,12 @@ struct SettingsModelManagementPanel: View {
         }
     }
 
-    /// One-line meaning of the two meters + the em-dash. Hoisted ABOVE
-    /// both sections (design review M2): the Recommended cards render
-    /// meters first — several with a dashed Speed track — so a top-down
-    /// reader needs the key before the table, not buried under it.
+    /// One-line meaning of the two meters + the em-dash. Rendered inside
+    /// the "All models" section, immediately above the only rows that
+    /// carry the Quality · Speed bars. (It used to sit at the panel top,
+    /// but the recommendation cards no longer show meters — they show the
+    /// curated capability / speed stats — so a top-of-panel legend
+    /// misattributed those curated numbers as published benchmarks.)
     @ViewBuilder
     private var meterLegend: some View {
         Text("Quality = the author's published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = tokens/sec on this class of Mac · “—” = the author hasn't published that score.")
@@ -656,8 +664,8 @@ struct SettingsModelManagementPanel: View {
 
     @ViewBuilder
     private func rowBadge(for alias: String) -> some View {
-        if let role = recommendedRoleByAlias[alias] {
-            badgePill(role.label.uppercased(), color: RapidTheme.brand)
+        if let badge = recommendedBadgeByAlias[alias] {
+            badgePill(badge, color: RapidTheme.brand)
         } else if ModelBrandStyle.modelType(forAlias: alias) == .vision {
             badgePill("VISION", color: Self.visionColor)
         }

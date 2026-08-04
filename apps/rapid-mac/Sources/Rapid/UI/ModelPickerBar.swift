@@ -13,12 +13,9 @@ import SwiftUI
 ///   │  bonsai-1.7b-2bit · Smallest model — fastest  │ ← RAM-blind, F-LWT-1
 ///   │  first install                                │
 ///   ├── Recommended for your 18 GB Mac ─────────────┤
-///   │  Default     qwen3.5-9b-4bit  [orange row     │ ← matches alias
-///   │              when selected = this role's]     │
-///   │  Speed       qwen3.5-4b-4bit                  │ ← v0.8.18: demoted gemma3-1b
-///   │  Quality     gemma-4-12b-4bit                 │
-///   │  Coding      devstral-v2-24b-4bit             │ ← v0.7.16: was ≡ default
-///   │  Vision      qwen3-vl-8b-4bit                 │
+///   │  Best pick   bonsai-27b-2bit   [amber row     │ ← the RAM tier's
+///   │              when selected]                   │   smart pick
+///   │  Faster      lfm2.5-8b-a1b-4bit               │ ← optional fast/light alt
 ///   ├── All models (alphabetical) ──────────────────┤
 ///   │  bonsai-1.7b-unpacked                         │
 ///   │  deepseek-coder-v2-lite-16b-4bit            ● │ ← green dot = cached
@@ -30,17 +27,9 @@ import SwiftUI
 /// The Quickstart row is deduped from "All models" so the same
 /// alias never appears in both sections.
 ///
-/// v0.7.16 also adds a hover popover anchored to each Recommended
-/// row that surfaces five horizontal bench-score bars (General &
-/// Reasoning / Code / Tool / Instruction Following / Speed). The
-/// bars read from ``BenchScoresCatalog`` and render n/a cells as
-/// dashed tracks + em-dashes — honest gap UX over fabricated scores.
-///
-/// Recommended section: four role-anchored aliases (Default, Speed,
-/// Quality, Coding) curated against the host's RAM bracket (see
-/// ``RAMBucketedDefault``; Vision is intentionally not a recommended
-/// role — its slot is filtered out in ``bucketedRecommendations``).
-/// The row whose
+/// Recommended section: the RAM tier's smart pick plus an optional
+/// faster/lighter alternative (see ``RAMBucketedDefault`` and
+/// ``MacHardware/recommendedPicks``). The row whose
 /// alias matches the currently selected one paints in the
 /// Start-button amber — same accent as the CTA so the selection
 /// reads as a single colour story rather than two competing
@@ -162,26 +151,6 @@ struct ModelPickerBar: View {
     /// fires exactly once, when the user commits via Start.
     @State private var pendingTooBigStart: String?
 
-    /// v0.7.16: alias whose ``ModelBenchTooltip`` popover is currently
-    /// open. Driven by ``onHover`` on each role row with a 400 ms
-    /// delay so brushing the cursor across the recommended section
-    /// doesn't fire a popover on every row. ``nil`` → no tooltip
-    /// visible. Cleared as soon as the cursor leaves the active row.
-    @State private var hoveredBenchAlias: String?
-
-    /// v0.7.16: monotonically-increasing token. Each hover-enter
-    /// stamps a new value here; the delayed open-popover task
-    /// captures the token at scheduling time and bails if a fresher
-    /// hover (or a hover-exit) has already moved the token forward.
-    ///
-    /// Without this, a quick brush of the cursor (enter then exit
-    /// before the 400 ms debounce) would leak a popover open AFTER
-    /// the cursor had already left: the enter task captured the
-    /// alias, the exit branch saw ``hoveredBenchAlias == nil`` and
-    /// did nothing, and the delayed body then set the popover live.
-    /// Codex r1 MINOR on PR #283.
-    @State private var benchTooltipGeneration: UInt64 = 0
-
     /// v0.5.2: how long the freed-bytes toast stays visible before
     /// auto-clearing. Picked to be longer than a glance read but
     /// shorter than typical user idle so it doesn't linger across
@@ -267,10 +236,10 @@ struct ModelPickerBar: View {
         )
     }
 
-    /// The five role-anchored recommendations for this Mac, paired
-    /// with the catalog row backing each alias (or `nil` if the
-    /// curated alias isn't in the catalog yet — e.g. rapid-mlx is on
-    /// an older release that doesn't ship the alias).
+    /// The RAM tier's recommendations for this Mac — the smart pick plus
+    /// its optional fast/light alt — paired with the catalog row backing
+    /// each alias (or `nil` if the curated alias isn't in the catalog yet —
+    /// e.g. rapid-mlx is on an older release that doesn't ship the alias).
     ///
     /// The rows are intentionally NOT decorated with any fit
     /// classification — the bucket table guarantees every entry fits
@@ -278,13 +247,16 @@ struct ModelPickerBar: View {
     /// entirely (forward/backward-compat skew), the row is omitted
     /// so the picker never tries to ``Start`` an alias rapid-mlx
     /// doesn't know about.
-    private func roleRecommendations() -> [(RAMBucketedDefault.Role, ModelEntry)] {
-        let pairs = hardware.bucketedRecommendations
-        return pairs.compactMap { (role, alias) in
-            guard let entry = catalog.first(where: { $0.alias == alias }) else {
+    private func recommendedPickRows() -> [(pick: RAMBucketedDefault.Pick, entry: ModelEntry, isPrimary: Bool)] {
+        // isPrimary comes from the SOURCE position (index 0 = primary), not
+        // the post-filter index — otherwise a primary missing from the
+        // catalog (rapid-mlx version skew) would leave the alt at index 0
+        // and mislabel it "Recommended" instead of "Faster".
+        hardware.recommendedPicks.enumerated().compactMap { index, pick in
+            guard let entry = catalog.first(where: { $0.alias == pick.alias }) else {
                 return nil
             }
-            return (role, entry)
+            return (pick, entry, index == 0)
         }
     }
 
@@ -638,14 +610,11 @@ struct ModelPickerBar: View {
 
     @ViewBuilder
     private var recommendedSection: some View {
-        let recs = ModelPickerBar.groupedRoleRows(
-            roleRecommendations(),
-            alias: \.alias
-        )
-        if !recs.isEmpty {
+        let rows = recommendedPickRows()
+        if !rows.isEmpty {
             Section(recommendedHeaderTitle) {
-                ForEach(recs, id: \.entry.alias) { group in
-                    roleRow(roles: group.roles, entry: group.entry)
+                ForEach(rows, id: \.entry.alias) { row in
+                    recommendedRow(pick: row.pick, entry: row.entry, isPrimary: row.isPrimary)
                 }
             }
         }
@@ -857,71 +826,51 @@ struct ModelPickerBar: View {
     }
 
     /// One row inside the "Recommended for your N GB Mac" section.
-    /// Renders the role label + short blurb + alias. NO warning icons
-    /// — the bucket table guarantees the alias fits the host (per the
-    /// operator-curated invariant in ``RAMBucketedDefault``).
+    /// Renders the Best pick / Faster label + short blurb + alias. NO
+    /// warning icons — the tier table guarantees the alias fits the host
+    /// (per the operator-curated invariant in ``RAMBucketedDefault``).
     ///
     /// Codex r1 on PR #196 flagged a real but accepted tension here:
-    /// ``ModelSizing.classify`` is a conservative heuristic and rates
-    /// a handful of curated quality-slot entries as ``.tooBig`` on
-    /// the bottom edge of their bucket (e.g. gemma-4-12b on 17 GB,
-    /// qwen3.6-35b-8bit on 64 GB). The picker's "All models" branch
-    /// keeps the existing ``.tooBig`` click-gate so a user can't
-    /// click through to a wildly-oversized alias by browsing. The
-    /// recommendation rows intentionally bypass that gate because
-    /// the curated table is the operator's source-of-truth (per user
-    /// spec line: "trust the curated bucket table — if it's
-    /// recommended, it fits"). If a curated entry ever turns out to
-    /// be a genuine OOM rather than a heuristic disagreement, the
-    /// fix is to retune the bucket in ``RAMBucketedDefault`` —
-    /// never to put a warning glyph back on this row.
-    private func roleRow(roles: [RAMBucketedDefault.Role], entry: ModelEntry) -> some View {
-        // The bucket table often points several roles at one alias (the
-        // 16 GB bucket sends default + speed + coding to the same
-        // model). One row per role would then repeat the same name
-        // three times and, when it is the selected alias, draw three
-        // checkmarks — which reads as a glitch rather than as "this one
-        // pick covers all three jobs".
-        let role = roles[0]
+    /// ``ModelSizing.classify`` is a conservative heuristic and rates a
+    /// handful of curated picks as ``.tooBig`` on the bottom edge of their
+    /// tier (e.g. the real-7.6 GB ``bonsai-27b-2bit`` reads as ~14.8 GB →
+    /// ``.tooBig`` on 16 GB). The picker's "All models" branch keeps the
+    /// existing ``.tooBig`` click-gate so a user can't click through to a
+    /// wildly-oversized alias by browsing. The recommendation rows
+    /// intentionally bypass that gate (via ``RAMBucketedDefault/isRecommendedPick``)
+    /// because the curated table is the operator's source-of-truth (per
+    /// user spec line: "trust the curated tier table — if it's recommended,
+    /// it fits"). If a curated entry ever turns out to be a genuine OOM
+    /// rather than a heuristic disagreement, the fix is to retune the tier
+    /// in ``RAMBucketedDefault`` — never to put a warning glyph back here.
+    private func recommendedRow(pick: RAMBucketedDefault.Pick, entry: ModelEntry, isPrimary: Bool) -> some View {
         // v0.6.9-rc: SwiftUI Menu wraps each Button as an NSMenuItem,
         // and NSMenuItem only honours the FIRST Text inside the
         // Button's label — HStack/Spacer/Circle/background fills are
-        // silently dropped. The previous shape (HStack with Text(role)
-        // + Text(alias) + amber background) therefore rendered as just
-        // "Default" / "Speed" / … in the dropdown, losing the alias
-        // and the selected-row tint. The fix is to fold everything
-        // into a single Text() via the helper below, with a leading
-        // SF Symbol (NSMenuItem DOES honour Label's leading image)
-        // signalling the currently-selected role.
+        // silently dropped. The fix is to fold everything into a single
+        // Text() via the helper below, with a leading SF Symbol
+        // (NSMenuItem DOES honour Label's leading image) carrying the
+        // download-state glyph.
         let isSelected = ModelPickerBar.roleRowIsSelected(
             selectedAlias: alias,
             rowAlias: entry.alias
         )
-        let baseTitle = ModelPickerBar.roleRowMenuTitle(
-            roles: roles.map(\.label),
+        let baseTitle = ModelPickerBar.recommendedRowMenuTitle(
+            label: isPrimary ? "Recommended" : "Faster",
             alias: entry.alias
         )
         let title = isSelected
             ? ModelPickerBar.currentSelectionTitle(baseTitle)
             : baseTitle
-        // v0.7.16: tagline = honest blurb + measured speed for the
-        // speed row. The picker dropdown surfaces the tagline as the
-        // NSMenuItem tooltip via ``.help(_)``; the ModelBenchTooltip
-        // popover surfaces it as the caption beneath the alias name.
-        let tagline = role.blurb(forSpeedAlias: entry.alias)
-        // v0.7.16: synthesise a rich NSMenuItem tooltip that summarises
-        // the five bench bars in text form. NSMenu's native tooltip
-        // surface is the most reliable way to expose this content
-        // inside the open dropdown (a SwiftUI ``.popover`` attached
-        // to a row inside a ``Menu`` is silently dropped when the
-        // dropdown becomes an NSMenu). The popover wiring below stays
-        // for surfaces that do honour ``.popover`` on hover (e.g. the
-        // long-press path on the bound alias when the dropdown is
-        // closed, accessibility / VoiceOver assistive technologies).
-        let helpText = Self.roleRowHelpText(
-            tagline: tagline,
-            scores: BenchScoresCatalog.lookup(alias: entry.alias)
-        )
+        // Tagline = "best pick / faster alternative" + the measured
+        // capability and (where we have it) tok/s. Surfaced as the row's
+        // NSMenuItem tooltip via ``.help(_)`` and its accessibility label.
+        let tagline = ModelPickerBar.recommendedTagline(pick: pick, isPrimary: isPrimary)
+        // The tagline rides the row's native NSMenuItem tooltip via
+        // ``.help(_)`` (below) — the reliable way to expose it inside the
+        // open dropdown, since a SwiftUI ``.popover`` attached to a row
+        // inside a ``Menu`` is silently dropped once the dropdown becomes
+        // an NSMenu — and doubles as the row's accessibility label.
         return Button {
             alias = entry.alias
         } label: {
@@ -933,155 +882,42 @@ struct ModelPickerBar: View {
             Label(title, systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached))
         }
         .disabled(deleting == entry.alias)
-        .help(helpText)
-        .accessibilityLabel(
-            ModelBenchTooltip.accessibilityLabel(
-                alias: entry.alias,
-                tagline: tagline,
-                scores: BenchScoresCatalog.lookup(alias: entry.alias)
-            )
-        )
-        // v0.7.16: bench-score popover on hover. A SwiftUI ``Menu``
-        // converts each Button into an NSMenuItem and silently drops
-        // ``.popover`` / ``.onHover`` modifiers on the menu's items
-        // (NSMenu owns the event loop while the dropdown is open).
-        // This wiring is therefore primarily for surfaces that
-        // present role rows OUTSIDE a Menu — long-press paths,
-        // accessibility tools, and a future "Recommended" sidebar
-        // that doesn't sit inside a dropdown. Tests pin the wiring
-        // shape so future surfaces inherit the same hover UX.
-        .onHover { hovering in
-            scheduleBenchTooltip(for: entry.alias, hovering: hovering)
-        }
-        .popover(
-            isPresented: Binding(
-                get: { hoveredBenchAlias == entry.alias && !entry.alias.isEmpty },
-                set: { presenting in
-                    if !presenting && hoveredBenchAlias == entry.alias {
-                        hoveredBenchAlias = nil
-                    }
-                }
-            ),
-            arrowEdge: .leading
-        ) {
-            ModelBenchTooltip(alias: entry.alias, roleTagline: tagline)
-        }
-    }
-
-    /// Debounce delay before the popover fires. Matches Superwhisper's
-    /// 400 ms latency so brushing the recommended section doesn't
-    /// flash a popover on every row.
-    static let benchTooltipDelay: TimeInterval = 0.4
-
-    private func scheduleBenchTooltip(for alias: String, hovering: Bool) {
-        // Every hover-event bumps the generation. The scheduled open
-        // task captures the generation at scheduling time and bails
-        // if a fresher event (enter on another row OR exit on this
-        // one) has moved the counter forward. This closes the race
-        // codex r1 surfaced: quick enter→exit before the 400 ms
-        // debounce would leave the open task to land AFTER the user
-        // had already left the row.
-        benchTooltipGeneration &+= 1
-        let myGeneration = benchTooltipGeneration
-        if hovering {
-            let target = alias
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(Self.benchTooltipDelay * 1_000_000_000))
-                // Bail if any hover-event (enter elsewhere, exit, or
-                // re-enter) has happened since this task was scheduled.
-                guard benchTooltipGeneration == myGeneration else { return }
-                hoveredBenchAlias = target
-            }
-        } else {
-            if hoveredBenchAlias == alias {
-                hoveredBenchAlias = nil
-            }
-        }
-    }
-
-    /// Pure helper that mirrors ``scheduleBenchTooltip`` so the
-    /// hover-race semantics are unit-testable without standing up an
-    /// NSHostingView and a SwiftUI run loop. Returns the new
-    /// (generation, hoveredAlias) state after applying ONE hover
-    /// event AND, if applicable, simulating the debounce-delay-fired
-    /// branch with a caller-supplied "did any newer event happen
-    /// before the timer?" predicate.
-    ///
-    /// Codex r1 MINOR on PR #283.
-    static func reduceBenchHover(
-        previousGeneration: UInt64,
-        previousHoveredAlias: String?,
-        eventAlias: String,
-        hovering: Bool,
-        // Test injection: returns true when an event "after the
-        // current one" has bumped the generation before the
-        // 400 ms timer fired. Production code captures
-        // ``benchTooltipGeneration`` and re-reads it after the sleep
-        // — the same check the helper here pins.
-        wasGenerationBumpedBeforeFire: (_ generationAtSchedule: UInt64) -> Bool = { _ in false }
-    ) -> (generation: UInt64, hoveredAlias: String?) {
-        let newGeneration = previousGeneration &+ 1
-        if hovering {
-            // Simulated debounce-delay-fired branch. Production async
-            // body bails when ``benchTooltipGeneration != myGeneration``;
-            // mirror that by consulting the injected predicate.
-            if wasGenerationBumpedBeforeFire(newGeneration) {
-                return (newGeneration, previousHoveredAlias)
-            }
-            return (newGeneration, eventAlias)
-        } else {
-            // Hover-exit: clear ONLY if the currently-open popover
-            // belongs to this alias. Don't touch other rows.
-            if previousHoveredAlias == eventAlias {
-                return (newGeneration, nil)
-            }
-            return (newGeneration, previousHoveredAlias)
-        }
-    }
-
-    /// Pure helper so the tooltip copy is unit-testable without
-    /// standing up a SwiftUI host. Builds a multi-line plain-text
-    /// summary of the five bench bars to feed NSMenu's native
-    /// tooltip surface — the only reliable place to surface rich
-    /// per-row content inside an open SwiftUI ``Menu`` dropdown
-    /// (NSMenuItems silently drop ``.popover`` / ``.onHover``).
-    ///
-    /// Returns the tagline alone when the bench JSON has no row for
-    /// the alias — the legacy ``Role.blurb`` behaviour, so a missing
-    /// bench score never makes the tooltip look broken.
-    static func roleRowHelpText(tagline: String, scores: BenchScores?) -> String {
-        guard let scores = scores else { return tagline }
-        var lines: [String] = [tagline]
-        for axis in BenchScores.Axis.allCases {
-            let value = scores.value(for: axis)
-            let formatted = BenchBarRow.formattedValue(axis: axis, value: value)
-            lines.append("\(axis.label): \(formatted)")
-        }
-        return lines.joined(separator: "\n")
+        // The recommendation shows only the curated capability / speed
+        // tagline — the single source of truth for a pick. The per-axis
+        // standard-benchmark meters live in "All models" (Settings), so
+        // the recommendation never shows two conflicting sets of numbers
+        // for the same model.
+        .help(tagline)
+        .accessibilityLabel("\(entry.alias). \(tagline)")
     }
 
     /// Pure helper so the menu title is pinnable by tests. " — " em
-    /// dash separator keeps the role label visually anchored on the
-    /// left while the alias trails on the right — matches the
-    /// original two-column intent that NSMenu collapsed.
-    static func roleRowMenuTitle(role: String, alias: String) -> String {
-        return "\(role) — \(alias)"
+    /// dash separator anchors the "Recommended" / "Faster" label on the
+    /// left while the alias trails on the right.
+    static func recommendedRowMenuTitle(label: String, alias: String) -> String {
+        return "\(label) — \(alias)"
     }
 
-    /// Title for a row that several roles resolve to.
-    ///
-    /// On most Macs the bucket table deliberately points more than one
-    /// role at the same alias — the 16 GB bucket sends `default`,
-    /// `speed` AND `coding` to `qwen3.5-4b-4bit`, because no faster
-    /// tool-capable model fits and the best all-rounder is also the best
-    /// coder at that size. Rendering that as three separate rows with an
-    /// identical model name reads as a bug ("why are they all the
-    /// same?") and, when that alias is the selected one, paints three
-    /// checkmarks at once. One row that names every role it covers says
-    /// the true thing instead: this is the pick for all of them.
-    static func roleRowMenuTitle(roles: [String], alias: String) -> String {
-        guard !roles.isEmpty else { return alias }
-        return "\(roles.joined(separator: " · ")) — \(alias)"
+    /// Tooltip / caption tagline for a recommended row: whether it's the
+    /// best pick or the faster alternative, plus the measured capability
+    /// and (where a local measurement exists) decode tok/s. A pick with a
+    /// ``caveat`` (e.g. a chat specialist) shows that word in place of the
+    /// capability %. Pure so tests can pin the copy without a SwiftUI host.
+    static func recommendedTagline(pick: RAMBucketedDefault.Pick, isPrimary: Bool) -> String {
+        let lead = isPrimary ? "Best pick for your Mac" : "Faster, lighter alternative"
+        var parts = [lead]
+        if let caveat = pick.caveat {
+            if let tps = pick.tokensPerSec {
+                parts.append("~\(Int(tps.rounded())) tok/s")
+            }
+            parts.append(caveat)
+        } else {
+            parts.append("\(pick.capabilityPct)% capability")
+            if let tps = pick.tokensPerSec {
+                parts.append("~\(Int(tps.rounded())) tok/s")
+            }
+        }
+        return parts.joined(separator: " · ")
     }
 
     /// Mark the row whose alias is the one currently in the picker.
@@ -1091,47 +927,18 @@ struct ModelPickerBar: View {
     /// the download-state glyph — which is the fact a user actually
     /// needs before committing to a multi-gigabyte pull. A word in the
     /// title survives the NSMenu collapse and, unlike a bare tick, says
-    /// which of the two things it means: this is the current model, not
-    /// "this role is on".
+    /// what it means: this is the current model.
     static func currentSelectionTitle(_ title: String) -> String {
         "\(title) (current)"
     }
 
-    /// Collapse consecutive role recommendations that resolve to the
-    /// same alias, preserving the table's role order. Pure so the
-    /// grouping can be pinned without a SwiftUI host.
-    ///
-    /// Grouping is by alias across the WHOLE list, not just adjacent
-    /// pairs: the roles that share a pick are not always neighbours in
-    /// the table, and the user cares that "these three are one
-    /// download", not where they sat in an enum.
-    static func groupedRoleRows<Entry>(
-        _ recommendations: [(RAMBucketedDefault.Role, Entry)],
-        alias: (Entry) -> String
-    ) -> [(roles: [RAMBucketedDefault.Role], entry: Entry)] {
-        var order: [String] = []
-        var byAlias: [String: (roles: [RAMBucketedDefault.Role], entry: Entry)] = [:]
-        for (role, entry) in recommendations {
-            let key = alias(entry)
-            if var existing = byAlias[key] {
-                existing.roles.append(role)
-                byAlias[key] = existing
-            } else {
-                order.append(key)
-                byAlias[key] = (roles: [role], entry: entry)
-            }
-        }
-        return order.compactMap { byAlias[$0] }
-    }
-
-    /// Pure helper so tests can pin the "should this role row paint
+    /// Pure helper so tests can pin the "should this recommended row paint
     /// amber?" rule without standing up a SwiftUI host. The rule is
     /// trivially equality, but lifting it out matches the project's
     /// "no truth table inside a view" convention so the test suite
     /// catches a future drift. The empty-alias guard rules out the
     /// transient "catalog still loading, no alias picked yet" state
-    /// where every role row would otherwise paint amber for "" — the
-    /// dropdown would briefly look like five selected rows at once.
+    /// where every recommended row would otherwise paint amber for "".
     static func roleRowIsSelected(selectedAlias: String, rowAlias: String) -> Bool {
         return !selectedAlias.isEmpty && selectedAlias == rowAlias
     }
@@ -1721,11 +1528,19 @@ struct ModelPickerBar: View {
             ModelSizing.estimate(alias: trimmed),
             on: hardware
         )
-        if fit == .tooBig {
+        // A recommended pick trusts the curated table's measured
+        // footprint over ModelSizing's estimate (which over-states
+        // low-bit / MoE models), so it skips the .tooBig gate — the
+        // table already vetted it fits this Mac's RAM tier.
+        let isRecommended = RAMBucketedDefault.isRecommendedPick(
+            alias: trimmed, physicalRAMGB: hardware.physicalRAMGB)
+        if fit == .tooBig && !isRecommended {
             pendingTooBigStart = trimmed
             return
         }
         let hfPath = catalog.first(where: { $0.alias == trimmed })?.hfRepo
+        // Launch flags are applied inside ServerManager.start (one choke
+        // point for every start path), RAM-gated to the recommended pick.
         Task { await server.start(alias: trimmed, hfPath: hfPath) }
     }
 

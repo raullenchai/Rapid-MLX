@@ -124,7 +124,13 @@ struct ContentView: View {
                     ModelSizing.estimate(alias: newAlias),
                     on: switchAlertHardware
                 )
-                if fit == .tooBig {
+                // A recommended pick trusts the curated table's measured
+                // footprint over ModelSizing's estimate (which over-states
+                // low-bit / MoE models), so switching to it skips the
+                // .tooBig gate — mirrors ModelPickerBar.handleStartTap.
+                let isRecommended = RAMBucketedDefault.isRecommendedPick(
+                    alias: newAlias, physicalRAMGB: switchAlertHardware.physicalRAMGB)
+                if fit == .tooBig && !isRecommended {
                     pendingReloadAlias = nil
                     pendingTooBigSwitch = newAlias
                     return
@@ -426,8 +432,17 @@ struct ContentView: View {
             return
         }
         let hardware = MacHardware.detect()
+        // A candidate is only "too big" for auto-start if ModelSizing says so
+        // AND it isn't this Mac's curated recommendation. The recommendation's
+        // measured footprint is trusted over ModelSizing's estimate (which
+        // over-states low-bit / MoE models — e.g. bonsai-27b-2bit reads as
+        // ~14.8 GB but really fits 16 GB), so a cached tier pick must not be
+        // rejected here. Mirrors ModelPickerBar.handleStartTap, the switch
+        // gate above, and CacheAwareDefault.bucketedFits.
         let rejectsAlias: (String) -> Bool = { candidate in
             ModelSizing.classify(ModelSizing.estimate(alias: candidate), on: hardware) == .tooBig
+                && !RAMBucketedDefault.isRecommendedPick(
+                    alias: candidate, physicalRAMGB: hardware.physicalRAMGB)
         }
         let decision = AutoStartDecision.decide(
             lastServedAlias: ServerManager.lastServedAlias(),

@@ -6,7 +6,7 @@ import Testing
 /// picker hover tooltip. The JSON must:
 ///
 ///   1. Decode cleanly into ``BenchScores`` for every alias the
-///      curated ``RAMBucketedDefault.buckets`` table references.
+///      curated ``RAMBucketedDefault/tiers`` table references.
 ///   2. Honour the spec-locked General-&-Reasoning merge rule
 ///      (`mean(mmlu_pro, gpqa_diamond)` when both present, single
 ///      bench otherwise, ``nil`` when neither).
@@ -15,7 +15,7 @@ import Testing
 ///      caught at CI time.
 ///   4. Never fabricate a value to fill a gap — gaps stay ``nil``.
 ///
-/// The five-bar order (General & Reasoning → Code → Tool →
+/// The five-axis order (General & Reasoning → Code → Tool →
 /// Instruction Following → Speed) is the user-signed-off spec; a
 /// future "Speed at the top" reshuffle should fail the
 /// ``axisOrderMatchesSpec`` test.
@@ -37,16 +37,31 @@ struct BenchScoresTests {
         // so the JSON must carry a row (even if every axis is null
         // for VL / Llama-3 rows that don't publish bench numbers).
         var distinct: Set<String> = []
-        for bucket in RAMBucketedDefault.buckets {
-            for role in RAMBucketedDefault.Role.allCases {
-                distinct.insert(bucket.alias(for: role))
+        for tier in RAMBucketedDefault.tiers {
+            for pick in tier.picks {
+                distinct.insert(pick.alias)
             }
         }
+        // Curated picks that legitimately publish NO standard benchmark —
+        // their capability / speed come from the maintainer's own eval and
+        // surface in the recommendation stats line, not the bench meters.
+        // The picker degrades gracefully for these (no bar block, no card
+        // meters), so a bench JSON row is not required.
+        let noStandardBench: Set<String> = ["bonsai-27b-2bit", "lfm2.5-8b-a1b-4bit"]
         let known = Set(BenchScoresCatalog.allAliases)
-        let missing = distinct.subtracting(known)
+        let missing = distinct.subtracting(known).subtracting(noStandardBench)
         #expect(
             missing.isEmpty,
             "Aliases recommended by RAMBucketedDefault but missing a bench JSON row: \(missing.sorted())"
+        )
+        // Anti-fabrication: the allowlisted picks publish no standard
+        // benchmark, so they must NOT carry a bench-scores.json row —
+        // otherwise re-introducing fabricated maintainer-eval numbers
+        // into the standard-bench columns would silently pass this test.
+        let fabricated = noStandardBench.intersection(known)
+        #expect(
+            fabricated.isEmpty,
+            "Allowlisted no-standard-bench aliases must not have a bench JSON row (fabrication risk): \(fabricated.sorted())"
         )
     }
 

@@ -62,5 +62,11 @@ let package = Package(
         // majority of the test suite exercised, so the target no longer
         // compiles. Per the migration plan, the test target is excluded
         // rather than rewritten; a fresh minimal suite lands with v1.0.
+        // (Command-line `swift test` also can't resolve the `import Testing`
+        // module in this toolchain, so re-enabling even a minimal subset is
+        // a separate toolchain/CI task.) The RAM-tier recommendation tests
+        // added here are kept in sync as the v1.0-suite seed; the contract
+        // itself is verified during development by a standalone `swift`
+        // script (no XCTest/Testing dependency).
     ]
 )

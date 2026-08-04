@@ -1,10 +1,9 @@
 import Foundation
 
 /// Pure logic behind the two compact benchmark meters (Accuracy · Speed)
-/// shown on every model row + recommendation card. Issue #507.
+/// shown on every "All models" row. Issue #507.
 ///
-/// The full 5-axis breakdown stays in ``ModelBenchTooltip`` (the picker
-/// hover). The management surface only has room for two meters per row,
+/// The management surface only has room for two meters per row,
 /// so this collapses the four quality axes into a single **primary
 /// quality** axis + the **speed** axis, and turns each into a
 /// 5-segment fill + a great/good/low rating.
@@ -51,8 +50,8 @@ enum ModelMeter {
     }
 
     /// great / good / low classification for a value on an axis, using
-    /// the same thresholds ``ModelBenchTooltip`` uses so the two
-    /// surfaces never disagree on a model's rating.
+    /// the axis's own ``thresholds`` so every surface that reads them
+    /// (the "All models" meters) agrees on a model's rating.
     static func level(value: Double, axis: BenchScores.Axis) -> MeterLevel {
         let t = axis.thresholds
         if value >= t.great { return .great }

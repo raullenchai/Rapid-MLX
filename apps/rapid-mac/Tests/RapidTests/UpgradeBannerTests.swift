@@ -457,25 +457,21 @@ struct UpgradeBannerTests {
 
     // MARK: - Test 8: copy renders correct alias + size for each RAM bucket
 
-    /// All six RAM buckets surfaced in ``RAMBucketedDefault``. Picked
-    /// at the inclusive-top of each band so the bucket boundary is
-    /// pinned alongside the copy.
+    /// The six RAM tiers surfaced in ``RAMBucketedDefault`` — sampled at
+    /// each tier floor so the round-DOWN boundary is pinned alongside the
+    /// upgrade copy.
     private static let bucketSamples: [(label: String, ramGB: Double, expectedAlias: String)] = [
-        ("≤ 16 GB",   16,  "qwen3.5-4b-4bit"),
-        ("17 – 24",   24,  "qwen3.5-9b-4bit"),
-        ("25 – 36",   36,  "gpt-oss-20b-mxfp4-q8"),
-        ("37 – 48",   48,  "qwen3.6-27b-4bit"),
-        ("49 – 96",   96,  "qwen3.6-35b-4bit"),
-        ("97+",       192, "qwen3.6-35b-4bit"),
+        ("16 GB",  16,  "bonsai-27b-2bit"),
+        ("18 GB",  18,  "bonsai-27b-2bit"),   // 18 mirrors 16
+        ("24 GB",  24,  "gemma-4-26b-4bit"),
+        ("32 GB",  32,  "qwen3.6-35b-4bit"),
+        ("64 GB",  64,  "qwen3.6-35b-8bit"),
+        ("96 GB+", 192, "qwen3.5-122b-mxfp4"),
     ]
 
-    @Test("Copy — every RAM bucket yields the right upgrade alias", arguments: bucketSamples)
+    @Test("Copy — every RAM tier yields the right upgrade alias", arguments: bucketSamples)
     func copy_per_bucket(sample: (label: String, ramGB: Double, expectedAlias: String)) {
-        let recs = RAMBucketedDefault.recommendations(forPhysicalRAMGB: sample.ramGB)
-        guard let upgrade = recs[.default] else {
-            Issue.record("\(sample.label): bucketed default missing")
-            return
-        }
+        let upgrade = RAMBucketedDefault.alias(forPhysicalRAMGB: sample.ramGB)
         #expect(
             upgrade == sample.expectedAlias,
             "\(sample.label) GB Mac should default to \(sample.expectedAlias), got \(upgrade)"

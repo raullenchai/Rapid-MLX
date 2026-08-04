@@ -1,383 +1,236 @@
 import Foundation
 
-/// Pure RAM bracket → curated role-based alias mapping for the
-/// first-launch "what model should this Mac default to" decision
-/// (issue #163) plus the "what should we recommend across roles"
-/// expansion (v0.6.7).
+/// Pure RAM tier → curated model recommendation for "what should this
+/// Mac run". Replaces the old 6-bucket × 5-role matrix (Default / Speed /
+/// Quality / Coding / Vision) with a much simpler table: per RAM tier, a
+/// **smart** pick (the most capable model that fits) and, when a genuinely
+/// faster/lighter model is worth surfacing, a **fast** alternative — plus
+/// the exact launch flags each pick needs.
 ///
-/// This intentionally lives next to ``MacHardware`` and ``ModelSizing``
-/// but does NOT consult them — the mapping is policy, expressed in
-/// gibibytes only, so it stays trivially unit-testable without a
-/// sysctl probe.
+/// ## Why the roles went away
 ///
-/// ## Why a hard bracket table instead of "largest fitting model"
+/// The role matrix asked the user to reason about "do I want Speed or
+/// Quality or Coding?" before running anything — five rows, most of them
+/// duplicated across buckets, several needing footnotes about which alias
+/// mis-parses tool calls. The signal that actually decides what a Mac can
+/// run is its RAM. So the recommendation is now: read the RAM, show the
+/// smartest model we'd run there and — where it helps — a faster/lighter
+/// second option. That's it.
 ///
-/// The picker used to surface a ranked-by-fit list with 🔴/🟡/🟢
-/// warning icons (``ModelSizing.classify``). That worked, but it had
-/// two failure modes the v0.6.7 UX walk surfaced:
+/// ## Tiers (keyed by machine RAM, rounded DOWN to the nearest floor)
 ///
-/// 1. **Decision fatigue.** "Here are 47 aliases; you can probably
-///    only run 12 of them; pick one" is a worse first-touch than
-///    "here are 5 hand-picked models, one per role".
-/// 2. **Warning-icon noise.** The 🔴 / 🟡 / 🟢 dots on every row
-///    read as "danger / caution / safe" — but the table beneath
-///    promised the user "we've picked these for your Mac". Mixing
-///    a recommendation with a per-row hazard pictogram on the same
-///    surface gave conflicting signals.
+/// A machine with N GB gets the tier whose floor is the largest value
+/// ≤ N — so a 20 GB Mac gets the 18 GB pick (which fits), NOT the 24 GB
+/// pick (which would be borderline). Sub-16 GB Macs clamp to the 16 GB
+/// tier; the app's per-row fit warning still flags anything too big, and
+/// that tier's fast alternative does fit 8 GB.
 ///
-/// v0.6.7 replaces both with **five role-specific recommendations
-/// per RAM bucket**: ``default``, ``speed``, ``quality``, ``coding``,
-/// ``multimodal``. The user sees one row per role, all hand-curated
-/// to fit, no warnings. The "All aliases" section is still there for
-/// power users but without the noisy per-row fit warnings — an alias
-/// that exceeds usable RAM gets dimmed text and an inline "may not
-/// fit on your Mac" tooltip instead.
+/// A tier only carries a **fast** alt when it beats the smart pick on
+/// speed by a margin worth a second card. The 24 & 32 GB smart picks are
+/// already MoE-fast (42 / 60 tok/s), so they stand alone — a slower or
+/// much weaker "fast" option there would only mislead.
 ///
-/// ## Brackets
+/// | RAM    | 🧠 Smart            | GB   | Cap | tok/s | 🚀 Fast                          |
+/// | ------ | ------------------- | ---- | --- | ----- | -------------------------------- |
+/// | 16 GB  | bonsai-27b-2bit     | 7.6  | 86% | 17.1  | lfm2.5-8b-a1b-4bit · 117 · chat  |
+/// | 18 GB  | bonsai-27b-2bit     | 7.6  | 86% | 17.1  | lfm2.5-8b-a1b-4bit · 117 · chat  |
+/// | 24 GB  | gemma-4-26b-4bit    | 14.6 | 87% | 41.7  | — (smart pick already fast)      |
+/// | 32 GB  | qwen3.6-35b-4bit    | 20.0 | 87% | 60.0  | — (smart pick already fast)      |
+/// | 64 GB  | qwen3.6-35b-8bit    | 37.7 | 87% | —     | qwen3.6-35b-4bit · 87% · 60      |
+/// | 96 GB+ | qwen3.5-122b-mxfp4  | 65.0 | 88% | —     | qwen3.6-35b-4bit · 87% · 60      |
 ///
-/// This is a 6-bucket × 5-role matrix and is the **source of truth
-/// for the in-app picker**. The marketing site (rapidmlx.com) has
-/// **no role/Speed table** — it publishes only a single
-/// best-model-per-RAM table (the `fits-table` in
-/// `landing/public/index.html` plus the identical "Pick by Mac RAM"
-/// widget in `models-worker`). That table is the same *axis* as the
-/// ``default`` role here (one best model per RAM), not the per-role
-/// picks — but its exact values are curated separately and can drift
-/// from this file's ``default`` column. So a change to a
-/// non-``default`` role (e.g. the v0.8.18 Speed demotion) has
-/// nothing to mirror on the site, and even the ``default`` values
-/// are not guaranteed to be identical: the site currently leans
-/// *aspirational* on the largest buckets (Qwen3.5-122B at 96 GB, a
-/// day-0 frontier MoE at 128 GB, and a larger 35B-A3B already at
-/// 48 GB) while the app's first-touch default prefers a
-/// faster-to-download Qwen3.6 27B / 35B-A3B. Treat THIS file as the
-/// source of truth for the in-app picker and reconcile the site
-/// deliberately rather than assuming they are locked together
-/// (see rapid-desktop #469).
-///
-/// | RAM (GB)   | Default               | Speed                | Quality               | Coding                              | Multimodal           |
-/// | ---------- | --------------------- | -------------------- | --------------------- | ----------------------------------- | -------------------- |
-/// | ≤ 16       | qwen3.5-4b-4bit       | phi-4-mini-4bit      | qwen3.5-9b-4bit       | qwen3.5-4b-4bit                     | qwen3-vl-4b-4bit     |
-/// | 17 – 24    | qwen3.5-9b-4bit       | qwen3.5-4b-4bit      | gemma-4-12b-4bit      | devstral-v2-24b-4bit                | qwen3-vl-8b-4bit     |
-/// | 25 – 36    | gpt-oss-20b-mxfp4-q8  | qwen3.5-4b-4bit      | gemma-4-26b-4bit      | deepseek-coder-v2-lite-16b-4bit     | qwen3-vl-8b-4bit     |
-/// | 37 – 48    | qwen3.6-27b-4bit      | qwen3.5-4b-4bit      | gemma-4-31b-4bit      | qwen3-coder-30b-4bit                | qwen3-vl-30b-4bit    |
-/// | 49 – 96    | qwen3.6-35b-4bit      | qwen3.5-4b-4bit      | qwen3.6-35b-8bit      | qwen3-coder-30b-4bit                | qwen3-vl-30b-4bit    |
-/// | 97+        | qwen3.6-35b-4bit      | qwen3.5-4b-4bit      | qwen3.5-122b-8bit     | qwen3-coder-30b-4bit                | qwen3-vl-30b-4bit    |
-///
-/// Boundaries were tuned against ``ModelSizing.classify`` so the
-/// bucketed alias on the BOTTOM of each bracket is at most
-/// ``.borderline`` (will run, won't OOM). The thresholds are
-/// inclusive at the top and exclusive at the bottom
-/// (`> previous && ≤ current`).
-///
-/// **Note on duplicates inside a bucket:** at ≤ 16 GB the
-/// ``coding`` slot intentionally reuses the ``default`` alias —
-/// there's no purpose-built code model small enough to fit a 16 GB
-/// Mac safely. The 17–24 GB ``coding`` slot graduated to
-/// ``devstral-v2-24b-4bit`` in the v0.7.16 rework: borderline-fit
-/// at the bucket floor but the audit (`/tmp/model-recs-audit.md`)
-/// explicitly chose distinctiveness over duplication, so all five
-/// recommended rows now read as different aliases on the user's
-/// 18 GB MBP.
-///
-/// **Speed slot rework (v0.8.18):** the ``speed`` pick is now the
-/// fastest alias that is STILL COHERENT in multi-turn chat —
-/// ``qwen3.5-4b-4bit`` (~158 t/s, MMLU-Pro+GPQA 65.8) on every
-/// bucket except ≤ 16 GB, where it would duplicate the ``default``
-/// so we use the near-identical-speed ``phi-4-mini-4bit`` (~159 t/s,
-/// 44.9) instead.
-///
-/// The previous pick, ``gemma3-1b-qat-4bit`` (~262 t/s, 0.7 GB),
-/// was demoted out of every recommendation. It is genuinely fast
-/// but its benchmark scores (general reasoning 17.0, code 1.9 — at
-/// or below random-guess on GPQA) make it incoherent for real chat:
-/// the v0.8.17 dogfood caught it hallucinating tool responses and
-/// repeating boilerplate to every follow-up. Trading 100 t/s for a
-/// model that 4× the reasoning score is the right call; "Speed" must
-/// still mean a usable model. ``gemma3-1b-qat-4bit`` remains in the
-/// "All aliases" list for power users who explicitly want it.
-///
-/// The capability drop relative to ``default`` is still acknowledged
-/// in ``Role.blurb`` so the user knows what they're picking.
-///
-/// ## Why the default slot collapses 49+ GB into 35B-A3B
-///
-/// v0.5.22 / v0.6.0 had a fifth bucket at 128+ GB → ``qwen3.5-
-/// 122b-mxfp4`` (~65 GB download). The v0.6.0 N2N walk surfaced this
-/// as the dominant first-touch UX failure: a fresh M3 Ultra user
-/// gets handed a 65 GB download and either waits 30+ minutes or
-/// quits before the chat surface responds.
-///
-/// 35B-A3B (~18 GB, A3B = 3B active params at decode) runs at
-/// near-122B quality on Apple Silicon and finishes downloading in
-/// 3–5 minutes on most home connections. 122B stays selectable —
-/// it's the ``quality`` slot in the 97+ GB bucket — but it's no
-/// longer the first-touch default for any bucket.
+/// 18 GB deliberately mirrors 16 GB (see the tier comment). The 16/18 GB
+/// fast pick is ``lfm2.5-8b-a1b-4bit`` — a chat specialist, so it shows
+/// "Chat only" instead of its blended 62 % (which understates conversation
+/// and overstates tools/coding). Capability % and tok/s are the
+/// maintainer's measured scores (M2/M3); the 64/96 GB smart rows have no
+/// local tok/s measurement yet (rendered without a speed figure). The
+/// capability column is monotonic non-decreasing by RAM, with ONE
+/// deliberate tie documented at the tier: the 64 GB smart 8-bit is floored
+/// at its own faster 4-bit alt's 87 % (an 8-bit quant can't display weaker
+/// than its 4-bit; its edge is fidelity, not bench points). Every alias is
+/// verified to exist in the bundled ``aliases.json`` by
+/// ``RAMBucketedDefaultTests``.
 enum RAMBucketedDefault {
-    /// Roles the picker recommends one alias per. ``default`` is the
-    /// best all-around starter; the others answer specific user
-    /// questions ("what's fastest?", "what's best?", etc.).
-    enum Role: String, CaseIterable, Sendable {
-        case `default`
-        case speed
-        case quality
-        case coding
-        case multimodal
-
-        /// Short label shown next to the alias in the picker.
-        var label: String {
-            switch self {
-            case .default:     return "Default"
-            case .speed:       return "Speed"
-            case .quality:     return "Quality"
-            case .coding:      return "Coding"
-            case .multimodal:  return "Vision"
-            }
-        }
-
-        /// One-line description shown beneath the label.
-        ///
-        /// v0.7.16 tightened the speed / quality / coding blurbs to
-        /// be honest about the tradeoff each pick makes. v0.8.18
-        /// dropped the "Tiny" wording from the speed blurb: the speed
-        /// pick is now a ~4B model (``qwen3.5-4b-4bit`` /
-        /// ``phi-4-mini-4bit``) rather than a 1B, so it's "light +
-        /// fast" but no longer "tiny", and — unlike the demoted
-        /// ``gemma3-1b-qat-4bit`` — actually coherent in chat.
-        var blurb: String {
-            switch self {
-            case .default:    return "Best balance for your Mac — what we'd pick first"
-            case .speed:      return "Light + fast. Trades some depth for snappiness."
-            case .quality:    return "Highest-scoring model that fits on your Mac — slower, smarter."
-            case .coding:     return "Best coding-bench score that fits — picks like a code reviewer."
-            case .multimodal: return "Accepts text + image input"
-            }
-        }
-
-        /// Blurb augmented with the per-bucket speed pick's measured
-        /// long-decode tok/s (Apple M3 Ultra) — surfaces on the speed
-        /// row's subtitle so a 18 GB MBP user (speed pick
-        /// ``qwen3.5-4b-4bit``) sees
-        ///   "Light + fast (~158 t/s). Trades some depth for snappiness."
-        /// rather than the generic blurb. Returns the un-augmented
-        /// ``blurb`` for any role other than ``.speed`` or when the
-        /// bench JSON has no measured tok/s for the alias yet.
-        ///
-        /// Lives next to ``blurb`` so a future contributor adding a
-        /// new role can wire it in one place.
-        func blurb(forSpeedAlias alias: String) -> String {
-            if self == .speed,
-               let scores = BenchScoresCatalog.lookup(alias: alias),
-               let tps = scores.speedTps {
-                return "Light + fast (~\(Int(tps.rounded())) t/s). Trades some depth for snappiness."
-            }
-            return blurb
-        }
+    /// One recommended model for a RAM tier: the alias, the numbers the
+    /// picker shows, and the launch flags it needs to fit/run on that
+    /// tier's RAM (e.g. ``--no-mllm`` to drop the vision tower).
+    struct Pick: Sendable, Equatable {
+        let alias: String
+        /// Active-memory footprint in GB (what the model actually uses).
+        let footprintGB: Double
+        /// Blended capability score 0–100 (tool / coding / reasoning /
+        /// general) — the single number that ranks picks.
+        let capabilityPct: Int
+        /// Measured decode tok/s, or ``nil`` when there is no local
+        /// measurement for this tier yet (the largest tiers).
+        let tokensPerSec: Double?
+        /// Extra ``rapid-mlx serve`` flags this pick needs on its tier,
+        /// applied only when the alias is started AS the recommendation
+        /// for a Mac at this RAM (see ``launchFlags(forAlias:physicalRAMGB:)``).
+        let launchFlags: [String]
+        /// An honest one-word caveat shown INSTEAD OF ``capabilityPct`` on
+        /// the card (e.g. "Chat only" for ``lfm2.5-8b-a1b-4bit``, a chat
+        /// specialist whose blended 62 % understates conversation quality
+        /// while overstating tools/coding). ``nil`` for a general-purpose
+        /// pick, which shows its capability % as usual.
+        var caveat: String? = nil
     }
 
-    /// One curated recommendation per role, anchored to a RAM bracket.
-    /// ``upperGB`` is the inclusive upper bound (a Mac at exactly that
-    /// RAM lands in this bucket). Every alias key must exist in the
-    /// rapid-mlx ``aliases.json`` — verified by
-    /// ``ModelRecommendationsTests`` against the bundled submodule.
-    struct Bucket: Sendable, Equatable {
-        let upperGB: Double
-        let `default`: String
-        let speed: String
-        let quality: String
-        let coding: String
-        let multimodal: String
+    /// A RAM tier: the ``floorGB`` it applies from (up to the next tier),
+    /// its ``primary`` (smart) pick, and an optional ``alt`` (fast/light)
+    /// pick — present only when a faster model is worth a second card.
+    struct Tier: Sendable, Equatable {
+        let floorGB: Double
+        let primary: Pick
+        let alt: Pick?
 
-        /// Lookup by role — keeps callers from having to switch on
-        /// every role themselves.
-        func alias(for role: Role) -> String {
-            switch role {
-            case .default:    return self.default
-            case .speed:      return self.speed
-            case .quality:    return self.quality
-            case .coding:     return self.coding
-            case .multimodal: return self.multimodal
-            }
-        }
+        /// Smart pick first, then the fast alt if present.
+        var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
     }
 
-    /// Source of truth — kept tiny so a recommendation change is a
-    /// one-line edit here, verified by ``RAMBucketedDefaultTests``
-    /// + ``ModelRecommendationsTests`` in one PR. (The marketing
-    /// site tracks only the ``default`` axis, not this whole matrix,
-    /// and can drift even there — see the type docstring +
-    /// rapid-desktop #469.)
-    ///
-    /// Coding role reuses the bucket ``default`` on ≤ 24 GB: there is
-    /// no purpose-built coder that both fits safely at the bucket floor
-    /// AND emits well-formed ``tool_calls``. ≤ 16 GB has no small coder
-    /// at all; the 17–24 GB slot USED to graduate to
-    /// ``devstral-v2-24b-4bit`` (v0.7.16) but the 2026-07-09
-    /// recommended-model tool-usability sweep found every Mistral-family
-    /// alias mis-parses its ``[TOOL_CALLS]…[ARGS]{…}`` output (the alias
-    /// ships ``tool_call_parser=hermes`` in the bundled engine; the model
-    /// is fine, the config is wrong) → 6/6 schema-leak on a tools-on
-    /// prompt. Until the engine parser is fixed (tracked upstream), the
-    /// slot falls back to the verified ``qwen3.5-9b-4bit`` default.
-    /// 25 GB+ fits ``qwen3-coder-30b-4bit`` (the headline coder,
-    /// swept 6/6). The 25–36 GB slot previously pointed at
-    /// ``deepseek-coder-v2-lite-16b-4bit`` which the same sweep found
-    /// invents ad-hoc tool names with no parser wired up (6/6 leak).
-    ///
-    /// Speed role points at the fastest alias that is still coherent in
-    /// chat AND tool-capable: ``qwen3.5-4b-4bit`` (~158 t/s) on EVERY
-    /// bucket. ≤ 16 GB previously used ``phi-4-mini-4bit`` (~159 t/s)
-    /// for a distinct-from-Default row, but the 2026-07-09 sweep found
-    /// phi-4-mini flatly refuses tool-eligible prompts ("I'm sorry, but
-    /// I can't assist with that", 6/6) — and at ~1 t/s faster it bought
-    /// no real speed. Dropped in favour of the verified
-    /// ``qwen3.5-4b-4bit`` even though it now duplicates the Default row
-    /// on ≤ 16 GB — a tool-capable duplicate beats a distinct model that
-    /// breaks the Tools flow. v0.8.18 had already demoted
-    /// ``gemma3-1b-qat-4bit`` (~262 t/s but benchmark reasoning 17.0 /
-    /// code 1.9 — incoherent in real chat) out of every recommendation;
-    /// it stays in the "All aliases" list for power users. The
-    /// capability drop relative to Default is acknowledged in
-    /// ``Role.blurb``.
-    ///
-    /// Every alias in this table was run end-to-end (2-turn plain chat +
-    /// 6 tool-eligible prompts through the real desktop wire —
-    /// ``toolGuidancePreamble`` + ``web_search`` schema +
-    /// ``tool_choice: auto``) on the 2026-07-09 sweep; only aliases that
-    /// emitted well-formed ``tool_calls`` (no schema-leak, no refusal)
-    /// are surfaced here. ``qwen3.5-122b-8bit`` is family-inferred from
-    /// its verified 4B/9B hermes siblings.
-    static let buckets: [Bucket] = [
-        // ≤ 16 GB
-        Bucket(
-            upperGB: 16,
-            default:    "qwen3.5-4b-4bit",
-            speed:      "qwen3.5-4b-4bit",   // reuse default — no faster tool-capable alias fits (was phi-4-mini, dropped: refuses tools)
-            quality:    "qwen3.5-9b-4bit",
-            coding:     "qwen3.5-4b-4bit",   // intentional reuse — no small coder fits
-            multimodal: "qwen3-vl-4b-4bit"
+    /// The fast/light pick shared by every tier whose smart pick is slow:
+    /// an 8B-A1B MoE at ~117 tok/s. A chat specialist, so it carries a
+    /// "Chat only" caveat instead of its (misleadingly low) blended score.
+    private static let lfm2FastPick = Pick(
+        alias: "lfm2.5-8b-a1b-4bit", footprintGB: 4.8, capabilityPct: 62,
+        tokensPerSec: 117.3, launchFlags: [], caveat: "Chat only")
+
+    /// The fast/light pick for the big-MoE tiers: the 4-bit Qwen3.6-35B
+    /// (same weights as the 32 GB smart pick) — near-equal capability to
+    /// the tier's smart model but much faster than an 8-bit / 122B load.
+    private static let qwen35bFastPick = Pick(
+        alias: "qwen3.6-35b-4bit", footprintGB: 20.0, capabilityPct: 87,
+        tokensPerSec: 60.0, launchFlags: [])
+
+    /// Source of truth — ascending by ``floorGB``. A recommendation change
+    /// is a one-line edit here, verified by ``RAMBucketedDefaultTests`` and
+    /// the standalone ``scripts/verify-recommendation-tiers.swift`` contract
+    /// check against the bundled ``aliases.json``.
+    static let tiers: [Tier] = [
+        Tier(
+            floorGB: 16,
+            primary: Pick(alias: "bonsai-27b-2bit", footprintGB: 7.6, capabilityPct: 86, tokensPerSec: 17.1, launchFlags: []),
+            alt: lfm2FastPick
         ),
-        // 17 – 24 GB
-        Bucket(
-            upperGB: 24,
-            default:    "qwen3.5-9b-4bit",
-            speed:      "qwen3.5-4b-4bit",
-            quality:    "gemma-4-12b-4bit",
-            coding:     "qwen3.5-9b-4bit",   // reuse default — no dedicated coder both fits ≤24 GB AND tool-calls (was devstral-v2-24b, dropped: engine parser misconfig leaks)
-            multimodal: "qwen3-vl-8b-4bit"
+        // 18 GB intentionally MIRRORS the 16 GB tier (bonsai smart + lfm2.5
+        // fast). An 18 GB Mac has no headroom for a meaningfully stronger
+        // model than bonsai-27b-2bit that we'd trust, and the gemma-4-12b
+        // that used to sit here read WEAKER (72 %) than 16 GB's bonsai
+        // (86 %) — a "more RAM, worse pick" dip. Rather than ship that
+        // inversion we keep bonsai here too; the tier stays explicit (not
+        // folded into 16 GB) so a future 18 GB-specific pick is a one-line
+        // edit. gemma-4-12b remains available in the full "All models" list.
+        Tier(
+            floorGB: 18,
+            primary: Pick(alias: "bonsai-27b-2bit", footprintGB: 7.6, capabilityPct: 86, tokensPerSec: 17.1, launchFlags: []),
+            alt: lfm2FastPick
         ),
-        // 25 – 36 GB
-        Bucket(
-            upperGB: 36,
-            default:    "gpt-oss-20b-mxfp4-q8",
-            speed:      "qwen3.5-4b-4bit",
-            quality:    "gemma-4-26b-4bit",
-            coding:     "qwen3-coder-30b-4bit",   // was deepseek-coder-v2-lite-16b, dropped: invents tool names + parser=None → 6/6 leak
-            multimodal: "qwen3-vl-8b-4bit"
+        // 24 & 32 GB: the smart pick is already MoE-fast (42 / 60 tok/s),
+        // so it stands alone — a slower or much-weaker "fast" card here
+        // would only mislead.
+        Tier(
+            floorGB: 24,
+            primary: Pick(
+                alias: "gemma-4-26b-4bit", footprintGB: 14.6, capabilityPct: 87, tokensPerSec: 41.7,
+                launchFlags: ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"]),
+            alt: nil
         ),
-        // 37 – 48 GB
-        Bucket(
-            upperGB: 48,
-            default:    "qwen3.6-27b-4bit",
-            speed:      "qwen3.5-4b-4bit",
-            quality:    "gemma-4-31b-4bit",
-            coding:     "qwen3-coder-30b-4bit",
-            multimodal: "qwen3-vl-30b-4bit"
+        Tier(
+            floorGB: 32,
+            primary: Pick(alias: "qwen3.6-35b-4bit", footprintGB: 20.0, capabilityPct: 87, tokensPerSec: 60.0, launchFlags: []),
+            alt: nil
         ),
-        // 49 – 96 GB
-        Bucket(
-            upperGB: 96,
-            default:    "qwen3.6-35b-4bit",
-            speed:      "qwen3.5-4b-4bit",
-            quality:    "qwen3.6-35b-8bit",
-            coding:     "qwen3-coder-30b-4bit",
-            multimodal: "qwen3-vl-30b-4bit"
+        // 64 GB smart pick is the 8-bit of the same Qwen3.6-35B whose 4-bit
+        // is the fast alt. Its capability is floored at the 4-bit's measured
+        // 87 % — an 8-bit quant is strictly higher-fidelity than its own
+        // 4-bit, so it must never DISPLAY below it (an earlier 85 % estimate
+        // made the "Best pick" read as weaker than its "Faster" alt). We
+        // pin equality, not a fabricated margin: the 8-bit's edge is
+        // quantization fidelity on long / hard prompts, which the blended
+        // bench doesn't fully resolve, and the alt exists precisely for
+        // users who'd rather trade that fidelity for the 4-bit's speed.
+        Tier(
+            floorGB: 64,
+            primary: Pick(alias: "qwen3.6-35b-8bit", footprintGB: 37.7, capabilityPct: 87, tokensPerSec: nil, launchFlags: []),
+            alt: qwen35bFastPick
         ),
-        // 97+ GB
-        Bucket(
-            upperGB: .infinity,
-            default:    "qwen3.6-35b-4bit",
-            speed:      "qwen3.5-4b-4bit",
-            quality:    "qwen3.5-122b-8bit",
-            coding:     "qwen3-coder-30b-4bit",
-            multimodal: "qwen3-vl-30b-4bit"
+        Tier(
+            floorGB: 96,
+            primary: Pick(alias: "qwen3.5-122b-mxfp4", footprintGB: 65.0, capabilityPct: 88, tokensPerSec: nil, launchFlags: []),
+            alt: qwen35bFastPick
         ),
     ]
 
-    /// The bracket a Mac with ``physicalRAMGB`` lands in. Always
-    /// returns something — the last bucket has an infinite upper
-    /// bound. Negative inputs (impossible in practice) fall into the
-    /// smallest bucket.
-    static func bucket(forPhysicalRAMGB physicalRAMGB: Double) -> Bucket {
-        for bucket in buckets where physicalRAMGB <= bucket.upperGB {
-            return bucket
+    /// The tier a Mac with ``physicalRAMGB`` lands in: the highest floor
+    /// ≤ RAM. A sub-16 GB Mac clamps to the smallest tier.
+    static func tier(forPhysicalRAMGB physicalRAMGB: Double) -> Tier {
+        var chosen = tiers[0]
+        for candidate in tiers where physicalRAMGB >= candidate.floorGB {
+            chosen = candidate
         }
-        // Unreachable because the last bucket's upperGB is .infinity,
-        // but Swift's type system can't prove that — return the
-        // largest bracket explicitly so adding a finite-cap bucket
-        // at the end of the table doesn't silently change behaviour.
-        return buckets.last ?? buckets[0]
+        return chosen
     }
 
-    /// Bracketed default alias for a Mac with ``physicalRAMGB`` —
-    /// kept for ``ServerManager`` / first-launch callers that only
-    /// need the ``.default`` slot. Internally just looks up the
-    /// bucket and reads the default role.
+    /// Primary alias for a Mac — kept for the first-launch /
+    /// ``ServerManager`` callers that need a single default alias.
     static func alias(forPhysicalRAMGB physicalRAMGB: Double) -> String {
-        bucket(forPhysicalRAMGB: physicalRAMGB).default
+        tier(forPhysicalRAMGB: physicalRAMGB).primary.alias
     }
 
-    /// Full role → alias map for a Mac with ``physicalRAMGB``. Drives
-    /// the picker's "Recommended for your N GB Mac" five-row section.
-    /// Every role is populated; some roles intentionally share an
-    /// alias on smaller buckets (see ``buckets`` docstring).
-    static func recommendations(forPhysicalRAMGB physicalRAMGB: Double) -> [Role: String] {
-        let b = bucket(forPhysicalRAMGB: physicalRAMGB)
-        return [
-            .default:    b.default,
-            .speed:      b.speed,
-            .quality:    b.quality,
-            .coding:     b.coding,
-            .multimodal: b.multimodal,
-        ]
+    /// The picks (primary, then optional alt) shown in the picker's
+    /// "Recommended for your N GB Mac" section.
+    static func picks(forPhysicalRAMGB physicalRAMGB: Double) -> [Pick] {
+        tier(forPhysicalRAMGB: physicalRAMGB).picks
     }
 
-    /// Ordered version of ``recommendations`` — preserves the role
-    /// display order (default → speed → quality → coding → multimodal)
-    /// for callers that need to render the rows top-to-bottom.
-    static func orderedRecommendations(forPhysicalRAMGB physicalRAMGB: Double) -> [(Role, String)] {
-        let b = bucket(forPhysicalRAMGB: physicalRAMGB)
-        return Role.allCases.map { ($0, b.alias(for: $0)) }
+    /// Launch flags to apply when starting ``alias`` AS the recommended
+    /// model for a Mac at ``physicalRAMGB`` — empty unless the alias is
+    /// this Mac's primary or alt pick. This is why a 64 GB Mac that hand-
+    /// picks ``gemma-4-26b-4bit`` (the 24 GB tier's pick, not its own)
+    /// keeps vision: the flags (``--no-mllm`` …) only ride along with the
+    /// recommendation on the tier they were curated for.
+    static func launchFlags(forAlias alias: String, physicalRAMGB: Double) -> [String] {
+        tier(forPhysicalRAMGB: physicalRAMGB)
+            .picks
+            .first(where: { $0.alias == alias })?
+            .launchFlags ?? []
+    }
+
+    /// Is ``alias`` a pick for a Mac that genuinely SITS IN its tier (RAM
+    /// ≥ the tier floor)? The picker trusts the curated table's measured
+    /// footprints over ``ModelSizing``'s heuristic estimate, which over-
+    /// states low-bit / MoE models (it scores the real-7.6 GB
+    /// ``bonsai-27b-2bit`` as ~14.8 GB and flags it ``.tooBig`` on a
+    /// 16 GB Mac). So starting a recommended pick skips the ``.tooBig``
+    /// "Start anyway" gate — the table already vetted it fits this tier.
+    ///
+    /// The floor guard matters for the sub-16 GB clamp: an 8 GB Mac is
+    /// SHOWN the 16 GB tier's picks, but it does NOT sit in that tier, so
+    /// its picks stay subject to the ``.tooBig`` gate — bypassing it there
+    /// would re-open the OOM hole (bonsai's 7.6 GB exceeds an 8 GB Mac's
+    /// usable pool).
+    static func isRecommendedPick(alias: String, physicalRAMGB: Double) -> Bool {
+        let t = tier(forPhysicalRAMGB: physicalRAMGB)
+        return physicalRAMGB >= t.floorGB && t.picks.contains { $0.alias == alias }
     }
 }
 
 extension MacHardware {
-    /// Convenience pass-through so ``ModelPickerBar`` doesn't have to
-    /// know that the alias decision is RAM-only. Lets a future
-    /// refinement also consider chip generation / bandwidth without
-    /// touching the call site.
+    /// Primary recommended alias for this Mac's RAM — the first-launch /
+    /// picker fallback default. (Quickstart still handles the true
+    /// first-touch with the small bundled model; this is the RAM-tier
+    /// fallback for the "nothing cached" case.)
     var bucketedDefaultAlias: String {
         RAMBucketedDefault.alias(forPhysicalRAMGB: physicalRAMGB)
     }
 
-    /// Role-anchored recommendations shown as cards/rows in the
-    /// "Recommended for your N GB Mac" section (picker + Model
-    /// Management). Vision (``.multimodal``) is intentionally excluded:
-    /// first-party vision support is weak, so it was dropped as a
-    /// recommended role in the v0.10 Model Management redesign. VL
-    /// models stay downloadable via the full catalog (they carry a
-    /// VISION badge in "All models"); only the *recommendation* is
-    /// suppressed. The ``.multimodal`` slot remains populated in
-    /// ``RAMBucketedDefault/recommendations(forPhysicalRAMGB:)`` as
-    /// data. This is the single source of truth for the four-role
-    /// recommendation set (Default / Speed / Quality / Coding) — both
-    /// the picker and the Model Management panel consume it, so they can
-    /// never drift on which roles show. Callers may still dedupe by
-    /// alias (a ≤16 GB bucket reuses the Default alias for Coding), so
-    /// the rendered row count can be fewer than four.
-    var bucketedRecommendations: [(RAMBucketedDefault.Role, String)] {
-        RAMBucketedDefault.orderedRecommendations(forPhysicalRAMGB: physicalRAMGB)
-            .filter { $0.0 != .multimodal }
+    /// Recommended picks (primary, then optional fast alternative) shown
+    /// as rows in the "Recommended for your N GB Mac" section — the single
+    /// source of truth for both the picker and the Model Management panel,
+    /// so they can never drift.
+    var recommendedPicks: [RAMBucketedDefault.Pick] {
+        RAMBucketedDefault.picks(forPhysicalRAMGB: physicalRAMGB)
     }
 }
 
@@ -539,7 +392,27 @@ enum CacheAwareDefault {
         bucketedDefault: String
     ) -> String? {
         let bucketedEntry = catalog.first(where: { $0.alias == bucketedDefault })
-        let bucketedFits = bucketedEntry.map { isSafe($0, on: hardware) } ?? false
+        // The RAM-tier primary is trusted to fit even when ModelSizing's
+        // heuristic over-states it (it scores the real-7.6 GB
+        // bonsai-27b-2bit as ~14.8 GB → .tooBig on 16 GB). Without this
+        // the default falls through to an unrelated fallback instead of
+        // the tier's own recommended primary.
+        //
+        // Scoped INSIDE `bucketedEntry.map` so `bucketedFits` is only ever
+        // true for an alias that actually exists in this engine's catalog:
+        // on a version skew where the RAM table names an alias the bundled
+        // engine doesn't ship, `bucketedEntry == nil` → `bucketedFits ==
+        // false` → we fall through to `SafeDefaultFallback` rather than
+        // handing back an alias the engine would refuse to serve. (Both
+        // return sites below already guard on `bucketedEntry != nil`, so
+        // this is defence-in-depth against a future refactor, not a live
+        // bug — but keeping the exemption catalog-scoped makes the
+        // invariant local and obvious.)
+        let bucketedFits = bucketedEntry.map {
+            RAMBucketedDefault.isRecommendedPick(
+                alias: bucketedDefault, physicalRAMGB: hardware.physicalRAMGB)
+                || isSafe($0, on: hardware)
+        } ?? false
 
         // Step 1: bucketed default is on disk AND runnable. No
         // surprise — high-quality canonical pick wins.
