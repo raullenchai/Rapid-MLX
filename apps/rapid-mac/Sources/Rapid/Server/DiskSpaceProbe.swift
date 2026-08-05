@@ -56,21 +56,24 @@ enum DiskSpaceProbe {
     /// Sized for the Quickstart default ``lfm2.5-1b-4bit``
     /// (~0.6 GB on disk):
     ///
-    ///   * ~0.5 GB final footprint, AND
+    ///   * ~0.6 GB final footprint (measured: 637 MB pulled), AND
     ///   * ~1.5× transient peak during chunk fetch + dedupe (HF's
     ///     downloader writes an incomplete `.bin` alongside the
     ///     sharded snapshot dir before atomically moving), AND
     ///   * ~1 GB headroom for the rest of the OS, swap, and Console
     ///     log churn during a 1-2 minute pull on a slow link.
     ///
-    /// ``0.5 × 1.5 + 1 = 1.75 GB`` rounded up to a clean ``2 GB`` so
-    /// the surfaced "needs ~Y GB" copy is human-readable. The prior
-    /// 0.6B starter (~0.4 GB) derived the same 2 GB; the ternary 1.7B
-    /// at ~0.5 GB stays comfortably inside it.
+    /// ``0.6 × 1.5 + 1 = 1.9 GB``, still inside the ``2 GB`` threshold —
+    /// which stays put so the surfaced "needs ~Y GB" copy remains a clean
+    /// round number. Earlier starters derived the same 2 GB from smaller
+    /// footprints (0.6B ~0.4 GB → 1.6 GB; ternary 1.7B ~0.5 GB →
+    /// 1.75 GB), so the margin has narrowed from ~0.4 GB to ~0.1 GB.
     ///
-    /// If the Quickstart default alias (see ``QuickstartCoordinator.alias``)
-    /// is ever bumped to a meaningfully larger model, the threshold
-    /// here MUST be re-derived from the new on-disk footprint.
+    /// That margin is now thin enough that the next bump almost certainly
+    /// breaks it: anything over ~0.67 GB on disk derives past 2 GB. If the
+    /// Quickstart default (see ``QuickstartCoordinator.defaultChoice``)
+    /// moves again, re-derive this constant — do not assume 2 GB still
+    /// covers it.
     static let quickstartRequiredBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     /// Outcome of ``decide``. Used to drive both the UI banner and a
