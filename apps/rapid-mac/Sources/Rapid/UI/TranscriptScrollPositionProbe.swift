@@ -90,16 +90,34 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         }
 
         @objc private func boundsDidChange(_ notification: Notification) {
-            guard isLiveScrolling else { return }
-            // Mid-gesture this may only RELEASE the pin, never restore it.
-            // ``isAtBottom`` is a slack comparison, so a gentle scroll whose
-            // per-event delta is within ``bottomResumeSlack`` still reads as
-            // "at the bottom" — re-pinning on it would let the next streamed
-            // frame yank the user straight back, which is precisely the
-            // hijacking this probe exists to stop, and the user could never
-            // escape by scrolling softly. Resuming is decided once the user
-            // has settled, in ``liveScrollDidEnd``.
-            if !isAtBottom { setPinned(false) }
+            // Our own ``scrollToBottom`` emits this too; it is not user intent.
+            guard !isProgrammaticScroll else { return }
+            if !isAtBottom {
+                // Any move away from the bottom releases the pin — whether or
+                // not AppKit bracketed it. A legacy mouse wheel can post bounds
+                // changes with NO willStartLiveScroll/didEndLiveScroll pair, and
+                // gating release on ``isLiveScrolling`` meant such a scroll never
+                // paused following: the next streamed frame yanked the reader
+                // straight back to the bottom.
+                setPinned(false)
+            } else if !isLiveScrolling {
+                // Back at the bottom on an UNBRACKETED scroll: no
+                // ``didEndLiveScroll`` is coming, so resume here. Deliberately
+                // not done mid-gesture — ``isAtBottom`` is a slack comparison,
+                // so re-pinning during a gesture would let a sub-slack gentle
+                // scroll be dragged back on every event.
+                setPinned(true)
+            }
+        }
+
+        /// The viewport itself resized (the composer grew from one line to
+        /// several, the window was resized). The document frame is unchanged,
+        /// so ``documentFrameDidChange`` never fires — yet a shorter viewport
+        /// means the newest content has slid out of sight while we still claim
+        /// to be following it. Re-anchor.
+        @objc private func clipFrameDidChange(_ notification: Notification) {
+            guard isPinnedToBottom.wrappedValue else { return }
+            scrollToBottom()
         }
 
         @objc private func documentFrameDidChange(_ notification: Notification) {
@@ -113,6 +131,13 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
 
         private func observeScrollView(_ scrollView: NSScrollView) {
             scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.contentView.postsFrameChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(clipFrameDidChange(_:)),
+                name: NSView.frameDidChangeNotification,
+                object: scrollView.contentView
+            )
             NotificationCenter.default.addObserver(
                 self,
                 selector: #selector(boundsDidChange(_:)),
@@ -166,8 +191,14 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             return distance <= bottomResumeSlack
         }
 
+        /// True while ``scrollToBottom`` is driving the clip view, so the
+        /// bounds notification it emits is not mistaken for the user moving.
+        private var isProgrammaticScroll = false
+
         private func scrollToBottom() {
             guard let scrollView, let documentView else { return }
+            isProgrammaticScroll = true
+            defer { isProgrammaticScroll = false }
             let clipView = scrollView.contentView
             let targetY: CGFloat
             if documentView.isFlipped {
