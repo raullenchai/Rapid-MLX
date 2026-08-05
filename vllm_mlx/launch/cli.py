@@ -28,15 +28,12 @@ later ``kill $(cat ~/.rapid-mlx/launch.pid)`` shuts it down cleanly.
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import os
-import socket
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
 
-from . import ADAPTERS
+from . import ADAPTERS, cursor
 
 # Where we drop the PID of a ``--start-server`` subprocess. Pulled out
 # so tests can monkeypatch it to a tmp_path and assert the file's
@@ -63,77 +60,6 @@ def _print_list() -> int:
         print(f"  {name.ljust(width)}{status}")
     print("\nNote: cursor requires an explicit public HTTPS --server-url.")
     return 0
-
-
-def _cursor_endpoint_error(server_url: str) -> str | None:
-    """Explain why ``server_url`` cannot be reached by Cursor's backend."""
-    if "\\" in server_url:
-        return "Cursor's --server-url cannot contain backslashes"
-    try:
-        parsed = urlparse(server_url)
-        hostname = parsed.hostname
-        username = parsed.username
-        password = parsed.password
-        port = parsed.port
-    except ValueError:
-        return "Cursor requires a valid public hostname and HTTPS port"
-
-    if parsed.scheme.lower() != "https":
-        return "Cursor requires a publicly reachable HTTPS --server-url"
-    if parsed.query or parsed.fragment:
-        return "Cursor's --server-url cannot contain a query string or fragment"
-    if username is not None or password is not None:
-        return "Cursor's --server-url cannot contain user information"
-
-    if not hostname:
-        return "Cursor requires a valid public hostname"
-    if port == 0:
-        return "Cursor requires a valid non-zero HTTPS port"
-
-    normalized = hostname.rstrip(".").lower()
-    if normalized == "localhost" or normalized.endswith((".localhost", ".local")):
-        return "Cursor's servers cannot reach localhost or private network hosts"
-
-    try:
-        resolved = socket.getaddrinfo(
-            normalized,
-            port if port is not None else 443,
-            type=socket.SOCK_STREAM,
-        )
-    except (OSError, ValueError):
-        return "Cursor requires a public hostname that resolves successfully"
-
-    addresses = {
-        ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
-        for _family, _type, _proto, _canonname, sockaddr in resolved
-    }
-    if not addresses or any(
-        not address.is_global
-        or address.is_multicast
-        or address.is_unspecified
-        or address.is_reserved
-        for address in addresses
-    ):
-        return "Cursor's servers cannot reach localhost or private network addresses"
-    return None
-
-
-def _canonical_cursor_server_url(server_url: str) -> str:
-    """Serialize the already-validated Cursor URL without authority ambiguity."""
-    parsed = urlparse(server_url)
-    hostname = parsed.hostname
-    assert hostname is not None
-    normalized = hostname.rstrip(".").lower()
-    try:
-        address = ipaddress.ip_address(normalized)
-    except ValueError:
-        canonical_host = normalized
-    else:
-        canonical_host = f"[{normalized}]" if address.version == 6 else normalized
-    netloc = canonical_host
-    if parsed.port is not None:
-        netloc += f":{parsed.port}"
-    return urlunparse(("https", netloc, parsed.path, "", "", ""))
 
 
 def _resolve_default_model() -> str:
@@ -220,7 +146,7 @@ def launch_command(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     server_url = args.server_url
-    api_key = getattr(args, "api_key", None) or os.environ.get("RAPID_MLX_API_KEY")
+    api_key = os.environ.get("RAPID_MLX_API_KEY")
     targets: list[str]
     if args.all:
         targets = [
@@ -229,7 +155,7 @@ def launch_command(args: argparse.Namespace) -> None:
             if adapter.detect()
             and (
                 name != "cursor"
-                or (_cursor_endpoint_error(server_url) is None and bool(api_key))
+                or (cursor.endpoint_error(server_url) is None and bool(api_key))
             )
         ]
         if not targets:
@@ -241,7 +167,7 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
     else:
         if args.client == "cursor":
-            reason = _cursor_endpoint_error(server_url)
+            reason = cursor.endpoint_error(server_url)
             if reason is not None:
                 print(
                     f"launch: {reason}. BYOK requests are routed through "
@@ -252,8 +178,8 @@ def launch_command(args: argparse.Namespace) -> None:
                 sys.exit(2)
             if not api_key:
                 print(
-                    "launch: Cursor public endpoints require --api-key or "
-                    "RAPID_MLX_API_KEY. Start Rapid-MLX with the same key; "
+                    "launch: Cursor public endpoints require RAPID_MLX_API_KEY. "
+                    "Start Rapid-MLX with the same key; "
                     "never expose an unauthenticated server to the internet.",
                     file=sys.stderr,
                 )
@@ -278,7 +204,7 @@ def launch_command(args: argparse.Namespace) -> None:
     original_alias = getattr(args, "_original_alias", None)
     model = original_alias or args.model or _resolve_default_model()
     cursor_server_url = (
-        _canonical_cursor_server_url(server_url) if "cursor" in targets else server_url
+        cursor.canonical_server_url(server_url) if "cursor" in targets else server_url
     )
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
@@ -397,15 +323,6 @@ def register(subparsers) -> None:
         type=str,
         default="http://127.0.0.1:8000",
         help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
-    )
-    p.add_argument(
-        "--api-key",
-        type=str,
-        default=None,
-        help=(
-            "API key written to the client config and used by --start-server "
-            "(default: RAPID_MLX_API_KEY). Required for Cursor's public endpoint."
-        ),
     )
     p.add_argument(
         "--port",
