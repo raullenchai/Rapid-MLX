@@ -5,7 +5,12 @@ import os
 
 import pytest
 
-from vllm_mlx.model_aliases import list_aliases, resolve_model, suggest_similar
+from vllm_mlx.model_aliases import (
+    RetiredModelAliasError,
+    list_aliases,
+    resolve_model,
+    suggest_similar,
+)
 
 
 def test_known_alias_resolves():
@@ -13,11 +18,17 @@ def test_known_alias_resolves():
     assert resolve_model("llama3-3b-4bit") == "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 
-def test_broken_ministral_3b_alias_is_not_advertised():
+def test_broken_ministral_3b_alias_is_rejected_before_loading():
     """#1367: the default VLM route hangs on its first text completion."""
     retired = "ministral-3b-4bit"
     assert retired not in list_aliases()
-    assert resolve_model(retired) == retired
+    with pytest.raises(RetiredModelAliasError, match="alias was retired"):
+        resolve_model(retired)
+
+
+def test_retired_alias_full_hf_path_remains_available_for_text_only_testing():
+    hf_path = "mlx-community/Ministral-3-3B-Instruct-2512-4bit"
+    assert resolve_model(hf_path) == hf_path
 
 
 def test_full_path_passes_through():

@@ -9280,9 +9280,13 @@ Examples:
         and args.model
         and getattr(args, "command", None) != "doctor"
     ):
-        from vllm_mlx.model_aliases import resolve_model
+        from vllm_mlx.model_aliases import RetiredModelAliasError, resolve_model
 
-        resolved = resolve_model(args.model)
+        try:
+            resolved = resolve_model(args.model)
+        except RetiredModelAliasError as exc:
+            print(f"\n  Error: {exc}")
+            raise SystemExit(1) from None
         if resolved != args.model:
             # Keep stdout pure JSON for machine-readable modes (jlens --json);
             # the human-facing alias banner goes to stderr there.

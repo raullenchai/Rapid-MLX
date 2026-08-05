@@ -136,6 +136,24 @@ def test_models_command_subparser_smoke():
     assert exc.value.code == 0
 
 
+def test_retired_ministral_alias_fails_before_server_start(capsys):
+    """The known-broken short alias must stop in CLI preflight, not load a model."""
+    import pytest
+
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "serve", "ministral-3b-4bit"]),
+        patch.object(cli, "serve_command") as serve,
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.main()
+
+    assert exc.value.code == 1
+    assert not serve.called
+    output = capsys.readouterr().out
+    assert "alias was retired" in output
+    assert "--no-mllm" in output
+
+
 # ----------------------------------------------------------------------
 # D2 — --cached / ls view
 # ----------------------------------------------------------------------
