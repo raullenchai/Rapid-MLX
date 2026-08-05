@@ -198,32 +198,17 @@ struct ChatView: View {
     @State private var showBenchmark = false
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
-    private let bottomSentinelID = "rapid-bottom-sentinel"
-    private let transcriptSpace = "rapid-transcript"
-    /// How far above the bottom the user may sit and still be treated as
-    /// "following the stream". One line of body text — enough to absorb
-    /// sub-pixel drift and the trailing-edge animation, small enough that
-    /// a deliberate scroll up immediately releases the pin.
-    private let bottomPinSlack: CGFloat = 24
+    /// A live user gesture must reach the actual trailing edge before
+    /// stream following resumes. The AppKit probe then owns following
+    /// through every subsequent SwiftUI layout pass.
+    private let bottomResumeSlack: CGFloat = 2
 
-    /// Bottom edge of the transcript content in the scroll view's own
-    /// coordinate space, and the scroll view's visible height. Together
-    /// they give the distance from the bottom without polling.
-    @State private var contentBottom: CGFloat = 0
-    @State private var viewportHeight: CGFloat = 0
+    /// Updated directly from the hosting NSScrollView. A SwiftUI geometry
+    /// preference arrives after the scroll event, which leaves a window
+    /// where the next streamed token can still yank the reader downward.
+    @State private var isPinnedToBottom = true
 
     private var messages: [ChatMessage] { viewModel.messages }
-
-    /// True while the user is parked at (or within ``bottomPinSlack`` of)
-    /// the trailing edge. Only then may streaming deltas move the scroll
-    /// position — otherwise reading back through the transcript mid-reply
-    /// would be yanked to the bottom on every token.
-    private var isPinnedToBottom: Bool {
-        // Before the first layout pass we have no measurements; default to
-        // pinned so a fresh transcript still follows the stream.
-        guard viewportHeight > 0 else { return true }
-        return contentBottom - viewportHeight <= bottomPinSlack
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -268,52 +253,20 @@ struct ChatView: View {
             emptyState
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    transcriptRows
-                        .background(
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: ContentBottomKey.self,
-                                    value: geo.frame(in: .named(transcriptSpace)).maxY
-                                )
-                            }
+            ScrollView {
+                transcriptRows
+                    .background(
+                        TranscriptScrollPositionProbe(
+                            isPinnedToBottom: $isPinnedToBottom,
+                            bottomResumeSlack: bottomResumeSlack
                         )
-                }
-                .coordinateSpace(name: transcriptSpace)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: ViewportHeightKey.self,
-                            value: geo.size.height
-                        )
-                    }
-                )
-                .onPreferenceChange(ContentBottomKey.self) { contentBottom = $0 }
-                .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
-                // This branch mounts fresh the moment the transcript goes
-                // from empty to populated — selecting a long saved
-                // conversation, or launching straight into one. The
-                // `messages.count` change that mounts it predates the
-                // `.onChange` handlers below, so a fresh ScrollView would
-                // open at the OLDEST message. Anchor to the latest on
-                // appear (no animation: this is initial positioning, not a
-                // scroll the user should see move).
-                .onAppear { scrollToBottom(proxy, animated: false) }
-                // Streaming deltas only move the view while the user is
-                // parked at the trailing edge. Scrolling up to re-read
-                // earlier text releases the pin, so the transcript stays
-                // put (and stays selectable) until the user scrolls back
-                // down. A brand-new message is a deliberate action by the
-                // user, so it always re-anchors.
-                .onChange(of: messages.last?.content) { _, _ in
-                    if isPinnedToBottom { scrollToBottom(proxy) }
-                }
-                .onChange(of: messages.last?.reasoning) { _, _ in
-                    if isPinnedToBottom { scrollToBottom(proxy) }
-                }
-                .onChange(of: messages.count) { _, _ in scrollToBottom(proxy) }
+                    )
             }
+            // The probe is the single owner of transcript positioning.
+            // A new message is deliberate navigation to the conversation
+            // tip; streamed frame changes then keep following from there.
+            .onAppear { isPinnedToBottom = true }
+            .onChange(of: messages.count) { _, _ in isPinnedToBottom = true }
         }
     }
 
@@ -335,20 +288,9 @@ struct ChatView: View {
             }
             Color.clear
                 .frame(height: 1)
-                .id(bottomSentinelID)
         }
         .padding(.horizontal, RapidTheme.Space.xl)
         .padding(.vertical, RapidTheme.Space.xl)
-    }
-
-    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
-        guard animated else {
-            proxy.scrollTo(bottomSentinelID, anchor: .bottom)
-            return
-        }
-        withAnimation(.easeOut(duration: 0.15)) {
-            proxy.scrollTo(bottomSentinelID, anchor: .bottom)
-        }
     }
 
     private var emptyState: some View {
@@ -1235,25 +1177,6 @@ extension MarkdownUI.Theme {
                 .markdownMargin(top: 8, bottom: 8)
         }
 }
-/// LazyVStack's bottom edge in the transcript's named coord space.
-/// Streams into ``ChatView`` so it can derive "is the user at the
-/// bottom?" without polling.
-private struct ContentBottomKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// ScrollView's visible height. Paired with ``ContentBottomKey`` to
-/// compute the bottom-distance dead-band.
-private struct ViewportHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 /// Code block with a hover-revealed Copy button. ChatGPT Desktop
 /// hangs the copy affordance off the top-right; we mirror that and
 /// fade in on hover so the button doesn't distract during reading.
