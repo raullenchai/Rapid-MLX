@@ -32,6 +32,7 @@ def test_release_scope_covers_routinely_feasible_families(fleet):
         "qwen3.5-35b-4bit",
         "qwen3.6-27b-4bit",
         "gemma-4-12b-4bit",
+        "deepseek-r1-32b-4bit",
         "gpt-oss-20b-mxfp4-q8",
     )
 
@@ -42,22 +43,20 @@ def test_toolchain_scope_adds_ultra_only_family(fleet):
     assert toolchain_models == release_models | {"hy3-preview-4bit"}
 
 
-def test_reasoning_distill_excluded_from_coherence_all_scopes(fleet):
-    # DeepSeek-R1-Distill false-fails the exact-match --no-thinking coherence
-    # gate (it emits CoT in the visible channel and is cut off before the terse
-    # answer), so it opts out of the coherence sweep in EVERY scope via
-    # `"coherence": false`. It must appear in no coherence scope -- release or
-    # toolchain -- so it can never re-trip the gate. See issue #1323.
-    assert "deepseek-r1-32b-4bit" not in fleet.models_for_scope("release")
-    assert "deepseek-r1-32b-4bit" not in fleet.models_for_scope("toolchain")
+def test_reasoning_distill_participates_in_coherence_all_scopes(fleet):
+    # DeepSeek-R1-Distill participates in the coherence sweep now that the gate
+    # is reasoning-aware (#1323): it is served with thinking enabled and scored
+    # on its concluded answer. It must appear in both release and toolchain
+    # coherence scopes and be flagged `reasoning_distill`.
+    assert "deepseek-r1-32b-4bit" in fleet.models_for_scope("release")
+    assert "deepseek-r1-32b-4bit" in fleet.models_for_scope("toolchain")
     deepseek = next(f for f in fleet.load_fleet() if f.name == "deepseek")
-    assert deepseek.coherence_enabled is False
+    assert deepseek.reasoning_distill is True
 
 
 def test_coherence_excluded_family_still_provides_artifact_matrix(fleet):
-    # Opting out of the coherence sweep must NOT drop the family from the
-    # scope-independent artifact-acceptance matrix; DeepSeek stays a full
-    # release fleet member for artifact/integration coverage.
+    # A reasoning-distill family stays a full release fleet member with its
+    # scope-independent artifact-acceptance matrix cell intact.
     deepseek = next(f for f in fleet.load_fleet() if f.name == "deepseek")
     assert deepseek.artifact_matrix is not None
     assert deepseek.artifact_matrix.get("model") == "deepseek-r1-32b-4bit"
@@ -72,9 +71,9 @@ def test_release_scope_covers_each_architecture_risk_class(fleet):
     assert release_classes >= fleet.REQUIRED_RELEASE_CLASSES
 
 
-def test_coherence_flag_defaults_true_and_rejects_non_bool(fleet, tmp_path):
-    # Absent flag -> coherence-enabled; a non-bool value is rejected like the
-    # other manifest field validators.
+def test_reasoning_distill_flag_defaults_false_and_rejects_non_bool(fleet, tmp_path):
+    # Absent flag -> not reasoning-distill; a non-bool value is rejected like
+    # the other manifest field validators.
     base = {
         "coherence_model": "m",
         "coverage_class": "small_dense",
@@ -112,19 +111,54 @@ def test_coherence_flag_defaults_true_and_rejects_non_bool(fleet, tmp_path):
         )
     )
     families = fleet.load_fleet(ok)
-    assert all(family.coherence_enabled for family in families)
+    assert all(not family.reasoning_distill for family in families)
 
     bad = tmp_path / "bad.json"
     bad.write_text(
         json.dumps(
             {
                 "schema": 1,
-                "families": {"small_dense": {**base, "coherence": "no"}},
+                "families": {"small_dense": {**base, "reasoning_distill": "no"}},
             }
         )
     )
-    with pytest.raises(ValueError, match="coherence must be a boolean"):
+    with pytest.raises(ValueError, match="reasoning_distill must be a boolean"):
         fleet.load_fleet(bad)
+
+    legacy = tmp_path / "legacy.json"
+    legacy_data = json.loads(fleet.DEFAULT_MANIFEST.read_text())
+    legacy_data["families"]["deepseek"]["coherence"] = False
+    legacy.write_text(json.dumps(legacy_data))
+    legacy_family = next(
+        family for family in fleet.load_fleet(legacy) if family.name == "deepseek"
+    )
+    assert legacy_family.coherence_enabled is False
+    assert "deepseek-r1-32b-4bit" not in fleet.models_for_scope("release", path=legacy)
+
+
+def test_reasoning_distill_classifier_resolves_alias_and_hf_path(fleet):
+    assert fleet.is_reasoning_distill_model("deepseek-r1-32b-4bit")
+    assert fleet.is_reasoning_distill_model(
+        "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit"
+    )
+    assert not fleet.is_reasoning_distill_model("qwen3.5-4b-4bit")
+
+
+def test_reasoning_distill_classifier_reports_infrastructure_failure(
+    fleet, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        fleet,
+        "is_reasoning_distill_model",
+        lambda _model: (_ for _ in ()).throw(ValueError("broken manifest")),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["release_fleet.py", "is-reasoning-distill", "deepseek-r1-32b-4bit"],
+    )
+    assert fleet.main() == 2
+    assert "broken manifest" in capsys.readouterr().err
 
 
 def test_toolchain_snapshot_detects_lock_only_version_bump(fleet):

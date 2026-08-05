@@ -50,6 +50,26 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 # them). Kept lowercase — callers compare against a lowercased copy.
 _THINK_MARKERS = ("<think>", "</think>", "<reasoning>", "</reasoning>")
 
+# Closed <think>…</think> and <reasoning>…</reasoning> blocks plus a
+# trailing unclosed opener. Reasoning-distill models (e.g. DeepSeek-R1-Distill)
+# may leave chain-of-thought in the visible message, so the gate strips it
+# before scoring the concluded answer. The block patterns match the same
+# _THINK_MARKERS tag bytes.
+_THINK_BLOCK_RE = re.compile(
+    r"<think>[\s\S]*?</think>\s*"
+    r"|<reasoning>[\s\S]*?</reasoning>\s*"
+    r"|<think>[\s\S]*"
+    r"|<reasoning>[\s\S]*",
+    re.IGNORECASE,
+)
+
+
+def strip_thinking(text: str) -> str:
+    """Remove reasoning-channel markers/blocks, returning only visible text."""
+    if not text:
+        return text
+    return _THINK_BLOCK_RE.sub("", text).strip()
+
 
 def _max_char_run(s: str) -> int:
     """Length of the longest run of a single non-space character."""
@@ -241,6 +261,24 @@ def _normalize_exact_answer(text: str) -> str:
 def _matches_exact(text: str, expected: tuple[str, ...]) -> bool:
     answer = _normalize_exact_answer(text)
     return any(answer == _normalize_exact_answer(item) for item in expected)
+
+
+def evaluate_concluded(case: GoldenCase, text: str) -> tuple[bool, str]:
+    """Score the *concluded* answer of a reasoning-distill completion.
+
+    Reasoning-distill models (DeepSeek-R1-Distill) emit chain-of-thought in the
+    visible channel even when the server was told not to think; the reasoning
+    prose is stripped and the remaining text is checked as an exact match, so
+    the gate measures the concluded answer rather than format compliance.
+    """
+    if not isinstance(text, str):
+        return False, f"invalid response content type {type(text).__name__}"
+    concluded = strip_thinking(text)
+    if not concluded:
+        return False, "no concluded answer after stripping reasoning channel"
+    if _matches_exact(concluded, case.expect):
+        return True, f"concluded answer exactly matches {case.expect!r}"
+    return False, f"concluded answer not an exact match for {case.expect!r}"
 
 
 def evaluate_case(case: GoldenCase, text: str) -> tuple[bool, str]:

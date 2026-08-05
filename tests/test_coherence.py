@@ -23,8 +23,10 @@ from vllm_mlx.coherence import (
     GOLDEN,
     GoldenCase,
     evaluate_case,
+    evaluate_concluded,
     is_degenerate_completion,
     looks_like_garbage,
+    strip_thinking,
 )
 
 # ── real, coherent outputs that must NOT be flagged as garbage ──────────────
@@ -159,6 +161,47 @@ def test_no_think_leak_case_rejects_raw_reasoning_tag() -> None:
     assert "think" in reason.lower() or "reasoning" in reason.lower()
     # Clean answer passes.
     assert evaluate_case(case, "Paris")[0]
+
+
+# ── reasoning-distill concluded-answer scoring (#1323) ──────────────────────
+def test_strip_thinking_removes_tagged_reasoning_blocks() -> None:
+    assert strip_thinking("<think>let me think</think> Tokyo") == "Tokyo"
+    assert strip_thinking("<reasoning>trace</reasoning> blue") == "blue"
+    # A trailing unclosed thought with no concluded answer strips to empty.
+    assert strip_thinking("<think>partial trace") == ""
+
+
+def test_evaluate_concluded_accepts_tagged_concluded_answer() -> None:
+    case = next(c for c in GOLDEN if c.id == "capital-japan")
+    passed, reason = evaluate_concluded(
+        case, "<think>Japan is in East Asia, let me recall.</think> Tokyo"
+    )
+    assert passed
+    assert "concluded" in reason
+
+
+def test_evaluate_concluded_rejects_coherent_but_wrong() -> None:
+    case = next(c for c in GOLDEN if c.id == "capital-japan")
+    assert not evaluate_concluded(case, "<think>reasoning</think> Osaka")[0]
+
+
+def test_evaluate_concluded_rejects_pure_reasoning_no_answer() -> None:
+    case = next(c for c in GOLDEN if c.id == "arithmetic")
+    passed, reason = evaluate_concluded(case, "<think>17 times 23 is 391...")
+    assert not passed
+    assert "no concluded answer" in reason
+
+
+def test_reasoning_distill_untagged_prose_does_not_false_pass() -> None:
+    """Untagged chain-of-thought prose that never reaches the terse token must
+    still fail the concluded check — the gate strips tags, not prose."""
+    case = next(c for c in GOLDEN if c.id == "capital-japan")
+    assert not evaluate_concluded(
+        case,
+        "Okay, so I need to figure out the capital of Japan. Japan is a "
+        "country in East Asia. Its largest city is Tokyo, which is where the "
+        "government sits. I'm fairly sure the capital is Tok",
+    )[0]
 
 
 def test_gate_returns_infrastructure_code_for_midrun_transport_failure(

@@ -53,6 +53,7 @@ from vllm_mlx.coherence import (  # noqa: E402
     GOLDEN,
     GoldenCase,
     evaluate_case,
+    evaluate_concluded,
     looks_like_garbage,
 )
 
@@ -63,19 +64,23 @@ class InvalidServerResponseError(RuntimeError):
     """The server replied, but not with a valid chat-completion payload."""
 
 
-def _generate(base_url: str, case: GoldenCase, *, timeout: float) -> str:
+def _generate(
+    base_url: str, case: GoldenCase, *, timeout: float, thinking: bool = False
+) -> str:
     """Non-streaming completion for ``case`` at temperature 0. Returns the
     visible assistant text (empty string if the model returned no content)."""
     body = {
         "model": "default",
         "messages": [{"role": "user", "content": case.prompt}],
-        "max_tokens": case.max_tokens,
+        "max_tokens": case.max_tokens * 4 if thinking else case.max_tokens,
         "temperature": 0.0,
         "stream": False,
-        # Match the gauntlet's --no-thinking boot: the gate measures answer
-        # coherence, not thinking-mode behavior. The no-think-leak case still
-        # asserts no raw <think> tag survives into the visible message.
-        "enable_thinking": False,
+        # Match the gauntlet's --no-thinking boot for ordinary families: the
+        # gate measures answer coherence, not thinking-mode behavior. For a
+        # reasoning-distill model we serve WITH thinking enabled (it does not
+        # honor --no-thinking anyway) so the parser can route the chain-of-
+        # thought to the reasoning channel and leave the conclusion in content.
+        "enable_thinking": thinking,
     }
     resp = httpx.post(
         f"{base_url.rstrip('/')}/chat/completions", json=body, timeout=timeout
@@ -114,9 +119,17 @@ def main() -> int:
     ap.add_argument(
         "--timeout", type=float, default=120.0, help="per-request timeout (s)"
     )
+    ap.add_argument(
+        "--reasoning-distill",
+        action="store_true",
+        help="serve the model with thinking enabled and score the concluded "
+        "(post-reasoning) answer against the golden token instead of the raw "
+        "visible text (for reasoning-distill families such as DeepSeek-R1).",
+    )
     args = ap.parse_args()
 
     base_url = args.base_url
+    thinking = args.reasoning_distill
     print("=" * 60)
     print("  output-coherence gate (#1247)")
     print(f"  base_url: {base_url}")
@@ -137,8 +150,11 @@ def main() -> int:
     infrastructure_failed = False
     for case in GOLDEN:
         try:
-            text = _generate(base_url, case, timeout=args.timeout)
-            passed, reason = evaluate_case(case, text)
+            text = _generate(base_url, case, timeout=args.timeout, thinking=thinking)
+            if thinking:
+                passed, reason = evaluate_concluded(case, text)
+            else:
+                passed, reason = evaluate_case(case, text)
         except (httpx.HTTPError, InvalidServerResponseError) as exc:
             passed, reason = False, f"server/protocol error: {exc}"
             infrastructure_failed = True

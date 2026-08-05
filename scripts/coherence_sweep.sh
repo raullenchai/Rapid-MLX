@@ -12,6 +12,13 @@
 # evals/coherence_gate.py (blocking golden answers), then torn down before the
 # next. Any alias that fails its blocking golden gate fails the whole sweep.
 #
+# Reasoning-distill families (e.g. DeepSeek-R1-Distill) do not honor
+# --no-thinking: they emit chain-of-thought in the visible channel. The fleet
+# marks them with "reasoning_distill": true; the sweep boots those with
+# --thinking (so the parser routes the chain-of-thought to the reasoning
+# channel) and passes --reasoning-distill so the gate scores the concluded
+# answer rather than the raw visible text (issue #1323).
+#
 # With no explicit models, the shared release fleet is selected automatically.
 # A normal release covers every routinely feasible family; changes to an MLX
 # dependency since the previous release tag add the Ultra-only Hy3 representative.
@@ -91,7 +98,23 @@ for MODEL in $MODELS; do
   echo "  → $MODEL"
   line
 
-  "$PY" -m vllm_mlx.cli serve "$MODEL" --port "$PORT" --no-thinking > "$LOG" 2>&1 &
+  DISTILL=0
+  if "$PY" scripts/release_fleet.py is-reasoning-distill "$MODEL"; then
+    DISTILL=1
+  else
+    classifier_status=$?
+    if [ "$classifier_status" -ne 1 ]; then
+      echo "ERROR: could not classify reasoning mode for $MODEL" >&2
+      exit 2
+    fi
+  fi
+  SERVE_ARGS=(--port "$PORT")
+  if [ "$DISTILL" = "1" ]; then
+    SERVE_ARGS+=(--thinking)
+  else
+    SERVE_ARGS+=(--no-thinking)
+  fi
+  "$PY" -m vllm_mlx.cli serve "$MODEL" "${SERVE_ARGS[@]}" > "$LOG" 2>&1 &
   CURRENT_PID=$!
   echo "$CURRENT_PID" > "$PIDFILE"
 
@@ -107,7 +130,11 @@ for MODEL in $MODELS; do
     tail -20 "$LOG" >&2
     infra_failed="$infra_failed $MODEL(boot)"
   else
-    if "$PY" evals/coherence_gate.py; then
+    GATE_ARGS=()
+    if [ "$DISTILL" = "1" ]; then
+      GATE_ARGS+=(--reasoning-distill)
+    fi
+    if "$PY" evals/coherence_gate.py "${GATE_ARGS[@]}"; then
       echo "  ✓ $MODEL coherent"
     else
       gate_status=$?

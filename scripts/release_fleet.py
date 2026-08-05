@@ -7,19 +7,14 @@ Normal releases sweep one real representative for every routinely feasible
 family. Changes to the MLX toolchain expand the sweep to the Ultra-only Hy3
 family as well.
 
-A family may set ``"coherence": false`` (the flag defaults to ``true`` when
-absent) to opt out of the G0a coherence sweep in *every* scope while remaining a
-full member of the fleet for artifact-acceptance and integration coverage. This
-exists for reasoning-distill families (e.g. DeepSeek-R1-Distill): the coherence
-gate boots each model with ``--no-thinking`` and exact-matches a terse golden
-answer, but reasoning-distill models emit chain-of-thought in the visible channel
-and get cut off at ``max_tokens`` before producing the terse answer, false-failing
-a gate that is measuring format compliance rather than coherence. Such a family is
-skipped by ``models_for_scope`` and is not counted toward
-``REQUIRED_RELEASE_CLASSES`` (so it can never mask a missing coverage class), yet
-its ``artifact_matrix`` cell -- which is scope- and coherence-independent -- still
-runs. The flag is retired once the coherence gate is reasoning-aware (issue
-#1323).
+A family may set ``"reasoning_distill": true`` (the flag defaults to ``false``
+when absent) to mark a reasoning-distill family such as DeepSeek-R1-Distill.
+Such families participate in the G0a coherence sweep like any other, but the
+gate serves them with thinking enabled and scores the concluded (post-reasoning)
+answer rather than the raw visible text (issue #1323).
+
+The legacy ``"coherence": false`` opt-out remains accepted for external
+manifests so this metadata migration does not silently change their sweep scope.
 """
 
 from __future__ import annotations
@@ -28,6 +23,7 @@ import argparse
 import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,6 +50,7 @@ class FleetFamily:
     scopes: tuple[str, ...]
     artifact_matrix: dict[str, Any] | None
     coherence_enabled: bool = True
+    reasoning_distill: bool = False
 
 
 def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
@@ -76,6 +73,7 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
         scopes = raw.get("scopes")
         artifact = raw.get("artifact_matrix")
         coherence_enabled = raw.get("coherence", True)
+        reasoning_distill = raw.get("reasoning_distill", False)
         if (
             not isinstance(model, str)
             or not model
@@ -104,6 +102,8 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
             raise ValueError(f"{name}: artifact_matrix must be an object")
         if not isinstance(coherence_enabled, bool):
             raise ValueError(f"{name}: coherence must be a boolean")
+        if not isinstance(reasoning_distill, bool):
+            raise ValueError(f"{name}: reasoning_distill must be a boolean")
         families.append(
             FleetFamily(
                 name=name,
@@ -112,6 +112,7 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
                 scopes=tuple(scopes),
                 artifact_matrix=artifact,
                 coherence_enabled=coherence_enabled,
+                reasoning_distill=reasoning_distill,
             )
         )
     release_classes = {
@@ -134,6 +135,34 @@ def models_for_scope(scope: str, *, path: Path = DEFAULT_MANIFEST) -> tuple[str,
         family.coherence_model
         for family in load_fleet(path)
         if scope in family.scopes and family.coherence_enabled
+    )
+
+
+def reasoning_distill_models(*, path: Path = DEFAULT_MANIFEST) -> frozenset[str]:
+    """Return the coherence-model names of reasoning-distill families."""
+    return frozenset(
+        family.coherence_model
+        for family in load_fleet(path)
+        if family.reasoning_distill
+    )
+
+
+def is_reasoning_distill_model(model: str, *, path: Path = DEFAULT_MANIFEST) -> bool:
+    """Classify a fleet alias or its equivalent Hugging Face repository ID."""
+    families = tuple(family for family in load_fleet(path) if family.reasoning_distill)
+    if any(model == family.coherence_model for family in families):
+        return True
+
+    # Import lazily so ordinary fleet parsing stays dependency-light.
+    from vllm_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile(model)
+    if profile is None:
+        return False
+    return any(
+        (candidate := resolve_profile(family.coherence_model)) is not None
+        and candidate.hf_path == profile.hf_path
+        for family in families
     )
 
 
@@ -245,11 +274,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     models.add_argument("--base-ref")
     models.add_argument("--format", choices=("shell", "json", "lines"), default="shell")
+    distill = subparsers.add_parser(
+        "is-reasoning-distill",
+        help="exit 0 iff the given coherence model is a reasoning-distill family",
+    )
+    distill.add_argument("model", help="coherence_model alias to test")
     return parser
 
 
 def main() -> int:
     args = _build_parser().parse_args()
+    if args.command == "is-reasoning-distill":
+        try:
+            return 0 if is_reasoning_distill_model(args.model) else 1
+        except (OSError, ValueError) as exc:
+            print(f"release fleet classification failed: {exc}", file=sys.stderr)
+            return 2
     scope = resolve_scope(requested=args.scope, base_ref=args.base_ref)
     models = models_for_scope(scope)
     if args.format == "json":
