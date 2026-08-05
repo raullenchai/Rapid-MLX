@@ -9285,7 +9285,7 @@ Examples:
         try:
             resolved = resolve_model(args.model)
         except RetiredModelAliasError as exc:
-            print(f"\n  Error: {exc}")
+            print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         if resolved != args.model:
             # Keep stdout pure JSON for machine-readable modes (jlens --json);

@@ -149,9 +149,10 @@ def test_retired_ministral_alias_fails_before_server_start(capsys):
 
     assert exc.value.code == 1
     assert not serve.called
-    output = capsys.readouterr().out
-    assert "alias was retired" in output
-    assert "--no-mllm" in output
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "alias was retired" in captured.err
+    assert "--no-mllm" in captured.err
 
 
 # ----------------------------------------------------------------------
