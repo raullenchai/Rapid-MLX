@@ -479,9 +479,11 @@ def _normalise_swift(body: str) -> str:
     return re.sub(r"\s+", " ", body).strip()
 
 
-def _extract_is_eligible(path: Path) -> str:
+def _extract_func_body(path: Path, signature: str) -> str:
+    """Brace-matched body of the first ``func`` whose declaration starts
+    with ``signature``, comments and whitespace normalised away."""
     text = path.read_text()
-    start = text.index("func isEligible(")
+    start = text.index(signature)
     depth, i = 0, text.index("{", start)
     for j in range(i, len(text)):
         if text[j] == "{":
@@ -490,28 +492,48 @@ def _extract_is_eligible(path: Path) -> str:
             depth -= 1
             if depth == 0:
                 return _normalise_swift(text[i : j + 1])
-    raise AssertionError(f"unbalanced isEligible body in {path}")
+    raise AssertionError(f"unbalanced {signature!r} body in {path}")
+
+
+def _extract_retired_set(path: Path) -> set[str]:
+    text = path.read_text()
+    block = re.search(r"retiredStarters: Set<String> = \[(.*?)\]", text, re.DOTALL)
+    assert block, f"retiredStarters literal not found in {path}"
+    return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+
+QUICKSTART_PROD = REPO / "apps/rapid-mac/Sources/Rapid/UI/QuickstartView.swift"
 
 
 def test_eligibility_check_script_has_not_drifted_from_production():
-    """``verify-recommendation-tiers.swift`` re-declares ``isEligible``
-    rather than importing it — the standalone-script pattern this repo uses
+    """``verify-recommendation-tiers.swift`` re-declares the gate rather
+    than importing it — the standalone-script pattern this repo uses
     because the SPM test target is stripped. That copy is the only thing
     that EXECUTES the gate, so if production changes and the copy does not,
     the check passes while testing yesterday's logic.
 
-    Comparing the two bodies is what makes the copy trustworthy: edit one
-    without the other and this fails, naming both files."""
-    prod = _extract_is_eligible(
-        REPO / "apps/rapid-mac/Sources/Rapid/UI/QuickstartView.swift"
-    )
-    copy = _extract_is_eligible(VERIFY_SCRIPT)
-    # The copy takes a fake enum and a defaulted arg; compare the decision
-    # logic after the signature.
-    prod_body = prod[prod.index("guard !done") :]
-    copy_body = copy[copy.index("guard !done") :]
-    assert prod_body == copy_body, (
-        "isEligible drifted between QuickstartView.swift and "
-        "verify-recommendation-tiers.swift — the executable check would be "
-        f"testing stale logic.\n  production: {prod_body}\n  copy:       {copy_body}"
+    The whole decision surface has to be pinned, not just the entry point:
+    ``isEligible`` delegates to ``isStranded``, which reads
+    ``retiredStarters``. Pinning only the first would let a new retired
+    alias — the most likely future edit — land in production while the
+    executable cases keep exercising the old set."""
+    for signature in ("func isEligible(", "func isStranded("):
+        prod = _extract_func_body(QUICKSTART_PROD, signature)
+        copy = _extract_func_body(VERIFY_SCRIPT, signature)
+        # The copy takes a fake ServerState enum, so compare the decision
+        # logic from the first statement rather than the signature.
+        head = "guard" if "isStranded" in signature else "guard !done"
+        prod_body, copy_body = prod[prod.index(head) :], copy[copy.index(head) :]
+        assert prod_body == copy_body, (
+            f"{signature.strip('func (')} drifted between "
+            "QuickstartView.swift and verify-recommendation-tiers.swift — "
+            "the executable check would be testing stale logic.\n"
+            f"  production: {prod_body}\n  copy:       {copy_body}"
+        )
+
+    prod_set = _extract_retired_set(QUICKSTART_PROD)
+    copy_set = _extract_retired_set(VERIFY_SCRIPT)
+    assert prod_set == copy_set, (
+        f"retiredStarters drifted: production {sorted(prod_set)} vs script "
+        f"{sorted(copy_set)} — the rescued cohort differs from the tested one"
     )
