@@ -36,7 +36,22 @@ struct ConnectToolsView: View {
                 cardContent
             }
         }
-        .frame(width: 460, height: 560)
+        // Size follows context, the same way ``showsCloseButton`` does.
+        //
+        // 460×560 is a sheet's size. As the Launch *page* it left the cards in
+        // a narrow column stranded in the middle of a 1200pt window, and the
+        // hard 560pt height forced a second scrollbar inside a pane that was
+        // already tall enough to show everything. Filling the pane instead
+        // lets the cards use the width that is actually there.
+        .frame(
+            width: showsCloseButton ? 460 : nil,
+            height: showsCloseButton ? 560 : nil
+        )
+        .frame(
+            maxWidth: showsCloseButton ? nil : .infinity,
+            maxHeight: showsCloseButton ? nil : .infinity,
+            alignment: .topLeading
+        )
         .background(RapidTheme.canvas)
     }
 
@@ -52,6 +67,11 @@ struct ConnectToolsView: View {
             endpointFootnote
         }
         .padding(20)
+        // Filling the pane is not the same as stretching to it. On a wide
+        // window the cards would otherwise run the full 1200pt and the
+        // one-line instructions would span the screen; capping the measure
+        // keeps them readable while the surrounding pane still expands.
+        .frame(maxWidth: showsCloseButton ? .infinity : 720)
     }
 
     private var header: some View {
@@ -63,6 +83,19 @@ struct ConnectToolsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                // The key only exists while the server is running, and it is
+                // regenerated on every start. Without this the cards render
+                // `API key:` followed by nothing — a config that looks
+                // complete, copies clean, and fails at the far end with a 401.
+                if bearer.isEmpty {
+                    Label(
+                        "Server not running — start a chat to generate the key.",
+                        systemImage: "exclamationmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.top, 4)
+                }
             }
             Spacer()
             if showsCloseButton {
