@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # smoke.sh — fast (sub-2s) end-to-end smoke for Rapid.app.
 #
-# Runs the Swift Testing unit suite + the chat lifecycle directive
-# against the fake rapid-mlx, so a code change can be verified
-# without standing up a real model.
+# Compiles the app and runs the chat lifecycle directive against the fake
+# rapid-mlx, so a code change can be verified without standing up a real model.
 #
 # What it covers:
-#   * swift test (14 cases — DownloadProgress, UpdateChecker,
-#     SessionStore roundtrip)
+#   * swift build (the package compiles)
 #   * ServerManager spawn / health-poll / state transitions
 #     (.idle → .starting → .ready → .stopped)
 #   * ChatStreamClient SSE decode (reasoning + content lanes,
 #     finish_reason routing, clean [DONE])
 #
 # What it does NOT cover:
+#   * The Swift Testing unit suite — the SPM test target was stripped
+#     (see Package.swift), so `swift test` finds no tests / can't build. A
+#     fresh suite is tracked separately; until then this smoke is build +
+#     chat-lifecycle only.
 #   * Real model inference (use ``RAPID_BIN=/opt/homebrew/bin/rapid-mlx``
 #     or unset RAPID_BIN for that)
 #   * SwiftUI view tree (Step 2 — ViewInspector)
@@ -23,13 +25,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> swift test"
-swift test
+echo "==> swift build"
+# Compile the package up front. This is the verification the old ``swift test``
+# line was meant to provide but couldn't (no test target → exit 1 on a clean
+# tree, killing the smoke before it ever reached the chat lifecycle below).
+swift build >/dev/null
 
 echo
 echo "==> chat lifecycle vs fake rapid-mlx"
-# Build first so we time the smoke, not the compile.
-swift build >/dev/null
 start_ts="$(date +%s)"
 RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
     RAPID_TEST_DRIVER='chat:fake-alias:hi there' \

@@ -1,0 +1,44 @@
+# Compile gate for the rapid-mac desktop app on pull requests.
+#
+# Until now the ONLY workflow that touched apps/rapid-mac was
+# rapid-mac-release.yml, which fires solely on `rapid-mac-v*` tags — so a PR
+# could land a change that did not even compile, and nothing caught it until a
+# human cut a release. This job builds the Swift package on every PR that
+# touches the app, so a non-compiling change fails in review instead.
+#
+# Scope is deliberately just `swift build`: the SPM test target was stripped
+# (see apps/rapid-mac/Package.swift — the strip deleted the subsystems most of
+# the suite exercised, so it no longer compiles, and `swift test` can't resolve
+# `import Testing` in this toolchain). Re-wiring a fresh test suite is tracked
+# separately; a compile gate is the high-value floor that costs ~20s.
+name: rapid-mac CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/rapid-mac/**"
+      - ".github/workflows/rapid-mac-ci.yml"
+
+permissions:
+  contents: read
+
+# One in-flight build per PR branch; a new push cancels the previous run.
+concurrency:
+  group: rapid-mac-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's
+    # swift-tools-version and the release workflow's runner. macos-latest still
+    # resolves to macos-14 (Swift 5.x) on GitHub-hosted runners.
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: apps/rapid-mac
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: swift build
+        run: swift build
