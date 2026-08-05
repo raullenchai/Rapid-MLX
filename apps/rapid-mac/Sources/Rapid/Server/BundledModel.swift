@@ -45,8 +45,11 @@ import Foundation
 /// looping until it hit ``max_tokens``. See
 /// ``QuickstartCoordinator.defaultChoice`` for the full measurements.
 ///
-/// The 1.2B replacement answers correctly and terminates cleanly
-/// (12/12 in a controlled repro), at 170 tok/s with no reasoning
+/// The 1.2B replacement answers correctly and terminates cleanly on
+/// every run recorded: 16/16 total, of which 12/12 came from a single
+/// controlled repro. Both numbers describe the same result, so quote
+/// the 16/16 -- it is the whole sample, not a subset of it. 170 tok/s
+/// with no reasoning
 /// phase. It is a text-first pick: unlike Bonsai it is not currently
 /// listed in ``ToolUseCapability``, so the empty-state capability
 /// chips stay hidden until someone measures its tool calls. That is

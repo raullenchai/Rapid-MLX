@@ -56,24 +56,28 @@ enum DiskSpaceProbe {
     /// Sized for the Quickstart default ``lfm2.5-1b-4bit``
     /// (~0.6 GB on disk):
     ///
-    ///   * ~0.6 GB final footprint (measured: 637 MB pulled), AND
+    /// Every operand below is binary (GiB), matching the constant itself
+    /// (``2 * 1024³``) — mixing a decimal download figure into a binary
+    /// budget is how a threshold silently stops covering what it claims.
+    ///
+    ///   * **0.622 GiB** final footprint — measured, ``du -sm`` reported
+    ///     637 MiB for the pulled snapshot, AND
     ///   * ~1.5× transient peak during chunk fetch + dedupe (HF's
     ///     downloader writes an incomplete `.bin` alongside the
     ///     sharded snapshot dir before atomically moving), AND
-    ///   * ~1 GB headroom for the rest of the OS, swap, and Console
+    ///   * 1 GiB headroom for the rest of the OS, swap, and Console
     ///     log churn during a 1-2 minute pull on a slow link.
     ///
-    /// ``0.6 × 1.5 + 1 = 1.9 GB``, still inside the ``2 GB`` threshold —
+    /// ``0.622 × 1.5 + 1 = 1.933 GiB``, inside the ``2 GiB`` threshold,
     /// which stays put so the surfaced "needs ~Y GB" copy remains a clean
-    /// round number. Earlier starters derived the same 2 GB from smaller
-    /// footprints (0.6B ~0.4 GB → 1.6 GB; ternary 1.7B ~0.5 GB →
-    /// 1.75 GB), so the margin has narrowed from ~0.4 GB to ~0.1 GB.
+    /// round number. Earlier starters derived the same 2 GiB from smaller
+    /// footprints, so the slack has narrowed to **~0.067 GiB (~68 MiB)**.
     ///
-    /// That margin is now thin enough that the next bump almost certainly
-    /// breaks it: anything over ~0.67 GB on disk derives past 2 GB. If the
-    /// Quickstart default (see ``QuickstartCoordinator.defaultChoice``)
-    /// moves again, re-derive this constant — do not assume 2 GB still
-    /// covers it.
+    /// That is thin enough that the next bump probably breaks it: solving
+    /// ``x × 1.5 + 1 = 2`` puts the ceiling at **0.667 GiB (~683 MiB)** on
+    /// disk. If the Quickstart default (see
+    /// ``QuickstartCoordinator.defaultChoice``) moves again, re-derive this
+    /// constant — do not assume 2 GiB still covers it.
     static let quickstartRequiredBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     /// Outcome of ``decide``. Used to drive both the UI banner and a

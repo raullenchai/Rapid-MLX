@@ -216,9 +216,11 @@ final class QuickstartCoordinator {
     /// tier recommendation — but it is the wrong *starter*. It routes
     /// through the ``qwen3`` reasoning parser, so ~2/3 of its output is
     /// hidden thinking: 3.6 s to a first answer, most of it a blank
-    /// screen. The 1.2B has no reasoning phase — 1.1 s, 170 tok/s, and
-    /// it answers correctly. For a first impression, "instant and right"
-    /// beats "smarter but silent first".
+    /// screen. The 1.2B has no reasoning phase — 1.1 s, 170 tok/s, and it
+    /// answered correctly and terminated on **16/16** recorded runs
+    /// (12/12 of them in one controlled repro; quote the 16, it is the
+    /// whole sample). For a first impression, "instant and right" beats
+    /// "smarter but silent first".
     ///
     /// Users still trade up in the wizard or later via the picker.
     static let defaultChoice = QuickstartModelChoice(
