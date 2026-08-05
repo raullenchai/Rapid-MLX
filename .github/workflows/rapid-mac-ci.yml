@@ -53,8 +53,19 @@ jobs:
       # excluded, so nothing compiled or ran ~3,100 test functions — which is
       # how a starter model that degenerates on an ordinary chat question
       # shipped for months while tests pinning that exact alias sat dormant.
+      # --no-parallel is load-bearing, not a preference. swift-testing
+      # parallelises across a cooperative pool sized to the core count, and
+      # several suites here call `proc.waitUntilExit()` — a synchronous
+      # blocking wait. On this 12-core dev machine there is enough slack to
+      # absorb that; on a GitHub runner there is not, and the pool starves:
+      # the first attempt logged 1,416 tests started, ZERO finished, and sat
+      # there until the job timed out, leaving orphan `head` / `swiftpm-testing`
+      # processes behind. Serialised it is 15s vs 4s locally — cheap insurance.
+      #
+      # The real fix is to stop blocking threads inside async tests; until
+      # then, do not drop this flag.
       - name: swift test
-        run: swift test
+        run: swift test --no-parallel
 
       # Kept alongside `swift test` rather than folded into it: this script
       # runs without the test target, so it stays usable while bisecting a
