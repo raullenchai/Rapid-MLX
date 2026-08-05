@@ -34,6 +34,12 @@ jobs:
     # swift-tools-version and the release workflow's runner. macos-latest still
     # resolves to macos-14 (Swift 5.x) on GitHub-hosted runners.
     runs-on: macos-15
+    # A hung test would otherwise sit on the 6-hour default. The whole
+    # job is ~2 min warm; 20 leaves room for a cold package resolve and
+    # still fails fast. Learned the hard way: a headless-incompatible
+    # dependency deadlocked every @MainActor test and burned 45 minutes
+    # of runner time before anyone noticed.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: apps/rapid-mac

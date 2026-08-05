@@ -20,23 +20,7 @@ let package = Package(
         // friendly Swift port of iosMath (pure-Swift, no WKWebView/JS),
         // embedded via ``NSViewRepresentable`` and stitched into the
         // render path by ``LaTeXSegmenter``.
-        .package(url: "https://github.com/mgriebling/SwiftMath", from: "1.7.0"),
-        // TEST-ONLY: SwiftUI view introspection for the picker + failure
-        // diagnosis tests. Never linked into the shipped app target.
-        //
-        // Pinned to an immutable commit, not a version range or a tag.
-        // Package.resolved is gitignored in this package, so nothing else
-        // constrains what CI resolves: a range picks up untested patches, and
-        // even `exact:` resolves through a tag a maintainer can move — which
-        // would mean unreviewed third-party code executing in CI on every app
-        // PR. A revision cannot move.
-        //
-        // Matches how this repo already pins CI inputs (see
-        // `actions/checkout@34e1148…` in rapid-mac-ci.yml). The trailing
-        // comment is the human-readable version; update both together.
-        // ViewInspector has no transitive dependencies, so this one pin
-        // closes the whole graph.
-        .package(url: "https://github.com/nalexn/ViewInspector", revision: "e9a06346499a3a889165647e3f23f8a7b2609a1c")  // 0.10.3
+        .package(url: "https://github.com/mgriebling/SwiftMath", from: "1.7.0")
     ],
     targets: [
         // Issue #24: signal-safe arena + handler in pure C. Swift
@@ -74,10 +58,7 @@ let package = Package(
         ),
         .testTarget(
             name: "RapidTests",
-            dependencies: [
-                "Rapid",
-                .product(name: "ViewInspector", package: "ViewInspector")
-            ],
+            dependencies: ["Rapid"],
             path: "Tests/RapidTests"
         )
         // NOTE (2026-08-05): the RapidTests target is BACK in the manifest,
@@ -91,10 +72,16 @@ let package = Package(
         //   1. The FIRST compile error was a missing test-only dependency
         //      (ViewInspector, used by 9 files). "No such module" aborts the
         //      build before type-checking, so it masked everything behind it
-        //      and made the damage look total.
+        //      and made the damage look total. Adding it back was a dead end:
+        //      7 of the 9 referenced stripped subsystems anyway, and the
+        //      surviving 2 deadlocked EVERY @MainActor test on a headless CI
+        //      runner (1,413 started, 0 finished, 45 minutes). SwiftUI view
+        //      introspection wants a GUI session; the runner has none. Those
+        //      2 files are deleted and the dependency is gone — do not
+        //      reintroduce it without a headless-verified alternative.
         //   2. Behind it, 137 of 254 files genuinely did not compile against
         //      the stripped Sources. Those are deleted. The remaining 117
-        //      compile and run: 1,514 tests, green.
+        //      compile and run: 1,485 tests, green.
         //
         // The cost of the exclusion was not hypothetical. The suite pinned
         // `BundledModel.bundledAlias`, `QuickstartCoordinator.defaultChoice`,
