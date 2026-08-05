@@ -633,17 +633,17 @@ def resolve_model(name: str) -> str:
     """Resolve a model alias to its full HuggingFace path.
 
     If name contains '/' it's already a full path — pass through.
-    If name is a retired, known-broken alias, raise before any download or load.
     If a local file/directory with the name exists, prefer that.
+    If name is a retired, known-broken alias, raise before any download or load.
     If name matches an alias, return the mapped HF path.
     Otherwise return unchanged.
     """
     if "/" in name:
         return name
-    if reason := _RETIRED_MODEL_ALIASES.get(name):
-        raise RetiredModelAliasError(reason)
     if os.path.exists(name):
         return name
+    if reason := _RETIRED_MODEL_ALIASES.get(name):
+        raise RetiredModelAliasError(reason)
     profile = _load().get(name)
     return profile.hf_path if profile is not None else name
 
