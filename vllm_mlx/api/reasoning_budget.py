@@ -220,11 +220,20 @@ class ReasoningBudgetLogitsProcessor:
         if self._budget < 0:
             return logits
         if self._ended:
-            if self._reopen_suppressor is not None:
+            if (
+                self._reopen_suppressor is not None
+                and self._think_start_id is not None
+                and 0 <= self._think_start_id < int(logits.shape[-1])
+            ):
                 return self._reopen_suppressor(token_ids, logits)
             return logits
         phase = self._phase(token_ids)
-        if self._ended and self._reopen_suppressor is not None:
+        if (
+            self._ended
+            and self._reopen_suppressor is not None
+            and self._think_start_id is not None
+            and 0 <= self._think_start_id < int(logits.shape[-1])
+        ):
             return self._reopen_suppressor(token_ids, logits)
         if phase != "force":
             return logits
