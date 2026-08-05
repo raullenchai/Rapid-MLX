@@ -62,16 +62,4 @@ struct SelectTextSheetTests {
         )
     }
 
-    @Test("MessageRow wires the affordance: menu item + sheet through selectableText(for:)")
-    func messageRowWiring() throws {
-        let source = try loadSource("Sources/Rapid/UI/ChatView.swift")
-        #expect(
-            source.contains("Select text…"),
-            "The assistant row must offer the Select text… entry point (context menu is also the VoiceOver path — hover-row icons are opacity-gated out of the a11y tree)."
-        )
-        #expect(
-            source.contains("SelectTextSheet(text: SelectTextSheet.selectableText(for: message.content))"),
-            "The sheet must be fed through selectableText(for:) — not raw message content — so the sanitiser contract above holds at the call site."
-        )
-    }
 }

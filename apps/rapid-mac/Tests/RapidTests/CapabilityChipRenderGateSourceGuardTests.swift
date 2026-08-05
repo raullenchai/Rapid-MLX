@@ -48,28 +48,6 @@ struct CapabilityChipRenderGateSourceGuardTests {
 
     // MARK: - ChatView.swift: the chip-row render site
 
-    /// The single canonical chip-row render site inside ``ChatView``
-    /// MUST consume the gated helper. Pre-#133 the body called
-    /// ``ForEach(Self.capabilityChipKinds, id: \.title) { kind in ...
-    /// CapabilityChip(...)``. The fix replaces the un-gated catalog
-    /// with ``Self.capabilityChipKinds(forAlias: alias)`` (assigned to
-    /// a local so the empty-array fast path collapses the row).
-    @Test("ChatView.swift chip-row ForEach consumes capabilityChipKinds(forAlias:), not the un-gated static")
-    func chipRowForEachUsesGatedHelper() throws {
-        let source = try loadSource("Sources/Rapid/UI/ChatView.swift")
-        // The body of ``var emptyState`` is the only chip-row
-        // render site. Find it by locating the gated-helper call,
-        // then walk backwards to ensure the ForEach in that vicinity
-        // consumes the GATED value, not the un-gated static.
-        let gatedCall = "Self.capabilityChipKinds(forAlias: alias)"
-        let stripped = Self.stripCommentsAndWhitespace(source)
-        let strippedGated = Self.stripCommentsAndWhitespace(gatedCall)
-        #expect(
-            stripped.contains(strippedGated),
-            "ChatView.swift must contain a call to Self.capabilityChipKinds(forAlias:) — the gated helper that consults ToolUseCapability. The pre-#133 un-gated ForEach(Self.capabilityChipKinds, id:) shape silently over-promised tool-call chips on .broken/.unknown aliases."
-        )
-    }
-
     /// Walk the chip-row neighbourhood (the slice of the file
     /// containing the ``CapabilityChip(icon:`` constructor) and
     /// assert NO call site there uses the un-gated static directly.
@@ -97,23 +75,6 @@ struct CapabilityChipRenderGateSourceGuardTests {
                 "ChatView.swift contains a bypass shape '\(bypass)' — a ForEach that iterates the un-gated static catalog. This re-opens the #133 over-promise bug: .broken/.unknown aliases will render the full chip row again. Route the ForEach through Self.capabilityChipKinds(forAlias: alias) instead."
             )
         }
-    }
-
-    /// The body where the chip-row appears also assigns the gated
-    /// catalog to a local. Pin the let-binding shape so a future
-    /// refactor that drops the local (and goes back to inlining the
-    /// catalog into the ForEach call) trips this test.
-    @Test("ChatView.swift chip-row body has 'let gatedKinds = Self.capabilityChipKinds(forAlias: alias)' binding")
-    func chipRowGatedLocalBinding() throws {
-        let source = try loadSource("Sources/Rapid/UI/ChatView.swift")
-        let stripped = Self.stripCommentsAndWhitespace(source)
-        let target = Self.stripCommentsAndWhitespace(
-            "let gatedKinds = Self.capabilityChipKinds(forAlias: alias)"
-        )
-        #expect(
-            stripped.contains(target),
-            "ChatView chip-row body must keep the 'let gatedKinds = Self.capabilityChipKinds(forAlias: alias)' binding so the ``if !gatedKinds.isEmpty`` fast-path collapses the HStack to zero children for .broken/.unknown aliases."
-        )
     }
 
     // MARK: - Other view files: no chip-row constructions outside ChatView

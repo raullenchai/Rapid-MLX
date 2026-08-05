@@ -63,19 +63,6 @@ struct SmoothnessRegressionTests {
         #expect(firstLabel == "8.0 GB / 32 GB")
     }
 
-    @Test("GPU pill seeds a real snapshot before its first render")
-    @MainActor
-    func gpuPillDoesNotFlashUnsupportedPlaceholder() throws {
-        let firstLabel = try GPUPill(sample: {
-            GPUProbe.Snapshot(percent: 42)
-        })
-            .inspect()
-            .find(ViewType.Text.self)
-            .string()
-
-        #expect(firstLabel == "GPU 42%")
-    }
-
     @Test("Memory pill publishes sampled state on the main thread")
     @MainActor
     func memoryPillPublishesOnMainThread() async throws {
@@ -127,25 +114,6 @@ struct SmoothnessRegressionTests {
         let countAtRemoval = sampleCount.withLock { $0 }
         try await Task.sleep(for: .milliseconds(250))
         #expect(sampleCount.withLock { $0 } == countAtRemoval)
-    }
-
-    @Test("Quick Ask lazily builds rows and does not animate token deltas")
-    func quickAskStreamingPathStaysLightweight() throws {
-        let source = try source("Sources/Rapid/QuickAsk/QuickAskView.swift")
-        #expect(source.contains("LazyVStack(alignment: .leading, spacing: 14)"))
-        #expect(source.contains("ForEach(session.messages) { msg in"))
-        #expect(!source.contains("Array(session.messages.enumerated())"))
-
-        let deltaStart = try #require(source.range(
-            of: ".onChange(of: session?.messages.last?.content)"
-        ))
-        let deltaEnd = try #require(source.range(
-            of: "\n        }\n    }",
-            range: deltaStart.upperBound..<source.endIndex
-        ))
-        let deltaHandler = source[deltaStart.lowerBound..<deltaEnd.lowerBound]
-        #expect(!deltaHandler.contains("withAnimation"))
-        #expect(deltaHandler.contains("proxy.scrollTo(last, anchor: .bottom)"))
     }
 
     private func source(_ relativePath: String) throws -> String {

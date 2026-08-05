@@ -43,10 +43,17 @@ jobs:
       - name: swift build
         run: swift build
 
-      # The recommendation + Quickstart-eligibility contracts. With the SPM
-      # test target stripped, this dependency-free script is the only thing
-      # that actually EXECUTES that logic — it was runnable but wired to
-      # nothing, so a regression in it would have reached a release.
+      # The suite is back in the manifest (see Package.swift). It had been
+      # excluded, so nothing compiled or ran ~3,100 test functions — which is
+      # how a starter model that degenerates on an ordinary chat question
+      # shipped for months while tests pinning that exact alias sat dormant.
+      - name: swift test
+        run: swift test
+
+      # Kept alongside `swift test` rather than folded into it: this script
+      # runs without the test target, so it stays usable while bisecting a
+      # manifest problem, and it covers the install.sh <-> app tier contract
+      # that no Swift test can see.
       - name: verify recommendation + eligibility contracts
         run: swift scripts/verify-recommendation-tiers.swift
 

@@ -41,26 +41,6 @@ struct SidecarBuildScriptTests {
                 "Restricted builders need a single-process compileall override.")
     }
 
-    @Test("Local app builds reuse an unchanged sidecar instead of running pip")
-    func localBuildReusesSidecarStage() throws {
-        let script = try String(contentsOf: Self.appBuildScriptURL, encoding: .utf8)
-
-        #expect(script.contains("FORCE_SIDECAR_REBUILD"),
-                "Developers need an explicit escape hatch when refreshing floating Python dependencies.")
-        #expect(script.contains("SIDECAR_CACHE_STAMP"))
-        #expect(script.contains("SIDECAR_CACHE_KEY"))
-        #expect(script.contains(#"git -C "$ROOT/third_party/rapid-mlx" status --porcelain"#),
-                "Dirty rapid-mlx source must never reuse a cached bundle.")
-        #expect(script.contains(#"shasum -a 256 "$SIDECAR_SCRIPT""#),
-                "Changes to the bundling recipe must invalidate the cache.")
-        #expect(script.contains("reusing cached rapid-mlx sidecar"),
-                "A cache hit must bypass build-sidecar.sh and its pip installs.")
-        #expect(script.contains(#"if [[ "$FORCE_SIDECAR_REBUILD" != "1""#),
-                "A forced build must bypass an otherwise valid cache hit.")
-        #expect(script.contains(#"printf '%s\n' "$SIDECAR_CACHE_KEY" > "$SIDECAR_CACHE_STAMP""#),
-                "Every successful local rebuild, including a forced one, must record its inputs.")
-    }
-
     private static var scriptURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

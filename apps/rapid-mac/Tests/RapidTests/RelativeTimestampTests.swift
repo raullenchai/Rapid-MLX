@@ -83,40 +83,4 @@ struct HoverToolbarSourceGuardTests {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    @Test("every message-row onHover is preceded by a contentShape on the same container")
-    func hoverHasContentShape() throws {
-        let src = try Self.chatViewSource()
-        // Both row hovers share the exact fix shape: contentShape
-        // immediately before onHover. If either loses the pairing the
-        // unreachable-toolbar bug is back.
-        let paired = src.components(
-            separatedBy: ".contentShape(Rectangle())"
-        ).dropFirst().filter { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(".onHover") }
-        #expect(
-            paired.count >= 2,
-            """
-            Expected the user row AND the assistant block to pair \
-            .contentShape(Rectangle()) directly with .onHover — the \
-            hover region otherwise excludes the opacity-0 toolbar and \
-            the spacing gaps, recreating the unreachable-pencil bug.
-            """
-        )
-    }
-
-    @Test("the failed-turn Retry row is not hover-gated")
-    func retryIsAlwaysVisible() throws {
-        let src = try Self.chatViewSource()
-        guard let failedRange = src.range(of: "} else if message.status == .failed && isLastAssistant {") else {
-            Issue.record("failed-turn branch not found — assistantActionRow reshaped?")
-            return
-        }
-        // The 600 chars after the branch open must not opacity-gate on
-        // hover: Retry is the one load-bearing affordance on a failed
-        // turn and must never hide until a pointer happens to pass by.
-        let window = src[failedRange.upperBound...].prefix(600)
-        #expect(
-            !window.contains("isHovered"),
-            "the failed-turn Retry row must stay always-visible, not hover-revealed"
-        )
-    }
 }

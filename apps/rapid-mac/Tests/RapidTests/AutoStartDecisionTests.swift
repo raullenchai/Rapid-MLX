@@ -545,7 +545,7 @@ struct AutoStartDecisionTests {
     @Test("#356: SkipReason cardinality + case-name set is pinned — adding/renaming a case requires explicit test update")
     func skipReasonCardinality() {
         let allCases = AutoStartDecision.SkipReason.allCases
-        #expect(allCases.count == 4)
+        #expect(allCases.count == 5)
         // Pin the exact case-name set via the raw-string backing so a
         // rename (``.userOptedOut`` → ``.userExplicitlyOptedOut``)
         // surfaces here even though ``count`` is unchanged.
@@ -555,6 +555,12 @@ struct AutoStartDecisionTests {
             "serverNotIdle",
             "binaryMissing",
             "noResolvableAlias",
+            // Added 2026-08-05 with the retired-starter swap. This test did
+            // exactly what its docstring promised: the suite was dormant at
+            // the time, so nothing forced the audit it demands, and the
+            // precedence question it asks — where does the new gate sit? —
+            // took several review rounds to answer instead of one red test.
+            "retiredStarter",
         ])
     }
 }

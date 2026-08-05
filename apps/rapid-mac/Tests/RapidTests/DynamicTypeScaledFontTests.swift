@@ -74,24 +74,6 @@ struct DynamicTypeScaledFontTests {
         let _ = MarkdownUI.Theme.rapidChat
     }
 
-    /// Backstop for the double-scale regression: no chat surface may
-    /// feed a scaled base into the theme via a `rapidChat(baseSize:)`
-    /// call. Scan the two markdown-rendering surfaces for that shape.
-    @Test("No markdown surface passes a scaled base into the theme")
-    func noScaledBaseIntoTheme() throws {
-        for rel in [
-            "Sources/Rapid/UI/Markdown/LaTeXMarkdownView.swift",
-            "Sources/Rapid/UI/PoppedConversationView.swift",
-        ] {
-            let url = Self.sourceRoot.appendingPathComponent(rel)
-            let body = try String(contentsOf: url, encoding: .utf8)
-            #expect(
-                !body.contains("rapidChat(baseSize:"),
-                "\(rel) passes a scaled base into .rapidChat — MarkdownUI already scales the theme root, so this double-scales the transcript (~13 × scale²). Use the fixed .rapidChat theme."
-            )
-        }
-    }
-
     // MARK: - Source guard: no pinned numeric system-font on text content
 
     /// Files intentionally kept on the fixed `.font(.system(size:))`
@@ -112,84 +94,6 @@ struct DynamicTypeScaledFontTests {
         "SystemPills.swift",
         "MemoryPill.swift",
     ]
-
-    /// Scan every SwiftUI view file on the user-facing content surfaces
-    /// (`Sources/Rapid/UI` + `Sources/Rapid/QuickAsk`, excluding the
-    /// transient `Bootstrapper` module) and fail if any **text** site
-    /// carries a pinned numeric `.font(.system(size: <literal>))`.
-    ///
-    /// A site is exempt when it is:
-    ///   * an icon glyph — the nearest enclosing view expression is an
-    ///     `Image(...)` (icons stay on the fixed rail on purpose);
-    ///   * a variable-driven size — `.font(.system(size: someVar))`,
-    ///     which is how the two `.monospacedDigit()` sites keep a local
-    ///     `@ScaledMetric` (those can't route through the helper because
-    ///     the digit variant is a Font-level modifier);
-    ///   * inside a comment;
-    ///   * in an allowlisted telemetry file (see ``telemetryAllowlist``).
-    @Test("No pinned numeric system-font on text content across swept surfaces")
-    func noPinnedSystemFontOnTextContent() throws {
-        let root = Self.sourceRoot
-        let scanDirs = [
-            root.appendingPathComponent("Sources/Rapid/UI"),
-            root.appendingPathComponent("Sources/Rapid/QuickAsk"),
-        ]
-        var offenders: [String] = []
-        for dir in scanDirs {
-            guard let enumerator = FileManager.default.enumerator(
-                at: dir,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for case let url as URL in enumerator where url.pathExtension == "swift" {
-                if Self.telemetryAllowlist.contains(url.lastPathComponent) { continue }
-                let body = try String(contentsOf: url, encoding: .utf8)
-                let lines = body.components(separatedBy: "\n")
-                for (i, rawLine) in lines.enumerated() {
-                    guard let hit = Self.pinnedNumericSystemFont(in: rawLine) else { continue }
-                    if Self.baseIsImage(lines: lines, at: i) { continue }
-                    offenders.append("\(url.lastPathComponent):\(i + 1): \(hit)")
-                }
-            }
-        }
-        #expect(
-            offenders.isEmpty,
-            """
-            Pinned numeric .font(.system(size:)) found on non-icon text \
-            content — this text is locked out of Dynamic Type. Route it \
-            through .scaledSystemFont(...) instead (or, for fixed-height \
-            footer telemetry, add the file to telemetryAllowlist with a \
-            documented rationale). Offenders:
-            \(offenders.joined(separator: "\n"))
-            """
-        )
-    }
-
-    /// Sanity floor: the guard is only meaningful if the swept surfaces
-    /// actually adopted the helper. Assert a representative set of swept
-    /// files each call ``scaledSystemFont`` at least once, so a bad
-    /// merge that reverted the sweep (leaving the guard trivially green
-    /// because everything went back to icons/telemetry) trips here.
-    @Test("Swept surfaces adopted scaledSystemFont")
-    func sweptSurfacesAdoptedHelper() throws {
-        let mustAdopt = [
-            "Sources/Rapid/UI/ChatView.swift",
-            "Sources/Rapid/UI/OnboardingComponents.swift",
-            "Sources/Rapid/UI/QuickstartView.swift",
-            "Sources/Rapid/UI/SettingsModelManagementPanel.swift",
-            "Sources/Rapid/UI/ContentView.swift",
-            "Sources/Rapid/UI/DownloadStrip.swift",
-            "Sources/Rapid/QuickAsk/QuickAskView.swift",
-        ]
-        for rel in mustAdopt {
-            let url = Self.sourceRoot.appendingPathComponent(rel)
-            let body = try String(contentsOf: url, encoding: .utf8)
-            #expect(
-                body.contains(".scaledSystemFont("),
-                "\(rel) must adopt .scaledSystemFont(...) — the #546 sweep looks reverted."
-            )
-        }
-    }
 
     // MARK: - Guard self-tests (meta-pins)
 

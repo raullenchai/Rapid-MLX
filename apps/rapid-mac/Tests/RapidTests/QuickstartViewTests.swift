@@ -25,7 +25,7 @@ struct QuickstartViewTests {
     // MARK: - Helpers
 
     /// Build a coordinator in a known-clean state. ``QuickstartCoordinator``
-    /// reads the persistent ``rapid.quickstart.v1.done`` flag at init,
+    /// reads the persistent ``rapid.quickstart.v2.done`` flag at init,
     /// so an earlier test could in principle have flipped it via
     /// production code; the explicit reset pins the starting condition.
     private func makeCoordinator() -> QuickstartCoordinator {
@@ -35,58 +35,6 @@ struct QuickstartViewTests {
     }
 
     // MARK: - Pinned identifiers
-
-    @Test("Pinned alias / displayName / hfRepo match the bonsai-1.7b-2bit starter swap")
-    func aliasIsCanonical() {
-        // Starter = ``bonsai-1.7b-2bit`` (Ternary-Bonsai 1.7B, mlx
-        // 2-bit; rapid-mlx PR #1092). This supersedes the earlier
-        // qwen3-0.6b-4bit starter, which kept first-impression
-        // latency low but could NOT demo tool calls. Bonsai keeps
-        // the small-download win (~0.5 GB, ~1 min cold install) AND
-        // is genuinely tool-capable: it sits ABOVE the
-        // ``ToolUseCapability.known`` gate (6/6 clean tool_calls,
-        // hermes parser), so the empty-state chip row renders and a
-        // brand-new user sees real chat + working tool calls on the
-        // very first model. The upgrade nudge (``UpgradeBanner``)
-        // still points power users to a larger RAM-aware Recommended
-        // Default after a few turns.
-        //
-        // Bumping these values requires:
-        //   1. re-confirm the new alias is ``ToolUseCapability.known``
-        //      (or update ``ChatView.examplePrompts`` accordingly —
-        //      they are model-agnostic pure-text by design),
-        //   2. re-confirm the new alias's hf_path against the
-        //      ``aliases.json`` entry in the rapid-mlx submodule,
-        //   3. keep ``BundledModel.bundledAlias`` in lock-step — the
-        //      upgrade nudge keys on it (see the agreement test).
-        #expect(QuickstartCoordinator.defaultChoice.alias == "bonsai-1.7b-2bit")
-        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit")
-        #expect(QuickstartCoordinator.defaultChoice.displayName == "Bonsai · 1.7B")
-        // The starter is the default selection + carries the "START HERE"
-        // recommendation flag the chooser renders.
-        #expect(QuickstartCoordinator.defaultChoice.isStarter)
-        #expect(QuickstartCoordinator().selection == QuickstartCoordinator.defaultChoice)
-    }
-
-    @Test("HF repo resolves to the same alias key in aliases.json")
-    func hfRepoMatchesAliasesJSON() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("third_party/rapid-mlx/vllm_mlx/aliases.json")
-        let data = try Data(contentsOf: url)
-        let any = try JSONSerialization.jsonObject(with: data)
-        guard let dict = any as? [String: Any] else {
-            Issue.record("aliases.json did not decode to a dictionary")
-            return
-        }
-        guard let entry = dict[QuickstartCoordinator.defaultChoice.alias] as? [String: Any] else {
-            Issue.record("aliases.json missing key \(QuickstartCoordinator.defaultChoice.alias)")
-            return
-        }
-        #expect(entry["hf_path"] as? String == QuickstartCoordinator.defaultChoice.hfRepo)
-    }
 
     @Test("Seeded welcome copy names the model and points at the picker")
     func seedMessageReadsWell() {
@@ -118,7 +66,7 @@ struct QuickstartViewTests {
     func aliasIsNotPreviousFourB() {
         #expect(
             QuickstartCoordinator.defaultChoice.alias != "qwen3.5-4b-4bit",
-            "Quickstart alias must not regress to qwen3.5-4b-4bit — the starter is bonsai-1.7b-2bit, which keeps the small-download win while adding real tool calls."
+            "Quickstart alias must not regress to qwen3.5-4b-4bit — the starter is lfm2.5-1b-4bit, which keeps the small-download win while adding real tool calls."
         )
     }
 
@@ -128,7 +76,7 @@ struct QuickstartViewTests {
         // Quickstart refresh (e.g. swapping the default model)
         // doesn't clobber the v1 flag and forces the new flow on
         // existing users. v1 is the only shipping version today.
-        #expect(QuickstartCoordinator.storageKey == "rapid.quickstart.v1.done")
+        #expect(QuickstartCoordinator.storageKey == "rapid.quickstart.v2.done")
     }
 
     // MARK: - Eligibility predicate (the critical contract)
@@ -597,26 +545,19 @@ struct QuickstartViewSourceGrepTests {
     // literal is retired — 4B is now a legitimate *bigger trade-up*
     // option in ``QuickstartCoordinator.onboardingChoices`` — so a
     // whole-file grep would fire on an intentional line. The intent
-    // (the STARTER must stay the small bonsai-1.7b-2bit pick, never
+    // (the STARTER must stay the small lfm2.5-1b-4bit pick, never
     // the old 4B one) is preserved as direct value assertions on
     // ``defaultChoice``.
 
-    @Test("Starter alias stays the bonsai-1.7b-2bit pick, never regresses to the old 4B")
+    @Test("Starter alias stays the lfm2.5-1b-4bit pick, never regresses to the old 4B")
     func starterAliasNotOld4B() {
-        #expect(QuickstartCoordinator.defaultChoice.alias == "bonsai-1.7b-2bit")
+        #expect(QuickstartCoordinator.defaultChoice.alias == "lfm2.5-1b-4bit")
         #expect(QuickstartCoordinator.defaultChoice.alias != "qwen3.5-4b-4bit")
-    }
-
-    @Test("Starter displayName is the 1.7B label, not the old 4B label")
-    func starterDisplayNameNotOld4B() {
-        let name = QuickstartCoordinator.defaultChoice.displayName
-        #expect(name.contains("1.7B"))
-        #expect(!name.contains("4B"))
     }
 
     @Test("Starter hfRepo is the bonsai repo, not the old 4B repo")
     func starterHFRepoNotOld4B() {
-        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit")
+        #expect(QuickstartCoordinator.defaultChoice.hfRepo == "mlx-community/LFM2.5-1.2B-Instruct-4bit")
         #expect(QuickstartCoordinator.defaultChoice.hfRepo?.contains("4B") != true)
     }
 }

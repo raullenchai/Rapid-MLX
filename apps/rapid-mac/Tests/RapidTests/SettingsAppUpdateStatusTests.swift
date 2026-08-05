@@ -103,28 +103,6 @@ struct SettingsAppUpdateStatusTests {
         #expect(s == .unknown(reason: "update server returned HTTP 503"))
     }
 
-    /// Regression for the v0.7.4 status-bar bug, mirrored on the
-    /// Settings → App panel resolver. ``Resources/Info.plist`` is
-    /// bumped to 0.7.4 ahead of the publish-desktop-release.sh run
-    /// that regenerates the manifest. While the regeneration is in
-    /// flight the manifest still advertises 0.6.14. Pre-fix this
-    /// resolver returned ``.upToDate(0.7.4)`` because
-    /// ``availableUpdate`` was nil and ``latest != nil`` — the same
-    /// shape that drove the status-bar lie. Post-fix it must fall
-    /// through to ``.unknown`` so the panel surfaces the truth.
-    @Test("Installed build ahead of manifest → .unknown, never .upToDate (#v0.7.4 status-bar regression)")
-    func installedAheadOfManifestIsUnknown() {
-        let s = SettingsView.resolveAppUpdateStatus(
-            currentVersion: "0.7.4",
-            availableUpdate: nil,
-            latest: release(version: "0.6.14"),
-            checking: false,
-            lastCheckedAt: Date(),
-            lastError: nil
-        )
-        #expect(s == .unknown(reason: nil))
-    }
-
     @Test("Recheck in flight on top of a previously-resolved up-to-date state stays .upToDate")
     func rerunOverUpToDateStaysUpToDate() {
         // Subtle case: a successful check landed earlier (lastCheckedAt

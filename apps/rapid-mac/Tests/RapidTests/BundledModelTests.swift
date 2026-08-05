@@ -31,17 +31,17 @@ struct BundledModelTests {
         // ``scripts/build.sh`` would ship a DMG whose weights don't
         // resolve to any alias — exactly the failure mode this
         // constant exists to prevent.
-        #expect(BundledModel.bundledAlias == "bonsai-1.7b-2bit")
-        #expect(BundledModel.bundledRepoID == "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit")
+        #expect(BundledModel.bundledAlias == "lfm2.5-1b-4bit")
+        #expect(BundledModel.bundledRepoID == "mlx-community/LFM2.5-1.2B-Instruct-4bit")
     }
 
     @Test("HF cache directory name follows huggingface_hub's models--<owner>--<name> rule")
     func cacheDirNameDerivation() {
         // The HF Hub cache encodes ``owner/name`` as ``models--owner--name``.
-        // Both halves matter — a code path that produces ``prism-ml/Ternary-Bonsai-1.7B-mlx-2bit``
+        // Both halves matter — a code path that produces ``mlx-community/LFM2.5-1.2B-Instruct-4bit``
         // verbatim (unescaped) would break symlink resolution because that's
         // not the path huggingface_hub looks for.
-        #expect(BundledModel.bundledCacheDirName == "models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+        #expect(BundledModel.bundledCacheDirName == "models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
     }
 
     @MainActor
@@ -81,7 +81,7 @@ struct BundledModelTests {
             .appendingPathComponent("models")
             .appendingPathComponent("hf-cache")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: true)
         let resolved = BundledModel.bundledSnapshotURL(bundleResourceURL: tmp)
         #expect(resolved?.path == staged.path)
@@ -192,7 +192,7 @@ struct BundledModelTests {
             .appendingPathComponent(".cache")
             .appendingPathComponent("huggingface")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         let attrs = try FileManager.default.attributesOfItem(atPath: target.path)
         #expect((attrs[.type] as? FileAttributeType) == .typeSymbolicLink)
         let dest = try FileManager.default.destinationOfSymbolicLink(atPath: target.path)
@@ -233,7 +233,7 @@ struct BundledModelTests {
             .appendingPathComponent(".cache")
             .appendingPathComponent("huggingface")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         try FileManager.default.createDirectory(
             at: target,
             withIntermediateDirectories: true
@@ -270,7 +270,7 @@ struct BundledModelTests {
             .appendingPathComponent(".cache")
             .appendingPathComponent("huggingface")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         try FileManager.default.createDirectory(
             at: target.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -317,7 +317,7 @@ struct BundledModelTests {
             .appendingPathComponent(".cache")
             .appendingPathComponent("huggingface")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         try FileManager.default.createDirectory(
             at: target.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -365,7 +365,7 @@ struct BundledModelTests {
             .appendingPathComponent(".cache")
             .appendingPathComponent("huggingface")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         try FileManager.default.createDirectory(
             at: target.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -422,7 +422,7 @@ struct BundledModelTests {
             lastServedAlias: nil,
             bundleResourceURL: bundle.resourceURL
         )
-        #expect(alias == "bonsai-1.7b-2bit")
+        #expect(alias == "lfm2.5-1b-4bit")
     }
 
     @Test("firstLaunchAlias returns nil when the user already has a last-served alias")
@@ -472,7 +472,7 @@ struct BundledModelTests {
             .appendingPathComponent("models")
             .appendingPathComponent("hf-cache")
             .appendingPathComponent("hub")
-            .appendingPathComponent("models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit")
+            .appendingPathComponent("models--mlx-community--LFM2.5-1.2B-Instruct-4bit")
         try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
         // Drop a marker file so a future "is this snapshot complete?"
         // check has something to grep for; today the existence of the

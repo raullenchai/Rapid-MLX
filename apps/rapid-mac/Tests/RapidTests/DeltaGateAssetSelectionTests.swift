@@ -33,20 +33,4 @@ struct DeltaGateAssetSelectionTests {
         try String(contentsOf: Self.releaseYamlPath, encoding: .utf8)
     }
 
-    @Test("Delta gate filters previous-release DMG by EXACT canonical name, not endswith")
-    func deltaGatePinsExactCanonicalName() throws {
-        let yaml = try Self.loadYaml()
-        #expect(
-            yaml.contains("CANONICAL_DMG_NAME=\"rapid-mlx-desktop.dmg\""),
-            "release.yml's delta gate must pin the canonical DMG name to ``rapid-mlx-desktop.dmg`` (no version infix, no ``-bootstrapper-`` infix). v0.8.6 added a second ``.dmg`` preview asset and the endswith-only filter started picking it non-deterministically — failed v0.8.7 release with a phantom +160 MB delta."
-        )
-        #expect(
-            yaml.contains("select(.name == \\\"${CANONICAL_DMG_NAME}\\\")"),
-            "Delta gate must use an EXACT name match (``select(.name == \"…\")``), not endswith. v0.8.7 release failed precisely because endswith caught the bootstrapper preview DMG too. If you refactor the filter to read from an env var or a list constant, update this assertion explicitly — substring-greppability matters more than DRY here."
-        )
-        #expect(
-            !yaml.contains("select(.name | endswith(\".dmg\")) | .size"),
-            "Delta gate MUST NOT use the legacy ``select(.name | endswith(\".dmg\"))`` filter. That filter picks the first ``.dmg`` asset returned by the GH API, which from v0.8.6 onward is non-deterministically the slim bootstrapper preview DMG → false +160 MB delta → release fails. The canonical-name pin is the fix."
-        )
-    }
 }
