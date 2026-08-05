@@ -516,19 +516,22 @@ def test_eligibility_check_script_has_not_drifted_from_production():
     ``isEligible`` delegates to ``isStranded``, which reads
     ``retiredStarters``. Pinning only the first would let a new retired
     alias — the most likely future edit — land in production while the
-    executable cases keep exercising the old set."""
+    executable cases keep exercising the old set.
+
+    Bodies are compared whole. An earlier version sliced from the first
+    ``guard`` to skip signature differences, which meant anything inserted
+    *above* that guard — an early return, a new precondition — diverged
+    invisibly. The slice was never needed: ``_extract_func_body`` already
+    returns brace-matched bodies without the signature, so the two sides
+    are directly comparable."""
     for signature in ("func isEligible(", "func isStranded("):
         prod = _extract_func_body(QUICKSTART_PROD, signature)
         copy = _extract_func_body(VERIFY_SCRIPT, signature)
-        # The copy takes a fake ServerState enum, so compare the decision
-        # logic from the first statement rather than the signature.
-        head = "guard" if "isStranded" in signature else "guard !done"
-        prod_body, copy_body = prod[prod.index(head) :], copy[copy.index(head) :]
-        assert prod_body == copy_body, (
+        assert prod == copy, (
             f"{signature.strip('func (')} drifted between "
             "QuickstartView.swift and verify-recommendation-tiers.swift — "
             "the executable check would be testing stale logic.\n"
-            f"  production: {prod_body}\n  copy:       {copy_body}"
+            f"  production: {prod}\n  copy:       {copy}"
         )
 
     prod_set = _extract_retired_set(QUICKSTART_PROD)
