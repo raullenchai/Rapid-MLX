@@ -37,6 +37,13 @@ struct SidebarView: View {
     /// Open a saved conversation (switches the detail pane back to chat).
     var onSelectConversation: (UUID) -> Void
 
+    /// The "now" the date buckets are computed against. Rolled forward by
+    /// ``dayBoundaryTicker`` at each midnight so an open, untouched sidebar
+    /// re-labels yesterday's conversations instead of freezing on the day it
+    /// was first rendered. Injected (rather than reading ``Date()`` inside the
+    /// section builder) so the roll-over is an observable state change.
+    @State private var referenceDate = Date()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             row(
@@ -77,6 +84,7 @@ struct SidebarView: View {
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.vertical, RapidTheme.Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task { await dayBoundaryTicker() }
     }
 
     /// The history list split into dated sections, newest first.
@@ -84,7 +92,28 @@ struct SidebarView: View {
     /// Everything used to sit under a hard-coded "Older" heading, so a
     /// conversation five seconds old was filed as ancient history.
     private var historySections: [HistorySection] {
-        SidebarView.sections(for: chat.conversations, now: Date())
+        SidebarView.sections(for: chat.conversations, now: referenceDate)
+    }
+
+    /// Advance ``referenceDate`` at each calendar-day boundary for as long as
+    /// the sidebar is on screen. Sleeps until the next midnight, bumps the
+    /// state (which re-buckets the list), then loops. Cancels with the view.
+    private func dayBoundaryTicker() async {
+        let calendar = Calendar.current
+        while !Task.isCancelled {
+            let next =
+                calendar.nextDate(
+                    after: Date(),
+                    matching: DateComponents(hour: 0, minute: 0, second: 0),
+                    matchingPolicy: .nextTime
+                ) ?? Date().addingTimeInterval(24 * 60 * 60)
+            let delay = next.timeIntervalSinceNow
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            if Task.isCancelled { break }
+            referenceDate = Date()
+        }
     }
 
     struct HistorySection {

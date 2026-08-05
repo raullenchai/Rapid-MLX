@@ -50,6 +50,10 @@ actor ModelCatalogCache {
         /// folder somewhere else changes what "cached" means for every alias,
         /// so a snapshot taken under a different root cannot be reused.
         let overridePath: String?
+        /// The rapid-mlx executable that produced this catalog. A dev build and
+        /// the shipped binary can enumerate different models, so a snapshot
+        /// from one must not be served after the app switches binaries.
+        let binaryPath: String
     }
 
     private var snapshot: Snapshot?
@@ -59,21 +63,36 @@ actor ModelCatalogCache {
     /// SwiftUI builds `@State` initial values synchronously, so a view cannot
     /// consult an actor before its first frame. Without this, a panel that
     /// re-appears starts at `catalog = []` + `loading = true`, renders the
-    /// spinner, and only replaces it once the `.task` resumes — the cache
-    /// removes the subprocess cost but the *flash* remains, which is the part
-    /// the user actually sees.
+    /// spinner, and only replaces it once the `.task` resumes.
     ///
-    /// `nonisolated(unsafe)` is sound here for the same reason the actor is
-    /// enough elsewhere: writes happen only from inside the actor (a single
-    /// serialised context), and the value is a `let`-only struct of immutable
-    /// members. A reader can observe a slightly older snapshot, never a torn
-    /// one — and "slightly older" is exactly what a cache promises.
+    /// Every access goes through ``mirrorLock``. `nonisolated(unsafe)` tells
+    /// the compiler we take responsibility for that synchronisation ourselves
+    /// (the actor cannot: ``seed`` must read synchronously from the main
+    /// thread). The previous lock-free version was a genuine data race — an
+    /// actor-side write could tear against a ``seed`` read on another thread.
+    private static let mirrorLock = NSLock()
     nonisolated(unsafe) private static var lastSnapshot: Snapshot?
 
+    private static func readMirror() -> Snapshot? {
+        mirrorLock.lock()
+        defer { mirrorLock.unlock() }
+        return lastSnapshot
+    }
+
+    private static func writeMirror(_ snap: Snapshot?) {
+        mirrorLock.lock()
+        defer { mirrorLock.unlock() }
+        lastSnapshot = snap
+    }
+
     /// Synchronous peek for `@State` seeding. Returns entries only when they
-    /// would also satisfy ``cached(binary:generation:)``.
+    /// still satisfy the generation / override / TTL gate. The binary is not
+    /// compared here (a `@State` initializer has no access to it); the async
+    /// ``entries(binary:generation:)`` the view calls immediately afterwards
+    /// re-validates against the real binary and refetches on a mismatch, so a
+    /// wrong-binary seed survives at most one frame.
     nonisolated static func seed(generation: UInt) -> [ModelEntry]? {
-        guard let snap = lastSnapshot,
+        guard let snap = readMirror(),
               snap.generation == generation,
               snap.overridePath == ModelsFolderPreference.validatedOverrideURL()?.path,
               Date().timeIntervalSince(snap.fetchedAt) < ttl
@@ -81,17 +100,35 @@ actor ModelCatalogCache {
         return snap.entries
     }
 
-    /// In-flight load, so N simultaneous views trigger one set of subprocesses
-    /// instead of N. Without this the first paint after launch — picker plus
-    /// auto-start plus whichever panel is open — would fan out.
-    private var inFlight: Task<[ModelEntry], Never>?
+    /// An in-flight load together with the inputs it was started for, and a
+    /// monotonic id (``Task`` is not `Equatable`, so identity is tracked
+    /// explicitly). N simultaneous views join ONE set of subprocesses — but
+    /// only when their inputs match. A caller arriving after a download (new
+    /// generation), a folder repoint (new override) or a binary switch must
+    /// NOT receive the pre-change catalog, so it starts its own load instead.
+    private struct InFlight {
+        let id: UInt64
+        let binaryPath: String
+        let generation: UInt
+        let overridePath: String?
+        let task: Task<[ModelEntry], Never>
+
+        func matches(binaryPath: String, generation: UInt, overridePath: String?) -> Bool {
+            self.binaryPath == binaryPath
+                && self.generation == generation
+                && self.overridePath == overridePath
+        }
+    }
+
+    private var inFlight: InFlight?
+    private var nextInFlightID: UInt64 = 0
 
     /// A snapshot only if one is currently valid; never triggers a load.
     ///
     /// Views use this to decide whether to show a loading state: `nil` means
     /// "nothing to display yet", not "nothing exists".
     func cached(binary: URL, generation: UInt) -> [ModelEntry]? {
-        guard let snapshot, isFresh(snapshot, generation: generation) else {
+        guard let snapshot, isFresh(snapshot, binary: binary, generation: generation) else {
             return nil
         }
         return snapshot.entries
@@ -99,34 +136,88 @@ actor ModelCatalogCache {
 
     /// The catalog, served from cache when possible.
     ///
-    /// Returns immediately with a valid snapshot; otherwise awaits a real load
-    /// (joining one already running rather than starting a second).
+    /// Returns immediately with a valid snapshot; on a same-inputs TTL expiry
+    /// it still returns the stale snapshot and refreshes in the background (the
+    /// "serve stale while revalidating" contract). Only a genuine miss — no
+    /// snapshot, or one whose generation/override/binary changed — awaits a
+    /// real load, joining an in-flight one with matching inputs rather than
+    /// starting a second.
     func entries(binary: URL, generation: UInt) async -> [ModelEntry] {
-        if let snapshot, isFresh(snapshot, generation: generation) {
-            return snapshot.entries
-        }
-        if let inFlight {
-            return await inFlight.value
-        }
         let override = ModelsFolderPreference.validatedOverrideURL()
+        let overridePath = override?.path
+        let binaryPath = binary.path
+
+        if let snapshot,
+           snapshotMatchesInputs(
+               snapshot, binaryPath: binaryPath, generation: generation,
+               overridePath: overridePath
+           ) {
+            if Date().timeIntervalSince(snapshot.fetchedAt) < Self.ttl {
+                return snapshot.entries
+            }
+            // Same inputs, past the TTL backstop: serve the stale entries now
+            // and revalidate in the background (deduplicated via inFlight), so
+            // a passive out-of-band change is picked up without a spinner.
+            let stale = snapshot.entries
+            if inFlight == nil {
+                startLoad(
+                    binary: binary, override: override, binaryPath: binaryPath,
+                    generation: generation, overridePath: overridePath
+                )
+            }
+            return stale
+        }
+
+        if let inFlight,
+           inFlight.matches(
+               binaryPath: binaryPath, generation: generation,
+               overridePath: overridePath
+           ) {
+            return await inFlight.task.value
+        }
+        let task = startLoad(
+            binary: binary, override: override, binaryPath: binaryPath,
+            generation: generation, overridePath: overridePath
+        )
+        return await task.value
+    }
+
+    /// Start (and register) a load, replacing any in-flight one with different
+    /// inputs. The follow-up stamps the snapshot when the load lands. Returns
+    /// the task so a synchronous caller can await it directly.
+    @discardableResult
+    private func startLoad(
+        binary: URL, override: URL?, binaryPath: String,
+        generation: UInt, overridePath: String?
+    ) -> Task<[ModelEntry], Never> {
         let task = Task<[ModelEntry], Never> {
             await ModelCatalog.load(binary: binary, hubCacheOverride: override)
         }
-        inFlight = task
-        let loaded = await task.value
-        // Stamp with the generation captured at call time. If a mutation
-        // landed mid-load the counter has already moved on, so this snapshot
-        // is born stale and the next read refetches — which is the correct
-        // outcome: the load observed the world before the change.
+        nextInFlightID &+= 1
+        let entry = InFlight(
+            id: nextInFlightID, binaryPath: binaryPath, generation: generation,
+            overridePath: overridePath, task: task
+        )
+        inFlight = entry
+        Task { await self.finish(entry) }
+        return task
+    }
+
+    /// Await a registered load and stamp its result — unless a newer load has
+    /// already replaced it (a mutation landed mid-load; its snapshot is
+    /// authoritative and this now-stale result must not clobber it).
+    private func finish(_ entry: InFlight) async {
+        let loaded = await entry.task.value
+        guard let current = inFlight, current.id == entry.id else { return }
         snapshot = Snapshot(
             entries: loaded,
-            generation: generation,
+            generation: entry.generation,
             fetchedAt: Date(),
-            overridePath: override?.path
+            overridePath: entry.overridePath,
+            binaryPath: entry.binaryPath
         )
-        Self.lastSnapshot = snapshot
+        Self.writeMirror(snapshot)
         inFlight = nil
-        return loaded
     }
 
     /// Drop the snapshot. For callers that mutate the model set themselves and
@@ -134,14 +225,24 @@ actor ModelCatalogCache {
     /// generation counter to propagate.
     func invalidate() {
         snapshot = nil
-        Self.lastSnapshot = nil
+        inFlight = nil
+        Self.writeMirror(nil)
     }
 
-    private func isFresh(_ snapshot: Snapshot, generation: UInt) -> Bool {
-        guard snapshot.generation == generation else { return false }
-        guard snapshot.overridePath == ModelsFolderPreference.validatedOverrideURL()?.path else {
-            return false
-        }
+    private func snapshotMatchesInputs(
+        _ snapshot: Snapshot, binaryPath: String, generation: UInt,
+        overridePath: String?
+    ) -> Bool {
+        snapshot.generation == generation
+            && snapshot.overridePath == overridePath
+            && snapshot.binaryPath == binaryPath
+    }
+
+    private func isFresh(_ snapshot: Snapshot, binary: URL, generation: UInt) -> Bool {
+        guard snapshotMatchesInputs(
+            snapshot, binaryPath: binary.path, generation: generation,
+            overridePath: ModelsFolderPreference.validatedOverrideURL()?.path
+        ) else { return false }
         return Date().timeIntervalSince(snapshot.fetchedAt) < Self.ttl
     }
 }
