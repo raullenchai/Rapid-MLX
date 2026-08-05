@@ -37,10 +37,30 @@ struct ChatStreamClient {
     /// the default port still reaches the live child.
     var baseURL: URL
 
-    /// Total deadline for an entire response. Generous (10 minutes) so a
-    /// long reasoning trace from a 27B model doesn't get clipped, but
-    /// bounded so a hung connection eventually errors out.
-    var requestTimeout: TimeInterval = 600
+    /// Per-request INACTIVITY deadline — the max time we wait for the
+    /// *next* byte from the server, reset every time data arrives (this
+    /// is what ``URLRequest.timeoutInterval`` means for a streaming
+    /// ``bytes(for:)`` task, NOT a total-response cap). The session's
+    /// ``timeoutIntervalForResource`` is the total-response cap; a long
+    /// reasoning trace that keeps emitting tokens resets THIS timer on
+    /// every delta, so it is never clipped by it.
+    ///
+    /// The only legitimate silent window against a LOCAL loopback model
+    /// server is the first token's prefill (before any byte arrives);
+    /// once tokens start, inter-token gaps are milliseconds. Even a cold
+    /// prefill of a normal chat prompt on the largest supported models
+    /// stays well under this bound (a 27B on a 4K-token prompt tops out
+    /// ~80 s). 180 s leaves generous headroom for that while still
+    /// catching a genuinely wedged/silent server — the mid-session
+    /// model-switch hang users hit — in ~3 min instead of the prior 10.
+    ///
+    /// Pre-fix this was 600 s (a remote-API-shaped value): a server that
+    /// went silent looked like a permanent hang, and the user force-quit
+    /// long before it fired. At 180 s the timeout surfaces as an
+    /// actionable, retryable failure row (``FailureDiagnoser`` maps
+    /// ``NSURLErrorTimedOut`` → ``.requestFailed`` + a Retry action)
+    /// instead of a dead, error-less spinner.
+    var requestTimeout: TimeInterval = 180
 
     /// What the SSE loop emits to the caller. Each event is delivered on
     /// the main actor so callers can mutate ``@Observable`` state without
@@ -160,14 +180,31 @@ struct ChatStreamClient {
 
     /// Process-wide ephemeral session reused across every
     /// production call. Ephemeral config (no on-disk cache, no
-    /// cookie store) plus our own 10-minute timeout policy. Held
-    /// statically so consecutive turns + tool-loop iterations
-    /// reuse the same HTTP/2 connection instead of paying a fresh
-    /// TLS handshake each time.
+    /// cookie store). Held statically so consecutive turns +
+    /// tool-loop iterations reuse the same HTTP/2 connection instead
+    /// of paying a fresh TLS handshake each time.
     /// [codex audit r1 ChatStreamClient.swift:175]
+    ///
+    /// Two distinct timeouts (see ``requestTimeout`` for the full
+    /// rationale):
+    ///   * ``timeoutIntervalForRequest`` — INACTIVITY between packets,
+    ///     reset on each received byte. 180 s bounds the max silent
+    ///     window (prefill / a wedged server) without clipping an
+    ///     actively-streaming response. Individual sends override this
+    ///     via ``req.timeoutInterval`` = ``requestTimeout``; kept in
+    ///     sync here so a caller that reuses this session without a
+    ///     per-request override still gets the bounded policy.
+    ///   * ``timeoutIntervalForResource`` — TOTAL wall-clock cap for the
+    ///     whole streamed response (10 min). A response still actively
+    ///     streaming past 10 min IS terminated here — this is the
+    ///     absolute worst-case bound, not "unlimited". 10 min of
+    ///     continuous local generation is far beyond any normal chat
+    ///     turn, so in practice the 180 s inactivity timer (silence, not
+    ///     length) is what fires; this cap only backstops a pathological
+    ///     never-ending stream.
     static let sharedSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 600
+        config.timeoutIntervalForRequest = 180
         config.timeoutIntervalForResource = 600
         return URLSession(configuration: config)
     }()
@@ -213,9 +250,10 @@ struct ChatStreamClient {
     ///   `127.0.0.1` but harmless to include for non-default
     ///   `baseURL` callers (TestDriver, future remote-tunnel).
     /// Explicitly NOT retried:
-    /// * `.timedOut` — the request was given 600s on purpose; a
-    ///   timeout means the server is genuinely hung, retrying
-    ///   compounds the wait.
+    /// * `.timedOut` — the request already got its full inactivity
+    ///   budget (``requestTimeout``); a timeout means the server is
+    ///   genuinely hung, so retrying just compounds the wait. Surface
+    ///   it as an actionable, retryable failure instead.
     /// * `.notConnectedToInternet` — the user's WiFi is off; a
     ///   200ms retry won't fix that and just delays the error
     ///   surface.

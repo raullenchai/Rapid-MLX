@@ -52,3 +52,9 @@ jobs:
 
       - name: Verify conversation history ordering
         run: scripts/verify-conversation-ordering.sh
+
+      # Same standalone-script pattern: pins the chat send's inactivity
+      # timeout to a local-appropriate bound so a silent server surfaces
+      # an actionable, retryable failure instead of a multi-minute hang.
+      - name: verify chat timeout contract
+        run: swift scripts/verify-chat-timeout.swift
