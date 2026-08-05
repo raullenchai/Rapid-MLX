@@ -239,5 +239,47 @@ let withFlag = serveArguments(alias: "gemma-4-26b-4bit", host: "127.0.0.1", port
 check(withFlag.suffix(5) == ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"], "flags trail the array")
 check(withFlag.firstIndex(of: "--no-mllm")! > withFlag.firstIndex(of: "--cors-origins")!, "--no-mllm comes after --cors-origins (terminates nargs)")
 
+// ---------------------------------------------------------------------------
+// Quickstart eligibility — the retired-starter carve-out
+//
+// Faithful copy of QuickstartCoordinator.isEligible + retiredStarters. The
+// Python contract test pins the *contents* of retiredStarters against the
+// source text; it cannot execute the gate, so inverting the condition or
+// dropping the `done` check would stay green there. These cases are the
+// executable half.
+
+enum FakeServerState { case idle, stopped, ready, starting, crashed, missing }
+
+let retiredStarters: Set<String> = ["bonsai-1.7b-2bit"]
+
+func isEligible(done: Bool, lastServedAlias: String?, serverState: FakeServerState) -> Bool {
+    guard !done else { return false }
+    if let alias = lastServedAlias, !retiredStarters.contains(alias) {
+        return false
+    }
+    switch serverState {
+    case .idle, .stopped: return true
+    case .ready, .starting, .crashed, .missing: return false
+    }
+}
+
+print("Quickstart eligibility:")
+check(isEligible(done: false, lastServedAlias: nil, serverState: .idle),
+      "brand-new user (no serve yet) sees the card")
+check(isEligible(done: false, lastServedAlias: "bonsai-1.7b-2bit", serverState: .idle),
+      "stranded on the retired starter → card returns (the point of the carve-out)")
+check(!isEligible(done: false, lastServedAlias: "qwen3.5-9b-4bit", serverState: .idle),
+      "traded up to another model → never re-onboarded")
+check(!isEligible(done: false, lastServedAlias: "lfm2.5-1b-4bit", serverState: .idle),
+      "already on the CURRENT starter → not re-onboarded (no onboarding loop)")
+check(!isEligible(done: true, lastServedAlias: "bonsai-1.7b-2bit", serverState: .idle),
+      "done flag still wins over the carve-out — dismissal is permanent")
+check(!isEligible(done: true, lastServedAlias: nil, serverState: .idle),
+      "done flag wins for a new user too")
+for busy in [FakeServerState.ready, .starting, .crashed, .missing] {
+    check(!isEligible(done: false, lastServedAlias: "bonsai-1.7b-2bit", serverState: busy),
+          "server busy (\(busy)) suppresses the card even for the stranded cohort")
+}
+
 print(fails == 0 ? "\nALL PASS" : "\n\(fails) FAILURE(S)")
 exit(fails == 0 ? 0 : 1)

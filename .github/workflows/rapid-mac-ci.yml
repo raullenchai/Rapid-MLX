@@ -42,3 +42,10 @@ jobs:
 
       - name: swift build
         run: swift build
+
+      # The recommendation + Quickstart-eligibility contracts. With the SPM
+      # test target stripped, this dependency-free script is the only thing
+      # that actually EXECUTES that logic — it was runnable but wired to
+      # nothing, so a regression in it would have reached a release.
+      - name: verify recommendation + eligibility contracts
+        run: swift scripts/verify-recommendation-tiers.swift

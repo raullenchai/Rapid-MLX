@@ -607,8 +607,18 @@ Open the picker any time to switch models.
     ///
     /// Membership here is a strong claim — it re-opens onboarding for
     /// someone already using the app. Add an alias only when it is
-    /// effectively unusable, never merely superseded. A user who traded
-    /// up to any other model is untouched by this.
+    /// effectively unusable, never merely superseded.
+    ///
+    /// Scope, precisely: ``rapid.serve.lastAlias`` is the *most recent*
+    /// serve, not a history. So the carve-out fires for anyone whose
+    /// **current** model is retired — including a user who traded up and
+    /// later went back to it deliberately, who is arguably not stranded.
+    /// That is accepted rather than fixed: the alternative is persisting
+    /// an onboarding history, which is more state to keep correct than
+    /// the four-line gate it would protect, and the cost of a false
+    /// positive is bounded — the card appears once on an idle server and
+    /// dismissing it sets ``done`` permanently. What the carve-out will
+    /// never do is reach a user whose current model is anything else.
     static let retiredStarters: Set<String> = ["bonsai-1.7b-2bit"]
 
     static func isEligible(

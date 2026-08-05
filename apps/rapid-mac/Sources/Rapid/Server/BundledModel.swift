@@ -20,7 +20,7 @@ import Foundation
 /// launch the desktop:
 ///
 /// 1. Resolves the bundled model directory at
-///    ``Contents/Resources/models/hf-cache/models--mlx-community--LFM2.5-1.2B-Instruct-4bit``
+///    ``Contents/Resources/models/hf-cache/hub/models--mlx-community--LFM2.5-1.2B-Instruct-4bit``
 /// 2. Symlinks it into the user's HuggingFace cache
 ///    (``~/.cache/huggingface/hub/``) the first time the symlink is
 ///    missing, so the sidecar can ``snapshot_download`` it without a

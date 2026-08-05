@@ -8,8 +8,10 @@ import Foundation
 /// PR #338 swapped the Quickstart default alias from
 /// ``gemma3-1b-qat-4bit`` (~700 MB) to ``qwen3.5-4b-4bit`` (~2.3 GB).
 /// F-LWT-1 then swapped to ``qwen3-0.6b-4bit`` (~400 MB); 2026-07-10
-/// swapped to ``lfm2.5-1b-4bit`` (~0.6 GB 4-bit) — see
-/// ``QuickstartCoordinator.alias`` for the receipt.
+/// swapped to ``bonsai-1.7b-2bit`` (~0.5 GB ternary); 2026-08-05
+/// swapped to ``lfm2.5-1b-4bit`` (~0.6 GB 4-bit) after Bonsai was found
+/// to degenerate on plain chat — see
+/// ``QuickstartCoordinator.defaultChoice`` for the receipt.
 /// A user with a near-full disk who clicks Get started watches the bar
 /// crawl, then either:
 ///
