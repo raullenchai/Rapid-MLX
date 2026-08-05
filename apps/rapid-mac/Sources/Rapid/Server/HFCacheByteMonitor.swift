@@ -183,6 +183,15 @@ enum HFCacheByteMonitor {
                 let bytes = directoryByteCount(at: cacheDir)
                 if bytes > 0 {
                     await MainActor.run {
+                        // Re-check at the publish point, not just at the top
+                        // of the loop. `directoryByteCount` is a filesystem
+                        // walk and the MainActor hop is a suspension — a
+                        // `stop()` landing in either window would otherwise
+                        // publish an observation the caller already cancelled,
+                        // which is exactly what "no further updates after
+                        // cancel" promises will not happen. Surfaced on CI,
+                        // where the wider window made the race reliable.
+                        guard !Task.isCancelled, !isCancelled() else { return }
                         progress.applyDiskObservation(bytes: bytes)
                     }
                 }
