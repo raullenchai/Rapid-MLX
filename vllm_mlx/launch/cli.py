@@ -34,7 +34,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from . import ADAPTERS
 
@@ -67,20 +67,26 @@ def _print_list() -> int:
 
 def _cursor_endpoint_error(server_url: str) -> str | None:
     """Explain why ``server_url`` cannot be reached by Cursor's backend."""
-    parsed = urlparse(server_url)
+    if "\\" in server_url:
+        return "Cursor's --server-url cannot contain backslashes"
+    try:
+        parsed = urlparse(server_url)
+        hostname = parsed.hostname
+        username = parsed.username
+        password = parsed.password
+        port = parsed.port
+    except ValueError:
+        return "Cursor requires a valid public hostname and HTTPS port"
+
     if parsed.scheme.lower() != "https":
         return "Cursor requires a publicly reachable HTTPS --server-url"
     if parsed.query or parsed.fragment:
         return "Cursor's --server-url cannot contain a query string or fragment"
+    if username is not None or password is not None:
+        return "Cursor's --server-url cannot contain user information"
 
-    hostname = parsed.hostname
     if not hostname:
         return "Cursor requires a valid public hostname"
-
-    try:
-        port = parsed.port
-    except ValueError:
-        return "Cursor requires a valid HTTPS port"
     if port == 0:
         return "Cursor requires a valid non-zero HTTPS port"
 
@@ -110,6 +116,24 @@ def _cursor_endpoint_error(server_url: str) -> str | None:
     ):
         return "Cursor's servers cannot reach localhost or private network addresses"
     return None
+
+
+def _canonical_cursor_server_url(server_url: str) -> str:
+    """Serialize the already-validated Cursor URL without authority ambiguity."""
+    parsed = urlparse(server_url)
+    hostname = parsed.hostname
+    assert hostname is not None
+    normalized = hostname.rstrip(".").lower()
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        canonical_host = normalized
+    else:
+        canonical_host = f"[{normalized}]" if address.version == 6 else normalized
+    netloc = canonical_host
+    if parsed.port is not None:
+        netloc += f":{parsed.port}"
+    return urlunparse(("https", netloc, parsed.path, "", "", ""))
 
 
 def _resolve_default_model() -> str:
@@ -237,6 +261,9 @@ def launch_command(args: argparse.Namespace) -> None:
     # Same pattern as ``share_command`` in ``vllm_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
     model = original_alias or args.model or _resolve_default_model()
+    cursor_server_url = (
+        _canonical_cursor_server_url(server_url) if "cursor" in targets else server_url
+    )
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
         for name in targets:
@@ -264,7 +291,7 @@ def launch_command(args: argparse.Namespace) -> None:
             continue
         try:
             path = adapter.write_or_patch_config(
-                server_url=server_url,
+                server_url=cursor_server_url if name == "cursor" else server_url,
                 model=model,
             )
         except Exception as exc:

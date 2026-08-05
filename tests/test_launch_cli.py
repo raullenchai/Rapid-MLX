@@ -474,6 +474,46 @@ class TestLaunchCommand:
         assert excinfo.value.code == 2
         assert error_text in capsys.readouterr().err
 
+    @pytest.mark.parametrize(
+        "server_url",
+        [
+            "https://[",
+            "https://127.0.0.1\\@example.com",
+            "https://user:password@example.com",
+        ],
+    )
+    def test_cursor_rejects_ambiguous_authority_without_traceback(
+        self, fake_home, capsys, server_url
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url=server_url)
+            )
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "launch:" in err
+        assert "Traceback" not in err
+
+    def test_cursor_canonicalizes_validated_url(self, fake_home, capsys, monkeypatch):
+        monkeypatch.setattr(
+            launch_cli.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("93.184.216.34", 443)),
+            ],
+        )
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        launch_cli.launch_command(
+            _make_args(
+                client="cursor",
+                server_url="https://EXAMPLE.COM.:443/api/",
+            )
+        )
+        config = json.loads(cursor.current_config_path().read_text())
+        assert config["cursor.aiprovider.openai.baseUrl"] == (
+            "https://example.com:443/api/v1"
+        )
+
     def test_cursor_rejects_multicast_address(self, fake_home, capsys, monkeypatch):
         monkeypatch.setattr(
             launch_cli.socket,
