@@ -1974,7 +1974,13 @@ struct ModelPickerBar: View {
                 loadingCatalog = false
             }
         }
-        let loaded = await ModelCatalog.load(binary: binary)
+        // Route the catalog read through the shared cache (#1470) so re-entering
+        // settings does not re-spawn the lister subprocess. Keep the ``loaded``
+        // name so the phantom-alias filter below (``entries``) is unchanged.
+        let loaded = await ModelCatalogCache.shared.entries(
+            binary: binary,
+            generation: downloads.cacheGeneration
+        )
         guard !Task.isCancelled, catalogRefreshGeneration == refreshGeneration else { return }
         // Belt-and-braces against a phantom alias reaching the UI.
         // ``ModelCatalog.parseAvailable`` already drops engine banner

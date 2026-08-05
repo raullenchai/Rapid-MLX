@@ -73,10 +73,11 @@ struct ConnectToolsView: View {
             }
         }
         // Sheet context keeps a fixed dialog size. Page context (the
-        // Launch sidebar section) now FILLS its column instead of
-        // sitting in a 460pt box inside a resizable pane — that fixed
-        // frame is why the page had a hard right edge and could not use
-        // the window it was given.
+        // Launch sidebar section) FILLS its column instead of sitting in a
+        // 460pt box inside a resizable pane — that fixed frame is why the
+        // page had a hard right edge and could not use the window it was
+        // given. main already fixes the same #1470 defect via this modifier,
+        // so we keep it rather than the PR's inline frame.
         .modifier(ConnectToolsFrame(fixedSize: showsCloseButton))
         .background(RapidTheme.surfaceCanvas)
     }
@@ -111,11 +112,27 @@ struct ConnectToolsView: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
-            SectionHeader(
-                "Connect your tools",
-                subtitle: "Point any editor at your local server. It's free and stays on your Mac.",
-                emphasis: .page
-            )
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                SectionHeader(
+                    "Connect your tools",
+                    subtitle: "Point any editor at your local server. It's free and stays on your Mac.",
+                    emphasis: .page
+                )
+                // #1470 fix: the key only exists while the server is running and
+                // is regenerated on every start. Without this hint the cards
+                // render `API key:` followed by nothing — a config that looks
+                // complete, copies clean, and fails at the far end with a 401.
+                if bearer.isEmpty {
+                    Label(
+                        "Server not running — start a chat to generate the key.",
+                        systemImage: "exclamationmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.top, 4)
+                }
+            }
+            Spacer()
             if showsCloseButton {
                 SheetCloseButton(action: onClose)
             }

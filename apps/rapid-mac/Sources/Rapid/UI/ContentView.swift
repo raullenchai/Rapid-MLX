@@ -225,6 +225,14 @@ struct ContentView: View {
         .sheet(isPresented: firstRunSheetPresented) {
             firstRunSheet
         }
+        // Presented from the split view — NOT from `mainArea` — so onboarding
+        // covers the whole window. Rendered inside the detail pane it left the
+        // sidebar exposed and clickable, which reads as "the app is already
+        // running, this panel is just one more surface" rather than "finish
+        // setup first".
+        .sheet(isPresented: quickstartSheetPresented) {
+            quickstartSheet
+        }
         .task { await runLaunchAutoStart() }
     }
 
@@ -248,26 +256,47 @@ struct ContentView: View {
     private var mainArea: some View {
         switch ContentView.mainAreaBranch(for: server.state) {
         case .chat(let serverReady):
-            if quickstartVisible {
-                QuickstartView(
-                    coordinator: quickstart,
-                    downloads: downloads,
-                    server: server,
-                    onBrowseAll: { quickstartDismissedThisSession = true },
-                    onSeedWelcome: { true }
-                )
-            } else {
-                ChatView(
-                    viewModel: chat,
-                    server: server,
-                    alias: $alias,
-                    serverReady: serverReady,
-                    autoStartPendingDownload: autoStartPendingDownload
-                )
-            }
+            ChatView(
+                viewModel: chat,
+                server: server,
+                alias: $alias,
+                serverReady: serverReady,
+                autoStartPendingDownload: autoStartPendingDownload
+            )
         case .missing:
             missingOverlay
         }
+    }
+
+    // MARK: - Quickstart presentation
+
+    private var quickstartSheetPresented: Binding<Bool> {
+        Binding(
+            get: { quickstartVisible },
+            set: { presented in
+                // A swipe-down / Esc means "let me look around first" — the
+                // same intent as the card's own "Browse all models", so route
+                // it to the same session flag rather than dropping it.
+                if !presented { quickstartDismissedThisSession = true }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var quickstartSheet: some View {
+        QuickstartView(
+            coordinator: quickstart,
+            downloads: downloads,
+            server: server,
+            onBrowseAll: { quickstartDismissedThisSession = true },
+            onSeedWelcome: { true }
+        )
+        // QuickstartView was written for the detail column and its comments
+        // cite a ~360pt worst case (the 640pt window floor minus the sidebar).
+        // A sheet has no such parent, so without an explicit size it would
+        // collapse to its content's ideal width. Pin it near the window floor
+        // so the model cards keep the room they were laid out for.
+        .frame(minWidth: 620, minHeight: Self.minWindowHeight)
     }
 
     /// True when the Quickstart card should render in place of the chat
@@ -277,6 +306,13 @@ struct ContentView: View {
     /// ``QuickstartCoordinator.isEligible``), never the shared HF cache.
     private var quickstartVisible: Bool {
         guard !quickstartDismissedThisSession else { return false }
+        // Telemetry consent comes first. Both surfaces used to be able to fire
+        // together (nothing referenced the other's condition) — tolerable when
+        // Quickstart merely filled the detail pane behind the consent sheet,
+        // but now they compete for the same presentation channel, and macOS
+        // grants that to whichever asks first. Deferring here keeps the order
+        // deterministic: decide on telemetry, then pick a model.
+        guard !telemetryConsentPending else { return false }
         if ContentView.serverEngagedWithDifferentAlias(
             state: server.state,
             quickstartAlias: quickstart.selection.alias
@@ -459,7 +495,10 @@ struct ContentView: View {
         let aliasAtEntry = alias
         var cachedAliases: Set<String> = []
         if let binary = server.binaryPath {
-            let entries = await ModelCatalog.load(binary: binary)
+            let entries = await ModelCatalogCache.shared.entries(
+                binary: binary,
+                generation: downloads.cacheGeneration
+            )
             cachedAliases = Set(entries.filter { $0.cached }.map(\.alias))
         }
         guard case .idle = server.state else {

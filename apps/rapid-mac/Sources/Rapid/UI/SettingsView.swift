@@ -445,7 +445,19 @@ struct SettingsView: View {
                     value: "v\(appUpdater.currentVersion)",
                     monospaced: true
                 )
-                if let release = appUpdater.latest {
+                // Only show the manifest's version when it is actually at or
+                // ahead of what's installed. A manifest BEHIND the installed
+                // build means the release feed is stale (or this is a dev /
+                // pre-release build) — labelling an older number "Latest
+                // release" reads as if the user is somehow ahead of the
+                // world, or that their install is wrong.
+                //
+                // ``appUpdateStatus`` already models exactly this case
+                // (installed strictly newer → ``.unknown``, see the truth
+                // table below), but this row rendered ``latest`` directly and
+                // so bypassed that judgement. Gate it on the same predicate.
+                if let release = appUpdater.latest,
+                   !UpdateChecker.isNewer(appUpdater.currentVersion, than: release.version) {
                     versionRow(
                         label: "Latest release",
                         value: "v\(release.version)",
@@ -566,6 +578,9 @@ struct SettingsView: View {
         case available(version: String)
         case upToDate(version: String)
         case checking
+        /// Poll succeeded but the manifest is behind the installed build.
+        /// Not an error and not "unknown" — see ``resolveAppUpdateStatus``.
+        case aheadOfManifest(current: String, manifest: String)
         case unknown(reason: String?)
     }
 
@@ -588,9 +603,14 @@ struct SettingsView: View {
     ///      ``currentVersion`` is ahead of the manifest does NOT
     ///      collapse into the reassuring "up to date" state (v0.7.4
     ///      status-bar regression).
-    ///   4. Otherwise (check completed but ``latest == nil`` —
-    ///      worker errored, payload rejected, or installed build is
-    ///      ahead of the manifest) → ``.unknown(lastError)``.
+    ///   4. A check completed and returned a manifest OLDER than the
+    ///      installed build → ``.aheadOfManifest``. Distinct from
+    ///      ``.unknown``: nothing failed and nothing is missing, so
+    ///      telling the user to press "Check for updates" would send
+    ///      them to re-run a poll that already succeeded and will keep
+    ///      returning the same answer.
+    ///   5. Otherwise (check completed but ``latest == nil`` — worker
+    ///      errored or payload rejected) → ``.unknown(lastError)``.
     static func resolveAppUpdateStatus(
         currentVersion: String,
         availableUpdate: UpdateChecker.Release?,
@@ -613,6 +633,16 @@ struct SettingsView: View {
             // if ``latest`` were strictly newer than us, so the only
             // remaining case here is equality.)
             return .upToDate(version: currentVersion)
+        }
+        if let latest, UpdateChecker.isNewer(currentVersion, than: latest.version) {
+            // The poll worked; the feed is just behind us. A dev build, or a
+            // release that shipped to GitHub before `latest.json` was
+            // republished. Either way it is a statement of fact, not an
+            // error, and re-checking cannot change it.
+            return .aheadOfManifest(
+                current: currentVersion,
+                manifest: latest.version
+            )
         }
         // ``lastCheckedAt`` set but EITHER ``latest`` is nil (most
         // recent attempt populated ``lastError`` instead of a
@@ -686,6 +716,21 @@ struct SettingsView: View {
                 }
                 Spacer()
                 appUpdateRecheckButton
+            case .aheadOfManifest(let current, _):
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(.secondary)
+                    Text("Up to date — v\(current).")
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .accessibilityIdentifier("Settings.App.AheadOfManifest")
+                }
+                Spacer()
+                // No re-check button. The poll already succeeded; the feed is
+                // simply behind this build, and pressing it again returns the
+                // same answer. An action that provably cannot change anything
+                // is worse than no action — it invites the user to keep
+                // trying and reads as if something is wrong.
             case .unknown(let reason):
                 HStack(spacing: 6) {
                     Image(systemName: "questionmark.circle")

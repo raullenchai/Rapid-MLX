@@ -56,7 +56,15 @@ enum ConversationStore {
             try? fm.moveItem(at: url, to: backup)
             return []
         }
-        return decoded
+        // Sort here rather than trusting the file's array order. ``save``
+        // writes whatever order the in-memory array happens to be in, which
+        // ``ChatViewModel.persistActive`` keeps newest-first only as a side
+        // effect of its ``insert(at: 0)`` bubbling. Any path that doesn't go
+        // through that bubble — a hand-edited file, a future bulk import, a
+        // partially-applied migration — would surface out of order in the
+        // sidebar with nothing to correct it. Guaranteeing the invariant at
+        // the data boundary costs one sort and removes the whole class.
+        return decoded.sorted { $0.updatedAt > $1.updatedAt }
     }
 
     /// Serial queue for history writes: every save re-encodes the whole

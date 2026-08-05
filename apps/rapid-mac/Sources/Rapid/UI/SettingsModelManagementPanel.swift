@@ -33,8 +33,11 @@ struct SettingsModelManagementPanel: View {
     @Environment(ServerManager.self) private var server
     @Environment(DownloadManager.self) private var downloads
 
-    @State private var catalog: [ModelEntry] = []
-    @State private var loading: Bool = true
+    // Seeded from the process-wide cache — see the matching note in
+    // ``SettingsModelsPanel``. An empty start re-rendered the spinner on every
+    // visit regardless of whether the data was already cached.
+    @State private var catalog: [ModelEntry] = ModelCatalogCache.seed(generation: 0) ?? []
+    @State private var loading: Bool = ModelCatalogCache.seed(generation: 0) == nil
     @State private var pendingDeletion: ModelEntry?
     @State private var lastError: String?
     @State private var lastFreed: String?
@@ -1069,13 +1072,27 @@ struct SettingsModelManagementPanel: View {
     // MARK: - Actions
 
     private func refreshCatalog() async {
-        loading = true
-        defer { loading = false }
         guard let binary = server.binaryPath else {
             catalog = []
+            loading = false
             return
         }
-        catalog = await ModelCatalog.load(binary: binary)
+        let generation = downloads.cacheGeneration
+        // Show a cached snapshot straight away and skip the spinner entirely —
+        // flashing "loading" over data we already have makes every visit to
+        // this panel feel like a cold start.
+        if let hit = await ModelCatalogCache.shared.cached(
+            binary: binary, generation: generation
+        ) {
+            catalog = hit
+            loading = false
+            return
+        }
+        loading = true
+        defer { loading = false }
+        catalog = await ModelCatalogCache.shared.entries(
+            binary: binary, generation: generation
+        )
     }
 
     private func deleteAlias(_ entry: ModelEntry) async {
