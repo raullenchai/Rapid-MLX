@@ -151,9 +151,7 @@ def launch_command(args: argparse.Namespace) -> None:
     cursor_reason: str | None = None
     if args.all or args.client == "cursor":
         try:
-            cursor_server_url = cursor.canonical_server_url(
-                server_url, resolve=not args.dry_run
-            )
+            cursor_server_url = cursor.canonical_server_url(server_url)
         except ValueError as exc:
             cursor_reason = str(exc)
 
