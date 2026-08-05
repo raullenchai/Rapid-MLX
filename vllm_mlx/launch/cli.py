@@ -147,16 +147,21 @@ def launch_command(args: argparse.Namespace) -> None:
 
     server_url = args.server_url
     api_key = os.environ.get("RAPID_MLX_API_KEY")
+    cursor_server_url: str | None = None
+    cursor_reason: str | None = None
+    if args.all or args.client == "cursor":
+        try:
+            cursor_server_url = cursor.canonical_server_url(server_url)
+        except ValueError as exc:
+            cursor_reason = str(exc)
+
     targets: list[str]
     if args.all:
         targets = [
             name
             for name, adapter in ADAPTERS.items()
             if adapter.detect()
-            and (
-                name != "cursor"
-                or (cursor.endpoint_error(server_url) is None and bool(api_key))
-            )
+            and (name != "cursor" or (cursor_server_url is not None and bool(api_key)))
         ]
         if not targets:
             print(
@@ -167,10 +172,9 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
     else:
         if args.client == "cursor":
-            reason = cursor.endpoint_error(server_url)
-            if reason is not None:
+            if cursor_reason is not None:
                 print(
-                    f"launch: {reason}. BYOK requests are routed through "
+                    f"launch: {cursor_reason}. BYOK requests are routed through "
                     "Cursor's servers; use a public HTTPS tunnel or choose "
                     "claude-code, cline, or continue-dev for a local connection.",
                     file=sys.stderr,
@@ -203,9 +207,7 @@ def launch_command(args: argparse.Namespace) -> None:
     # Same pattern as ``share_command`` in ``vllm_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
     model = original_alias or args.model or _resolve_default_model()
-    cursor_server_url = (
-        cursor.canonical_server_url(server_url) if "cursor" in targets else server_url
-    )
+    effective_cursor_url = cursor_server_url or server_url
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
         for name in targets:
@@ -233,7 +235,7 @@ def launch_command(args: argparse.Namespace) -> None:
             continue
         try:
             config_kwargs = {
-                "server_url": cursor_server_url if name == "cursor" else server_url,
+                "server_url": effective_cursor_url if name == "cursor" else server_url,
                 "model": model,
             }
             if api_key:

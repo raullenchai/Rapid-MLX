@@ -467,13 +467,12 @@ class TestLaunchCommand:
         assert "cannot reach" in capsys.readouterr().err
 
     def test_cursor_accepts_public_https_endpoint(self, fake_home, capsys, monkeypatch):
-        monkeypatch.setattr(
-            cursor.socket,
-            "getaddrinfo",
-            lambda *_args, **_kwargs: [
+        resolver = MagicMock(
+            return_value=[
                 (2, 1, 6, "", ("93.184.216.34", 443)),
-            ],
+            ]
         )
+        monkeypatch.setattr(cursor.socket, "getaddrinfo", resolver)
         (fake_home / "Cursor/User").mkdir(parents=True)
         monkeypatch.setenv("RAPID_MLX_API_KEY", "cursor-secret")
         launch_cli.launch_command(
@@ -485,6 +484,7 @@ class TestLaunchCommand:
         )
         out = capsys.readouterr().out
         assert "[dry-run] cursor: detected=True" in out
+        assert resolver.call_count == 1
 
     def test_cursor_rejects_hostname_resolving_to_private_address(
         self, fake_home, capsys, monkeypatch

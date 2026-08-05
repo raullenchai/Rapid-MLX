@@ -21,10 +21,10 @@ _CONFIG_DIR_LINUX = Path.home() / ".config" / "Cursor" / "User"
 _SETTINGS_FILENAME = "settings.json"
 
 
-def endpoint_error(server_url: str) -> str | None:
-    """Explain why ``server_url`` cannot be reached by Cursor's backend."""
+def canonical_server_url(server_url: str) -> str:
+    """Validate and serialize a public Cursor URL without ambiguity."""
     if "\\" in server_url:
-        return "Cursor's --server-url cannot contain backslashes"
+        raise ValueError("Cursor's --server-url cannot contain backslashes")
     try:
         parsed = urlsplit(server_url)
         hostname = parsed.hostname
@@ -32,22 +32,28 @@ def endpoint_error(server_url: str) -> str | None:
         password = parsed.password
         port = parsed.port
     except ValueError:
-        return "Cursor requires a valid public hostname and HTTPS port"
+        raise ValueError(
+            "Cursor requires a valid public hostname and HTTPS port"
+        ) from None
 
     if parsed.scheme.lower() != "https":
-        return "Cursor requires a publicly reachable HTTPS --server-url"
+        raise ValueError("Cursor requires a publicly reachable HTTPS --server-url")
     if parsed.query or parsed.fragment:
-        return "Cursor's --server-url cannot contain a query string or fragment"
+        raise ValueError(
+            "Cursor's --server-url cannot contain a query string or fragment"
+        )
     if username is not None or password is not None:
-        return "Cursor's --server-url cannot contain user information"
+        raise ValueError("Cursor's --server-url cannot contain user information")
     if not hostname:
-        return "Cursor requires a valid public hostname"
+        raise ValueError("Cursor requires a valid public hostname")
     if port == 0:
-        return "Cursor requires a valid non-zero HTTPS port"
+        raise ValueError("Cursor requires a valid non-zero HTTPS port")
 
     normalized = hostname.rstrip(".").lower()
     if normalized == "localhost" or normalized.endswith((".localhost", ".local")):
-        return "Cursor's servers cannot reach localhost or private network hosts"
+        raise ValueError(
+            "Cursor's servers cannot reach localhost or private network hosts"
+        )
 
     try:
         resolved = socket.getaddrinfo(
@@ -56,7 +62,9 @@ def endpoint_error(server_url: str) -> str | None:
             type=socket.SOCK_STREAM,
         )
     except (OSError, ValueError):
-        return "Cursor requires a public hostname that resolves successfully"
+        raise ValueError(
+            "Cursor requires a public hostname that resolves successfully"
+        ) from None
 
     addresses = {
         ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
@@ -69,20 +77,10 @@ def endpoint_error(server_url: str) -> str | None:
         or address.is_reserved
         for address in addresses
     ):
-        return "Cursor's servers cannot reach localhost or private network addresses"
-    return None
+        raise ValueError(
+            "Cursor's servers cannot reach localhost or private network addresses"
+        )
 
-
-def canonical_server_url(server_url: str) -> str:
-    """Validate and serialize a public Cursor URL without authority ambiguity."""
-    reason = endpoint_error(server_url)
-    if reason is not None:
-        raise ValueError(reason)
-
-    parsed = urlsplit(server_url)
-    hostname = parsed.hostname
-    assert hostname is not None
-    normalized = hostname.rstrip(".").lower()
     try:
         address = ipaddress.ip_address(normalized)
     except ValueError:
@@ -93,6 +91,15 @@ def canonical_server_url(server_url: str) -> str:
     if parsed.port is not None:
         netloc += f":{parsed.port}"
     return urlunsplit(("https", netloc, parsed.path, "", ""))
+
+
+def endpoint_error(server_url: str) -> str | None:
+    """Return the validation error for ``server_url``, if any."""
+    try:
+        canonical_server_url(server_url)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _candidate_dirs() -> list[Path]:
