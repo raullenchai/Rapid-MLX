@@ -438,3 +438,83 @@ def test_anthropic_stream_omits_cache_fields_without_hit():
     assert usage["input_tokens"] == 100
     assert "cache_read_input_tokens" not in usage
     assert "cache_creation_input_tokens" not in usage
+
+
+class _ThinkThenToolEngine:
+    """Streams reasoning, then the template's ``</think>`` → ``<tool_call>``
+    separator ("\n\n") as a standalone delta, then a hermes tool call — the
+    exact shape that used to open a blank text block between the thinking and
+    tool_use blocks."""
+
+    preserve_native_tool_format = False
+    tokenizer = _ThinkingTemplateTokenizer()
+    _tokenizer = None
+
+    async def stream_chat(self, messages, **kwargs):
+        deltas = [
+            "<think>Let me check ",
+            "the weather.</think>",
+            "\n\n",
+            '<tool_call>\n{"name": "get_weather", ',
+            '"arguments": {"city": "SF"}}\n</tool_call>',
+        ]
+        for i, text in enumerate(deltas, start=1):
+            yield SimpleNamespace(new_text=text, prompt_tokens=14, completion_tokens=i)
+
+
+def test_anthropic_stream_no_blank_text_block_between_thinking_and_tool_use():
+    """Regression: the whitespace-only ``</think>``→``<tool_call>`` separator
+    must NOT stream as its own ``text`` content block. Streaming should match
+    non-stream ([thinking, tool_use]); previously it emitted
+    [thinking, text("\\n\\n"), tool_use]."""
+    from vllm_mlx.reasoning import get_parser
+
+    cfg = reset_config()
+    cfg.engine = _ThinkThenToolEngine()
+    cfg.model_name = "test-model"
+    cfg.no_thinking = False
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = get_parser("qwen3")()
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    cfg.model_registry = None
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 256,
+            "stream": True,
+            "messages": [{"role": "user", "content": "weather in SF?"}],
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "description": "get weather",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    events = _parse_sse_data(response.text)
+    block_types = [
+        e["content_block"]["type"]
+        for e in events
+        if e.get("type") == "content_block_start"
+    ]
+    text_deltas = [
+        e["delta"].get("text", "")
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e["delta"].get("type") == "text_delta"
+    ]
+    assert block_types == ["thinking", "tool_use"]
+    assert text_deltas == []

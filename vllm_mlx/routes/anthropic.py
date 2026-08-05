@@ -1712,6 +1712,19 @@ async def _stream_anthropic_messages(
                     out.append(("text", text))
                     effective = "text"
             else:
+                if block_type == "text" and not text.strip() and effective != "text":
+                    # Whitespace-only TEXT piece that would OPEN a new text
+                    # block (none currently open — effective is None or
+                    # "thinking"). Drop it, mirroring the thinking arm above
+                    # and the non-stream ``.strip()`` parity: the tool filter
+                    # surfaces the ``</think>`` → ``<tool_call>`` template
+                    # separator ("\n\n") as a standalone text piece, which
+                    # otherwise streams as ``[thinking, text(""), tool_use]``
+                    # while non-stream (which strips whole-output whitespace)
+                    # yields ``[thinking, tool_use]``. Whitespace INSIDE an
+                    # already-open text block (effective == "text") is kept —
+                    # that is genuine intra-text spacing, not a blank opener.
+                    continue
                 out.append((block_type, text))
                 # ``block_type`` is already not "thinking" in this
                 # branch — track the effective open block as that type.
