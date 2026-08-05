@@ -99,13 +99,26 @@ final class ChatViewModel {
     /// Snapshot the active conversation into ``conversations`` + disk. A
     /// no-op until the user has actually sent something (no empty rows in
     /// the sidebar). Title is derived from the first user message.
-    private func persistActive() {
+    ///
+    /// - Parameter touching: whether this counts as *activity*. Only a real
+    ///   change to the transcript should refresh ``updatedAt`` and bubble the
+    ///   row to the top. Merely opening a conversation to read it, or leaving
+    ///   it to start a new one, archives the buffer without claiming the user
+    ///   did anything to it — otherwise clicking through history silently
+    ///   reshuffles the sidebar, and the list stops reflecting when each
+    ///   conversation was last *worked on*.
+    private func persistActive(touching: Bool = true) {
         guard messages.contains(where: { $0.role == .user }) else { return }
         let now = Date()
         let title = ConversationStore.title(from: messages)
         if let idx = conversations.firstIndex(where: { $0.id == activeConversationID }) {
             conversations[idx].messages = messages
             conversations[idx].title = title
+            guard touching else {
+                // Content written back, position and timestamp left alone.
+                ConversationStore.save(conversations)
+                return
+            }
             conversations[idx].updatedAt = now
             // Bubble the just-touched conversation to the top.
             let updated = conversations.remove(at: idx)
@@ -136,7 +149,7 @@ final class ChatViewModel {
         // is what gets persisted and a mid-stream switch doesn't leave the
         // incoming conversation showing Stop.
         isStreaming = false
-        persistActive()
+        persistActive(touching: false)
         guard let conv = conversations.first(where: { $0.id == id }) else { return }
         messages = conv.messages
         activeConversationID = id
@@ -205,7 +218,7 @@ final class ChatViewModel {
         // chat stuck showing Stop (isStreaming never reset). Setting it
         // false here also archives the just-closed conversation via didSet.
         isStreaming = false
-        persistActive()
+        persistActive(touching: false)
         messages.removeAll()
         activeConversationID = UUID()
         lastError = nil
