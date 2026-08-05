@@ -11,6 +11,7 @@ tunnel forwarding to Rapid-MLX).
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from . import _common
 
@@ -52,15 +53,19 @@ def write_or_patch_config(
     The caller is responsible for rejecting local/private endpoints. All
     unrelated Cursor settings are preserved.
     """
+    parsed = urlsplit(server_url)
+    if parsed.query or parsed.fragment:
+        raise ValueError("Cursor server URL cannot contain a query string or fragment")
+    path_component = parsed.path.rstrip("/")
+    if not path_component.endswith("/v1"):
+        path_component += "/v1"
+    base_url = urlunsplit((parsed.scheme, parsed.netloc, path_component, "", ""))
+
     path = config_path or current_config_path()
     assert path is not None
 
     existing = _common.load_json_lenient(path)
     _common.backup_existing(path)
-
-    base_url = server_url.rstrip("/")
-    if not base_url.endswith("/v1"):
-        base_url += "/v1"
 
     existing["cursor.aiprovider.openai.baseUrl"] = base_url
     existing["cursor.aiprovider.openai.apiKey"] = api_key

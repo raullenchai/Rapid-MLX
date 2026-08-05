@@ -52,6 +52,7 @@ def _print_list() -> int:
         cline           detected
         claude-code     not detected
         continue-dev    detected
+        cursor          not detected
 
     Always returns 0 — listing is a read-only inspect command.
     """
@@ -69,10 +70,19 @@ def _cursor_endpoint_error(server_url: str) -> str | None:
     parsed = urlparse(server_url)
     if parsed.scheme.lower() != "https":
         return "Cursor requires a publicly reachable HTTPS --server-url"
+    if parsed.query or parsed.fragment:
+        return "Cursor's --server-url cannot contain a query string or fragment"
 
     hostname = parsed.hostname
     if not hostname:
         return "Cursor requires a valid public hostname"
+
+    try:
+        port = parsed.port
+    except ValueError:
+        return "Cursor requires a valid HTTPS port"
+    if port == 0:
+        return "Cursor requires a valid non-zero HTTPS port"
 
     normalized = hostname.rstrip(".").lower()
     if normalized == "localhost" or normalized.endswith((".localhost", ".local")):
@@ -81,7 +91,7 @@ def _cursor_endpoint_error(server_url: str) -> str | None:
     try:
         resolved = socket.getaddrinfo(
             normalized,
-            parsed.port or 443,
+            port if port is not None else 443,
             type=socket.SOCK_STREAM,
         )
     except (OSError, ValueError):
@@ -91,7 +101,13 @@ def _cursor_endpoint_error(server_url: str) -> str | None:
         ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
         for _family, _type, _proto, _canonname, sockaddr in resolved
     }
-    if not addresses or any(not address.is_global for address in addresses):
+    if not addresses or any(
+        not address.is_global
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_reserved
+        for address in addresses
+    ):
         return "Cursor's servers cannot reach localhost or private network addresses"
     return None
 

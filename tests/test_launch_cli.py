@@ -290,6 +290,18 @@ class TestCursor:
         cursor.write_or_patch_config("https://rapid.example.com", "alias")
         assert json.loads(cfg.read_text())["editor.fontSize"] == 14
 
+    @pytest.mark.parametrize(
+        "server_url",
+        [
+            "https://rapid.example.com?token=value",
+            "https://rapid.example.com#settings",
+        ],
+    )
+    def test_rejects_query_and_fragment(self, fake_home, server_url):
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        with pytest.raises(ValueError, match="query string or fragment"):
+            cursor.write_or_patch_config(server_url, "alias")
+
 
 # --------------------------------------------------------------------
 # Atomic-write + backup primitives
@@ -440,6 +452,39 @@ class TestLaunchCommand:
         with pytest.raises(SystemExit) as excinfo:
             launch_cli.launch_command(
                 _make_args(client="cursor", server_url="https://127.1")
+            )
+        assert excinfo.value.code == 2
+        assert "cannot reach" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("server_url", "error_text"),
+        [
+            ("https://rapid.example.com:0", "non-zero HTTPS port"),
+            ("https://rapid.example.com?token=value", "query string or fragment"),
+            ("https://rapid.example.com#settings", "query string or fragment"),
+        ],
+    )
+    def test_cursor_rejects_malformed_public_url_components(
+        self, fake_home, capsys, server_url, error_text
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url=server_url)
+            )
+        assert excinfo.value.code == 2
+        assert error_text in capsys.readouterr().err
+
+    def test_cursor_rejects_multicast_address(self, fake_home, capsys, monkeypatch):
+        monkeypatch.setattr(
+            launch_cli.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("224.0.0.1", 443)),
+            ],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url="https://rapid.example.com")
             )
         assert excinfo.value.code == 2
         assert "cannot reach" in capsys.readouterr().err
