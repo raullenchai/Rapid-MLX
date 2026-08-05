@@ -231,6 +231,19 @@ def test_bounded_reasoning_suppresses_reopen_after_public_content():
     assert out[0, 20].item() == 0.0
 
 
+def test_invalid_reopen_id_is_ignored_against_runtime_logits_width():
+    proc = ReasoningBudgetLogitsProcessor(
+        THINK_END, 1, think_start_id=-1, seeded_thinking=True
+    )
+    _ = proc([1], mx.zeros((128,)))
+    _ = proc([1, 10], mx.zeros((128,)))
+    _ = proc([1, 10, THINK_END], mx.zeros((128,)))
+
+    logits = mx.zeros((128,))
+    out = proc([1, 10, THINK_END, 20], logits)
+    assert bool(mx.all(out == logits))
+
+
 def test_force_override_dominates_a_prior_neg_inf_at_think_end():
     # The load-bearing #1 fix: the force is an OVERRIDE, not an additive mask.
     # Simulate a chained grammar that already drove </think> (and much else) to

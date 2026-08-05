@@ -219,6 +219,10 @@ class ReasoningBudgetLogitsProcessor:
         # cap costs nothing.
         if self._budget < 0:
             return logits
+        if self._ended:
+            if self._reopen_suppressor is not None:
+                return self._reopen_suppressor(token_ids, logits)
+            return logits
         phase = self._phase(token_ids)
         if self._ended and self._reopen_suppressor is not None:
             return self._reopen_suppressor(token_ids, logits)
