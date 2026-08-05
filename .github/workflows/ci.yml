@@ -44,6 +44,14 @@ jobs:
       - name: GitHub Actions SHA pinning
         run: python scripts/check_gha_pinning.py
 
+      # An invalid ``${{ … }}`` expression invalidates the WHOLE workflow:
+      # the run fails instantly with zero jobs and no log, and because it
+      # is not a PR check it never shows up as red on the PR that
+      # introduced it. That is how an empty expression inside a `run:`
+      # comment took the release pipeline down for a full day.
+      - name: Workflow expression sanity
+        run: python scripts/check_workflow_expressions.py
+
       # Parser microbench — catches >10x regressions in tool-call
       # extraction. Pure Python (parsers don't import mlx); thresholds
       # are intentionally generous (3-5x measured M3 numbers) to

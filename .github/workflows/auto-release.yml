@@ -249,7 +249,7 @@ jobs:
           # (``body<<__EOF__``) could be escaped by any line equal to the
           # delimiter — now reachable from human-authored highlights as well as
           # commit subjects. A file has no delimiter to escape and never passes
-          # through ``${{ }}``.
+          # through GitHub Actions expression interpolation.
           RELEASE_SHA="$RELEASE_SHA" bash scripts/build_release_notes.sh > "$NOTES_FILE"
 
           echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
