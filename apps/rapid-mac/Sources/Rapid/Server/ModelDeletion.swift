@@ -112,6 +112,11 @@ enum ModelDeletion {
     }
 
     private static func cachedRepo(for alias: String, binary: URL) async -> String? {
+        // Deliberately NOT routed through ``ModelCatalogCache``: this resolves
+        // which directory is about to be deleted. A snapshot that is even
+        // slightly stale could name the wrong repo, and the cost of being
+        // wrong here is destroying the wrong download. Two subprocesses is a
+        // fine price for reading the world as it is at deletion time.
         let entries = await ModelCatalog.load(binary: binary)
         return entries.first { $0.alias == alias && $0.cached }?.hfRepo
     }

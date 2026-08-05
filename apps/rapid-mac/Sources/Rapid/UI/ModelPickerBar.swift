@@ -1914,7 +1914,10 @@ struct ModelPickerBar: View {
                 loadingCatalog = false
             }
         }
-        let entries = await ModelCatalog.load(binary: binary)
+        let entries = await ModelCatalogCache.shared.entries(
+            binary: binary,
+            generation: downloads.cacheGeneration
+        )
         guard !Task.isCancelled, catalogRefreshGeneration == refreshGeneration else { return }
         self.catalog = entries
         // Default selection: only apply if the current alias is blank or

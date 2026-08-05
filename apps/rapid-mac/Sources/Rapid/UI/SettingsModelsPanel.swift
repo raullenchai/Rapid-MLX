@@ -32,8 +32,17 @@ struct SettingsModelsPanel: View {
     @Environment(ServerManager.self) private var server
     @Environment(DownloadManager.self) private var downloads
 
-    @State private var catalog: [ModelEntry] = []
-    @State private var loading: Bool = true
+    // Seeded from the process-wide cache rather than starting empty. `@State`
+    // is rebuilt every time this panel re-appears, so an empty start meant the
+    // spinner rendered on the first frame of every visit — even when the data
+    // was already in hand and the refresh would resolve instantly.
+    //
+    // Generation 0 is the right key here: `@State` initialisers can't read
+    // `@Environment`, and a fresh app run starts at 0. If the real generation
+    // has moved on, the `.task` below simply refetches — the seed is an
+    // optimisation, never the source of truth.
+    @State private var catalog: [ModelEntry] = ModelCatalogCache.seed(generation: 0) ?? []
+    @State private var loading: Bool = ModelCatalogCache.seed(generation: 0) == nil
     @State private var pendingDeletion: ModelEntry?
     @State private var lastError: String?
     @State private var lastFreed: String?
@@ -564,13 +573,26 @@ struct SettingsModelsPanel: View {
     // MARK: - Actions
 
     private func refreshCatalog() async {
-        loading = true
-        defer { loading = false }
         guard let binary = server.binaryPath else {
             catalog = []
+            loading = false
             return
         }
-        catalog = await ModelCatalog.load(binary: binary)
+        let generation = downloads.cacheGeneration
+        // Cached snapshot → paint it and skip the spinner (see
+        // ``ModelCatalogCache``); only a genuine miss shows a loading state.
+        if let hit = await ModelCatalogCache.shared.cached(
+            binary: binary, generation: generation
+        ) {
+            catalog = hit
+            loading = false
+            return
+        }
+        loading = true
+        defer { loading = false }
+        catalog = await ModelCatalogCache.shared.entries(
+            binary: binary, generation: generation
+        )
     }
 
     private func deleteAlias(_ entry: ModelEntry) async {
