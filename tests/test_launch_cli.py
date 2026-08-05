@@ -623,6 +623,23 @@ class TestLaunchCommand:
         assert excinfo.value.code == 2
         assert "cannot reach" in capsys.readouterr().err
 
+    def test_cursor_rejects_ipv6_site_local_address(
+        self, fake_home, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cursor.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (10, 1, 6, "", ("fec0::1", 443, 0, 0)),
+            ],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url="https://rapid.example.com")
+            )
+        assert excinfo.value.code == 2
+        assert "cannot reach" in capsys.readouterr().err
+
     def test_all_skips_cursor_for_default_local_endpoint(self, fake_home, capsys):
         (fake_home / "Cursor/User").mkdir(parents=True)
         with pytest.raises(SystemExit) as excinfo:

@@ -73,6 +73,7 @@ def canonical_server_url(server_url: str) -> str:
     if not addresses or any(
         not address.is_global
         or address.is_multicast
+        or getattr(address, "is_site_local", False)
         or address.is_unspecified
         or address.is_reserved
         for address in addresses
