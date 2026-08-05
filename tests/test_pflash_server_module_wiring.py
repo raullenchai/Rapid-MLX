@@ -25,6 +25,7 @@ engine/uvicorn boot.
 
 from __future__ import annotations
 
+import os
 import sys
 from unittest import mock
 
@@ -36,6 +37,47 @@ import vllm_mlx.server as server
 
 class _StopError(Exception):
     """Short-circuit ``server.main()`` right after the PFlash step."""
+
+
+# ``server.main()`` writes serving config into module-level globals (API key,
+# timeouts, sampling defaults, and — via alias auto-config — the tool-call /
+# reasoning parser names). Driving it here would leak that state into the shared
+# test process (e.g. a later ``/models`` route test seeing an auto-detected
+# ``tool_call_parser``), so snapshot and restore them around every test.
+_SERVER_GLOBALS = (
+    "_api_key",
+    "_default_timeout",
+    "_rate_limiter",
+    "_default_temperature",
+    "_default_top_p",
+    "_default_top_k",
+    "_enable_audio_lane",
+    "_enable_auto_tool_choice",
+    "_tool_call_parser",
+    "_enable_tool_logits_bias",
+    "_reasoning_parser",
+    "_reasoning_parser_name",
+)
+_MISSING = object()
+
+
+@pytest.fixture(autouse=True)
+def _restore_server_globals():
+    saved = {name: getattr(server, name, _MISSING) for name in _SERVER_GLOBALS}
+    mcp_saved = os.environ.get("RAPID_MLX_MCP_CONFIG", _MISSING)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is _MISSING:
+                if hasattr(server, name):
+                    delattr(server, name)
+            else:
+                setattr(server, name, value)
+        if mcp_saved is _MISSING:
+            os.environ.pop("RAPID_MLX_MCP_CONFIG", None)
+        else:
+            os.environ["RAPID_MLX_MCP_CONFIG"] = mcp_saved
 
 
 def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
@@ -55,9 +97,7 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
         mock.patch.object(cli, "_port_preflight_or_die", lambda *a, **k: None),
         mock.patch.object(server, "_ensure_routing_config", lambda *a, **k: None),
         mock.patch.object(server, "resolve_serving_lane", lambda name, **kw: lane),
-        mock.patch(
-            "vllm_mlx.pflash.validate_model_support", _capture_validate
-        ),
+        mock.patch("vllm_mlx.pflash.validate_model_support", _capture_validate),
         mock.patch.object(sys, "argv", ["vllm_mlx.server", *argv]),
         pytest.raises((_StopError, SystemExit)),
     ):
