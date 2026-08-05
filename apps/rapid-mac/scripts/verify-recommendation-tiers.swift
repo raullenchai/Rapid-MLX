@@ -252,9 +252,16 @@ enum FakeServerState { case idle, stopped, ready, starting, crashed, missing }
 
 let retiredStarters: Set<String> = ["bonsai-1.7b-2bit"]
 
-func isEligible(done: Bool, lastServedAlias: String?, serverState: FakeServerState) -> Bool {
+func isStranded(_ lastServedAlias: String?) -> Bool {
+    guard let alias = lastServedAlias else { return false }
+    return retiredStarters.contains(alias)
+}
+
+func isEligible(done: Bool, legacyDone: Bool = false, lastServedAlias: String?, serverState: FakeServerState) -> Bool {
     guard !done else { return false }
-    if let alias = lastServedAlias, !retiredStarters.contains(alias) {
+    let stranded = isStranded(lastServedAlias)
+    guard !(legacyDone && !stranded) else { return false }
+    if lastServedAlias != nil, !stranded {
         return false
     }
     switch serverState {
@@ -276,6 +283,12 @@ check(!isEligible(done: true, lastServedAlias: "bonsai-1.7b-2bit", serverState: 
       "done flag still wins over the carve-out — dismissal is permanent")
 check(!isEligible(done: true, lastServedAlias: nil, serverState: .idle),
       "done flag wins for a new user too")
+check(!isEligible(done: false, legacyDone: true, lastServedAlias: nil, serverState: .idle),
+      "dismissed under v1, never served → the v2 bump must NOT resurrect the card")
+check(!isEligible(done: false, legacyDone: true, lastServedAlias: "qwen3.5-9b-4bit", serverState: .idle),
+      "dismissed under v1 and on another model → still dismissed")
+check(isEligible(done: false, legacyDone: true, lastServedAlias: "bonsai-1.7b-2bit", serverState: .idle),
+      "dismissed under v1 but stranded on the retired starter → rescued anyway")
 for busy in [FakeServerState.ready, .starting, .crashed, .missing] {
     check(!isEligible(done: false, lastServedAlias: "bonsai-1.7b-2bit", serverState: busy),
           "server busy (\(busy)) suppresses the card even for the stranded cohort")

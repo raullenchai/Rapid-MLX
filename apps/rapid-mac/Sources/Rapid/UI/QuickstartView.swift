@@ -258,9 +258,16 @@ final class QuickstartCoordinator {
     /// UserDefaults key for the persistent "Quickstart already
     /// completed" flag. Once set, the surface NEVER returns — not
     /// even after the user deletes every model. Versioned so a
-    /// future Quickstart refresh (e.g. introducing a different
-    /// default model) can re-show without clobbering the v1 flag.
+    /// Quickstart refresh can re-show without clobbering the older flag.
+    ///
+    /// Moved to v2 on 2026-08-05 for the retired-starter swap. The bump
+    /// alone is not the migration: ``isEligible`` still honours
+    /// ``legacyStorageKey`` so a v1 dismissal is not silently undone.
     static let storageKey: String = "rapid.quickstart.v2.done"
+
+    /// Pre-2026-08-05 completion flag. Read-only — nothing writes it any
+    /// more; it exists so a user who dismissed under v1 stays dismissed.
+    static let legacyStorageKey: String = "rapid.quickstart.v1.done"
 
     /// Welcome message seeded into the active session after the sidecar
     /// comes online, so the user always lands in chat with a friendly
@@ -327,6 +334,9 @@ Open the picker any time to switch models.
     /// check so the surface never returns. Mirrors UserDefaults.
     private(set) var done: Bool
 
+    /// Snapshot of ``legacyStorageKey`` taken at init. Never written.
+    let legacyDone: Bool
+
     /// True once the seeded assistant message has been appended to the
     /// active session. Stops ``markReady`` from double-seeding when the
     /// observation pipeline fires multiple ``.ready`` transitions for
@@ -387,6 +397,7 @@ Open the picker any time to switch models.
 
     init() {
         self.done = UserDefaults.standard.bool(forKey: Self.storageKey)
+        self.legacyDone = UserDefaults.standard.bool(forKey: Self.legacyStorageKey)
         // Codex r5: read the persisted awaiting-seed flag so a
         // quit-mid-deferred-flow relaunch can resume the welcome
         // injection once an active session lands. (Assigning a stored
@@ -621,15 +632,34 @@ Open the picker any time to switch models.
     /// never do is reach a user whose current model is anything else.
     static let retiredStarters: Set<String> = ["bonsai-1.7b-2bit"]
 
+    /// Whether the persisted alias is one we retired for being unusable.
+    static func isStranded(_ lastServedAlias: String?) -> Bool {
+        guard let alias = lastServedAlias else { return false }
+        return retiredStarters.contains(alias)
+    }
+
+    /// - Parameter legacyDone: the pre-v2 completion flag
+    ///   (``legacyStorageKey``). Bumping ``storageKey`` to v2 is what
+    ///   re-opens onboarding, but on its own it re-opens it for *everyone*
+    ///   who had not completed under v2 — including a user who deliberately
+    ///   dismissed the card under v1 and never served anything, whose
+    ///   ``done`` and ``lastServedAlias`` both read empty. That would break
+    ///   the documented "the card never returns" contract for people the
+    ///   version bump was never about. A v1 dismissal is therefore still
+    ///   honoured; it is overridden only for the stranded cohort, which is
+    ///   the entire reason the key moved.
     static func isEligible(
         done: Bool,
+        legacyDone: Bool = false,
         lastServedAlias: String?,
         serverState: ServerState
     ) -> Bool {
         guard !done else { return false }
+        let stranded = isStranded(lastServedAlias)
+        guard !(legacyDone && !stranded) else { return false }
         // Gate 2, with the retired-starter carve-out. `nil` is the
         // genuinely-new user; a retired starter is a user we stranded.
-        if let alias = lastServedAlias, !retiredStarters.contains(alias) {
+        if lastServedAlias != nil, !stranded {
             return false
         }
         switch serverState {

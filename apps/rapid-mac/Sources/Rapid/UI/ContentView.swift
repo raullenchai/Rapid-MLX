@@ -321,6 +321,7 @@ struct ContentView: View {
         }
         if QuickstartCoordinator.isEligible(
             done: quickstart.done,
+            legacyDone: quickstart.legacyDone,
             lastServedAlias: ServerManager.lastServedAlias(),
             serverState: server.state
         ) {

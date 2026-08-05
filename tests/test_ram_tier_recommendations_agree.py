@@ -467,3 +467,51 @@ def test_retired_starters_are_real_aliases():
     known = list_aliases()
     for alias in _parse_retired_starters():
         assert alias in known, f"retiredStarters names unknown alias {alias!r}"
+
+
+VERIFY_SCRIPT = REPO / "apps/rapid-mac/scripts/verify-recommendation-tiers.swift"
+
+
+def _normalise_swift(body: str) -> str:
+    """Collapse whitespace and drop comments so a copy is compared on
+    behaviour, not formatting."""
+    body = re.sub(r"//[^\n]*", "", body)
+    return re.sub(r"\s+", " ", body).strip()
+
+
+def _extract_is_eligible(path: Path) -> str:
+    text = path.read_text()
+    start = text.index("func isEligible(")
+    depth, i = 0, text.index("{", start)
+    for j in range(i, len(text)):
+        if text[j] == "{":
+            depth += 1
+        elif text[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return _normalise_swift(text[i : j + 1])
+    raise AssertionError(f"unbalanced isEligible body in {path}")
+
+
+def test_eligibility_check_script_has_not_drifted_from_production():
+    """``verify-recommendation-tiers.swift`` re-declares ``isEligible``
+    rather than importing it — the standalone-script pattern this repo uses
+    because the SPM test target is stripped. That copy is the only thing
+    that EXECUTES the gate, so if production changes and the copy does not,
+    the check passes while testing yesterday's logic.
+
+    Comparing the two bodies is what makes the copy trustworthy: edit one
+    without the other and this fails, naming both files."""
+    prod = _extract_is_eligible(
+        REPO / "apps/rapid-mac/Sources/Rapid/UI/QuickstartView.swift"
+    )
+    copy = _extract_is_eligible(VERIFY_SCRIPT)
+    # The copy takes a fake enum and a defaulted arg; compare the decision
+    # logic after the signature.
+    prod_body = prod[prod.index("guard !done") :]
+    copy_body = copy[copy.index("guard !done") :]
+    assert prod_body == copy_body, (
+        "isEligible drifted between QuickstartView.swift and "
+        "verify-recommendation-tiers.swift — the executable check would be "
+        f"testing stale logic.\n  production: {prod_body}\n  copy:       {copy_body}"
+    )
