@@ -13,6 +13,69 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.5] — 2026-08-05
+
+A stability release. The headline is a crash: a reply with a formula in it
+took the whole app down, and an ordinary maths question was enough to
+produce one. The starter model that shipped with 0.12.1 also turned out to
+be unusable, so it has been replaced.
+
+### Fixed — crashes and hangs
+
+- **Maths no longer crashes the app.** When a reply contained a formula, the
+  app quit outright with a macOS crash dialog — a plain `2 + 2 = 4` was
+  enough. Formulas now show as their plain-text source instead of taking the
+  app down. (Typesetting them properly is still to come.)
+- **A silent server no longer hangs the chat.** Sending a message used to sit
+  there indefinitely if the model stopped responding; it now fails after a
+  bounded wait and the message stays retryable.
+- **Quitting no longer stalls or crashes**, and starting the app no longer
+  risks shutting down a Rapid-MLX server you started yourself in a terminal.
+
+### Fixed — first run
+
+- **The starter model has changed.** The previous one fell apart on ordinary
+  multi-step questions — doubling words, then looping until it ran out of
+  room. Measured on the same Mac and the same question: 0/4 correct before,
+  16/16 after, with the first answer arriving in about a second.
+- **Two models that could fail to answer are temporarily hidden.** Ministral 3
+  and Gemma 4 E2B looked like ordinary small chat models in the picker, but on
+  some Macs sending them a message produced no reply at all, or a reply that
+  made no sense. They stay hidden until that is fixed.
+- **8 GB Macs get a recommendation instead of a rejection**, and every RAM
+  size now gets a "smart" and (where it helps) a "fast" pick.
+
+### Fixed — chat and models
+
+- **Conversation history keeps its order.** Older chats could jump around in
+  the sidebar.
+- **The compose box grows with what you type**, and the transcript stops
+  yanking you back to the bottom while you are reading further up.
+- **Loading a model that will not fit is now blocked** with a warning based on
+  free memory at that moment, rather than freezing or panicking the Mac.
+- **"Speed on this Mac" shows live progress and an estimate** instead of an
+  unmoving spinner, and the size column no longer mixes download size with
+  memory use.
+
+### Fixed — connecting your tools
+
+- **Your API key is no longer shown in the clear** in the copyable setup
+  snippets on the Launch page.
+- **Cursor no longer gets a configuration that cannot work.** Cursor routes
+  requests through its own servers, so a `localhost` address was never
+  reachable; the app now says so and points at Claude Code, Cline, or
+  Continue for a local connection.
+
+### Changed
+
+- A refreshed visual system for the model list and its states.
+- Bundles the **Rapid-MLX 0.12.4** engine. What you should notice: replies
+  are faster on a long conversation because the model no longer re-reads
+  what it has already read; models that think before answering keep their
+  reasoning out of the answer; the app can tell whether a model is busy or
+  idle; and several models that used to fail to start — including the
+  Gemma 4 family — now load. LFM2.5 models are newly available.
+
 ## [0.12.1] — 2026-08-03
 
 The first **signed + notarised** release — it installs and opens without the
