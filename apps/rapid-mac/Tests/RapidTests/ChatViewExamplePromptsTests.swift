@@ -7,10 +7,10 @@ import Testing
 /// model-agnostic by design: they must read well on ANY active model
 /// — including a brand-new user's starter — and never tease a
 /// capability tied to one specific alias. The starter is now
-/// ``bonsai-1.7b-2bit``, which DOES emit clean ``tool_calls`` (so the
-/// empty-state capability chip row renders for it), but the seeded
-/// prompts still stay generic so they hold up if the active model is
-/// swapped for one that flubs a tool call. The chip row's tool-bias
+/// ``lfm2.5-1b-4bit`` (2026-08-05), a text-first pick that is NOT in
+/// ``ToolUseCapability.known`` — so the empty-state capability chip row
+/// stays hidden for it. The seeded prompts stay generic regardless, so
+/// they hold up whichever way the starter goes. The chip row's tool-bias
 /// hider (PR #333 / FU-9) covers the chip surface; these tests cover
 /// the seeded example prompts the chip row gate does not touch.
 ///
@@ -144,8 +144,8 @@ struct ChatViewExamplePromptsTests {
         let scanStart = intentRange.lowerBound
         let scanEnd = src.index(scanStart, offsetBy: 600, limitedBy: src.endIndex) ?? src.endIndex
         let neighbourhood = src[scanStart..<scanEnd]
-        #expect(neighbourhood.contains("bonsai-1.7b-2bit"),
-                "Docstring above ChatView.examplePrompts must name the Quickstart alias 'bonsai-1.7b-2bit' so the rationale is one source-grep away.")
+        #expect(neighbourhood.contains("lfm2.5-1b-4bit"),
+                "Docstring above ChatView.examplePrompts must name the Quickstart alias 'lfm2.5-1b-4bit' so the rationale is one source-grep away.")
     }
 
     @Test("Docstring above examplePrompts mentions trade-up to Recommended")

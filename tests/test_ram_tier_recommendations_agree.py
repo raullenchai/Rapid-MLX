@@ -333,3 +333,137 @@ def test_readme_one_shot_commands_carry_the_exact_flags():
             f"README's one-shot command for {alias} has {oneshot_flags}, "
             f"the app launches it with {app[alias]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# The Quickstart starter — the RAM-blind first-run pick
+#
+# The tier tables above answer "what should this Mac run". They do NOT
+# cover the alias every brand-new user actually meets first: the
+# Quickstart starter, which is deliberately the same on every Mac.
+#
+# Nothing checked it. The starter shipped as ``bonsai-1.7b-2bit`` on the
+# strength of a tool-call eval (6/6 clean ``tool_calls``), and a community
+# report found it degenerating on an ordinary chat question — reproduced
+# 4/4, terminating 0/4, on plain-chat requests where the repetition guard
+# is inactive by design (it gates on ``request.has_tools``). The eval that
+# justified it measured a real capability that this slot is not judged on.
+#
+# These tests cannot judge output quality. What they can do is pin the
+# mechanical contract that a swap must not break: the alias has to exist,
+# its pinned HF repo has to be the one the registry resolves, and the
+# downloaded and bundled (airgapped) paths must not drift apart — a
+# divergence there means an offline build first-launches a model the
+# online path already rejected.
+
+QUICKSTART = REPO / "apps/rapid-mac/Sources/Rapid/UI/QuickstartView.swift"
+BUNDLED = REPO / "apps/rapid-mac/Sources/Rapid/Server/BundledModel.swift"
+
+
+def _parse_quickstart_default() -> tuple[str, str]:
+    """``(alias, hfRepo)`` from ``QuickstartCoordinator.defaultChoice``."""
+    text = QUICKSTART.read_text()
+    block = re.search(
+        r"static let defaultChoice = QuickstartModelChoice\((.*?)\n    \)",
+        text,
+        re.DOTALL,
+    )
+    assert block, "defaultChoice literal not found in QuickstartView.swift"
+    body = block.group(1)
+    alias = re.search(r'alias:\s*"([^"]+)"', body)
+    repo = re.search(r'hfRepo:\s*"([^"]+)"', body)
+    assert alias, "defaultChoice has no alias literal"
+    assert repo, "defaultChoice must pin hfRepo — it drives the byte-progress monitor"
+    return alias.group(1), repo.group(1)
+
+
+def _parse_bundled() -> tuple[str, str]:
+    """``(bundledAlias, bundledRepoID)`` from ``BundledModel.swift``."""
+    text = BUNDLED.read_text()
+    alias = re.search(r'static let bundledAlias: String = "([^"]+)"', text)
+    repo = re.search(r'static let bundledRepoID: String = "([^"]+)"', text)
+    assert alias and repo, (
+        "bundledAlias / bundledRepoID not found in BundledModel.swift"
+    )
+    return alias.group(1), repo.group(1)
+
+
+def test_quickstart_starter_exists():
+    """An unknown starter alias breaks first run for every new user."""
+    from vllm_mlx.model_aliases import list_aliases
+
+    alias, _ = _parse_quickstart_default()
+    assert alias in list_aliases(), f"Quickstart starter is unknown alias {alias!r}"
+
+
+def test_quickstart_pinned_repo_matches_the_registry():
+    """``hfRepo`` drives the bytes-on-disk progress bar. If it names a
+    different repo than the alias resolves to, the download completes
+    while the bar sits at 0% — the first-impression path, silently wrong."""
+    from vllm_mlx.model_aliases import resolve_model
+
+    alias, repo = _parse_quickstart_default()
+    assert resolve_model(alias) == repo, (
+        f"Quickstart pins hfRepo {repo!r} but {alias!r} resolves to "
+        f"{resolve_model(alias)!r}"
+    )
+
+
+def test_bundled_starter_tracks_the_quickstart_starter():
+    """``BundledModel`` is the airgapped twin of the Quickstart pick. The
+    two are one product decision reached by two paths; letting them drift
+    ships an offline build whose first launch uses the rejected model."""
+    q_alias, q_repo = _parse_quickstart_default()
+    b_alias, b_repo = _parse_bundled()
+    assert b_alias == q_alias, (
+        f"bundledAlias {b_alias!r} != Quickstart starter {q_alias!r}"
+    )
+    assert b_repo == q_repo, f"bundledRepoID {b_repo!r} != Quickstart hfRepo {q_repo!r}"
+
+
+def test_build_script_stages_the_bundled_repo():
+    """``BUNDLE_MODEL=1`` stages weights by repo id in build.sh. A stale
+    default there bundles one model while the app asks for another, and
+    the airgapped first launch falls through to a network pull it cannot
+    make."""
+    build_sh = (REPO / "apps/rapid-mac/scripts/build.sh").read_text()
+    default = re.search(
+        r'BUNDLED_MODEL_REPO="\$\{BUNDLED_MODEL_REPO:-([^}"]+)\}"', build_sh
+    )
+    assert default, "BUNDLED_MODEL_REPO default not found in build.sh"
+    _, b_repo = _parse_bundled()
+    assert default.group(1) == b_repo, (
+        f"build.sh stages {default.group(1)!r} but BundledModel wants {b_repo!r}"
+    )
+
+
+def _parse_retired_starters() -> set[str]:
+    text = QUICKSTART.read_text()
+    block = re.search(
+        r"static let retiredStarters: Set<String> = \[(.*?)\]", text, re.DOTALL
+    )
+    assert block, "retiredStarters literal not found in QuickstartView.swift"
+    return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+
+def test_current_starter_is_not_itself_retired():
+    """``retiredStarters`` re-opens onboarding for anyone whose last-served
+    model is in it. Listing the *current* starter would re-show the wizard
+    to every user who just completed it — an onboarding loop, and the one
+    way this carve-out can strand people instead of rescuing them."""
+    alias, _ = _parse_quickstart_default()
+    assert alias not in _parse_retired_starters(), (
+        f"current starter {alias!r} is listed in retiredStarters — "
+        "every user who onboards onto it would be re-prompted forever"
+    )
+
+
+def test_retired_starters_are_real_aliases():
+    """A typo here silently rescues nobody: the carve-out compares against
+    the persisted ``rapid.serve.lastAlias``, so a misspelled entry just
+    never matches and the stranded cohort stays stranded."""
+    from vllm_mlx.model_aliases import list_aliases
+
+    known = list_aliases()
+    for alias in _parse_retired_starters():
+        assert alias in known, f"retiredStarters names unknown alias {alias!r}"

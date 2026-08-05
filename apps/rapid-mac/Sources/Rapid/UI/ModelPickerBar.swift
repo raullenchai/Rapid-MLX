@@ -10,7 +10,7 @@ import SwiftUI
 /// card can still one-click install the demo model from the picker:
 ///
 ///   ┌── Quickstart ─────────────────────────────────┐
-///   │  bonsai-1.7b-2bit · Smallest model — fastest  │ ← RAM-blind, F-LWT-1
+///   │  lfm2.5-1b-4bit · Smallest model — fastest   │ ← RAM-blind, F-LWT-1
 ///   │  first install                                │
 ///   ├── Recommended for your 18 GB Mac ─────────────┤
 ///   │  Best pick   bonsai-27b-2bit   [amber row     │ ← the RAM tier's
@@ -80,7 +80,7 @@ struct ModelPickerBar: View {
 
     /// The alias the Quickstart flow is currently aimed at — the wizard's
     /// live selection (#1524) while a coordinator is attached, else the
-    /// fixed starter (bonsai-1.7b-2bit). This is the target the in-flight
+    /// fixed starter (lfm2.5-1b-4bit). This is the target the in-flight
     /// picker breadcrumb mirrors onto so the picker never shows a model
     /// that disagrees with what's downloading. The picker's *own*
     /// persistent "Quickstart" demo row is a separate, always-starter
@@ -194,7 +194,7 @@ struct ModelPickerBar: View {
            catalog.contains(where: { $0.alias == quickstartTargetAlias }) {
             return quickstartTargetAlias
         }
-        // v0.7.1 #229: on a fresh install the bundled bonsai-1.7b-2bit
+        // v0.7.1 #229: on a fresh install the bundled lfm2.5-1b-4bit
         // is on disk and the user has never picked anything else.
         // Prefer it so the picker matches what the ContentView ``.task``
         // auto-restart starts — otherwise the breadcrumb shows a
@@ -656,7 +656,7 @@ struct ModelPickerBar: View {
 
     /// F-LWT-1: dedicated single-row "Quickstart" section above the
     /// RAM-aware Recommended section. RAM-blind by design — the
-    /// Quickstart alias is the same on every Mac (bonsai-1.7b-2bit is
+    /// Quickstart alias is the same on every Mac (lfm2.5-1b-4bit is
     /// the smallest first-impression install). Persists
     /// across all Quickstart phases including ``.dismissed`` so a
     /// user who closed the Quickstart card can still come back and

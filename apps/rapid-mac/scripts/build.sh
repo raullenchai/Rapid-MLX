@@ -297,7 +297,7 @@ else
     echo "==> sidecar staged ($SIDECAR_VERSION)"
 fi
 
-# v0.7.1 #229: bundle the bonsai-1.7b-2bit weights inside the DMG so
+# v0.7.1 #229: bundle the lfm2.5-1b-4bit weights inside the DMG so
 # first-launch chat happens with zero HuggingFace round-trips. The HF
 # Hub snapshot layout (``models--<owner>--<name>``) lives under
 # ``Contents/Resources/models/hf-cache/hub/``; ``BundledModel.swift``
@@ -317,7 +317,7 @@ fi
 # 1.
 BUNDLE_MODEL="${BUNDLE_MODEL:-0}"
 SKIP_BUNDLED_MODEL="${SKIP_BUNDLED_MODEL:-0}"
-BUNDLED_MODEL_REPO="${BUNDLED_MODEL_REPO:-prism-ml/Ternary-Bonsai-1.7B-mlx-2bit}"
+BUNDLED_MODEL_REPO="${BUNDLED_MODEL_REPO:-mlx-community/LFM2.5-1.2B-Instruct-4bit}"
 # HF Hub cache encodes ``owner/name`` as ``models--owner--name`` —
 # each ``/`` becomes a literal ``--`` (double dash). Matches the
 # derivation in Sources/Rapid/Server/BundledModel.swift's

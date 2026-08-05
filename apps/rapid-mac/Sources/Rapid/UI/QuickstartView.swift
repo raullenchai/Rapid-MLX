@@ -17,42 +17,63 @@ import SwiftUI
 /// first-touch shape for an inference app.
 ///
 /// Quickstart collapses the cold-start into one click. The card surfaces
-/// when (a) the user has no last-served alias persisted AND (b) the
-/// quickstart flag in UserDefaults hasn't been set yet AND (c) the
-/// server isn't already busy with something else. Clicking "Get started"
-/// triggers a ``rapid-mlx pull bonsai-1.7b-2bit`` (~0.5 GB) via the
+/// when (a) the user has no last-served alias persisted — or has one that
+/// is a ``retiredStarters`` entry, i.e. a model we stranded them on —
+/// AND (b) the quickstart flag in UserDefaults hasn't been set yet AND
+/// (c) the server isn't already busy with something else. Clicking
+/// "Get started"
+/// triggers a ``rapid-mlx pull lfm2.5-1b-4bit`` (~0.6 GB) via the
 /// existing ``DownloadManager``, then auto-spawns
-/// ``rapid-mlx serve bonsai-1.7b-2bit`` once the pull is done, then
+/// ``rapid-mlx serve lfm2.5-1b-4bit`` once the pull is done, then
 /// drops the user into chat with a single seeded assistant message
 /// introducing the model.
 ///
-/// ## Why bonsai-1.7b-2bit
+/// ## Why lfm2.5-1b-4bit
 ///
-/// Starter = Ternary-Bonsai 1.7B (mlx 2-bit; rapid-mlx alias
-/// ``bonsai-1.7b-2bit``, PR #1092). This supersedes the earlier
-/// ``qwen3-0.6b-4bit`` starter. History: the original ``qwen3.5-4b-4bit``
-/// (~2.3 GB) cold-installed in ~11 minutes at the user's observed
-/// 4.4 MB/s — an atrocious first-impression — so F-LWT-1 dropped to a
-/// tiny ~400 MB 0.6B model purely for install latency, at the cost of
-/// the tool-calls demo (0.6B can't reliably emit ``tool_calls``).
+/// Starter = LFM2.5 1.2B Instruct (mlx 4-bit; rapid-mlx alias
+/// ``lfm2.5-1b-4bit``). This supersedes the ``bonsai-1.7b-2bit``
+/// starter, which degenerated 4/4 on a plain-chat word problem — see
+/// ``defaultChoice`` for the measurements.
 ///
-/// Bonsai removes that tradeoff. A ternary (1.58-bit) 1.7B checkpoint
-/// weighs only ~0.5 GB — still a ~1-minute cold install on the same
-/// link — yet it is a real Qwen3 that holds coherent multi-turn chat
-/// AND emits clean ``tool_calls`` (6/6 in eval, hermes parser). The
-/// brand-new user gets both halves on the very first model: "the app
-/// works" AND "it can actually do things."
+/// History: the original ``qwen3.5-4b-4bit`` (~2.3 GB) cold-installed in
+/// ~11 minutes at the user's observed 4.4 MB/s — an atrocious first
+/// impression — so F-LWT-1 dropped to a tiny ~400 MB 0.6B purely for
+/// install latency. #1092 then moved to Bonsai on the strength of a
+/// tool-call eval. Both swaps optimised something other than "does the
+/// first answer come out right", which is what the user actually sees.
+///
+/// ### The selection criterion this slot actually has
+///
+/// A starter is judged on the first plain-chat reply, not on capability
+/// breadth. Concretely, in priority order:
+///
+///   1. **It must terminate and be coherent.** Non-negotiable, and the
+///      one thing neither prior pick was measured on. Note the guard
+///      cannot cover for a weak model here: the loop breaker and the
+///      streaming hard-stop are both gated on ``request.has_tools``,
+///      and onboarding is plain chat.
+///   2. **It must answer immediately.** A reasoning model is
+///      disqualified regardless of quality — hidden thinking means a
+///      blank screen on the one interaction that forms the impression.
+///      This is why the stronger ``lfm2.5-2.6b-4bit`` is not the
+///      starter even though it is the 8-15 GB tier pick.
+///   3. **Download small enough not to lose the user.** Real, but
+///      weaker than it looks: 637 MB pulled in 21 s, *faster* than
+///      Bonsai's 484 MB in 24 s. Shard parallelism dominates at this
+///      size, so a few hundred MB is not the deciding axis.
+///
+/// Tool calling is deliberately absent from that list. It is the right
+/// bar for a *recommended* model, not for the first 60 seconds.
 ///
 /// ### What this means for the empty state
 ///
-///   1. Tool calls ARE reachable on the starter. ``ToolUseCapability``
-///      lists ``bonsai-`` as ``.known`` (≥1.5 B floor), so the
-///      empty-state capability chip row renders instead of being
-///      hidden by the tool-bias gate (PR #333 + FU-9).
-///   2. The ``ChatView`` empty-state ``examplePrompts`` stay
-///      model-agnostic pure-text by design — they must read well on
-///      ANY starter, not tease a capability tied to one alias — so
-///      they are unchanged by this swap.
+///   1. The starter is text-first. If ``ToolUseCapability`` does not
+///      list ``lfm2.5-`` as ``.known``, the empty-state capability chip
+///      row stays hidden by the tool-bias gate (PR #333 + FU-9) — which
+///      is the correct, honest surface for it.
+///   2. The ``ChatView`` empty-state prompts stay model-agnostic pure
+///      text by design — they must read well on ANY starter, not tease
+///      a capability tied to one alias — so they are unchanged.
 ///   3. Users who want more depth trade up via the picker's
 ///      **Recommended Default** (``RAMBucketedDefault``, RAM-aware —
 ///      e.g. ``qwen3.5-9b-4bit`` on an 18 GB Mac), and the
@@ -60,9 +81,8 @@ import SwiftUI
 ///
 /// ### What we keep
 ///
-///   * One-click install + chat for the brand-new user, ~1-minute
-///     cold install.
-///   * Coherent pure-text chat + working tool calls on the starter.
+///   * One-click install + chat for the brand-new user, well under a
+///     minute of cold install.
 ///   * A dedicated "Quickstart" picker section (RAM-blind, persists
 ///     post-dismiss) so a user who skipped Quickstart can still
 ///     one-click install the demo model from the picker.
@@ -95,8 +115,8 @@ import SwiftUI
 
 /// One selectable model in the Quickstart wizard's "choose your first
 /// model" step (#1524). The wizard defaults to — and recommends — the
-/// tiny 0.6B starter (the locked "0.6B first-run" decision), but lets the
-/// user trade up to a bigger model before the first download.
+/// small starter (see ``QuickstartCoordinator.defaultChoice``), but lets
+/// the user trade up to a bigger model before the first download.
 ///
 /// ``hfRepo`` is pinned only for the starter (it wires the precise
 /// bytes-on-disk monitor for the first-impression cold install — see the
@@ -107,7 +127,7 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     var id: String { alias }
     /// Canonical alias resolved in ``vllm_mlx/aliases.json``.
     let alias: String
-    /// Prose label for onboarding copy ("Bonsai · 1.7B"). Hand-picked
+    /// Prose label for onboarding copy ("LFM2.5 · 1.2B"). Hand-picked
     /// rather than catalog-derived so the copy never reads a raw alias.
     let displayName: String
     /// HF repo backing the byte monitor. Pinned for the starter; ``nil``
@@ -154,20 +174,58 @@ final class QuickstartCoordinator {
     /// The default + recommended starter — the first-run decision.
     /// Pinned, not derived (F-LWT-1: ~11 min cold install of the old 4B
     /// pick was the wrong first-impression tradeoff; a small starter
-    /// wins). 2026-07-10: swapped from ``qwen3-0.6b-4bit`` to the
-    /// Ternary Bonsai 1.7B (rapid-mlx alias ``bonsai-1.7b-2bit``, PR
-    /// #1092) — a ~0.5 GB ternary (1.58-bit) checkpoint that keeps the
-    /// small-first-download win but, unlike the 0.6B, is multi-turn
-    /// coherent AND emits clean ``tool_calls`` (6/6 on the eval
-    /// harness). It therefore clears ``ToolUseCapability.known``, so the
-    /// empty-state capability chips surface and the starter no longer
-    /// has to hide its agentic surface. Users still trade up to a
-    /// bigger model in the wizard or later via the picker.
+    /// wins).
+    ///
+    /// ## History
+    ///
+    /// - 2026-07-10 (#1092): ``qwen3-0.6b-4bit`` → ``bonsai-1.7b-2bit``.
+    /// - 2026-08-05: ``bonsai-1.7b-2bit`` → ``lfm2.5-1b-4bit``, because
+    ///   the Bonsai starter does not survive an ordinary chat question.
+    ///
+    /// ## Why the Bonsai starter had to go
+    ///
+    /// A community report showed the starter collapsing on a basic
+    /// multi-step word problem. Reproduced on an M2 Pro against engine
+    /// 0.12.4, one plain-chat request (no tools), 4 attempts at two
+    /// different token budgets: it degenerated **4/4** and terminated
+    /// **0/4**. Output doubles words within the first line ("for for",
+    /// "the the the the"), then collapses into an unbounded loop
+    /// (``\text{1} \text{1} …``, ``1 + 9 = 1 + 9 = …``) that only ends
+    /// when it hits ``max_tokens``.
+    ///
+    /// Two things made this the worst possible default. It is *fast*
+    /// while being wrong, so it reads as "this app is broken" rather
+    /// than "this Mac is slow". And the runaway-generation guard cannot
+    /// save it: both the logits-level loop breaker and the streaming
+    /// hard-stop are gated on ``request.has_tools``, and onboarding is
+    /// plain chat — so nothing intervenes.
+    ///
+    /// The prior "6/6 clean ``tool_calls``" evidence is not contradicted;
+    /// it just measured the wrong thing for this slot. Emitting
+    /// well-formed tool calls says nothing about staying coherent in the
+    /// free-form chat every new user actually types first.
+    ///
+    /// ## Why the 1.2B and not the 2.6B
+    ///
+    /// Measured on the same M2 Pro, same prompt. The download worry that
+    /// motivated a ~0.5 GB pick does not survive measurement: 637 MB
+    /// pulled in 21 s, *faster* than Bonsai's 484 MB in 24 s (HF shard
+    /// parallelism dominates at this size).
+    ///
+    /// ``lfm2.5-2.6b-4bit`` is the stronger model and stays the 8-15 GB
+    /// tier recommendation — but it is the wrong *starter*. It routes
+    /// through the ``qwen3`` reasoning parser, so ~2/3 of its output is
+    /// hidden thinking: 3.6 s to a first answer, most of it a blank
+    /// screen. The 1.2B has no reasoning phase — 1.1 s, 170 tok/s, and
+    /// it answers correctly. For a first impression, "instant and right"
+    /// beats "smarter but silent first".
+    ///
+    /// Users still trade up in the wizard or later via the picker.
     static let defaultChoice = QuickstartModelChoice(
-        alias: "bonsai-1.7b-2bit",
-        displayName: "Bonsai · 1.7B",
-        hfRepo: "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit",
-        blurb: "Small download (~0.5 GB), runs on any Mac. Surprisingly capable — real chat and tool calls. Upgrade anytime for more depth.",
+        alias: "lfm2.5-1b-4bit",
+        displayName: "LFM2.5 · 1.2B",
+        hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+        blurb: "Small download (~0.6 GB), runs on any Mac. Answers instantly and follows instructions well. Upgrade anytime for more depth.",
         isStarter: true
     )
 
@@ -202,14 +260,14 @@ final class QuickstartCoordinator {
     /// even after the user deletes every model. Versioned so a
     /// future Quickstart refresh (e.g. introducing a different
     /// default model) can re-show without clobbering the v1 flag.
-    static let storageKey: String = "rapid.quickstart.v1.done"
+    static let storageKey: String = "rapid.quickstart.v2.done"
 
     /// Welcome message seeded into the active session after the sidecar
     /// comes online, so the user always lands in chat with a friendly
     /// intro rather than an empty transcript. Interpolates the chosen
     /// model's display name.
     ///
-    /// The starter (bonsai-1.7b-2bit) is intentionally the smallest
+    /// The starter (lfm2.5-1b-4bit) is intentionally the smallest
     /// pick, so its copy keeps the "start in about a minute, trade up
     /// any time" framing. A bigger pick gets a plainer intro without
     /// the "smallest model" framing (it earned the trade-up, so don't
@@ -518,7 +576,7 @@ Open the picker any time to switch models.
     ///
     /// Three gates, all must hold:
     ///   1. ``done == false`` — the persistent one-shot guard
-    ///      (``rapid.quickstart.v1.done``). Set once the user completes
+    ///      (``rapid.quickstart.v2.done``). Set once the user completes
     ///      OR dismisses Quickstart, so the card never returns.
     ///   2. ``lastServedAlias == nil`` — our own "has this app ever
     ///      served a model?" signal (``rapid.serve.lastAlias``, written
@@ -535,13 +593,35 @@ Open the picker any time to switch models.
     /// re-trigger onboarding is to clear them (a deliberate developer
     /// ``defaults delete``), which is the correct semantics for "reset
     /// first-run", not something inferred from disk contents.
+    /// Aliases retired because they do not survive an ordinary chat, not
+    /// because something better came along.
+    ///
+    /// Gate 2 below treats "has served a model" as "is not a new user".
+    /// That inference breaks for the one cohort this list exists for: a
+    /// user whose only model is ``bonsai-1.7b-2bit`` did reach a running
+    /// model, so the gate calls them onboarded — but what they onboarded
+    /// onto degenerates 4/4 on a plain-chat question (see
+    /// ``defaultChoice``). Bumping ``storageKey`` to v2 alone does not
+    /// reach them: their ``rapid.serve.lastAlias`` is set, so gate 2 keeps
+    /// the card down and they stay stranded on the broken starter.
+    ///
+    /// Membership here is a strong claim — it re-opens onboarding for
+    /// someone already using the app. Add an alias only when it is
+    /// effectively unusable, never merely superseded. A user who traded
+    /// up to any other model is untouched by this.
+    static let retiredStarters: Set<String> = ["bonsai-1.7b-2bit"]
+
     static func isEligible(
         done: Bool,
         lastServedAlias: String?,
         serverState: ServerState
     ) -> Bool {
         guard !done else { return false }
-        guard lastServedAlias == nil else { return false }
+        // Gate 2, with the retired-starter carve-out. `nil` is the
+        // genuinely-new user; a retired starter is a user we stranded.
+        if let alias = lastServedAlias, !retiredStarters.contains(alias) {
+            return false
+        }
         switch serverState {
         case .idle, .stopped:
             return true

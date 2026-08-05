@@ -306,7 +306,7 @@ enum ToolUseCapability {
         // it to .known lets the empty-state capability chips surface.
         // 1.5B floor: the starter is 1.7B (below the 3.0 floor the other
         // rows use), and the smallest shipped ternary is 1.7B.
-        KnownFamily(prefix: "bonsai-", minSizeBillions: 1.5, note: "Ternary Bonsai (Qwen3 arch); 6/6 clean tool_calls on 1.7B, hermes parser; rapid-mlx PR #1092; first-run starter"),
+        KnownFamily(prefix: "bonsai-", minSizeBillions: 1.5, note: "Ternary Bonsai (Qwen3 arch); 6/6 clean tool_calls on 1.7B, hermes parser; rapid-mlx PR #1092. NOT the first-run starter since 2026-08-05 — it degenerates on plain chat; see QuickstartCoordinator.defaultChoice"),
 
         // MARK: Llama family
 

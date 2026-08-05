@@ -15,32 +15,43 @@ import Foundation
 /// inactive the entire time. By the time the user had typed "hi" the
 /// app had already failed.
 ///
-/// For airgapped builds (``BUNDLE_MODEL=1``) the ~0.5 GB
-/// bonsai-1.7b-2bit weights are staged inside the DMG. On first
+/// For airgapped builds (``BUNDLE_MODEL=1``) the ~0.6 GB
+/// lfm2.5-1b-4bit weights are staged inside the DMG. On first
 /// launch the desktop:
 ///
 /// 1. Resolves the bundled model directory at
-///    ``Contents/Resources/models/hf-cache/models--prism-ml--Ternary-Bonsai-1.7B-mlx-2bit``
+///    ``Contents/Resources/models/hf-cache/models--mlx-community--LFM2.5-1.2B-Instruct-4bit``
 /// 2. Symlinks it into the user's HuggingFace cache
 ///    (``~/.cache/huggingface/hub/``) the first time the symlink is
 ///    missing, so the sidecar can ``snapshot_download`` it without a
 ///    network call.
 /// 3. Returns ``bundledAlias`` as the first-launch default so the
-///    sidecar gets ``rapid-mlx serve bonsai-1.7b-2bit`` instead of
+///    sidecar gets ``rapid-mlx serve lfm2.5-1b-4bit`` instead of
 ///    something the user would have to wait minutes to download.
 ///
-/// ## Why bonsai-1.7b-2bit (Ternary Bonsai)
+/// ## Why lfm2.5-1b-4bit (LFM2.5 1.2B Instruct)
 ///
-/// 2026-07-10: swapped from the v0.7.x ``qwen3-0.6b-4bit`` starter.
-/// The ternary (1.58-bit, packed as MLX-2bit) 1.7B is ~0.5 GB on
-/// disk — still a small first-download — but is a genuinely usable
-/// model where the 0.6B was smoke-test-grade: it holds multi-turn
-/// context and, crucially, emits clean ``tool_calls`` (6/6 on the
-/// eval harness, hermes parser), so it clears
-/// ``ToolUseCapability.known`` instead of hiding its agentic surface.
-/// It's a real Qwen3-architecture checkpoint, so the chat-template +
-/// tool-call shape carries forward to every ``RAMBucketedDefault``
-/// upgrade target. See rapid-mlx alias ``bonsai-1.7b-2bit`` (PR #1092).
+/// 2026-08-05: swapped from ``bonsai-1.7b-2bit``. Kept in lock-step
+/// with ``QuickstartCoordinator.defaultChoice`` — the two are the same
+/// product decision reached by two paths (bundled vs downloaded), and
+/// letting them drift means an airgapped build ships a first-launch
+/// model the online path has already rejected.
+///
+/// Bonsai was chosen (#1092) on a tool-call eval: 6/6 clean
+/// ``tool_calls`` on the 1.7B. That measurement was real but did not
+/// cover the thing a starter is actually judged on. On a plain-chat
+/// multi-step word problem — no tools — it degenerated 4/4 and
+/// terminated 0/4, doubling words within the first line and then
+/// looping until it hit ``max_tokens``. See
+/// ``QuickstartCoordinator.defaultChoice`` for the full measurements.
+///
+/// The 1.2B replacement answers correctly and terminates cleanly
+/// (12/12 in a controlled repro), at 170 tok/s with no reasoning
+/// phase. It is a text-first pick: unlike Bonsai it is not currently
+/// listed in ``ToolUseCapability``, so the empty-state capability
+/// chips stay hidden until someone measures its tool calls. That is
+/// the intended fail-closed posture — do not add it to the known
+/// list on the strength of the engine's ``lfm`` parser alone.
 ///
 /// ## Why this lives in ``Server/`` not ``UI/``
 ///
@@ -55,13 +66,13 @@ enum BundledModel {
     /// re-test, sidecar smoke). Source-of-truth lives in the
     /// submodule at ``third_party/rapid-mlx/vllm_mlx/aliases.json``;
     /// this constant just names the entry we ship weights for.
-    static let bundledAlias: String = "bonsai-1.7b-2bit"
+    static let bundledAlias: String = "lfm2.5-1b-4bit"
 
     /// HuggingFace repo ID for the bundled weights. The HF cache
     /// layout encodes this as ``models--<owner>--<name>`` on disk.
     /// Kept here next to ``bundledAlias`` so a renamed-upstream
     /// repo doesn't silently break the symlink path.
-    static let bundledRepoID: String = "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit"
+    static let bundledRepoID: String = "mlx-community/LFM2.5-1.2B-Instruct-4bit"
 
     /// HF cache directory name for the bundled repo. The HF Hub
     /// snapshot layout uses ``models--<owner>--<name>`` (double-dash
