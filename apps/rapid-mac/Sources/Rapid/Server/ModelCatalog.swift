@@ -539,6 +539,16 @@ enum ModelCatalog {
             processBox.set(task)
             do {
                 try task.run()
+                // The child now holds its own dup of both write ends, so
+                // drop OUR copies. While the parent keeps a write end
+                // open the pipe can never reach EOF — ``readPipeData``
+                // then blocks forever even after the child exits, and
+                // ``terminationHandler``'s ``drainGroup.wait()`` deadlocks
+                // the continuation with it. The launch-failure branch
+                // below has always closed them; the success path is where
+                // a long-lived or hung child actually makes it matter.
+                try? stdout.fileHandleForWriting.close()
+                try? stderr.fileHandleForWriting.close()
                 processBox.terminateIfCancelled()
             } catch {
                 // Close write ends so the drainers see EOF instead

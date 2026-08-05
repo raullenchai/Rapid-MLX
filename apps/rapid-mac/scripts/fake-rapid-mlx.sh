@@ -193,8 +193,66 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+FAKE_REPO = "fake-org/fake-repo"
+
+
+def _emit_catalog(subcommand, alias):
+    """Print the canned output for a NON-``serve`` subcommand.
+
+    ``ModelCatalog`` shells out to ``models`` / ``ls`` / ``info`` to
+    populate the picker, and every one of those is a print-and-exit
+    command on the real binary. The formats below mirror what
+    ``ModelCatalog.parseAvailable`` / ``parseCached`` / ``parseInfoRepo``
+    actually parse (column-aligned rows behind a header + divider; an
+    ``Alias: <alias> -> <repo>`` line for ``info``).
+
+    Returns True when ``subcommand`` was handled, so ``main`` knows not
+    to fall through to the server.
+    """
+    if subcommand == "models":
+        print("Available models")
+        print("Alias                  Parser           Reasoning")
+        print("---------------------  ---------------  ---------")
+        print("fake-alias             hermes           qwen3")
+        return True
+    if subcommand == "ls":
+        print("Cached models")
+        print("Alias                  Repo                   Size")
+        print("---------------------  ---------------------  ------")
+        print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+        return True
+    if subcommand == "info":
+        print(f"Alias: {alias} -> {FAKE_REPO}")
+        return True
+    return False
+
+
 def main():
     args = _parse_args(sys.argv)
+
+    # Only ``serve`` runs a server. Every other subcommand prints and
+    # exits, exactly like the real binary.
+    #
+    # This branch is the whole point of parsing ``subcommand``: without
+    # it the fake ignored the verb and started the HTTP server for ANY
+    # invocation. ``ModelCatalog.runRapidMlx(args: ["models"])`` (the
+    # catalog refresh on app launch) therefore spawned a child that
+    # never exited, so its pipe write ends never closed, so both
+    # ``readPipeData`` drainers blocked on an EOF that could not arrive
+    # and ``terminationHandler``'s ``drainGroup.wait()`` deadlocked the
+    # continuation. Net effect: ``scripts/smoke.sh`` hung forever
+    # instead of running its chat-lifecycle assertions, and left a
+    # stray listener squatting :8000 (which the next Rapid launch's
+    # PortSweep would then reap — along with any real rapid-mlx the
+    # developer had running on that port).
+    #
+    # Default-deny is deliberate: an unknown verb exits 0 with no
+    # output rather than falling through to the server, so a future
+    # ``ModelCatalog`` subcommand can't resurrect the hang.
+    if args.subcommand != "serve":
+        _emit_catalog(args.subcommand, args.alias)
+        sys.exit(0)
+
     # Match the real server's startup banner shape closely enough
     # that DownloadProgress's "Loading model with" detection fires
     # — this lets the SwiftUI overlay flip out of the spinner state
