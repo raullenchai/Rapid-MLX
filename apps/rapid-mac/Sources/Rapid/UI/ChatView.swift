@@ -267,6 +267,14 @@ struct ChatView: View {
             // tip; streamed frame changes then keep following from there.
             .onAppear { isPinnedToBottom = true }
             .onChange(of: messages.count) { _, _ in isPinnedToBottom = true }
+            // Switching conversations is navigation to a DIFFERENT tip, but it
+            // need not change `messages.count` — two conversations can have the
+            // same number of turns, and then the count-keyed reset above never
+            // fires. Without this, opening B inherits A's paused state and lands
+            // at A's old scroll offset instead of B's latest message.
+            .onChange(of: viewModel.activeConversationID) { _, _ in
+                isPinnedToBottom = true
+            }
         }
     }
 
