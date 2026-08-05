@@ -505,6 +505,8 @@ class TestLaunchCommand:
             "https://[",
             "https://127.0.0.1\\@example.com",
             "https://user:password@example.com",
+            "https://%31%32%37.0.0.1",
+            "https://例子.测试",
         ],
     )
     def test_cursor_rejects_ambiguous_authority_without_traceback(

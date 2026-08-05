@@ -81,6 +81,11 @@ config, plus an honest test-backed [support matrix](../agents/matrix.md):
 | [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `ANTHROPIC_BASE_URL=http://localhost:8000 claude` | Compatible | Uses Anthropic `/v1/messages` |
 | [Cursor](https://cursor.com) | IDE | `RAPID_MLX_API_KEY=your-secret rapid-mlx launch cursor --server-url https://your-public-host` | Not compatible locally | BYOK requests pass through Cursor's servers; public HTTPS and server auth are required |
+
+Rapid-MLX rejects explicit local/private Cursor addresses, but it does not use
+your Mac's DNS result as proof that Cursor's backend can reach a hostname.
+Split-horizon DNS may look different from Cursor's network, so verify the
+authenticated HTTPS endpoint from an external network before configuring it.
 | [Continue.dev](https://continue.dev) | IDE Extension | `~/.continue/config.yaml` `apiBase: http://localhost:8000/v1` | Compatible | VS Code / JetBrains |
 | [pi](https://shittycodingagent.ai) | TUI | `OPENAI_BASE_URL=http://localhost:8000/v1` | Community-reported | Works with Qwen3.5/Qwen3.6 models |
 

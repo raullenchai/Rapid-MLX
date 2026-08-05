@@ -62,6 +62,25 @@ def canonical_server_url(server_url: str) -> str:
             address = ipaddress.ip_address(socket.inet_aton(normalized))
         except OSError:
             address = None
+    if address is None:
+        labels = normalized.split(".")
+        if (
+            not normalized.isascii()
+            or len(normalized) > 253
+            or any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or not all(
+                    character.isalnum() or character == "-" for character in label
+                )
+                for label in labels
+            )
+        ):
+            raise ValueError(
+                "Cursor requires an unescaped ASCII hostname (use IDNA/punycode if needed)"
+            )
     if address is not None and (
         not address.is_global
         or address.is_multicast
@@ -72,6 +91,12 @@ def canonical_server_url(server_url: str) -> str:
         raise ValueError(
             "Cursor's servers cannot reach localhost or private network addresses"
         )
+
+    # Do not resolve hostnames here. Cursor, not this Mac, makes the provider
+    # request, so split-horizon DNS can produce a different answer from the
+    # backend. Local DNS is neither proof of reachability nor a stable SSRF
+    # boundary; the operator must supply an authenticated HTTPS endpoint that
+    # is public from Cursor's network vantage point.
 
     try:
         canonical_address = ipaddress.ip_address(normalized)
