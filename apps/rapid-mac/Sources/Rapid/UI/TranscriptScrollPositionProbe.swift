@@ -91,7 +91,15 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
 
         @objc private func boundsDidChange(_ notification: Notification) {
             guard isLiveScrolling else { return }
-            setPinned(isAtBottom)
+            // Mid-gesture this may only RELEASE the pin, never restore it.
+            // ``isAtBottom`` is a slack comparison, so a gentle scroll whose
+            // per-event delta is within ``bottomResumeSlack`` still reads as
+            // "at the bottom" — re-pinning on it would let the next streamed
+            // frame yank the user straight back, which is precisely the
+            // hijacking this probe exists to stop, and the user could never
+            // escape by scrolling softly. Resuming is decided once the user
+            // has settled, in ``liveScrollDidEnd``.
+            if !isAtBottom { setPinned(false) }
         }
 
         @objc private func documentFrameDidChange(_ notification: Notification) {

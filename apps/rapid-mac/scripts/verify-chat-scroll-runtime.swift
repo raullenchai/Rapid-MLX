@@ -165,7 +165,40 @@ struct ChatScrollRuntimeCheck {
             bottomY = max(0, document.bounds.height - scroll.contentView.bounds.height)
         }
 
-        print("PASS: paused scrolling and bottom-resume following survived 3 streaming cycles")
+        // A GENTLE scroll must escape too. The cycles above jump 240 pt in one
+        // move, far outside `bottomResumeSlack`, so they never exercised the
+        // case where each per-event delta lands INSIDE the slack. If the
+        // mid-gesture handler is allowed to re-pin on a slack comparison, every
+        // small step reads as "still at the bottom", the next streamed frame
+        // snaps the transcript back down, and the user can never scroll away by
+        // moving softly — the exact hijacking this probe exists to prevent.
+        move(scroll, toY: bottomY)
+        pump()
+        guard model.isPinnedToBottom else {
+            fputs("FAIL: could not re-pin before the gentle-scroll check\n", stderr)
+            exit(1)
+        }
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        for _ in 0..<8 {
+            // Step 1 pt above WHERE WE CURRENTLY ARE (not a precomputed
+            // absolute Y): if a streamed frame drags us back to the bottom,
+            // the next step starts from the bottom again and no distance ever
+            // accumulates — which is exactly the failure being detected.
+            let currentY = scroll.contentView.bounds.minY
+            move(scroll, toY: max(0, currentY - 1))   // 1 pt: inside the 2 pt slack
+            model.rowCount += 1                        // stream while the user reads
+            pump(0.03)
+        }
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        pump(0.2)
+        let gentleDistance = document.bounds.height - scroll.contentView.bounds.maxY
+        guard !model.isPinnedToBottom, gentleDistance > 2 else {
+            fputs("FAIL: a gentle (sub-slack) scroll was dragged back to the bottom\n", stderr)
+            fputs("distance=\(gentleDistance) pinned=\(model.isPinnedToBottom) \(metrics(scroll))\n", stderr)
+            exit(1)
+        }
+
+        print("PASS: paused scrolling and bottom-resume following survived 3 streaming cycles + gentle scroll")
         window.close()
     }
 }
