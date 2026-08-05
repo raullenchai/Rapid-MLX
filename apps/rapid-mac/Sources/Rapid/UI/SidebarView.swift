@@ -38,16 +38,18 @@ struct SidebarView: View {
             )
 
             if !chat.conversations.isEmpty {
-                Text("Older")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 12)
-                    .padding(.bottom, 2)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        ForEach(chat.conversations) { conv in
-                            conversationRow(conv)
+                        ForEach(historySections, id: \.title) { section in
+                            Text(section.title)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10)
+                                .padding(.top, 12)
+                                .padding(.bottom, 2)
+                            ForEach(section.conversations) { conv in
+                                conversationRow(conv)
+                            }
                         }
                     }
                 }
@@ -57,6 +59,65 @@ struct SidebarView: View {
         }
         .padding(8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// The history list split into dated sections, newest first.
+    ///
+    /// Everything used to sit under a hard-coded "Older" heading, so a
+    /// conversation five seconds old was filed as ancient history.
+    private var historySections: [HistorySection] {
+        SidebarView.sections(for: chat.conversations, now: Date())
+    }
+
+    struct HistorySection {
+        let title: String
+        let conversations: [ChatConversation]
+    }
+
+    /// Bucket conversations by recency. ``now`` is injected rather than read
+    /// inside, matching ``RelativeTimestamp`` — it keeps the function pure so
+    /// the day boundaries can be exercised without waiting for midnight.
+    ///
+    /// Uses `Calendar` (not a fixed 86 400s divisor) because the buckets are
+    /// *calendar* days: something sent at 23:55 belongs to "Yesterday" once
+    /// the clock passes midnight, even though barely any time has elapsed.
+    /// Empty buckets produce no section, so no stray headings appear.
+    static func sections(
+        for conversations: [ChatConversation],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [HistorySection] {
+        var today: [ChatConversation] = []
+        var yesterday: [ChatConversation] = []
+        var week: [ChatConversation] = []
+        var older: [ChatConversation] = []
+
+        // The 7-day cutoff is anchored to the START of today, not to `now` —
+        // otherwise the boundary would drift through the day and a
+        // conversation could slide between sections while the user watches.
+        let startOfToday = calendar.startOfDay(for: now)
+        let weekCutoff = calendar.date(byAdding: .day, value: -7, to: startOfToday)
+
+        for conv in conversations {
+            if calendar.isDate(conv.updatedAt, inSameDayAs: now) {
+                today.append(conv)
+            } else if calendar.isDateInYesterday(conv.updatedAt) {
+                yesterday.append(conv)
+            } else if let weekCutoff, conv.updatedAt >= weekCutoff {
+                week.append(conv)
+            } else {
+                older.append(conv)
+            }
+        }
+
+        return [
+            ("Today", today),
+            ("Yesterday", yesterday),
+            ("Previous 7 Days", week),
+            ("Older", older),
+        ]
+        .filter { !$0.1.isEmpty }
+        .map { HistorySection(title: $0.0, conversations: $0.1) }
     }
 
     /// One history row — the conversation's derived title, amber-selected
