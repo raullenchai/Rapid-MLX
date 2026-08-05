@@ -25,9 +25,16 @@ let package = Package(
         // diagnosis tests. Never linked into the shipped app target.
         //
         // Pinned exact, not `from:`. Package.resolved is gitignored here, so
-        // a range would let CI resolve a different version than anyone tested
-        // — and view-introspection libraries track SwiftUI internals closely
-        // enough that a patch bump can change what compiles.
+        // a range would let CI resolve a patch nobody tested — and
+        // view-introspection libraries track SwiftUI internals closely enough
+        // that a patch bump can change what compiles.
+        //
+        // This is narrower than reproducible: an exact tag still resolves to
+        // whatever revision the tag points at, and a maintainer can move a
+        // tag. Committing Package.resolved is the real fix, but that reverses
+        // a standing decision for this package and is not a test-revival
+        // change. ViewInspector has no transitive dependencies, so the
+        // exposure is one repo's tag.
         .package(url: "https://github.com/nalexn/ViewInspector", exact: "0.10.3")
     ],
     targets: [
