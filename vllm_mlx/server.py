@@ -2635,8 +2635,7 @@ Examples:
     # was silently dropped — same bug class as #400. The unified rapid-mlx
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
-    from .pflash import config_from_args as _server_pflash_config_from_args
-    from .pflash import resolve_pflash_mode_default as _server_pflash_resolve_default
+    from .pflash import resolve_pflash_config as _server_pflash_resolve_config
     from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
 
@@ -2666,11 +2665,20 @@ Examples:
         force_mllm=_srv_force_mllm,
         force_text=_srv_force_text,
     )
-    args.pflash = _server_pflash_resolve_default(
-        args, model_name=args.model, is_multimodal=_srv_is_mllm
-    )
+    # Resolve mode AND per-alias keep_ratio through the single shared helper —
+    # the same call ``cli.py`` uses for ``serve``/``bench``. Going through
+    # ``resolve_pflash_config`` (rather than ``resolve_pflash_mode_default`` +
+    # ``config_from_args`` directly) is what applies a per-alias
+    # ``pflash_keep_ratio`` override (#1458): a verified alias pinned at a
+    # non-default ratio (e.g. bonsai-27b-2bit @0.50, whose mid-prompt recall
+    # collapses to 1/5 at the 0.20 engine default) would otherwise auto-enable
+    # PFlash at the lossy 0.20 here while ``rapid-mlx serve`` used 0.50 — the
+    # two serving entrypoints must not drift. It mutates ``args.pflash`` and
+    # ``args.pflash_keep_ratio`` in place so later readers see resolved values.
     try:
-        server_pflash_config = _server_pflash_config_from_args(args)
+        server_pflash_config = _server_pflash_resolve_config(
+            args, model_name=args.model, is_multimodal=_srv_is_mllm
+        )
         _server_pflash_validate(
             server_pflash_config,
             model_name=args.model,
