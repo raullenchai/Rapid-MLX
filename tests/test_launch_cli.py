@@ -50,6 +50,8 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     tests. Returns the tmp_path for callers that want to construct
     expected paths.
     """
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+
     # cline: replace the candidate-roots helper so detect/path
     # resolution picks paths under tmp_path.
     fake_root = tmp_path / "vscode-globalStorage"
@@ -536,6 +538,24 @@ class TestLaunchCommand:
         err = capsys.readouterr().err
         assert "require --api-key" in err
         assert "unauthenticated" in err
+
+    def test_cursor_uses_api_key_from_environment(self, fake_home, capsys, monkeypatch):
+        monkeypatch.setattr(
+            launch_cli.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("93.184.216.34", 443)),
+            ],
+        )
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "cursor-env-secret")
+        (fake_home / "Cursor/User").mkdir(parents=True)
+
+        launch_cli.launch_command(
+            _make_args(client="cursor", server_url="https://rapid.example.com")
+        )
+
+        config = json.loads(cursor.current_config_path().read_text())
+        assert config["cursor.aiprovider.openai.apiKey"] == "cursor-env-secret"
 
     def test_cursor_rejects_multicast_address(self, fake_home, capsys, monkeypatch):
         monkeypatch.setattr(
