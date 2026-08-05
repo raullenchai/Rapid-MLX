@@ -271,6 +271,48 @@ struct BenchScoresTests {
         // a future copy edit can't silently drop it.
         #expect(BenchScores.Axis.generalReasoning.bilingualLabel.contains("通识和推理"))
     }
+
+    @Test("Every alias referenced by RAMBucketedDefault has a benchmark-scores.json row")
+    func everyRecommendedAliasHasScoreRow() {
+        // Gather every distinct alias the curated bucket table can
+        // surface. The picker can recommend any of these on hover,
+        // so the JSON must carry a row (even if every axis is null
+        // for VL / Llama-3 rows that don't publish bench numbers).
+        var distinct: Set<String> = []
+        for tier in RAMBucketedDefault.tiers {
+            for pick in tier.picks {
+                distinct.insert(pick.alias)
+            }
+        }
+        // Curated picks that legitimately publish NO standard benchmark —
+        // their capability / speed come from the maintainer's own eval and
+        // surface in the recommendation stats line, not the bench meters.
+        // The picker degrades gracefully for these (no bar block, no card
+        // meters), so a bench JSON row is not required.
+        // lfm2.5-2.6b-4bit joined 2026-08-04 as the 8-15 GB pick. It is
+        // genuinely unscored — not on Artificial Analysis, no published
+        // standard bench — so it belongs here rather than getting a
+        // fabricated row. The anti-fabrication check below is what keeps
+        // that honest.
+        let noStandardBench: Set<String> = [
+            "bonsai-27b-2bit", "lfm2.5-8b-a1b-4bit", "lfm2.5-2.6b-4bit",
+        ]
+        let known = Set(BenchScoresCatalog.allAliases)
+        let missing = distinct.subtracting(known).subtracting(noStandardBench)
+        #expect(
+            missing.isEmpty,
+            "Aliases recommended by RAMBucketedDefault but missing a bench JSON row: \(missing.sorted())"
+        )
+        // Anti-fabrication: the allowlisted picks publish no standard
+        // benchmark, so they must NOT carry a bench-scores.json row —
+        // otherwise re-introducing fabricated maintainer-eval numbers
+        // into the standard-bench columns would silently pass this test.
+        let fabricated = noStandardBench.intersection(known)
+        #expect(
+            fabricated.isEmpty,
+            "Allowlisted no-standard-bench aliases must not have a bench JSON row (fabrication risk): \(fabricated.sorted())"
+        )
+    }
 }
 
 // MARK: - Helpers

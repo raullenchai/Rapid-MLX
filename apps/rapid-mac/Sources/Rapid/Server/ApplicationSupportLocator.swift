@@ -65,19 +65,37 @@ enum ApplicationSupportLocator {
     /// mutating the real process environment (which Swift Testing
     /// can't isolate per-test).
     static func applicationSupportRoot(environment: [String: String]) -> URL {
+        applicationSupportBase(environment: environment)
+            .appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    /// ``Library/Application Support`` itself, resolved by the same
+    /// HOME-first ladder but WITHOUT appending ``folderName``.
+    ///
+    /// Exists for the one caller that legitimately claims a different
+    /// subdirectory: ``ConversationStore`` keys its folder on the bundle
+    /// identifier so a dogfood build (rewritten bundle id) keeps its
+    /// history separate. Before this it hand-rolled the FileManager call
+    /// and so ignored ``$HOME`` — the exact #419/#420 shape, and precisely
+    /// what the source-scan test in ``ApplicationSupportLocatorTests``
+    /// forbids. Route new callers through here rather than re-deriving.
+    static func applicationSupportBase(environment: [String: String]) -> URL {
         if let home = environment["HOME"], home.hasPrefix("/") {
             return URL(fileURLWithPath: home, isDirectory: true)
                 .appendingPathComponent("Library", isDirectory: true)
                 .appendingPathComponent("Application Support", isDirectory: true)
-                .appendingPathComponent(folderName, isDirectory: true)
         }
         if let base = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first {
-            return base.appendingPathComponent(folderName, isDirectory: true)
+            return base
         }
         return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    /// Production accessor for ``applicationSupportBase``.
+    static func applicationSupportBase() -> URL {
+        applicationSupportBase(environment: ProcessInfo.processInfo.environment)
     }
 }

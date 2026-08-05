@@ -23,7 +23,12 @@ let package = Package(
         .package(url: "https://github.com/mgriebling/SwiftMath", from: "1.7.0"),
         // TEST-ONLY: SwiftUI view introspection for the picker + failure
         // diagnosis tests. Never linked into the shipped app target.
-        .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0")
+        //
+        // Pinned exact, not `from:`. Package.resolved is gitignored here, so
+        // a range would let CI resolve a different version than anyone tested
+        // — and view-introspection libraries track SwiftUI internals closely
+        // enough that a patch bump can change what compiles.
+        .package(url: "https://github.com/nalexn/ViewInspector", exact: "0.10.3")
     ],
     targets: [
         // Issue #24: signal-safe arena + handler in pure C. Swift
@@ -81,7 +86,7 @@ let package = Package(
         //      and made the damage look total.
         //   2. Behind it, 137 of 254 files genuinely did not compile against
         //      the stripped Sources. Those are deleted. The remaining 117
-        //      compile and run: 1,512 tests, green.
+        //      compile and run: 1,514 tests, green.
         //
         // The cost of the exclusion was not hypothetical. The suite pinned
         // `BundledModel.bundledAlias`, `QuickstartCoordinator.defaultChoice`,
@@ -94,6 +99,9 @@ let package = Package(
         // that said otherwise predates it.
         //
         // Deleting a test is a real decision. If one fails, read it first —
-        // several of these were correct about code that had moved.
+        // several of these were correct about code that had moved, and two
+        // were reporting live defects: a $HOME-bypassing Application Support
+        // lookup in ConversationStore, and an 8-15 GB tier pick with no
+        // benchmark row. Both are fixed here rather than deleted.
     ]
 )

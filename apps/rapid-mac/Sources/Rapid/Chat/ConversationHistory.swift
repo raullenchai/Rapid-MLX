@@ -20,9 +20,10 @@ extension ChatConversation: ConversationOrderingItem {}
 /// empty history (first run).
 enum ConversationStore {
     static func fileURL() -> URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? FileManager.default.temporaryDirectory
+        // Must go through the locator: a direct FileManager call ignores
+        // $HOME overrides, which is the #419/#420 shape a dogfood build
+        // depends on (and what ApplicationSupportLocatorTests forbids).
+        let base = ApplicationSupportLocator.applicationSupportBase()
         let dir = base.appendingPathComponent(
             Bundle.main.bundleIdentifier ?? "Rapid",
             isDirectory: true
