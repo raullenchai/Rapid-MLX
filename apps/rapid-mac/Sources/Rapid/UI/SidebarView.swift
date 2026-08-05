@@ -13,6 +13,21 @@ enum SidebarSection: Hashable {
 /// is the primary column of ``ContentView``'s ``NavigationSplitView``, so
 /// macOS gives us the collapse toggle in the toolbar for free.
 struct SidebarView: View {
+    /// Column metrics. v1.0: narrowed from 190/230/300.
+    ///
+    /// At the old ideal the rail took ~35% of a 640pt window and ~26% of
+    /// a 900pt one for two nav rows and a usually-empty history list —
+    /// which is what made the mostly-blank column read as unfinished.
+    /// A 200pt rail still fits the longest conversation titles at this
+    /// row density while giving the detail pane the width it needs at
+    /// the 640pt floor.
+    ///
+    /// Exposed (rather than inlined at the ``ContentView`` call site) so
+    /// the snapshot harness composes the same column it ships.
+    static let columnMinWidth: CGFloat = 176
+    static let columnIdealWidth: CGFloat = 200
+    static let columnMaxWidth: CGFloat = 260
+
     @Binding var selection: SidebarSection
     /// The chat model — source of the conversation history list + the
     /// active conversation id (for highlighting).
@@ -23,7 +38,7 @@ struct SidebarView: View {
     var onSelectConversation: (UUID) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 1) {
             row(
                 title: "New Chat",
                 systemImage: "square.and.pencil",
@@ -38,24 +53,26 @@ struct SidebarView: View {
             )
 
             if !chat.conversations.isEmpty {
-                Text("Older")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 12)
-                    .padding(.bottom, 2)
+                // Label only — grouping, ordering, and persistence are
+                // untouched.
+                SectionHeader("Recents")
+                    .padding(.horizontal, RapidTheme.Space.sm)
+                    .padding(.top, RapidTheme.Space.lg)
+                    .padding(.bottom, RapidTheme.Space.xs)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 1) {
                         ForEach(chat.conversations) { conv in
                             conversationRow(conv)
                         }
                     }
                 }
+                .scrollIndicators(.never)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(8)
+        .padding(.horizontal, RapidTheme.Space.sm)
+        .padding(.vertical, RapidTheme.Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -63,24 +80,18 @@ struct SidebarView: View {
     /// when it's the open one, with a right-click Delete.
     private func conversationRow(_ conv: ChatConversation) -> some View {
         let isActive = selection == .chat && conv.id == chat.activeConversationID
-        return Button {
+        return SidebarRow(isSelected: isActive) {
             onSelectConversation(conv.id)
-        } label: {
+        } content: {
+            // History rows carry no icon but keep the same leading inset
+            // as the nav rows above, so titles and nav labels align down
+            // one column instead of stepping in and out.
             Text(conv.title)
-                .font(.callout)
+                .font(RapidFont.body)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isActive ? RapidTheme.brandAmberTint : Color.clear)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(.leading, RapidTheme.Layout.iconSlot + RapidTheme.Space.sm)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(isActive ? RapidTheme.brandAmber : Color.primary)
         .contextMenu {
             Button("Delete", role: .destructive) {
                 chat.deleteConversation(conv.id)
@@ -88,29 +99,66 @@ struct SidebarView: View {
         }
     }
 
-    /// One sidebar row — a borderless button that fills the column and
-    /// paints an amber-tinted rounded highlight when selected (matching
-    /// the design system's selection = amber role).
+    /// One nav row — icon in a fixed-width slot so every label starts on
+    /// the same x, whatever the glyph's natural width.
     private func row(
         title: String,
         systemImage: String,
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
+        SidebarRow(isSelected: isSelected, action: action) {
+            HStack(spacing: RapidTheme.Space.sm) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: RapidTheme.Layout.iconSlot, alignment: .center)
+                Text(title)
+                    .font(RapidFont.body)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+/// Shared chrome for every sidebar row: fixed height, one row radius,
+/// amber selection, neutral hover.
+///
+/// The selected treatment is the product's canonical "this is chosen"
+/// signal — amber tint fill plus the deep-amber label. Deep amber (not
+/// raw ``brandPrimary``) because a 13pt label in #EFA23A on the light
+/// tint is under 3:1; the deeper shade of the same hue clears AA while
+/// reading as the same colour.
+private struct SidebarRow<Content: View>: View {
+    let isSelected: Bool
+    let action: () -> Void
+    @ViewBuilder let content: Content
+
+    @State private var hovering = false
+
+    var body: some View {
         Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .font(.body)
+            content
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+                .padding(.horizontal, RapidTheme.Space.sm)
+                .frame(height: RapidTheme.ControlHeight.row)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isSelected ? RapidTheme.brandAmberTint : Color.clear)
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                        .fill(fill)
                 )
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? RapidTheme.brandAmber : Color.primary)
+        .foregroundStyle(isSelected ? RapidTheme.brandPrimaryDeep : Color.primary)
+        .onHover { hovering = $0 }
+        .rapidAnimation(RapidMotion.quick, value: hovering)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var fill: Color {
+        if isSelected { return RapidTheme.brandPrimaryTint }
+        return hovering ? RapidTheme.hoverFill : .clear
     }
 }
 

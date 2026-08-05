@@ -40,15 +40,10 @@ struct CPUPill: View {
     @ViewBuilder
     private var content: some View {
         let pressure = CPUProbe.Pressure.classify(percent: displayedPercent)
-        HStack(spacing: 5) {
-            Circle()
-                .fill(color(for: pressure))
-                .frame(width: 6, height: 6)
-            Text("CPU \(CPUProbe.formatLabel(percent: displayedPercent))")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
+        MetricChip(
+            label: "CPU \(CPUProbe.formatLabel(percent: displayedPercent))",
+            level: Self.level(for: pressure)
+        )
         .help(Self.tooltip(percent: displayedPercent, pressure: pressure))
         // Collapse the HStack into a single VoiceOver element so the
         // override label below replaces the children's text — without
@@ -80,16 +75,22 @@ struct CPUPill: View {
         }
     }
 
-    static func color(for pressure: CPUProbe.Pressure) -> Color {
+    /// v1.0: pressure now maps onto the shared ``MetricChip.Level``
+    /// rather than raw SwiftUI colours. `.yellow` in particular was a
+    /// system hue that matched nothing else in the product — the
+    /// elevated state is the same amber the rest of the app uses for
+    /// "working".
+    static func level(for pressure: CPUProbe.Pressure) -> MetricChip.Level {
         switch pressure {
-        case .normal:   return .green
-        case .warning:  return .yellow
-        case .critical: return .red
+        case .normal:   return .ok
+        case .warning:  return .warning
+        case .critical: return .critical
         }
     }
 
-    private func color(for pressure: CPUProbe.Pressure) -> Color {
-        Self.color(for: pressure)
+    /// Retained for callers/tests that ask for the resolved colour.
+    static func color(for pressure: CPUProbe.Pressure) -> Color {
+        level(for: pressure).tint
     }
 
     static func tooltip(percent: Double, pressure: CPUProbe.Pressure) -> String {
@@ -134,21 +135,12 @@ struct TokensPerSecondPill: View {
     let messages: [ChatMessage]
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(dotColor)
-                .frame(width: 6, height: 6)
-            // Idle (no resolved value) drops to .tertiary so the chip
-            // visibly recedes from the "live data" CPU/GPU/RAM chips
-            // next to it — same treatment GPUPill uses for its own
-            // "GPU n/a" Intel-Mac fallback. Active rows keep
-            // .secondary to match CPU/GPU/RAM weight.
-            Text(label)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(resolvedTokensPerSecond == nil ? .tertiary : .secondary)
-                .lineLimit(1)
-        }
-        .help(tooltip)
+        // Idle (no resolved value) renders at ``MetricChip.Level.none``,
+        // which drops the label to .tertiary and dims the dot — the chip
+        // recedes from the live CPU/GPU/RAM chips beside it instead of
+        // claiming a reading it doesn't have.
+        MetricChip(label: label, level: level)
+            .help(tooltip)
         // See CPUPill — collapse children to suppress double-read.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabel)
@@ -214,12 +206,12 @@ struct TokensPerSecondPill: View {
         return "\(resolved.isEstimated ? "~" : "")\(rounded) tok/s"
     }
 
-    private var dotColor: Color {
+    private var level: MetricChip.Level {
         switch pressure {
-        case .fast:     return .green
-        case .moderate: return .yellow
-        case .slow:     return .red
-        case .unknown:  return Color.secondary.opacity(0.4)
+        case .fast:     return .ok
+        case .moderate: return .warning
+        case .slow:     return .critical
+        case .unknown:  return .noData
         }
     }
 
@@ -285,42 +277,32 @@ struct GPUPill: View {
     private var content: some View {
         if let snap = snapshot {
             let pressure = GPUProbe.Pressure.classify(percent: snap.percent)
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(color(for: pressure))
-                    .frame(width: 6, height: 6)
-                Text("GPU \(GPUProbe.formatLabel(percent: snap.percent))")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            MetricChip(
+                label: "GPU \(GPUProbe.formatLabel(percent: snap.percent))",
+                level: Self.level(for: pressure)
+            )
             .help(Self.tooltip(percent: snap.percent, pressure: pressure))
             // See CPUPill — collapse children to suppress double-read.
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("GPU \(Int(snap.percent.rounded())) percent")
         } else {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(Color.secondary.opacity(0.4))
-                    .frame(width: 6, height: 6)
-                Text("GPU n/a")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-            .help("GPU probe unavailable — Intel Macs and sandboxed apps don't expose AGXAccelerator utilisation.")
+            MetricChip(label: "GPU n/a", level: .noData)
+                .help("GPU probe unavailable — Intel Macs and sandboxed apps don't expose AGXAccelerator utilisation.")
         }
     }
 
-    static func color(for pressure: GPUProbe.Pressure) -> Color {
+    /// See ``CPUPill.level(for:)`` — same mapping, same reasoning.
+    static func level(for pressure: GPUProbe.Pressure) -> MetricChip.Level {
         switch pressure {
-        case .normal:   return .green
-        case .warning:  return .yellow
-        case .critical: return .red
+        case .normal:   return .ok
+        case .warning:  return .warning
+        case .critical: return .critical
         }
     }
 
-    private func color(for pressure: GPUProbe.Pressure) -> Color {
-        Self.color(for: pressure)
+    /// Retained for callers/tests that ask for the resolved colour.
+    static func color(for pressure: GPUProbe.Pressure) -> Color {
+        level(for: pressure).tint
     }
 
     @MainActor

@@ -197,7 +197,7 @@ struct ChatView: View {
     @State private var showConnectTools = false
     @State private var showBenchmark = false
 
-    private let contentMaxWidth: CGFloat = 800
+    private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
     private let bottomSentinelID = "rapid-bottom-sentinel"
 
     private var messages: [ChatMessage] { viewModel.messages }
@@ -208,7 +208,7 @@ struct ChatView: View {
             Divider()
             composeBar
         }
-        .background(RapidTheme.canvas)
+        .background(RapidTheme.surfaceCanvas)
         // Drop a stale error banner once the server is provably ready.
         .onChange(of: server.state) { _, newState in
             if case .ready = newState { viewModel.clearStaleErrorBanner() }
@@ -234,14 +234,25 @@ struct ChatView: View {
 
     // MARK: - Transcript
 
+    @ViewBuilder
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                transcriptRows
+        if messages.isEmpty {
+            // v1.0: the empty state is centred in the transcript region
+            // instead of living inside the scroll flow behind a 96pt top
+            // pad. In the scroll flow it sat high and left the bottom
+            // two-thirds of the window blank, which is what made an
+            // otherwise-fine screen read as an unfinished poster.
+            emptyState
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    transcriptRows
+                }
+                .onChange(of: messages.last?.content) { _, _ in scrollToBottom(proxy) }
+                .onChange(of: messages.last?.reasoning) { _, _ in scrollToBottom(proxy) }
+                .onChange(of: messages.count) { _, _ in scrollToBottom(proxy) }
             }
-            .onChange(of: messages.last?.content) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: messages.last?.reasoning) { _, _ in scrollToBottom(proxy) }
-            .onChange(of: messages.count) { _, _ in scrollToBottom(proxy) }
         }
     }
 
@@ -250,27 +261,23 @@ struct ChatView: View {
     /// ``ScrollView`` content to zero height).
     @ViewBuilder
     var transcriptRows: some View {
-        LazyVStack(alignment: .leading, spacing: 14) {
-            if messages.isEmpty {
-                emptyState
-            } else {
-                ForEach(messages) { message in
-                    MessageRow(
-                        message: message,
-                        isStreaming: viewModel.isStreaming,
-                        onRegenerate: regenerate
-                    )
-                    .frame(maxWidth: contentMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .id(message.id)
-                }
+        LazyVStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+            ForEach(messages) { message in
+                MessageRow(
+                    message: message,
+                    isStreaming: viewModel.isStreaming,
+                    onRegenerate: regenerate
+                )
+                .frame(maxWidth: contentMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .id(message.id)
             }
             Color.clear
                 .frame(height: 1)
                 .id(bottomSentinelID)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 24)
+        .padding(.horizontal, RapidTheme.Space.xl)
+        .padding(.vertical, RapidTheme.Space.xl)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -280,65 +287,132 @@ struct ChatView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(RapidTheme.brandAmberTint)
-                    .frame(width: 60, height: 60)
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 27, weight: .semibold))
-                    .foregroundStyle(RapidTheme.brandAmber)
-            }
-            .padding(.bottom, 2)
-            Text("Ask anything")
-                .font(.title2.weight(.semibold))
-            Text("Chatting with \(alias.isEmpty ? "your local model" : alias)")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            if let pending = autoStartPendingDownload {
-                let size = pending.sizeText.map { " (\($0))" } ?? ""
-                Text("First message will download \(pending.alias)\(size).")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
-            }
-            if serverReady {
-                HStack(spacing: 10) {
-                    Button {
-                        showConnectTools = true
-                    } label: {
-                        Label("Connect your tools", systemImage: "link")
-                            .font(.callout.weight(.medium))
-                    }
-                    Button {
-                        showBenchmark = true
-                    } label: {
-                        Label("Speed on this Mac", systemImage: "gauge.with.dots.needle.67percent")
-                            .font(.callout.weight(.medium))
-                    }
+        EmptyState(
+            title: "Ask anything",
+            message: emptyStateSubtitle,
+            hint: downloadHint,
+            markDiameter: 92,
+            mark: {
+                // The brand moment on the app's main surface. 68pt
+                // inside a 92pt disc — at the previous 28/44 the mascot
+                // read as a favicon rather than the product's mark.
+                //
+                // 68 is deliberately ≥ 64: ``CheetahLogo`` switches to
+                // the 440×390 master above that threshold, so the
+                // artwork is downsampled from a large source (crisp at
+                // @2x) instead of being upscaled from the 56×50 crop.
+                // ``scaledToFit`` inside a square frame preserves the
+                // asset's own aspect ratio.
+                CheetahLogo(size: 68)
+            },
+            actions: {
+                // #CTA-bug: both actions used to be wrapped in
+                // `if serverReady`, so on a cold first launch — exactly
+                // when a new user most needs the second call-to-action —
+                // the row was absent entirely, and it then popped into
+                // existence mid-session and shifted the layout.
+                //
+                // Now both always render whenever the transcript is
+                // empty, in every lifecycle state. Availability is
+                // expressed by ENABLEMENT, not by presence:
+                //
+                //   * Connect your tools is always actionable. The sheet
+                //     itself explains when the endpoint isn't ready yet
+                //     and refuses to hand out incomplete values.
+                //   * Speed needs a live model to measure, so it
+                //     disables with a tooltip that says why.
+                Button {
+                    showConnectTools = true
+                } label: {
+                    Label("Connect your tools", systemImage: "link")
                 }
-                .buttonStyle(.bordered)
-                .tint(RapidTheme.brandAmber)
-                .padding(.top, 6)
+                .help("Point an editor or agent at your local server")
+
+                Button {
+                    showBenchmark = true
+                } label: {
+                    Label("Speed on this Mac", systemImage: "gauge.with.dots.needle.67percent")
+                }
+                // Enablement is derived from live server state, so the
+                // button flips to enabled on its own the moment the
+                // model reaches .ready — no user action, no re-render
+                // trigger needed beyond the @Observable read.
+                .disabled(!benchmarkAvailable)
+                .help(
+                    benchmarkAvailable
+                        ? "Measure this model's tokens per second on your Mac"
+                        : "Start a model to run a speed test."
+                )
             }
+        )
+    }
+
+    /// The line under "Ask anything".
+    ///
+    /// Three distinct states, none of which may render an internal
+    /// placeholder (`Loading`, `Starting`, …) where a model name goes:
+    ///
+    ///   * nothing chosen yet  → an instruction, not a claim
+    ///   * coming up           → a status sentence
+    ///   * resolved            → the real alias
+    private var emptyStateSubtitle: String {
+        if case .starting = server.state {
+            return "Preparing your local model…"
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 96)
+        if ModelDisplayName.isUnresolved(alias) {
+            // "Choose", not "Select" — one verb for this flow, matching
+            // the composer control and the picker's own tooltip.
+            return "Choose a model to start"
+        }
+        return "Chatting with \(alias)"
+    }
+
+    /// The download hint under the subtitle. Names the model only when
+    /// it is a real alias; otherwise stays generic rather than
+    /// interpolating a placeholder into the sentence.
+    private var downloadHint: String? {
+        guard let pending = autoStartPendingDownload else { return nil }
+        guard !ModelDisplayName.isUnresolved(pending.alias) else {
+            return "Your first message will download the selected model."
+        }
+        let size = pending.sizeText.map { " (\($0))" } ?? ""
+        return "Your first message will download \(pending.alias)\(size)."
+    }
+
+    /// Speed can only measure a model that is actually up. Keyed on the
+    /// live server state rather than the ``serverReady`` flag so the
+    /// button re-enables the moment the model finishes starting.
+    private var benchmarkAvailable: Bool {
+        guard server.binaryPath != nil else { return false }
+        // Routed through the shared predicate rather than a bare
+        // ``isEmpty`` so every readiness decision in the app agrees on
+        // what counts as "no model" — an internal placeholder is not a
+        // model you can benchmark.
+        if case .ready = server.state {
+            return !ModelDisplayName.isUnresolved(alias)
+        }
+        return false
     }
 
     // MARK: - Compose bar
 
     private var composeBar: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: RapidTheme.Space.sm) {
             if let error = viewModel.lastError {
-                errorBanner(error)
+                InlineNotice(message: error, tone: .error)
+                    .frame(maxWidth: contentMaxWidth)
+                    .frame(maxWidth: .infinity)
             }
-            // Ollama-style single compose box: the message field on top,
-            // a control row (inline model picker + send) underneath, all
-            // inside one rounded pill. The model picker lives here now —
-            // there is no top control bar — and the model comes up on the
-            // first send (implicit lifecycle via ChatViewModel.send →
-            // ServerManager.ensureServing).
-            VStack(spacing: 10) {
+            // One input, not a pill containing a second pill.
+            //
+            // v1.0 proportions: radius 22 → 12 (the single input
+            // radius), padding 14/12 → 10/8, inner spacing 10 → 6, and
+            // the field/controls stack now sits on ``surfaceRaised``
+            // with a hairline instead of a heavy grey ``composePill``
+            // fill. The old treatment made a two-line composer ~110pt
+            // tall and read as a card that happened to contain a text
+            // area; this reads as a text field with controls in it.
+            VStack(spacing: RapidTheme.Space.sm - 2) {
                 ComposeField(
                     text: $draft,
                     focusToken: composeFocusToken,
@@ -351,27 +425,28 @@ struct ChatView: View {
                 )
                 composerControls
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, RapidTheme.Space.md - 2)
+            .padding(.vertical, RapidTheme.Space.sm)
             .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(RapidTheme.composePill)
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                    .fill(RapidTheme.surfaceRaised)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .stroke(RapidTheme.composePillStroke, lineWidth: 1)
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                    .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
             )
             .frame(maxWidth: contentMaxWidth)
             .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 14)
+        .padding(.horizontal, RapidTheme.Space.xl)
+        .padding(.top, RapidTheme.Space.md)
+        .padding(.bottom, RapidTheme.Space.lg)
     }
 
     /// Bottom row of the compose box: the inline model picker on the
     /// right, then the send/stop button — Ollama's `model ▾  ⬆` cluster.
     private var composerControls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: RapidTheme.Space.sm) {
             Spacer(minLength: 0)
             ModelPickerBar(
                 server: server,
@@ -384,37 +459,48 @@ struct ChatView: View {
         }
     }
 
-    private func errorBanner(_ error: String) -> some View {
-        Text(error)
-            .font(.footnote)
-            .foregroundStyle(RapidTheme.amberDeep)
-            .frame(maxWidth: contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity)
-    }
-
+    /// Send / stop. v1.0 gives the send action the amber hierarchy:
+    /// when there is something to send it is the brightest thing in the
+    /// composer, and when there isn't it recedes to a neutral outline
+    /// rather than a filled-but-dead grey disc. Stop stays neutral-solid
+    /// — it is a correction, not the primary path.
     @ViewBuilder
     private var sendOrStopButton: some View {
         if viewModel.isStreaming {
             Button(action: { viewModel.stop() }) {
                 Image(systemName: "stop.fill")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(RapidTheme.sendButtonIcon)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 28, height: 28)
                     .background(Circle().fill(RapidTheme.sendButton))
             }
             .buttonStyle(.plain)
             .help("Stop generating")
+            .accessibilityLabel("Stop generating")
         } else {
             Button(action: send) {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(RapidTheme.sendButtonIcon)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(sendEnabled ? RapidTheme.sendButton : RapidTheme.sendButtonDisabled))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(
+                        sendEnabled ? RapidTheme.onBrandPrimary : Color.secondary
+                    )
+                    .frame(width: 28, height: 28)
+                    .background(
+                        Circle().fill(
+                            sendEnabled ? RapidTheme.brandPrimary : Color.clear
+                        )
+                    )
+                    .overlay(
+                        Circle().strokeBorder(
+                            sendEnabled ? .clear : RapidTheme.hairlineStrong,
+                            lineWidth: 1
+                        )
+                    )
             }
             .buttonStyle(.plain)
             .disabled(!sendEnabled)
             .help("Send")
+            .accessibilityLabel("Send message")
         }
     }
 
@@ -471,7 +557,7 @@ private struct MessageRow: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
-                    RoundedRectangle(cornerRadius: RapidTheme.userBubbleRadius, style: .continuous)
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.bubble, style: .continuous)
                         .fill(RapidTheme.userBubble)
                 )
         }
@@ -545,9 +631,14 @@ private struct MessageRow: View {
 
     private var failureCaption: some View {
         HStack(spacing: 10) {
+            // A failed turn is an ERROR, so it takes the error token.
+            // It previously rendered in deep amber, which under this
+            // palette means brand / active / working — the same hue the
+            // product uses for a model that is starting up. Red is the
+            // only colour that means "this went wrong".
             Text(message.errorMessage ?? "The model couldn't complete that request.")
                 .font(.footnote)
-                .foregroundStyle(RapidTheme.amberDeep)
+                .foregroundStyle(RapidTheme.statusError)
             Button("Regenerate", action: onRegenerate)
                 .buttonStyle(.link)
                 .font(.footnote)
@@ -933,12 +1024,15 @@ extension MarkdownUI.Theme {
             // move the streaming Text + MathView base in lockstep
             // (three literals, one size; see the streaming branch).
             FontSize(15)
-            // New York, the system serif — assistant prose only, the
-            // Claude Desktop split: serif for the model's voice, sans
-            // for every piece of chrome around it. Native enough to
-            // keep Dynamic Type + optical sizing for free, and a
-            // two-line revert if it doesn't land.
-            FontFamily(.system(.serif))
+            // v1.0.1: system sans, not New York.
+            //
+            // The serif was an editorial device — "serif for the
+            // model's voice, sans for the chrome" — and it read as a
+            // different application embedded inside this one. A
+            // desktop tool should feel like one product; the
+            // separation between model content and app chrome is
+            // carried by the 720pt measure, the paragraph rhythm
+            // below, and weight — not by a typeface switch.
             ForegroundColor(.primary)
         }
         .code {
@@ -947,21 +1041,23 @@ extension MarkdownUI.Theme {
             BackgroundColor(.secondary.opacity(0.15))
         }
         .strong { FontWeight(.semibold) }
-        .link { ForegroundColor(RapidTheme.brand) }
+        // Steel blue, spelled semantically: a markdown link is exactly
+        // the sanctioned use of the secondary brand colour. Same value
+        // as the legacy ``brand`` alias it replaces.
+        .link { ForegroundColor(RapidTheme.linkLabel) }
+        // v1.0.1: restrained heading scale. With the serif gone the
+        // old 1.45/1.25/1.1 ramp read as oversized — a serif carries
+        // a large size gracefully, a sans at 21.75pt inside a 15pt
+        // answer just looks like a heading pasted in from a document.
+        // 1.27/1.13/1.0-with-weight keeps three distinguishable
+        // levels while staying inside the answer's own rhythm.
         .heading1 { config in
-            // v0.5.9: shrink heading scale + tighten top breathing
-            // room. Earlier shape rendered H1 at 1.6 × 13 pt =
-            // 20.8 pt which is one heading-level larger than
-            // ChatGPT Desktop ships. Same logic for H2/H3 below.
-            // Halving the top padding closes the airy gap above
-            // every H-tag that made consecutive headed sections
-            // feel chapter-thick.
             config.label
                 .relativePadding(.top, length: .em(0.35))
                 .relativePadding(.bottom, length: .em(0.1))
                 .markdownTextStyle {
-                    FontWeight(.bold)
-                    FontSize(.em(1.45))
+                    FontWeight(.semibold)
+                    FontSize(.em(1.27))
                 }
         }
         .heading2 { config in
@@ -969,8 +1065,8 @@ extension MarkdownUI.Theme {
                 .relativePadding(.top, length: .em(0.3))
                 .relativePadding(.bottom, length: .em(0.1))
                 .markdownTextStyle {
-                    FontWeight(.bold)
-                    FontSize(.em(1.25))
+                    FontWeight(.semibold)
+                    FontSize(.em(1.13))
                 }
         }
         .heading3 { config in
@@ -979,7 +1075,7 @@ extension MarkdownUI.Theme {
                 .relativePadding(.bottom, length: .em(0.1))
                 .markdownTextStyle {
                     FontWeight(.semibold)
-                    FontSize(.em(1.1))
+                    FontSize(.em(1.0))
                 }
         }
         .paragraph { config in

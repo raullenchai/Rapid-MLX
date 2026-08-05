@@ -11,6 +11,9 @@ import SwiftUI
 struct BenchmarkView: View {
     @State private var runner: BenchmarkRunner
     @State private var showSubmitConsent = false
+    /// Collapsed by default — raw child output is diagnostic detail,
+    /// not the primary error surface.
+    @State private var showFailureDetails = false
 
     let binary: URL?
     let alias: String
@@ -49,12 +52,7 @@ struct BenchmarkView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2).foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close")
+            SheetCloseButton(action: onClose)
         }
         .padding(20)
     }
@@ -218,20 +216,105 @@ struct BenchmarkView: View {
         .frame(width: 380)
     }
 
+    /// Failure state.
+    ///
+    /// ``BenchmarkRunner`` returns the last four lines of the child's
+    /// combined stdout+stderr on a non-zero exit, which for a Python
+    /// sidecar is a raw traceback tail. Rendering that as the primary
+    /// message told the user nothing actionable and looked like a
+    /// crash. The raw text is still preserved — it just moves behind a
+    /// collapsed disclosure, and a classified sentence takes the front.
     private func failedState(_ msg: String) -> some View {
-        VStack(spacing: 14) {
+        let diagnosis = BenchmarkView.classifyFailure(msg)
+        return VStack(spacing: RapidTheme.Space.md) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 32)).foregroundStyle(RapidTheme.amberDeep)
-                .padding(.top, 36)
-            Text(msg).font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 26))
+                .foregroundStyle(RapidTheme.brandPrimaryDeep)
+                .padding(.top, RapidTheme.Space.xl)
+                .accessibilityHidden(true)
+
+            Text(diagnosis.headline)
+                .font(RapidFont.body)
+                .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+
             Button("Try again") {
-                Task { await runner.run(binary: binary ?? URL(fileURLWithPath: "/"), alias: alias, chip: hardware.brandString) }
+                Task {
+                    await runner.run(
+                        binary: binary ?? URL(fileURLWithPath: "/"),
+                        alias: alias,
+                        chip: hardware.brandString
+                    )
+                }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.rapidSecondary)
+
+            if diagnosis.showsDetails {
+                DisclosureGroup(isExpanded: $showFailureDetails) {
+                    ScrollView {
+                        Text(msg)
+                            .font(RapidFont.code)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(RapidTheme.Space.sm)
+                    }
+                    .frame(maxHeight: 120)
+                    .background(
+                        RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                            .fill(RapidTheme.surfaceCode)
+                    )
+                } label: {
+                    Text("Show details")
+                        .font(RapidFont.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, RapidTheme.Space.xs)
+            }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Maps a raw runner failure onto user-facing copy.
+    ///
+    /// Pure + `static` so the mapping can be unit-tested without
+    /// standing up the sheet, and so adding a case is a one-line change
+    /// in one place rather than a new branch in the view.
+    ///
+    /// ``showsDetails`` is false for messages we authored ourselves
+    /// (they are already the explanation) and true for anything that
+    /// came out of the child process.
+    static func classifyFailure(_ raw: String) -> (headline: String, showsDetails: Bool) {
+        let lowered = raw.lowercased()
+
+        if lowered.contains("address already in use")
+            || lowered.contains("errno 48")
+            || lowered.contains("eaddrinuse") {
+            return ("Couldn't start the benchmark because its local port is already in use.", true)
+        }
+        if lowered.contains("out of memory")
+            || lowered.contains("insufficient memory")
+            || lowered.contains("metal-cap") {
+            return ("Not enough memory to benchmark this model. Try a smaller model.", true)
+        }
+        if lowered.contains("no such file") || lowered.contains("not found") {
+            return ("Couldn't find the model files for this benchmark.", true)
+        }
+        if lowered.contains("connection") || lowered.contains("timed out") || lowered.contains("timeout") {
+            return ("The benchmark couldn't reach the local server. Try again.", true)
+        }
+        // Messages the runner authors itself are already plain English
+        // ("Choose a model first.", "Couldn't read the benchmark result.").
+        // Anything short and traceback-free is treated as one of those.
+        let looksLikeOurCopy = raw.count < 120
+            && !raw.contains("Traceback")
+            && !lowered.contains("error:")
+            && !raw.contains("  File \"")
+        if looksLikeOurCopy {
+            return (raw, false)
+        }
+        return ("The benchmark didn't finish. Try again.", true)
     }
 
     private func statRow(_ label: String, _ value: String) -> some View {
@@ -244,7 +327,8 @@ struct BenchmarkView: View {
         }
     }
 
+    /// Never renders an internal placeholder as a model name.
     private var displayAlias: String {
-        alias.isEmpty ? "your model" : alias
+        ModelDisplayName.configValue(alias: alias) ?? "your local model"
     }
 }

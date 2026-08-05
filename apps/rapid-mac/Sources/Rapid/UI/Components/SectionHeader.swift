@@ -1,0 +1,93 @@
+import SwiftUI
+
+/// A page or group heading: title, optional supporting line, optional
+/// trailing accessory.
+///
+/// Exists so headings stop being re-invented per view. Before v1.0 the
+/// same conceptual heading appeared as `.title3.weight(.semibold)` in
+/// Connect Tools, `.title2.weight(.semibold)` in the missing-sidecar
+/// overlay, and a hand-tracked uppercase `scaledSystemFont(11)` in
+/// onboarding — three sizes for one role.
+///
+/// Two emphases:
+///   * ``page`` — the one title on a page. 20pt semibold.
+///   * ``section`` — a label over a group of rows. 11pt semibold,
+///     uppercase, tracked, secondary. Deliberately quiet: it organises
+///     content, it doesn't announce it.
+struct SectionHeader: View {
+    enum Emphasis {
+        case page
+        case section
+    }
+
+    let title: String
+    var subtitle: String? = nil
+    var emphasis: Emphasis = .section
+    /// Trailing control (a "See all", a count, a toggle).
+    var accessory: AnyView? = nil
+
+    init(
+        _ title: String,
+        subtitle: String? = nil,
+        emphasis: Emphasis = .section
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.emphasis = emphasis
+        self.accessory = nil
+    }
+
+    init<Accessory: View>(
+        _ title: String,
+        subtitle: String? = nil,
+        emphasis: Emphasis = .section,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.emphasis = emphasis
+        self.accessory = AnyView(accessory())
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.md) {
+            VStack(alignment: .leading, spacing: subtitle == nil ? 0 : RapidTheme.Space.xs) {
+                titleText
+                if let subtitle {
+                    Text(subtitle)
+                        .font(RapidFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if accessory != nil {
+                Spacer(minLength: RapidTheme.Space.sm)
+                accessory
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // One AX element per heading, announced with the heading trait
+        // so VoiceOver's rotor can jump between sections.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    @ViewBuilder
+    private var titleText: some View {
+        switch emphasis {
+        case .page:
+            Text(title)
+                .font(RapidFont.pageTitle)
+                .foregroundStyle(.primary)
+        case .section:
+            // v1.0.1: Title Case, no tracking. ALL-CAPS + letter-spacing
+            // gave a purely organisational label more presence than the
+            // content under it — "ENDPOINT" was shouting at the values
+            // it labels. A quiet 11pt semibold in secondary does the
+            // same structural job without competing.
+            Text(title)
+                .font(RapidFont.sectionTitle)
+                .foregroundStyle(.secondary)
+        }
+    }
+}

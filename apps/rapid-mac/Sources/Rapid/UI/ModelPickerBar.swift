@@ -451,7 +451,14 @@ struct ModelPickerBar: View {
     private var modelPicker: some View {
         Menu {
             if loadingCatalog && catalog.isEmpty {
-                Text("Fetching model list…")
+                // A plain ``Text`` in a SwiftUI Menu renders as a
+                // disabled, non-selectable row — which is exactly the
+                // affordance we want while the catalog is in flight.
+                // "Type a model name…" stays reachable so a user who
+                // knows what they want isn't blocked on the fetch.
+                Text("Fetching models…")
+                Divider()
+                Button("Type a model name…") { showCustom = true }
             } else if catalog.isEmpty {
                 // v0.4.29: previously this state was a dead end — a
                 // failed first-load (bootstrapper still installing
@@ -460,9 +467,12 @@ struct ModelPickerBar: View {
                 // "Type alias…" and no way back to a populated picker
                 // short of restarting the app. Retry is a one-click
                 // rescue.
-                Text("Model list unavailable")
+                // Honest terminal state: the fetch finished and there is
+                // nothing to offer. Non-selectable, and never an
+                // indefinite placeholder posing as a model.
+                Text("No models available")
                 Divider()
-                Button("Retry") {
+                Button("Refresh catalog") {
                     Task { await refreshCatalog(force: true) }
                 }
                 Button("Type a model name…") { showCustom = true }
@@ -502,8 +512,11 @@ struct ModelPickerBar: View {
                     // `.accessibilityElement(children: .ignore)` instead —
                     // it de-duplicates but downgrades the role to AXUnknown.
                     .accessibilityHidden(true)
-                Text(alias.isEmpty ? "Pick a model" : alias)
-                    .font(.body)
+                // Never renders an internal placeholder as if it were a
+                // chosen model — an unresolved alias reads as an
+                // instruction instead.
+                Text(pickerLabel)
+                    .font(RapidFont.secondary)
                     .foregroundStyle(aliasTextStyle)
                     .lineLimit(1)
                     // Middle truncation keeps both ends of a long alias
@@ -517,31 +530,23 @@ struct ModelPickerBar: View {
                     .foregroundStyle(chevronStyle)
                     .accessibilityHidden(true)
             }
-            .padding(.horizontal, 10)
-            // 10/5 at radius 8 are exactly the state badge's metrics, so
-            // the two pills in this row share one shape language — and it
-            // holds the bar at its historical 46 pt (the old flattened
-            // NSPopUpButton label was only 16 pt tall, so a 6 pt-padded
-            // pill would push the strip to 48).
-            .padding(.vertical, 5)
-            // v0.5: the picker reads as a calm input pill — a faint fill
-            // plus a hairline border, instead of a flat grey block.
-            // v0.10.7: both firm up on hover. Static chrome alone still
-            // reads as a status label; a control that *responds to the
-            // pointer* is what makes a bezel-less macOS control legible as
-            // interactive (same move as SessionsSidebar's rows).
-            // Deliberately neutral — no hue shift; RapidTheme.brand stays
-            // reserved for focus everywhere else in the app.
+            .padding(.horizontal, RapidTheme.Space.sm)
+            .frame(height: RapidTheme.ControlHeight.small)
+            // v1.0: inside the composer this chip sits ON an input
+            // surface, so its own bordered pill produced the
+            // field-inside-a-field look the redesign is removing. In
+            // ``composerStyle`` it is therefore borderless and picks up
+            // a fill only on hover; the standalone (non-composer) bar
+            // keeps a hairline so it still reads as a control on a bare
+            // toolbar. Model selection is a brand moment, so the
+            // resolved alias renders in deep amber rather than neutral.
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.secondary.opacity(pickerHovering ? 0.12 : 0.06))
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .fill(pickerFill)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(
-                        pickerHovering ? Color.primary.opacity(0.22) : RapidTheme.hairline,
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .strokeBorder(pickerStroke, lineWidth: 1)
             )
             // The Spacer stretches the pill across the reserved frame, but
             // SwiftUI hit-tests the label's intrinsic content unless the
@@ -577,19 +582,48 @@ struct ModelPickerBar: View {
         .menuIndicator(.hidden)
         .onHover { pickerHovering = $0 }
         .rapidAnimation(RapidMotion.quick, value: pickerHovering)
-        .help(alias.isEmpty
+        .help(pickerIsUnresolved
               ? "Choose a model to run"
               : "Model: \(alias) — click to change")
         // Both glyphs are hidden from AX above, so this collapses to a
         // single AXMenuButton announced as "Model, <alias>, pop up button"
         // rather than spelling out SF Symbol names.
         .accessibilityLabel("Model")
-        .accessibilityValue(alias.isEmpty ? "None selected" : alias)
+        .accessibilityValue(pickerIsUnresolved ? "None selected" : alias)
         .accessibilityHint("Choose which model to run")
         .accessibilityIdentifier("ModelPickerBar.ModelMenu")
     }
 
-    /// The alias renders in `.primary`; only the "Pick a model"
+    /// Chip fill. Borderless-until-hover inside the composer; a faint
+    /// standing fill on the standalone bar.
+    private var pickerFill: Color {
+        if composerStyle {
+            return pickerHovering ? RapidTheme.hoverFill : .clear
+        }
+        return pickerHovering ? RapidTheme.hoverFill : Color.secondary.opacity(0.06)
+    }
+
+    /// Chip border. Suppressed inside the composer (the composer already
+    /// draws the field edge); a hairline that firms up on hover
+    /// elsewhere, so a bezel-less macOS control still reads as live.
+    private var pickerStroke: Color {
+        if composerStyle {
+            return pickerHovering ? RapidTheme.hairlineStrong : .clear
+        }
+        return pickerHovering ? RapidTheme.hairlineStrong : RapidTheme.hairline
+    }
+
+    /// What the composer chip shows. A real alias, or an instruction.
+    private var pickerLabel: String {
+        ModelDisplayName.configValue(alias: alias) ?? "Choose a model"
+    }
+
+    /// True when the chip is showing the instruction rather than a model.
+    private var pickerIsUnresolved: Bool {
+        ModelDisplayName.isUnresolved(alias)
+    }
+
+    /// The alias renders in `.primary`; only the "Choose a model"
     /// placeholder is `.secondary`, like an empty text field.
     ///
     /// Deliberately NOT the accent colour. A real NSPopUpButton draws its
@@ -600,7 +634,7 @@ struct ModelPickerBar: View {
     /// to the bezel and the chevron, not the text colour. The old blue
     /// was never authored anyway; it leaked from the NSPopUpButton tint.
     private var aliasTextStyle: HierarchicalShapeStyle {
-        alias.isEmpty ? .secondary : .primary
+        pickerIsUnresolved ? .secondary : .primary
     }
 
     /// The disclosure chevron brightens under the pointer — the cheapest
@@ -1427,6 +1461,12 @@ struct ModelPickerBar: View {
         return "questionmark.circle"
     }
 
+    /// v1.0: the pill chrome (dot + tint + shape) moved to the shared
+    /// ``ServerStatusPill`` so lifecycle → colour is defined once. This
+    /// wrapper keeps the picker's own richer label (which folds in the
+    /// alias and the collapse rules in ``displayedStateLabel``) and its
+    /// progress tooltip, both of which the shared pill deliberately
+    /// does not carry.
     private var stateBadge: some View {
         HStack(spacing: 6) {
             PulsingStateDot(color: stateColor, isAnimating: isAnimatedState)
@@ -1785,30 +1825,53 @@ struct ModelPickerBar: View {
         return "\(firstSentence) Continuing may cause swap thrashing, performance crashes, or system lock-up."
     }
 
+    /// v1.0.1: the last native-blue surface in the app.
+    ///
+    /// ``.roundedBorder`` drew AppKit's bezel plus the system focus
+    /// ring, so the brightest blue in the product appeared the moment
+    /// this field took focus — on a sheet whose primary action is
+    /// amber. ``RapidTextField`` draws an amber 2px focus border
+    /// instead and keeps focus, Return, Escape, and VoiceOver exactly
+    /// as they were: Return still commits via the field's `onSubmit`
+    /// AND the default-action button, Escape still cancels.
     private var customAliasSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Custom model")
-                .font(.headline)
-            Text("Type a model name or a Hugging Face path. New models download when you press Start.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            TextField("e.g. qwen3.6-35b", text: $customDraft)
-                .textFieldStyle(.roundedBorder)
-            HStack {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+            SectionHeader(
+                "Custom model",
+                subtitle: "Type a model name or a Hugging Face path. New models download when you press Start.",
+                emphasis: .page
+            )
+
+            RapidTextField(
+                placeholder: "e.g. qwen3.6-35b",
+                text: $customDraft,
+                onSubmit: commitCustomAlias
+            )
+
+            HStack(spacing: RapidTheme.Space.sm) {
                 Spacer()
                 Button("Cancel") { showCustom = false }
+                    .buttonStyle(.rapidSecondary)
                     .keyboardShortcut(.cancelAction)
-                Button("Use") {
-                    let trimmed = customDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty { alias = trimmed }
-                    showCustom = false
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.return, modifiers: [])
+                Button("Use", action: commitCustomAlias)
+                    .buttonStyle(RapidPrimaryButtonStyle(
+                        height: RapidTheme.ControlHeight.medium
+                    ))
+                    .keyboardShortcut(.return, modifiers: [])
             }
+            .padding(.top, RapidTheme.Space.xs)
         }
-        .padding(20)
-        .frame(width: 360)
+        .padding(RapidTheme.Space.xl)
+        .frame(width: 380)
+        .background(RapidTheme.surfaceOverlay)
+    }
+
+    /// Commit the typed alias. Shared by Return-in-field and the Use
+    /// button so both paths behave identically.
+    private func commitCustomAlias() {
+        let trimmed = customDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { alias = trimmed }
+        showCustom = false
     }
 
     private var isStartable: Bool {
@@ -1940,22 +2003,19 @@ struct ModelPickerBar: View {
         alias = target
     }
 
+    /// v1.0: delegates to ``ServerStatusPill``, which owns the single
+    /// lifecycle → colour mapping for the whole app.
+    ///
+    /// The semantics it inherits are the ones this property already
+    /// implemented — #129's collapse of ``.idle``/``.stopped`` onto one
+    /// off-state colour, amber for starting, green for ready — with two
+    /// corrections: the off-state is now the explicit ``statusIdle``
+    /// token rather than `.secondary` (which shifts with the
+    /// surrounding foreground style), and ``.missing`` reads as an
+    /// error rather than a neutral grey, since a missing sidecar is a
+    /// fault the user has to act on.
     private var stateColor: Color {
-        switch server.state {
-        case .missing: return .gray
-        // #129: ``.idle`` and ``.stopped`` were grey vs amber-tinted
-        // grey — the difference was too subtle to read as semantically
-        // distinct ("is amber a warning? what does the warm subtitle
-        // mean?"). Collapse both to a single off-state colour so the
-        // pill matches its collapsed copy. Matches Ollama / LM Studio.
-        case .idle, .stopped: return .secondary
-        // v0.6: loading uses the brand amber (cheetah energy); ready
-        // uses the brand green. Both come from RapidTheme so the dots
-        // and status pills match the rest of the palette.
-        case .starting: return RapidTheme.amber
-        case .ready: return RapidTheme.green
-        case .crashed: return .red
-        }
+        ServerStatusPill(state: server.state).tint
     }
 
     private var stateLabel: String {
@@ -2099,8 +2159,15 @@ struct ModelPickerBar: View {
                 loadingCatalog = false
             }
         }
-        let entries = await ModelCatalog.load(binary: binary)
+        let loaded = await ModelCatalog.load(binary: binary)
         guard !Task.isCancelled, catalogRefreshGeneration == refreshGeneration else { return }
+        // Belt-and-braces against a phantom alias reaching the UI.
+        // ``ModelCatalog.parseAvailable`` already drops engine banner
+        // lines, but this guard means a NEW banner shape can at worst
+        // produce a missing row — never a selectable fake model, and
+        // never a placeholder word promoted into ``alias`` by
+        // ``recommendedDefault`` below.
+        let entries = loaded.filter { !ModelDisplayName.isUnresolved($0.alias) }
         self.catalog = entries
         // Default selection: only apply if the current alias is blank or
         // not in the catalog (catalog absence still means manual pick).
@@ -2187,7 +2254,11 @@ struct ModelInfoPopover: View {
 /// Animated state dot. Steady-state for ready / idle / crashed; gentle
 /// breathing animation during ``starting`` so the user knows the
 /// model is still loading. Pure SwiftUI animation — no timer needed.
-private struct PulsingStateDot: View {
+///
+/// Internal (not `private`) since v1.0: ``ServerStatusPill`` is the
+/// shared rendering of ``ServerState`` and needs the same dot, so the
+/// dot can no longer be file-scoped to the picker.
+struct PulsingStateDot: View {
     let color: Color
     let isAnimating: Bool
 

@@ -63,12 +63,26 @@ struct ContentView: View {
                     section = .chat
                 }
             )
-            .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 300)
+            // v1.0: the rail paints an explicit warm surface rather than
+            // inheriting the system sidebar material. The material is a
+            // cool translucent grey that fought the warm canvas beside
+            // it — the two planes read as belonging to different apps.
+            .background(RapidTheme.surfaceSidebar)
+            .navigationSplitViewColumnWidth(
+                min: SidebarView.columnMinWidth,
+                ideal: SidebarView.columnIdealWidth,
+                max: SidebarView.columnMaxWidth
+            )
         } detail: {
             detailArea
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .frame(minWidth: 520, minHeight: Self.minWindowHeight)
-                .background(RapidTheme.canvas)
+                // Detail floor drops 520 → 440 alongside the narrower
+                // rail: at the 640pt window floor the old pair
+                // (190 sidebar + 520 detail) over-committed the window
+                // by 70pt, which is what forced horizontal clipping
+                // instead of graceful compression.
+                .frame(minWidth: 440, minHeight: Self.minWindowHeight)
+                .background(RapidTheme.surfaceCanvas)
         }
         .onChange(of: server.state) { _, newState in
             // #223: clear the download-prompt CTA the moment the server
@@ -294,77 +308,74 @@ struct ContentView: View {
     private var missingOverlay: some View {
         VStack {
             Spacer()
-            VStack(spacing: 20) {
+            VStack(spacing: RapidTheme.Space.lg) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(RapidTheme.brandTint)
-                        .frame(width: 60, height: 60)
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
+                        .fill(RapidTheme.brandPrimaryTint)
+                        .frame(width: 48, height: 48)
                     Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 28, weight: .regular))
-                        .foregroundStyle(RapidTheme.brand)
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(RapidTheme.brandPrimaryDeep)
                 }
-                VStack(spacing: 8) {
+                .accessibilityHidden(true)
+                VStack(spacing: RapidTheme.Space.sm) {
                     Text("Setup didn't finish")
-                        .font(.title2.weight(.semibold))
-                    Text("Rapid isn't fully set up yet. Reopen Rapid-MLX to run the one-time setup again.")
-                        .font(.callout)
+                        .font(RapidFont.pageTitle)
+                    Text("Rapid-MLX isn't fully set up yet. Reopen Rapid-MLX to run the one-time setup again.")
+                        .font(RapidFont.secondary)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineSpacing(2)
                 }
+                // Same two branches, same actions, same ordering as
+                // before — only the button tiers change. The recovery
+                // action (download the update, or recheck) is the amber
+                // primary; Quit steps down to secondary, since making
+                // "give up" the most prominent control on a recoverable
+                // failure was the wrong emphasis.
                 if let release = updater.availableUpdate,
                    let downloadURL = ContentView.missingOverlayDownloadURL(for: release) {
-                    VStack(spacing: 8) {
-                        Button {
+                    VStack(spacing: RapidTheme.Space.sm) {
+                        Button("Download update \(release.version)") {
                             NSWorkspace.shared.open(downloadURL)
-                        } label: {
-                            Text("Download update \(release.version)")
-                                .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        HStack(spacing: 12) {
+                        .buttonStyle(.rapidPrimaryWide)
+                        HStack(spacing: RapidTheme.Space.sm) {
                             Button("Recheck") { server.refreshBinary() }
-                                .controlSize(.large)
+                                .buttonStyle(.rapidSecondary)
                             Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
-                                .controlSize(.large)
+                                .buttonStyle(.rapidSecondary)
                         }
                     }
                 } else {
-                    HStack(spacing: 12) {
-                        Button {
-                            NSApp.terminate(nil)
-                        } label: {
-                            Text("Quit Rapid-MLX")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
+                    HStack(spacing: RapidTheme.Space.sm) {
                         Button("Recheck") { server.refreshBinary() }
-                            .controlSize(.large)
+                            .buttonStyle(.rapidPrimary)
+                        Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
+                            .buttonStyle(.rapidSecondary)
                     }
                 }
                 Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
-                    .font(.caption)
+                    .font(RapidFont.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 4)
             }
-            .padding(28)
-            .frame(width: 420)
+            .padding(RapidTheme.Space.xl)
+            .frame(maxWidth: 400)
             .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
+                    .fill(RapidTheme.surfaceRaised)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
+                    .strokeBorder(RapidTheme.hairline, lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
+            .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 6)
             Spacer()
         }
+        .padding(.horizontal, RapidTheme.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LeopardSpots(opacity: 0.06))
     }

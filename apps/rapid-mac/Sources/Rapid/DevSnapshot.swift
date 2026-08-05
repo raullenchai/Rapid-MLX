@@ -40,7 +40,7 @@ enum DevSnapshot {
         func contentView(width: CGFloat, height: CGFloat) -> AnyView {
             AnyView(
                 ContentView()
-                    .tint(RapidTheme.brand)
+                    .tint(RapidTheme.brandAmber)
                     .environment(server)
                     .environment(downloads)
                     .environment(chat)
@@ -55,10 +55,113 @@ enum DevSnapshot {
             )
         }
 
+        /// The Launch page inside the real split-view chrome, so the
+        /// captured frame shows what the user actually sees (sidebar +
+        /// page) rather than the page in isolation.
+        ///
+        /// ``ContentView`` owns its ``SidebarSection`` in private
+        /// ``@State``, so the harness cannot drive it to ``.launch``
+        /// from outside. Re-composing the same two views here is the
+        /// only way to capture that route; the scaffold deliberately
+        /// mirrors ``ContentView``'s ``NavigationSplitView`` shape so
+        /// the screenshot stays representative.
+        /// An `HStack`, deliberately, NOT a ``NavigationSplitView``.
+        ///
+        /// A hosted ``NavigationSplitView`` renders its DETAIL pane
+        /// correctly offscreen but leaves the SIDEBAR column blank —
+        /// AppKit's split-view controller wants a real on-screen window
+        /// to populate it. Since the point of this scene is to review
+        /// the rail's width and density against the detail pane, the
+        /// scaffold reproduces the split geometry manually so both
+        /// columns actually appear.
+        ///
+        /// Consequence to keep in mind when reading the image: the
+        /// system's sidebar toolbar/collapse chrome is absent, and the
+        /// divider is drawn here rather than by AppKit.
+        func launchView(width: CGFloat, height: CGFloat) -> AnyView {
+            AnyView(
+                HStack(spacing: 0) {
+                    SidebarView(
+                        selection: .constant(.launch),
+                        chat: chat,
+                        onNewChat: {},
+                        onSelectConversation: { _ in }
+                    )
+                    .frame(width: SidebarView.columnIdealWidth)
+                    .background(RapidTheme.surfaceSidebar)
+
+                    Rectangle()
+                        .fill(RapidTheme.hairline)
+                        .frame(width: 1)
+
+                    LaunchView(server: server, alias: "bonsai-1.7b-2bit")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(RapidTheme.surfaceCanvas)
+                }
+                .tint(RapidTheme.brandAmber)
+                .environment(server)
+                .environment(downloads)
+                .environment(chat)
+                .environment(updater)
+                .environment(sampling)
+                .environment(appearance)
+                .environment(settingsRouter)
+                .environment(installTracker)
+                .environment(quickstart)
+                .environment(dockPromptStore)
+                .frame(width: width, height: height)
+            )
+        }
+
         // Scenario 1: the app as launched (idle / first-run, depending on
         // whether HF_HUB_CACHE points at a populated cache).
         render(contentView(width: 900, height: 640), to: "\(dir)/content-idle.png")
         render(contentView(width: 640, height: 560), to: "\(dir)/content-min.png")
+
+        // Scenario 1b (v1.0 visual foundation): the Light/Dark × surface
+        // matrix the Phase-1 review runs on. Chat and Launch are the two
+        // surfaces this phase repaints, so both are captured at the
+        // 900x640 review size in both appearances, plus one shot each at
+        // the 640x560 window floor to prove the layout survives it.
+        let reviewSize = CGSize(width: 900, height: 640)
+        let floorSize = CGSize(width: 640, height: 560)
+
+        renderHosted(contentView(width: 900, height: 640), size: reviewSize,
+                     appearance: .aqua, to: "\(dir)/chat-900x640-light.png")
+        renderHosted(contentView(width: 900, height: 640), size: reviewSize,
+                     appearance: .darkAqua, to: "\(dir)/chat-900x640-dark.png")
+        renderHosted(contentView(width: 640, height: 560), size: floorSize,
+                     appearance: .aqua, to: "\(dir)/chat-640x560-light.png")
+        renderHosted(launchView(width: 900, height: 640), size: reviewSize,
+                     appearance: .aqua, to: "\(dir)/launch-900x640-light.png")
+        renderHosted(launchView(width: 900, height: 640), size: reviewSize,
+                     appearance: .darkAqua, to: "\(dir)/launch-900x640-dark.png")
+        renderHosted(launchView(width: 640, height: 560), size: floorSize,
+                     appearance: .aqua, to: "\(dir)/launch-640x560-light.png")
+
+        // The rail on its own, at its shipping width, with seeded
+        // history so row density / truncation / the amber selected
+        // state are all reviewable. Needed because the hosted
+        // ``NavigationSplitView`` captures above render the sidebar
+        // column blank.
+        func sidebarOnly() -> AnyView {
+            AnyView(
+                SidebarView(
+                    selection: .constant(.launch),
+                    chat: chat,
+                    onNewChat: {},
+                    onSelectConversation: { _ in }
+                )
+                .frame(width: SidebarView.columnIdealWidth, height: 640)
+                .background(RapidTheme.surfaceSidebar)
+                .tint(RapidTheme.brandAmber)
+            )
+        }
+        let sidebarSize = CGSize(width: SidebarView.columnIdealWidth, height: 640)
+        renderHosted(sidebarOnly(), size: sidebarSize,
+                     appearance: .aqua, to: "\(dir)/sidebar-light.png")
+        renderHosted(sidebarOnly(), size: sidebarSize,
+                     appearance: .darkAqua, to: "\(dir)/sidebar-dark.png")
 
         // Scenario 2: a populated chat transcript, so we can eyeball the
         // streaming bubble / markdown render path that an empty transcript
@@ -86,6 +189,16 @@ enum DevSnapshot {
                     promptTokens: 12,
                     completionTokens: 58
                 )
+            ),
+            // A failed turn, so the transcript scene actually exercises
+            // the error branch of ``MessageRow``. Without it the failure
+            // caption's colour had no render path at all and could only
+            // be reviewed by reading the source.
+            ChatMessage(
+                role: .assistant,
+                content: "",
+                status: .failed,
+                errorMessage: "The model couldn't complete that request."
             ),
         ])
         // Let the transcript layout settle before capturing.
@@ -239,6 +352,15 @@ enum DevSnapshot {
         )
     }
 
+    /// Render at the host's current appearance via ``ImageRenderer``.
+    ///
+    /// Retained unchanged for the pre-v1.0 component scenes (Connect
+    /// Tools card body, Benchmark result, Consent, chat bubbles), which
+    /// are plain view trees that ``ImageRenderer`` rasterises correctly
+    /// and which benefit from its ``scale`` support.
+    ///
+    /// Full-window compositions must use ``renderHosted`` instead — see
+    /// the note there about ``NavigationSplitView``.
     @MainActor
     private static func render(_ view: AnyView, to path: String) {
         let renderer = ImageRenderer(content: view)
@@ -248,6 +370,80 @@ enum DevSnapshot {
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else {
             log("FAILED to render \(path)")
+            return
+        }
+        do {
+            try png.write(to: URL(fileURLWithPath: path))
+        } catch {
+            log("FAILED to write \(path): \(error)")
+        }
+    }
+
+    /// Render a full-window composition at a pinned appearance.
+    ///
+    /// **Why not ``ImageRenderer``.** ``ImageRenderer`` cannot rasterise
+    /// ``NavigationSplitView``: it emits a "prohibited" placeholder
+    /// glyph instead of the view tree. That is not new — every
+    /// `content-idle.png` / `content-min.png` this harness has ever
+    /// written was that placeholder, verified by rendering from a
+    /// pristine build of the parent commit. Any main-window screenshot
+    /// taken from the old path was therefore worthless, which also
+    /// means the split view has never actually been under visual
+    /// regression review.
+    ///
+    /// Hosting the view in a real (offscreen, borderless) ``NSWindow``
+    /// and calling ``cacheDisplay`` drives genuine AppKit layout, which
+    /// the split view needs. The window also gives us:
+    ///
+    ///   * a correct ``NSAppearance`` for the whole tree, which is what
+    ///     ``NSColor(name:dynamicProvider:)`` — i.e. every
+    ///     ``RapidTheme`` colour — resolves against, and
+    ///   * the display's backing scale, so the capture is 2x on Retina
+    ///     rather than the 1x a window-less ``NSHostingView`` yields.
+    ///
+    /// ``\.colorScheme`` is set alongside the appearance to cover the
+    /// SwiftUI-native side (materials, `.primary`/`.secondary`).
+    @MainActor
+    private static func renderHosted(
+        _ view: AnyView,
+        size: CGSize,
+        appearance appearanceName: NSAppearance.Name,
+        to path: String
+    ) {
+        let scheme: ColorScheme = appearanceName == .darkAqua ? .dark : .light
+        let hosting = NSHostingView(
+            rootView: view.environment(\.colorScheme, scheme)
+        )
+        hosting.frame = CGRect(origin: .zero, size: size)
+
+        let window = NSWindow(
+            contentRect: CGRect(origin: .zero, size: size),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.appearance = NSAppearance(named: appearanceName)
+        window.contentView = hosting
+        window.setFrame(CGRect(origin: .zero, size: size), display: true)
+        hosting.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        // Let SwiftUI's first layout pass + any .task/.onAppear that
+        // affects layout settle before we snapshot. Spinning the
+        // runloop (rather than sleeping) lets those callbacks actually
+        // run — they are main-actor bound.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        hosting.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            log("FAILED to allocate bitmap for \(path)")
+            return
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            log("FAILED to encode \(path)")
             return
         }
         do {

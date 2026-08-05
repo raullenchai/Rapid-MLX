@@ -315,6 +315,21 @@ enum ModelCatalog {
             // Model Management, auto-start).
             if line.hasPrefix("Audio models") { continue }
             if line.contains("[audio:") { continue }
+            // Skip engine/server banner lines that can share stdout with
+            // the table.
+            //
+            // The engine prints "Loading model with BatchedEngine: …"
+            // and uvicorn prints "INFO:     Uvicorn running on …". Both
+            // are prose, and the "first whitespace token is the alias"
+            // rule turns them into phantom models — which is exactly how
+            // a selectable model literally named "Loading" reached the
+            // picker, and from there ``recommendedDefault`` put the word
+            // "Loading" in the composer as if the user had chosen it.
+            //
+            // Matching on the banner prefix (rather than blacklisting
+            // the word) keeps a genuine alias that merely starts with
+            // those letters safe.
+            if isBannerLine(line) { continue }
             // First whitespace-delimited token is the alias.
             let token = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first
             guard let alias = token.map(String.init), !alias.isEmpty else { continue }
@@ -322,6 +337,26 @@ enum ModelCatalog {
             entries.append((alias, nil))
         }
         return entries
+    }
+
+    /// Log/banner lines the engine or its HTTP server can interleave
+    /// with table output. None of these are catalog rows, and every one
+    /// of them would otherwise yield a phantom alias from its first
+    /// token ("Loading", "INFO:", "Uvicorn", …).
+    ///
+    /// Pure + `static` so the set is one list rather than a chain of
+    /// `hasPrefix` calls buried in the parse loop.
+    static func isBannerLine(_ line: String) -> Bool {
+        let bannerPrefixes = [
+            "Loading model",
+            "Loading ",
+            "INFO:",
+            "WARNING:",
+            "ERROR:",
+            "Uvicorn",
+            "Traceback",
+        ]
+        return bannerPrefixes.contains { line.hasPrefix($0) }
     }
 
     /// Parses ``rapid-mlx ls`` output. Each row has the alias in the
@@ -336,6 +371,9 @@ enum ModelCatalog {
             if line.hasPrefix("Cached models") { continue }
             if line.hasPrefix("Alias") { continue }
             if line.allSatisfy({ $0 == "─" || $0 == "-" || $0.isWhitespace }) { continue }
+            // Same banner guard as ``parseAvailable`` — `ls` shares the
+            // engine's stdout too.
+            if isBannerLine(line) { continue }
             // Multi-space splitting: each column is separated by 2+
             // spaces.  ``components(separatedBy: doubleSpaces)`` would
             // need a custom CharacterSet; cheaper to regex.

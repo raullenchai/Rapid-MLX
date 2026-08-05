@@ -46,7 +46,7 @@ final class BenchmarkRunner {
 
     func run(binary: URL, alias: String, chip: String) async {
         guard !alias.isEmpty else {
-            phase = .failed("Pick a model first.")
+            phase = .failed("Choose a model first.")
             return
         }
         phase = .running
@@ -79,7 +79,7 @@ final class BenchmarkRunner {
 
     func submit(binary: URL, alias: String) async {
         guard !alias.isEmpty else {
-            submitPhase = .failed("Pick a model first.")
+            submitPhase = .failed("Choose a model first.")
             return
         }
         submitPhase = .submitting

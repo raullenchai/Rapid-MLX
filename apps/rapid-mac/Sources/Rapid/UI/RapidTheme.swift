@@ -247,16 +247,381 @@ enum RapidTheme {
     }))
 
     // MARK: - Dimensions
-
-    /// Corner radius for the user bubble. 18 reads as a true
-    /// pill at the 2-line common case — anything smaller looks
-    /// like a square-with-rounded-corners chip.
-    static let userBubbleRadius: CGFloat = 18
+    //
+    // ``userBubbleRadius`` (18) was removed here: its only call site now
+    // reads ``Radius.bubble`` (14), and leaving the old constant behind
+    // would have been a second, divergent radius for the same shape —
+    // exactly the drift the ``Radius`` group exists to end.
 
     /// Compose pill corner radius. v0.5: tightened 22 → 18 to match
     /// the user bubble exactly — the larger radius read as a bubbly,
     /// oversized field; 18 is calmer and more "modern AI input."
-    static let composePillRadius: CGFloat = 18
+    /// v1.0 visual foundation: superseded by ``Radius.input`` (10) —
+    /// kept so the legacy token name still resolves, now pointing at
+    /// the single input radius rather than its own value.
+    static let composePillRadius: CGFloat = Radius.input
+
+    // MARK: - v1.0 semantic layer
+    //
+    // Everything below is the Phase-1 "visual foundation": a semantic
+    // vocabulary business views spend instead of writing literals.
+    //
+    // The brand hierarchy this encodes (and which the pre-v1.0 tokens
+    // above got backwards):
+    //
+    //   * AMBER (#EFA23A) is the FIRST brand colour. Primary CTAs,
+    //     selection, focus, working/progress states, key icons, the
+    //     cheetah moments.
+    //   * STEEL BLUE (#3A5C86) is SECONDARY. Informational data,
+    //     links, utility icons, engineering detail. It no longer fills
+    //     primary buttons.
+    //   * GREEN (#2E7D55) means Ready / success and nothing else.
+    //   * RED means error / destructive and nothing else.
+    //   * Warm neutrals carry every large surface, so the product reads
+    //     as a calm desktop app with an amber accent — not an orange
+    //     theme.
+    //
+    // The legacy tokens above are intentionally left in place and
+    // re-pointed here rather than deleted: they have call sites across
+    // the app, and a rename sweep is churn this phase doesn't need.
+
+    // MARK: Brand
+
+    /// The primary brand colour. Amber #EFA23A holds in both modes —
+    /// it is the product's single strongest visual memory, and shifting
+    /// it per-appearance would weaken the recall it exists to build.
+    static let brandPrimary = amber
+
+    /// Amber for small text and glyphs on a light surface. Raw
+    /// ``brandPrimary`` fails contrast under ~15pt on warm white, so
+    /// anything type-sized uses this deeper shade of the same hue.
+    static let brandPrimaryDeep = amberDeep
+
+    /// The calm amber wash behind selected rows, working states, and
+    /// brand-adjacent surfaces that must not become a saturated block.
+    static let brandPrimaryTint = amberTint
+
+    /// Foreground for content sitting ON a ``brandPrimary`` fill.
+    ///
+    /// Deliberately a near-black graphite, never white. White on
+    /// #EFA23A lands around 2.0:1 — below every WCAG threshold — and is
+    /// exactly the low-contrast default this phase was asked to remove.
+    /// Graphite on amber measures ~9:1.
+    static let onBrandPrimary = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x24/255.0, green: 0x1A/255.0, blue: 0x08/255.0, alpha: 1.0)
+    }))
+
+    /// The secondary brand colour — steel blue. Data, links, secondary
+    /// icons, engineering detail. Aliases the legacy ``brand`` token.
+    static let brandSecondary = brand
+
+    /// Soft steel-blue wash. Aliases the legacy ``brandTint``.
+    static let brandSecondaryTint = brandTint
+
+    // MARK: Surfaces
+    //
+    // Four planes, warmest-and-lowest to raised. Light mode is a warm
+    // greyscale, NOT four shades of near-white; dark mode is authored
+    // on its own ramp rather than an inversion of the light one (the
+    // dark values carry a touch more blue so the amber accent stays
+    // warm against them).
+
+    /// The window canvas — the plane chat, pages, and empty states sit on.
+    static let surfaceCanvas = canvas
+
+    /// The sidebar rail. v1.0: re-warmed from the old cool #F3F5F9,
+    /// which read as a blue-grey slab beside the warm canvas and made
+    /// the whole left column feel like a different product.
+    static let surfaceSidebar = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x1A/255.0, green: 0x1C/255.0, blue: 0x20/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xF2/255.0, green: 0xF0/255.0, blue: 0xEB/255.0, alpha: 1.0)
+    }))
+
+    /// A raised surface — cards, popovers, grouped rows.
+    static let surfaceRaised = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x1E/255.0, green: 0x21/255.0, blue: 0x26/255.0, alpha: 1.0)
+                          : NSColor.white
+    }))
+
+    /// The ground under code, endpoints, and keys. Recessed relative to
+    /// ``surfaceRaised`` — a snippet should read as inset into a card,
+    /// not as a second card floating on top of one.
+    static let surfaceCode = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x14/255.0, green: 0x16/255.0, blue: 0x1A/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xF4/255.0, green: 0xF2/255.0, blue: 0xED/255.0, alpha: 1.0)
+    }))
+
+    /// Sheets and popovers — a hair lighter than ``surfaceRaised`` in
+    /// dark mode so a sheet over a card still separates.
+    static let surfaceOverlay = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x23/255.0, green: 0x26/255.0, blue: 0x2C/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xFC/255.0, green: 0xFB/255.0, blue: 0xF9/255.0, alpha: 1.0)
+    }))
+
+    /// A more present divider for structural separation (card headers,
+    /// grouped-row separators) where ``hairline`` disappears.
+    static let hairlineStrong = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x32/255.0, green: 0x38/255.0, blue: 0x40/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xDD/255.0, green: 0xDA/255.0, blue: 0xD3/255.0, alpha: 1.0)
+    }))
+
+    // MARK: Status
+    //
+    // One colour per lifecycle meaning. Views switch on state and read
+    // a token; they never pick a hue themselves.
+
+    /// Not running, nothing pending. Deliberately neutral — an idle
+    /// server is not a warning.
+    static let statusIdle = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x8A/255.0, green: 0x90/255.0, blue: 0x99/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0x8A/255.0, green: 0x86/255.0, blue: 0x7E/255.0, alpha: 1.0)
+    }))
+
+    /// Starting, downloading, benchmarking — anything in flight. Amber,
+    /// which is also the brand colour: progress is on-brand by design.
+    static let statusWorking = brandPrimary
+
+    /// Ready / success. The only role green plays.
+    static let statusReady = green
+
+    /// Error / failure. The only role red plays.
+    static let statusError = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0xFF/255.0, green: 0x6B/255.0, blue: 0x5E/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xC0/255.0, green: 0x39/255.0, blue: 0x2B/255.0, alpha: 1.0)
+    }))
+
+    /// Tinted backing for an error surface (inline notices, failure rows).
+    static let statusErrorTint = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x33/255.0, green: 0x1C/255.0, blue: 0x1A/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xFB/255.0, green: 0xEC/255.0, blue: 0xEA/255.0, alpha: 1.0)
+    }))
+
+    // MARK: Actions
+
+    /// Fill for the single highest-emphasis action on a surface.
+    static let primaryActionFill = brandPrimary
+    /// Label on ``primaryActionFill``.
+    static let primaryActionLabel = onBrandPrimary
+    /// Label/icon for a secondary (outlined) action. Neutral graphite.
+    ///
+    /// v1.0.1: was ``brandSecondary``. Painting every secondary control
+    /// steel blue turned a *supporting* colour into the most repeated
+    /// hue on the surface — three filled blue "Copy config" buttons, a
+    /// blue glyph on every endpoint row, a blue icon per tool. Steel
+    /// blue is now rare by default and earned on hover.
+    static let secondaryActionLabel = Color.primary
+    /// Fill for a destructive action.
+    static let destructiveActionFill = statusError
+    /// Label on ``destructiveActionFill``.
+    static let destructiveActionLabel = Color.white
+    /// A quiet, borderless action — present but not competing.
+    static let quietActionLabel = Color.secondary
+
+    // MARK: Utility controls
+    //
+    // Copy glyphs, reveal toggles, per-row actions: things that are
+    // genuinely useful but must not read as calls to action. Neutral at
+    // rest, steel blue under the pointer (the hover is where the
+    // secondary brand colour earns its place), ready-green on success.
+
+    /// Resting colour for a utility icon/label.
+    static let utilityActionLabel = Color.secondary
+    /// Hover colour for a utility icon/label.
+    ///
+    /// v1.0.2: amber, not steel blue. An active control lighting up is
+    /// a brand moment; routing every hover through the secondary colour
+    /// made steel blue the most frequently-seen accent in the app,
+    /// which is the opposite of "rare supporting colour".
+    static let utilityActionHover = brandPrimaryDeep
+    /// A utility action that just succeeded (copied, saved).
+    static let utilityActionSuccess = statusReady
+
+    /// Genuine text links. After v1.0.2 this is essentially the ENTIRE
+    /// remaining budget for steel blue: not buttons, not icons, not
+    /// hover, not notices — links, and the occasional single deliberate
+    /// technical accent on a surface that has earned one.
+    static let linkLabel = brandSecondary
+
+    /// Keyboard-focus ring. Amber, per the brand hierarchy: focus is a
+    /// primary-attention signal.
+    static let focusRing = brandPrimary
+
+    // MARK: Interaction
+
+    /// Hover wash over a neutral row or control.
+    static let hoverFill = Color.primary.opacity(0.055)
+    /// Pressed wash — one step firmer than hover.
+    static let pressedFill = Color.primary.opacity(0.10)
+    /// Multiplier applied to a control's opacity when disabled.
+    ///
+    /// v1.0.2: raised 0.40 → 0.62. A disabled control still has to be
+    /// READ — "Speed on this Mac" and "Copy config" both explain, via
+    /// their tooltips, what would make them available, and at 0.40 on a
+    /// warm canvas the label was close to invisible. 0.62 keeps the
+    /// unmistakable "not right now" signal while leaving the text
+    /// legible.
+    static let disabledOpacity: Double = 0.62
+
+    // MARK: - Spacing
+    //
+    // One rhythm for the whole app: 4 / 8 / 12 / 16 / 24 / 32. Page
+    // margins, section gaps, and control padding all come from here so
+    // they can never drift apart per-view.
+
+    enum Space {
+        /// 4 — icon-to-label, tight glyph gaps.
+        static let xs: CGFloat = 4
+        /// 8 — inside a control, between related chips.
+        static let sm: CGFloat = 8
+        /// 12 — row padding, gap between grouped rows.
+        static let md: CGFloat = 12
+        /// 16 — card padding, gap between cards.
+        static let lg: CGFloat = 16
+        /// 24 — page margin, gap between sections.
+        static let xl: CGFloat = 24
+        /// 32 — major vertical separation.
+        static let xxl: CGFloat = 32
+    }
+
+    // MARK: - Radii
+    //
+    // One radius per shape ROLE, not per view. The pre-v1.0 surface had
+    // 6/8/10/12/16/18/22 in play simultaneously, which is why nothing
+    // felt like it belonged to one system.
+
+    /// v1.0.1: tightened again. 12pt cards over 8pt buttons over 12pt
+    /// inputs still read as soft — three roundnesses competing. Cards,
+    /// buttons, and rows now share 8; inputs get 10 so a field is
+    /// distinguishable from a button at a glance; only chat bubbles
+    /// stay soft, because a message is the one thing that should feel
+    /// like an object rather than a control.
+    enum Radius {
+        /// Cards and grouped containers.
+        static let card: CGFloat = 8
+        /// Text fields and the composer.
+        static let input: CGFloat = 10
+        /// Buttons.
+        static let button: CGFloat = 8
+        /// Selectable rows — sidebar, lists, menu rows.
+        static let row: CGFloat = 8
+        /// Chat bubbles. Deliberately the one soft shape left.
+        static let bubble: CGFloat = 14
+        /// Inset code / endpoint blocks. Tighter than the card that
+        /// contains them so the inset reads as recessed, not nested.
+        static let code: CGFloat = 6
+    }
+
+    // MARK: - Control heights
+    //
+    // Accessibility floor is 28pt for anything clickable; a primary
+    // action is 36pt. Both are enforced by the shared button styles.
+
+    enum ControlHeight {
+        /// 24 — inline icon buttons inside dense rows. Only for
+        /// controls with a larger surrounding hit target.
+        static let mini: CGFloat = 24
+        /// 28 — the standard minimum tappable control.
+        static let small: CGFloat = 28
+        /// 32 — comfortable default for secondary buttons.
+        static let medium: CGFloat = 32
+        /// 36 — primary actions.
+        static let large: CGFloat = 36
+        /// 30 — sidebar / list row height.
+        static let row: CGFloat = 30
+    }
+
+    // MARK: - Layout
+
+    enum Layout {
+        /// Reading measure for chat + prose. Content never stretches
+        /// edge-to-edge on a wide window.
+        static let contentMaxWidth: CGFloat = 720
+        /// Max width for a settings/tool page's content column.
+        static let pageMaxWidth: CGFloat = 640
+        /// Fixed leading slot every row icon occupies, so labels align
+        /// down a column regardless of glyph width.
+        static let iconSlot: CGFloat = 18
+    }
+}
+
+// MARK: - User-facing model naming
+
+/// Turns an internal alias + lifecycle state into copy a person can read.
+///
+/// Exists because internal placeholders were reaching the surface as if
+/// they were model names. ``DownloadProgress.StartupActivity`` has a
+/// ``.loading`` phase whose label is the bare word "Loading", and an
+/// unresolved alias is the empty string — neither is a model, and
+/// neither should ever be rendered where a user expects one.
+///
+/// Pure and free-standing so every surface (chat empty state, Connect
+/// Tools, benchmark header) answers "what model am I using?" the same
+/// way, and so the mapping is unit-testable without SwiftUI.
+enum ModelDisplayName {
+    /// Internal placeholder strings that must never surface as a name.
+    /// Compared case-insensitively.
+    private static let placeholders: Set<String> = [
+        "loading", "starting", "warming up", "downloading", "unknown", "none",
+    ]
+
+    /// True when ``alias`` is absent or is an internal placeholder.
+    static func isUnresolved(_ alias: String) -> Bool {
+        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        return placeholders.contains(trimmed.lowercased())
+    }
+
+    /// The name to show in running prose ("Chatting with …").
+    ///
+    /// While the server is coming up we deliberately do NOT show the
+    /// alias, even when we know it: the honest statement is that the
+    /// model is being prepared, not that you are talking to it.
+    static func conversational(alias: String, state: ServerState) -> String {
+        if case .starting = state { return "Preparing your local model…" }
+        return isUnresolved(alias) ? "your local model" : alias
+    }
+
+    /// The name to show in a config value slot (Connect Tools' `Model`
+    /// row, copied snippets). ``nil`` means "no real value yet" — the
+    /// caller must not present a placeholder as a working config.
+    static func configValue(alias: String) -> String? {
+        isUnresolved(alias) ? nil : alias
+    }
+}
+
+// MARK: - Typography
+
+/// The type ramp. Eight roles, native SF throughout.
+///
+/// Monospaced is reserved for code, endpoints, keys, and metrics —
+/// never for prose. A monospaced sentence reads as terminal output,
+/// which is precisely the "this is a CLI with a window around it"
+/// impression the product is trying to shed.
+///
+/// Sizes are fixed rather than `Font.TextStyle`-relative because the
+/// desktop density target is tighter than the system defaults. Views
+/// that must honour Dynamic Type keep using ``scaledSystemFont``; this
+/// ramp covers the chrome.
+enum RapidFont {
+    /// Window / toolbar title.
+    static let windowTitle = Font.system(size: 15, weight: .semibold)
+    /// The one big title on a page. Chat empty state, page headers.
+    static let pageTitle = Font.system(size: 20, weight: .semibold)
+    /// A section label above a group of rows.
+    static let sectionTitle = Font.system(size: 11, weight: .semibold)
+    /// Default body copy and row labels.
+    static let body = Font.system(size: 13)
+    /// Emphasised body — a row's primary label.
+    static let bodyEmphasis = Font.system(size: 13, weight: .medium)
+    /// Supporting copy under a title or row label.
+    static let secondary = Font.system(size: 12)
+    /// The smallest supporting text: hints, footnotes, timestamps.
+    static let caption = Font.system(size: 11)
+    /// A number meant to be compared or watched. Monospaced digits so
+    /// a live-updating value doesn't jitter its own layout.
+    static let metric = Font.system(size: 11, design: .monospaced)
+    /// Code, endpoints, and API keys.
+    static let code = Font.system(size: 11, design: .monospaced)
 }
 
 private extension NSAppearance {

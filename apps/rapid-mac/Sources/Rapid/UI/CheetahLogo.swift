@@ -79,12 +79,34 @@ struct CheetahLogo: View {
             return image
         }
 
-        let anchor = Bundle(for: BundleFinder.self).bundleURL.deletingLastPathComponent()
-        let bundleURL = anchor.appendingPathComponent("Rapid_Rapid.bundle")
-        if let bundle = Bundle(url: bundleURL),
-           let url = bundle.url(forResource: name, withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
-            return image
+        // Dev / test probe. Two anchors, because ``bundleURL`` means
+        // different things depending on how the binary is packaged:
+        //
+        //   * Inside a real .app it is the .app itself, so the resource
+        //     bundle is a SIBLING — hence `deletingLastPathComponent`.
+        //   * For a bare SwiftPM executable (`swift build`,
+        //     `.build/debug/Rapid`) it is ALREADY the directory holding
+        //     the executable, and SwiftPM drops `Rapid_Rapid.bundle`
+        //     right there — so stripping a component overshoots to
+        //     `.build/` and misses.
+        //
+        // Only the first anchor existed, which is why every `swift
+        // build` run silently fell through to the `hare.fill` fallback
+        // and dev screenshots showed a hare where the mascot should be.
+        // Probing both is additive: the production path is unchanged
+        // and still wins first.
+        let executableAnchor = Bundle(for: BundleFinder.self).bundleURL
+        let anchors = [
+            executableAnchor.deletingLastPathComponent(),
+            executableAnchor,
+        ]
+        for anchor in anchors {
+            let bundleURL = anchor.appendingPathComponent("Rapid_Rapid.bundle")
+            if let bundle = Bundle(url: bundleURL),
+               let url = bundle.url(forResource: name, withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                return image
+            }
         }
 
         return nil
