@@ -24,18 +24,19 @@ let package = Package(
         // TEST-ONLY: SwiftUI view introspection for the picker + failure
         // diagnosis tests. Never linked into the shipped app target.
         //
-        // Pinned exact, not `from:`. Package.resolved is gitignored here, so
-        // a range would let CI resolve a patch nobody tested — and
-        // view-introspection libraries track SwiftUI internals closely enough
-        // that a patch bump can change what compiles.
+        // Pinned to an immutable commit, not a version range or a tag.
+        // Package.resolved is gitignored in this package, so nothing else
+        // constrains what CI resolves: a range picks up untested patches, and
+        // even `exact:` resolves through a tag a maintainer can move — which
+        // would mean unreviewed third-party code executing in CI on every app
+        // PR. A revision cannot move.
         //
-        // This is narrower than reproducible: an exact tag still resolves to
-        // whatever revision the tag points at, and a maintainer can move a
-        // tag. Committing Package.resolved is the real fix, but that reverses
-        // a standing decision for this package and is not a test-revival
-        // change. ViewInspector has no transitive dependencies, so the
-        // exposure is one repo's tag.
-        .package(url: "https://github.com/nalexn/ViewInspector", exact: "0.10.3")
+        // Matches how this repo already pins CI inputs (see
+        // `actions/checkout@34e1148…` in rapid-mac-ci.yml). The trailing
+        // comment is the human-readable version; update both together.
+        // ViewInspector has no transitive dependencies, so this one pin
+        // closes the whole graph.
+        .package(url: "https://github.com/nalexn/ViewInspector", revision: "e9a06346499a3a889165647e3f23f8a7b2609a1c")  // 0.10.3
     ],
     targets: [
         // Issue #24: signal-safe arena + handler in pure C. Swift
