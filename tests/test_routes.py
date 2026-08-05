@@ -399,6 +399,43 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_status_is_idle_when_no_requests_in_flight(self, mock_engine):
+        """`status` must reflect ACTIVE generation, not engine liveness.
+
+        Regression: the field used to key off ``stats["running"]`` — the
+        engine-loop lifecycle flag, True for the whole server lifetime — so a
+        live but idle server (running=True, num_running=0) wrongly reported
+        "generating" alongside num_running=0. Drive it off the in-flight count.
+        """
+        # A running engine with nothing in flight → idle (fails pre-fix).
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "running": True,
+            "num_running": 0,
+            "num_waiting": 0,
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            assert data["status"] == "idle"
+            assert data["num_running"] == 0
+        finally:
+            self._restore_config(orig)
+
+        # Active requests → generating.
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "running": True,
+            "num_running": 2,
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            assert data["status"] == "generating"
+            assert data["num_running"] == 2
+        finally:
+            self._restore_config(orig)
+
     def test_status_exposes_batch_generator_throughput(self, mock_engine):
         """Status surfaces generation_tps/prompt_tps from batch_generator stats.
 

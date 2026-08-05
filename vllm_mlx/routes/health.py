@@ -282,7 +282,14 @@ async def status():
         return 0.0 if v is None else v
 
     return {
-        "status": "generating" if stats.get("running") else "idle",
+        # "generating" must reflect ACTIVE token generation, not engine
+        # liveness. ``stats["running"]`` is the engine-loop lifecycle flag
+        # (True for the whole server lifetime), so keying off it reported
+        # "generating" on a fully idle server (with num_running=0 right below
+        # it — self-contradictory). Drive it off the in-flight request count
+        # from the scheduler instead; ``num_waiting`` is surfaced separately
+        # for queue depth.
+        "status": "generating" if stats.get("num_running") else "idle",
         "model": cfg.model_name,
         "uptime_s": round(stats.get("uptime_seconds", 0), 1),
         "steps_executed": stats.get("steps_executed", 0),
