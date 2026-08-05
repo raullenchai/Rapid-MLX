@@ -199,8 +199,31 @@ struct ChatView: View {
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
     private let bottomSentinelID = "rapid-bottom-sentinel"
+    private let transcriptSpace = "rapid-transcript"
+    /// How far above the bottom the user may sit and still be treated as
+    /// "following the stream". One line of body text — enough to absorb
+    /// sub-pixel drift and the trailing-edge animation, small enough that
+    /// a deliberate scroll up immediately releases the pin.
+    private let bottomPinSlack: CGFloat = 24
+
+    /// Bottom edge of the transcript content in the scroll view's own
+    /// coordinate space, and the scroll view's visible height. Together
+    /// they give the distance from the bottom without polling.
+    @State private var contentBottom: CGFloat = 0
+    @State private var viewportHeight: CGFloat = 0
 
     private var messages: [ChatMessage] { viewModel.messages }
+
+    /// True while the user is parked at (or within ``bottomPinSlack`` of)
+    /// the trailing edge. Only then may streaming deltas move the scroll
+    /// position — otherwise reading back through the transcript mid-reply
+    /// would be yanked to the bottom on every token.
+    private var isPinnedToBottom: Bool {
+        // Before the first layout pass we have no measurements; default to
+        // pinned so a fresh transcript still follows the stream.
+        guard viewportHeight > 0 else { return true }
+        return contentBottom - viewportHeight <= bottomPinSlack
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -248,7 +271,26 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     transcriptRows
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: ContentBottomKey.self,
+                                    value: geo.frame(in: .named(transcriptSpace)).maxY
+                                )
+                            }
+                        )
                 }
+                .coordinateSpace(name: transcriptSpace)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ViewportHeightKey.self,
+                            value: geo.size.height
+                        )
+                    }
+                )
+                .onPreferenceChange(ContentBottomKey.self) { contentBottom = $0 }
+                .onPreferenceChange(ViewportHeightKey.self) { viewportHeight = $0 }
                 // This branch mounts fresh the moment the transcript goes
                 // from empty to populated — selecting a long saved
                 // conversation, or launching straight into one. The
@@ -258,8 +300,18 @@ struct ChatView: View {
                 // appear (no animation: this is initial positioning, not a
                 // scroll the user should see move).
                 .onAppear { scrollToBottom(proxy, animated: false) }
-                .onChange(of: messages.last?.content) { _, _ in scrollToBottom(proxy) }
-                .onChange(of: messages.last?.reasoning) { _, _ in scrollToBottom(proxy) }
+                // Streaming deltas only move the view while the user is
+                // parked at the trailing edge. Scrolling up to re-read
+                // earlier text releases the pin, so the transcript stays
+                // put (and stays selectable) until the user scrolls back
+                // down. A brand-new message is a deliberate action by the
+                // user, so it always re-anchors.
+                .onChange(of: messages.last?.content) { _, _ in
+                    if isPinnedToBottom { scrollToBottom(proxy) }
+                }
+                .onChange(of: messages.last?.reasoning) { _, _ in
+                    if isPinnedToBottom { scrollToBottom(proxy) }
+                }
                 .onChange(of: messages.count) { _, _ in scrollToBottom(proxy) }
             }
         }
@@ -735,24 +787,24 @@ private struct ComposeField: View {
         // Top-aligned (NSTextView default), so the caret/placeholder sit
         // at the top-left and the field hugs one line by default.
         ZStack(alignment: .topLeading) {
-            // ``AutosizingTextView`` (the NSTextView subclass behind
-            // ``ComposeTextEditor``) reports its content's measured
-            // height as intrinsic size, so SwiftUI's
-            // ``.frame(minHeight: 28, maxHeight: 160)`` on the parent
-            // becomes a true elastic range: 28 pt for an empty draft
-            // (hugging the placeholder) → grows one line at a time
-            // → caps at 160 pt with internal scrolling beyond. The
-            // ghost-Text autosize trick that this view used to need
-            // was a no-op as long as the stock NSTextView returned
-            // ``noIntrinsicMetric`` (it always grew to the cap), so
-            // the trick is gone now.
+            // ``ComposeTextEditor`` reports the NSTextView's measured
+            // content height on every edit; we clamp it into
+            // ``[minHeight, maxHeight]`` and apply it below. Beyond the
+            // cap the editor scrolls internally (it is hosted in an
+            // NSScrollView) rather than pushing the window around.
             ComposeTextEditor(
                 text: $text,
                 focusToken: focusToken,
                 isStreaming: isStreaming,
                 onSubmit: onSubmit,
                 onCancel: onCancel,
-                onRecallLastUser: onRecallLastUser
+                onRecallLastUser: onRecallLastUser,
+                onMeasuredHeight: { measured in
+                    let clamped = min(max(measured, minHeight), maxHeight)
+                    if abs(clamped - contentHeight) > 0.5 {
+                        contentHeight = clamped
+                    }
+                }
             )
             if text.isEmpty {
                 Text(placeholder)
@@ -770,31 +822,55 @@ private struct ComposeField: View {
     }
 }
 
-/// ``NSTextView`` subclass that reports its content's measured height
-/// as ``intrinsicContentSize``. The stock ``NSTextView`` returns
-/// ``noIntrinsicMetric`` for both axes, which lets SwiftUI hand it the
-/// whole vertical budget of its parent — so a parent ``.frame(maxHeight:
-/// 160)`` becomes a *fixed* 160 pt box rather than a 28→160 pt elastic
-/// pill. By overriding ``intrinsicContentSize`` to ``usedRect`` +
-/// inset, SwiftUI's ``minHeight: 28, maxHeight: 160`` clamp becomes a
-/// real elastic range that hugs single-line content and grows to the
-/// cap as the user types. ``didChangeText`` invalidates so each edit
-/// re-asks SwiftUI to re-measure.
+/// ``NSTextView`` subclass that measures its own laid-out content and
+/// reports the height back to SwiftUI. The stock ``NSTextView`` returns
+/// ``noIntrinsicMetric`` for both axes, so a SwiftUI parent has no way
+/// to size the field to its text; ``ComposeField`` therefore drives the
+/// height explicitly from ``onMeasuredHeight``. ``didChangeText`` and
+/// width changes both re-measure, so wrapping caused by resizing the
+/// window grows the field just like typing does.
 final class AutosizingTextView: NSTextView {
-    override var intrinsicContentSize: NSSize {
-        guard let lm = layoutManager, let tc = textContainer else {
-            return NSSize(width: NSView.noIntrinsicMetric, height: 28)
-        }
+    /// Called with the measured content height whenever the text or the
+    /// view's width changes. The receiver owns the clamping; this only
+    /// reports what the layout manager actually used.
+    var onMeasuredHeight: ((CGFloat) -> Void)?
+
+    /// Height of the laid-out text plus the editor's vertical insets.
+    var measuredHeight: CGFloat {
+        guard let lm = layoutManager, let tc = textContainer else { return 28 }
         lm.ensureLayout(for: tc)
-        let used = lm.usedRect(for: tc)
-        return NSSize(
-            width: NSView.noIntrinsicMetric,
-            height: ceil(used.height) + textContainerInset.height * 2
-        )
+        return ceil(lm.usedRect(for: tc).height) + textContainerInset.height * 2
     }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight)
+    }
+
     override func didChangeText() {
         super.didChangeText()
+        remeasure()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = abs(newSize.width - frame.width) > 0.5
+        super.setFrameSize(newSize)
+        // Re-wrap on a width change means a different line count, so the
+        // height the parent is holding is now stale.
+        if widthChanged { remeasure() }
+    }
+
+    /// Re-measures and republishes the content height. Call after any
+    /// programmatic edit — assigning ``string`` directly does not route
+    /// through ``didChangeText``.
+    func remeasure() {
         invalidateIntrinsicContentSize()
+        guard let onMeasuredHeight else { return }
+        let height = measuredHeight
+        // Both callers can run inside a layout or view-update pass;
+        // publishing SwiftUI state from there would mutate the view graph
+        // mid-update. Hop to the next runloop turn so the write lands in
+        // a clean cycle.
+        DispatchQueue.main.async { onMeasuredHeight(height) }
     }
 
     /// Bug 3-A residual P2: AppleScript / cliclick / VoiceOver target
@@ -830,12 +906,14 @@ private struct ComposeTextEditor: NSViewRepresentable {
     var onSubmit: () -> Void
     var onCancel: () -> Void
     var onRecallLastUser: () -> String?
+    /// Reports the editor's laid-out content height so ``ComposeField``
+    /// can size the field to the draft.
+    var onMeasuredHeight: (CGFloat) -> Void
 
-    func makeNSView(context: Context) -> NSTextView {
+    func makeNSView(context: Context) -> NSScrollView {
         let tv = AutosizingTextView()
         tv.delegate = context.coordinator
         tv.isRichText = false
-        tv.font = .systemFont(ofSize: NSFont.systemFontSize)
         tv.allowsUndo = true
         tv.drawsBackground = false
         tv.backgroundColor = .clear
@@ -856,23 +934,43 @@ private struct ComposeTextEditor: NSViewRepresentable {
         // is what lets us measure the true content height below.
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
         tv.textContainer?.widthTracksTextView = true
         tv.textContainer?.heightTracksTextView = false
         tv.textContainer?.containerSize = NSSize(
             width: 0, height: CGFloat.greatestFiniteMagnitude
         )
+        tv.onMeasuredHeight = onMeasuredHeight
         // Bug 3-A residual P2: NSTextView already advertises role
         // ``.textArea`` by default, but with no label / identifier
         // AppleScript and cliclick can't tell which text area is the
         // chat compose vs the system-prompt editor or search bar.
         AutosizingTextView.applyComposeAccessibility(tv)
-        return tv
+
+        // Hosting the editor in a scroll view is what makes the height
+        // cap usable: past ``ComposeField.maxHeight`` the draft scrolls
+        // inside the field (and the caret stays visible) instead of
+        // being clipped out of reach.
+        let scroll = NSScrollView()
+        scroll.documentView = tv
+        scroll.hasVerticalScroller = false
+        scroll.hasHorizontalScroller = false
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.autohidesScrollers = true
+        return scroll
     }
 
-    func updateNSView(_ view: NSTextView, context: Context) {
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? AutosizingTextView else { return }
         if view.string != text {
             view.string = text
+            // A programmatic assignment does not fire ``didChangeText``,
+            // so the parent would keep the height of the previous draft
+            // (e.g. after Send clears it, or after Up-arrow recall).
+            view.remeasure()
         }
+        view.onMeasuredHeight = onMeasuredHeight
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onCancel = onCancel
         context.coordinator.isStreaming = isStreaming
@@ -983,6 +1081,10 @@ private struct ComposeTextEditor: NSViewRepresentable {
                 else { return false }
                 textView.string = recalled
                 text.wrappedValue = recalled
+                // Direct ``string`` assignment skips ``didChangeText``, so
+                // the recalled draft would render at the old (one-line)
+                // height until the next keystroke.
+                (textView as? AutosizingTextView)?.remeasure()
                 // Park the caret at the END so the user can
                 // immediately append or hit ⌘A → retype. Anchoring
                 // at start would force a ⌘→ before the first edit.
