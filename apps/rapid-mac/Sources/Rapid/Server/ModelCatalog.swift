@@ -347,14 +347,21 @@ enum ModelCatalog {
     /// Pure + `static` so the set is one list rather than a chain of
     /// `hasPrefix` calls buried in the parse loop.
     static func isBannerLine(_ line: String) -> Bool {
+        // Match the full banner grammar, not a bare word. An alias is
+        // ASCII `[A-Za-z0-9._-]` with no spaces or colons (``isSafeAlias``),
+        // so a genuine alias row for a model literally named "Loading",
+        // "Uvicorn", or "Traceback" is `<name><2+ spaces><size>` — which
+        // none of these prefixes match, while the real banners
+        // ("Loading model with …", "Uvicorn running on …", "Traceback
+        // (most recent call last):") all do. `INFO:`/`WARNING:`/`ERROR:`
+        // carry a colon and so can never collide with an alias.
         let bannerPrefixes = [
             "Loading model",
-            "Loading ",
             "INFO:",
             "WARNING:",
             "ERROR:",
-            "Uvicorn",
-            "Traceback",
+            "Uvicorn running",
+            "Traceback (",
         ]
         return bannerPrefixes.contains { line.hasPrefix($0) }
     }
