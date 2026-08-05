@@ -153,7 +153,7 @@ def _resolve_default_model() -> str:
     return os.environ.get("RAPID_MLX_DEFAULT_MODEL") or "qwen3.5-4b-4bit"
 
 
-def _start_server_background(model: str, port: int) -> int:
+def _start_server_background(model: str, port: int, api_key: str | None = None) -> int:
     """Spawn ``rapid-mlx serve <model> --port <port>`` detached.
 
     Writes the child PID to :data:`PID_FILE` so a later ``kill $(cat
@@ -172,13 +172,17 @@ def _start_server_background(model: str, port: int) -> int:
     # ``start_new_session=True`` is the POSIX-portable replacement for
     # setsid() — detaches the child from the parent's controlling
     # terminal so a Ctrl-C on the parent doesn't propagate.
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    popen_kwargs: dict[str, object] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "start_new_session": True,
+    }
+    if api_key:
+        child_env = os.environ.copy()
+        child_env["RAPID_MLX_API_KEY"] = api_key
+        popen_kwargs["env"] = child_env
+    proc = subprocess.Popen(cmd, **popen_kwargs)
     PID_FILE.write_text(str(proc.pid) + "\n", encoding="utf-8")
     return proc.pid
 
@@ -216,13 +220,17 @@ def launch_command(args: argparse.Namespace) -> None:
         sys.exit(2)
 
     server_url = args.server_url
+    api_key = getattr(args, "api_key", None) or os.environ.get("RAPID_MLX_API_KEY")
     targets: list[str]
     if args.all:
         targets = [
             name
             for name, adapter in ADAPTERS.items()
             if adapter.detect()
-            and (name != "cursor" or _cursor_endpoint_error(server_url) is None)
+            and (
+                name != "cursor"
+                or (_cursor_endpoint_error(server_url) is None and bool(api_key))
+            )
         ]
         if not targets:
             print(
@@ -239,6 +247,14 @@ def launch_command(args: argparse.Namespace) -> None:
                     f"launch: {reason}. BYOK requests are routed through "
                     "Cursor's servers; use a public HTTPS tunnel or choose "
                     "claude-code, cline, or continue-dev for a local connection.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            if not api_key:
+                print(
+                    "launch: Cursor public endpoints require --api-key or "
+                    "RAPID_MLX_API_KEY. Start Rapid-MLX with the same key; "
+                    "never expose an unauthenticated server to the internet.",
                     file=sys.stderr,
                 )
                 sys.exit(2)
@@ -290,10 +306,13 @@ def launch_command(args: argparse.Namespace) -> None:
             failures.append(name)
             continue
         try:
-            path = adapter.write_or_patch_config(
-                server_url=cursor_server_url if name == "cursor" else server_url,
-                model=model,
-            )
+            config_kwargs = {
+                "server_url": cursor_server_url if name == "cursor" else server_url,
+                "model": model,
+            }
+            if api_key:
+                config_kwargs["api_key"] = api_key
+            path = adapter.write_or_patch_config(**config_kwargs)
         except Exception as exc:
             print(f"  {name}: FAILED — {exc}", file=sys.stderr)
             failures.append(name)
@@ -310,7 +329,7 @@ def launch_command(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
         else:
-            pid = _start_server_background(model, args.port)
+            pid = _start_server_background(model, args.port, api_key=api_key)
             print(f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})")
             print(f"  PID file: {PID_FILE}")
 
@@ -378,6 +397,15 @@ def register(subparsers) -> None:
         type=str,
         default="http://127.0.0.1:8000",
         help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
+    )
+    p.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help=(
+            "API key written to the client config and used by --start-server "
+            "(default: RAPID_MLX_API_KEY). Required for Cursor's public endpoint."
+        ),
     )
     p.add_argument(
         "--port",

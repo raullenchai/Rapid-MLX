@@ -362,6 +362,7 @@ def _make_args(**overrides):
         all=False,
         model=None,
         server_url="http://127.0.0.1:8000",
+        api_key=None,
         port=8000,
         start_server=False,
         dry_run=False,
@@ -425,6 +426,7 @@ class TestLaunchCommand:
             _make_args(
                 client="cursor",
                 server_url="https://rapid.example.com",
+                api_key="cursor-secret",
                 dry_run=True,
             )
         )
@@ -507,12 +509,33 @@ class TestLaunchCommand:
             _make_args(
                 client="cursor",
                 server_url="https://EXAMPLE.COM.:443/api/",
+                api_key="cursor-secret",
             )
         )
         config = json.loads(cursor.current_config_path().read_text())
         assert config["cursor.aiprovider.openai.baseUrl"] == (
             "https://example.com:443/api/v1"
         )
+        assert config["cursor.aiprovider.openai.apiKey"] == "cursor-secret"
+
+    def test_cursor_public_endpoint_requires_api_key(
+        self, fake_home, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(
+            launch_cli.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("93.184.216.34", 443)),
+            ],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url="https://example.com")
+            )
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "require --api-key" in err
+        assert "unauthenticated" in err
 
     def test_cursor_rejects_multicast_address(self, fake_home, capsys, monkeypatch):
         monkeypatch.setattr(
@@ -623,6 +646,21 @@ class TestLaunchCommand:
         ]
         # PID file written.
         assert launch_cli.PID_FILE.read_text().strip() == "99999"
+
+    def test_api_key_is_passed_to_client_and_started_server(self, fake_home, capsys):
+        ext_dir = (
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
+        )
+        ext_dir.mkdir(parents=True)
+        fake_proc = MagicMock()
+        fake_proc.pid = 99998
+        with patch.object(subprocess, "Popen", return_value=fake_proc) as popen:
+            launch_cli.launch_command(
+                _make_args(client="cline", start_server=True, api_key="shared-secret")
+            )
+        config = json.loads((ext_dir / "cline_mcp_settings.json").read_text())
+        assert config["openAiApiKey"] == "shared-secret"
+        assert popen.call_args.kwargs["env"]["RAPID_MLX_API_KEY"] == "shared-secret"
 
     def test_start_server_skipped_when_no_clients_patched(self, fake_home, capsys):
         # cline is NOT detected on this fake_home. --start-server must

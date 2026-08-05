@@ -96,7 +96,7 @@ rapid-mlx launch claude-code
 
 With a server running (step 3), this patches Claude Code's local config (`~/.config/claude/settings.json`) to route at `http://localhost:8000` — no manual env vars, no editing JSON by hand. You get a fully local Claude Code: `$0` per token, nothing leaves your Mac. Swap in `cline` or `continue-dev` for the other IDE clients, or run `rapid-mlx launch list` to see what's detected on this machine.
 
-> **Cursor:** Cursor currently routes BYOK requests through its own servers, so its servers cannot reach a Rapid-MLX endpoint on `localhost`. Rapid-MLX therefore does not generate a Cursor localhost config. If you intentionally expose the server through a public HTTPS tunnel, configure it with `rapid-mlx launch cursor --server-url https://your-public-host` — that is no longer a fully local connection.
+> **Cursor:** Cursor currently routes BYOK requests through its own servers, so its servers cannot reach a Rapid-MLX endpoint on `localhost`. Rapid-MLX therefore does not generate a Cursor localhost config. If you intentionally expose the server through a public HTTPS tunnel, set `RAPID_MLX_API_KEY=<secret>` for both `rapid-mlx serve ...` and `rapid-mlx launch cursor --server-url https://your-public-host`. This is no longer a fully local connection; never expose an unauthenticated server.
 
 > **Vision / audio / video / diffusion models?** Base install is text-only (~460 MB). Vision, audio (TTS, STT, voice cloning), video generation, embeddings, and DFlash speculative decoding ship as opt-in extras. → [Optional extras](https://rapidmlx.com/docs/extras.html)
 
