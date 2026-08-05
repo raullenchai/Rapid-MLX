@@ -390,6 +390,19 @@ final class ChatViewModel {
     func stopAndPersist() {
         inflight?.cancel()
         guard isStreaming else { return }
+        // Finalise through the SHARED cancellation contract before snapshotting.
+        // Persisting a message still marked ``.streaming`` writes a turn that
+        // reopens after relaunch as a permanent typing indicator, with no live
+        // task left to ever complete or cancel it. Same transition the normal
+        // stop path uses: ``.complete`` + "Stopped.", keeping whatever bytes
+        // already arrived.
+        if let idx = messages.indices.last,
+           messages[idx].role == .assistant,
+           messages[idx].status == .streaming,
+           var last = currentMessage(index: idx) {
+            Self.finaliseCancellation(message: &last)
+            updateMessage(at: idx, with: last)
+        }
         isStreaming = false
         persistActive()
     }
