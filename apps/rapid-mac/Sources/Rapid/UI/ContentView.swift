@@ -530,7 +530,8 @@ struct ContentView: View {
             cachedAliases: cachedAliases,
             serverState: server.state,
             rejectsAlias: rejectsAlias,
-            userOptedIn: autoStartOnLaunch
+            userOptedIn: autoStartOnLaunch,
+            isRetiredStarter: QuickstartCoordinator.retiredStarters.contains
         )
         switch decision {
         case .start(let resume):

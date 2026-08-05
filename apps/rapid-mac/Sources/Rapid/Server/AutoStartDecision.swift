@@ -165,6 +165,13 @@ enum AutoStartDecision: Equatable {
         /// or surface a ``promptDownload`` caption that would suggest
         /// they should click Start.
         case userOptedOut
+        /// The alias we would resume is a ``QuickstartCoordinator``
+        /// retired starter — a model withdrawn for being unusable, not
+        /// merely superseded. Auto-starting it would put the user back
+        /// in the broken chat AND move ``serverState`` off ``.idle``,
+        /// which suppresses the Quickstart rescue card that exists to
+        /// get them off it. Skipping leaves the frame to that card.
+        case retiredStarter
         /// ``serverState`` is not ``.idle`` — either a previous
         /// ``.task`` already kicked an auto-start (re-entry), the
         /// user manually clicked Start before this helper fired, or
@@ -226,7 +233,8 @@ enum AutoStartDecision: Equatable {
         cachedAliases: Set<String>,
         serverState: ServerState,
         rejectsAlias: (String) -> Bool = { _ in false },
-        userOptedIn: Bool = true
+        userOptedIn: Bool = true,
+        isRetiredStarter: (String) -> Bool = { _ in false }
     ) -> AutoStartDecision {
         // FU-1 precedence #0 (highest): if the user has turned the
         // auto-start preference OFF in Settings → Models, never
@@ -285,6 +293,16 @@ enum AutoStartDecision: Equatable {
         )
         guard let alias = resolved else {
             return .skip(reason: .noResolvableAlias)
+        }
+
+        // A retired starter must not be resumed. Auto-start defaults to
+        // ON, so without this the rescue is decorative: the stranded user
+        // launches, we restart the broken model, ``serverState`` leaves
+        // ``.idle``, and Quickstart's third gate hides the card that was
+        // supposed to reach them. Placed after resolution so the reason is
+        // specific rather than folded into ``noResolvableAlias``.
+        if isRetiredStarter(alias) {
+            return .skip(reason: .retiredStarter)
         }
 
         // Cond-3 gate — model on disk?

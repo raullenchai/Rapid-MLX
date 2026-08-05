@@ -294,5 +294,46 @@ for busy in [FakeServerState.ready, .starting, .crashed, .missing] {
           "server busy (\(busy)) suppresses the card even for the stranded cohort")
 }
 
+// ---------------------------------------------------------------------------
+// Auto-start must not resume a retired starter
+//
+// Auto-start defaults to ON. Without this guard the rescue above is
+// decorative: the stranded user launches, we restart the broken model,
+// serverState leaves .idle, and Quickstart's third gate hides the card.
+// Mirrors the ordering in AutoStartDecision.decide — resolution first, then
+// the retired check, then the on-disk check.
+
+enum FakeDecision: Equatable { case start(String), promptDownload(String), skip(String) }
+
+func decideResume(lastServedAlias: String?, cachedAliases: Set<String>,
+                  serverState: FakeServerState, userOptedIn: Bool = true) -> FakeDecision {
+    if !userOptedIn { return .skip("userOptedOut") }
+    guard case .idle = serverState else { return .skip("serverNotIdle") }
+    guard let alias = lastServedAlias else { return .skip("noResolvableAlias") }
+    if isStranded(alias) { return .skip("retiredStarter") }
+    return cachedAliases.contains(alias) ? .start(alias) : .promptDownload(alias)
+}
+
+print("Auto-start vs retired starters:")
+check(decideResume(lastServedAlias: "bonsai-1.7b-2bit",
+                   cachedAliases: ["bonsai-1.7b-2bit"], serverState: .idle)
+        == .skip("retiredStarter"),
+      "retired starter on disk is NOT resumed — state stays .idle so the card can show")
+check(decideResume(lastServedAlias: "qwen3.5-9b-4bit",
+                   cachedAliases: ["qwen3.5-9b-4bit"], serverState: .idle)
+        == .start("qwen3.5-9b-4bit"),
+      "a normal model still auto-starts (the guard is not a blanket off-switch)")
+check(decideResume(lastServedAlias: "lfm2.5-1b-4bit",
+                   cachedAliases: ["lfm2.5-1b-4bit"], serverState: .idle)
+        == .start("lfm2.5-1b-4bit"),
+      "the CURRENT starter auto-starts normally")
+
+// The end-to-end property the two halves buy together.
+check(decideResume(lastServedAlias: "bonsai-1.7b-2bit",
+                   cachedAliases: ["bonsai-1.7b-2bit"], serverState: .idle)
+        == .skip("retiredStarter")
+      && isEligible(done: false, lastServedAlias: "bonsai-1.7b-2bit", serverState: .idle),
+      "end-to-end: stranded user launches → no auto-start → card IS shown")
+
 print(fails == 0 ? "\nALL PASS" : "\n\(fails) FAILURE(S)")
 exit(fails == 0 ? 0 : 1)

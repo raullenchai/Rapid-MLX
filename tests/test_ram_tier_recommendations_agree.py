@@ -540,3 +540,31 @@ def test_eligibility_check_script_has_not_drifted_from_production():
         f"retiredStarters drifted: production {sorted(prod_set)} vs script "
         f"{sorted(copy_set)} — the rescued cohort differs from the tested one"
     )
+
+
+def test_auto_start_skips_retired_starters():
+    """Auto-start defaults to ON, so a stranded user's launch would resume
+    the broken model and push ``serverState`` off ``.idle`` — which is
+    exactly what Quickstart's third gate treats as "not a new user". The
+    rescue card would then never render for the cohort it exists for.
+
+    Pinned as source structure because ``AutoStartDecision.decide`` is not
+    reachable from Python; the executable half lives in
+    ``verify-recommendation-tiers.swift``."""
+    decision = (
+        REPO / "apps/rapid-mac/Sources/Rapid/Server/AutoStartDecision.swift"
+    ).read_text()
+    assert "case retiredStarter" in decision, (
+        "AutoStartDecision lost its retiredStarter skip reason"
+    )
+    assert "if isRetiredStarter(alias) {" in decision, (
+        "AutoStartDecision no longer guards against resuming a retired starter"
+    )
+
+    caller = (REPO / "apps/rapid-mac/Sources/Rapid/UI/ContentView.swift").read_text()
+    assert (
+        "isRetiredStarter: QuickstartCoordinator.retiredStarters.contains" in caller
+    ), (
+        "the launch hook stopped passing the retired-starter predicate — the "
+        "parameter defaults to 'never retired', so the guard silently no-ops"
+    )
