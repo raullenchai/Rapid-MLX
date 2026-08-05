@@ -531,42 +531,47 @@ def _attach_deepseek_codex_reasoning_budget(
     # prefilled or is the first generated token. Treating it as seeded also avoids
     # losing that first marker when mlx-lm establishes the processor's cumulative
     # token baseline on its first callback.
-    cache_attr = "_rapid_mlx_deepseek_codex_reasoning_boundary"
+    cache_attr = "_rapid_mlx_deepseek_codex_reasoning_boundary_v2"
     boundary = getattr(engine, cache_attr, None)
     if not (
         isinstance(boundary, tuple)
-        and len(boundary) == 2
+        and len(boundary) == 3
         and all(isinstance(value, int) for value in boundary)
     ):
         tokenizer = getattr(engine, "tokenizer", None)
         try:
-            end_id = tokenizer.get_vocab().get("</think>")
+            vocab = tokenizer.get_vocab()
+            start_id = vocab.get("<think>")
+            end_id = vocab.get("</think>")
         except Exception as exc:
             raise RuntimeError(
                 "DeepSeek Codex reasoning budget unavailable: tokenizer cannot "
-                "resolve the </think> boundary"
+                "resolve the <think>/</think> boundaries"
             ) from exc
         vocab_size = _engine_output_vocab_size(engine)
         if (
-            not isinstance(end_id, int)
+            not isinstance(start_id, int)
+            or not isinstance(end_id, int)
             or vocab_size is None
+            or not 0 <= start_id < vocab_size
             or not 0 <= end_id < vocab_size
         ):
             raise RuntimeError(
-                "DeepSeek Codex reasoning budget unavailable: </think> is "
-                "missing or outside the model output vocabulary"
+                "DeepSeek Codex reasoning budget unavailable: <think> or "
+                "</think> is missing or outside the model output vocabulary"
             )
-        boundary = (end_id, vocab_size)
+        boundary = (start_id, end_id, vocab_size)
         try:
             setattr(engine, cache_attr, boundary)
         except (AttributeError, TypeError):
             # Slot-only engine facades still get the enforced processor; they
             # merely pay the one-token lookup again on their next request.
             pass
-    end_id, _vocab_size = boundary
+    start_id, end_id, _vocab_size = boundary
     chat_kwargs["reasoning_budget_logits_processor"] = ReasoningBudgetLogitsProcessor(
         end_id,
         getattr(openai_request, "reasoning_max_tokens", None),
+        think_start_id=start_id,
         seeded_thinking=True,
     )
 

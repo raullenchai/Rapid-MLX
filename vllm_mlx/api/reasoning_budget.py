@@ -90,9 +90,11 @@ class ReasoningBudgetLogitsProcessor:
       already thinking is NOT exempt — it counts, else a model looping ``<think>``
       could stall the budget forever (see ``_commit_tail``). At budget, force
       ``think_end_id``.
-    * GENERATION — once ``think_end_id`` is seen, this processor is inert
-      (returns logits unchanged) so a chained grammar/penalty processor owns
-      the rest of the request. A latch makes this O(1) after the boundary.
+    * GENERATION — once ``think_end_id`` is seen, the processor suppresses a
+      later ``think_start_id`` while leaving every other logit unchanged. This
+      prevents a bounded reasoning turn from reopening hidden reasoning after
+      public content, which the Responses protocol cannot represent. A cached
+      one-token mask keeps this O(1) after the boundary.
 
     ``seeded_thinking`` selects between the TWO shapes a reasoning template can
     take: one that PREFILLS ``<think>`` into the prompt (seeded — the opener
@@ -148,6 +150,11 @@ class ReasoningBudgetLogitsProcessor:
         # ``think_end_id`` outside the logits width disables the budget instead
         # of masking to an all -inf row.
         self._oob_logged = False
+        self._reopen_suppressor = (
+            SuppressTokensLogitsProcessor([self._think_start_id])
+            if self._think_start_id is not None
+            else None
+        )
 
     # ---- phase machine (pure, unit-testable without mlx) -------------------
 
@@ -209,10 +216,13 @@ class ReasoningBudgetLogitsProcessor:
 
     def __call__(self, token_ids: Any, logits: Any) -> Any:
         # Unlimited budget is a pure no-op; skip even the tail walk so an unset
-        # cap costs nothing. The ended-latch short-circuits the O(1) tail.
-        if self._budget < 0 or self._ended:
+        # cap costs nothing.
+        if self._budget < 0:
             return logits
-        if self._phase(token_ids) != "force":
+        phase = self._phase(token_ids)
+        if self._ended and self._reopen_suppressor is not None:
+            return self._reopen_suppressor(token_ids, logits)
+        if phase != "force":
             return logits
         return self._force_distribution(logits)
 

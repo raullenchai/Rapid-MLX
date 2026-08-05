@@ -1839,7 +1839,7 @@ def test_deepseek_codex_reasoning_budget_is_narrowly_attached(
         tools=[object()] if has_tools else [], reasoning_max_tokens=2048
     )
     engine = SimpleNamespace(
-        tokenizer=SimpleNamespace(get_vocab=lambda: {"</think>": 18})
+        tokenizer=SimpleNamespace(get_vocab=lambda: {"<think>": 17, "</think>": 18})
     )
     cfg = SimpleNamespace(
         model_path="DeepSeek-V4-Flash-0731",
@@ -1856,7 +1856,7 @@ def test_deepseek_codex_reasoning_budget_is_narrowly_attached(
     assert bool(calls) is expected
     if expected:
         assert calls[0][0] == (18, 2048)
-        assert calls[0][1] == {"seeded_thinking": True}
+        assert calls[0][1] == {"think_start_id": 17, "seeded_thinking": True}
 
 
 @pytest.mark.parametrize(
@@ -1926,7 +1926,7 @@ def test_deepseek_codex_reasoning_boundary_is_cached_per_engine(monkeypatch):
     def get_vocab():
         nonlocal calls
         calls += 1
-        return {"</think>": 18}
+        return {"<think>": 17, "</think>": 18}
 
     monkeypatch.setattr(
         "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
@@ -1943,7 +1943,7 @@ def test_deepseek_codex_reasoning_boundary_is_cached_per_engine(monkeypatch):
         _attach_deepseek_codex_reasoning_budget(engine, cfg, request, True, True, {})
 
     assert calls == 1
-    assert engine._rapid_mlx_deepseek_codex_reasoning_boundary == (18, 256)
+    assert engine._rapid_mlx_deepseek_codex_reasoning_boundary_v2 == (17, 18, 256)
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -1963,7 +1963,7 @@ def test_responses_route_wires_deepseek_codex_reasoning_budget(
     cfg.reasoning_parser_name = "deepseek_v4"
     cfg.tool_call_parser = tool_parser
     engine = responses_client.engine
-    engine.tokenizer.get_vocab = lambda: {"</think>": 18}
+    engine.tokenizer.get_vocab = lambda: {"<think>": 17, "</think>": 18}
     monkeypatch.setattr(
         "vllm_mlx.routes.chat._engine_output_vocab_size", lambda _engine: 256
     )
