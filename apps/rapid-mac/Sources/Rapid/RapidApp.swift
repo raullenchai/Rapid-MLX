@@ -67,7 +67,28 @@ struct RapidApp: App {
         TelemetryConsent.synchronizeExistingDecision()
         // Sweep orphan rapid-mlx processes from previous sessions BEFORE
         // anything else looks at our serve port.
-        PortSweep.sweep(port: PortAllocator.candidatePorts.first ?? 8000)
+        //
+        // Detached, NOT inline. This runs inside ``RapidApp.init`` —
+        // i.e. before the first window is drawn — and the sweep forks
+        // ``lsof`` (plus a ``ps`` per pid it finds) and can wait out a
+        // SIGTERM grace when it actually finds an orphan. Inline, that
+        // was dead time on the main thread with no UI on screen: the
+        // app appeared to hang on launch (Dock icon bouncing, no
+        // window) for as long as the sweep took.
+        //
+        // Fire-and-forget is correct here rather than something the
+        // launch path awaits. The sweep is an opportunistic cleanup of
+        // a PREVIOUS session's leftovers; nothing in this launch's
+        // startup depends on its result. The real guarantee that we
+        // don't collide with an orphan lives in
+        // ``ServerManager.start`` → ``PortAllocator.allocate()``,
+        // which re-sweeps each candidate port and bind-probes it
+        // before spawning. If this background sweep hasn't finished by
+        // the time the user picks a model, the allocator simply finds
+        // the orphan itself and reaps it there.
+        Task.detached(priority: .userInitiated) {
+            PortSweep.sweep(port: PortAllocator.candidatePorts.first ?? 8000)
+        }
         let manager = ServerManager()
         let samplingConfig = SamplingConfig()
         let appearanceConfig = AppearanceConfig()
@@ -528,8 +549,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             AppDelegate.runTerminationSequence(
                 stopStream: { AppDelegate.shared.chat?.stop() },
-                shutdownServer: { AppDelegate.shared.server?.shutdownSync() },
-                shutdownDownloads: { AppDelegate.shared.downloads?.shutdownSync() }
+                signalServer: { AppDelegate.shared.server?.beginShutdown() },
+                signalDownloads: { AppDelegate.shared.downloads?.beginShutdown() },
+                reapServer: { AppDelegate.shared.server?.shutdownSync() },
+                reapDownloads: { AppDelegate.shared.downloads?.finishShutdown() }
             )
         }
         // Last write before AppKit pulls the plug — clears this
@@ -628,17 +651,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Codex r1 NIT: prior version had the 5 calls inlined in
     /// `applicationWillTerminate`, with no test pinning the
     /// stop-first invariant against a future reorder.
+    ///
+    /// Teardown is SPLIT into a signal phase and a reap phase. The
+    /// previous shape called a single blocking `shutdownSync()` per
+    /// subsystem back-to-back, so their grace windows SUMMED: the
+    /// server's 5 s SIGTERM grace (+0.5 s post-SIGKILL settle) ran to
+    /// completion before the download manager even sent its first
+    /// SIGTERM, then that added its own 2 s — up to ~7.5 s of blocked
+    /// main thread. macOS gives `applicationWillTerminate` a finite
+    /// budget before force-killing the app, and everything after the
+    /// teardown (`ConversationStore.flush()`, and
+    /// `CrashReporter.recordCleanShutdown()` at the call site) is
+    /// exactly the work that must not be skipped — losing the latter
+    /// makes the NEXT launch misreport a clean quit as a crash.
+    ///
+    /// Signalling every child FIRST means the two grace windows
+    /// OVERLAP: the download children spend the server's 5 s grace
+    /// dying, so the download reap that follows almost always finds
+    /// them already gone and returns immediately. Worst case is now
+    /// bounded by the longest single grace rather than their sum, and
+    /// no grace period was shortened — the server's 5 s window is
+    /// load-bearing for rapid-mlx's prefix-cache flush.
     static func runTerminationSequence(
         stopStream: () -> Void,
-        shutdownServer: () -> Void,
-        shutdownDownloads: () -> Void
+        signalServer: () -> Void,
+        signalDownloads: () -> Void,
+        reapServer: () -> Void,
+        reapDownloads: () -> Void
     ) {
         // ORDER MATTERS — the audit P1 invariant is: stopStream BEFORE
-        // shutdownServer so the inflight URLSessionDataTask FIN reaches
-        // rapid-mlx before `shutdownServer` SIGTERMs the child.
+        // any teardown so the inflight URLSessionDataTask FIN reaches
+        // rapid-mlx before the child is SIGTERM'd.
         stopStream()
-        shutdownServer()
-        shutdownDownloads()
+        // Signal phase — non-blocking. Both subsystems get their
+        // SIGTERM before anyone waits, so the graces overlap.
+        signalServer()
+        signalDownloads()
+        // Reap phase — blocking. Server first: its grace is the long
+        // one, and by the time it returns the download children have
+        // had that entire window to exit.
+        reapServer()
+        reapDownloads()
         // Drain any queued conversation-history write so the last turn /
         // edit / deletion isn't lost when the process exits before the
         // async save lands.

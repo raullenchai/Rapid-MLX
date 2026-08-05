@@ -529,11 +529,28 @@ final class DownloadManager {
     /// ``ServerManager.shutdownSync``. We can't await Process.exit
     /// from ``applicationWillTerminate``, so SIGTERM + short blocking
     /// poll + SIGKILL.
-    func shutdownSync() {
-        let aliases = Array(processes.keys)
+    ///
+    /// Split into ``beginShutdown`` (signal, non-blocking) and
+    /// ``finishShutdown`` (reap, blocking) so the caller can overlap
+    /// this grace window with ``ServerManager``'s. Previously both
+    /// teardowns ran start-to-finish back-to-back on the main thread,
+    /// so the app quit path serialised the server's 5.5 s budget and
+    /// this 2 s one into 7.5 s of blocking — see
+    /// ``AppDelegate.runTerminationSequence``. Signalling here first
+    /// lets these children die WHILE the server grace is running, and
+    /// by the time ``finishShutdown`` polls they are almost always
+    /// already gone.
+    func beginShutdown() {
         for (_, process) in processes where process.isRunning {
             process.terminate()
         }
+    }
+
+    /// Second half of the split teardown: wait briefly for the
+    /// already-SIGTERM'd children, SIGKILL any survivor, then run the
+    /// normal per-alias bookkeeping so nothing is left half-torn-down.
+    func finishShutdown() {
+        let aliases = Array(processes.keys)
         let deadline = Date().addingTimeInterval(2.0)
         while Date() < deadline && processes.values.contains(where: { $0.isRunning }) {
             Thread.sleep(forTimeInterval: 0.1)

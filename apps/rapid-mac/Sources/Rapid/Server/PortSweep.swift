@@ -26,6 +26,57 @@ enum PortSweep {
     /// port the running rapid-mlx is bound to) when wiring URLs.
     static var port: Int { defaultPort }
 
+    /// Upper bound on how long we wait for a SIGTERM'd process (group)
+    /// to exit before escalating to SIGKILL. Unchanged from the
+    /// original fixed ``Thread.sleep(1.5)`` — what changed is that we
+    /// now POLL toward this deadline instead of always burning it.
+    private static let sigtermGrace: TimeInterval = 1.5
+
+    /// Poll granularity while waiting for death. 50 ms is far below
+    /// human perception yet coarse enough that the ``kill(_:0)`` probes
+    /// cost nothing measurable.
+    private static let deathPollInterval: TimeInterval = 0.05
+
+    /// Block until ``isAlive`` reports false or ``grace`` elapses.
+    /// Returns true when the target actually died inside the window.
+    ///
+    /// Replaces an unconditional ``Thread.sleep(forTimeInterval: 1.5)``
+    /// after each SIGTERM. That sleep burned the FULL 1.5 s even when
+    /// uvicorn exited in 80 ms, and ``PortAllocator.allocate()`` runs
+    /// this sweep once per candidate port (8000…8009) — so a machine
+    /// with several stale ports paid 1.5 s each, serially, for
+    /// processes that were already gone. Polling keeps the identical
+    /// worst-case bound while collapsing the common case to roughly
+    /// one poll interval.
+    @discardableResult
+    private static func awaitDeath(
+        within grace: TimeInterval,
+        isAlive: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(grace)
+        while Date() < deadline {
+            if !isAlive() { return true }
+            Thread.sleep(forTimeInterval: deathPollInterval)
+        }
+        return !isAlive()
+    }
+
+    /// ``kill(-pgid, 0)`` probes process-group liveness without
+    /// signalling. Errno ``EPERM`` means "the group exists but we lack
+    /// permission to signal it" — that is very much alive, so it must
+    /// NOT be read as death. Only ``ESRCH`` (no such group) is death.
+    private static func processGroupIsAlive(_ pgid: Int32) -> Bool {
+        if kill(-pgid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
+    /// Single-pid counterpart to ``processGroupIsAlive``. Same EPERM
+    /// caveat applies.
+    private static func pidIsAlive(_ pid: Int32) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+    }
+
     /// Sweep ``defaultPort`` — kept as a zero-arg overload for the
     /// app's launch hook which always runs against the canonical
     /// rapid-mlx port.
@@ -95,12 +146,12 @@ enum PortSweep {
                         "[server] sweep_port_\(port): PGID-kill \(record.pgid) (recorded pid \(record.pid), alias \(record.alias))\n".utf8
                     ))
                     _ = kill(-record.pgid, SIGTERM)
-                    Thread.sleep(forTimeInterval: 1.5)
-                    // ``kill(-pgid, 0)`` probes group liveness without
-                    // signalling. Errno EPERM means "process group
-                    // exists but we lack signal permission" — treat
-                    // as alive.
-                    if kill(-record.pgid, 0) == 0 || errno == EPERM {
+                    // Poll toward the grace deadline rather than
+                    // always sleeping through it — see ``awaitDeath``.
+                    awaitDeath(within: sigtermGrace) {
+                        processGroupIsAlive(record.pgid)
+                    }
+                    if processGroupIsAlive(record.pgid) {
                         _ = kill(-record.pgid, SIGKILL)
                     }
                     OwnedServerRecord.clear()
@@ -151,8 +202,12 @@ enum PortSweep {
             _ = kill(pid, SIGTERM)
         }
         // Give uvicorn a moment for graceful shutdown; observed up to ~1 s
-        // in the wild.
-        Thread.sleep(forTimeInterval: 1.5)
+        // in the wild. Polls instead of always burning the full grace —
+        // the overwhelmingly common case is "already gone in <100 ms",
+        // and this sweep runs once PER candidate port on the start path.
+        awaitDeath(within: sigtermGrace) {
+            owned.contains(where: pidIsAlive)
+        }
 
         // Codex round-2 finding: the previous SIGKILL pass took a
         // FRESH ``lsof`` snapshot and SIGKILL'd anything that looked
@@ -194,17 +249,9 @@ enum PortSweep {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         task.arguments = ["-nP", "-sTCP:LISTEN", "-ti", ":\(port)"]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        task.standardOutput = stdout
-        task.standardError = stderr
-        do {
-            try task.run()
-        } catch {
+        guard let data = runCapturingStdout(task) else {
             return pidsOnPortFallback(port: port)
         }
-        task.waitUntilExit()
-        let data = drainPipeToEOF(stdout.fileHandleForReading)
         return parsePids(data)
     }
 
@@ -212,17 +259,74 @@ enum PortSweep {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/lsof")
         task.arguments = ["-nP", "-sTCP:LISTEN", "-ti", ":\(port)"]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        task.standardOutput = stdout
-        task.standardError = stderr
+        guard let data = runCapturingStdout(task) else { return [] }
+        return parsePids(data)
+    }
+
+    /// Run ``task`` to completion and return its stdout bytes, draining
+    /// stdout AND stderr concurrently. Returns nil only when the spawn
+    /// itself threw (missing binary) so callers can distinguish "couldn't
+    /// launch" from "launched and produced nothing".
+    ///
+    /// The concurrent drain is the load-bearing part. The previous shape
+    /// at all three call sites here was:
+    ///
+    ///     task.standardError = Pipe()   // created, NEVER read
+    ///     task.waitUntilExit()          // <- blocks forever
+    ///     drainPipeToEOF(stdout...)     // <- never reached
+    ///
+    /// A pipe holds ~64 KiB. Once a child fills an undrained pipe it
+    /// blocks in ``write(2)`` and never exits, while the parent blocks in
+    /// ``waitUntilExit()`` waiting for that exit — a textbook deadlock
+    /// with no timeout on either side. ``lsof`` reaches that volume on
+    /// machines with stale network mounts (a ``WARNING: can't stat()``
+    /// line per unreachable filesystem); reading stdout only AFTER the
+    /// wait means even stdout alone can hang on a long pid list.
+    ///
+    /// This mattered more than a stuck helper: ``PortSweep`` runs from
+    /// ``AppDelegate`` init and from the @MainActor start path, so the
+    /// deadlock froze the whole app at launch with no way out.
+    /// Verified: a repro of the old shape had to be SIGKILLed at 10 s.
+    ///
+    /// Both handles are drained on concurrent queues so neither pipe can
+    /// backpressure the child, and ``waitUntilExit`` is called only after
+    /// both reach EOF — which the child's exit guarantees, since exit
+    /// closes both write ends.
+    private static func runCapturingStdout(_ task: Process) -> Data? {
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        task.standardOutput = stdoutPipe
+        task.standardError = stderrPipe
         do {
             try task.run()
         } catch {
-            return []
+            return nil
         }
+
+        // Read both ends concurrently. ``readToEndSafely`` degrades a
+        // bad descriptor to empty Data rather than raising the
+        // uncatchable NSException — see ``drainPipeToEOF``.
+        //
+        // stderr goes to a background queue and its bytes are DISCARDED
+        // — we drain it purely so the child can never block writing to
+        // a full pipe. stdout is then read on THIS thread, which both
+        // pipes being drained in parallel is all the deadlock fix
+        // requires. Keeping the captured result on the stack (rather
+        // than a shared `var` written from the background queue) is
+        // what keeps this free of cross-thread mutable state, so no
+        // lock is needed and the compiler's Sendable capture checking
+        // is satisfied by construction.
+        let stderrHandle = stderrPipe.fileHandleForReading
+        let stderrDrain = DispatchWorkItem { _ = stderrHandle.readToEndSafely() }
+        DispatchQueue.global(qos: .userInitiated).async(execute: stderrDrain)
+
+        let stdoutData = stdoutPipe.fileHandleForReading.readToEndSafely()
+
+        // Both reads must reach EOF before the wait — the child's exit
+        // closes both write ends, so this cannot outlive the child.
+        stderrDrain.wait()
         task.waitUntilExit()
-        return parsePids(drainPipeToEOF(stdout.fileHandleForReading))
+        return stdoutData
     }
 
     private static func parsePids(_ data: Data) -> [Int32] {
@@ -279,16 +383,7 @@ enum PortSweep {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/ps")
         task.arguments = ["-p", String(pid), "-o", "command="]
-        let stdout = Pipe()
-        task.standardOutput = stdout
-        task.standardError = Pipe()
-        do {
-            try task.run()
-        } catch {
-            return nil
-        }
-        task.waitUntilExit()
-        let data = drainPipeToEOF(stdout.fileHandleForReading)
+        guard let data = runCapturingStdout(task) else { return nil }
         guard let s = String(data: data, encoding: .utf8) else { return nil }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -539,9 +634,26 @@ enum PortSweep {
         // and the submodule run shape are reachable depending on
         // how rapid-mlx was installed.
         let tokens = argv.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        for i in 0..<(tokens.count - 1) where i + 1 < tokens.count {
-            guard tokens[i] == "-m" else { continue }
-            let modName = tokens[i + 1]
+        // Iterate over ADJACENT PAIRS, never a manually-constructed
+        // ``0..<(count - 1)``. On an empty argv that expression is
+        // ``0..<(-1)``, and Swift traps on Range construction
+        // (`lowerBound <= upperBound`) BEFORE the loop body or any
+        // `where` clause can guard it — the previous
+        // ``where i + 1 < tokens.count`` was dead code for exactly the
+        // input that crashes.
+        //
+        // Empty argv is reachable in production, not theoretical: a
+        // Python started with no arguments (``python3 < script.py``,
+        // a bare REPL, ``python -``) reports a single-token
+        // ``ps -o command=`` line, so ``splitCommand`` returns an
+        // empty argv tail. That token's basename is ``Python`` on the
+        // macOS framework build, which passes ``isPythonBasename``
+        // and routes straight here. Any such process merely LISTENING
+        // on a swept port crashed the app on launch, because
+        // ``RapidApp`` runs the sweep during ``AppDelegate`` init.
+        // Verified: repro trapped at this line with exit 133 (SIGTRAP).
+        for (flag, modName) in zip(tokens, tokens.dropFirst()) {
+            guard flag == "-m" else { continue }
             if modName == "vllm_mlx" || modName.hasPrefix("vllm_mlx.") {
                 return true
             }
