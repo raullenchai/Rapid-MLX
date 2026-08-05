@@ -563,10 +563,12 @@ def test_auto_start_skips_retired_starters():
 
     caller = (REPO / "apps/rapid-mac/Sources/Rapid/UI/ContentView.swift").read_text()
     assert (
-        "isRetiredStarter: QuickstartCoordinator.retiredStarters.contains" in caller
+        "!quickstart.done && QuickstartCoordinator.retiredStarters.contains" in caller
     ), (
-        "the launch hook stopped passing the retired-starter predicate — the "
-        "parameter defaults to 'never retired', so the guard silently no-ops"
+        "the launch hook stopped passing the rescue-gated retired-starter "
+        "predicate. Unconditional leaves a user who dismissed the rescue with "
+        "neither auto-start nor a card; absent, the guard silently no-ops "
+        "because the parameter defaults to 'never retired'"
     )
 
     # Presence is not enough: the guard has to come BEFORE the on-disk

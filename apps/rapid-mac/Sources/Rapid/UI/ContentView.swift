@@ -531,7 +531,17 @@ struct ContentView: View {
             serverState: server.state,
             rejectsAlias: rejectsAlias,
             userOptedIn: autoStartOnLaunch,
-            isRetiredStarter: QuickstartCoordinator.retiredStarters.contains
+            // Skip a retired starter only while the rescue is still on
+            // offer. Once the user has completed or dismissed Quickstart,
+            // `isEligible` stops showing the card — and an unconditional
+            // predicate here would then leave them with neither their
+            // configured auto-start nor any rescue UI, launching into an
+            // idle server for no reason they can see. Respecting `done`
+            // keeps the skip and the card appearing and disappearing
+            // together.
+            isRetiredStarter: { alias in
+                !quickstart.done && QuickstartCoordinator.retiredStarters.contains(alias)
+            }
         )
         switch decision {
         case .start(let resume):

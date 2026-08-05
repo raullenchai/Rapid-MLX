@@ -308,11 +308,12 @@ enum FakeDecision: Equatable { case start(String), promptDownload(String), skip(
 func isRetiredStarter(_ alias: String) -> Bool { retiredStarters.contains(alias) }
 
 func decideResume(lastServedAlias: String?, cachedAliases: Set<String>,
-                  serverState: FakeServerState, userOptedIn: Bool = true) -> FakeDecision {
+                  serverState: FakeServerState, userOptedIn: Bool = true,
+                  quickstartDone: Bool = false) -> FakeDecision {
     if !userOptedIn { return .skip("userOptedOut") }
     guard case .idle = serverState else { return .skip("serverNotIdle") }
     guard let alias = lastServedAlias else { return .skip("noResolvableAlias") }
-    if isRetiredStarter(alias) { return .skip("retiredStarter") }
+    if !quickstartDone && isRetiredStarter(alias) { return .skip("retiredStarter") }
     return cachedAliases.contains(alias) ? .start(alias) : .promptDownload(alias)
 }
 
@@ -329,6 +330,14 @@ check(decideResume(lastServedAlias: "lfm2.5-1b-4bit",
                    cachedAliases: ["lfm2.5-1b-4bit"], serverState: .idle)
         == .start("lfm2.5-1b-4bit"),
       "the CURRENT starter auto-starts normally")
+
+check(decideResume(lastServedAlias: "bonsai-1.7b-2bit",
+                   cachedAliases: ["bonsai-1.7b-2bit"], serverState: .idle,
+                   quickstartDone: true)
+        == .start("bonsai-1.7b-2bit"),
+      "dismissed the rescue → auto-start comes back (no dead end: neither card nor start)")
+check(!isEligible(done: true, lastServedAlias: "bonsai-1.7b-2bit", serverState: .idle),
+      "…and the card stays down for them, so the two move together")
 
 // The end-to-end property the two halves buy together.
 check(decideResume(lastServedAlias: "bonsai-1.7b-2bit",
