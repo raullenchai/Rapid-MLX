@@ -305,12 +305,14 @@ for busy in [FakeServerState.ready, .starting, .crashed, .missing] {
 
 enum FakeDecision: Equatable { case start(String), promptDownload(String), skip(String) }
 
+func isRetiredStarter(_ alias: String) -> Bool { retiredStarters.contains(alias) }
+
 func decideResume(lastServedAlias: String?, cachedAliases: Set<String>,
                   serverState: FakeServerState, userOptedIn: Bool = true) -> FakeDecision {
     if !userOptedIn { return .skip("userOptedOut") }
     guard case .idle = serverState else { return .skip("serverNotIdle") }
     guard let alias = lastServedAlias else { return .skip("noResolvableAlias") }
-    if isStranded(alias) { return .skip("retiredStarter") }
+    if isRetiredStarter(alias) { return .skip("retiredStarter") }
     return cachedAliases.contains(alias) ? .start(alias) : .promptDownload(alias)
 }
 

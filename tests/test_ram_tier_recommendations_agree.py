@@ -568,3 +568,24 @@ def test_auto_start_skips_retired_starters():
         "the launch hook stopped passing the retired-starter predicate — the "
         "parameter defaults to 'never retired', so the guard silently no-ops"
     )
+
+    # Presence is not enough: the guard has to come BEFORE the on-disk
+    # check, or a cached retired starter returns .start and is resumed
+    # before anything looks at whether it was retired. Order is what a
+    # refactor moves silently, so pin it in both the production function
+    # and the executable copy that models it.
+    for path, label in (
+        (
+            REPO / "apps/rapid-mac/Sources/Rapid/Server/AutoStartDecision.swift",
+            "AutoStartDecision.decide",
+        ),
+        (VERIFY_SCRIPT, "decideResume (the executable copy)"),
+    ):
+        text = path.read_text()
+        guard_at = text.index("isRetiredStarter(alias)")
+        disk_at = text.index("cachedAliases.contains(alias)")
+        assert guard_at < disk_at, (
+            f"{label}: the retired-starter guard moved after the on-disk "
+            "check — a cached retired starter would be resumed before the "
+            "guard ever runs"
+        )
