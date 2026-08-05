@@ -25,18 +25,33 @@ engine/uvicorn boot.
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from unittest import mock
 
 import pytest
 
-import vllm_mlx.cli as cli  # noqa: F401  (bind before patching)
-import vllm_mlx.server as server
-
 
 class _StopError(Exception):
     """Short-circuit ``server.main()`` right after the PFlash step."""
+
+
+def _server_module():
+    """Resolve ``vllm_mlx.server`` from ``sys.modules`` at call time.
+
+    NOT a module-level ``import ... as server``: another test in the shared
+    process may ``sys.modules.pop("vllm_mlx.cli")`` / reimport (several route
+    tests do), which swaps the live module object. A binding captured at import
+    time would then be stale, so ``mock.patch.object`` on it would patch a
+    different object than the one ``server.main()`` actually calls into — the
+    real ``_port_preflight_or_die`` would run and, if port 8000 is taken by an
+    earlier test, abort with SystemExit. Fetching fresh (and patching by string
+    target below, which mock also resolves through ``sys.modules``) keeps the
+    patch and the code-under-test pointed at the same object regardless of
+    ordering.
+    """
+    return importlib.import_module("vllm_mlx.server")
 
 
 # ``server.main()`` writes serving config into module-level globals (API key,
@@ -63,6 +78,7 @@ _MISSING = object()
 
 @pytest.fixture(autouse=True)
 def _restore_server_globals():
+    server = _server_module()
     saved = {name: getattr(server, name, _MISSING) for name in _SERVER_GLOBALS}
     mcp_saved = os.environ.get("RAPID_MLX_MCP_CONFIG", _MISSING)
     try:
@@ -93,13 +109,24 @@ def _run_server_main_capturing_config(argv: list[str], *, lane=(False, False)):
         captured["is_mllm"] = is_mllm
         raise _StopError
 
+    server = _server_module()
+    # All patch targets are STRING paths so mock resolves each module through
+    # ``sys.modules`` at enter time — the same object ``server.main()`` reaches
+    # (``_port_preflight_or_die`` via its in-function ``from .cli import``).
+    # Using ``mock.patch.object`` on an import-time-captured module would miss
+    # after a ``sys.modules`` swap (see ``_server_module``).
+    #
+    # Only ``_StopError`` is allowed to escape — NOT SystemExit. If a preflight
+    # ever runs unpatched (e.g. port 8000 taken) it aborts via SystemExit, and
+    # we want that to fail LOUDLY here rather than be swallowed into an empty
+    # ``captured`` that then trips a confusing "cfg is None" assertion.
     with (
-        mock.patch.object(cli, "_port_preflight_or_die", lambda *a, **k: None),
-        mock.patch.object(server, "_ensure_routing_config", lambda *a, **k: None),
-        mock.patch.object(server, "resolve_serving_lane", lambda name, **kw: lane),
+        mock.patch("vllm_mlx.cli._port_preflight_or_die", lambda *a, **k: None),
+        mock.patch("vllm_mlx.server._ensure_routing_config", lambda *a, **k: None),
+        mock.patch("vllm_mlx.server.resolve_serving_lane", lambda name, **kw: lane),
         mock.patch("vllm_mlx.pflash.validate_model_support", _capture_validate),
         mock.patch.object(sys, "argv", ["vllm_mlx.server", *argv]),
-        pytest.raises((_StopError, SystemExit)),
+        pytest.raises(_StopError),
     ):
         server.main()
     return captured
