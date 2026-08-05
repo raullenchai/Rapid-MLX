@@ -86,9 +86,10 @@ struct RapidApp: App {
         // before spawning. If this background sweep hasn't finished by
         // the time the user picks a model, the allocator simply finds
         // the orphan itself and reaps it there.
-        Task.detached(priority: .userInitiated) {
-            PortSweep.sweep(port: PortAllocator.candidatePorts.first ?? 8000)
-        }
+        // Held as an awaitable handle rather than a fire-and-forget task, so
+        // ``ServerManager.start`` can wait it out instead of racing it onto
+        // the same port. Still detached — launch never blocks on it.
+        PortSweep.startLaunchSweep(port: PortAllocator.candidatePorts.first ?? 8000)
         let manager = ServerManager()
         let samplingConfig = SamplingConfig()
         let appearanceConfig = AppearanceConfig()
@@ -548,7 +549,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // returns to AppKit.
         MainActor.assumeIsolated {
             AppDelegate.runTerminationSequence(
-                stopStream: { AppDelegate.shared.chat?.stop() },
+                stopStream: { AppDelegate.shared.chat?.stopAndPersist() },
                 signalServer: { AppDelegate.shared.server?.beginShutdown() },
                 signalDownloads: { AppDelegate.shared.downloads?.beginShutdown() },
                 reapServer: { AppDelegate.shared.server?.shutdownSync() },

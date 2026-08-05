@@ -172,6 +172,8 @@ final class DownloadManager {
 
     private var binaryPath: URL?
     private let resolvesBinaryAtStart: Bool
+    private var shutdownSignalledAt: Date?
+
     private var processes: [String: Process] = [:]
     private var cancellingProcesses: [String: Process] = [:]
     private let cancellationTracker = DownloadCancellationTracker()
@@ -541,17 +543,29 @@ final class DownloadManager {
     /// by the time ``finishShutdown`` polls they are almost always
     /// already gone.
     func beginShutdown() {
+        if shutdownSignalledAt == nil { shutdownSignalledAt = Date() }
         for (_, process) in processes where process.isRunning {
             process.terminate()
         }
     }
+
+    /// When the children were SIGTERM'd, so ``finishShutdown`` can measure
+    /// its grace from the SIGNAL rather than from the reap.
+    private static let downloadShutdownGrace: TimeInterval = 2.0
 
     /// Second half of the split teardown: wait briefly for the
     /// already-SIGTERM'd children, SIGKILL any survivor, then run the
     /// normal per-alias bookkeeping so nothing is left half-torn-down.
     func finishShutdown() {
         let aliases = Array(processes.keys)
-        let deadline = Date().addingTimeInterval(2.0)
+        // Measured from when the children were SIGNALLED, not from when we
+        // got round to reaping them. The server's grace runs first, so a
+        // fresh 2 s here would still SUM with it whenever a child ignores
+        // SIGTERM — which is exactly the serialisation this split exists to
+        // remove. Children that already had their whole window are reaped
+        // immediately; only genuinely-new time is ever spent.
+        let deadline = (shutdownSignalledAt ?? Date())
+            .addingTimeInterval(Self.downloadShutdownGrace)
         while Date() < deadline && processes.values.contains(where: { $0.isRunning }) {
             Thread.sleep(forTimeInterval: 0.1)
         }

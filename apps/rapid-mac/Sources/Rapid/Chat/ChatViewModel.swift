@@ -377,6 +377,23 @@ final class ChatViewModel {
         inflight?.cancel()
     }
 
+    /// Stop AND snapshot, synchronously, for the app-termination path.
+    ///
+    /// ``stop()`` only *requests* cancellation; the streaming task's own
+    /// cleanup — ``isStreaming = false`` plus ``persistActive()`` — runs later
+    /// on the main actor. During termination the main actor is then blocked
+    /// for seconds reaping the server child, so that continuation never gets
+    /// to run before ``ConversationStore.flush()``, and the partial final turn
+    /// is written nowhere. Snapshot here instead, while we still hold the
+    /// actor. The task's own cleanup remains harmless: it re-persists the same
+    /// state if it ever gets to run.
+    func stopAndPersist() {
+        inflight?.cancel()
+        guard isStreaming else { return }
+        isStreaming = false
+        persistActive()
+    }
+
     /// Drop a stale chat-level error banner once the server provably
     /// reaches ``.ready`` again. The banner's copy is advice about a
     /// PAST failure ("Couldn't reach the model. Restart it from the

@@ -15,6 +15,29 @@ import Foundation
 /// SIGKILL anyone still alive. A developer running rapid-mlx in their
 /// own terminal can opt out via `RAPID_DESKTOP_NO_PORT_SWEEP=1`.
 enum PortSweep {
+    /// The opportunistic launch-time sweep, so a spawn can wait it out
+    /// instead of racing it. Detached at launch (never blocking the UI); a
+    /// ``ServerManager.start`` that lands while it is still running awaits it
+    /// via ``awaitLaunchSweep`` rather than allocating a port the sweep is
+    /// about to clear — otherwise an auto-start can spawn onto the candidate
+    /// port before the sweep's ``lsof`` snapshot, and the sweep then reaps the
+    /// server this launch just started.
+    @MainActor private static var launchSweep: Task<Void, Never>?
+
+    /// Kick off the launch sweep. Idempotent: a second call is a no-op.
+    @MainActor static func startLaunchSweep(port: Int) {
+        guard launchSweep == nil else { return }
+        launchSweep = Task.detached(priority: .userInitiated) {
+            sweep(port: port)
+        }
+    }
+
+    /// Await the launch sweep if one is in flight. Returns immediately when
+    /// none was started or it already finished.
+    @MainActor static func awaitLaunchSweep() async {
+        await launchSweep?.value
+    }
+
     /// The default port rapid-mlx serve binds on. ``PortAllocator``
     /// walks ``defaultPort … defaultPort + 9`` when the default port
     /// is held by a foreign process. ``sweep()`` (no arg) targets the
