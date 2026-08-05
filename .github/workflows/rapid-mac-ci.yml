@@ -6,11 +6,11 @@
 # human cut a release. This job builds the Swift package on every PR that
 # touches the app, so a non-compiling change fails in review instead.
 #
-# Scope is deliberately just `swift build`: the SPM test target was stripped
-# (see apps/rapid-mac/Package.swift — the strip deleted the subsystems most of
-# the suite exercised, so it no longer compiles, and `swift test` can't resolve
-# `import Testing` in this toolchain). Re-wiring a fresh test suite is tracked
-# separately; a compile gate is the high-value floor that costs ~20s.
+# The SPM test target was stripped (see apps/rapid-mac/Package.swift — the strip
+# deleted the subsystems most of the suite exercised, so it no longer compiles,
+# and `swift test` can't resolve `import Testing` in this toolchain). Keep the
+# full-app compile gate and run focused dependency-free contract executables for
+# regressions that can be isolated from the removed test stack.
 name: rapid-mac CI
 
 on:
@@ -49,3 +49,6 @@ jobs:
       # nothing, so a regression in it would have reached a release.
       - name: verify recommendation + eligibility contracts
         run: swift scripts/verify-recommendation-tiers.swift
+
+      - name: Verify conversation history ordering
+        run: scripts/verify-conversation-ordering.sh

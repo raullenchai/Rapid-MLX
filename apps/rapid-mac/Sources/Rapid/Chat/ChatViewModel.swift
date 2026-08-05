@@ -111,18 +111,16 @@ final class ChatViewModel {
         guard messages.contains(where: { $0.role == .user }) else { return }
         let now = Date()
         let title = ConversationStore.title(from: messages)
-        if let idx = conversations.firstIndex(where: { $0.id == activeConversationID }) {
-            conversations[idx].messages = messages
-            conversations[idx].title = title
-            guard touching else {
-                // Content written back, position and timestamp left alone.
-                ConversationStore.save(conversations)
-                return
+        if conversations.contains(where: { $0.id == activeConversationID }) {
+            conversations = ConversationOrdering.updating(
+                conversations,
+                id: activeConversationID,
+                touching: touching,
+                at: now
+            ) { conversation in
+                conversation.messages = messages
+                conversation.title = title
             }
-            conversations[idx].updatedAt = now
-            // Bubble the just-touched conversation to the top.
-            let updated = conversations.remove(at: idx)
-            conversations.insert(updated, at: 0)
         } else {
             conversations.insert(
                 ChatConversation(

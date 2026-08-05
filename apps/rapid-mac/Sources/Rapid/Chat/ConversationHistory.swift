@@ -11,6 +11,8 @@ struct ChatConversation: Identifiable, Codable, Equatable {
     var updatedAt: Date
 }
 
+extension ChatConversation: ConversationOrderingItem {}
+
 /// On-disk store for the conversation history. One JSON file under
 /// Application Support, keyed by bundle identifier so a dogfood-isolated
 /// instance (rewritten bundle id) keeps its own history separate from the
