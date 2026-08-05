@@ -28,10 +28,12 @@ later ``kill $(cat ~/.rapid-mlx/launch.pid)`` shuts it down cleanly.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import ADAPTERS
 
@@ -57,7 +59,31 @@ def _print_list() -> int:
     for name, adapter in ADAPTERS.items():
         status = "detected" if adapter.detect() else "not detected"
         print(f"  {name.ljust(width)}{status}")
+    print("\nNote: cursor requires an explicit public HTTPS --server-url.")
     return 0
+
+
+def _cursor_endpoint_error(server_url: str) -> str | None:
+    """Explain why ``server_url`` cannot be reached by Cursor's backend."""
+    parsed = urlparse(server_url)
+    if parsed.scheme.lower() != "https":
+        return "Cursor requires a publicly reachable HTTPS --server-url"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return "Cursor requires a valid public hostname"
+
+    normalized = hostname.rstrip(".").lower()
+    if normalized == "localhost" or normalized.endswith((".localhost", ".local")):
+        return "Cursor's servers cannot reach localhost or private network hosts"
+
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return None
+    if not address.is_global:
+        return "Cursor's servers cannot reach localhost or private network addresses"
+    return None
 
 
 def _resolve_default_model() -> str:
@@ -139,9 +165,15 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
+    server_url = args.server_url
     targets: list[str]
     if args.all:
-        targets = [name for name, adapter in ADAPTERS.items() if adapter.detect()]
+        targets = [
+            name
+            for name, adapter in ADAPTERS.items()
+            if adapter.detect()
+            and (name != "cursor" or _cursor_endpoint_error(server_url) is None)
+        ]
         if not targets:
             print(
                 "launch: no supported clients detected on this machine. "
@@ -151,13 +183,15 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(1)
     else:
         if args.client == "cursor":
-            print(
-                "launch: Cursor cannot connect directly to localhost because "
-                "BYOK requests are routed through Cursor's servers. Use "
-                "claude-code, cline, or continue-dev for a local connection.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
+            reason = _cursor_endpoint_error(server_url)
+            if reason is not None:
+                print(
+                    f"launch: {reason}. BYOK requests are routed through "
+                    "Cursor's servers; use a public HTTPS tunnel or choose "
+                    "claude-code, cline, or continue-dev for a local connection.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
         if args.client not in ADAPTERS:
             supported = ", ".join(ADAPTERS.keys())
             print(
@@ -177,8 +211,6 @@ def launch_command(args: argparse.Namespace) -> None:
     # Same pattern as ``share_command`` in ``vllm_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
     model = original_alias or args.model or _resolve_default_model()
-    server_url = args.server_url
-
     if args.dry_run:
         print(f"[dry-run] model={model} server-url={server_url}")
         for name in targets:
@@ -259,10 +291,10 @@ def register(subparsers) -> None:
         "launch",
         help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
         description=(
-            "Detect an IDE client (Cline, Claude Code, Continue) "
-            "and write/patch its local config to route at the local "
+            "Detect an IDE client (Cline, Claude Code, Continue, Cursor) "
+            "and write/patch its config to route at the "
             "rapid-mlx server. Use `rapid-mlx launch list` to see what's "
-            "supported on this machine."
+            "supported. Cursor requires a public HTTPS --server-url."
         ),
     )
     p.add_argument(

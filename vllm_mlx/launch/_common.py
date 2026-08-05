@@ -108,7 +108,7 @@ def atomic_write_json(path: Path, data: object) -> None:
 def load_json_lenient(path: Path) -> dict:
     """Read ``path`` as JSON, returning ``{}`` if missing or unreadable.
 
-    Cline / Continue both *technically* require strict JSON, but
+    Cline / Cursor / Continue all *technically* require strict JSON, but
     in practice users hand-edit these files and occasionally end up with
     trailing commas or comments that ``json.loads`` rejects. We don't
     pretend to be a JSON5 parser — we just refuse to overwrite a config

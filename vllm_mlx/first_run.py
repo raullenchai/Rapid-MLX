@@ -135,7 +135,12 @@ def detected_agents() -> list[str]:
     try:
         from vllm_mlx.launch import ADAPTERS
 
-        found = {name for name, a in ADAPTERS.items() if _safe_detect(a)}
+        # Cursor cannot use the local default endpoint; it only works when the
+        # user explicitly provides a public HTTPS tunnel. Do not recommend a
+        # one-shot local launch command that will necessarily be rejected.
+        found = {
+            name for name, a in ADAPTERS.items() if name != "cursor" and _safe_detect(a)
+        }
     except Exception:
         return []
     ordered = [n for n in _AGENT_PREFERENCE if n in found]

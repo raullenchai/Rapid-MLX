@@ -80,7 +80,7 @@ config, plus an honest test-backed [support matrix](../agents/matrix.md):
 | [Aider](https://aider.chat) | CLI | `OPENAI_API_BASE=http://localhost:8000/v1 aider --model openai/default` | Verified | Architect mode, edit-and-commit |
 | [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `ANTHROPIC_BASE_URL=http://localhost:8000 claude` | Compatible | Uses Anthropic `/v1/messages` |
-| [Cursor](https://cursor.com) | IDE | Direct localhost is unsupported | Not compatible locally | BYOK requests pass through Cursor's servers; a public HTTPS endpoint is required |
+| [Cursor](https://cursor.com) | IDE | `rapid-mlx launch cursor --server-url https://your-public-host` | Not compatible locally | BYOK requests pass through Cursor's servers; a public HTTPS endpoint is required |
 | [Continue.dev](https://continue.dev) | IDE Extension | `~/.continue/config.yaml` `apiBase: http://localhost:8000/v1` | Compatible | VS Code / JetBrains |
 | [pi](https://shittycodingagent.ai) | TUI | `OPENAI_BASE_URL=http://localhost:8000/v1` | Community-reported | Works with Qwen3.5/Qwen3.6 models |
 

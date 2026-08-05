@@ -26,6 +26,7 @@ from vllm_mlx.launch import (
     claude_code,
     cline,
     continue_dev,
+    cursor,
 )
 from vllm_mlx.launch import cli as launch_cli
 
@@ -60,6 +61,11 @@ def fake_home(tmp_path, monkeypatch) -> Path:
 
     # continue_dev: replace the config dir.
     monkeypatch.setattr(continue_dev, "_CONFIG_DIR", tmp_path / ".continue")
+
+    fake_cursor_dir = tmp_path / "Cursor/User"
+    monkeypatch.setattr(cursor, "_candidate_dirs", lambda: [fake_cursor_dir])
+    monkeypatch.setattr(cursor, "_CONFIG_DIR_MAC", fake_cursor_dir)
+    monkeypatch.setattr(cursor, "_CONFIG_DIR_LINUX", fake_cursor_dir)
 
     # Also redirect which() and mac_app_installed() so detect() doesn't
     # find the dev machine's real client installs.
@@ -253,6 +259,39 @@ class TestContinueDev:
 
 
 # --------------------------------------------------------------------
+# Cursor adapter (public HTTPS endpoints only at the CLI boundary)
+# --------------------------------------------------------------------
+
+
+class TestCursor:
+    def test_detect_false_when_nothing_installed(self, fake_home):
+        assert cursor.detect() is False
+
+    def test_detect_true_when_user_dir_exists(self, fake_home):
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        assert cursor.detect() is True
+
+    def test_write_sets_dotted_keys(self, fake_home):
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        path = cursor.write_or_patch_config(
+            "https://rapid.example.com", "qwen3.5-9b-4bit"
+        )
+        data = json.loads(path.read_text())
+        assert data["cursor.aiprovider.openai.baseUrl"] == (
+            "https://rapid.example.com/v1"
+        )
+        assert data["cursor.aiprovider.openai.model"] == "qwen3.5-9b-4bit"
+        assert data["cursor.aiprovider.openai.apiKey"] == "sk-noop"
+
+    def test_preserves_unrelated_settings(self, fake_home):
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        cfg = cursor.current_config_path()
+        cfg.write_text(json.dumps({"editor.fontSize": 14}))
+        cursor.write_or_patch_config("https://rapid.example.com", "alias")
+        assert json.loads(cfg.read_text())["editor.fontSize"] == 14
+
+
+# --------------------------------------------------------------------
 # Atomic-write + backup primitives
 # --------------------------------------------------------------------
 
@@ -340,8 +379,45 @@ class TestLaunchCommand:
             launch_cli.launch_command(_make_args(client="cursor"))
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
-        assert "cannot connect directly to localhost" in err
+        assert "publicly reachable HTTPS" in err
         assert "Cursor's servers" in err
+
+    @pytest.mark.parametrize(
+        "server_url",
+        [
+            "https://127.0.0.1:8000",
+            "https://192.168.1.20:8000",
+            "https://rapid.local:8000",
+        ],
+    )
+    def test_cursor_rejects_private_https_endpoints(
+        self, fake_home, capsys, server_url
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url=server_url)
+            )
+        assert excinfo.value.code == 2
+        assert "cannot reach" in capsys.readouterr().err
+
+    def test_cursor_accepts_public_https_endpoint(self, fake_home, capsys):
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        launch_cli.launch_command(
+            _make_args(
+                client="cursor",
+                server_url="https://rapid.example.com",
+                dry_run=True,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "[dry-run] cursor: detected=True" in out
+
+    def test_all_skips_cursor_for_default_local_endpoint(self, fake_home, capsys):
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(_make_args(all=True))
+        assert excinfo.value.code == 1
+        assert "no supported clients detected" in capsys.readouterr().err
 
     def test_missing_client_and_no_all_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:
