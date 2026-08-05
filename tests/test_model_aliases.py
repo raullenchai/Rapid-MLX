@@ -31,6 +31,16 @@ def test_retired_alias_full_hf_path_remains_available_for_text_only_testing():
     assert resolve_model(hf_path) == hf_path
 
 
+def test_retired_alias_is_not_shadowed_by_same_named_local_directory(
+    tmp_path, monkeypatch
+):
+    retired = "ministral-3b-4bit"
+    (tmp_path / retired).mkdir()
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RetiredModelAliasError, match="alias was retired"):
+        resolve_model(retired)
+
+
 def test_full_path_passes_through():
     assert resolve_model("mlx-community/Foo-Bar") == "mlx-community/Foo-Bar"
     assert resolve_model("/Users/me/local-model") == "/Users/me/local-model"
