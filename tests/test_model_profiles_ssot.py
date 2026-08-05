@@ -71,8 +71,7 @@ def test_every_alias_has_explicit_profile_fields() -> None:
 
 
 def test_no_orphan_aliases() -> None:
-    """The pre-SSOT audit found 6 orphans with no profile (bonsai×3,
-    ministral, nemotron×2). After P1 every alias must resolve."""
+    """Every advertised alias must resolve to an explicit profile."""
     aliases = list_aliases()
     for alias in aliases:
         cfg = detect_model_config(alias)
@@ -88,7 +87,6 @@ def test_orphan_aliases_now_covered() -> None:
     must itself resolve — so it takes their slot in this guard."""
     for orphan in (
         "bonsai-1.7b-2bit",
-        "ministral-3b-4bit",
         "nemotron-30b-4bit",
     ):
         profile = resolve_profile(orphan)

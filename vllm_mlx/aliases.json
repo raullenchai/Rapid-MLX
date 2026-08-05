@@ -1163,18 +1163,6 @@
     "is_hybrid": true,
     "supports_spec_decode": false
   },
-  "ministral-3b-4bit": {
-    "hf_path": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
-    "tool_call_parser": "mistral",
-    "reasoning_parser": null,
-    "is_hybrid": false,
-    "supports_spec_decode": true,
-    "suffix_decoding_tier": "avoid",
-    "suffix_bench_speedup": {
-      "chat": 0.838,
-      "json_array": 1.08
-    }
-  },
   "hermes4-70b-4bit": {
     "hf_path": "lmstudio-community/Hermes-4-70B-MLX-4bit",
     "tool_call_parser": "hermes",

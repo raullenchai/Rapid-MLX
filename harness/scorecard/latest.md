@@ -33,7 +33,6 @@ _Generated: 2026-04-16T07:10:38_
 - **kimi-48b-4bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio
 - **kimi-k2.5-3bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio
 - **minimax-m2.5-4bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio
-- **ministral-3b-4bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio
 - **mistral-24b-4bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio
 - **phi-4-14b-4bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio
 - **qwen3-coder-4bit** — not found in HF_HUB_CACHE / ~/.cache/huggingface / ~/.lmstudio

@@ -69,11 +69,11 @@ fi
 # --no-mllm: force the text-only mlx-lm lane. This gate only exercises the
 # TEXT coherence + tool-call parser paths, never vision, so the LM backbone is
 # all we need. It is a no-op for text-only models, but for a small model that
-# is *detected* as multimodal (Gemma nano, Ministral-3-2512) it (a) skips the
+# is *detected* as multimodal (for example Gemma nano) it (a) skips the
 # ``[vision]`` / mlx-vlm requirement so a lean ``pip install -e .`` suffices,
-# and (b) avoids the mlx-vlm text-generation path, which returns incoherent
-# output / hangs for these models (measured 2026-07-31: gemma-4-e2b 0/6 golden,
-# Ministral-3 request-hang under mlx-vlm 0.6.3). ``resolve_serving_lane`` maps
+# and (b) avoids an unvalidated mlx-vlm text-generation path. The retired
+# Ministral-3 alias hung there; Gemma e2b now passes on M2/M3 but its historical
+# M1 runner failure remains tracked in #1367. ``resolve_serving_lane`` maps
 # ``--no-mllm`` -> ``force_text`` -> the text lane, matching engine semantics.
 nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-thinking --no-mllm > "$LOG" 2>&1 &
 SERVE_PID=$!

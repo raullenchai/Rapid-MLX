@@ -258,16 +258,13 @@ jobs:
     # model comfortably. A 3-4B model is fine for a coherence/parser gate — it
     # is not a chat-quality eval, which stays on the 35B L2 tier.
     #
-    # Why only these two families (not Gemma / Mistral too): the *small* models
-    # in those families ship ONLY as multimodal checkpoints (Gemma nano,
-    # Ministral-3-2512). Serving them here is unreliable — via the mlx-vlm lane
-    # the text path is broken (gemma-4-e2b 0/6 golden, Ministral-3 request-hang
-    # under mlx-vlm 0.6.3); via ``--no-mllm`` (text lane) Ministral is flaky
-    # (5/6) and gemma-4-e2b returns 0/6 on this engine/runner even though the
-    # same model is coherent text-only on an older build. A permanently-red leg
-    # is worse than no leg, so those families are DEFERRED pending an engine fix
-    # (tracked as a follow-up issue). ``l1_smoke.sh`` already forces ``--no-mllm``
-    # so re-adding a multimodal small model later needs no install change.
+    # Why only these two families (not Gemma / Mistral too): their small
+    # checkpoints are multimodal. The broken Ministral-3 alias was retired after
+    # its default VLM route repeatedly hung (#1367). Gemma e2b now passes the
+    # coherence gate on M2/M3, but its historical macos-14/M1 0/6 result still
+    # needs a same-runner rerun before it becomes an always-on CI leg. The smoke
+    # script forces ``--no-mllm``, so adding a validated multimodal model later
+    # needs no install change.
     #
     # Kept a standalone check (NOT folded into the required ``tests`` aggregate)
     # so it can prove itself green on real PRs before a maintainer marks it a

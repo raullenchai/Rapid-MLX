@@ -13,6 +13,13 @@ def test_known_alias_resolves():
     assert resolve_model("llama3-3b-4bit") == "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 
+def test_broken_ministral_3b_alias_is_not_advertised():
+    """#1367: the default VLM route hangs on its first text completion."""
+    retired = "ministral-3b-4bit"
+    assert retired not in list_aliases()
+    assert resolve_model(retired) == retired
+
+
 def test_full_path_passes_through():
     assert resolve_model("mlx-community/Foo-Bar") == "mlx-community/Foo-Bar"
     assert resolve_model("/Users/me/local-model") == "/Users/me/local-model"

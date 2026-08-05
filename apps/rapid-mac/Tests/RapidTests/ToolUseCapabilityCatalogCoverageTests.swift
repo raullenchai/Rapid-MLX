@@ -244,9 +244,6 @@ struct ToolUseCapabilityCatalogCoverageTests {
         // minimax — minimax parser; M2.x is 235B MoE family
         "minimax-m2.5-4bit": .known,
         "minimax-m2.7-mxfp4": .known,
-        // ministral-3b — Mistral-family 3B, hermes parser; loop never
-        // benched the 3B explicitly. .unknown.
-        "ministral-3b-4bit": .unknown,
         // mistral-24b — Mistral-family. The 2026-07-09 parser-misconfig
         // leak is fixed now that the "mistral" parser ships bundled
         // (rapid-mlx #1071/#1077, submodule 7b6a787; devstral-v2-24b

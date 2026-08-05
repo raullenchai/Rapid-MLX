@@ -249,9 +249,8 @@ enum ToolUseCapability {
         // emits a clean ``tool_calls`` (get_weather) with the mistral
         // parser. So ``mistral-`` / ``devstral`` are promoted back to
         // ``knownFamilies`` below (the disposition their comments
-        // always pointed to). Kept ``ministral-3b-4bit`` unclassified
-        // (.unknown) — different model, not benched, and it does not
-        // match the ``mistral-`` prefix anyway.
+        // always pointed to). The broken ``ministral-3b-4bit`` alias was
+        // removed from the engine catalog in #1367.
     ]
 
     /// Empirically verified family rows. Match rule: alias starts
@@ -370,8 +369,7 @@ enum ToolUseCapability {
         // Bench on the bundled engine: devstral-v2-24b-4bit → clean
         // ``tool_calls`` (get_weather). Parser fix is family-level, so
         // the 24B bench validates the routing for the 119B siblings
-        // too. 3.0 floor keeps the unrelated 3B ``ministral-`` model
-        // out (it also doesn't match the ``mistral-`` prefix).
+        // too.
         KnownFamily(prefix: "mistral-", minSizeBillions: 3.0, note: "mistral parser (rapid-mlx #1071/#1077, bundled 7b6a787); [TOOL_CALLS] format parsed cleanly; devstral-v2-24b family-bench confirms routing"),
         KnownFamily(prefix: "devstral", minSizeBillions: 3.0, note: "mistral parser (rapid-mlx #1071/#1077, bundled 7b6a787); devstral-v2-24b-4bit benched clean on the bundled engine"),
         // nemotron — hermes parser; cycle-7 headline confirmed engine

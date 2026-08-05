@@ -2012,17 +2012,14 @@ class TestMistralFamilyToolParser:
     """
 
     # Every in-tree Mistral-family alias. Resolution goes through the
-    # alias profile (single source of truth) in ``aliases.json``. Note
-    # ``ministral-3b-4bit`` is included even though the ``mistral|devstral``
-    # regex does NOT match "Ministral" — its alias profile is the authority
-    # (#1071 codex round 1). This list is kept exhaustive; the
+    # alias profile (single source of truth) in ``aliases.json``. This list
+    # is kept exhaustive; the
     # ``test_every_mistral_family_alias_is_covered`` guard below fails if a
     # new Mistral-family alias is added without a ``mistral`` parser.
     _MISTRAL_ALIASES = (
         "mistral-24b-4bit",
         "devstral-24b-4bit",
         "devstral-v2-24b-4bit",
-        "ministral-3b-4bit",
         "mistral-small-4-119b",
         "mistral-small-4-119b-4bit",
         "mistral-small-4-119b-8bit",
