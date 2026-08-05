@@ -729,6 +729,18 @@ def mtp_generate_step(
                 return
 
             # Decide K for the NEXT round.
+            #
+            # No drafter time is ever abandoned unaccounted. Drafting is the
+            # LAST thing a round does — strictly after this round's yield and
+            # its ``ntoks >= max_tokens`` return above (and, in the verify
+            # branch, after its EOS-cut / bonus / residual returns, which sit
+            # before their own tail draft). So a request that stops never
+            # produced the draft: max_tokens returns above before drafting,
+            # and a caller that stops pulling on EOS leaves the generator
+            # suspended AT the yield, before this line. When drafting DOES
+            # run, there is no yield between it and the consuming round's
+            # ``_record_round``, so the carried ``pending_draft_ms`` is always
+            # charged. (codex #1441: the "abandoned drafts" case cannot occur.)
             next_k = (
                 _controller.pick_k() if _select_k and _controller is not None else 1
             )

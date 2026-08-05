@@ -870,7 +870,16 @@ def derive_controller_key(model: Any) -> str:
             continue
         candidates.append(cfg)
         for nested_attr in ("text_config", "language_config"):
-            nested = getattr(cfg, nested_attr, None)
+            # Mirror the dual Mapping/attribute read used for the fields
+            # below: an outer config handed to us as a plain dict (e.g.
+            # ``args={"text_config": {...}}``) exposes the nested config by
+            # key, not attribute, so a bare ``getattr`` would silently miss
+            # it and collapse the key onto other unnamed models (codex #1441).
+            nested = (
+                cfg.get(nested_attr)
+                if isinstance(cfg, Mapping)
+                else getattr(cfg, nested_attr, None)
+            )
             if nested is not None:
                 candidates.append(nested)
     for name in _KEY_FIELDS:

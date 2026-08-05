@@ -2882,6 +2882,56 @@ def test_engine_core_threads_checkpoint_name_into_scheduler_config():
     assert _resolve_model_identity(pathy, None) == "/models/foo"
 
 
+def test_engine_core_init_wires_resolved_model_name_onto_a_scheduler_copy(
+    monkeypatch,
+):
+    """Guards the ACTUAL ``EngineCore.__init__`` wiring, not just the helper:
+    __init__ must ``copy.copy`` the SchedulerConfig and stamp the resolved
+    model identity onto the COPY before handing it to the Scheduler. Deleting
+    the copy+resolve lines would leave the captured config's ``model_name``
+    None (or mutate the caller's object); both are caught here and neither is
+    caught by the ``_resolve_model_identity``-only test above (codex #1441).
+    """
+    from vllm_mlx import engine_core as ec
+
+    captured: dict = {}
+
+    class _StopInitError(Exception):
+        pass
+
+    def _capture_scheduler(**kwargs):
+        captured["config"] = kwargs.get("config")
+        raise _StopInitError
+
+    class _FakeRegistry:
+        def acquire(self, **kw):
+            return None
+
+        def release(self, *a, **kw):
+            return None
+
+    monkeypatch.setattr(ec, "Scheduler", _capture_scheduler)
+    monkeypatch.setattr(ec, "get_registry", lambda: _FakeRegistry())
+
+    # Caller's pristine, shared SchedulerConfig (model_name unset).
+    shared = ec.SchedulerConfig()
+    cfg = ec.EngineConfig(model_name="engine/x", scheduler_config=shared)
+
+    try:
+        ec.EngineCore(model=object(), tokenizer=object(), config=cfg)
+    except _StopInitError:
+        pass
+
+    sc = captured.get("config")
+    assert sc is not None, "EngineCore.__init__ never constructed the Scheduler"
+    # The engine's checkpoint identity reached the scheduler config...
+    assert sc.model_name == "engine/x"
+    # ...on a COPY: the caller's shared config stays pristine, so a second
+    # unnamed engine cannot inherit this name as its own explicit config.
+    assert sc is not shared
+    assert shared.model_name is None
+
+
 def test_mtp_controller_key_separates_sidecars():
     """The controller learns an ACCEPTANCE profile, and acceptance is a
     property of the target/drafter pair, not the target alone.
