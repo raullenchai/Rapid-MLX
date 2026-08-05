@@ -400,7 +400,14 @@ class TestLaunchCommand:
         assert excinfo.value.code == 2
         assert "cannot reach" in capsys.readouterr().err
 
-    def test_cursor_accepts_public_https_endpoint(self, fake_home, capsys):
+    def test_cursor_accepts_public_https_endpoint(self, fake_home, capsys, monkeypatch):
+        monkeypatch.setattr(
+            launch_cli.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("93.184.216.34", 443)),
+            ],
+        )
         (fake_home / "Cursor/User").mkdir(parents=True)
         launch_cli.launch_command(
             _make_args(
@@ -411,6 +418,31 @@ class TestLaunchCommand:
         )
         out = capsys.readouterr().out
         assert "[dry-run] cursor: detected=True" in out
+
+    def test_cursor_rejects_hostname_resolving_to_private_address(
+        self, fake_home, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(
+            launch_cli.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("10.0.0.8", 443)),
+            ],
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url="https://rapid.example.com")
+            )
+        assert excinfo.value.code == 2
+        assert "private network" in capsys.readouterr().err
+
+    def test_cursor_rejects_shorthand_loopback_address(self, fake_home, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cursor", server_url="https://127.1")
+            )
+        assert excinfo.value.code == 2
+        assert "cannot reach" in capsys.readouterr().err
 
     def test_all_skips_cursor_for_default_local_endpoint(self, fake_home, capsys):
         (fake_home / "Cursor/User").mkdir(parents=True)

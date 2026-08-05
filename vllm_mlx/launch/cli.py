@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -78,10 +79,19 @@ def _cursor_endpoint_error(server_url: str) -> str | None:
         return "Cursor's servers cannot reach localhost or private network hosts"
 
     try:
-        address = ipaddress.ip_address(normalized)
-    except ValueError:
-        return None
-    if not address.is_global:
+        resolved = socket.getaddrinfo(
+            normalized,
+            parsed.port or 443,
+            type=socket.SOCK_STREAM,
+        )
+    except (OSError, ValueError):
+        return "Cursor requires a public hostname that resolves successfully"
+
+    addresses = {
+        ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+        for _family, _type, _proto, _canonname, sockaddr in resolved
+    }
+    if not addresses or any(not address.is_global for address in addresses):
         return "Cursor's servers cannot reach localhost or private network addresses"
     return None
 
