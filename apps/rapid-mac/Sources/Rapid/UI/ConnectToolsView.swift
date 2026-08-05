@@ -42,8 +42,21 @@ struct ConnectToolsView: View {
     /// in that state anyway, so this text is read, never pasted.
     private var snippetModel: String { resolvedModel ?? "<start a model first>" }
 
-    /// Same contract as ``snippetModel`` for the API key slot.
+    /// The REAL key, for the clipboard only (``ConnectTool.snippet``). Never
+    /// painted on screen — see ``snippetKeyMasked``.
     private var snippetKey: String { bearer.isEmpty ? "<starts with your server>" : bearer }
+
+    /// Masked key for the always-visible snippet (``ConnectTool.displaySnippet``).
+    /// The API-key ``CopyableRow`` above masks the bearer behind an eye toggle,
+    /// but the config snippets rendered right below it interpolated the raw key
+    /// in cleartext — so a screenshot of this page (the Launch "connect your
+    /// tools" surface users naturally share) leaked the bearer despite the dots
+    /// above. Render dots here; the real key still reaches the clipboard on Copy
+    /// and stays revealable via the API-key row's eye. Mirrors ``CopyableRow``'s
+    /// masking (bullets, length-capped so the key length isn't leaked either).
+    private var snippetKeyMasked: String {
+        bearer.isEmpty ? "<starts with your server>" : String(repeating: "•", count: min(bearer.count, 16))
+    }
 
     /// A config is only complete once the server is actually listening
     /// (so the port is real) AND it has minted a bearer AND a model is
@@ -212,6 +225,11 @@ struct ConnectToolsView: View {
                 Base URL: \(openAIBaseURL)
                 API key:  \(snippetKey)
                 Model:    \(snippetModel)
+                """,
+                displaySnippet: """
+                Base URL: \(openAIBaseURL)
+                API key:  \(snippetKeyMasked)
+                Model:    \(snippetModel)
                 """
             ),
             ConnectTool(
@@ -223,6 +241,11 @@ struct ConnectToolsView: View {
                 export ANTHROPIC_BASE_URL=\(anthropicBaseURL)
                 export ANTHROPIC_API_KEY=\(snippetKey)
                 export ANTHROPIC_MODEL=\(snippetModel)
+                """,
+                displaySnippet: """
+                export ANTHROPIC_BASE_URL=\(anthropicBaseURL)
+                export ANTHROPIC_API_KEY=\(snippetKeyMasked)
+                export ANTHROPIC_MODEL=\(snippetModel)
                 """
             ),
             ConnectTool(
@@ -233,6 +256,10 @@ struct ConnectToolsView: View {
                 snippet: """
                 export OPENAI_BASE_URL=\(openAIBaseURL)
                 export OPENAI_API_KEY=\(snippetKey)
+                """,
+                displaySnippet: """
+                export OPENAI_BASE_URL=\(openAIBaseURL)
+                export OPENAI_API_KEY=\(snippetKeyMasked)
                 """
             ),
         ]
@@ -276,7 +303,12 @@ private struct ConnectTool: Identifiable {
     let name: String
     let symbol: String
     let blurb: String
+    /// The config with the REAL key — placed on the clipboard by Copy, never
+    /// rendered on screen.
     let snippet: String
+    /// The same config with the key masked — the ONLY form painted on screen,
+    /// so a screenshot can't leak the bearer.
+    let displaySnippet: String
 }
 
 /// One tool row: icon, name, description, a Copy action, and the
@@ -363,7 +395,10 @@ private struct ConnectToolRow: View {
                     .frame(maxWidth: 420, alignment: .leading)
                     .padding(.top, RapidTheme.Space.sm)
 
-                Text(tool.snippet)
+                // Masked form only — the real key never touches the screen, so
+                // a screenshot of this page can't leak the bearer. Copy still
+                // puts the real key (``tool.snippet``) on the clipboard.
+                Text(tool.displaySnippet)
                     .font(RapidFont.code)
                     .foregroundStyle(.secondary)
                     .lineSpacing(3)
