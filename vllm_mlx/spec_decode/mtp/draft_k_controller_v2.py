@@ -718,6 +718,18 @@ def get_or_create_controller(
                     model_id,
                     ctrl.max_k,
                 )
+            # Only ``max_k`` moves. Every depth-indexed structure the
+            # controller owns — ``CostModel._ewma``/``_depths``,
+            # ``AcceptanceModel._seen``/``_rate``, ``k_histogram`` — grows
+            # LAZILY on first observation of a depth (``observe`` does
+            # ``while len(self._seen) <= i: append``); none is pre-sized to
+            # the old ceiling. So lifting max_k 1→3 needs no resize: a later
+            # authoritative run that selects deeper simply materializes those
+            # depths as it visits them, and ``frontier()`` still gates
+            # selection to one past a trusted-acceptance position, so the
+            # promoted ceiling ramps outward rather than jumping to an
+            # unobserved depth. Preserved observations from the observer run
+            # stay valid (they are depth-keyed, not ceiling-keyed).
             ctrl.max_k = max(0, max_k)
             ctrl.ceiling_is_authoritative = True
         elif ctrl.max_k != max_k:

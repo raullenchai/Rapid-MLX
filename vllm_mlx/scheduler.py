@@ -401,11 +401,6 @@ class SchedulerConfig:
     # published as the ``model_id`` label on
     # ``rapid_mlx_spec_decode_k_cost_ms``.
     model_name: str | None = None
-    # The ordinary Metal free-cache limit is intentionally generous for
-    # decode throughput. During a very long prefill that same cache competes
-    # with growing KV state and the current forward's transient allocations.
-    # Temporarily cap it, then restore the device-scaled default when prefill
-    # completes. Zero disables only this cache-limit guard.
 
     def __post_init__(self) -> None:
         if self.response_cache_entries < 0:
@@ -695,6 +690,14 @@ def _install_mtp_vendored(
     # non-MTP build has zero cost.
     from .spec_decode.mtp.draft_k_controller_v2 import derive_controller_key
     from .spec_decode.mtp.generator import mtp_generate_step
+
+    # Derive the structural controller key ONCE at install. It walks the model
+    # tree to discover quantization, so recomputing it per generation request
+    # (the unnamed-model fallback in ``_mtp_step`` below) would put
+    # O(model-size) work on the decode hot path. ``mtp_model`` is fixed for
+    # this generator's lifetime, so the key is stable — cache it in the closure
+    # and let the per-request path read it (codex #1441 NIT).
+    _derived_controller_key = derive_controller_key(mtp_model)
 
     _orig_step = gb._step
 
@@ -1231,7 +1234,7 @@ def _install_mtp_vendored(
                     # boot) and distinct between different models (equal
                     # keys share one DepthController, so a collision lets
                     # one model's learned costs drive another's depth).
-                    model_id=controller_key or derive_controller_key(mtp_model),
+                    model_id=controller_key or _derived_controller_key,
                     max_k=max_k,
                     disable_auto_k=disable_auto_k,
                     # 0.9.13 PR-C: EOS holdout — feed the

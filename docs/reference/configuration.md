@@ -161,6 +161,18 @@ per-round overhead, so clearing this bar is necessary but not sufficient
 — a marginal result should be confirmed against a real MTP-off A/B before
 you turn it on.
 
+> **Run this on a single model per process.** The two sides of the rule
+> come from series with *different identity scopes*: `k_cost_ms` is keyed
+> per checkpoint (`model_id`, from the per-model controller registry that
+> survives a model swap), while `accept_ratio` is a **process-global**
+> counter — it pools acceptance across every model *and* every depth the
+> process ever ran (the `family` label only splits a dashboard panel; it
+> is not a separate counter). So after a model swap, or with concurrent
+> models in one process, the cost curve and the acceptance term describe
+> different model/head combinations and the rule can read wrong. The
+> diagnostic above already assumes one model and `disable_auto_k`; keep it
+> that way — a fresh process per checkpoint — when you read the ratio.
+
 #### MTP sidecar heads are not standalone models
 
 The `*-mtp-4bit` aliases — `qwen3.6-27b-mtp-4bit`

@@ -2982,3 +2982,48 @@ def test_fixed_k_observer_leaves_the_ceiling_to_whoever_selects_depth():
     # unchanged: a conflicting later ceiling is ignored.
     assert get_or_create_controller("ceiling-model", max_k=2).max_k == 3
     reset_controllers()
+
+
+def test_promoted_ceiling_records_and_selects_deeper_depths_lazily():
+    """Promotion lifts only ``max_k``; the depth-indexed cost/acceptance
+    state grows lazily, so a controller promoted 1->3 can record and select
+    depths 2/3 afterwards without out-of-range access, and keeps the
+    observations made while provisional (codex #1441 r1: the promotion must
+    not leave K=1-sized state that a later K=3 run overruns).
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        ACCEPTANCE_MIN_SAMPLES,
+        get_or_create_controller,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    # Provisional observer ceiling at 1; teach it depths 0 and 1 only.
+    ctrl = get_or_create_controller("m", max_k=1, authoritative=False)
+    for _ in range(ACCEPTANCE_MIN_SAMPLES + 1):
+        ctrl.cost.observe(0, 10.0)
+        ctrl.cost.observe(1, 16.0)
+        ctrl.acc.observe(1, accepted=True)
+    assert ctrl.max_k == 1
+    depth1_cost_before = ctrl.cost.cost(1)
+
+    # First authoritative caller promotes the ceiling to 3.
+    ctrl = get_or_create_controller("m", max_k=3, authoritative=True)
+    assert ctrl.max_k == 3
+    # Observations made while provisional survive (depth-keyed, not
+    # ceiling-keyed): the depth-1 cost EWMA is still there.
+    assert ctrl.cost.sampled(1)
+    assert ctrl.cost.cost(1) == depth1_cost_before
+
+    # Now record the depths a K=3 run would visit — must not raise and must
+    # actually fold in (the lists grow via ``while len <= i: append``).
+    for _ in range(ACCEPTANCE_MIN_SAMPLES + 1):
+        ctrl.cost.observe(2, 22.0)
+        ctrl.cost.observe(3, 28.0)
+        ctrl.acc.observe(2, accepted=True)
+        ctrl.acc.observe(3, accepted=True)
+    assert ctrl.cost.sampled(3)
+    assert ctrl.cost.visits(3) == ACCEPTANCE_MIN_SAMPLES + 1
+    # Selection stays within the promoted ceiling, never past it.
+    assert 0 <= ctrl.pick_k() <= 3
+    reset_controllers()
