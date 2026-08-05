@@ -249,6 +249,15 @@ struct ChatView: View {
                 ScrollView {
                     transcriptRows
                 }
+                // This branch mounts fresh the moment the transcript goes
+                // from empty to populated — selecting a long saved
+                // conversation, or launching straight into one. The
+                // `messages.count` change that mounts it predates the
+                // `.onChange` handlers below, so a fresh ScrollView would
+                // open at the OLDEST message. Anchor to the latest on
+                // appear (no animation: this is initial positioning, not a
+                // scroll the user should see move).
+                .onAppear { scrollToBottom(proxy, animated: false) }
                 .onChange(of: messages.last?.content) { _, _ in scrollToBottom(proxy) }
                 .onChange(of: messages.last?.reasoning) { _, _ in scrollToBottom(proxy) }
                 .onChange(of: messages.count) { _, _ in scrollToBottom(proxy) }
@@ -280,7 +289,11 @@ struct ChatView: View {
         .padding(.vertical, RapidTheme.Space.xl)
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        guard animated else {
+            proxy.scrollTo(bottomSentinelID, anchor: .bottom)
+            return
+        }
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(bottomSentinelID, anchor: .bottom)
         }
