@@ -590,10 +590,19 @@ def _mtp_controller_key(model_name: str | None, sidecar: str | None) -> str | No
 
     ``None`` when there is no target name, which hands the caller over to
     the shape-derived fallback rather than keying on a bare sidecar path.
+
+    The pair is length-prefixed so the encoding is injective: a bare
+    ``"{target}+mtp:{sidecar}"`` join made target ``"a+mtp:b"`` (no sidecar)
+    alias target ``"a"`` with sidecar ``"b"`` — two unrelated models sharing
+    one controller. Prefixing the target with its length makes the target
+    boundary exact, so no two distinct (target, sidecar) inputs — including
+    the no-sidecar case — can collide (codex #1441).
     """
     if not model_name:
         return None
-    return f"{model_name}+mtp:{sidecar}" if sidecar else model_name
+    if not sidecar:
+        return f"{len(model_name)}:{model_name}"
+    return f"{len(model_name)}:{model_name}+mtp:{sidecar}"
 
 
 def _install_mtp_vendored(

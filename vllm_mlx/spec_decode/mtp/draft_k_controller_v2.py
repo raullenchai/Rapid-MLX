@@ -129,9 +129,18 @@ class CostModel:
     Mirrors Go ``costModel`` (`speculate_depth.go:130-205`).
     """
 
-    __slots__ = ("_ewma", "_depths", "_visits")
+    __slots__ = ("_ewma", "_depths", "_visits", "_lock")
 
     def __init__(self) -> None:
+        # Guards the three mutable structures against a concurrent reader.
+        # ``observe`` runs on the single generator thread, but ``samples``
+        # is called from the ``/metrics`` scrape thread — without this an
+        # in-flight ``observe`` (dict insert + ``bisect.insort``) can race a
+        # scrape's iteration and raise "dict changed size during iteration",
+        # which the renderer's broad except would swallow, silently dropping
+        # the whole cost curve (codex #1441). Uncontended in the common
+        # single-request path, so the hot-path cost is negligible.
+        self._lock = threading.Lock()
         self._ewma: dict[int, float] = {}
         # Sorted list of sampled depths, maintained via bisect.
         self._depths: list[int] = []
@@ -151,19 +160,20 @@ class CostModel:
         """
         if drafts < 0 or wall_ms <= 0.0:
             return
-        prev = self._ewma.get(drafts)
-        if prev is None:
-            self._ewma[drafts] = wall_ms
-            bisect.insort(self._depths, drafts)
-        else:
-            limit = COST_CLAMP_FRACTION * prev
-            innovation = wall_ms - prev
-            if innovation > limit:
-                innovation = limit
-            elif innovation < -limit:
-                innovation = -limit
-            self._ewma[drafts] = prev + COST_EWMA_ALPHA * innovation
-        self._visits[drafts] = self._visits.get(drafts, 0) + 1
+        with self._lock:
+            prev = self._ewma.get(drafts)
+            if prev is None:
+                self._ewma[drafts] = wall_ms
+                bisect.insort(self._depths, drafts)
+            else:
+                limit = COST_CLAMP_FRACTION * prev
+                innovation = wall_ms - prev
+                if innovation > limit:
+                    innovation = limit
+                elif innovation < -limit:
+                    innovation = -limit
+                self._ewma[drafts] = prev + COST_EWMA_ALPHA * innovation
+            self._visits[drafts] = self._visits.get(drafts, 0) + 1
 
     def ready(self) -> bool:
         """True when two distinct depths have been sampled, so a slope
@@ -216,8 +226,13 @@ class CostModel:
         operator that the controller is choosing K=0, but not whether
         K=0 is actually cheaper than K=1 on their hardware, and that is
         the only question the park counter is ever asked.
+
+        Returns an atomic snapshot taken under the lock so a concurrent
+        ``observe`` on the generator thread cannot mutate the structures
+        mid-iteration (codex #1441).
         """
-        return {d: (self._ewma[d], self._visits.get(d, 0)) for d in self._depths}
+        with self._lock:
+            return {d: (self._ewma[d], self._visits.get(d, 0)) for d in self._depths}
 
 
 # ---------------------------------------------------------------------------

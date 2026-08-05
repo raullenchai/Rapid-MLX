@@ -2817,14 +2817,14 @@ def test_derive_controller_key_reads_quantization_off_the_modules():
     assert "quant=" not in derive_controller_key(_Plain())
 
 
-def test_engine_core_threads_checkpoint_name_into_scheduler_config():
-    """The engine knows which checkpoint it loaded; the scheduler must
-    learn it, because the MTP controller registry is process-global.
-
-    Without a name the registry key falls back to the model's shape, and
-    two checkpoints sharing an architecture, quantization and MTP-head
-    size collapse onto one ``DepthController`` — one model's observed
-    costs then drive the other's depth selection.
+def test_resolve_model_identity_prefers_engine_checkpoint_over_stale_config():
+    """Unit test of the ``_resolve_model_identity`` HELPER only — the engine's
+    own loaded checkpoint wins over a (possibly stale, shared) configured name,
+    and the resolution is idempotent so a reused config object stays safe. The
+    ACTUAL ``EngineCore.__init__`` wiring (copy + assign) is covered separately
+    by ``test_engine_core_init_wires_resolved_model_name_onto_a_scheduler_copy``,
+    which constructs the engine; this test deliberately does not, so keep the
+    two distinct (codex #1441).
     """
     from vllm_mlx.scheduler import SchedulerConfig
 
@@ -2946,13 +2946,18 @@ def test_mtp_controller_key_separates_sidecars():
     a = _mtp_controller_key("qwen3.6-35b", "mlx-community/Head-A")
     b = _mtp_controller_key("qwen3.6-35b", "mlx-community/Head-B")
 
-    assert base == "qwen3.6-35b"
+    assert "qwen3.6-35b" in base
     assert a != b
     assert a != base and b != base
     assert "qwen3.6-35b" in a and "Head-A" in a
 
     # A different target with the same head is still distinct.
     assert _mtp_controller_key("qwen3.6-27b", "mlx-community/Head-A") != a
+
+    # Injectivity regression (codex #1441): a target that literally contains
+    # the old ``+mtp:`` join must NOT collide with a different (target, sidecar)
+    # pair. Pre-fix, both of these rendered ``"a+mtp:b"``.
+    assert _mtp_controller_key("a+mtp:b", None) != _mtp_controller_key("a", "b")
 
     # No target name -> None, so the caller falls through to the
     # shape-derived key rather than keying on a bare sidecar path.
