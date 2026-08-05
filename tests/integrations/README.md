@@ -64,7 +64,7 @@ official BYOK docs review):
 | GitHub Copilot | **PASS** | `COPILOT_PROVIDER_BASE_URL` + `COPILOT_PROVIDER_API_KEY` env vars documented at [docs.github.com](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-byok-models) | ✅ (new cell `TestCopilot`) |
 | Factory AI Droid | **PASS** | `~/.factory/settings.json` `customModels` array with `provider: generic-chat-completion-api`, docs at [docs.factory.ai](https://docs.factory.ai/cli/byok/overview) | ✅ (new cell `TestDroid`) |
 | Moonshot Kimi Code | **PASS** | `~/.kimi/config.toml` provider block with `type = "openai"` + `base_url`, docs at [moonshotai.github.io](https://moonshotai.github.io/kimi-cli/en/configuration/providers.html) | ✅ (new cell `TestKimiCode`) |
-| Cursor CLI | **DEFERRED** | Cursor IDE honors custom OpenAI base URL, but the CLI/agent path routes exclusively through Cursor's backend (per community forum + docs). Not integrable at custom endpoint | ❌ — fallback promoted: `qwen-code` |
+| Cursor | **DEFERRED** | Cursor routes BYOK requests through its backend, which cannot reach a server bound to the user's localhost. A public HTTPS endpoint would no longer be a fully local integration | ❌ — fallback promoted: `qwen-code` |
 | Alibaba Qoder | **DEFERRED** | Native Qoder CLI has no first-party OpenAI base_url hook — only third-party proxy wrappers (`qoder-proxy`, `qoder-cli-api`). Wire-smoke would misrepresent Qoder's native shape | ❌ — fallback promoted: `hermes-agent` |
 
 **Final top-10** (order preserves task's ranking with fallbacks

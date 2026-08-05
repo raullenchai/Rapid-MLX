@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// Once the local server is running it speaks the OpenAI and Anthropic
 /// wire formats on `127.0.0.1`, so any coding tool that lets you point
-/// at a custom base URL can use it for free. This sheet turns that from
+/// at a custom local base URL can use it for free. This sheet turns that from
 /// "read the docs and assemble a config" into one click per tool.
 ///
 /// The endpoint + key are passed in from the live ``ServerManager`` so
@@ -128,7 +128,7 @@ struct ConnectToolsView: View {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 SectionHeader(
                     "Connect your tools",
-                    subtitle: "Point any editor at your local server. It's free and stays on your Mac.",
+                    subtitle: "Connect tools that support a local base URL. It's free and stays on your Mac.",
                     emphasis: .page
                 )
                 // #1470 fix: the key only exists while the server is running and
@@ -202,6 +202,10 @@ struct ConnectToolsView: View {
                 }
             }
             .groupedCard()
+            InlineNotice(
+                message: "Cursor can't connect directly to localhost: its BYOK requests are routed through Cursor's servers. Use Claude Code or Codex for a fully local connection.",
+                tone: .info
+            )
         }
     }
 
@@ -216,22 +220,6 @@ struct ConnectToolsView: View {
 
     private var tools: [ConnectTool] {
         [
-            ConnectTool(
-                id: "cursor",
-                name: "Cursor",
-                symbol: "cursorarrow.rays",
-                blurb: "Settings → Models → add an OpenAI-compatible model with this base URL and key.",
-                snippet: """
-                Base URL: \(openAIBaseURL)
-                API key:  \(snippetKey)
-                Model:    \(snippetModel)
-                """,
-                displaySnippet: """
-                Base URL: \(openAIBaseURL)
-                API key:  \(snippetKeyMasked)
-                Model:    \(snippetModel)
-                """
-            ),
             ConnectTool(
                 id: "claude-code",
                 name: "Claude Code",

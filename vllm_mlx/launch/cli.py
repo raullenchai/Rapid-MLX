@@ -49,7 +49,6 @@ def _print_list() -> int:
         cline           detected
         claude-code     not detected
         continue-dev    detected
-        cursor          not detected
 
     Always returns 0 — listing is a read-only inspect command.
     """
@@ -151,6 +150,14 @@ def launch_command(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
     else:
+        if args.client == "cursor":
+            print(
+                "launch: Cursor cannot connect directly to localhost because "
+                "BYOK requests are routed through Cursor's servers. Use "
+                "claude-code, cline, or continue-dev for a local connection.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if args.client not in ADAPTERS:
             supported = ", ".join(ADAPTERS.keys())
             print(
@@ -252,7 +259,7 @@ def register(subparsers) -> None:
         "launch",
         help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
         description=(
-            "Detect an IDE client (Cline, Claude Code, Continue, Cursor) "
+            "Detect an IDE client (Cline, Claude Code, Continue) "
             "and write/patch its local config to route at the local "
             "rapid-mlx server. Use `rapid-mlx launch list` to see what's "
             "supported on this machine."

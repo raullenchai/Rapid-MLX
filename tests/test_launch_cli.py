@@ -26,7 +26,6 @@ from vllm_mlx.launch import (
     claude_code,
     cline,
     continue_dev,
-    cursor,
 )
 from vllm_mlx.launch import cli as launch_cli
 
@@ -62,14 +61,8 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     # continue_dev: replace the config dir.
     monkeypatch.setattr(continue_dev, "_CONFIG_DIR", tmp_path / ".continue")
 
-    # cursor: replace the candidate-dirs helper.
-    fake_cursor_dir = tmp_path / "Cursor/User"
-    monkeypatch.setattr(cursor, "_candidate_dirs", lambda: [fake_cursor_dir])
-    monkeypatch.setattr(cursor, "_CONFIG_DIR_MAC", fake_cursor_dir)
-    monkeypatch.setattr(cursor, "_CONFIG_DIR_LINUX", fake_cursor_dir)
-
     # Also redirect which() and mac_app_installed() so detect() doesn't
-    # find the dev machine's real claude / cursor installs.
+    # find the dev machine's real client installs.
     monkeypatch.setattr(_common, "which", lambda _: None)
     monkeypatch.setattr(_common, "mac_app_installed", lambda _: False)
 
@@ -260,44 +253,6 @@ class TestContinueDev:
 
 
 # --------------------------------------------------------------------
-# Cursor adapter
-# --------------------------------------------------------------------
-
-
-class TestCursor:
-    def test_detect_false_when_nothing_installed(self, fake_home):
-        assert cursor.detect() is False
-
-    def test_detect_true_when_user_dir_exists(self, fake_home):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        assert cursor.detect() is True
-
-    def test_write_sets_dotted_keys(self, fake_home):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        path = cursor.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-9b-4bit")
-        data = json.loads(path.read_text())
-        assert data["cursor.aiprovider.openai.baseUrl"] == "http://127.0.0.1:8000/v1"
-        assert data["cursor.aiprovider.openai.model"] == "qwen3.5-9b-4bit"
-        assert data["cursor.aiprovider.openai.apiKey"] == "sk-noop"
-
-    def test_preserves_unrelated_settings(self, fake_home):
-        (fake_home / "Cursor/User").mkdir(parents=True)
-        cfg = cursor.current_config_path()
-        cfg.write_text(
-            json.dumps(
-                {
-                    "editor.fontSize": 14,
-                    "workbench.colorTheme": "Default Dark+",
-                }
-            )
-        )
-        cursor.write_or_patch_config("http://127.0.0.1:8000", "alias")
-        data = json.loads(cfg.read_text())
-        assert data["editor.fontSize"] == 14
-        assert data["workbench.colorTheme"] == "Default Dark+"
-
-
-# --------------------------------------------------------------------
 # Atomic-write + backup primitives
 # --------------------------------------------------------------------
 
@@ -379,6 +334,14 @@ class TestLaunchCommand:
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         assert "unknown client" in err
+
+    def test_cursor_explains_localhost_is_unsupported(self, fake_home, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(_make_args(client="cursor"))
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        assert "cannot connect directly to localhost" in err
+        assert "Cursor's servers" in err
 
     def test_missing_client_and_no_all_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:

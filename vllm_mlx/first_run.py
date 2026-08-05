@@ -46,7 +46,7 @@ FIRST_RUN_MODEL_SIZE = "~3.1 GB"
 
 # Preference order when several coding agents are detected: claude-code is the
 # ICP, so it leads. Others follow in a stable order.
-_AGENT_PREFERENCE = ("claude-code", "cursor", "cline", "continue-dev")
+_AGENT_PREFERENCE = ("claude-code", "cline", "continue-dev")
 
 _DOCS_URL = "https://rapidmlx.com/docs/"
 
