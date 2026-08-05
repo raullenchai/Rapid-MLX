@@ -151,12 +151,20 @@ def launch_command(args: argparse.Namespace) -> None:
     cursor_reason: str | None = None
     if args.all or args.client == "cursor":
         try:
-            cursor_server_url = cursor.canonical_server_url(server_url)
+            cursor_server_url = cursor.canonical_server_url(
+                server_url, resolve=not args.dry_run
+            )
         except ValueError as exc:
             cursor_reason = str(exc)
 
     targets: list[str]
     if args.all:
+        if ADAPTERS["cursor"].detect() and (cursor_reason is not None or not api_key):
+            skip_reason = cursor_reason or (
+                "public endpoints require RAPID_MLX_API_KEY; never expose an "
+                "unauthenticated server"
+            )
+            print(f"  cursor: skipped — {skip_reason}", file=sys.stderr)
         targets = [
             name
             for name, adapter in ADAPTERS.items()

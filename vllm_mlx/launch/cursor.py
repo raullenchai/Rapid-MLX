@@ -21,8 +21,12 @@ _CONFIG_DIR_LINUX = Path.home() / ".config" / "Cursor" / "User"
 _SETTINGS_FILENAME = "settings.json"
 
 
-def canonical_server_url(server_url: str) -> str:
-    """Validate and serialize a public Cursor URL without ambiguity."""
+def canonical_server_url(server_url: str, *, resolve: bool = True) -> str:
+    """Validate and serialize a public Cursor URL without ambiguity.
+
+    ``resolve=False`` is intended for diagnostic dry runs: syntax and literal
+    IPs are still checked, but hostnames do not trigger network I/O.
+    """
     if "\\" in server_url:
         raise ValueError("Cursor's --server-url cannot contain backslashes")
     try:
@@ -56,31 +60,39 @@ def canonical_server_url(server_url: str) -> str:
         )
 
     try:
-        resolved = socket.getaddrinfo(
-            normalized,
-            port if port is not None else 443,
-            type=socket.SOCK_STREAM,
-        )
-    except (OSError, ValueError):
-        raise ValueError(
-            "Cursor requires a public hostname that resolves successfully"
-        ) from None
+        literal_address = ipaddress.ip_address(normalized)
+    except ValueError:
+        addresses = None
+        if resolve:
+            try:
+                resolved = socket.getaddrinfo(
+                    normalized,
+                    port if port is not None else 443,
+                    type=socket.SOCK_STREAM,
+                )
+            except (OSError, ValueError):
+                raise ValueError(
+                    "Cursor requires a public hostname that resolves successfully"
+                ) from None
+            addresses = {
+                ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+                for _family, _type, _proto, _canonname, sockaddr in resolved
+            }
+    else:
+        addresses = {literal_address}
 
-    addresses = {
-        ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
-        for _family, _type, _proto, _canonname, sockaddr in resolved
-    }
-    if not addresses or any(
-        not address.is_global
-        or address.is_multicast
-        or getattr(address, "is_site_local", False)
-        or address.is_unspecified
-        or address.is_reserved
-        for address in addresses
-    ):
-        raise ValueError(
-            "Cursor's servers cannot reach localhost or private network addresses"
-        )
+    if addresses is not None:
+        if not addresses or any(
+            not address.is_global
+            or address.is_multicast
+            or getattr(address, "is_site_local", False)
+            or address.is_unspecified
+            or address.is_reserved
+            for address in addresses
+        ):
+            raise ValueError(
+                "Cursor's servers cannot reach localhost or private network addresses"
+            )
 
     try:
         address = ipaddress.ip_address(normalized)

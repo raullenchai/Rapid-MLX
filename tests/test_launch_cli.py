@@ -484,7 +484,7 @@ class TestLaunchCommand:
         )
         out = capsys.readouterr().out
         assert "[dry-run] cursor: detected=True" in out
-        assert resolver.call_count == 1
+        resolver.assert_not_called()
 
     def test_cursor_rejects_hostname_resolving_to_private_address(
         self, fake_home, capsys, monkeypatch
@@ -645,7 +645,30 @@ class TestLaunchCommand:
         with pytest.raises(SystemExit) as excinfo:
             launch_cli.launch_command(_make_args(all=True))
         assert excinfo.value.code == 1
-        assert "no supported clients detected" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "cursor: skipped" in err
+        assert "publicly reachable HTTPS" in err
+        assert "no supported clients detected" in err
+
+    def test_all_reports_cursor_skipped_without_api_key(
+        self, fake_home, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cursor.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("93.184.216.34", 443)),
+            ],
+        )
+        (fake_home / "Cursor/User").mkdir(parents=True)
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(all=True, server_url="https://rapid.example.com")
+            )
+        assert excinfo.value.code == 1
+        err = capsys.readouterr().err
+        assert "cursor: skipped" in err
+        assert "require RAPID_MLX_API_KEY" in err
 
     def test_missing_client_and_no_all_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:
