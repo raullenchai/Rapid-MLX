@@ -26,7 +26,13 @@ them.
 
 from __future__ import annotations
 
+import pathlib
+import subprocess
+import sys
+
 import pytest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 pytest.importorskip("mlx_lm.generate", reason="requires MLX")
 
@@ -163,8 +169,30 @@ def test_scheduler_import_installs_the_guard():
 
     A shim nobody calls is a shim that does not exist; this is the wire
     between the fix and the crash path.
-    """
-    import importlib
 
-    importlib.import_module("vllm_mlx.scheduler")
-    assert getattr(PromptProcessingBatch, "_rapid_mlx_slot_guard", False)
+    In a SUBPROCESS, and deliberately outside the autouse fixture's reach.
+    Asserting the flag in-process proves nothing: the fixture installs the
+    guard before every test in this file, so the assertion would hold with
+    the ``scheduler.py`` call site deleted (review BLOCKING). The only
+    honest question is whether importing the scheduler — and nothing else —
+    arms it.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib;"
+            "m = importlib.import_module('mlx_lm.generate');"
+            "assert not getattr(m.PromptProcessingBatch, '_rapid_mlx_slot_guard', False),"
+            " 'guard armed before importing the scheduler — test is vacuous';"
+            "importlib.import_module('vllm_mlx.scheduler');"
+            "assert getattr(m.PromptProcessingBatch, '_rapid_mlx_slot_guard', False),"
+            " 'importing vllm_mlx.scheduler did not install the guard';"
+            "print('WIRED')",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        timeout=300,
+    )
+    assert "WIRED" in proc.stdout, proc.stderr + proc.stdout
