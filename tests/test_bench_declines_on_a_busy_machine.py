@@ -77,7 +77,7 @@ BASELINE = {
 }
 
 
-def _run(monkeypatch, cold_per_capture, warm_per_capture, tmp_path):
+def _run(monkeypatch, cold_per_capture, warm_per_capture, tmp_path, base=None):
     """Drive ``_run_bench`` with scripted latencies."""
     baseline_dir = tmp_path / seb.BASELINE_DIR
     if not baseline_dir.exists():
@@ -87,7 +87,10 @@ def _run(monkeypatch, cold_per_capture, warm_per_capture, tmp_path):
     artifacts.mkdir(exist_ok=True)
 
     ctx = types.SimpleNamespace(
-        repo_root=tmp_path, artifact_path=lambda name: artifacts / name
+        repo_root=tmp_path,
+        artifact_path=lambda name: artifacts / name,
+        base_sha="0" * 40,
+        base_branch="main",
     )
     choice = types.SimpleNamespace(model_id="test/model", quality_tier="full")
 
@@ -132,6 +135,10 @@ def _run(monkeypatch, cold_per_capture, warm_per_capture, tmp_path):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(seb.time, "time", fake_time)
 
+    # ``base`` is what a base-ref replay would measure: None means the
+    # replay is unavailable, a tuple means it returned those numbers.
+    monkeypatch.setattr(seb, "_bench_on_base", lambda _c, _ch: base)
+
     return seb._run_bench(ctx, choice)
 
 
@@ -168,13 +175,79 @@ def test_a_machine_noisier_than_the_threshold_gets_no_verdict(monkeypatch, tmp_p
 def test_a_real_regression_on_a_quiet_machine_still_fails(monkeypatch, tmp_path):
     """The gate must not become unfailable.
 
-    Both captures agree — the machine is quiet — and both are 40% over
-    baseline. That is a regression and has to be reported as one.
+    Captures agree (quiet machine), the PR is 40% over baseline, and the
+    base ref measured in the same session is NOT. That is a regression the
+    diff caused and has to be reported as one.
     """
-    result = _run(monkeypatch, [350.0, 351.0], [400.0, 400.0], tmp_path)
+    result = _run(
+        monkeypatch,
+        [350.0, 351.0],
+        [400.0, 400.0],
+        tmp_path,
+        base=(250.0, 400.0),
+    )
 
     assert result["status"] == "fail", result
     assert "perf regression" in result["summary"], result["summary"]
+    assert "BASE REF" in result["summary"], result["summary"]
+
+
+def test_steady_contention_is_caught_by_the_base_ref_arm(monkeypatch, tmp_path):
+    """The hole the spread check cannot see.
+
+    A steady GPU consumer inflates every capture equally, so repeats agree
+    and the spread filter passes them through — and the committed baseline,
+    captured on some other day, then reads the inflation as this PR's doing.
+    Measuring the base ref in the SAME session under the SAME conditions is
+    what cancels it.
+    """
+    result = _run(
+        monkeypatch,
+        [350.0, 351.0],
+        [560.0, 561.0],
+        tmp_path,
+        base=(349.0, 559.0),
+    )
+
+    assert result["status"] == "skip", result
+    assert "base ref measured HERE, NOW" in result["summary"], result["summary"]
+
+    artifact = json.loads(pathlib.Path(result["artifact"]).read_text())
+    assert "base_ref_comparison" in artifact, artifact
+    assert artifact["base_ref_comparison"]["cold_delta_pct"] < 5
+
+
+def test_an_unavailable_base_replay_falls_back_and_says_so(monkeypatch, tmp_path):
+    """No silent pass when the A/B cannot be run."""
+    result = _run(monkeypatch, [350.0, 351.0], [400.0, 400.0], tmp_path, base=None)
+
+    assert result["status"] == "fail", result
+    assert "could not be A/B" in result["summary"], result["summary"]
+
+
+def test_cold_prompts_differ_between_captures(monkeypatch, tmp_path):
+    """The second capture must not be able to hit the prefix cache.
+
+    Reusing the same five cold prompts against the same server would make
+    the second capture's "cold" median a WARM measurement, and the minimum
+    across captures would then systematically understate cold — hiding the
+    regressions this exists to catch.
+    """
+    seen: list[str] = []
+
+    real_dumps = json.dumps
+
+    def spy(obj, *a, **k):
+        if isinstance(obj, dict) and "messages" in obj:
+            seen.append(obj["messages"][-1]["content"])
+        return real_dumps(obj, *a, **k)
+
+    monkeypatch.setattr(seb.json, "dumps", spy)
+    _run(monkeypatch, [250.0, 251.0], [400.0, 401.0], tmp_path, base=None)
+
+    cold = [p for p in seen if p.startswith("Cold prompt")]
+    assert len(cold) == 10, cold
+    assert len(set(cold)) == 10, f"cold prompts repeated across captures: {cold}"
 
 
 def test_a_quiet_machine_within_threshold_passes(monkeypatch, tmp_path):

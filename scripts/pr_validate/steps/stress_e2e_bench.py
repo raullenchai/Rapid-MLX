@@ -754,6 +754,61 @@ def _run_agent(
     }
 
 
+def _bench_on_base(ctx: Context, choice: ModelChoice) -> tuple[float, float] | None:
+    """Re-run the bench protocol on the PR's base ref, right now.
+
+    Returns ``(cold_ms, warm_ms)``, or ``None`` when the base ref cannot be
+    checked out or served — in which case the caller falls back to the
+    committed baseline and says so.
+
+    The committed baseline was captured on another day with the machine in
+    another state. Comparing against it makes every environmental change
+    look like the PR's doing, and steady contention in particular is
+    invisible to any spread check because it inflates every capture alike.
+    Measuring both arms in the same session under the same conditions is
+    what cancels it. This mirrors ``_run_base_check``, which the stress lane
+    already uses on its own failures for the same reason.
+    """
+    base_ref = ctx.base_sha or ctx.base_branch
+    if not base_ref:
+        return None
+    tmp = Path(tempfile.mkdtemp(prefix="pr_validate_bench_base_"))
+    tmp.rmdir()
+    try:
+        subprocess.run(  # noqa: S603
+            ["git", "worktree", "add", "--detach", str(tmp), base_ref],
+            cwd=str(ctx.repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+        with _server_in_repo(
+            choice,
+            ctx,
+            repo_root=tmp,
+            artifact_prefix="base-bench-",
+            isolate_pythonpath=True,
+        ):
+            result = _run_bench(ctx, choice, compare=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"   bench base-ref replay unavailable: {e}", flush=True)
+        return None
+    finally:
+        subprocess.run(  # noqa: S603
+            ["git", "worktree", "remove", "--force", str(tmp)],
+            cwd=str(ctx.repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    measured = result.get("measured")
+    if not measured:
+        return None
+    return measured["cold_request_ms_median"], measured["warm_request_ms_median"]
+
+
 def _run_base_check(
     ctx: Context,
     choice: ModelChoice,
@@ -937,7 +992,9 @@ def _repo_python_env(
     return env
 
 
-def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
+def _run_bench(
+    ctx: Context, choice: ModelChoice, *, compare: bool = True
+) -> dict[str, Any]:
     """Inline bench — measure cold TTFT + decode TPS, compare to
     baseline. Implementation borrowed from the inline benchmark we ran
     against PR #200; keeps this step dependency-free."""
@@ -981,11 +1038,19 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         toks = payload.get("usage", {}).get("completion_tokens", 0)
         return dt_ms, toks
 
-    def protocol() -> tuple[float, float]:
-        """One capture: cold = 5 different prompts, warm = 5 repeats."""
+    def protocol(run: int) -> tuple[float, float]:
+        """One capture: cold = 5 unseen prompts, warm = 5 repeats.
+
+        ``run`` makes the cold prompts unique ACROSS captures, not just
+        within one. Reusing the same five strings against the same server
+        would let the second capture hit the prefix cache, so its "cold"
+        median would be a warm measurement — and taking the minimum would
+        then systematically understate cold and hide the very regressions
+        this compares against.
+        """
         cold_times = []
         for i in range(5):
-            dt, _ = call(f"Cold prompt #{i} — say something brief")
+            dt, _ = call(f"Cold prompt #{run}.{i} — say something brief")
             cold_times.append(dt)
 
         call("warmup", 30)
@@ -1014,8 +1079,7 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
     # that declines to measure is worth far more than one that measures
     # wrong — a perf verdict people learn to re-roll has stopped being a
     # gate.
-    captures = [protocol()]
-    captures.append(protocol())
+    captures = [protocol(0), protocol(1)]
     cold = min(c for c, _ in captures)
     warm = min(w for _, w in captures)
     speedup = cold / warm if warm else 0
@@ -1045,7 +1109,19 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
     }
 
     bench_path = ctx.artifact_path(f"bench-{_safe_name(choice.model_id)}.json")
-    bench_path.write_text(json.dumps(metrics, indent=2))
+    if compare:
+        bench_path.write_text(json.dumps(metrics, indent=2))
+
+    # ``compare=False`` is the base-ref arm of the A/B below: measure and
+    # return, without judging against a baseline or overwriting the PR's
+    # artifact.
+    if not compare:
+        return {
+            "status": "pass",
+            "summary": f"base ref cold={cold:.0f}ms warm={warm:.0f}ms",
+            "measured": metrics,
+            "executed": True,
+        }
 
     # Compare to baseline if present.
     baseline_path = (
@@ -1114,10 +1190,10 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         if cold_threshold != warm_threshold
         else f"{cold_threshold:g}%"
     )
-    # Decline before judging. A machine noisier than the threshold cannot
-    # produce a verdict at that threshold, and reporting one anyway is how
-    # a phantom regression gets attributed to whatever PR happened to be
-    # under review.
+    # Spread across repeats catches contention that CHANGES between them.
+    # A steady consumer — the animated desktop is exactly that — inflates
+    # both captures alike and slips through, so this is a first filter, not
+    # the answer.
     if cold_spread > cold_threshold or warm_spread > warm_threshold:
         return {
             "status": "skip",
@@ -1131,12 +1207,62 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
             "artifact": str(bench_path),
             "executed": True,
         }
+
     if cold_slow > cold_threshold or warm_slow > warm_threshold:
+        # The committed baseline was captured on some other day, on a
+        # machine in some other state. Steady contention — a background GPU
+        # consumer that inflates every capture equally — is invisible to the
+        # spread check above and lands here as a regression the diff did not
+        # cause. So do what the stress lane already does with its failures:
+        # replay on the BASE REF, in this session, under whatever conditions
+        # are current, and compare PR against base instead of against
+        # history. Contention that affects both arms cancels; a real
+        # regression does not.
+        #
+        # Only paid when the bench flags, so a quiet machine never sees it.
+        base = _bench_on_base(ctx, choice)
+        if base is not None:
+            base_cold_ms, base_warm_ms = base
+            vs_cold = (cold / base_cold_ms - 1) * 100 if base_cold_ms else 0
+            vs_warm = (warm / base_warm_ms - 1) * 100 if base_warm_ms else 0
+            metrics["base_ref_comparison"] = {
+                "cold_request_ms_median": base_cold_ms,
+                "warm_request_ms_median": base_warm_ms,
+                "cold_delta_pct": vs_cold,
+                "warm_delta_pct": vs_warm,
+            }
+            bench_path.write_text(json.dumps(metrics, indent=2))
+            if vs_cold <= cold_threshold and vs_warm <= warm_threshold:
+                return {
+                    "status": "skip",
+                    "summary": (
+                        f"vs committed baseline cold {cold_slow:+.1f}%, warm "
+                        f"{warm_slow:+.1f}% — but base ref measured HERE, NOW "
+                        f"shows cold {vs_cold:+.1f}%, warm {vs_warm:+.1f}% "
+                        f"(threshold {threshold_text}). Not this PR: either the "
+                        f"machine is busy or the baseline is stale. Recorded, "
+                        f"not gated."
+                    ),
+                    "artifact": str(bench_path),
+                    "executed": True,
+                }
+            return {
+                "status": "fail",
+                "summary": (
+                    f"perf regression: cold {vs_cold:+.1f}%, warm {vs_warm:+.1f}% "
+                    f"vs the BASE REF measured in this same session "
+                    f"(threshold {threshold_text}); vs committed baseline "
+                    f"cold {cold_slow:+.1f}%, warm {warm_slow:+.1f}%"
+                ),
+                "artifact": str(bench_path),
+                "executed": True,
+            }
         return {
             "status": "fail",
             "summary": (
                 f"perf regression: cold {cold_slow:+.1f}%, warm {warm_slow:+.1f}% "
-                f"vs baseline (threshold {threshold_text})"
+                f"vs baseline (threshold {threshold_text}); base-ref replay "
+                f"unavailable, so this could not be A/B'd"
             ),
             "artifact": str(bench_path),
             "executed": True,
