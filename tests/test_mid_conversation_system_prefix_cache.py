@@ -618,7 +618,7 @@ class TestFlagReachesTheAdapterEndToEnd:
                     and tgt.value.id == "server"
                 ):
                     # The RHS must be EXACTLY one of the accepted forms.
-                    # Substring matching was not enough (review BLOCKING):
+                    # Substring matching was not enough (raised in review):
                     # `not args.relocate_mid_conversation_system` contains
                     # both "args" and the attribute name, so an inverted
                     # assignment — the flag doing the opposite of what it

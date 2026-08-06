@@ -131,24 +131,69 @@ def test_anthropic_adapter_translates_without_mlx(flag: bool) -> None:
     assert "ADAPTER-OK" in proc.stdout, proc.stderr + proc.stdout
 
 
-def test_annotations_stay_introspectable_without_mlx() -> None:
-    """``TYPE_CHECKING`` must not turn working introspection into NameError.
+def test_annotations_resolve_to_the_real_engine_type_without_mlx() -> None:
+    """Introspection must return ``BaseEngine`` itself, not a stand-in.
 
-    Moving the import behind ``TYPE_CHECKING`` leaves no runtime binding
-    for ``BaseEngine``, and ``typing.get_type_hints`` — which is how
-    dataclass-driven serializers and DI containers read annotations —
-    resolves names in the defining module's namespace. Without a runtime
-    alias it raises instead of returning the field types (review NIT).
+    ``typing.get_type_hints`` is how dataclass-driven serializers and DI
+    containers read annotations, and it resolves names in the defining
+    module's globals. Two tempting shortcuts both fail here:
+
+    * hiding the import behind ``TYPE_CHECKING`` leaves no runtime name at
+      all, so this raises ``NameError``;
+    * binding a placeholder such as ``Any`` makes it resolve — to the wrong
+      type, which is worse, because a container keyed on the annotation
+      silently stops matching instead of failing.
+
+    So assert the identity of what comes back, not merely that the key is
+    present. The weaker form claimed introspection was preserved while the
+    placeholder was in place.
     """
     proc = _run_without_mlx(
         """
         import typing
 
         from vllm_mlx.config import ServerConfig
+        from vllm_mlx.engine.base import BaseEngine
 
         hints = typing.get_type_hints(ServerConfig)
         assert "engine" in hints, sorted(hints)
+        assert BaseEngine in typing.get_args(hints["engine"]), hints["engine"]
+        assert "mlx" not in __import__("sys").modules
         print("HINTS-OK")
         """
     )
     assert "HINTS-OK" in proc.stdout, proc.stderr + proc.stdout
+
+
+def test_engine_package_defers_its_mlx_dependent_members() -> None:
+    """``import vllm_mlx.engine`` must not pull MLX in on its own.
+
+    This is the property the config fix rests on. ``base`` is stdlib-pure
+    and stays eager; ``engine_core`` and ``batched`` are PEP 562 lazies.
+    """
+    proc = _run_without_mlx(
+        """
+        import sys
+
+        import vllm_mlx.engine as engine
+
+        # The property the config fix rests on: the package alone is cheap.
+        assert "mlx" not in sys.modules, "importing the package pulled MLX in"
+        assert "vllm_mlx.engine_core" not in sys.modules
+        assert engine.BaseEngine.__name__ == "BaseEngine"
+
+        # The deferred members are still reachable by name...
+        assert "BatchedEngine" in dir(engine)
+        assert engine.BatchedEngine.__name__ == "BatchedEngine"
+        # ...and resolving one caches it, so the hook runs once.
+        assert engine.__dict__["BatchedEngine"] is engine.BatchedEngine
+
+        # An unknown name must still be an AttributeError, not a KeyError
+        # escaping the lookup table.
+        try:
+            engine.NoSuchMember
+        except AttributeError:
+            print("LAZY-OK")
+        """
+    )
+    assert "LAZY-OK" in proc.stdout, proc.stderr + proc.stdout

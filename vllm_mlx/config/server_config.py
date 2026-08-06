@@ -9,25 +9,22 @@ accessible from routes and middleware via `get_config()`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    # Type-only. Importing it for real drags the whole engine in —
-    # ``engine.base`` -> ``engine_core`` -> ``import mlx.core`` — which
-    # makes ``vllm_mlx.config`` unimportable anywhere MLX is absent
-    # (Linux CI, and any pure-adapter unit test). ``ServerConfig`` only
-    # ever names the type in an annotation, and ``from __future__ import
-    # annotations`` above keeps annotations unevaluated, so nothing needs
-    # the symbol at runtime.
-    from ..engine.base import BaseEngine
-else:
-    # ...but a name that exists only for the type checker is a name that
-    # ``typing.get_type_hints(ServerConfig)`` cannot resolve, and that is
-    # how dataclass-introspecting tools read annotations. Without this
-    # binding they would go from working to ``NameError`` (review NIT).
-    # ``Any`` keeps introspection resolvable at runtime while the real
-    # type is what every static checker sees.
-    BaseEngine = Any
+# A real runtime import, deliberately. It used to drag the whole engine in
+# — ``vllm_mlx.engine`` eagerly imported ``engine_core``, which does
+# ``import mlx.core`` at module scope — so naming ``BaseEngine`` here made
+# ``vllm_mlx.config`` unimportable anywhere MLX is absent, and a wire
+# adapter that consults ``get_config()`` died on Linux CI.
+#
+# The fix is in ``vllm_mlx/engine/__init__.py``, which now imports only the
+# stdlib-pure ``base`` eagerly and defers the MLX-dependent members to PEP
+# 562. Hiding this behind ``TYPE_CHECKING`` instead would have left
+# ``typing.get_type_hints(ServerConfig)`` unable to resolve the name, and a
+# runtime stand-in would have made it answer with the wrong type; keeping
+# the import real and cheap is correct for the runtime and the type checker
+# at once.
+from ..engine.base import BaseEngine
 
 
 @dataclass

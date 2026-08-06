@@ -109,7 +109,7 @@ def _relocate_mid_system_enabled() -> bool:
     Gemma accept at most one system message, at index 0. What it does is
     prepend the text to the FOLLOWING user turn, so the bytes stay where
     they were in the sequence instead of being hoisted to the front. That
-    is what preserves the prefix; the role changes (review NIT).
+    is what preserves the prefix; the role changes (raised in review).
 
     Hoisting destroys the prefix cache. Measured on qwen3.6-35b: a warm
     760-token prefix dropped to ZERO reuse after a single injected system
@@ -140,7 +140,7 @@ def _relocate_mid_system_enabled() -> bool:
     # swallowing everything here would turn a broken config publication into
     # an operator's explicit flag being silently ignored, with the measured
     # 20k-token prefix destroyed on every turn and nothing in the log to say
-    # why (review MAJOR).
+    # why (raised in review).
     return bool(get_config().relocate_mid_conversation_system)
 
 
