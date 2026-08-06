@@ -884,9 +884,10 @@ def test_every_refused_block_reaches_the_user_and_none_twice():
         previous = current
         content += (delta or {}).get("content") or ""
 
-    assert content.count("<function=delete_everything>") == 1, content
-    assert content.count("<function=also_undeclared>") == 1, content
-    assert content.count("BETWEEN") == 1, content
+    assert content == text, (
+        "every byte of every refused block and the prose between them must "
+        f"reach the wire exactly once: {content!r}"
+    )
 
 
 def test_reset_clears_the_content_watermark():
