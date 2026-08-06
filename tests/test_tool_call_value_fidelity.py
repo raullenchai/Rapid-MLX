@@ -901,22 +901,54 @@ def test_reset_clears_the_content_watermark():
     delta.
     """
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
-    hostile = _render_xml_body("delete_everything", _KEY, "x")
+    hostile = _render_xml_body("delete_everything", _KEY, "a much longer first turn")
 
-    def _turn():
+    def _turn(text):
         out, previous = "", ""
-        for i in range(len(hostile)):
-            current = hostile[: i + 1]
+        for i in range(len(text)):
+            current = text[: i + 1]
             delta = parser.extract_tool_calls_streaming(
-                previous, current, hostile[i], request=_REQUEST
+                previous, current, text[i], request=_REQUEST
             )
             previous = current
             out += (delta or {}).get("content") or ""
         return out
 
-    _turn()
+    _turn(hostile)
     parser.reset()
-    assert "delete_everything" in _turn(), "stale state swallowed the second turn"
+    # Model the real fast path: the postprocessor already forwarded this
+    # prefix without invoking the parser, so the first post-reset parser call
+    # starts with non-empty previous_text.
+    prefix = "already visible: "
+    second = _render_xml_body("also_undeclared", _KEY, "x")
+    current = prefix + second
+    delta = parser.extract_tool_calls_streaming(
+        prefix, current, second, request=_REQUEST
+    )
+    content = (delta or {}).get("content") or ""
+    assert "also_undeclared" in content, "stale state swallowed the second turn"
+    assert "already visible" not in content, "the fast-path prefix was replayed"
+
+
+def test_refused_block_before_valid_call_in_one_delta_is_not_swallowed():
+    """A later valid call must not advance across earlier refused prose.
+
+    Streaming parsers receive tokenizer-sized deltas in production, including
+    a delta large enough to complete more than one block. The valid call still
+    executes, while the undeclared block retains non-streaming parity as text.
+    """
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    refused = _render_xml_body("delete_everything", _KEY, "x")
+    valid = _render_xml_body(_NAME, _KEY, "ok")
+    text = refused + valid
+
+    delta = parser.extract_tool_calls_streaming("", text, text, request=_REQUEST)
+
+    calls = (delta or {}).get("tool_calls") or []
+    assert [call["function"]["name"] for call in calls] == [_NAME]
+    content = (delta or {}).get("content") or ""
+    assert "delete_everything" in content, content
+    assert f"<function={_NAME}>" not in content, content
 
 
 def test_gating_is_off_when_the_request_declares_no_tools():
