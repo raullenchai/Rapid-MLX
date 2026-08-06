@@ -182,10 +182,15 @@ struct ChatView: View {
     @Bindable var viewModel: ChatViewModel
     @Bindable var server: ServerManager
     @Binding var alias: String
-    var serverReady: Bool
-    /// When the next Send would trigger a cold model download, the
-    /// alias + a human size string so the empty state can hint at it.
-    var autoStartPendingDownload: (alias: String, sizeText: String?)? = nil
+    /// The single readiness value for this window, resolved once by
+    /// ``ContentView`` and shared with the Launch page. Both the chat
+    /// hero and the composer read their copy off this, so they cannot
+    /// describe the same lifecycle differently.
+    var readiness: ModelReadiness
+    /// Perform the readiness banner's next-step action (start, download
+    /// & start, retry). Owned by ``ContentView`` because starting a model
+    /// is a window-level concern, not a chat-surface one.
+    var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
 
     /// Backing state for the composer's inline model picker (Ollama-style).
     /// The picker lives in the compose box now, not a top control bar.
@@ -196,6 +201,9 @@ struct ChatView: View {
     @State private var composeFocusToken: Int = 0
     @State private var showConnectTools = false
     @State private var showBenchmark = false
+    /// Incremented every time the user tries to send while gated. Drives
+    /// the banner's brief emphasis so a blocked Return is never silent.
+    @State private var blockedSendAttempts: Int = 0
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
     /// A live user gesture must reach the actual trailing edge before
@@ -328,8 +336,10 @@ struct ChatView: View {
                 // existence mid-session and shifted the layout.
                 //
                 // Now both always render whenever the transcript is
-                // empty, in every lifecycle state. Availability is
-                // expressed by ENABLEMENT, not by presence:
+                // empty, in every lifecycle state, and neither appears
+                // or disappears because chat history changed.
+                // Availability is expressed by ENABLEMENT, not by
+                // presence:
                 //
                 //   * Connect your tools is always actionable. The sheet
                 //     itself explains when the endpoint isn't ready yet
@@ -362,58 +372,48 @@ struct ChatView: View {
         )
     }
 
-    /// The line under "Ask anything".
+    /// The line under "Ask anything", and the quieter hint below it.
     ///
-    /// Three distinct states, none of which may render an internal
-    /// placeholder (`Loading`, `Starting`, …) where a model name goes:
+    /// Both come straight off ``ModelReadiness`` rather than being
+    /// re-derived here. That is the whole point of the type: the hero
+    /// and the composer are two renderings of one state, so they can no
+    /// longer say different things about the same moment. The two
+    /// strings the approved empty state already shipped ("Choose a model
+    /// to start", "Chatting with <alias>") are preserved verbatim by
+    /// ``ModelReadiness/emptyStateSubtitle``.
+    private var emptyStateSubtitle: String { readiness.emptyStateSubtitle }
+
+    private var downloadHint: String? { readiness.emptyStateHint }
+
+    /// Speed can only measure a model that is actually up.
     ///
-    ///   * nothing chosen yet  → an instruction, not a claim
-    ///   * coming up           → a status sentence
-    ///   * resolved            → the real alias
-    private var emptyStateSubtitle: String {
-        if case .starting = server.state {
-            return "Preparing your local model…"
-        }
-        if ModelDisplayName.isUnresolved(alias) {
-            // "Choose", not "Select" — one verb for this flow, matching
-            // the composer control and the picker's own tooltip.
-            return "Choose a model to start"
-        }
-        return "Chatting with \(alias)"
-    }
-
-    /// The download hint under the subtitle. Names the model only when
-    /// it is a real alias; otherwise stays generic rather than
-    /// interpolating a placeholder into the sentence.
-    private var downloadHint: String? {
-        guard let pending = autoStartPendingDownload else { return nil }
-        guard !ModelDisplayName.isUnresolved(pending.alias) else {
-            return "Your first message will download the selected model."
-        }
-        let size = pending.sizeText.map { " (\($0))" } ?? ""
-        return "Your first message will download \(pending.alias)\(size)."
-    }
-
-    /// Speed can only measure a model that is actually up. Keyed on the
-    /// live server state rather than the ``serverReady`` flag so the
-    /// button re-enables the moment the model finishes starting.
+    /// Presence is unconditional (the button always renders while the
+    /// transcript is empty); only enablement moves. Keyed on the shared
+    /// readiness value so the button re-enables the moment the model
+    /// reaches ready — no user action, no extra render trigger.
     private var benchmarkAvailable: Bool {
-        guard server.binaryPath != nil else { return false }
-        // Routed through the shared predicate rather than a bare
-        // ``isEmpty`` so every readiness decision in the app agrees on
-        // what counts as "no model" — an internal placeholder is not a
-        // model you can benchmark.
-        if case .ready = server.state {
-            return !ModelDisplayName.isUnresolved(alias)
-        }
-        return false
+        server.binaryPath != nil && readiness.isReady
     }
 
     // MARK: - Compose bar
 
     private var composeBar: some View {
         VStack(spacing: RapidTheme.Space.sm) {
-            if let error = viewModel.lastError {
+            // Exactly one notice slot. While the model is not ready the
+            // readiness banner owns it — it already folds the failure
+            // message in, so rendering the raw error underneath would be
+            // the same fact twice. Once the model is ready the slot
+            // reverts to turn-level errors (a 500 from a healthy server),
+            // which readiness has no opinion about.
+            if !readiness.isReady {
+                ReadinessBanner(
+                    readiness: readiness,
+                    attentionToken: blockedSendAttempts,
+                    onAction: onReadinessAction
+                )
+                .frame(maxWidth: contentMaxWidth)
+                .frame(maxWidth: .infinity)
+            } else if let error = viewModel.lastError {
                 InlineNotice(message: error, tone: .error)
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
@@ -428,10 +428,16 @@ struct ChatView: View {
             // tall and read as a card that happened to contain a text
             // area; this reads as a text field with controls in it.
             VStack(spacing: RapidTheme.Space.sm - 2) {
+                // The field stays live in every state — a user may draft
+                // while the model downloads, and that draft survives the
+                // transition to ready untouched. Only the send ACTION is
+                // gated; the placeholder names the blocking step so the
+                // reason is visible before a single character is typed.
                 ComposeField(
                     text: $draft,
                     focusToken: composeFocusToken,
                     isStreaming: viewModel.isStreaming,
+                    placeholder: readiness.composerPlaceholder,
                     onSubmit: send,
                     onCancel: { viewModel.stop() },
                     onRecallLastUser: {
@@ -514,12 +520,24 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(!sendEnabled)
-            .help("Send")
+            .help(readiness.sendTooltip)
             .accessibilityLabel("Send message")
+            // The tooltip alone is mouse-only. VoiceOver users get the
+            // same sentence as the control's hint, so "why is this
+            // dimmed" is answerable without a pointer.
+            .accessibilityHint(readiness.sendAllowed ? "" : readiness.sendTooltip)
         }
     }
 
+    /// Two independent gates. ``hasDraft`` is the ordinary "nothing to
+    /// send" case; ``readiness.sendAllowed`` is the lifecycle gate that
+    /// replaces the old behaviour where pressing Send on a cold model
+    /// silently kicked off a multi-gigabyte download behind a spinner.
     private var sendEnabled: Bool {
+        hasDraft && readiness.sendAllowed
+    }
+
+    private var hasDraft: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -529,6 +547,21 @@ struct ChatView: View {
         let text = draft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard !viewModel.isStreaming else { return }
+        // Return reaches here even when the Send button is disabled —
+        // AppKit routes the key through ``ComposeTextEditor`` regardless
+        // of SwiftUI's button state. Previously that landed on a silent
+        // no-op: the keystroke did nothing and nothing said why.
+        //
+        // Two guarantees here. The draft is NOT cleared (it is still
+        // exactly what the user typed, ready to send the moment the
+        // model is up), and the attempt is acknowledged — the banner
+        // flashes and VoiceOver speaks the same sentence the Send
+        // tooltip carries.
+        guard readiness.sendAllowed else {
+            blockedSendAttempts &+= 1
+            VoiceOverAnnouncer.announce(readiness.sendTooltip)
+            return
+        }
         draft = ""
         composeFocusToken &+= 1
         viewModel.send(text, alias: alias)
@@ -536,6 +569,13 @@ struct ChatView: View {
 
     private func regenerate() {
         guard !viewModel.isStreaming else { return }
+        // Same contract as ``send``: a regenerate needs a live model, so
+        // acknowledge rather than silently drop it when there isn't one.
+        guard readiness.sendAllowed else {
+            blockedSendAttempts &+= 1
+            VoiceOverAnnouncer.announce(readiness.sendTooltip)
+            return
+        }
         viewModel.regenerateLast(alias: alias)
     }
 }

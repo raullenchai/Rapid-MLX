@@ -260,6 +260,12 @@ private struct SidebarRow<Content: View>: View {
 struct LaunchView: View {
     @Bindable var server: ServerManager
     let alias: String
+    /// The window's shared readiness value. Optional so the dev snapshot
+    /// harness can render the page standalone; when supplied, the page
+    /// describes the model lifecycle in exactly the same words the chat
+    /// composer does, and offers the same next step.
+    var readiness: ModelReadiness? = nil
+    var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
 
     var body: some View {
         ConnectToolsView(
@@ -272,7 +278,9 @@ struct LaunchView: View {
             // no-op button). A dedicated page-mode header lands with the
             // #1405 Launch redesign.
             onClose: {},
-            showsCloseButton: false
+            showsCloseButton: false,
+            readiness: readiness,
+            onReadinessAction: onReadinessAction
         )
     }
 }

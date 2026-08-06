@@ -63,6 +63,18 @@ final class ChatViewModel {
     /// Structured counterpart to ``lastError`` used by the shared failure
     /// view to choose a recovery action without parsing display copy.
     private(set) var lastFailureKind: FailureDiagnosis.Kind?
+    /// Which model ``lastError`` is about.
+    ///
+    /// Without this the readiness surface had to guess, and it guessed
+    /// "whatever is selected right now" — so after `kimi-k2.6` failed to
+    /// start, choosing `bonsai-1.7b-2bit` re-labelled Kimi's error as
+    /// Bonsai's. A failure belongs to the model that actually failed;
+    /// recording the alias is what lets a later surface decide whether
+    /// the failure is still the user's current problem.
+    ///
+    /// Cleared in lockstep with ``lastError``. Note this scopes only the
+    /// BANNER — the failed turn stays in the transcript either way.
+    private(set) var lastFailureAlias: String?
 
     private var inflight: Task<Void, Never>?
 
@@ -153,6 +165,7 @@ final class ChatViewModel {
         activeConversationID = id
         lastError = nil
         lastFailureKind = nil
+        lastFailureAlias = nil
     }
 
     /// Delete a saved conversation. If it was the open one, drop to a fresh
@@ -171,6 +184,7 @@ final class ChatViewModel {
             isStreaming = false          // messages now empty → persistActive no-ops
             lastError = nil
             lastFailureKind = nil
+            lastFailureAlias = nil
         }
         conversations.removeAll { $0.id == id }
         ConversationStore.save(conversations)
@@ -221,6 +235,7 @@ final class ChatViewModel {
         activeConversationID = UUID()
         lastError = nil
         lastFailureKind = nil
+        lastFailureAlias = nil
     }
 
     /// DEV-ONLY: replace the transcript with a fixed set of messages so
@@ -257,6 +272,7 @@ final class ChatViewModel {
 
         lastError = nil
         lastFailureKind = nil
+        lastFailureAlias = nil
         isStreaming = true
 
         let epoch = conversationEpoch
@@ -340,6 +356,9 @@ final class ChatViewModel {
             updateMessage(at: placeholderIndex, with: placeholder)
         }
         lastError = message
+        // Attribute the failure to the alias that actually failed, not to
+        // whatever the picker happens to hold later.
+        lastFailureAlias = alias
         // Classify the banner as a model-load failure (#590) rather than
         // letting it fall back to chatFailureKind("Couldn't start …") →
         // the generic `.requestFailed` diagnosis, whose Retry action just
@@ -433,6 +452,8 @@ final class ChatViewModel {
     func clearStaleErrorBanner() {
         guard !isStreaming else { return }
         lastError = nil
+        lastFailureKind = nil
+        lastFailureAlias = nil
     }
 
     /// Pure transformation applied to the assistant placeholder when
@@ -821,6 +842,7 @@ final class ChatViewModel {
                     for: .modelLoadFailed,
                     modelAlias: trimmed
                 ).message
+                lastFailureAlias = trimmed
                 return
             }
         }
@@ -1179,6 +1201,7 @@ final class ChatViewModel {
             current.failureKind = failureKind
             lastFailureKind = failureKind
             lastError = actionable
+            lastFailureAlias = request.alias
             writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
             // #478: speak the failure to a screen-reader user (the error
             // string), so a silent red bubble isn't the only signal.

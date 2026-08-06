@@ -78,7 +78,17 @@ enum DevSnapshot {
         /// Consequence to keep in mind when reading the image: the
         /// system's sidebar toolbar/collapse chrome is absent, and the
         /// divider is drawn here rather than by AppKit.
-        func launchView(width: CGFloat, height: CGFloat) -> AnyView {
+        /// ``readiness`` is threaded through so the capture exercises the
+        /// SHARED value the real ``ContentView`` supplies, not
+        /// ``ConnectToolsView``'s nil-fallback sentence. Without it this
+        /// scene could not show that Chat and Launch render the same
+        /// banner, with the same words and the same action, for the same
+        /// state — which is the whole point of the readiness work.
+        func launchView(
+            width: CGFloat,
+            height: CGFloat,
+            readiness: ModelReadiness? = .needsStart(alias: "bonsai-1.7b-2bit")
+        ) -> AnyView {
             AnyView(
                 HStack(spacing: 0) {
                     SidebarView(
@@ -94,9 +104,14 @@ enum DevSnapshot {
                         .fill(RapidTheme.hairline)
                         .frame(width: 1)
 
-                    LaunchView(server: server, alias: "bonsai-1.7b-2bit")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(RapidTheme.surfaceCanvas)
+                    LaunchView(
+                        server: server,
+                        alias: "bonsai-1.7b-2bit",
+                        readiness: readiness,
+                        onReadinessAction: { _ in }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(RapidTheme.surfaceCanvas)
                 }
                 .tint(RapidTheme.brandAmber)
                 .environment(server)
@@ -132,12 +147,74 @@ enum DevSnapshot {
                      appearance: .darkAqua, to: "\(dir)/chat-900x640-dark.png")
         renderHosted(contentView(width: 640, height: 560), size: floorSize,
                      appearance: .aqua, to: "\(dir)/chat-640x560-light.png")
+        renderHosted(contentView(width: 640, height: 560), size: floorSize,
+                     appearance: .darkAqua, to: "\(dir)/chat-640x560-dark.png")
         renderHosted(launchView(width: 900, height: 640), size: reviewSize,
                      appearance: .aqua, to: "\(dir)/launch-900x640-light.png")
         renderHosted(launchView(width: 900, height: 640), size: reviewSize,
                      appearance: .darkAqua, to: "\(dir)/launch-900x640-dark.png")
         renderHosted(launchView(width: 640, height: 560), size: floorSize,
                      appearance: .aqua, to: "\(dir)/launch-640x560-light.png")
+        renderHosted(launchView(width: 640, height: 560), size: floorSize,
+                     appearance: .darkAqua, to: "\(dir)/launch-640x560-dark.png")
+
+        // The readiness matrix: every ``ModelReadiness`` case rendered as
+        // the user sees it, with the three copy channels that must agree
+        // printed underneath.
+        //
+        // A live ``ContentView`` capture can only ever show whichever
+        // state the harness happens to be in (``noModel``, with no
+        // catalog and autostart off). The lifecycle states that matter
+        // most for review — mid-download, starting, failed — need a real
+        // server doing real work, which a snapshot run cannot stage. This
+        // renders the same view the composer renders, driven directly by
+        // the state values, so the banner / action / placeholder /
+        // tooltip / send-enabled contract is reviewable in one image.
+        func readinessMatrix() -> AnyView {
+            let states: [ModelReadiness] = [
+                .noModel,
+                .needsDownload(alias: "qwen3.5-9b-4bit", sizeText: "5.0 GB"),
+                .needsStart(alias: "bonsai-1.7b-2bit"),
+                .downloading(
+                    alias: "qwen3.5-9b-4bit",
+                    detail: "1.2 GB / 5.0 GB · 24% · 8.4 MB/s · 7 min left",
+                    fraction: 0.24
+                ),
+                .starting(alias: "bonsai-1.7b-2bit", detail: "Loading the model into memory…"),
+                .failed(
+                    alias: "qwen3.5-9b-4bit",
+                    message: FailureDiagnoser.diagnosis(for: .modelLoadFailed).message,
+                    action: .retry(alias: "qwen3.5-9b-4bit")
+                ),
+                .engineMissing,
+                .ready(alias: "bonsai-1.7b-2bit"),
+            ]
+            return AnyView(
+                VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+                    ForEach(Array(states.enumerated()), id: \.offset) { _, state in
+                        VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                            ReadinessBanner(readiness: state, onAction: { _ in })
+                            Text(
+                                "send=\(state.sendAllowed ? "ENABLED" : "disabled")"
+                                + "  ·  placeholder: “\(state.composerPlaceholder)”"
+                                + "  ·  tooltip: “\(state.sendTooltip)”"
+                            )
+                            .font(RapidFont.code)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(RapidTheme.Space.xl)
+                .frame(width: 900, alignment: .leading)
+                .background(RapidTheme.surfaceCanvas)
+                .tint(RapidTheme.brandAmber)
+            )
+        }
+        let matrixSize = CGSize(width: 900, height: 900)
+        renderHosted(readinessMatrix(), size: matrixSize,
+                     appearance: .aqua, to: "\(dir)/readiness-matrix-light.png")
+        renderHosted(readinessMatrix(), size: matrixSize,
+                     appearance: .darkAqua, to: "\(dir)/readiness-matrix-dark.png")
 
         // The rail on its own, at its shipping width, with seeded
         // history so row density / truncation / the amber selected
@@ -210,7 +287,8 @@ enum DevSnapshot {
         render(
             AnyView(
                 ChatView(viewModel: chat, server: server,
-                         alias: .constant("bonsai-1.7b-2bit"), serverReady: true)
+                         alias: .constant("bonsai-1.7b-2bit"),
+                         readiness: .ready(alias: "bonsai-1.7b-2bit"))
                     .transcriptRows
                     .frame(width: 900)
                     .background(RapidTheme.canvas)
@@ -342,7 +420,7 @@ enum DevSnapshot {
                 viewModel: chat,
                 server: server,
                 alias: .constant(server.servingAlias ?? ""),
-                serverReady: true
+                readiness: .ready(alias: server.servingAlias ?? "bonsai-1.7b-2bit")
             )
             .environment(downloads)
             .environment(quickstart)
