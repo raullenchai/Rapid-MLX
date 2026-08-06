@@ -60,6 +60,30 @@ def _decode_json_like(value: Any) -> Any:
     return current
 
 
+def _declared_tool_names(request: dict[str, Any] | None) -> frozenset[str] | None:
+    """Tool names the request actually declared, or ``None`` if it declared none.
+
+    ``None`` rather than an empty set, because the two mean different things
+    to the scanners: an empty set would reject every opener, while ``None``
+    selects the position-only rules. A request with no tools cannot execute
+    anything anyway, so there is nothing to protect there and no reason to
+    change how its text is parsed.
+    """
+    if not isinstance(request, dict):
+        return None
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return None
+    names = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            names.add(function["name"])
+    return frozenset(names) or None
+
+
 def _get_tool_param_config(
     tool_name: str | None, request: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -510,16 +534,34 @@ def parse_tool_calls(
     # Pattern for Nemotron-style:
     # Format 1: <tool_call><function=name><parameter=key>val</parameter></function></tool_call>
     # Format 2: <toolcall>func_name\n<parameter=key>value</parameter>...</toolcall>
+    # Declared TOOL names gate which openers count as calls. A value that
+    # contains ``</function> … <function=other>`` otherwise splits into a
+    # second executable call, so marker text inside an argument could
+    # fabricate an invocation the caller never authorised. Names are
+    # checked, not positions, because position alone cannot tell a real
+    # sibling from markup in a value.
+    #
+    # No tools declared => None => the position-only rules, which is the
+    # pre-existing behaviour and cannot fabricate anything executable
+    # (nothing would be authorised to run either way).
+    declared_tools = _declared_tool_names(request)
     nemotron_matches = split_marked_calls(
-        text, r"<tool_call>\s*<function=(\w+)>", "</function>", "</tool_call>"
-    ) or split_marked_calls(text, r"<toolcall>\s*(\w+)\s*\n", "</toolcall>")
+        text,
+        r"<tool_call>\s*<function=(\w+)>",
+        "</function>",
+        "</tool_call>",
+        valid_names=declared_tools,
+    ) or split_marked_calls(
+        text, r"<toolcall>\s*(\w+)\s*\n", "</toolcall>", valid_names=declared_tools
+    )
 
     for name, params_block, _, _ in nemotron_matches:
         arguments = {}
         # Declared parameter names disambiguate a value that contains a
-        # literal ``<parameter=…>``; without them the scan can invent an
-        # argument the model never sent. Empty/unknown tool => None => the
-        # position-only rules, which is still the pre-existing behaviour.
+        # literal ``<parameter=…>`` — see ``tool_call_scan._next_sibling``
+        # for why dropping this filter reintroduces the corruption this
+        # scanner exists to remove. Repeated names are NOT filtered: two
+        # real elements with one name are last-value-wins here.
         declared = set(_get_tool_param_config(name, request)) or None
         for p_name, val in split_marked_parameters(
             params_block, r"<parameter=([^>]+)>", "</parameter>", valid_names=declared

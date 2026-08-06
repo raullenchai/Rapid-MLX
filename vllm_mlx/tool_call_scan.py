@@ -48,42 +48,41 @@ def _next_sibling(
     index: int,
     closer: str,
     valid_names: frozenset[str] | set[str] | None = None,
-    used_names: set[str] | None = None,
 ) -> int:
     """Index of the next opener that is a real SIBLING of ``openers[index]``.
 
-    Three filters, because each alone leaves a hole:
+    Two filters:
 
     * a ``closer`` must appear between the two openers — an element cannot
       begin before the previous one ends;
     * with ``valid_names`` given, the opener's name must be one the request
-      actually declared.
+      declared.
 
-    The name check is what resolves the genuinely ambiguous ordering
+    The name check resolves what syntax alone cannot. In
     ``<parameter=a>before </parameter> text <parameter=fake> after
-    </parameter>``. Syntax alone cannot tell that apart from two real
-    parameters — the closer *is* there before the second opener — so
-    position-only rules fabricate a ``fake`` argument. Nothing in the wire
-    format disambiguates it; only the schema does.
+    </parameter>`` the closer really is there before the second opener, so
+    a position-only reading fabricates ``fake``. Nothing in these
+    escaping-free formats distinguishes that from two real elements; only
+    the schema does. Concretely, the case this exists for::
 
-    ``used_names`` closes the last gap: a literal opener whose name IS
-    declared — ``<parameter=body>before </parameter> <parameter=body>
-    after</parameter>`` — passes the schema filter, and treating it as a
-    sibling both truncates the real value and emits a second ``body`` that
-    overwrites the first. These formats carry one value per name, so a
-    repeat is payload by construction.
+        <parameter=code>if x: print("</parameter><parameter=evil>")</parameter>
 
-    Getting this wrong is worse than truncating: a phantom or overwritten
-    argument is handed to the tool as though the model had asked for it.
+    An agent writing code or documentation ABOUT tool calling emits exactly
+    that. With the filter, ``code`` keeps its whole value. Without it the
+    value is truncated at ``print("`` and a phantom ``evil`` is handed to
+    the tool as though the model had asked for it.
+
+    Repeated names are NOT filtered. Two real ``<parameter=body>`` elements
+    are the caller's to resolve — dict assignment makes it last-value-wins,
+    which is the established behaviour — and suppressing the second opener
+    instead merges its wire markup into the first value, which corrupts
+    both.
 
     Returns ``len(openers)`` when no sibling follows.
     """
     for j in range(index + 1, len(openers)):
-        name = openers[j].group(1).strip()
-        if valid_names is not None and name not in valid_names:
+        if valid_names is not None and openers[j].group(1).strip() not in valid_names:
             continue  # not a declared name — literal text inside the value
-        if used_names is not None and name in used_names:
-            continue  # already emitted — a repeat is payload, not an element
         if closer in text[openers[index].end() : openers[j].start()]:
             return j
     return len(openers)
@@ -95,7 +94,6 @@ def segment_by_next_opener(
     index: int,
     closer: str,
     valid_names: frozenset[str] | set[str] | None = None,
-    used_names: set[str] | None = None,
 ) -> tuple[str, int] | None:
     """``(body, end_offset)`` for ``openers[index]``, or ``None`` if unclosed.
 
@@ -114,7 +112,7 @@ def segment_by_next_opener(
     closing marker to match, so accepting them would be a behaviour change,
     not a fix.
     """
-    sibling = _next_sibling(text, openers, index, closer, valid_names, used_names)
+    sibling = _next_sibling(text, openers, index, closer, valid_names)
     end = openers[sibling].start() if sibling < len(openers) else len(text)
     body = text[openers[index].end() : end]
     cut = body.rfind(closer)
@@ -193,16 +191,12 @@ def split_marked_parameters(
     """
     openers = list(re.finditer(opener, block))
     out: list[tuple[str, str]] = []
-    used: set[str] = set()
     i = 0
     while i < len(openers):
-        seen = used | {openers[i].group(1).strip()}
-        segmented = segment_by_next_opener(block, openers, i, closer, valid_names, seen)
-        sibling = _next_sibling(block, openers, i, closer, valid_names, seen)
+        segmented = segment_by_next_opener(block, openers, i, closer, valid_names)
+        sibling = _next_sibling(block, openers, i, closer, valid_names)
         if segmented is not None:
-            name = openers[i].group(1).strip()
-            used.add(name)
-            out.append((name, segmented[0].strip()))
+            out.append((openers[i].group(1).strip(), segmented[0].strip()))
         # Jump to the sibling, not i+1: the openers in between are literal
         # text inside the value just consumed. Advancing one at a time is
         # what turns a value containing "<parameter=x>" into a phantom
