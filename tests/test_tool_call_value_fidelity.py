@@ -951,6 +951,19 @@ def test_refused_block_before_valid_call_in_one_delta_is_not_swallowed():
     assert f"<function={_NAME}>" not in content, content
 
 
+def test_plain_less_than_after_call_is_not_mistaken_for_partial_markup():
+    """Ordinary same-delta prose containing ``<`` must survive stream end."""
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    valid = _render_xml_body(_NAME, _KEY, "ok")
+    text = valid + " Result: 2 < 3"
+
+    delta = parser.extract_tool_calls_streaming("", text, text, request=_REQUEST)
+
+    calls = (delta or {}).get("tool_calls") or []
+    assert [call["function"]["name"] for call in calls] == [_NAME]
+    assert (delta or {}).get("content") == " Result: 2 < 3"
+
+
 def test_gating_is_off_when_the_request_declares_no_tools():
     """A request with no tools keeps the position-only behaviour.
 

@@ -144,17 +144,43 @@ class NemotronToolParser(ToolParser):
 
         parts: list[str] = []
         cursor = start
+        removed_before = False
         for span_start, span_end in removed:
             if span_end <= start or span_start >= end:
                 continue
             clipped_start = max(start, span_start)
             clipped_end = min(end, span_end)
             if cursor < clipped_start:
-                parts.append(text[cursor:clipped_start])
+                gap = text[cursor:clipped_start]
+                # Pretty-printed wire uses newlines between the decorative
+                # wrapper and function body. If both neighboring spans are
+                # removed, that formatting is markup too, not assistant text.
+                if not (removed_before and gap.isspace()):
+                    parts.append(gap)
             cursor = max(cursor, clipped_end)
+            removed_before = True
         if cursor < end:
             parts.append(text[cursor:end])
         return "".join(parts)
+
+    @staticmethod
+    def _pending_markup_index(text: str) -> int | None:
+        """Return where recognized complete/partial markup begins, if any.
+
+        A bare ``<`` in assistant prose (for example ``2 < 3``) is content,
+        not sufficient evidence of a tool-call opener. Only suppress a suffix
+        that is already a known marker or can still grow into one.
+        """
+        markers = ("<function=", "<tool_call>", "</function>", "</tool_call>")
+        candidates: list[int] = []
+        for marker in markers:
+            full = text.find(marker)
+            if full != -1:
+                candidates.append(full)
+            for prefix_len in range(1, len(marker)):
+                if text.endswith(marker[:prefix_len]):
+                    candidates.append(len(text) - prefix_len)
+        return min(candidates) if candidates else None
 
     @staticmethod
     def _safe_accounting_boundary(text: str) -> int:
@@ -171,7 +197,9 @@ class NemotronToolParser(ToolParser):
                 latest_close = max(latest_close, idx + len(tag))
         if latest_close == 0:
             return 0
-        return len(text) if "<" not in text[latest_close:] else latest_close
+        tail = text[latest_close:]
+        pending = NemotronToolParser._pending_markup_index(tail)
+        return len(text) if pending is None else latest_close + pending
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -334,7 +362,8 @@ class NemotronToolParser(ToolParser):
             # No close tag yet → we are still inside the (first) call's markup.
             return None
         tail = current_text[end:]
-        return None if "<" in tail else tail
+        pending = NemotronToolParser._pending_markup_index(tail)
+        return None if pending is not None else tail
 
     def extract_tool_calls_streaming(
         self,
