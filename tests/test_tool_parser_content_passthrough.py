@@ -28,6 +28,8 @@ not be able to lose text to the tool layer.
 
 import pytest
 
+from vllm_mlx.config import get_config
+from vllm_mlx.service import helpers
 from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
 
 # Registered parser names, one per wire family. Aliases of the same class
@@ -96,12 +98,6 @@ def test_miss_path_returns_content_uncut(parser_name, text):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#1513 — qwen3_coder_xml still fabricates calls from prose. "
-    "Split out of the </tool_call> fix: the parser gate needs the streaming "
-    "path, the generic fallback and tool_choice to be handled together.",
-)
 def test_qwen3coder_regression_bare_function_mention():
     """The exact measured regression, pinned on its own.
 
@@ -167,12 +163,6 @@ def _qwen3coder():
 class TestOnlyDeclaredToolsBecomeCalls:
     """A name the request never offered can never be executed."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#1513 — qwen3_coder_xml still fabricates calls from prose. "
-        "Split out of the </tool_call> fix: the parser gate needs the streaming "
-        "path, the generic fallback and tool_choice to be handled together.",
-    )
     def test_balanced_prose_with_no_tools_declared(self):
         """codex r1 BLOCKING: closed spans in prose were still promoted."""
         text = "Docs: write <function=read_file></function> to show an empty call."
@@ -180,29 +170,115 @@ class TestOnlyDeclaredToolsBecomeCalls:
         assert result.tools_called is False
         assert result.content == text
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#1513 — qwen3_coder_xml still fabricates calls from prose. "
-        "Split out of the </tool_call> fix: the parser gate needs the streaming "
-        "path, the generic fallback and tool_choice to be handled together.",
-    )
     def test_balanced_prose_naming_an_undeclared_tool(self):
         text = "Docs: write <function=read_file></function> to show an empty call."
         result = _qwen3coder().extract_tool_calls(text, {"tools": DECLARED_TOOLS})
         assert result.tools_called is False
         assert result.content == text
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#1513 — qwen3_coder_xml still fabricates calls from prose. "
-        "Split out of the </tool_call> fix: the parser gate needs the streaming "
-        "path, the generic fallback and tool_choice to be handled together.",
-    )
     def test_unclosed_prose_with_no_tools_declared(self):
         text = "Docs mention </tool_call> and <function=name> together."
         result = _qwen3coder().extract_tool_calls(text, None)
         assert result.tools_called is False
         assert result.content == text
+
+    def test_tool_choice_none_never_promotes_a_declared_name(self):
+        text = "Docs: write <function=write_file></function> to show an empty call."
+        request = {"tools": DECLARED_TOOLS, "tool_choice": "none"}
+        result = _qwen3coder().extract_tool_calls(text, request)
+        assert result.tools_called is False
+        assert result.content == text
+
+    @pytest.mark.parametrize(
+        "request_payload",
+        [
+            None,
+            {"tools": DECLARED_TOOLS, "tool_choice": "none"},
+            {
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "read_file", "parameters": {}},
+                    }
+                ]
+            },
+        ],
+    )
+    def test_streaming_prose_is_not_promoted_without_an_allowed_tool(
+        self, request_payload
+    ):
+        parser = _qwen3coder()
+        chunks = [
+            "Docs: write ",
+            "<function=",
+            "write_file>",
+            "</function> to show an empty call.",
+        ]
+        previous = ""
+        content = []
+        calls = []
+        for chunk in chunks:
+            current = previous + chunk
+            result = parser.extract_tool_calls_streaming(
+                previous,
+                current,
+                chunk,
+                request=request_payload,
+            )
+            if result:
+                content.append(result.get("content", ""))
+                calls.extend(result.get("tool_calls", []))
+            previous = current
+
+        assert calls == []
+        assert "".join(content) == "".join(chunks)
+
+    def test_streaming_undeclared_span_in_one_chunk_is_preserved(self):
+        parser = _qwen3coder()
+        text = "Docs: <function=write_file></function> is the wire form."
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "read_file", "parameters": {}},
+                }
+            ]
+        }
+        result = parser.extract_tool_calls_streaming("", text, text, request=request)
+        assert result == {"content": text}
+
+    @pytest.mark.parametrize(
+        "structured", [None, [{"name": "read_file", "arguments": "{}"}]]
+    )
+    def test_service_helper_cannot_repromote_an_undeclared_span(
+        self, monkeypatch, structured
+    ):
+        text = "Docs: <function=read_file></function> is the wire form."
+
+        class Request:
+            def model_dump(self):
+                return {"tools": DECLARED_TOOLS}
+
+        cfg = get_config()
+        saved = (cfg.enable_auto_tool_choice, cfg.tool_call_parser)
+        cfg.enable_auto_tool_choice = True
+        cfg.tool_call_parser = "qwen3_coder_xml"
+        monkeypatch.setattr(
+            helpers,
+            "parse_tool_calls",
+            lambda *args, **kwargs: pytest.fail("generic fallback re-promoted prose"),
+        )
+        try:
+            content, calls = helpers._parse_tool_calls_with_parser(
+                text,
+                Request(),
+                structured_tool_calls=structured,
+            )
+        finally:
+            cfg.enable_auto_tool_choice, cfg.tool_call_parser = saved
+
+        assert content == text
+        assert calls is None
 
 
 class TestTruncatedCallsStillRecover:

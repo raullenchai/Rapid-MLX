@@ -809,7 +809,8 @@ final class ChatViewModel {
     /// Edit a user turn in place: replace its prose, drop everything
     /// that came after it, and re-send. Matches ChatGPT Desktop's
     /// "edit message" pattern — the edit point becomes the new
-    /// conversation tip, no branching, no orphan replies.
+    /// conversation tip. The prior transcript is retained as a sidebar branch
+    /// so later turns are never destroyed by the replay.
     @discardableResult
     func editUserMessage(
         id: UUID,
@@ -820,7 +821,10 @@ final class ChatViewModel {
         let trimmed = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         guard let idx = messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return false }
-        // Truncate everything from the edited row onward, then resend.
+        // Preserve the original transcript under its current conversation id,
+        // then continue the edit as a new branch. A one-click edit of an older
+        // turn must never overwrite all later turns on disk.
+        forkConversationForReplay()
         messages = Array(messages.prefix(idx))
         send(trimmed, alias: alias)
         return true
@@ -855,9 +859,21 @@ final class ChatViewModel {
         guard !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
+        // The selected response and every later turn remain available in the
+        // original sidebar conversation; the regenerated path gets a new id.
+        forkConversationForReplay()
         messages = Array(messages.prefix(userIndex))
         send(userText, alias: alias)
         return true
+    }
+
+    /// Snapshot the current transcript and move subsequent replay mutations
+    /// onto a fresh conversation id. This is a lightweight conversation branch:
+    /// the UI can keep its simple linear transcript while Edit/Retry remains
+    /// lossless and the original is recoverable from the sidebar.
+    private func forkConversationForReplay() {
+        persistActive(touching: false)
+        activeConversationID = UUID()
     }
 
     /// Same as ``regenerateLast(alias:)`` but brings up ``newAlias``

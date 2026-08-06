@@ -17,6 +17,7 @@ shape so a future regression that re-introduces the silent path
 trips a CI failure rather than waiting for another dogfood report.
 """
 
+import asyncio
 import json
 import sys
 import types
@@ -40,30 +41,35 @@ async def test_deepseek_codex_nonprogress_retry_is_internal(monkeypatch):
     async def fake_stream(*args, nonprogress_retry=False, **kwargs):
         calls.append(nonprogress_retry)
         state = kwargs["heartbeat_state"]
+        public_id = kwargs.get("response_id_override")
         if not nonprogress_retry:
             state["response"] = {"id": "hidden-attempt"}
-            assert visible_heartbeat_state == {}
-            yield 'data: {"type":"response.created","attempt":1}\n\n'
+            assert visible_heartbeat_state["response"]["id"] == public_id
+            yield json.dumps(
+                {"type": "response.created", "response": {"id": public_id}}
+            ).join(["data: ", "\n\n"])
             yield (
                 'data: {"type":"response.failed","response":{"error":'
                 '{"code":"model_no_final_answer"}}}\n\n'
             )
         else:
             state["response"] = {"id": "visible-attempt"}
-            yield 'data: {"type":"response.created","attempt":2}\n\n'
             yield 'data: {"type":"response.completed","attempt":2}\n\n'
 
     monkeypatch.setattr(responses_route, "_stream_responses", fake_stream)
     monkeypatch.setattr(
         responses_route,
         "get_config",
-        lambda: SimpleNamespace(tool_call_parser="deepseek_v4_0731"),
+        lambda: SimpleNamespace(tool_call_parser="deepseek_v4_0731", model_name=None),
     )
     request = SimpleNamespace(
+        model="test-model",
+        parallel_tool_calls=False,
+        tool_choice="auto",
         tools=[
             {"type": "function", "name": "exec_command"},
             {"type": "function", "name": "write_stdin"},
-        ]
+        ],
     )
 
     events = [
@@ -74,10 +80,99 @@ async def test_deepseek_codex_nonprogress_retry_is_internal(monkeypatch):
     ]
 
     assert calls == [False, True]
-    assert all('"attempt":1' not in event for event in events)
+    assert all("hidden-attempt" not in event for event in events)
     assert all('"type":"response.failed"' not in event for event in events)
     assert any('"type":"response.completed"' in event for event in events)
     assert visible_heartbeat_state["response"] == {"id": "visible-attempt"}
+
+
+@pytest.mark.asyncio
+async def test_deepseek_retry_never_sends_heartbeat_before_response_created(
+    monkeypatch,
+):
+    """A slow hidden attempt must not put an invalid lifecycle event first."""
+    import vllm_mlx.routes.responses as responses_route
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    async def fake_stream(*args, nonprogress_retry=False, **kwargs):
+        state = kwargs["heartbeat_state"]
+        sequence = kwargs["sequence_counter"]
+
+        def emit(event_type, extra=""):
+            payload = (
+                f'{{"type":"{event_type}","sequence_number":{sequence[0]}{extra}}}'
+            )
+            sequence[0] += 1
+            return f"event: {event_type}\ndata: {payload}\n\n"
+
+        state["response"] = {
+            "id": "visible-attempt" if nonprogress_retry else "hidden-attempt"
+        }
+        state["sequence_number"] = sequence
+        if kwargs.get("emit_initial_lifecycle", True):
+            yield emit("response.created")
+            yield emit("response.in_progress")
+        if not nonprogress_retry:
+            # Longer than the test keepalive interval: this is a 20+ second
+            # prefill/reasoning pause in production.
+            await asyncio.sleep(0.03)
+            yield emit(
+                "response.failed",
+                ',"response":{"error":{"code":"model_no_final_answer"}}',
+            )
+        else:
+            yield emit("response.completed")
+
+    monkeypatch.setattr(responses_route, "_stream_responses", fake_stream)
+    monkeypatch.setattr(
+        responses_route,
+        "get_config",
+        lambda: SimpleNamespace(tool_call_parser="deepseek_v4_0731", model_name=None),
+    )
+    request = SimpleNamespace(
+        model="test-model",
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[
+            {"type": "function", "name": "exec_command"},
+            {"type": "function", "name": "write_stdin"},
+        ],
+    )
+    visible_state: dict[str, object] = {}
+    stream = responses_route._stream_responses_with_nonprogress_retry(
+        object(), object(), request, heartbeat_state=visible_state
+    )
+    events = [
+        event
+        async for event in _disconnect_guard(
+            stream,
+            ConnectedRequest(),
+            keepalive_seconds=0.01,
+            keepalive_factory=lambda: responses_route._responses_keepalive_sse(
+                visible_state
+            ),
+        )
+    ]
+
+    data_events = [
+        json.loads(line[6:])
+        for event in events
+        for line in event.splitlines()
+        if line.startswith("data: ")
+    ]
+    first_data = data_events[0]
+    assert first_data["type"] == "response.created"
+    assert first_data["sequence_number"] == 0
+    assert [event["sequence_number"] for event in data_events] == list(
+        range(len(data_events))
+    )
+    assert sum(event["type"] == "response.created" for event in data_events) == 1
+    assert all(event["type"] != "response.failed" for event in data_events)
+    assert any(event["type"] == "response.completed" for event in data_events), events
 
 
 class _Tokenizer:

@@ -2397,6 +2397,37 @@ async def _stream_responses_with_nonprogress_retry(
     # Responses heartbeats at the configured interval. Keep the attempt's
     # lifecycle private until it commits so a heartbeat cannot expose an ID
     # that will be discarded by the transparent retry.
+    # The transparent retry owns one public Responses lifecycle. Expose its
+    # created/in-progress pair immediately and let both engine attempts share
+    # the same id. Public events and keepalives use their own counter so buffered
+    # or discarded attempt events cannot leave gaps in the visible sequence.
+    public_response_id = f"resp_{uuid.uuid4().hex[:24]}"
+    public_created_at = int(time.time())
+    public_sequence = [0]
+    attempt_sequence = [0]
+    public_response = _responses_initial_payload(
+        response_id=public_response_id,
+        created_at=public_created_at,
+        served_model=cfg.model_name or responses_request.model,
+        responses_request=responses_request,
+    )
+    if heartbeat_state is not None:
+        heartbeat_state["response"] = public_response
+        heartbeat_state["sequence_number"] = public_sequence
+    yield _responses_resequence_event(
+        _sse(
+            "response.created",
+            {"type": "response.created", "response": public_response},
+        ),
+        public_sequence,
+    )
+    yield _responses_resequence_event(
+        _sse(
+            "response.in_progress",
+            {"type": "response.in_progress", "response": public_response},
+        ),
+        public_sequence,
+    )
     attempt_heartbeat_state: dict[str, object] = {}
     buffered: list[str] = []
     buffered_bytes = 0
@@ -2409,12 +2440,17 @@ async def _stream_responses_with_nonprogress_retry(
         explicit_no_thinking=explicit_no_thinking,
         request_id_holder=request_id_holder,
         heartbeat_state=attempt_heartbeat_state,
+        response_id_override=public_response_id,
+        created_at_override=public_created_at,
+        sequence_counter=attempt_sequence,
+        emit_initial_lifecycle=False,
     ):
+        if heartbeat_state is not None:
+            heartbeat_state.clear()
+            heartbeat_state.update(attempt_heartbeat_state)
+            heartbeat_state["sequence_number"] = public_sequence
         if committed:
-            if heartbeat_state is not None:
-                heartbeat_state.clear()
-                heartbeat_state.update(attempt_heartbeat_state)
-            yield event
+            yield _responses_resequence_event(event, public_sequence)
             continue
         event_bytes = len(event.encode("utf-8"))
         event_buffered = False
@@ -2433,25 +2469,19 @@ async def _stream_responses_with_nonprogress_retry(
                 buffered_bytes + event_bytes,
             )
         if committed:
-            if heartbeat_state is not None:
-                heartbeat_state.clear()
-                heartbeat_state.update(attempt_heartbeat_state)
             for pending in buffered:
-                yield pending
+                yield _responses_resequence_event(pending, public_sequence)
             buffered.clear()
             if not event_buffered:
-                yield event
+                yield _responses_resequence_event(event, public_sequence)
         elif _responses_event_is_nonprogress_failure(event):
             retry_nonprogress = True
 
     if committed:
         return
     if not retry_nonprogress:
-        if heartbeat_state is not None:
-            heartbeat_state.clear()
-            heartbeat_state.update(attempt_heartbeat_state)
         for event in buffered:
-            yield event
+            yield _responses_resequence_event(event, public_sequence)
         return
 
     logger.warning(
@@ -2467,6 +2497,10 @@ async def _stream_responses_with_nonprogress_retry(
         request_id_holder=request_id_holder,
         heartbeat_state=heartbeat_state,
         nonprogress_retry=True,
+        response_id_override=public_response_id,
+        created_at_override=public_created_at,
+        sequence_counter=public_sequence,
+        emit_initial_lifecycle=False,
     ):
         yield event
 
@@ -2488,6 +2522,45 @@ def _responses_event_commits_progress(event: str) -> bool:
             if item_type in {"function_call", "computer_call"}:
                 return True
     return False
+
+
+def _responses_resequence_event(event: str, sequence: list[int]) -> str:
+    """Assign the next public sequence number to one buffered SSE event."""
+    for line in event.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            data = json.loads(line[6:])
+        except (TypeError, ValueError):
+            return event
+        event_type = data.get("type")
+        if not isinstance(event_type, str):
+            return event
+        data["sequence_number"] = sequence[0]
+        sequence[0] += 1
+        return _sse(event_type, data)
+    return event
+
+
+def _responses_initial_payload(
+    *,
+    response_id: str,
+    created_at: int,
+    served_model: str,
+    responses_request: ResponsesRequest,
+) -> dict:
+    """Build the shared response object used by initial lifecycle events."""
+    return {
+        "id": response_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "in_progress",
+        "model": served_model,
+        "output": [],
+        "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
+        "tool_choice": responses_request.tool_choice or "auto",
+        "tools": responses_request.tools or [],
+    }
 
 
 def _responses_event_is_nonprogress_failure(event: str) -> bool:
@@ -2516,6 +2589,10 @@ async def _stream_responses(
     request_id_holder: list | None = None,
     heartbeat_state: dict[str, object] | None = None,
     nonprogress_retry: bool = False,
+    response_id_override: str | None = None,
+    created_at_override: int | None = None,
+    sequence_counter: list[int] | None = None,
+    emit_initial_lifecycle: bool = True,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -2547,8 +2624,8 @@ async def _stream_responses(
     we always finalize.
     """
     cfg = get_config()
-    response_id = f"resp_{uuid.uuid4().hex[:24]}"
-    created_at = int(time.time())
+    response_id = response_id_override or f"resp_{uuid.uuid4().hex[:24]}"
+    created_at = created_at_override or int(time.time())
     start_time = time.perf_counter()
     served_model = cfg.model_name or responses_request.model
 
@@ -2556,7 +2633,7 @@ async def _stream_responses(
     # required on every Responses-API event. Monotonic counter starting
     # at 0, incremented per yielded event. Wrap ``_sse`` via a helper so
     # the bookkeeping stays in one place.
-    _seq = [0]
+    _seq = sequence_counter if sequence_counter is not None else [0]
     if heartbeat_state is not None:
         heartbeat_state["sequence_number"] = _seq
 
@@ -2571,26 +2648,22 @@ async def _stream_responses(
     # so consumers like openai-python ``Response.model_validate`` accept
     # the streaming payload too. ``output`` starts empty and is rebuilt
     # below before ``response.completed`` is emitted.
-    _initial_response_payload = {
-        "id": response_id,
-        "object": "response",
-        "created_at": created_at,
-        "status": "in_progress",
-        "model": served_model,
-        "output": [],
-        "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
-        "tool_choice": responses_request.tool_choice or "auto",
-        "tools": responses_request.tools or [],
-    }
+    _initial_response_payload = _responses_initial_payload(
+        response_id=response_id,
+        created_at=created_at,
+        served_model=served_model,
+        responses_request=responses_request,
+    )
     if heartbeat_state is not None:
         heartbeat_state["response"] = _initial_response_payload
-    yield _emit(
-        "response.created",
-        {
-            "type": "response.created",
-            "response": _initial_response_payload,
-        },
-    )
+    if emit_initial_lifecycle:
+        yield _emit(
+            "response.created",
+            {
+                "type": "response.created",
+                "response": _initial_response_payload,
+            },
+        )
     # R10-C3: the OpenAI Responses SSE spec mandates ``response.in_progress``
     # between ``response.created`` and the first ``response.output_item.added``.
     # The ``openai-python`` SDK transitions internal state on it (sets
@@ -2601,13 +2674,14 @@ async def _stream_responses(
     # arrives without the intermediate transition. Sven r10-R1 captured
     # exactly this on 0.8.11. Payload mirrors ``created`` because no
     # generation state has changed yet, just the lifecycle marker.
-    yield _emit(
-        "response.in_progress",
-        {
-            "type": "response.in_progress",
-            "response": _initial_response_payload,
-        },
-    )
+    if emit_initial_lifecycle:
+        yield _emit(
+            "response.in_progress",
+            {
+                "type": "response.in_progress",
+                "response": _initial_response_payload,
+            },
+        )
     try:
         messages = _prepare_messages_for_engine(engine, openai_request)
         codex_surface = _is_deepseek_codex_surface(

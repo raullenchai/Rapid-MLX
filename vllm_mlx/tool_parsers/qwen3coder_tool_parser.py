@@ -251,6 +251,7 @@ class Qwen3CoderToolParser(ToolParser):
         self.json_closed = False
         self.accumulated_params = {}
         self._streaming_request = None
+        self._pending_tool_start: int | None = None
         self.prev_tool_call_arr = []
         self.in_param_emitted_chars = 0
         self.in_param_opened = False
@@ -344,6 +345,25 @@ class Qwen3CoderToolParser(ToolParser):
             raw_function_calls.extend(self.tool_call_function_regex.findall(tc))
         return [m[0] if m[0] else m[1] for m in raw_function_calls]
 
+    @staticmethod
+    def _declared_tool_names(request: dict[str, Any] | None) -> set[str]:
+        """Return executable tool names offered by this request."""
+        if not isinstance(request, dict) or request.get("tool_choice") == "none":
+            return set()
+        names: set[str] = set()
+        for tool in request.get("tools") or []:
+            if not isinstance(tool, dict):
+                continue
+            function = tool.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+            else:
+                # Responses-native tools are flat: {type, name, parameters}.
+                name = tool.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+        return names
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
@@ -359,15 +379,28 @@ class Qwen3CoderToolParser(ToolParser):
                     tools_called=False, tool_calls=[], content=model_output
                 )
 
-            tools = None
-            if request and isinstance(request, dict):
-                tools = request.get("tools")
+            tools = request.get("tools") if isinstance(request, dict) else None
+            declared = self._declared_tool_names(request)
 
             tool_calls = []
             for fc_str in function_calls:
                 tc = self._parse_xml_function_call(fc_str, tools)
-                if tc:
-                    tool_calls.append(tc)
+                if not tc:
+                    continue
+                if tc.get("name") not in declared:
+                    # Framing alone cannot distinguish executable wire from
+                    # prose documenting that wire. A name the caller did not
+                    # offer (including every name under tool_choice=none) is
+                    # never executable, so preserve the entire answer as text.
+                    return ExtractedToolCallInformation(
+                        tools_called=False, tool_calls=[], content=model_output
+                    )
+                tool_calls.append(tc)
+
+            if not tool_calls:
+                return ExtractedToolCallInformation(
+                    tools_called=False, tool_calls=[], content=model_output
+                )
 
             # Extract content before tool calls
             content_index = model_output.find(self.tool_call_start_token)
@@ -544,6 +577,15 @@ class Qwen3CoderToolParser(ToolParser):
         if not delta_text:
             return None
 
+        declared = self._declared_tool_names(
+            request if request is not None else self._streaming_request
+        )
+        if not declared:
+            # No executable tool exists for this request. Bypass the XML state
+            # machine entirely so protocol examples stream byte-for-byte and
+            # tool_choice=none cannot be overturned by model-authored markup.
+            return {"content": delta_text}
+
         delta_token_ids = delta_token_ids or []
         self.accumulated_text = current_text
 
@@ -580,6 +622,20 @@ class Qwen3CoderToolParser(ToolParser):
             if self._has_new_opener(delta_text, delta_token_ids):
                 self.is_tool_call_started = True
                 opener_pos = self._first_opener_pos(delta_text)
+                self._pending_tool_start = len(previous_text) + opener_pos
+                header_start = current_text.find(
+                    self.tool_call_prefix, self._pending_tool_start
+                )
+                if header_start >= 0:
+                    name_start = header_start + len(self.tool_call_prefix)
+                    header_end = current_text.find(">", name_start)
+                    if header_end >= 0:
+                        candidate_name = current_text[name_start:header_end]
+                        if candidate_name not in declared:
+                            saved_request = self._streaming_request
+                            self._reset_streaming_state()
+                            self._streaming_request = saved_request
+                            return {"content": delta_text}
                 content_before = (
                     delta_text[:opener_pos] if opener_pos < len(delta_text) else ""
                 )
@@ -628,6 +684,15 @@ class Qwen3CoderToolParser(ToolParser):
                 func_end = tool_text.find(">", func_start)
                 if func_end != -1:
                     self.current_function_name = tool_text[func_start:func_end]
+                    if self.current_function_name not in declared:
+                        start = self._pending_tool_start
+                        rejected = (
+                            current_text[start:] if start is not None else delta_text
+                        )
+                        saved_request = self._streaming_request
+                        self._reset_streaming_state()
+                        self._streaming_request = saved_request
+                        return {"content": rejected}
                     self._current_tool_id = _generate_tool_id()
                     self.header_sent = True
                     self.in_function = True

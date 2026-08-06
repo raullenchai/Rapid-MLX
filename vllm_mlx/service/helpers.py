@@ -2742,6 +2742,21 @@ def _validate_model_name(request_model: str) -> None:
 # ── Tool call parsing ──────────────────────────────────────────────
 
 
+def _request_declared_tool_names(request_dict: dict | None) -> set[str]:
+    """Executable function names after applying tool_choice=none."""
+    if not isinstance(request_dict, dict) or request_dict.get("tool_choice") == "none":
+        return set()
+    names: set[str] = set()
+    for tool in request_dict.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        name = function.get("name") if isinstance(function, dict) else tool.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
+
+
 def _parse_tool_calls_with_parser(
     output_text: str,
     request=None,
@@ -2763,7 +2778,19 @@ def _parse_tool_calls_with_parser(
     #515 codex round-12 / round-14 BLOCKING). ``output_text`` becomes
     the user-facing content directly in that case.
     """
+    cfg = get_config()
+    request_dict = request.model_dump() if request else None
+    declared: set[str] | None = None
+    if cfg.tool_call_parser == "qwen3_coder_xml":
+        declared = _request_declared_tool_names(request_dict)
+        if not declared:
+            return output_text or "", None
+
     if structured_tool_calls:
+        if declared is not None and any(
+            tc.get("name") not in declared for tc in structured_tool_calls
+        ):
+            return output_text or "", None
         tool_calls = [
             ToolCall(
                 id=tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
@@ -2776,9 +2803,6 @@ def _parse_tool_calls_with_parser(
             for tc in structured_tool_calls
         ]
         return output_text or "", tool_calls
-
-    cfg = get_config()
-    request_dict = request.model_dump() if request else None
 
     tokenizer = None
     if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):
@@ -2817,6 +2841,8 @@ def _parse_tool_calls_with_parser(
         parser = parser_cls(tokenizer)
     except Exception as e:
         logger.warning(f"Failed to create tool parser '{cfg.tool_call_parser}': {e}")
+        if cfg.tool_call_parser == "qwen3_coder_xml":
+            return output_text or "", None
         return parse_tool_calls(output_text, request_dict)
 
     try:
@@ -2836,6 +2862,11 @@ def _parse_tool_calls_with_parser(
             ]
             return result.content or "", tool_calls
         else:
+            if cfg.tool_call_parser == "qwen3_coder_xml":
+                # The Qwen parser made an authoritative declared-name decision.
+                # Falling through to the generic parser would re-promote the
+                # exact undeclared/tool_choice=none span it rejected.
+                return result.content or "", None
             return parse_tool_calls(output_text, request_dict)
     except Exception as e:
         # Opt-in telemetry (Phase 2.2 error wiring): the configured tool
@@ -2849,6 +2880,8 @@ def _parse_tool_calls_with_parser(
 
         _telemetry_emit.error(category="tool_parse", exc=e, phase="chat")
         logger.warning(f"Tool parser error: {e}")
+        if cfg.tool_call_parser == "qwen3_coder_xml":
+            return output_text or "", None
         return parse_tool_calls(output_text, request_dict)
 
 
