@@ -25,23 +25,12 @@ This adaptation differs from the fork in three places:
 from __future__ import annotations
 
 import logging
-import threading
 from collections import Counter
 from dataclasses import dataclass
 from math import ceil
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
-
-# Warn at most once per process when compression degrades to "endpoints-only"
-# (leading sink + trailing tail consume the entire keep budget, so the whole
-# middle span is dropped). It is a config-level footgun rather than a per-request
-# event, so one warning is the right dosage; per-request occurrences are still
-# exposed via the ``endpoints_only`` / ``middle_tokens_kept`` metadata for metrics.
-# The lock makes the check-then-set atomic so concurrent requests can't both
-# observe ``False`` and each emit the "once" warning.
-_ENDPOINTS_ONLY_WARNED = False
-_ENDPOINTS_ONLY_WARN_LOCK = threading.Lock()
 
 PFlashMode = Literal["off", "auto", "always"]
 
@@ -101,9 +90,9 @@ class PFlashResult:
     original_tokens: int
     kept_tokens: int
     # Number of *middle* tokens (between the leading sink and trailing tail) that
-    # survived compression. 0 on a compressed result means the sink+tail budget
-    # left no room for body content — see ``endpoints_only``. Defaults to 0 so
-    # existing keyword construction (e.g. ``_unchanged``) is unaffected.
+    # survived compression. A zero-middle budget now refuses compression rather
+    # than deleting the body. Defaults to 0 so existing keyword construction
+    # (e.g. ``_unchanged``) is unaffected.
     middle_tokens_kept: int = 0
 
     @property
@@ -114,16 +103,12 @@ class PFlashResult:
 
     @property
     def endpoints_only(self) -> bool:
-        """True when a *compressed* result kept zero middle tokens.
+        """True when a compressed result kept zero middle tokens.
 
-        In this regime ``sink_tokens + tail_tokens`` met or exceeded the keep
-        budget, so PFlash retained only the leading sink and trailing tail and
-        dropped the entire middle span. Mid-document recall collapses to ~0 here
-        (a paraphrased or body-resident answer is simply not in the kept set),
-        even though ``compressed`` is True and ``reason`` is ``"compressed"``.
-        A compressed result always has a non-empty middle span — an all-endpoints
-        prompt short-circuits to ``reason="budget"`` unchanged — so this flag is
-        an unambiguous signal of the degenerate budget, not of a short prompt.
+        The compressor now refuses this lossy state with
+        ``reason="insufficient_middle_budget"`` and returns the prompt unchanged,
+        so production results should always report False. The property remains
+        for metadata compatibility and as a defensive invariant signal.
         """
         return self.compressed and self.middle_tokens_kept == 0
 
@@ -418,6 +403,15 @@ def compress_tokens(
     # flag the degenerate "endpoints-only" regime.
     middle_span = tail_start - sink_end
     remaining_budget = keep_budget - len(keep_positions)
+    if middle_span > 0 and remaining_budget <= 0:
+        # The endpoints already consume the entire keep budget. Compressing in
+        # this regime used to return a normal success after silently deleting
+        # every token in the body — exactly where ordinary 2.3k-11.5k agent
+        # conversations land under the verified Qwen3.5/3.6 defaults. There is
+        # no middle selection to score, so preserve the prompt instead. These
+        # prompts are also too short for the long-prefill win PFlash targets.
+        return _unchanged(tokens, "insufficient_middle_budget")
+
     middle_selected = 0
     if remaining_budget > 0:
         scored_blocks = _score_middle_blocks(
@@ -439,34 +433,6 @@ def compress_tokens(
             middle_selected += take
             if middle_selected >= remaining_budget:
                 break
-
-    if middle_span > 0 and middle_selected == 0:
-        # Endpoints-only: sink+tail consumed the whole budget, so the entire
-        # middle span is dropped and mid-document recall falls to ~0. Warn once
-        # (it is a config-level footgun) with the numbers an operator needs.
-        global _ENDPOINTS_ONLY_WARNED
-        should_warn = False
-        if not _ENDPOINTS_ONLY_WARNED:
-            # Double-checked locking: cheap unlocked read on the hot path, then
-            # take the lock only to atomically re-check and flip the flag so a
-            # single winner emits the once-per-process warning below.
-            with _ENDPOINTS_ONLY_WARN_LOCK:
-                if not _ENDPOINTS_ONLY_WARNED:
-                    _ENDPOINTS_ONLY_WARNED = True
-                    should_warn = True
-        if should_warn:
-            logger.warning(
-                "PFlash endpoints-only: sink(%d)+tail(%d) meet or exceed the keep "
-                "budget (%d) for a %d-token prompt, so all %d middle tokens are "
-                "dropped and mid-document recall falls to ~0. Raise "
-                "--pflash-keep-ratio / --pflash-min-keep-tokens or lower "
-                "--pflash-sink-tokens / --pflash-tail-tokens to retain body context.",
-                sink_end,
-                n_tokens - tail_start,
-                keep_budget,
-                n_tokens,
-                middle_span,
-            )
 
     kept = [tokens[i] for i in sorted(keep_positions)]
     if len(kept) >= n_tokens:
