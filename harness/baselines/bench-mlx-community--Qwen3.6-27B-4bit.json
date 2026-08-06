@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "captured_at": "2026-07-27T23:32:13Z",
+  "captured_at": "2026-08-06T05:13:56Z",
   "family": "qwen3.6",
-  "sample_runs": 2,
+  "sample_runs": 3,
   "regression_threshold_pct": {
     "cold_request_ms_median": 5,
     "warm_request_ms_median": 5
@@ -16,19 +16,19 @@
   "environment": {
     "hardware": {"chip": "Apple M3 Ultra", "memory_gb": 256},
     "software": {
-      "rapid_mlx_version": "0.11.0",
-      "rapid_mlx_commit": "6a445517007ffd14fcefdf58cbfca2008da1c5f0",
+      "rapid_mlx_version": "0.12.4",
+      "rapid_mlx_commit": "f2097169ce0fd294e96a889a9e31615b32141dd5",
       "python": "3.12.13",
       "macos": "26.5.2 (25F84)",
       "mlx": "0.31.2",
       "mlx_lm": "0.31.3",
-      "mlx_vlm": "0.6.3",
-      "mlx_audio": "0.4.3"
+      "mlx_vlm": "0.6.4",
+      "mlx_audio": "0.4.6"
     }
   },
   "metrics": {
-    "cold_request_ms_median": 544.592022895813,
-    "warm_request_ms_median": 822.5079774856567,
-    "speedup_x": 0.6621115391009199
+    "cold_request_ms_median": 378.0820369720459,
+    "warm_request_ms_median": 664.9401187896729,
+    "speedup_x": 0.5685956167906256
   }
 }
