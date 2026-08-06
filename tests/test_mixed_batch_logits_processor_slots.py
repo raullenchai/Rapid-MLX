@@ -34,11 +34,20 @@ import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
+# BEFORE importing mlx_lm.generate, not after. That module captures
+# ``mx.new_thread_local_stream(...)`` at import time, and ``install()`` is what
+# makes that call safe on single-stream GPUs (#404) — the ordering invariant
+# both ``_mlx_compat`` and ``scheduler`` document. Importing mlx-lm first here
+# would pin the unusable stream for the rest of the pytest process, so a later
+# scheduler import installs the shim too late and inference fails with
+# "There is no Stream(gpu, 1) in current thread".
+from vllm_mlx import _mlx_compat  # noqa: E402
+
+_mlx_compat.install()
+
 pytest.importorskip("mlx_lm.generate", reason="requires MLX")
 
 from mlx_lm.generate import PromptProcessingBatch  # noqa: E402
-
-from vllm_mlx import _mlx_compat  # noqa: E402
 
 
 def _noop_processor(token_context, logits):
