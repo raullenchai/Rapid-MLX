@@ -490,11 +490,19 @@ class NemotronToolParser(ToolParser):
         # silently dropped. _clean_trailing_content being non-None guarantees no
         # partial or complete tag can leak, so we never emit "<function=",
         # "</function>", or a fragment like "</fun" as user-visible content. We
-        # emit only delta_text (the new chars), never the whole tail, so
-        # already-streamed trailing content is not re-sent.
+        # Emit only the source range after the watermark, so already-streamed
+        # trailing content is not re-sent while previously withheld partial
+        # opener bytes can be recovered when they become ordinary prose.
         if self._clean_trailing_content(current_text) is not None:
-            # On the wire now, so a later refusal release must not repeat it.
+            # Release the whole unaccounted visible range, not only this delta.
+            # A prior suffix such as ``<fun`` may have been withheld while it
+            # could still become ``<function=``; once a later byte turns it
+            # into ordinary prose (``<funx``), those earlier bytes belong on
+            # the wire too.
+            content = self._visible_content_between(
+                current_text, self._content_upto, len(current_text), request
+            )
             self._content_upto = len(current_text)
-            return {"content": delta_text}
+            return {"content": content} if content else None
 
         return None

@@ -964,6 +964,25 @@ def test_plain_less_than_after_call_is_not_mistaken_for_partial_markup():
     assert (delta or {}).get("content") == " Result: 2 < 3"
 
 
+def test_disambiguated_partial_opener_releases_every_withheld_byte():
+    """A marker-like suffix that becomes prose must be released in full."""
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    valid = _render_xml_body(_NAME, _KEY, "ok")
+    parser.extract_tool_calls_streaming("", valid, valid, request=_REQUEST)
+
+    previous = valid
+    emitted = ""
+    for char in "<funx":
+        current = previous + char
+        delta = parser.extract_tool_calls_streaming(
+            previous, current, char, request=_REQUEST
+        )
+        previous = current
+        emitted += (delta or {}).get("content") or ""
+
+    assert emitted == "<funx"
+
+
 def test_gating_is_off_when_the_request_declares_no_tools():
     """A request with no tools keeps the position-only behaviour.
 
