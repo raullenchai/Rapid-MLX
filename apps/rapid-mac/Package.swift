@@ -60,6 +60,14 @@ let package = Package(
             name: "RapidTests",
             dependencies: ["Rapid"],
             path: "Tests/RapidTests"
+        ),
+        // Phase 1 model-readiness regression tests: the pure
+        // ``ModelReadiness`` state machine that gates Send and drives the
+        // readiness banner shared by Chat and Launch.
+        .testTarget(
+            name: "RapidUXTests",
+            dependencies: ["Rapid"],
+            path: "Tests/RapidUXTests"
         )
         // NOTE (2026-08-05): the RapidTests target is BACK in the manifest,
         // above. It had been excluded on the reasoning that the strip

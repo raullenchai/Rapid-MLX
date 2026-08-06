@@ -49,7 +49,10 @@ from ..api.models import (
     Usage,
 )
 from ..api.tool_calling import parse_tool_calls
-from ..api.utils import sanitize_output, strip_reasoning_channel_markup
+from ..api.utils import (
+    sanitize_reasoning_content,
+    strip_reasoning_channel_markup,
+)
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..tool_parsers import ToolParserManager
@@ -1200,7 +1203,10 @@ def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
     # regression this order closes.
     stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
     tail = stripped[-RESCUE_TAIL_LENGTH:]
-    sanitized = sanitize_output(tail)
+    # Reasoning-channel sanitizer, not the content one: this slice is a
+    # copy of the reasoning trace (see docstring above), so bare wire
+    # markers in it are parser artifacts rather than requested text.
+    sanitized = sanitize_reasoning_content(tail)
     if not sanitized:
         return REASONING_CUTOFF_SENTINEL
     return f"{REASONING_CUTOFF_SENTINEL}\n\n{sanitized}"

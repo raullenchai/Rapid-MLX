@@ -324,6 +324,21 @@ Open the picker any time to switch models.
     /// Back out of the chooser to the hero ("Back").
     func backToWelcome() { stage = .welcome }
 
+    /// Drop a serve that the pre-load memory guard declined back to the
+    /// model chooser (#1503). The handoff to ``ServerManager.start`` parks
+    /// on ``pendingMemoryWarning`` and returns WITHOUT changing
+    /// ``server.state``, so nothing ever moves ``phase`` out of
+    /// ``.starting`` on its own — the sheet would sit on "Starting…"
+    /// forever. When the user declines the risky load we return here:
+    /// NOT ``.failed`` (the download succeeded — only loading was refused),
+    /// and NOT ``.idle``/``.welcome`` (they already chose a model), but the
+    /// chooser, where they can free memory and retry, pick a smaller model,
+    /// or browse all. Leaving ``.starting`` is what releases the sheet.
+    func returnToChooser() {
+        phase = .idle
+        stage = .chooseModel
+    }
+
     /// Set the model the wizard will download. No-op once a download is
     /// in flight (``phase != .idle``) so a late tap can't retarget an
     /// active pull.
@@ -752,10 +767,30 @@ struct QuickstartView: View {
         case .downloading:
             centeredCard(progressStep: 2) { downloadingCard }
         case .starting, .ready:
-            // .ready is transitional — the parent swaps to ChatView, but
-            // a one-frame race can land here; the starting copy is a calm
-            // fallback so the user never sees a blank pane.
-            centeredCard(progressStep: 2) { startingCard }
+            // #1503: a serve handed off from Quickstart funnels through
+            // ServerManager's pre-load memory guard. On a Mac under heavy
+            // memory pressure the guard PARKS the load on
+            // ``server.pendingMemoryWarning`` and returns WITHOUT changing
+            // ``server.state``. The shared confirmation ``.alert`` is
+            // anchored on ContentView — BEHIND this full-window onboarding
+            // sheet — so it can never present: the sheet waits for a serve
+            // that will never arrive, and the guard waits for an answer the
+            // user can't reach. A hard deadlock the user sees as a permanent
+            // "Starting…". Surface the SAME decision inside the sheet, where
+            // it is reachable. (ContentView suppresses its covered alert for
+            // exactly this case via the same predicate.)
+            if let warning = QuickstartView.memoryWarningToPresent(
+                phase: coordinator.phase,
+                pending: server.pendingMemoryWarning,
+                selectionAlias: coordinator.selection.alias
+            ) {
+                centeredCard(progressStep: nil) { memoryWarningCard(warning) }
+            } else {
+                // .ready is transitional — the parent swaps to ChatView, but
+                // a one-frame race can land here; the starting copy is a calm
+                // fallback so the user never sees a blank pane.
+                centeredCard(progressStep: 2) { startingCard }
+            }
         case .failed(let message):
             centeredCard(progressStep: nil) { failedCard(message: message) }
         }
@@ -1027,6 +1062,88 @@ struct QuickstartView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
+    }
+
+    /// In-sheet twin of ContentView's memory-warning ``.alert`` (#1503).
+    /// That alert is unreachable while this full-window onboarding sheet is
+    /// up, so a Quickstart serve that trips the pre-load memory guard would
+    /// otherwise strand the user on a permanent "Starting…". Same copy, same
+    /// two ``ServerManager`` actions — presented where the user is looking.
+    ///
+    /// "Load anyway" carries no ``.defaultAction`` shortcut on purpose: the
+    /// risky choice must not be what Return triggers. Cancel owns
+    /// ``.cancelAction`` so Esc DECLINES the load (the safe default) rather
+    /// than dismissing the sheet out from under the decision.
+    @ViewBuilder
+    private func memoryWarningCard(_ warning: ModelSizing.MemoryWarning) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(RapidTheme.amberTint)
+                .frame(width: 60, height: 60)
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 28, weight: .regular))
+                .foregroundStyle(RapidTheme.amberDeep)
+        }
+        .accessibilityHidden(true)
+
+        VStack(spacing: 8) {
+            Text(warning.title)
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+            Text(warning.message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(warning.title). \(warning.message)")
+
+        Button {
+            // Re-enters ``start`` with the guard bypassed. We stay in
+            // ``.starting``; ``handleServerStateChange`` seeds the welcome
+            // and dismisses the sheet once the child reaches ``.ready``.
+            server.confirmPendingMemoryLoad(warning)
+        } label: {
+            Text(warning.confirmTitle)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .accessibilityIdentifier("Quickstart.Memory.LoadAnyway")
+
+        Button {
+            // Drop the parked load and leave ``.starting`` for the chooser
+            // so the sheet stops waiting on a serve that will never come.
+            server.cancelPendingMemoryLoad()
+            coordinator.returnToChooser()
+        } label: {
+            Text("Cancel")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .keyboardShortcut(.cancelAction)
+        .accessibilityIdentifier("Quickstart.Memory.Cancel")
+    }
+
+    /// Which memory warning, if any, the Quickstart sheet must present
+    /// itself rather than delegate to ContentView's covered ``.alert``
+    /// (#1503). Returns the pending warning ONLY while we are actively
+    /// driving a serve (``phase == .starting``) AND the parked load is for
+    /// OUR selection — a warning carrying a different alias belongs to some
+    /// other start path and is not ours to resolve inside onboarding. Pure
+    /// so the deadlock scenario can be pinned without a SwiftUI host, and so
+    /// ContentView can gate its alert on the exact same condition.
+    static func memoryWarningToPresent(
+        phase: QuickstartCoordinator.Phase,
+        pending: ModelSizing.MemoryWarning?,
+        selectionAlias: String
+    ) -> ModelSizing.MemoryWarning? {
+        guard case .starting = phase else { return nil }
+        guard let pending, pending.alias == selectionAlias else { return nil }
+        return pending
     }
 
     /// Low-disk warning card. Non-blocking — the user can still

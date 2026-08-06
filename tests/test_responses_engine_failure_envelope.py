@@ -29,6 +29,57 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+@pytest.mark.asyncio
+async def test_deepseek_codex_nonprogress_retry_is_internal(monkeypatch):
+    """A hidden-only first attempt must not leak a failed SSE lifecycle."""
+    import vllm_mlx.routes.responses as responses_route
+
+    calls: list[bool] = []
+    visible_heartbeat_state: dict[str, object] = {}
+
+    async def fake_stream(*args, nonprogress_retry=False, **kwargs):
+        calls.append(nonprogress_retry)
+        state = kwargs["heartbeat_state"]
+        if not nonprogress_retry:
+            state["response"] = {"id": "hidden-attempt"}
+            assert visible_heartbeat_state == {}
+            yield 'data: {"type":"response.created","attempt":1}\n\n'
+            yield (
+                'data: {"type":"response.failed","response":{"error":'
+                '{"code":"model_no_final_answer"}}}\n\n'
+            )
+        else:
+            state["response"] = {"id": "visible-attempt"}
+            yield 'data: {"type":"response.created","attempt":2}\n\n'
+            yield 'data: {"type":"response.completed","attempt":2}\n\n'
+
+    monkeypatch.setattr(responses_route, "_stream_responses", fake_stream)
+    monkeypatch.setattr(
+        responses_route,
+        "get_config",
+        lambda: SimpleNamespace(tool_call_parser="deepseek_v4_0731"),
+    )
+    request = SimpleNamespace(
+        tools=[
+            {"type": "function", "name": "exec_command"},
+            {"type": "function", "name": "write_stdin"},
+        ]
+    )
+
+    events = [
+        event
+        async for event in responses_route._stream_responses_with_nonprogress_retry(
+            object(), object(), request, heartbeat_state=visible_heartbeat_state
+        )
+    ]
+
+    assert calls == [False, True]
+    assert all('"attempt":1' not in event for event in events)
+    assert all('"type":"response.failed"' not in event for event in events)
+    assert any('"type":"response.completed"' in event for event in events)
+    assert visible_heartbeat_state["response"] == {"id": "visible-attempt"}
+
+
 class _Tokenizer:
     chat_template = ""
 
@@ -209,6 +260,48 @@ class _ReasoningThenWhitespaceStopEngine:
             finish_reason="stop",
             finished=True,
             channel="content",
+        )
+
+
+class _ContentThenReasoningThenToolEngine:
+    """DeepSeek agent shape: action prose precedes renewed reasoning + DSML."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="I'll patch it.",
+            raw_text="I'll patch it.",
+            new_text="I'll patch it.",
+            prompt_tokens=7,
+            completion_tokens=4,
+            finish_reason=None,
+            finished=False,
+            channel="content",
+        )
+        yield _GenerationOutput(
+            text="Need the smallest edit.",
+            raw_text="Need the smallest edit.",
+            new_text="Need the smallest edit.",
+            completion_tokens=9,
+            finish_reason=None,
+            finished=False,
+            channel="reasoning",
+        )
+        yield _GenerationOutput(
+            completion_tokens=12,
+            finish_reason="tool_calls",
+            finished=True,
+            tool_calls=[
+                {
+                    "id": "call_patch",
+                    "name": "exec_command",
+                    "arguments": '{"cmd":"apply_patch <<PATCH\\nPATCH"}',
+                }
+            ],
         )
 
 
@@ -560,6 +653,18 @@ def reasoning_only_stop_client(monkeypatch):
 @pytest.fixture
 def reasoning_then_whitespace_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _ReasoningThenWhitespaceStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def content_then_reasoning_then_tool_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ContentThenReasoningThenToolEngine)
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    cfg.model_name = "deepseek-v4-flash-0731"
+    cfg.tool_call_parser = "deepseek_v4_0731"
     yield holder
     holder.cleanup()
 
@@ -934,6 +1039,63 @@ class TestResponsesStreamFailureEnvelope:
         assert "response.completed" not in names, names
         failed = next(data for name, data in events if name == "response.failed")
         assert failed["response"]["error"]["code"] == "model_no_final_answer"
+
+    def test_deepseek_codex_buffers_content_across_renewed_reasoning(
+        self, content_then_reasoning_then_tool_client
+    ):
+        payload = {
+            **PAYLOAD,
+            "model": "deepseek-v4-flash-0731",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"cmd": {"type": "string"}},
+                        "required": ["cmd"],
+                    },
+                },
+                {
+                    "type": "function",
+                    "name": "write_stdin",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            ],
+        }
+        with content_then_reasoning_then_tool_client.client.stream(
+            "POST", "/v1/responses", json=payload, headers=HEADERS
+        ) as resp:
+            body = "".join(resp.iter_text())
+            assert resp.status_code == 200, body
+            events = _parse_sse(body)
+
+        names = [name for name, _ in events]
+        assert "response.failed" not in names, names
+        assert "response.completed" in names, names
+        reasoning_done = names.index("response.reasoning_summary_text.done")
+        message_added = next(
+            index
+            for index, (name, data) in enumerate(events)
+            if name == "response.output_item.added"
+            and data.get("item", {}).get("type") == "message"
+        )
+        function_call_added = next(
+            index
+            for index, (name, data) in enumerate(events)
+            if name == "response.output_item.added"
+            and data.get("item", {}).get("type") == "function_call"
+        )
+        assert reasoning_done < message_added
+        assert message_added < function_call_added
+        assert "response.function_call_arguments.delta" in names
+        text = "".join(
+            str(data.get("delta") or "")
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert "I'll patch it." in text
 
     def test_auto_tool_choice_allows_textual_action_language(
         self, tool_intent_only_stop_client

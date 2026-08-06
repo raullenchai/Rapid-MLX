@@ -41,6 +41,16 @@ struct ContentView: View {
     /// #223: launch-time auto-start "needs download" state — the empty
     /// state names the pending pull when non-nil.
     @State private var autoStartPendingDownload: (alias: String, sizeText: String?)?
+    /// Catalog snapshot, owned here rather than in ``ChatView`` so the
+    /// chat surface and the Launch page resolve readiness from the SAME
+    /// inputs. Two views calling the same pure function on different
+    /// catalogs would reintroduce exactly the drift ``ModelReadiness``
+    /// exists to remove. Empty until the first refresh lands.
+    @State private var catalogEntries: [ModelEntry] = []
+    /// False until the first catalog refresh completes. Distinguishes
+    /// "this alias is not downloaded" from "we don't know yet", which
+    /// are different sentences and different next steps.
+    @State private var catalogLoaded: Bool = false
     /// FU-1: persisted opt-out for the launch-time auto-start path.
     @AppStorage(AutoStartPreference.storageKey) private var autoStartOnLaunch: Bool = AutoStartPreference.defaultValue
 
@@ -197,7 +207,15 @@ struct ContentView: View {
         .alert(
             server.pendingMemoryWarning?.title ?? "",
             isPresented: Binding(
-                get: { server.pendingMemoryWarning != nil },
+                // #1503: when the Quickstart sheet is up it renders its OWN
+                // in-sheet copy of this decision (this alert is anchored on
+                // the parent, behind the full-window sheet, and cannot
+                // present over it). Suppress here so we don't double-present
+                // on macOS builds where an alert DOES stack above a sheet —
+                // gated on the exact predicate QuickstartView presents on.
+                get: {
+                    server.pendingMemoryWarning != nil && !memoryWarningHandledByQuickstart
+                },
                 // SwiftUI writes `false` here AFTER a button action runs.
                 // Both buttons already resolved the decision and cleared
                 // `pendingMemoryWarning`, so an unconditional cancel would
@@ -234,6 +252,143 @@ struct ContentView: View {
             quickstartSheet
         }
         .task { await runLaunchAutoStart() }
+        // Keyed exactly as the picker's own catalog task: re-fetch when
+        // the engine binary appears and whenever the set of models on
+        // disk changes anywhere in the app. Routed through the shared
+        // ``ModelCatalogCache`` so owning a second reader here costs no
+        // extra subprocess.
+        .task(id: ModelPickerBar.PickerCatalogKey(
+            binaryPath: server.binaryPath,
+            cacheGeneration: downloads.cacheGeneration
+        )) {
+            await refreshCatalogSnapshot()
+        }
+    }
+
+    // MARK: - Readiness (the one shared lifecycle value)
+
+    /// The window's single readiness value.
+    ///
+    /// Resolved once per render and handed to both the chat surface and
+    /// the Launch page, so "what state is the model in" has exactly one
+    /// answer at any instant. See ``ModelReadiness`` for the precedence
+    /// rules and the copy contract.
+    private var readiness: ModelReadiness {
+        ModelReadiness.resolve(
+            serverState: server.state,
+            alias: alias,
+            isAliasCached: cachedState(for: alias),
+            sizeText: sizeText(for: alias),
+            progress: progressSnapshot,
+            failure: chat.lastError.map {
+                ModelReadiness.Failure(
+                    message: $0,
+                    kind: chat.lastFailureKind,
+                    // The alias the failure is ABOUT — not the one
+                    // currently selected. Passing `alias` here is what
+                    // let a failure follow the user onto whatever model
+                    // they picked next.
+                    alias: chat.lastFailureAlias
+                )
+            }
+        )
+    }
+
+    /// Progress is only read while the server is actually starting.
+    ///
+    /// This is an observation-scope decision, not a cosmetic one.
+    /// ``DownloadProgress`` republishes every 500 ms, and reading it in
+    /// this view's body registers ``ContentView`` — and therefore the
+    /// whole split view — as an observer. Gating on ``.starting`` keeps
+    /// that half-second churn confined to the window where the banner
+    /// genuinely needs it, instead of paying it for the entire session.
+    private var progressSnapshot: ModelReadiness.ProgressSnapshot? {
+        guard case .starting = server.state else { return nil }
+        return ModelReadiness.ProgressSnapshot(
+            activity: server.downloadProgress.startupActivity,
+            subtitle: server.downloadProgress.progressSubtitle,
+            fraction: server.downloadProgress.progressFraction
+        )
+    }
+
+    /// `nil` while the catalog is still loading — see the ``resolve``
+    /// docs for why that resolves to "start" rather than "download".
+    private func cachedState(for alias: String) -> Bool? {
+        guard !alias.isEmpty else { return nil }
+        // #223's launch-time decision already established that this
+        // alias needs pulling, and it lands before the catalog snapshot
+        // does. Trusting it here means a cold first launch says
+        // "isn't downloaded yet" immediately instead of flashing
+        // "isn't running" for the second the catalog takes to load.
+        if let pending = autoStartPendingDownload, pending.alias == alias {
+            return false
+        }
+        guard catalogLoaded else { return nil }
+        guard let entry = catalogEntries.first(where: { $0.alias == alias }) else {
+            // A custom alias the user typed isn't in the catalog. We
+            // genuinely don't know whether it's on disk.
+            return nil
+        }
+        return entry.cached
+    }
+
+    /// Human download size for the readiness copy. Shares
+    /// ``QuickstartView``'s formatter so onboarding and the composer
+    /// quote the same number in the same units for the same model.
+    private func sizeText(for alias: String) -> String? {
+        guard !alias.isEmpty else { return nil }
+        // The launch-time auto-start decision already formatted one for
+        // the alias it picked; prefer it so the two paths can't disagree
+        // by a rounding step.
+        if let pending = autoStartPendingDownload,
+           pending.alias == alias,
+           let text = pending.sizeText {
+            return text
+        }
+        let text = QuickstartView.sizeText(for: alias)
+        return text.isEmpty ? nil : text
+    }
+
+    private func refreshCatalogSnapshot() async {
+        guard let binary = server.binaryPath else { return }
+        let loaded = await ModelCatalogCache.shared.entries(
+            binary: binary,
+            generation: downloads.cacheGeneration
+        )
+        guard !Task.isCancelled else { return }
+        catalogEntries = loaded
+        catalogLoaded = true
+    }
+
+    /// Perform the readiness banner's next-step action.
+    ///
+    /// Lives here rather than in ``ChatView`` because starting a model is
+    /// a window-level concern — the Launch page raises the same actions.
+    /// Start routes through ``ServerManager.start``, which is the one
+    /// choke point that applies the launch flags and the live
+    /// free-memory guard (#1435), so this path inherits the same OOM
+    /// protection the implicit send-start path already had.
+    private func performReadinessAction(_ action: ModelReadiness.Action) {
+        switch action {
+        case .chooseModel:
+            // The model picker in the composer owns this step; the
+            // banner names it but deliberately renders no second
+            // control. See ``ModelReadiness.Action.isRenderable``.
+            break
+        case .downloadAndStart(let target), .start(let target):
+            startModel(target)
+        case .retry(let target):
+            // Clear the failure first, or the banner would stay in its
+            // failed state until the next server transition lands and
+            // the user would read "Couldn't start X" while X is starting.
+            chat.clearStaleErrorBanner()
+            startModel(target)
+        }
+    }
+
+    private func startModel(_ target: String) {
+        let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
+        Task { await server.start(alias: target, hfPath: hfPath) }
     }
 
     // MARK: - Detail routing
@@ -246,7 +401,12 @@ struct ContentView: View {
         case .chat:
             mainArea
         case .launch:
-            LaunchView(server: server, alias: alias)
+            LaunchView(
+                server: server,
+                alias: alias,
+                readiness: readiness,
+                onReadinessAction: performReadinessAction
+            )
         }
     }
 
@@ -255,13 +415,13 @@ struct ContentView: View {
     @ViewBuilder
     private var mainArea: some View {
         switch ContentView.mainAreaBranch(for: server.state) {
-        case .chat(let serverReady):
+        case .chat:
             ChatView(
                 viewModel: chat,
                 server: server,
                 alias: $alias,
-                serverReady: serverReady,
-                autoStartPendingDownload: autoStartPendingDownload
+                readiness: readiness,
+                onReadinessAction: performReadinessAction
             )
         case .missing:
             missingOverlay
@@ -334,6 +494,21 @@ struct ContentView: View {
         case .idle, .ready:
             return false
         }
+    }
+
+    /// True when the Quickstart sheet is up AND owns the pending
+    /// memory-warning decision (#1503) — it renders its own in-sheet copy,
+    /// so this parent-anchored (and sheet-covered) alert must stand down to
+    /// avoid a double presentation. Keyed on the exact predicate
+    /// ``QuickstartView`` presents on, so the two surfaces can never
+    /// disagree about who owns the decision.
+    private var memoryWarningHandledByQuickstart: Bool {
+        quickstartVisible
+            && QuickstartView.memoryWarningToPresent(
+                phase: quickstart.phase,
+                pending: server.pendingMemoryWarning,
+                selectionAlias: quickstart.selection.alias
+            ) != nil
     }
 
     /// Alias the server is actively serving, or ``nil`` if no live state.
@@ -589,21 +764,24 @@ struct ContentView: View {
         }
     }
 
+    /// Which surface the detail pane shows.
+    ///
+    /// The branch used to carry a ``serverReady`` payload that
+    /// ``ChatView`` accepted and never read — readiness was decided
+    /// three other ways inside the view. ``ModelReadiness`` now owns
+    /// that question in one place, so the branch is back to the single
+    /// thing it actually decides: chat surface, or install overlay.
     enum MainAreaBranch: Equatable {
-        case chat(serverReady: Bool)
+        case chat
         case missing
     }
 
     static func mainAreaBranch(for state: ServerState) -> MainAreaBranch {
         switch state {
-        case .ready:
-            return .chat(serverReady: true)
-        case .starting:
-            return .chat(serverReady: false)
         case .missing:
             return .missing
-        case .idle, .stopped, .crashed:
-            return .chat(serverReady: false)
+        case .ready, .starting, .idle, .stopped, .crashed:
+            return .chat
         }
     }
 }

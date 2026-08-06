@@ -1989,12 +1989,22 @@ class AssistantMessage(BaseModel):
     # sanitized fields. New call sites cannot reopen the leak by
     # forgetting to sanitize — the contract is enforced at the type
     # boundary.
+    # Channel-aware. This validator is the NON-STREAMING twin of the one
+    # on ``ChatCompletionChunkDelta``; both must dispatch on the field,
+    # because the reasoning sanitizer additionally strips the
+    # ``</tool_call>`` closer. Routing ``content`` through it deleted
+    # that token out of ordinary assistant prose on every surface that
+    # builds an ``AssistantMessage`` — chat completions, the Anthropic
+    # adapter and the Responses adapter alike, which is exactly why the
+    # bug reproduced identically against real Claude Code and real Codex.
     @field_validator("content", "reasoning_content", mode="after")
     @classmethod
-    def _sanitize_user_visible_strings(cls, v: str | None) -> str | None:
-        from .utils import sanitize_reasoning_content
+    def _sanitize_user_visible_strings(cls, v: str | None, info) -> str | None:
+        from .utils import sanitize_output, sanitize_reasoning_content
 
-        return sanitize_reasoning_content(v)
+        if info.field_name == "reasoning_content":
+            return sanitize_reasoning_content(v)
+        return sanitize_output(v) if v is not None else None
 
     @model_serializer(mode="wrap")
     def _serialize_assistant_message(self, handler):
@@ -3046,14 +3056,24 @@ class ChatCompletionChunkDelta(BaseModel):
     # ``sanitize_reasoning_content`` (which calls ``.strip()``) so the
     # logprobs streaming path produces the same on-wire bytes as the
     # non-logprobs ``_fast_sse_chunk`` path.
+    # Channel-aware: ``content`` may legitimately contain the literal
+    # ``</tool_call>`` token (a coding agent writing docs about the tool
+    # protocol), ``reasoning_content`` never does — a bare marker there
+    # is parser residue. Dispatch on ``info.field_name`` so the two
+    # fields get their own alternation.
     @field_validator("content", "reasoning_content", mode="after")
     @classmethod
-    def _sanitize_user_visible_strings(cls, v: str | None) -> str | None:
-        from .utils import sanitize_reasoning_for_stream
+    def _sanitize_user_visible_strings(cls, v: str | None, info) -> str | None:
+        from .utils import sanitize_content_for_stream, sanitize_reasoning_for_stream
 
         if v is None:
             return None
-        sanitized = sanitize_reasoning_for_stream(v)
+        sanitizer = (
+            sanitize_reasoning_for_stream
+            if info.field_name == "reasoning_content"
+            else sanitize_content_for_stream
+        )
+        sanitized = sanitizer(v)
         # Mirror the field's nullable contract: an empty post-sanitization
         # result collapses to ``None`` so ``exclude_none`` drops the
         # field cleanly on the wire when the delta was entirely markup.

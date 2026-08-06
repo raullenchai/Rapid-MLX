@@ -161,7 +161,20 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
     # folded into the leading system message instead of tripping the
     # template. Mirrors the Codex-side fix covered by
     # ``test_responses_adapter::test_multiple_systems_merge_to_single_at_index_0``.
-    messages = _merge_system_messages(messages)
+    #
+    # ``relocate_mid_conversation=True`` is set on THIS lane only. A
+    # mid-conversation ``role: "system"`` message in the Anthropic API is
+    # an ephemeral reminder by design — Claude Code uses it for the
+    # task-tool nudge, the date-change notice and plan-mode transitions —
+    # so keeping it at its true position (and out of the leading block)
+    # is both faithful and what preserves the prefix cache.
+    #
+    # The Responses lane deliberately does NOT opt in: Codex sends
+    # ``developer`` items as DURABLE instructions, and folding those into
+    # a user turn would demote them from template-enforced system
+    # authority to ordinary user text that a later user message could
+    # override (codex r1 MAJOR).
+    messages = _merge_system_messages(messages, relocate_mid_conversation=True)
 
     # Convert tools
     tools = None

@@ -549,8 +549,39 @@ def responses_to_openai(
     )
 
 
-def _merge_system_messages(messages: list[Message]) -> list[Message]:
+def _to_text(value):
+    """Coerce a ``Message.content`` of any supported shape to plain text.
+
+    Defensive coercion: today every system message reaches the callers
+    with string content (``_message_item_to_chat`` joins structured
+    content parts), but a future path or a hand-crafted
+    ``ChatCompletionRequest`` mutation could leave a list / dict there,
+    and ``"\\n\\n".join([list, list])`` would raise ``TypeError``.
+    """
+    if isinstance(value, str):
+        return value
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(exclude_none=True)
+    if isinstance(value, dict):
+        return value.get("text") or ""
+    if isinstance(value, list):
+        return "\n".join(_to_text(v) for v in value)
+    return ""
+
+
+def _merge_system_messages(
+    messages: list[Message], *, relocate_mid_conversation: bool = False
+) -> list[Message]:
     """Collapse all system messages into one at index 0.
+
+    ``relocate_mid_conversation`` opts into keeping MID-CONVERSATION
+    system messages at their original position (folded into the next
+    user turn) instead of hoisting them, which is what preserves the
+    prefix cache. It is OFF by default and enabled only on the Anthropic
+    lane. See :func:`_relocate_mid_conversation_systems` for why the two
+    lanes differ: Codex sends ``developer`` items as durable instructions
+    that must keep system authority, while Anthropic's mid-conversation
+    system messages are ephemeral reminders by design.
 
     Codex 0.136.0 sends BOTH ``instructions`` (the big system prompt)
     AND ``developer``-role items interleaved with user turns. After role
@@ -569,17 +600,6 @@ def _merge_system_messages(messages: list[Message]) -> list[Message]:
     found`` mid-conversion.
     """
 
-    def _to_text(value):
-        if isinstance(value, str):
-            return value
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(exclude_none=True)
-        if isinstance(value, dict):
-            return value.get("text") or ""
-        if isinstance(value, list):
-            return "\n".join(_to_text(v) for v in value)
-        return ""
-
     # Branch on role presence, not on whether the merged text is truthy.
     # An empty / unsupported-shape `developer` item still appears as a
     # system-role message after `_message_item_to_chat`, so leaving the
@@ -589,6 +609,18 @@ def _merge_system_messages(messages: list[Message]) -> list[Message]:
     has_system = any(m.role == "system" for m in messages)
     if not has_system:
         return messages
+
+    # Index of the first non-system message. Everything at or before it is
+    # "leading" and keeps the historical treatment; anything after it is a
+    # MID-CONVERSATION system message and is handled below.
+    first_body = next(
+        (i for i, m in enumerate(messages) if m.role != "system"), len(messages)
+    )
+    only_leading = not any(m.role == "system" for m in messages[first_body:])
+
+    if relocate_mid_conversation and not only_leading:
+        messages = _relocate_mid_conversation_systems(messages, first_body)
+
     system_texts = [
         t for t in (_to_text(m.content) for m in messages if m.role == "system") if t
     ]
@@ -600,6 +632,115 @@ def _merge_system_messages(messages: list[Message]) -> list[Message]:
         return non_system
     merged = Message(role="system", content="\n\n".join(system_texts))
     return [merged] + non_system
+
+
+#: Wrapper for a relocated mid-conversation system message. Claude Code uses
+#: this exact tag for the reminders it injects into user turns upstream, so
+#: models already read it as "an instruction, not something the human typed".
+_MID_SYSTEM_OPEN = "<system-reminder>"
+_MID_SYSTEM_CLOSE = "</system-reminder>"
+
+
+def _relocate_mid_conversation_systems(
+    messages: list[Message], first_body: int
+) -> list[Message]:
+    """Fold mid-conversation system messages into the NEXT user turn.
+
+    Hoisting them into the leading system block (the historical
+    behaviour) destroys the prefix cache. Measured on qwen3.6-35b, three
+    renderings differing only in WHERE one nudge sits::
+
+        A  no nudge                  input_tokens = 775
+        B  nudge mid-array           input_tokens = 803
+        C  nudge appended to system  input_tokens = 803   <- B == C
+
+    B and C render identically, i.e. the mid-array message really was
+    hoisted to the front. The front of the prompt therefore GROWS every
+    time one arrives and everything behind it shifts, so the cache is
+    invalidated at the system/first-user boundary. Measured cost: a warm
+    prefix of 760 reused tokens dropped to 0 after a single injected
+    system message, and stayed at 0 for every subsequent turn.
+
+    This is not a rare shape. Claude Code injects a ``role: "system"``
+    message into ``messages`` routinely — the "task tools haven't been
+    used recently" nudge, the "date has changed" notice, and entering or
+    leaving plan mode — always at the END of the array, right before the
+    new user turn. Every one of those was a full re-prefill.
+
+    Folding into the FOLLOWING user turn keeps the text at its true
+    position, so everything before it is byte-identical to the previous
+    request and stays cached. The trailing user turn is new on this
+    request anyway, so nothing that was cacheable is disturbed.
+
+    ALL-OR-NOTHING (codex r1 BLOCKING). If ANY mid-conversation system
+    message has no following user turn to fold into, this returns
+    ``messages`` untouched so the caller hoists every one of them, the
+    historical way. Mixing the two strategies in one request inverts
+    instruction order::
+
+        system: base
+        user:   ...
+        system: enter plan mode      -> folded into the next user turn
+        user:   plan this
+        system: exit plan mode       -> no following user turn, hoisted
+
+    The hoisted "exit plan mode" would land at the FRONT, ahead of the
+    folded "enter plan mode" that came before it — the newest
+    instruction rendered as the oldest, so the model could stay in plan
+    mode after being told to leave. Losing the cache benefit on that
+    request is the cheaper failure.
+
+    CONTENT SHAPE IS PRESERVED (codex r1 BLOCKING). The target user
+    message is rebuilt with ``model_copy`` and, when its content is a
+    list of blocks, the reminder is inserted as a leading text part
+    rather than flattening the list — otherwise an ``input_image`` /
+    video / audio block on that turn would be silently dropped and an
+    MLLM would answer without the image it was given.
+    """
+    # Refuse to mix relocation and hoisting — see ALL-OR-NOTHING above.
+    tail = messages[first_body:]
+    for i, msg in enumerate(tail):
+        if msg.role != "system":
+            continue
+        if not any(m.role == "user" for m in tail[i + 1 :]):
+            return messages
+
+    out: list[Message] = list(messages[:first_body])
+    pending: list[str] = []
+
+    for msg in tail:
+        if msg.role == "system":
+            text = _to_text(msg.content)
+            if text:
+                pending.append(text)
+            continue
+        if pending and msg.role == "user":
+            reminder = "\n".join(
+                f"{_MID_SYSTEM_OPEN}\n{t}\n{_MID_SYSTEM_CLOSE}" for t in pending
+            )
+            out.append(_prepend_text_to_message(msg, reminder))
+            pending = []
+            continue
+        out.append(msg)
+
+    return out
+
+
+def _prepend_text_to_message(msg: Message, prefix: str) -> Message:
+    """Return a copy of ``msg`` with ``prefix`` inserted before its content.
+
+    Preserves the content SHAPE: a string stays a string, a list of
+    content blocks stays a list with one extra text block at the front,
+    and every other field on the message is carried over via
+    ``model_copy`` rather than reconstructed.
+    """
+    content = msg.content
+    if isinstance(content, list):
+        return msg.model_copy(
+            update={"content": [{"type": "text", "text": prefix}, *content]}
+        )
+    body = _to_text(content)
+    return msg.model_copy(update={"content": f"{prefix}\n\n{body}" if body else prefix})
 
 
 def openai_to_responses(

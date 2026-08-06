@@ -276,9 +276,28 @@ class TestAssistantMessageSanitizes:
     def test_content_special_token_is_stripped_on_construction(self, marker):
         """Parity: content side is sanitized identically (defense in
         depth — the chat route already sanitized content explicitly
-        but other call sites must get the same guarantee)."""
+        but other call sites must get the same guarantee).
+
+        ``</tool_call>`` is excluded: it is the one marker in this list a
+        caller can legitimately ask for on the CONTENT channel, and this
+        validator routing content through the reasoning sanitizer is what
+        deleted it out of files coding agents were told to write. See
+        ``test_tool_call_closer_content_integrity.py``.
+        """
+        if marker == "</tool_call>":
+            pytest.skip("content channel keeps this token — see the test below")
         msg = AssistantMessage(content=marker, reasoning_content=None)
         assert msg.content is None
+
+    def test_content_keeps_tool_call_closer_on_construction(self):
+        """The CONTENT half of the channel split, pinned here too."""
+        msg = AssistantMessage(content="</tool_call>", reasoning_content=None)
+        assert msg.content == "</tool_call>"
+
+    def test_reasoning_content_still_strips_tool_call_closer(self):
+        """...and the REASONING half is unchanged."""
+        msg = AssistantMessage(content="ok", reasoning_content="</tool_call>")
+        assert msg.reasoning_content is None
 
     @pytest.mark.parametrize("marker", _LEAK_MARKERS)
     def test_reasoning_content_mixed_text_only_strips_markers(self, marker):
@@ -322,8 +341,49 @@ class TestChunkDeltaSanitizes:
 
     @pytest.mark.parametrize("marker", _LEAK_MARKERS)
     def test_content_delta_special_token_is_stripped(self, marker):
+        if marker == "</tool_call>":
+            pytest.skip("content channel keeps this token — see the test below")
         delta = ChatCompletionChunkDelta(content=marker)
         assert delta.content is None
+
+    def test_content_delta_keeps_tool_call_closer(self):
+        """``</tool_call>`` is legitimate text on the CONTENT channel.
+
+        The chat-template special tokens in ``_LEAK_MARKERS`` can never be
+        something a caller asked for — they are decode artifacts. The
+        ``</tool_call>`` closer is different: ask any coding agent to write
+        documentation about the tool-calling protocol and that exact token
+        is the payload.
+
+        Stripping it here corrupted real work. Reproduced end-to-end against
+        real Claude Code (``/v1/messages``) and real Codex
+        (``/v1/responses``): both were asked to write a file containing
+
+            A tool call block ends with </tool_call> on its own.
+
+        and both wrote ``"A tool call block ends with  on its own."`` to
+        disk — token excised, double space left behind. Both then spent
+        turns trying to work around output they could not explain.
+
+        Structural wire residue is the payload-aware route-level scrubber's
+        job (``_scrub_visible_tool_wire_leaks``); it is not something a
+        blanket per-delta regex can decide, because a single delta carries
+        no payload context.
+        """
+        delta = ChatCompletionChunkDelta(content="</tool_call>")
+        assert delta.content == "</tool_call>"
+
+        prose = "A tool call block ends with </tool_call> on its own."
+        assert ChatCompletionChunkDelta(content=prose).content == prose
+
+    def test_reasoning_delta_still_strips_tool_call_closer(self):
+        """The same token on the REASONING channel stays stripped.
+
+        Inside a reasoning trace a bare wire marker is parser residue, never
+        requested text — the same split already drawn for ``<think>``.
+        """
+        delta = ChatCompletionChunkDelta(reasoning_content="</tool_call>")
+        assert delta.reasoning_content is None
 
     def test_plain_reasoning_delta_is_untouched(self):
         delta = ChatCompletionChunkDelta(reasoning_content="next step:")
@@ -686,6 +746,33 @@ def test_chat_route_streaming_required_reasoning_is_sanitized():
             f"R12-MED-2 streaming leak: {leak!r} survived in "
             f"aggregated reasoning_content: {aggregated_reasoning!r}"
         )
+        if leak == "</tool_call>":
+            # KNOWN PRE-EXISTING LEAK — tracked in #1508, NOT weakened here.
+            #
+            # This path really does put the model's raw tool wire on the
+            # content channel. It always did: replaying this same input
+            # through the pre-fix global sanitizer yields
+            #     <tool_call>{"name":"get_weather","arguments":{...}}
+            # i.e. the opener AND the whole JSON payload stayed visible to
+            # the user. The assertion passed only because the blanket
+            # ``</tool_call>`` strip removed the trailing 13 bytes — a
+            # cosmetic strip that never prevented the leak it appeared to
+            # guard.
+            #
+            # That blanket strip was also deleting the token out of
+            # ordinary assistant prose on every surface, so it is gone.
+            # Fixing the underlying structural leak needs a
+            # streaming-aware version of ``_scrub_visible_tool_wire_leaks``
+            # (it is payload-aware and needs the whole span) — #1508.
+            #
+            # Pin the leak explicitly so it stays visible instead of
+            # silently reappearing as a green test.
+            assert "<tool_call>" in aggregated_content, (
+                "#1508 appears fixed — the forced/required streaming path no "
+                "longer leaks tool wire into content. Delete this branch and "
+                "restore the strict assertion below."
+            )
+            continue
         assert leak not in aggregated_content, (
             f"R12-MED-2 streaming leak: {leak!r} survived in "
             f"aggregated content: {aggregated_content!r}"

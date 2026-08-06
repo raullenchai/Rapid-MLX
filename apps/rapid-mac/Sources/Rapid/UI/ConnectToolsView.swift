@@ -23,6 +23,19 @@ struct ConnectToolsView: View {
     /// sheet to dismiss — showing a dead ✕ that does nothing was a real
     /// papercut. The sidebar owns navigation, so it passes false.
     var showsCloseButton: Bool = true
+    /// The window's shared readiness value, when the caller has one.
+    ///
+    /// Before this, the page derived readiness twice and locally, and
+    /// rendered BOTH results at once: a header line saying "start a
+    /// chat to generate the key" and a body notice saying "Start a
+    /// model to generate your local endpoint and key". Two verbs, two
+    /// placements, one condition — and neither offered a way to do the
+    /// thing it asked for. Supplying ``readiness`` replaces both with
+    /// the same banner (and the same next-step action) the composer
+    /// shows. ``nil`` keeps the legacy local sentence for the dev
+    /// snapshot harness, which has no live server to resolve against.
+    var readiness: ModelReadiness? = nil
+    var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
 
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
     private var anthropicBaseURL: String { "http://\(host):\(port)" }
@@ -112,7 +125,19 @@ struct ConnectToolsView: View {
             // always reachable (see ChatView's empty-state CTA), so
             // this is the surface that has to explain the "not yet"
             // case instead of the button hiding it.
-            if !configReady {
+            //
+            // One notice, never two. When the window supplies a shared
+            // readiness value it wins outright — it is the same object
+            // the composer renders, so the two surfaces cannot disagree,
+            // and unlike the old local sentence it carries the action
+            // that resolves the problem.
+            if let readiness, !readiness.isReady {
+                ReadinessBanner(readiness: readiness, onAction: onReadinessAction)
+            } else if !configReady {
+                // Either no readiness was supplied (dev snapshot), or the
+                // model is up but a value is still missing — a narrow
+                // case, but silence there would leave a half-filled
+                // config looking complete.
                 InlineNotice(message: readinessMessage, tone: .info)
             }
             endpointSection
@@ -131,19 +156,14 @@ struct ConnectToolsView: View {
                     subtitle: "Connect tools that support a local base URL. It's free and stays on your Mac.",
                     emphasis: .page
                 )
-                // #1470 fix: the key only exists while the server is running and
-                // is regenerated on every start. Without this hint the cards
-                // render `API key:` followed by nothing — a config that looks
-                // complete, copies clean, and fails at the far end with a 401.
-                if bearer.isEmpty {
-                    Label(
-                        "Server not running — start a chat to generate the key.",
-                        systemImage: "exclamationmark.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .padding(.top, 4)
-                }
+                // The #1470 "start a chat to generate the key" hint used
+                // to live here, duplicating the body's readiness notice
+                // with a different verb. The fact it carried — the key
+                // only exists while the server runs — is preserved by
+                // the API key row's own placeholder ("Created when the
+                // server starts") and, when the caller supplies one, by
+                // the readiness banner below, which also says how to
+                // fix it. One statement, in one place, with an action.
             }
             Spacer()
             if showsCloseButton {

@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -113,6 +114,8 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_NONPROGRESS_RETRY_BUFFER_LIMIT = 4 * 1024 * 1024
 
 
 def _should_prime_deepseek_codex_exec(
@@ -232,7 +235,7 @@ def _inject_codex_progress_reminder(
             call_id = str(data.get("call_id") or "")
             calls[call_id] = arguments
             call_names[call_id] = str(data.get("name") or "")
-            if "apply_patch" in arguments:
+            if _codex_call_performs_edit(call_names[call_id], arguments):
                 has_edited = True
                 has_test_passed = False
                 has_test_failed = False
@@ -252,6 +255,15 @@ def _inject_codex_progress_reminder(
             "and choose a materially different evidence-gathering, editing, or testing "
             "action. Preserve any user-specified interpreter and toolchain."
         )
+    elif not has_edited and len(actions) >= 8:
+        reminder = (
+            "Engineering exploration checkpoint: at least eight read-only tool "
+            "results are already available and no edit has been made. Before another "
+            "broad read, identify the one concrete unresolved question that blocks a "
+            "safe change and inspect only the evidence needed to answer it. If no "
+            "such question remains, move to the smallest grounded failing test or "
+            "implementation change. Do not edit while a material ambiguity remains."
+        )
     else:
         return messages
     return [
@@ -266,6 +278,86 @@ def _inject_codex_progress_reminder(
             "_rapid_mlx_transient_priming": True,
         },
     ]
+
+
+def _codex_call_performs_edit(name: str, arguments: str) -> bool:
+    """Recognize common coding-agent writes without matching search literals."""
+    if name == "apply_patch":
+        return True
+    command = arguments
+    argument_field = "chars" if name == "write_stdin" else "cmd"
+    try:
+        decoded = json.loads(arguments)
+        if isinstance(decoded, dict) and isinstance(decoded.get(argument_field), str):
+            command = decoded[argument_field]
+    except (TypeError, ValueError):
+        # Some model-emitted argument objects escape apostrophes as ``\'``,
+        # which is harmless to the shell command but invalid JSON.
+        match = re.search(rf'"{argument_field}"\s*:\s*"((?:\\.|[^"\\])*)"', arguments)
+        if match:
+            command = match.group(1).replace(r"\'", "'").replace(r"\"", '"')
+
+    # Output sinks do not modify the project and should not suppress the
+    # exploration checkpoint.
+    command = re.sub(r"(?:>>|>)\s*/dev/null\b", "", command)
+    command = re.sub(r"\btee(?:\s+-\S+)*\s+/dev/null\b", "", command)
+
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|&;<>")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        tokens = []
+    for index, token in enumerate(tokens):
+        if token in {">", ">>"}:
+            target = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if target and target != "/dev/null":
+                return True
+    mutating_commands = {
+        "apply_patch",
+        "cp",
+        "install",
+        "ln",
+        "mkdir",
+        "mv",
+        "rm",
+        "rmdir",
+        "touch",
+        "truncate",
+    }
+    command_words = [
+        token
+        for index, token in enumerate(tokens)
+        if index == 0 or tokens[index - 1] in {";", "&&", "||", "|"}
+    ]
+    if any(word.rsplit("/", 1)[-1] in mutating_commands for word in command_words):
+        return True
+    for index, token in enumerate(tokens):
+        if token.rsplit("/", 1)[-1] != "tee":
+            continue
+        destinations = [
+            value
+            for value in tokens[index + 1 :]
+            if value not in {";", "&&", "||", "|"} and not value.startswith("-")
+        ]
+        if any(value != "/dev/null" for value in destinations):
+            return True
+    if re.search(
+        r"(?:^|[\n;&|])\s*sed\s+(?:-[A-Za-z]*i[A-Za-z]*|--in-place)\b", command
+    ):
+        return True
+    if name != "write_stdin" and not re.search(
+        r"(?:^|[\s/])python(?:\d+(?:\.\d+)?)?\b", command
+    ):
+        return False
+    return bool(
+        re.search(r"\.(?:write_text|write_bytes)\s*\(", command)
+        or re.search(
+            r"\bopen\s*\([^,\n]+,\s*(['\"])[^'\"]*[wax+][^'\"]*\1",
+            command,
+        )
+    )
 
 
 def _codex_action_command_prefix(responses_request: ResponsesRequest) -> str | None:
@@ -1277,7 +1369,7 @@ async def create_response(request: Request):
             _resp_heartbeat_state: dict[str, object] = {}
             return StreamingResponse(
                 _disconnect_guard(
-                    _stream_responses(
+                    _stream_responses_with_nonprogress_retry(
                         engine,
                         openai_request,
                         responses_request,
@@ -2266,6 +2358,155 @@ async def _emit_computer_call_item(tc, output_index: int) -> AsyncIterator[str]:
     )
 
 
+async def _stream_responses_with_nonprogress_retry(
+    engine: BaseEngine,
+    openai_request: ChatCompletionRequest,
+    responses_request: ResponsesRequest,
+    *,
+    explicit_no_thinking: bool = False,
+    request_id_holder: list | None = None,
+    heartbeat_state: dict[str, object] | None = None,
+) -> AsyncIterator[str]:
+    """Hide one DeepSeek reasoning-only stop behind a bounded retry.
+
+    Codex otherwise reconnects the whole Responses turn when the model ends
+    after hidden reasoning.  Buffer only this model/surface combination so a
+    failed attempt has not committed an SSE lifecycle, then retry once with a
+    transient completion reminder.  Successful turns and every other surface
+    retain their existing streaming behaviour.
+    """
+    cfg = get_config()
+    retryable_surface = _is_deepseek_codex_surface(
+        responses_request, cfg.tool_call_parser
+    )
+    if not retryable_surface:
+        async for event in _stream_responses(
+            engine,
+            openai_request,
+            responses_request,
+            explicit_no_thinking=explicit_no_thinking,
+            request_id_holder=request_id_holder,
+            heartbeat_state=heartbeat_state,
+        ):
+            yield event
+        return
+
+    # Transport liveness and cancellation remain owned by the outer
+    # ``_disconnect_guard`` in ``create_response``. While lifecycle events are
+    # held here, that guard keeps polling disconnects and emits parsed
+    # Responses heartbeats at the configured interval. Keep the attempt's
+    # lifecycle private until it commits so a heartbeat cannot expose an ID
+    # that will be discarded by the transparent retry.
+    attempt_heartbeat_state: dict[str, object] = {}
+    buffered: list[str] = []
+    buffered_bytes = 0
+    committed = False
+    retry_nonprogress = False
+    async for event in _stream_responses(
+        engine,
+        openai_request,
+        responses_request,
+        explicit_no_thinking=explicit_no_thinking,
+        request_id_holder=request_id_holder,
+        heartbeat_state=attempt_heartbeat_state,
+    ):
+        if committed:
+            if heartbeat_state is not None:
+                heartbeat_state.clear()
+                heartbeat_state.update(attempt_heartbeat_state)
+            yield event
+            continue
+        event_bytes = len(event.encode("utf-8"))
+        event_buffered = False
+        if buffered_bytes + event_bytes >= _NONPROGRESS_RETRY_BUFFER_LIMIT:
+            committed = True
+        else:
+            buffered.append(event)
+            buffered_bytes += event_bytes
+            event_buffered = True
+        if _responses_event_commits_progress(event):
+            committed = True
+        elif committed:
+            logger.warning(
+                "DeepSeek Codex retry buffer reached %d bytes; preserving streaming "
+                "and disabling the transparent retry for this turn",
+                buffered_bytes + event_bytes,
+            )
+        if committed:
+            if heartbeat_state is not None:
+                heartbeat_state.clear()
+                heartbeat_state.update(attempt_heartbeat_state)
+            for pending in buffered:
+                yield pending
+            buffered.clear()
+            if not event_buffered:
+                yield event
+        elif _responses_event_is_nonprogress_failure(event):
+            retry_nonprogress = True
+
+    if committed:
+        return
+    if not retry_nonprogress:
+        if heartbeat_state is not None:
+            heartbeat_state.clear()
+            heartbeat_state.update(attempt_heartbeat_state)
+        for event in buffered:
+            yield event
+        return
+
+    logger.warning(
+        "DeepSeek Codex reasoning-only stop: retrying once inside the server"
+    )
+    if request_id_holder is not None:
+        request_id_holder[0] = None
+    async for event in _stream_responses(
+        engine,
+        openai_request,
+        responses_request,
+        explicit_no_thinking=explicit_no_thinking,
+        request_id_holder=request_id_holder,
+        heartbeat_state=heartbeat_state,
+        nonprogress_retry=True,
+    ):
+        yield event
+
+
+def _responses_event_commits_progress(event: str) -> bool:
+    """Return whether an SSE event proves this attempt has public progress."""
+    for line in event.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            data = json.loads(line[6:])
+        except (TypeError, ValueError):
+            continue
+        event_type = data.get("type")
+        if event_type == "response.output_text.delta":
+            return bool(str(data.get("delta") or "").strip())
+        if event_type == "response.output_item.added":
+            item_type = data.get("item", {}).get("type")
+            if item_type in {"function_call", "computer_call"}:
+                return True
+    return False
+
+
+def _responses_event_is_nonprogress_failure(event: str) -> bool:
+    """Match only the terminal failure envelope, never model-authored text."""
+    for line in event.splitlines():
+        if not line.startswith("data: "):
+            continue
+        try:
+            data = json.loads(line[6:])
+        except (TypeError, ValueError):
+            continue
+        return bool(
+            data.get("type") == "response.failed"
+            and data.get("response", {}).get("error", {}).get("code")
+            == "model_no_final_answer"
+        )
+    return False
+
+
 async def _stream_responses(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
@@ -2274,6 +2515,7 @@ async def _stream_responses(
     explicit_no_thinking: bool = False,
     request_id_holder: list | None = None,
     heartbeat_state: dict[str, object] | None = None,
+    nonprogress_retry: bool = False,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -2373,6 +2615,19 @@ async def _stream_responses(
         )
         if codex_surface:
             messages = _inject_codex_progress_reminder(messages, responses_request)
+            if nonprogress_retry:
+                messages = [
+                    *messages,
+                    {
+                        "role": "developer",
+                        "content": (
+                            "The previous generation stopped inside private reasoning. "
+                            "Complete this turn now with exactly one public answer or "
+                            "one valid tool call; do not end in reasoning alone."
+                        ),
+                        "_rapid_mlx_transient_priming": True,
+                    },
+                ]
 
         # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection on
         # the streaming responses lane. Same gate as the non-stream
@@ -2400,6 +2655,7 @@ async def _stream_responses(
                 openai_request, responses_request, cfg.tool_call_parser
             ),
         }
+        forced_prefix = None
         if openai_request.tools:
             chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
             from .chat import _compute_forced_tool_prefix
@@ -2486,7 +2742,33 @@ async def _stream_responses(
                 )
             )
         )
+        # DeepSeek-V4 can briefly leave reasoning to announce an action, then
+        # re-enter reasoning before emitting the actual DSML tool call. Once a
+        # Responses message item is opened, that channel transition is
+        # irreversible and Codex rejects the later reasoning item. Buffer
+        # public text for DeepSeek Codex tool turns until generation finishes,
+        # when the complete reasoning/message/tool ordering is known. Ordinary
+        # chat streams and other models retain token-by-token text delivery.
+        _deepseek_defer_public_text = bool(
+            codex_surface
+            and openai_request.tools
+            and openai_request.tool_choice != "none"
+            and cfg.tool_call_parser == "deepseek_v4_0731"
+        )
+        _defer_public_text = _forced_choice_active or _deepseek_defer_public_text
+        # This buffer is bounded by the request's already-resolved scheduler
+        # ``max_tokens`` budget (32K by default for Codex), not by wall time or
+        # context length. Keeping it in memory avoids blocking file I/O and
+        # cancellation-time descriptor cleanup on the async request path.
         deferred_text: list[str] = []
+
+        def _clear_deferred_text() -> None:
+            deferred_text.clear()
+
+        def _take_deferred_text() -> str:
+            value = "".join(deferred_text)
+            deferred_text.clear()
+            return value
 
         _tokenizer = engine.tokenizer
         _chat_template = ""
@@ -2863,7 +3145,7 @@ async def _stream_responses(
             nonlocal accumulated_text
             if not delta:
                 return
-            if _forced_choice_active:
+            if _defer_public_text:
                 deferred_text.append(delta)
                 return
             if not message_open:
@@ -2902,11 +3184,10 @@ async def _stream_responses(
             assistant's actual text content.
             """
             nonlocal accumulated_text
-            if will_synthesise or not deferred_text:
-                deferred_text.clear()
+            if will_synthesise:
+                _clear_deferred_text()
                 return
-            joined = "".join(deferred_text)
-            deferred_text.clear()
+            joined = _take_deferred_text()
             if not joined:
                 return
             if not message_open:
@@ -3455,7 +3736,7 @@ async def _stream_responses(
             # Drop any deferred buffered text — the request failed
             # under forced choice, the deferred prose has no
             # legitimate destination on the wire.
-            deferred_text.clear()
+            _clear_deferred_text()
             err_detail = forced_choice_err.detail
             if isinstance(err_detail, dict):
                 err_envelope = err_detail.get("error", {})

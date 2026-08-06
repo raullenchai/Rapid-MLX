@@ -529,6 +529,94 @@ struct QuickstartViewTests {
             serverState: .ready(alias: QuickstartCoordinator.defaultChoice.alias)
         ))
     }
+
+    // MARK: - #1503 memory-guard deadlock
+
+    /// Build an ``.unsafe`` memory warning for an alias — the shape
+    /// ``ServerManager.start`` parks on when a Quickstart serve would push
+    /// live memory past the 85% panic line.
+    private func makeWarning(alias: String) -> ModelSizing.MemoryWarning {
+        ModelSizing.MemoryWarning(
+            alias: alias,
+            hfPath: nil,
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: 3.25,
+            freeGB: 0.7
+        )
+    }
+
+    /// The deadlock scenario itself: a serve we handed off has parked on the
+    /// memory guard (``phase == .starting``, warning for OUR selection). Old
+    /// code had no in-sheet surface for this — the covered ContentView alert
+    /// could never present and the sheet sat on "Starting…" forever. The
+    /// predicate must now hand the sheet the warning to render.
+    @Test("Parked memory warning for our alias while starting IS surfaced in-sheet")
+    func memoryWarningSurfacedWhenStartingOurAlias() {
+        let alias = QuickstartCoordinator.defaultChoice.alias
+        let warning = makeWarning(alias: alias)
+        let shown = QuickstartView.memoryWarningToPresent(
+            phase: .starting,
+            pending: warning,
+            selectionAlias: alias
+        )
+        #expect(shown == warning)
+    }
+
+    @Test("No warning pending while starting → normal Starting card, nothing surfaced")
+    func noMemoryWarningWhenNonePending() {
+        let shown = QuickstartView.memoryWarningToPresent(
+            phase: .starting,
+            pending: nil,
+            selectionAlias: QuickstartCoordinator.defaultChoice.alias
+        )
+        #expect(shown == nil)
+    }
+
+    @Test("A warning for a DIFFERENT alias is not ours to resolve inside onboarding")
+    func memoryWarningForForeignAliasIgnored() {
+        let shown = QuickstartView.memoryWarningToPresent(
+            phase: .starting,
+            pending: makeWarning(alias: "qwen3.5-9b-4bit"),
+            selectionAlias: QuickstartCoordinator.defaultChoice.alias
+        )
+        #expect(shown == nil)
+    }
+
+    @Test("A warning is only surfaced while starting — not mid-download / idle / ready")
+    func memoryWarningOnlyWhileStarting() {
+        let alias = QuickstartCoordinator.defaultChoice.alias
+        let warning = makeWarning(alias: alias)
+        #expect(
+            QuickstartView.memoryWarningToPresent(
+                phase: .downloading, pending: warning, selectionAlias: alias
+            ) == nil
+        )
+        #expect(
+            QuickstartView.memoryWarningToPresent(
+                phase: .idle, pending: warning, selectionAlias: alias
+            ) == nil
+        )
+        #expect(
+            QuickstartView.memoryWarningToPresent(
+                phase: .ready, pending: warning, selectionAlias: alias
+            ) == nil
+        )
+    }
+
+    /// Declining the risky load must LEAVE ``.starting`` — that is the whole
+    /// point, otherwise the sheet stays wedged. It returns to the chooser
+    /// (download already succeeded; only loading was refused), not ``.failed``
+    /// and not the hero.
+    @Test("returnToChooser leaves .starting for the chooser step")
+    func returnToChooserLeavesStarting() {
+        let coord = makeCoordinator()
+        coord.enterStarting()
+        #expect(coord.phase == .starting)
+        coord.returnToChooser()
+        #expect(coord.phase == .idle)
+        #expect(coord.stage == .chooseModel)
+    }
 }
 
 /// F-LWT-1 source-grep tripwire: catch a partial swap that leaves
@@ -559,5 +647,86 @@ struct QuickstartViewSourceGrepTests {
     func starterHFRepoNotOld4B() {
         #expect(QuickstartCoordinator.defaultChoice.hfRepo == "mlx-community/LFM2.5-1.2B-Instruct-4bit")
         #expect(QuickstartCoordinator.defaultChoice.hfRepo?.contains("4B") != true)
+    }
+}
+
+/// #1503 render-wiring source guard.
+///
+/// The pure predicate ``QuickstartView.memoryWarningToPresent`` is unit-
+/// tested above, but a green predicate does NOT prove the deadlock is
+/// fixed: if the `.starting` branch stopped *calling* the predicate and
+/// rendering ``memoryWarningCard``, or the card stopped calling the
+/// ``ServerManager`` confirm/cancel actions, the sheet would sit on
+/// "Starting…" forever again while every logic test stayed green. There is
+/// no ViewInspector in this target (removed in #1492), so — mirroring the
+/// established ``CapabilityChipRenderGateSourceGuardTests`` pattern — we pin
+/// the wiring by scanning the source in canonical (comment/whitespace-
+/// stripped) form. Delete any load-bearing line and one of these trips.
+@MainActor
+@Suite("#1503 — Quickstart memory-warning render wiring source guard")
+struct QuickstartMemoryWiringSourceGuardTests {
+
+    /// SPM package root, derived from ``#filePath`` so the test runs from
+    /// any cwd. RapidTests → Tests → package root (``apps/rapid-mac``).
+    private static var packageRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // RapidTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // apps/rapid-mac
+    }
+
+    private func loadStripped(_ relativePath: String) throws -> String {
+        let url = Self.packageRoot.appendingPathComponent(relativePath)
+        let source = try String(contentsOf: url, encoding: .utf8)
+        // Reuse the canonical strip so these pins can't drift on the strip
+        // rules from the sibling render-gate guard.
+        return CapabilityChipRenderGateSourceGuardTests.stripCommentsAndWhitespace(source)
+    }
+
+    @Test("QuickstartView renders the memory-warning card from the .starting branch")
+    func startingBranchRendersMemoryCard() throws {
+        let src = try loadStripped("Sources/Rapid/UI/QuickstartView.swift")
+        // The predicate is actually INVOKED from the view body (the
+        // ``QuickstartView.`` qualifier distinguishes the call site from the
+        // ``static func`` definition) …
+        #expect(
+            src.contains("QuickstartView.memoryWarningToPresent("),
+            "QuickstartView no longer calls memoryWarningToPresent from its body — the .starting branch would never surface the parked warning and the #1503 deadlock returns."
+        )
+        // … and its result is rendered as the memory card, not swallowed.
+        #expect(
+            src.contains("memoryWarningCard(warning)"),
+            "QuickstartView no longer renders memoryWarningCard(warning) — the parked memory warning has no on-screen surface and the sheet wedges on 'Starting…' (#1503)."
+        )
+    }
+
+    @Test("memoryWarningCard wires both ServerManager actions and the chooser exit")
+    func cardWiresConfirmCancelAndReturn() throws {
+        let src = try loadStripped("Sources/Rapid/UI/QuickstartView.swift")
+        #expect(
+            src.contains("server.confirmPendingMemoryLoad(warning)"),
+            "The in-sheet card's confirm button no longer calls server.confirmPendingMemoryLoad — 'Load anyway' would be inert (#1503)."
+        )
+        #expect(
+            src.contains("server.cancelPendingMemoryLoad()"),
+            "The in-sheet card's cancel button no longer calls server.cancelPendingMemoryLoad — the parked load is never dropped (#1503)."
+        )
+        #expect(
+            src.contains("coordinator.returnToChooser()"),
+            "Cancel no longer calls returnToChooser — the coordinator stays in .starting and the sheet never releases (#1503)."
+        )
+    }
+
+    @Test("ContentView suppresses its covered alert via the shared predicate")
+    func contentViewGatesAlertOnPredicate() throws {
+        let src = try loadStripped("Sources/Rapid/UI/ContentView.swift")
+        #expect(
+            src.contains("server.pendingMemoryWarning!=nil&&!memoryWarningHandledByQuickstart"),
+            "ContentView's memory alert is no longer gated on memoryWarningHandledByQuickstart — it can double-present with the in-sheet card on macOS builds that stack an alert above a sheet (#1503)."
+        )
+        #expect(
+            src.contains("QuickstartView.memoryWarningToPresent("),
+            "ContentView's suppression helper no longer keys on the shared memoryWarningToPresent predicate — the two surfaces can drift on who owns the decision (#1503)."
+        )
     }
 }

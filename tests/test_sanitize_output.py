@@ -73,8 +73,13 @@ def test_strips_multiple_gemma4_tool_calls():
         # text-format tool call
         ("[Calling tool: foo]", None),
         ('[Calling tool="foo"]', None),
-        # stray closing tags
-        ("answer</tool_call>", "answer"),
+        # NOTE: ``("answer</tool_call>", "answer")`` used to live here.
+        # The content channel no longer strips the ``</tool_call>``
+        # closer — see ``test_tool_call_closer_content_integrity.py`` for
+        # why (it was deleting the token out of files coding agents had
+        # been asked to write). The reasoning channel still strips it and
+        # is covered by ``test_reasoning_channel_still_strips_closer``
+        # below.
     ],
 )
 def test_legacy_strippers_still_work(raw, expected_clean):
@@ -119,3 +124,24 @@ def test_only_markup_collapses_to_none():
     ]
     for c in cases:
         assert sanitize_output(c) is None, f"failed: {c!r}"
+
+
+# ---------------------------------------------------------------------------
+# Channel split for the ``</tool_call>`` closer
+# ---------------------------------------------------------------------------
+
+
+def test_content_channel_keeps_closer():
+    """Content may legitimately contain the literal closer.
+
+    Full rationale and the end-to-end Claude Code / Codex reproduction
+    live in ``test_tool_call_closer_content_integrity.py``.
+    """
+    assert sanitize_output("answer</tool_call>") == "answer</tool_call>"
+
+
+def test_reasoning_channel_still_strips_closer():
+    """A bare closer inside a reasoning trace is parser residue."""
+    from vllm_mlx.api.utils import sanitize_reasoning_content
+
+    assert sanitize_reasoning_content("answer</tool_call>") == "answer"

@@ -58,6 +58,7 @@ from ..api.utils import (
     decode_inline_tool_call_arguments,
     extract_json_from_response,
     extract_multimodal_content,
+    sanitize_content_for_stream,
     sanitize_output,
     sanitize_reasoning_for_stream,
     strip_thinking_tags,
@@ -6001,8 +6002,19 @@ async def stream_chat_completion(
             "every user-visible string that originated from a raw
             token decode flows through the same final sanitizer",
             including the streaming hot path.
+
+            Channel-aware since the ``</tool_call>`` content fix: the
+            reasoning sanitizer also strips that closer, which is
+            correct for a reasoning trace and wrong for ``content``,
+            where the token can be exactly what the caller asked the
+            model to write.
             """
-            escaped = json.dumps(sanitize_reasoning_for_stream(text))
+            _sanitize = (
+                sanitize_reasoning_for_stream
+                if field == "reasoning_content"
+                else sanitize_content_for_stream
+            )
+            escaped = json.dumps(_sanitize(text))
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # First chunk with role

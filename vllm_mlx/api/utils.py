@@ -81,7 +81,7 @@ def strip_special_tokens(text: str) -> str:
 # call the dedicated ``strip_reasoning_channel_markup`` helper below.
 # =============================================================================
 
-_FINAL_SANITIZER = re.compile(
+_FINAL_SANITIZER_ALTERNATIVES = (
     # Full Gemma 4 tool call (greedy body): <|tool_call>call:name{...}<tool_call|>
     # MUST be listed BEFORE the bare-token strippers, otherwise the inner
     # `call:name{...}` body would be left orphaned in content.
@@ -107,8 +107,37 @@ _FINAL_SANITIZER = re.compile(
     # (``routes/chat.py:~3245``). Defense-in-depth at the global
     # sanitizer would over-strip; the existing layered gate is the
     # correct architecture.
-    r"|</think>|</tool_call>",
-    re.DOTALL,
+    #
+    # The CLOSER ``</tool_call>`` used to be stripped here — that was
+    # the same over-strip the paragraph above rejects for the opener,
+    # and the argument applies verbatim to the closer. It deleted the
+    # token out of ordinary assistant prose on EVERY surface
+    # (``/v1/chat/completions``, ``/v1/messages``, ``/v1/responses``),
+    # so a coding agent asked to write a file documenting the tool
+    # protocol silently got a file with the tag missing. Reproduced
+    # end-to-end against real Claude Code and real Codex: both wrote
+    # ``"A tool call block ends with  on its own."`` — marker excised,
+    # double space left behind — and both then burned turns trying to
+    # work around their own apparently-broken output. Structural
+    # residue is the layered gate's job (it is payload-aware); prose is
+    # not residue.
+    r"|</think>"
+)
+
+#: CONTENT channel. ``</tool_call>`` is deliberately absent — see the
+#: block above.
+_FINAL_SANITIZER = re.compile(_FINAL_SANITIZER_ALTERNATIVES, re.DOTALL)
+
+#: REASONING channel. Same set PLUS the ``</tool_call>`` closer.
+#:
+#: The channel split mirrors the one already drawn for ``<think>``
+#: (``_REASONING_CHANNEL_TAG_RE`` below): inside a reasoning trace a
+#: bare wire marker is a structural parser artifact, never text the
+#: user asked the model to produce, so the aggressive strip is correct
+#: there. In ``content`` the same token can be exactly what was asked
+#: for — a coding agent writing documentation about the tool protocol.
+_REASONING_FINAL_SANITIZER = re.compile(
+    _FINAL_SANITIZER_ALTERNATIVES + r"|</tool_call>", re.DOTALL
 )
 
 
@@ -181,11 +210,20 @@ def sanitize_output(text: str) -> str:
 
     Designed to be aggressive — better to over-strip than to leak.
     """
+    return _sanitize_with(text, _FINAL_SANITIZER)
+
+
+def _sanitize_with(text: str, pattern: re.Pattern[str]) -> str:
+    """Shared body for the content / reasoning sanitizers.
+
+    Only the alternation differs between the two channels; the
+    fast-path bypass and the collapse-to-None semantics are identical.
+    """
     if not text:
         return text
     for ch in text:
         if ch in _SPECIAL_TOKEN_CHARS:
-            cleaned = _FINAL_SANITIZER.sub("", text).strip()
+            cleaned = pattern.sub("", text).strip()
             return cleaned or None  # collapse empty to None
     return text
 
@@ -219,8 +257,12 @@ def sanitize_reasoning_content(text: str | None) -> str | None:
     Use ``sanitize_reasoning_for_stream`` (defined below) when the call
     site can't tolerate a ``None`` return (per-delta streaming where a
     None would change the field's type contract).
+
+    Uses ``_REASONING_FINAL_SANITIZER``, which differs from the content
+    channel by ALSO stripping the ``</tool_call>`` closer — see the
+    comment on that pattern for why the two channels diverge.
     """
-    return sanitize_output(text)
+    return _sanitize_with(text, _REASONING_FINAL_SANITIZER)
 
 
 def sanitize_reasoning_for_stream(text: str | None) -> str:
@@ -237,7 +279,9 @@ def sanitize_reasoning_for_stream(text: str | None) -> str:
     ``" bar <|im_start|>"`` would arrive as ``"foobar"`` instead of
     ``"foo bar"`` if the sanitizer trimmed leading whitespace after
     removing the marker. This variant therefore removes ONLY the marker
-    bytes via :data:`_FINAL_SANITIZER` and leaves all surrounding
+    bytes via :data:`_REASONING_FINAL_SANITIZER` (this is the reasoning
+    channel, so the ``</tool_call>`` closer is stripped here — see that
+    pattern's comment) and leaves all surrounding
     whitespace intact. (The non-stream :func:`sanitize_output` strips
     because it operates on a fully-assembled final string where leading/
     trailing whitespace is cosmetic.)
@@ -251,6 +295,25 @@ def sanitize_reasoning_for_stream(text: str | None) -> str:
           May still be ``""`` if the input was entirely markup — the
           caller decides whether to suppress the empty delta.
     """
+    return _sanitize_for_stream(text, _REASONING_FINAL_SANITIZER)
+
+
+def sanitize_content_for_stream(text: str | None) -> str:
+    """Streaming variant of :func:`sanitize_output` for ``content``.
+
+    Same whitespace-preservation contract as
+    :func:`sanitize_reasoning_for_stream`, but on the CONTENT channel —
+    so the ``</tool_call>`` closer is NOT stripped. Streaming is the
+    path every coding agent actually uses (Claude Code, Codex, OpenClaw
+    and Hermes all stream), so routing content deltas through the
+    reasoning sanitizer is what let the marker get eaten out of files
+    the agent was asked to write.
+    """
+    return _sanitize_for_stream(text, _FINAL_SANITIZER)
+
+
+def _sanitize_for_stream(text: str | None, pattern: re.Pattern[str]) -> str:
+    """Shared body for the per-delta streaming sanitizers."""
     if not text:
         return ""
     # Fast-path bypass: no marker characters → no rewrite at all
@@ -260,7 +323,7 @@ def sanitize_reasoning_for_stream(text: str | None) -> str:
             # Strip markers ONLY — do NOT ``.strip()`` the whitespace
             # around them, because cross-delta whitespace is
             # load-bearing in the streaming concatenation contract.
-            return _FINAL_SANITIZER.sub("", text)
+            return pattern.sub("", text)
     return text
 
 

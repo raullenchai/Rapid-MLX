@@ -461,14 +461,24 @@ struct ModelPickerBar: View {
                 // remembered the alias's spelling would scroll right
                 // past the cached copy in the wrong section, then
                 // grumble that the alias was "missing".
-                quickstartSection
-                recommendedSection
-                allAliasesSection
-                Divider()
+                // Actions FIRST, then the catalog.
+                //
+                // The alias list runs to ~150 rows, so at the bottom
+                // these two were past several screens of scrolling — and
+                // "Type a model name…" is precisely what a user reaches
+                // for when they cannot find their model in that list, so
+                // burying it under the list made the escape hatch cost
+                // the most effort at the exact moment it was needed. The
+                // loading and empty branches above already lead with
+                // their actions; this makes all three agree.
                 Button("Refresh catalog") {
                     Task { await refreshCatalog(force: true) }
                 }
                 Button("Type a model name…") { showCustom = true }
+                Divider()
+                quickstartSection
+                recommendedSection
+                allAliasesSection
             }
         } label: {
             HStack(spacing: 6) {
@@ -554,14 +564,20 @@ struct ModelPickerBar: View {
         .menuIndicator(.hidden)
         .onHover { pickerHovering = $0 }
         .rapidAnimation(RapidMotion.quick, value: pickerHovering)
+        // One vocabulary across every readiness surface (see
+        // ``ModelReadiness``): you CHOOSE a model, DOWNLOAD it if
+        // needed, START it, and then it is READY. The picker is the
+        // control the readiness banner's "Choose a model in the box
+        // below" points at, so it has to use that exact word rather
+        // than a near-synonym.
         .help(pickerIsUnresolved
-              ? "Choose a model to run"
+              ? "Choose a model"
               : "Model: \(alias) — click to change")
         // Both glyphs are hidden from AX above, so this collapses to a
         // single AXMenuButton announced as "Model, <alias>, pop up button"
         // rather than spelling out SF Symbol names.
         .accessibilityLabel("Model")
-        .accessibilityValue(pickerIsUnresolved ? "None selected" : alias)
+        .accessibilityValue(pickerIsUnresolved ? "No model chosen" : alias)
         .accessibilityHint("Choose which model to run")
         .accessibilityIdentifier("ModelPickerBar.ModelMenu")
     }
