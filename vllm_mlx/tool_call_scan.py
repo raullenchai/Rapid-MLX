@@ -34,12 +34,38 @@ the same defect could be fixed in ``tool_calling.py`` and still be live in
 from __future__ import annotations
 
 import re
+from typing import Any
 
 __all__ = [
     "segment_by_next_opener",
+    "declared_tool_names",
     "split_marked_calls",
     "split_marked_parameters",
 ]
+
+
+def declared_tool_names(request: dict[str, Any] | None) -> frozenset[str] | None:
+    """Tool names the request actually declared, or ``None`` if it declared none.
+
+    ``None`` rather than an empty set, because the two mean different things
+    to the scanners: an empty set would reject every opener, while ``None``
+    selects the position-only rules. A request with no tools cannot execute
+    anything anyway, so there is nothing to protect there and no reason to
+    change how its text is parsed.
+    """
+    if not isinstance(request, dict):
+        return None
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return None
+    names = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            names.add(function["name"])
+    return frozenset(names) or None
 
 
 def _next_sibling(
@@ -147,6 +173,14 @@ def split_marked_calls(
         # turn is ordinary agent behaviour — read_file /a then read_file /b —
         # and suppressing the second opener merges both into one body and
         # silently drops a call the model asked for.
+        # The gate applies to the opener being EMITTED, not only to the
+        # search for the next one. Filtering siblings alone left the hole
+        # wide open at index 0: a standalone ``<function=delete_everything>``
+        # was still returned as a call, so the authorisation check could be
+        # skipped entirely by putting the undeclared opener first.
+        if valid_names is not None and openers[i].group(1).strip() not in valid_names:
+            i += 1
+            continue
         segmented = segment_by_next_opener(text, openers, i, closer, valid_names)
         sibling = _next_sibling(text, openers, i, closer, valid_names)
         if segmented is not None:

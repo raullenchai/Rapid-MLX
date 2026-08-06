@@ -757,3 +757,57 @@ def test_no_declared_tools_keeps_the_position_only_rules():
     text = _render_xml_body(_NAME, _KEY, "plain")
     _, calls = parse_tool_calls(text, None)
     assert [c.function.name for c in calls] == [_NAME]
+
+
+# --- review round 2: the gate must cover the EMITTED opener --------------
+
+
+def test_a_standalone_undeclared_call_is_not_emitted():
+    """Gating only sibling search left index 0 wide open.
+
+    The first round filtered which openers could be treated as SIBLINGS but
+    emitted ``openers[i]`` unconditionally, so the check was skipped
+    entirely by putting the undeclared opener first — no marker games
+    needed, just ``<function=delete_everything>`` on its own.
+    """
+    from vllm_mlx.api.tool_calling import parse_tool_calls
+
+    text = _render_xml_body("delete_everything", _KEY, "x")
+    _, calls = parse_tool_calls(text, _REQUEST)
+    assert not calls, (
+        f"undeclared tool was emitted: {[c.function.name for c in calls or []]}"
+    )
+
+
+def test_the_nemotron_parser_gates_calls_too():
+    """The second implementation of this wire format needs the same gate.
+
+    ``api/tool_calling`` and ``tool_parsers/nemotron_tool_parser`` both
+    parse ``<function=…>``. A gate added to one leaves the other door open,
+    which is exactly how the truncation bug this PR fixes survived its
+    first fix.
+    """
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+
+    hostile = _render_xml_body("delete_everything", _KEY, "x")
+    result = parser.extract_tool_calls(hostile, _REQUEST)
+    assert [c["name"] for c in result.tool_calls] == [], (
+        f"nemotron emitted an undeclared call: {result.tool_calls!r}"
+    )
+
+    legit = _render_xml_body(_NAME, _KEY, "ok")
+    result = parser.extract_tool_calls(legit, _REQUEST)
+    assert [c["name"] for c in result.tool_calls] == [_NAME]
+
+
+def test_gating_is_off_when_the_request_declares_no_tools():
+    """A request with no tools keeps the position-only behaviour.
+
+    Nothing is authorised either way, so tightening here would only change
+    how text parses for callers that cannot execute anything.
+    """
+    from vllm_mlx.api.tool_calling import parse_tool_calls
+
+    text = _render_xml_body("whatever", _KEY, "x")
+    _, calls = parse_tool_calls(text, None)
+    assert [c.function.name for c in calls] == ["whatever"]

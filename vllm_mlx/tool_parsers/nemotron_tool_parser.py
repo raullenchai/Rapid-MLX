@@ -15,7 +15,13 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from ..tool_call_scan import split_marked_calls, split_marked_parameters
+from ..tool_call_scan import (
+    declared_tool_names as _declared_tool_names,
+)
+from ..tool_call_scan import (
+    split_marked_calls,
+    split_marked_parameters,
+)
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
@@ -95,7 +101,17 @@ class NemotronToolParser(ToolParser):
         # here because this is a second implementation of the same format.
         # Both now share ``vllm_mlx/tool_call_scan``; the patterns are kept
         # only as the format's documentation.
-        matches = split_marked_calls(model_output, r"<function=([^>]+)>", "</function>")
+        # Declared tool names, same as the ``api/tool_calling`` path. This is
+        # the second implementation of this wire format, so a gate added only
+        # there leaves the other door open: argument text containing
+        # ``</function><function=delete_everything>`` would still fabricate an
+        # executable call here.
+        matches = split_marked_calls(
+            model_output,
+            r"<function=([^>]+)>",
+            "</function>",
+            valid_names=_declared_tool_names(request),
+        )
         for func_name, content, _span_start, _span_end in matches:
             func_name = func_name.strip()
 

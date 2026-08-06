@@ -19,7 +19,13 @@ from typing import Any
 
 from jsonschema import ValidationError, validate
 
-from ..tool_call_scan import split_marked_calls, split_marked_parameters
+from ..tool_call_scan import (
+    declared_tool_names as _declared_tool_names,
+)
+from ..tool_call_scan import (
+    split_marked_calls,
+    split_marked_parameters,
+)
 from .models import FunctionCall, ResponseFormat, ToolCall
 
 logger = logging.getLogger(__name__)
@@ -58,30 +64,6 @@ def _decode_json_like(value: Any) -> Any:
             return parsed
         current = parsed
     return current
-
-
-def _declared_tool_names(request: dict[str, Any] | None) -> frozenset[str] | None:
-    """Tool names the request actually declared, or ``None`` if it declared none.
-
-    ``None`` rather than an empty set, because the two mean different things
-    to the scanners: an empty set would reject every opener, while ``None``
-    selects the position-only rules. A request with no tools cannot execute
-    anything anyway, so there is nothing to protect there and no reason to
-    change how its text is parsed.
-    """
-    if not isinstance(request, dict):
-        return None
-    tools = request.get("tools")
-    if not isinstance(tools, list):
-        return None
-    names = set()
-    for tool in tools:
-        if not isinstance(tool, dict):
-            continue
-        function = tool.get("function")
-        if isinstance(function, dict) and isinstance(function.get("name"), str):
-            names.add(function["name"])
-    return frozenset(names) or None
 
 
 def _get_tool_param_config(
