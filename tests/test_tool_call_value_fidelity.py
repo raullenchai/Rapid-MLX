@@ -818,7 +818,7 @@ def test_the_nemotron_gate_survives_streaming():
     parser = ToolParserManager.get_tool_parser("nemotron")(None)
     hostile = _render_xml_body("delete_everything", _KEY, "x")
 
-    emitted: list[str] = []
+    emitted: list[dict] = []
     previous = ""
     for i in range(len(hostile)):
         current = hostile[: i + 1]
@@ -826,10 +826,7 @@ def test_the_nemotron_gate_survives_streaming():
             previous, current, hostile[i], request=_REQUEST
         )
         previous = current
-        for call in (delta or {}).get("tool_calls") or []:
-            name = (call.get("function") or {}).get("name")
-            if name:
-                emitted.append(name)
+        emitted.extend((delta or {}).get("tool_calls") or [])
 
     assert emitted == [], f"streaming admitted an undeclared call: {emitted}"
 

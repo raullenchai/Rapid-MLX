@@ -499,9 +499,11 @@ class NemotronToolParser(ToolParser):
             # could still become ``<function=``; once a later byte turns it
             # into ordinary prose (``<funx``), those earlier bytes belong on
             # the wire too.
-            content = self._visible_content_between(
-                current_text, self._content_upto, len(current_text), request
-            )
+            # Everything after the watermark is already known to be outside
+            # completed tool spans on this no-new-close path. Slice directly
+            # instead of reparsing the full accumulated response for every
+            # prose delta (which would make long streams quadratic).
+            content = current_text[self._content_upto :]
             self._content_upto = len(current_text)
             return {"content": content} if content else None
 
