@@ -188,11 +188,20 @@ class StressE2EBenchStep(Step):
                     bench_result = _capture_runner(
                         "bench", lambda choice=choice: _run_bench(ctx, choice)
                     )
+                    # A flagged bench is not a verdict yet, so record it as
+                    # PRELIMINARY. Recording it as a plain failure and then
+                    # appending the A/B verdict below leaves two records for
+                    # one measurement that can flatly contradict each other,
+                    # and nothing in the manifest says which one settled it.
                     _record_manifest(
                         manifest,
                         kind="bench",
                         choice=choice,
-                        status=bench_result["status"],
+                        status=(
+                            "preliminary"
+                            if _is_blocking_status(bench_result["status"])
+                            else bench_result["status"]
+                        ),
                         summary=bench_result["summary"],
                         artifact=bench_result.get("artifact"),
                     )
@@ -314,12 +323,20 @@ class StressE2EBenchStep(Step):
                             f"[NOT-THIS-PR] bench on {choice.model_id}: {ab['summary']}"
                         )
                     else:
-                        # It did NOT answer. "We could not tell" is not "the PR
-                        # is innocent" — reporting it as [NOT-THIS-PR] would
-                        # exonerate a possible real regression on the strength
-                        # of a measurement we had just declared unusable.
-                        # Surface it as its own thing, and do not count it
-                        # toward the pre-existing tally.
+                        # It did NOT answer — and an unanswered perf question
+                        # cannot clear the PR. Letting the step succeed here
+                        # would ship a real regression whenever unrelated
+                        # noise happened to make the A/B inconclusive, which
+                        # is a far worse trade than the false BLOCKING this
+                        # change set out to remove.
+                        #
+                        # This still differs from that original failure in the
+                        # way that matters: it does not accuse the diff of a
+                        # regression that is not there. It says the machine
+                        # cannot answer the question and names the remedy. Nor
+                        # does it teach re-rolling — re-running on a machine
+                        # that is still busy says the same thing again.
+                        any_fail = True
                         all_findings.append(
                             f"[INCONCLUSIVE] bench on {choice.model_id}: "
                             f"{ab['summary']}"

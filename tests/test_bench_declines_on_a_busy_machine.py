@@ -76,7 +76,9 @@ BASELINE = {
     },
 }
 
-CHOICE = types.SimpleNamespace(model_id="test/model", quality_tier="full")
+CHOICE = types.SimpleNamespace(
+    model_id="test/model", quality_tier="full", family="test"
+)
 BASE_ROOT = "/base-worktree"
 
 
@@ -272,18 +274,6 @@ def test_the_fast_path_keeps_the_baselines_own_statistic():
     assert "min(" not in head
 
 
-def test_a_flagged_bench_defers_instead_of_deciding():
-    """The committed-baseline delta must not be the final word."""
-    import inspect
-
-    src = inspect.getsource(seb.StressE2EBenchStep.run)
-    assert 'pending_failures.append(("bench", bench_result, None))' in src
-    assert "_bench_ab_against_base(" in src
-
-
-# --- review round 3 -------------------------------------------------------
-
-
 def test_arm_order_is_counterbalanced_across_rounds(monkeypatch, tmp_path):
     """Interleaving is not enough — the ORDER has to alternate too.
 
@@ -316,23 +306,98 @@ def test_the_ab_writes_the_artifact_the_docs_promise(monkeypatch, tmp_path):
     assert "delta_pct" in data
 
 
-def test_an_inconclusive_ab_is_not_reported_as_exoneration():
-    """ "We could not tell" must not become "not this PR".
+# --- review round 4: assert the STEP's outcome, not its source ----------
+#
+# The previous versions of these two grepped `inspect.getsource`, so they
+# stayed green whether or not the branch was reachable, whether the right
+# value was passed, and — the one that matters — whether an inconclusive A/B
+# actually changed the step's verdict. Drive `run()` instead.
 
-    Folding `skip` into the same branch as `pass` would clear a possible real
-    regression on the strength of a measurement just declared unusable.
+
+def _run_step(monkeypatch, tmp_path, ab_status, ab_summary="stubbed"):
+    """Run StressE2EBenchStep with the matrix stubbed to one flagged bench."""
+    ctx = _ctx(tmp_path)
+    ctx.files_changed = ["vllm_mlx/scheduler.py"]
+    ctx.blast_radius = "high"
+    ctx.run_log = lambda *a, **k: None
+
+    monkeypatch.setattr(
+        seb,
+        "_select_models",
+        lambda *a, **k: [CHOICE],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        seb, "_load_registry", lambda *a, **k: {"agents": []}, raising=False
+    )
+
+    @contextlib.contextmanager
+    def fake_server(choice, ctx_, **kw):
+        yield "server.log"
+
+    monkeypatch.setattr(seb, "_server_in_repo", fake_server)
+    monkeypatch.setattr(seb, "_server", fake_server, raising=False)
+    monkeypatch.setattr(
+        seb,
+        "_run_bench",
+        lambda ctx_, choice, **kw: {
+            "status": "fail",
+            "summary": "perf regression: cold +42.5% vs baseline",
+            "artifact": str(tmp_path / "artifacts" / "bench.json"),
+            "thresholds": dict(THRESHOLDS),
+            "executed": True,
+        },
+    )
+    monkeypatch.setattr(
+        seb,
+        "_run_stress",
+        lambda *a, **k: {"status": "pass", "summary": "8/8", "executed": True},
+    )
+    monkeypatch.setattr(
+        seb,
+        "_bench_ab_against_base",
+        lambda *a, **k: {"status": ab_status, "summary": ab_summary},
+    )
+    return seb.StressE2EBenchStep().run(ctx)
+
+
+def test_an_inconclusive_ab_fails_the_step(monkeypatch, tmp_path):
+    """An unanswered perf question must not clear the PR.
+
+    Letting the step succeed here would ship a real regression whenever
+    unrelated noise made the A/B inconclusive — a worse trade than the false
+    BLOCKING this change removes.
     """
-    import inspect
+    result = _run_step(monkeypatch, tmp_path, "skip", "machine not quiet enough")
+    assert result.status == "fail", result
+    joined = " ".join(result.findings)
+    assert "[INCONCLUSIVE]" in joined, joined
+    assert "[NOT-THIS-PR]" not in joined, joined
 
-    src = inspect.getsource(seb.StressE2EBenchStep.run)
-    block = src[src.index('if kind == "bench":') :]
-    block = block[: block.index("base_result = _run_base_check")]
-    assert 'elif ab["status"] == "pass":' in block, block
-    assert "[INCONCLUSIVE]" in block
-    # The exoneration path must be reachable only from an answered A/B.
-    not_this_pr = block.index("[NOT-THIS-PR]")
-    inconclusive = block.index("[INCONCLUSIVE]")
-    assert not_this_pr < inconclusive
-    # ...and only the answered one counts toward the pre-existing tally.
-    assert block.count("preexisting_count += 1") == 1
-    assert block.index("preexisting_count += 1") < inconclusive
+
+def test_an_answered_ab_that_clears_the_pr_passes_the_step(monkeypatch, tmp_path):
+    result = _run_step(monkeypatch, tmp_path, "pass", "not this PR: cold +0.2%")
+    assert result.status == "pass", result
+    joined = " ".join(result.findings)
+    assert "[NOT-THIS-PR]" in joined, joined
+    assert "[BLOCKING]" not in joined, joined
+
+
+def test_a_confirmed_regression_fails_the_step(monkeypatch, tmp_path):
+    result = _run_step(
+        monkeypatch, tmp_path, "fail", "perf regression confirmed against base"
+    )
+    assert result.status == "fail", result
+    assert any("[BLOCKING]" in f for f in result.findings), result.findings
+
+
+def test_the_manifest_records_one_settled_verdict_per_bench(monkeypatch, tmp_path):
+    """Not a raw failure AND an A/B verdict that contradict each other."""
+    _run_step(monkeypatch, tmp_path, "pass", "not this PR")
+    manifest = json.loads(
+        (tmp_path / "artifacts" / "stress-e2e-manifest.json").read_text()
+    )
+    entries = [e for e in manifest if e.get("kind") == "bench"]
+    statuses = [e["status"] for e in entries]
+    assert "fail" not in statuses, entries
+    assert "preliminary" in statuses, entries
