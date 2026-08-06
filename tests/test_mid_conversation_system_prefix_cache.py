@@ -492,11 +492,100 @@ class TestRelocationIsOptInAndOffByDefault:
         _Cfg.relocate_mid_conversation_system = False
         assert anthropic_adapter._relocate_mid_system_enabled() is False
 
-    def test_adapter_defaults_off_when_config_is_absent(self, monkeypatch):
-        from vllm_mlx.api import anthropic_adapter
 
-        def _boom():
-            raise RuntimeError("config not initialised")
+class TestFlagReachesTheAdapterEndToEnd:
+    """Exercise the REAL chain, not each link in isolation.
 
-        monkeypatch.setattr("vllm_mlx.config.get_config", _boom, raising=False)
-        assert anthropic_adapter._relocate_mid_system_enabled() is False
+    Review MAJOR: the other tests here check `ServerConfig`'s default, the
+    merge helper, and a mocked `get_config()` separately. Delete either
+    plumbing assignment — `cli.py`'s `server._relocate_mid_conversation_system
+    = ...` or `server.py`'s `cfg.relocate_mid_conversation_system = ...` —
+    and every one of them stays green while
+    `rapid-mlx serve --relocate-mid-conversation-system` silently keeps
+    hoisting.
+
+    So: parse the real flag off the real parser, publish it the way the
+    server does, and assert an actual Anthropic request comes out
+    relocated.
+    """
+
+    @staticmethod
+    def _parse(argv):
+        """Drive the REAL ``main()`` parser, capturing args at dispatch.
+
+        Same technique as ``tests/test_cli_response_cache_flag.py`` — it
+        exercises the actual ``serve_parser`` registration rather than a
+        reconstructed stand-in, and nothing past parsing runs.
+        """
+        import sys
+        from unittest import mock
+
+        from vllm_mlx import cli
+
+        captured = {}
+
+        with (
+            mock.patch.object(
+                cli, "serve_command", lambda a: captured.setdefault("a", a)
+            ),
+            mock.patch.object(
+                sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", *argv]
+            ),
+        ):
+            cli.main()
+        assert "a" in captured, "serve_command dispatch was never reached"
+        return captured["a"]
+
+    @staticmethod
+    def _publish(value):
+        from vllm_mlx import server
+
+        server._relocate_mid_conversation_system = value
+        server._sync_config()
+
+    @staticmethod
+    def _request():
+        from vllm_mlx.api.anthropic_models import AnthropicRequest
+
+        return AnthropicRequest(
+            model="m",
+            max_tokens=16,
+            system="base",
+            messages=[
+                {"role": "user", "content": "t0"},
+                {"role": "system", "content": NUDGE},
+                {"role": "user", "content": "t1"},
+            ],
+        )
+
+    @pytest.fixture(autouse=True)
+    def _restore(self):
+        from vllm_mlx import server
+
+        before = server._relocate_mid_conversation_system
+        yield
+        server._relocate_mid_conversation_system = before
+        server._sync_config()
+
+    def test_flag_present_relocates(self):
+        from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
+
+        args = self._parse(["--relocate-mid-conversation-system"])
+        assert args.relocate_mid_conversation_system is True
+        self._publish(args.relocate_mid_conversation_system)
+
+        msgs = anthropic_to_openai(self._request()).messages
+        assert text(msgs[0]) == "base", "leading system must stay clean"
+        assert NUDGE in text(msgs[-1])
+        assert "<system-reminder>" in text(msgs[-1])
+
+    def test_flag_absent_hoists(self):
+        from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
+
+        args = self._parse([])
+        assert args.relocate_mid_conversation_system is False
+        self._publish(args.relocate_mid_conversation_system)
+
+        msgs = anthropic_to_openai(self._request()).messages
+        assert NUDGE in text(msgs[0]), "default must hoist into the system block"
+        assert all("<system-reminder>" not in text(m) for m in msgs[1:])

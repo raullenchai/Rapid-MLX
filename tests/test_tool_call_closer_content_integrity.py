@@ -168,13 +168,21 @@ class TestAnthropicThinkingBlockStillStrips:
         )
 
 
-class TestStreamingContentPathKeepsTheCloser:
-    """codex MINOR: the existing #1508 branch only asserts the OPENER
-    survives, so routing `_fast_sse_chunk` content back through the
-    reasoning sanitizer would still pass. Assert the CLOSER directly.
+class TestStreamingSanitizerHelpersKeepTheCloser:
+    """The per-delta helpers, asserted on the CLOSER specifically.
+
+    The pre-existing #1508 branch only checks that the OPENER survives, so
+    routing streamed content back through the reasoning sanitizer would
+    still have passed there.
+
+    NOTE these exercise the HELPERS, not `routes/chat.py::_fast_sse_chunk`
+    itself — that closure is defined inside the streaming generator and is
+    not reachable from a unit test. Its dispatch is a one-line
+    `field == "reasoning_content"` branch; an HTTP-level streaming test
+    would be needed to pin it end to end.
     """
 
-    def test_fast_sse_chunk_content_keeps_the_closer(self):
+    def test_content_stream_helper_keeps_the_closer(self):
         assert sanitize_content_for_stream(AGENT_LINE) == AGENT_LINE
         # ...while the reasoning half of the same helper pair does strip.
         assert "</tool_call>" not in sanitize_reasoning_for_stream(AGENT_LINE)
@@ -186,3 +194,26 @@ class TestStreamingContentPathKeepsTheCloser:
         )
         assert delta.content == AGENT_LINE
         assert "</tool_call>" not in (delta.reasoning_content or "")
+
+
+class TestRescuePrefixBranchAlsoStrips:
+    """The length-cut rescue branch is the OTHER call site that moved.
+
+    Review MINOR: the test above covers `_sanitize_reasoning_channel`, but
+    `_thinking_block_content` has a second path — when the turn was cut by
+    `max_tokens`, a prefix of the reasoning is surfaced through a
+    separate `sanitize_*` call. If only that line regressed to
+    `sanitize_output`, a `finish_reason="length"` response whose retained
+    prefix contains `</tool_call>` would leak it into `thinking` and every
+    other test here would stay green.
+    """
+
+    def test_length_cut_prefix_strips_the_closer(self):
+        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+
+        reasoning = "planning </tool_call> the next step"
+        for content in (None, "", "answer"):
+            out = _thinking_block_content(reasoning, content)
+            assert "</tool_call>" not in (out or ""), (
+                f"closer leaked into thinking with content={content!r}: {out!r}"
+            )

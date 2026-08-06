@@ -128,10 +128,13 @@ def _relocate_mid_system_enabled() -> bool:
     """
     from ..config import get_config
 
-    try:
-        return bool(getattr(get_config(), "relocate_mid_conversation_system", False))
-    except Exception:  # noqa: BLE001 — config not initialised (unit tests)
-        return False
+    # No try/except. ``_config`` is eagerly initialised at module import, so
+    # "config not initialised" is not a reachable production state — and
+    # swallowing everything here would turn a broken config publication into
+    # an operator's explicit flag being silently ignored, with the measured
+    # 20k-token prefix destroyed on every turn and nothing in the log to say
+    # why (review MAJOR).
+    return bool(get_config().relocate_mid_conversation_system)
 
 
 class AnthropicOutputConfigError(ValueError):
