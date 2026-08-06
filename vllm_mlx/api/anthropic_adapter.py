@@ -363,12 +363,15 @@ def _sanitize_reasoning_channel(text: str | None) -> str | None:
 
     Stage 1 — :func:`strip_reasoning_channel_markup` strips the
     ``<think>`` opener + closer (the canonical reasoning-channel
-    parser artifact that the catch-all :func:`sanitize_output`
-    intentionally leaves alone — see ``api.utils`` docstring).
+    parser artifact that the content catch-all intentionally leaves
+    alone — see ``api.utils`` docstring).
 
-    Stage 2 — :func:`sanitize_output` strips the rest of the special-
-    token catch-all (``<|im_end|>``, harmony channel markers,
-    ``</tool_call>``, …).
+    Stage 2 — :func:`sanitize_reasoning_content` strips the rest of the
+    special-token catch-all (``<|im_end|>``, harmony channel markers,
+    ``</tool_call>``, …). NOT :func:`sanitize_output`: since the
+    content/reasoning channel split, the content variant deliberately
+    PRESERVES ``</tool_call>`` because it can be text the caller asked
+    for. In a reasoning trace it is always parser residue.
 
     Returns ``None`` when the result is empty / whitespace-only so the
     caller can suppress the surrounding channel emission.
@@ -397,8 +400,9 @@ def _thinking_block_content(
 
     1. **Sanitization (R12-M1b fix #1)** — strips the ``<think>`` /
        ``</think>`` tags that the reasoning parser may have left in
-       the trace, then runs the canonical :func:`sanitize_output` for
-       the rest of the special-token catch-all. Mira r12 R-3 bonus
+       the trace, then runs :func:`sanitize_reasoning_content` for the
+       rest of the special-token catch-all (the REASONING variant — the
+       content one preserves ``</tool_call>``). Mira r12 R-3 bonus
        regression: at ``max_tokens=1`` on a thinking model, the prompt
        template's pre-injected ``<think>`` is the only token seen by
        the parser and it ended up as the literal ``thinking`` block

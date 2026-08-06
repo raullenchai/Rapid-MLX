@@ -199,21 +199,48 @@ class TestStreamingSanitizerHelpersKeepTheCloser:
 class TestRescuePrefixBranchAlsoStrips:
     """The length-cut rescue branch is the OTHER call site that moved.
 
-    Review MINOR: the test above covers `_sanitize_reasoning_channel`, but
-    `_thinking_block_content` has a second path — when the turn was cut by
-    `max_tokens`, a prefix of the reasoning is surfaced through a
-    separate `sanitize_*` call. If only that line regressed to
-    `sanitize_output`, a `finish_reason="length"` response whose retained
-    prefix contains `</tool_call>` would leak it into `thinking` and every
-    other test here would stay green.
+    Review MINOR, twice: my first attempt at this test passed neither
+    ``finish_reason="length"`` nor rescue-shaped content, so it ran the
+    ORDINARY path and would have stayed green with the rescue line
+    reverted. Reviewer mutated that line in memory and confirmed it.
+
+    Entering the branch needs all three at once:
+
+    * ``finish_reason == "length"``
+    * ``text`` that satisfies ``is_rescue_payload`` (the cutoff sentinel)
+    * a reasoning trace LONGER than ``RESCUE_TAIL_LENGTH``, so a
+      non-empty prefix survives the tail slice
+
+    The assertion below is on the PREFIX, so the closer under test must
+    sit in the first ``len(reasoning) - RESCUE_TAIL_LENGTH`` characters.
     """
 
-    def test_length_cut_prefix_strips_the_closer(self):
+    def test_length_cut_rescue_prefix_strips_the_closer(self):
+        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+        from vllm_mlx.api.constants import (
+            REASONING_CUTOFF_SENTINEL,
+            RESCUE_TAIL_LENGTH,
+        )
+
+        # Closer up front, then enough filler that the prefix survives
+        # the tail slice.
+        reasoning = "planning </tool_call> the next step. " + (
+            "x" * RESCUE_TAIL_LENGTH * 2
+        )
+        rescue_text = f"{REASONING_CUTOFF_SENTINEL}\n\nsome tail"
+
+        out = _thinking_block_content(reasoning, rescue_text, "length")
+
+        assert out, "expected a non-empty thinking prefix from the rescue branch"
+        assert "planning" in out, (
+            f"did not enter the rescue-prefix branch; got {out[:80]!r}"
+        )
+        assert "</tool_call>" not in out, (
+            f"closer leaked through the rescue prefix: {out[:120]!r}"
+        )
+
+    def test_ordinary_path_still_strips_the_closer(self):
+        """The non-rescue path, for contrast — both must hold."""
         from vllm_mlx.api.anthropic_adapter import _thinking_block_content
 
-        reasoning = "planning </tool_call> the next step"
-        for content in (None, "", "answer"):
-            out = _thinking_block_content(reasoning, content)
-            assert "</tool_call>" not in (out or ""), (
-                f"closer leaked into thinking with content={content!r}: {out!r}"
-            )
+        assert _thinking_block_content("x</tool_call>y", "answer") == "xy"
