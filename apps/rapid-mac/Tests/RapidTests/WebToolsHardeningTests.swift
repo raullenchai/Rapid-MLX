@@ -33,6 +33,18 @@ struct WebToolsHardeningTests {
         #expect(comps.queryItems?.first?.value == "swift concurrency")
     }
 
+    @Test("A literal + survives as %2B, not a form-decoded space")
+    func duckDuckGoURLEscapesPlus() throws {
+        let url = try #require(WebSearchTool.duckDuckGoSearchURL(query: "C++ vs Rust"))
+        // Raw wire form must carry %2B so a form-decoding endpoint keeps the
+        // pluses rather than reading them as spaces ("C  vs Rust").
+        #expect(url.absoluteString.contains("C%2B%2B"))
+        #expect(!url.absoluteString.contains("q=C++"))
+        // And it still decodes back to the exact query.
+        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(comps.queryItems?.first?.value == "C++ vs Rust")
+    }
+
     // MARK: - #5 anti-bot class-token boundary
 
     @Test("Token inside the class value is detected, both class orderings")

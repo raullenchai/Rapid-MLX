@@ -101,16 +101,32 @@ final class BuiltinToolsTests {
         // prevents the network fetch.
         let refusal = ChatViewModel.toolRefusalMessage(
             name: "browse",
-            disabledTools: ["browse"]
+            allowed: ["web_search", "weather"],
+            known: ["web_search", "weather", "browse"]
         )
         #expect(refusal != nil)
         #expect(refusal?.contains("browse") == true)
     }
 
+    @Test("A call for a tool the model invented outright is refused, not run")
+    func unknownToolIsRefused() {
+        // Not advertised AND not a shipped tool — must be refused before
+        // dispatch, never handed to tools.run.
+        let refusal = ChatViewModel.toolRefusalMessage(
+            name: "run_shell",
+            allowed: ["web_search", "weather", "browse"],
+            known: ["web_search", "weather", "browse"]
+        )
+        #expect(refusal != nil)
+        #expect(refusal?.contains("run_shell") == true)
+    }
+
     @Test("A call for an advertised tool is allowed through")
     func advertisedToolIsAllowed() {
-        #expect(ChatViewModel.toolRefusalMessage(name: "weather", disabledTools: []) == nil)
-        #expect(ChatViewModel.toolRefusalMessage(name: "weather", disabledTools: ["browse"]) == nil)
+        let all: Set<String> = ["web_search", "weather", "browse"]
+        #expect(ChatViewModel.toolRefusalMessage(name: "weather", allowed: all, known: all) == nil)
+        #expect(ChatViewModel.toolRefusalMessage(
+            name: "weather", allowed: ["weather"], known: all) == nil)
     }
 
     // MARK: - Broken-alias wire strip

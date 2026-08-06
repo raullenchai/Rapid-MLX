@@ -380,8 +380,17 @@ enum HTMLToMarkdown {
 
         private func isSafeHref(_ href: String) -> Bool {
             guard !href.isEmpty, !href.hasPrefix("#") else { return false }
-            let lower = href.lowercased()
-            if lower.hasPrefix("javascript:") || lower.hasPrefix("data:") || lower.hasPrefix("vbscript:") {
+            // Browsers strip ASCII whitespace and control characters (including
+            // leading spaces and EMBEDDED tab/newline/CR) before resolving a
+            // URL's scheme, so ``\njavascript:`` and ``jav\tascript:`` are live.
+            // Normalise the same way for the scheme allowlist test — this local
+            // is only used to classify the scheme, not to rewrite the link.
+            let scanned = String(
+                href.unicodeScalars.filter { $0.value > 0x20 && $0.value != 0x7F }
+            ).lowercased()
+            if scanned.hasPrefix("javascript:")
+                || scanned.hasPrefix("data:")
+                || scanned.hasPrefix("vbscript:") {
                 return false
             }
             return true

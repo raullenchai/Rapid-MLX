@@ -135,6 +135,12 @@ enum WebSearchTool {
         components.host = "html.duckduckgo.com"
         components.path = "/html/"
         components.queryItems = [URLQueryItem(name: "q", value: q)]
+        // URLQueryItem leaves a literal ``+`` unescaped, and a form-decoding
+        // endpoint reads ``+`` as a space — so ``C++`` would arrive as ``C  ``.
+        // Escape it explicitly. (Spaces are already ``%20`` here, so every
+        // remaining ``+`` is a real plus from the query text.)
+        components.percentEncodedQuery = components.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
         return components.url
     }
 

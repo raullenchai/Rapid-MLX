@@ -1023,8 +1023,7 @@ final class ChatViewModel {
                 enabled: enabledDefinitions
             )
             let allowedToolNames = Set(definitions.map { $0.function.name })
-            let roundDisabledTools = Set(tools.definitions.map { $0.function.name })
-                .subtracting(allowedToolNames)
+            let knownToolNames = Set(tools.definitions.map { $0.function.name })
             // Ambient anti-confabulation guidance, prepended for the wire body
             // only (never appended to the transcript) so the user's history
             // stays prose-only. Skipped when the transcript already opens with
@@ -1114,7 +1113,8 @@ final class ChatViewModel {
                     // error result so the model can recover in prose.
                     if let refusal = ChatViewModel.toolRefusalMessage(
                         name: call.function.name,
-                        disabledTools: roundDisabledTools
+                        allowed: allowedToolNames,
+                        known: knownToolNames
                     ) {
                         results.append(ToolCallResult(
                             toolCallID: call.id,
@@ -1217,10 +1217,19 @@ final class ChatViewModel {
     /// keeps trying.
     nonisolated static func toolRefusalMessage(
         name: String,
-        disabledTools: Set<String>
+        allowed: Set<String>,
+        known: Set<String>
     ) -> String? {
-        guard disabledTools.contains(name) else { return nil }
-        return "tool '\(name)' isn't available in this conversation — answer directly, or ask the user to enable it in Settings."
+        // Only a tool advertised (and enabled) THIS round may run. Everything
+        // else is refused before dispatch — a disabled-but-shipped tool and a
+        // name the model invented outright both get a recoverable prose nudge
+        // rather than reaching ``tools.run``.
+        if allowed.contains(name) { return nil }
+        if known.contains(name) {
+            return "tool '\(name)' isn't available in this conversation — answer directly, or ask the user to enable it in Settings."
+        }
+        let list = allowed.sorted().joined(separator: ", ")
+        return "unknown tool '\(name)'\(list.isEmpty ? "" : " — available: \(list)"). Answer directly instead."
     }
 
     /// Ambient anti-confabulation guidance — prepended to the wire body
