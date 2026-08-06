@@ -156,6 +156,51 @@ def _hf_files(repo_id: str) -> list[FileMeta]:
     return files
 
 
+# Files that live at the repo root and belong with EVERY quantisation
+# subfolder. A subfolder holds weights and tokenizer; provenance and terms
+# sit at the top level, and a mirror that drops them hands users a copy of
+# the weights with no statement of what they may do with them.
+_ROOT_KEEP = {
+    "LICENSE",
+    "LICENSE.txt",
+    "LICENSE.md",
+    "NOTICE",
+    "NOTICE.txt",
+    "README.md",
+}
+
+
+def _select_subfolder(files: list[FileMeta], subfolder: str) -> list[FileMeta]:
+    """Narrow ``files`` to one quantisation subfolder plus repo-root metadata.
+
+    Some upstreams now ship every quantisation of a model in ONE repo, as
+    sibling directories::
+
+        LiquidAI/LFM2.5-2.6B-MLX/
+          LICENSE  README.md  .gitattributes
+          4bit/  5bit/  6bit/  8bit/  bf16/  mxfp4/  mxfp8/  nvfp4/
+
+    Mirroring such a repo wholesale copies ~20 GB to serve the 1.6 GB anyone
+    actually pulls. Every other repo we mirror is one-quantisation-per-repo,
+    where "the repo" and "what we serve" are the same thing — which is why
+    this selector did not exist until the first subfolder repo showed up.
+
+    Keys keep their full in-repo path (``…-MLX/4bit/config.json``), so the
+    object layout on R2 stays a faithful copy of the source tree and the
+    alias resolver can point at the subfolder directly.
+    """
+    prefix = subfolder.strip("/") + "/"
+    selected = [f for f in files if f.relpath.startswith(prefix)]
+    if not selected:
+        available = sorted({f.relpath.split("/")[0] for f in files if "/" in f.relpath})
+        raise ValueError(
+            f"--subfolder {subfolder!r} matched no files. "
+            f"Available subfolders: {available or '(none — flat repo)'}"
+        )
+    roots = [f for f in files if "/" not in f.relpath and f.relpath in _ROOT_KEEP]
+    return roots + selected
+
+
 def _r2_client(endpoint_url: str, profile: str) -> Any:
     """Build a boto3 S3 client bound to the R2 endpoint / profile.
 
@@ -397,8 +442,15 @@ def mirror_repo(
     dry_run: bool = False,
     verify_only: bool = False,
     tmp_dir: Path | None = None,
+    subfolder: str | None = None,
 ) -> int:
-    """Mirror one HF repo to R2. Return process exit code (0 = ok)."""
+    """Mirror one HF repo to R2. Return process exit code (0 = ok).
+
+    ``subfolder`` narrows a multi-quantisation repo to one variant; see
+    ``_select_subfolder``. Omitted, the whole repo is mirrored, which is
+    correct for the one-quantisation-per-repo layout every other upstream
+    we mirror uses.
+    """
     started = time.monotonic()
     print(f"== mirror {repo_id} → r2://{bucket}/{repo_id}/ ==", flush=True)
     print(f"   endpoint: {endpoint_url}", flush=True)
@@ -409,6 +461,16 @@ def mirror_repo(
         print("   MODE:     verify-only (no uploads)", flush=True)
 
     files = _hf_files(repo_id)
+    if subfolder:
+        before = len(files)
+        before_bytes = sum((f.size or 0) for f in files)
+        files = _select_subfolder(files, subfolder)
+        kept_bytes = sum((f.size or 0) for f in files)
+        print(
+            f"   subfolder: {subfolder!r} — {len(files)}/{before} files, "
+            f"{kept_bytes / 1e9:.3f} of {before_bytes / 1e9:.3f} GB",
+            flush=True,
+        )
     # HF sometimes doesn't expose sizes for a subset of siblings; treat
     # those as 0 for the aggregate banner (the actual bytes-uploaded
     # counter tracks the ground truth below).
@@ -624,6 +686,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip upload; only run the verification pass.",
     )
     p.add_argument(
+        "--subfolder",
+        default=None,
+        help=(
+            "Mirror only this quantisation subfolder (e.g. '4bit') from a "
+            "repo that ships several. Repo-root LICENSE/NOTICE/README are "
+            "always included. Default: mirror the whole repo."
+        ),
+    )
+    p.add_argument(
         "--tmp-dir",
         default=None,
         help="Scratch dir for per-file downloads (default: /tmp/mirror-<pid>)",
@@ -636,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
     tmp = Path(args.tmp_dir) if args.tmp_dir else None
     return mirror_repo(
         args.repo_id,
+        subfolder=args.subfolder,
         endpoint_url=args.endpoint_url,
         bucket=args.bucket,
         profile=args.profile,
