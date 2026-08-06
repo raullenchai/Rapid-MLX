@@ -202,6 +202,12 @@ class StressE2EBenchStep(Step):
                             f"[BLOCKING] bench on {choice.model_id}: "
                             + bench_result["summary"]
                         )
+                    # Registered here, not after the matrix: the bench has
+                    # already produced its artifact, and an exception in
+                    # stress or in any agent below would otherwise discard
+                    # a measurement that was complete (review NIT).
+                    if bench_result.get("artifact"):
+                        all_artifacts.append(bench_result["artifact"])
 
                     # Stress.
                     stress_result = _capture_runner(
@@ -264,9 +270,6 @@ class StressE2EBenchStep(Step):
                             pending_failures.append(("agent", ag_result, agent))
                         if ag_result.get("artifact"):
                             all_artifacts.append(ag_result["artifact"])
-
-                    if bench_result.get("artifact"):
-                        all_artifacts.append(bench_result["artifact"])
 
             except _ServerStartError as e:
                 any_fail = True

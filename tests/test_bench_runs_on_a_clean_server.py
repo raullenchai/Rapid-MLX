@@ -35,9 +35,18 @@ def _run_body():
     )
 
 
-def _capture_runner_labels_in_order():
-    """Labels passed to `_capture_runner`, in source order."""
-    labels = []
+def _capture_runner_lines():
+    """``{label: lineno}`` for each literal ``_capture_runner("<label>", ...)``.
+
+    Ordering comes from ``lineno``, never from traversal order:
+    ``ast.walk`` is breadth-first, so it yields shallower nodes before
+    deeper ones regardless of where they sit in the source. The bench
+    call and the agent-matrix call are at different nesting depths — the
+    latter lives inside a ``for`` — so a walk-order test would have
+    reported an order the file does not have, and would have kept
+    passing with the bench moved back to the end (review BLOCKING).
+    """
+    lines = {}
     for node in ast.walk(_run_body()):
         if not isinstance(node, ast.Call):
             continue
@@ -47,20 +56,36 @@ def _capture_runner_labels_in_order():
             continue
         first = node.args[0]
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
-            labels.append(first.value)
-    return labels
+            lines[first.value] = first.lineno
+    return lines
 
 
-def test_bench_runs_before_stress_and_agents():
-    labels = _capture_runner_labels_in_order()
-    assert "bench" in labels, f"no bench runner found; got {labels}"
-    assert "stress" in labels, f"no stress runner found; got {labels}"
+def _agent_matrix_lineno():
+    """Line of ``for agent in registry["agents"]:`` — the matrix loop."""
+    for node in ast.walk(_run_body()):
+        if not isinstance(node, ast.For):
+            continue
+        it = node.iter
+        if (
+            isinstance(it, ast.Subscript)
+            and isinstance(it.value, ast.Name)
+            and it.value.id == "registry"
+            and isinstance(it.slice, ast.Constant)
+            and it.slice.value == "agents"
+        ):
+            return node.lineno
+    raise AssertionError("no `for agent in registry['agents']` loop found")
 
-    bench_at = labels.index("bench")
-    stress_at = labels.index("stress")
-    assert bench_at < stress_at, (
+
+def test_bench_runs_before_the_stress_battery():
+    lines = _capture_runner_lines()
+    assert "bench" in lines, f"no bench runner found; got {sorted(lines)}"
+    assert "stress" in lines, f"no stress runner found; got {sorted(lines)}"
+
+    order = sorted(lines, key=lines.get)
+    assert lines["bench"] < lines["stress"], (
         "the bench must run BEFORE the stress battery, on a server that has "
-        f"served nothing else. Runner order is {labels}. Benching afterwards "
+        f"served nothing else. Runner order is {order}. Benching afterwards "
         "measures residual state and cannot be compared against a baseline "
         "captured on a fresh server — a ~14% cold gap on Qwen3.5-35B-A3B-8bit."
     )
@@ -68,10 +93,10 @@ def test_bench_runs_before_stress_and_agents():
 
 def test_bench_runs_before_the_agent_matrix():
     """The agent matrix is the heavier half of the contamination."""
-    src = inspect.getsource(stress_e2e_bench.StressE2EBenchStep.run)
-    bench_at = src.index('_capture_runner(\n                        "bench"')
-    agents_at = src.index('for agent in registry["agents"]')
-    assert bench_at < agents_at, (
+    lines = _capture_runner_lines()
+    assert "bench" in lines, f"no bench runner found; got {sorted(lines)}"
+
+    assert lines["bench"] < _agent_matrix_lineno(), (
         "the bench must run before the agent matrix; benching after it "
         "measures a server that has already served every agent battery"
     )
