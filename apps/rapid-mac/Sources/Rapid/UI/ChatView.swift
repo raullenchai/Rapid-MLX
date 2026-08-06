@@ -288,7 +288,19 @@ struct ChatView: View {
                 MessageRow(
                     message: message,
                     isStreaming: viewModel.isStreaming,
-                    onRegenerate: regenerate
+                    onEdit: { newContent in
+                        viewModel.editUserMessage(
+                            id: message.id,
+                            newContent: newContent,
+                            alias: alias
+                        )
+                    },
+                    onRetry: {
+                        viewModel.retryAssistantMessage(
+                            id: message.id,
+                            alias: alias
+                        )
+                    }
                 )
                 .frame(maxWidth: contentMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -534,10 +546,6 @@ struct ChatView: View {
         viewModel.send(text, alias: alias)
     }
 
-    private func regenerate() {
-        guard !viewModel.isStreaming else { return }
-        viewModel.regenerateLast(alias: alias)
-    }
 }
 
 /// One transcript row — a user prompt bubble, an assistant answer
@@ -546,9 +554,14 @@ struct ChatView: View {
 private struct MessageRow: View {
     let message: ChatMessage
     let isStreaming: Bool
-    var onRegenerate: () -> Void = {}
+    var onEdit: (String) -> Bool = { _ in false }
+    var onRetry: () -> Bool = { false }
 
     @State private var reasoningExpanded: Bool = false
+    @State private var isEditing: Bool = false
+    @State private var editDraft: String = ""
+    @State private var copiedRecently: Bool = false
+    @FocusState private var editFieldFocused: Bool
 
     var body: some View {
         switch message.role {
@@ -564,19 +577,118 @@ private struct MessageRow: View {
     // MARK: User
 
     private var userBubble: some View {
-        HStack {
-            Spacer(minLength: 40)
-            Text(message.content)
-                .textSelection(.enabled)
-                .foregroundStyle(RapidTheme.userBubbleText)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: RapidTheme.Radius.bubble, style: .continuous)
-                        .fill(RapidTheme.userBubble)
-                )
+        VStack(alignment: .trailing, spacing: RapidTheme.Space.xs) {
+            HStack {
+                Spacer(minLength: 40)
+                if isEditing {
+                    userEditor
+                } else {
+                    Text(message.content)
+                        .textSelection(.enabled)
+                        .foregroundStyle(RapidTheme.userBubbleText)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: RapidTheme.Radius.bubble, style: .continuous)
+                                .fill(RapidTheme.userBubble)
+                        )
+                }
+            }
+            userActions
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
+        .task(id: isEditing) {
+            guard isEditing else { return }
+            editFieldFocused = true
+        }
+    }
+
+    private var userEditor: some View {
+        TextEditor(text: $editDraft)
+            .font(.body)
+            .foregroundStyle(RapidTheme.userBubbleText)
+            .scrollContentBackground(.hidden)
+            .focused($editFieldFocused)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(minWidth: 240, idealWidth: 420, maxWidth: 560, minHeight: 72, maxHeight: 160)
+            .background(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.bubble, style: .continuous)
+                    .fill(RapidTheme.userBubble)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.bubble, style: .continuous)
+                    .stroke(RapidTheme.utilityActionHover.opacity(0.7), lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private var userActions: some View {
+        HStack(spacing: 2) {
+            if isEditing {
+                QuietIconButton(
+                    symbol: "xmark",
+                    label: "Cancel editing",
+                    size: RapidTheme.ControlHeight.mini
+                ) {
+                    cancelEditing()
+                }
+                QuietIconButton(
+                    symbol: "checkmark",
+                    label: "Save edited message",
+                    size: RapidTheme.ControlHeight.mini
+                ) {
+                    saveEditing()
+                }
+                .disabled(
+                    isStreaming
+                        || editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            } else {
+                copyButton(text: message.content, label: "Copy message")
+                QuietIconButton(
+                    symbol: "pencil",
+                    label: "Edit message",
+                    size: RapidTheme.ControlHeight.mini
+                ) {
+                    editDraft = message.content
+                    isEditing = true
+                }
+                .disabled(isStreaming)
+            }
+        }
+    }
+
+    private func cancelEditing() {
+        editFieldFocused = false
+        editDraft = message.content
+        isEditing = false
+    }
+
+    private func saveEditing() {
+        guard onEdit(editDraft) else { return }
+        editFieldFocused = false
+        isEditing = false
+    }
+
+    @ViewBuilder
+    private func copyButton(text: String, label: String) -> some View {
+        QuietIconButton(
+            symbol: copiedRecently ? "checkmark" : "doc.on.doc",
+            label: label,
+            tint: copiedRecently ? RapidTheme.utilityActionSuccess : nil,
+            size: RapidTheme.ControlHeight.mini
+        ) {
+            copySanitizedToPasteboard(text)
+            copiedRecently = true
+        }
+        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .task(id: copiedRecently) {
+            guard copiedRecently else { return }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            copiedRecently = false
+        }
     }
 
     // MARK: Assistant
@@ -609,8 +721,29 @@ private struct MessageRow: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
+            assistantActions
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var assistantActions: some View {
+        HStack(spacing: 2) {
+            copyButton(text: assistantCopyText, label: "Copy response")
+            QuietIconButton(
+                symbol: "arrow.clockwise",
+                label: "Retry response",
+                size: RapidTheme.ControlHeight.mini
+            ) {
+                _ = onRetry()
+            }
+            .disabled(isStreaming)
+        }
+    }
+
+    private var assistantCopyText: String {
+        message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? message.reasoning
+            : message.content
     }
 
     private var reasoningDisclosure: some View {
@@ -645,21 +778,10 @@ private struct MessageRow: View {
     }
 
     private var failureCaption: some View {
-        HStack(spacing: 10) {
-            // A failed turn is an ERROR, so it takes the error token.
-            // It previously rendered in deep amber, which under this
-            // palette means brand / active / working — the same hue the
-            // product uses for a model that is starting up. Red is the
-            // only colour that means "this went wrong".
-            Text(message.errorMessage ?? "The model couldn't complete that request.")
-                .font(.footnote)
-                .foregroundStyle(RapidTheme.statusError)
-            Button("Regenerate", action: onRegenerate)
-                .buttonStyle(.link)
-                .font(.footnote)
-                .disabled(isStreaming)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(message.errorMessage ?? "The model couldn't complete that request.")
+            .font(.footnote)
+            .foregroundStyle(RapidTheme.statusError)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// A ``.complete`` row can still carry a soft, non-error caption —

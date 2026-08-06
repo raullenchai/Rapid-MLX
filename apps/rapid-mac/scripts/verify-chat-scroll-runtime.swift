@@ -7,8 +7,12 @@ import SwiftUI
 
 @MainActor
 final class HarnessModel: ObservableObject {
-    @Published var rowCount = 120
+    @Published var rowCount: Int
     @Published var isPinnedToBottom = true
+
+    init(rowCount: Int = 120) {
+        self.rowCount = rowCount
+    }
 }
 
 @MainActor
@@ -39,7 +43,7 @@ private struct HarnessView: View {
             )
             .overlay(ScrollCaptureProbe(capture: capture).frame(width: 0, height: 0))
         }
-        .frame(width: 420, height: 320)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -87,18 +91,53 @@ struct ChatScrollRuntimeCheck {
         pump()
     }
 
+    static func bottomTargetY(_ scroll: NSScrollView, document: NSView) -> CGFloat {
+        if document.isFlipped {
+            return max(
+                document.bounds.minY - scroll.contentInsets.top,
+                document.bounds.maxY
+                    + scroll.contentInsets.bottom
+                    - scroll.contentView.bounds.height
+            )
+        }
+        return document.bounds.minY - scroll.contentInsets.bottom
+    }
+
+    static func bottomDistance(_ scroll: NSScrollView, document: NSView) -> CGFloat {
+        if document.isFlipped {
+            return document.bounds.maxY
+                + scroll.contentInsets.bottom
+                - scroll.contentView.bounds.maxY
+        }
+        return scroll.contentView.bounds.minY
+            - (document.bounds.minY - scroll.contentInsets.bottom)
+    }
+
     static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
-        let model = HarnessModel()
+        let model = HarnessModel(rowCount: 2)
         let capture = ScrollCapture()
-        let host = NSHostingView(rootView: HarnessView(model: model, capture: capture))
+        let host = NSHostingView(
+            rootView: NavigationSplitView {
+                Text("Rapid-MLX")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .navigationSplitViewColumnWidth(180)
+            } detail: {
+                HarnessView(model: model, capture: capture)
+                    .frame(minWidth: 440, minHeight: 320)
+            }
+            .frame(width: 900, height: 560)
+        )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
-            styleMask: [.borderless],
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        window.title = "Rapid-MLX"
+        window.titlebarAppearsTransparent = true
+        window.toolbar = NSToolbar(identifier: "Rapid.ChatScrollCheck")
         window.contentView = host
         window.orderFrontRegardless()
         pump(0.8)
@@ -108,7 +147,62 @@ struct ChatScrollRuntimeCheck {
             exit(1)
         }
 
-        var bottomY = max(0, document.bounds.height - scroll.contentView.bounds.height)
+        // SwiftUI's full-size macOS window contributes a titlebar content
+        // inset to the transcript scroll view. Reproduce it explicitly so
+        // this check remains deterministic outside a full App scene.
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: 48, left: 0, bottom: 0, right: 0)
+        model.rowCount = 3
+        pump(0.2)
+        model.rowCount = 2
+        pump(0.2)
+
+        // A short conversation must remain wholly visible. This is the exact
+        // shape where an eager bottom anchor can leave the first user bubble
+        // above the clip view even though most of the transcript is blank;
+        // trying to reveal it then only produces AppKit's elastic snap-back.
+        let shortDocumentRect = document.bounds
+        let shortVisibleRect = scroll.documentVisibleRect
+        guard shortDocumentRect.height <= shortVisibleRect.height + 0.5,
+              shortVisibleRect.contains(shortDocumentRect)
+        else {
+            fputs("FAIL: short transcript hid content above the viewport\n", stderr)
+            fputs("\(metrics(scroll))\n", stderr)
+            exit(1)
+        }
+        let expectedShortY = document.bounds.minY - scroll.contentInsets.top
+        guard abs(scroll.contentView.bounds.minY - expectedShortY) <= 0.5 else {
+            fputs("FAIL: short transcript was pushed beneath its top content inset\n", stderr)
+            fputs(
+                "expectedY=\(expectedShortY) actualY=\(scroll.contentView.bounds.minY) "
+                    + "\(metrics(scroll))\n",
+                stderr
+            )
+            exit(1)
+        }
+
+        // A SwiftUI Window uses a full-size content view: the scroll view may
+        // geometrically extend beneath the translucent titlebar, but its
+        // scroll content must be inset by the overlap. Otherwise the first
+        // message is visible to NSScrollView yet blurred behind the titlebar,
+        // and attempting to reveal it only hits the elastic top boundary.
+        let scrollRectInHost = scroll.convert(scroll.bounds, to: host)
+        let safeContentTop = host.bounds.maxY - host.safeAreaInsets.top
+        let titlebarOverlap = max(0, scrollRectInHost.maxY - safeContentTop)
+        guard scroll.contentInsets.top + 0.5 >= titlebarOverlap else {
+            fputs("FAIL: transcript content extends beneath the titlebar\n", stderr)
+            fputs(
+                "overlap=\(titlebarOverlap) host.safe=\(host.safeAreaInsets) "
+                    + "scroll.frame=\(scrollRectInHost) \(metrics(scroll))\n",
+                stderr
+            )
+            exit(1)
+        }
+
+        model.rowCount = 120
+        pump(0.4)
+
+        var bottomY = bottomTargetY(scroll, document: document)
         move(scroll, toY: bottomY)
         guard model.isPinnedToBottom else {
             fputs("FAIL: initial transcript did not follow the bottom\n", stderr)
@@ -140,7 +234,7 @@ struct ChatScrollRuntimeCheck {
                 exit(1)
             }
 
-            bottomY = max(0, document.bounds.height - scroll.contentView.bounds.height)
+            bottomY = bottomTargetY(scroll, document: document)
             NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
             move(scroll, toY: bottomY)
             NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
@@ -156,13 +250,13 @@ struct ChatScrollRuntimeCheck {
                 pump(0.03)
             }
             pump(0.2)
-            let distance = document.bounds.height - scroll.contentView.bounds.maxY
+            let distance = bottomDistance(scroll, document: document)
             guard model.isPinnedToBottom && distance <= 2.5 else {
                 fputs("FAIL: cycle \(cycle) streamed content was not followed after resuming\n", stderr)
                 fputs("distance=\(distance) \(metrics(scroll))\n", stderr)
                 exit(1)
             }
-            bottomY = max(0, document.bounds.height - scroll.contentView.bounds.height)
+            bottomY = bottomTargetY(scroll, document: document)
         }
 
         // A GENTLE scroll must escape too. The cycles above jump 240 pt in one
@@ -191,14 +285,14 @@ struct ChatScrollRuntimeCheck {
         }
         NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
         pump(0.2)
-        let gentleDistance = document.bounds.height - scroll.contentView.bounds.maxY
+        let gentleDistance = bottomDistance(scroll, document: document)
         guard !model.isPinnedToBottom, gentleDistance > 2 else {
             fputs("FAIL: a gentle (sub-slack) scroll was dragged back to the bottom\n", stderr)
             fputs("distance=\(gentleDistance) pinned=\(model.isPinnedToBottom) \(metrics(scroll))\n", stderr)
             exit(1)
         }
 
-        print("PASS: paused scrolling and bottom-resume following survived 3 streaming cycles + gentle scroll")
+        print("PASS: titlebar insets, paused scrolling, bottom resume, and gentle scrolling")
         window.close()
     }
 }

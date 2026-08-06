@@ -184,9 +184,12 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             let clipBounds = scrollView.contentView.bounds
             let distance: CGFloat
             if documentView.isFlipped {
-                distance = documentView.bounds.maxY - clipBounds.maxY
+                distance = documentView.bounds.maxY
+                    + scrollView.contentInsets.bottom
+                    - clipBounds.maxY
             } else {
-                distance = clipBounds.minY - documentView.bounds.minY
+                distance = clipBounds.minY
+                    - (documentView.bounds.minY - scrollView.contentInsets.bottom)
             }
             return distance <= bottomResumeSlack
         }
@@ -202,12 +205,17 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             let clipView = scrollView.contentView
             let targetY: CGFloat
             if documentView.isFlipped {
+                // SwiftUI's full-size macOS window contributes the transparent
+                // titlebar safe area through contentInsets. For a short
+                // transcript, zero is therefore below the natural top edge.
                 targetY = max(
-                    documentView.bounds.minY,
-                    documentView.bounds.maxY - clipView.bounds.height
+                    documentView.bounds.minY - scrollView.contentInsets.top,
+                    documentView.bounds.maxY
+                        + scrollView.contentInsets.bottom
+                        - clipView.bounds.height
                 )
             } else {
-                targetY = documentView.bounds.minY
+                targetY = documentView.bounds.minY - scrollView.contentInsets.bottom
             }
             clipView.scroll(to: NSPoint(x: clipView.bounds.minX, y: targetY))
             scrollView.reflectScrolledClipView(clipView)

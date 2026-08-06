@@ -66,6 +66,11 @@ final class ChatViewModel {
 
     private var inflight: Task<Void, Never>?
 
+    /// Tests that exercise turn replay can disable disk I/O so seeded
+    /// transcripts never read or overwrite the user's conversation history.
+    /// Production keeps the default enabled.
+    private let persistsConversations: Bool
+
     /// v0.4.14: user-mutable sampling knobs. Optional in the init
     /// signature so existing tests don't have to spin one up — they
     /// fall back to the v0.4.12 hard-coded defaults via
@@ -86,12 +91,14 @@ final class ChatViewModel {
     init(
         client: ChatStreamClient = ChatStreamClient(),
         sampling: SamplingConfig? = nil,
-        server: ServerManager? = nil
+        server: ServerManager? = nil,
+        persistsConversations: Bool = true
     ) {
         self.client = client
         self.sampling = sampling
         self.server = server
-        self.conversations = ConversationStore.load()
+        self.persistsConversations = persistsConversations
+        self.conversations = persistsConversations ? ConversationStore.load() : []
     }
 
     // MARK: - Conversation history (M3)
@@ -133,7 +140,9 @@ final class ChatViewModel {
                 at: 0
             )
         }
-        ConversationStore.save(conversations)
+        if persistsConversations {
+            ConversationStore.save(conversations)
+        }
     }
 
     /// Load a saved conversation into the transcript, archiving whatever is
@@ -173,7 +182,9 @@ final class ChatViewModel {
             lastFailureKind = nil
         }
         conversations.removeAll { $0.id == id }
-        ConversationStore.save(conversations)
+        if persistsConversations {
+            ConversationStore.save(conversations)
+        }
     }
 
     // MARK: - In-memory message storage
@@ -803,6 +814,29 @@ final class ChatViewModel {
         let userText = messages[lastUserIndex].content
         messages = Array(messages.prefix(lastUserIndex))
         send(userText, alias: alias)
+    }
+
+    /// Retry the turn that produced a specific assistant message. This is
+    /// intentionally message-addressed: retrying an older response rewinds
+    /// to the user prompt immediately before it instead of regenerating the
+    /// latest turn by accident.
+    @discardableResult
+    func retryAssistantMessage(id: UUID, alias: String) -> Bool {
+        guard !isStreaming else { return false }
+        guard let assistantIndex = messages.firstIndex(where: {
+            $0.id == id && $0.role == .assistant
+        }) else { return false }
+        guard let userIndex = messages[..<assistantIndex].lastIndex(where: {
+            $0.role == .user
+        }) else { return false }
+
+        let userText = messages[userIndex].content
+        guard !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        messages = Array(messages.prefix(userIndex))
+        send(userText, alias: alias)
+        return true
     }
 
     /// Same as ``regenerateLast(alias:)`` but brings up ``newAlias``
