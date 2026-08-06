@@ -2930,6 +2930,9 @@ def serve_command(args):
 
     # Configure system prompt pinning
     server._pin_system_prompt = args.pin_system_prompt
+    server._relocate_mid_conversation_system = getattr(
+        args, "relocate_mid_conversation_system", False
+    )
 
     # Configure tool calling
     if args.enable_auto_tool_choice and args.tool_call_parser:
@@ -8304,6 +8307,19 @@ Examples:
         action="store_true",
         default=False,
         help="Auto-pin system prompt in prefix cache to prevent eviction under memory pressure",
+    )
+    serve_parser.add_argument(
+        "--relocate-mid-conversation-system",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep a mid-conversation system message at its position (folded "
+            "into the next user turn) instead of hoisting it into the leading "
+            "system block. Preserves the prefix cache for clients that inject "
+            "reminders mid-session (Claude Code); OFF by default because the "
+            "relocated text carries user authority rather than system "
+            "authority."
+        ),
     )
     # Multimodal option
     serve_parser.add_argument(

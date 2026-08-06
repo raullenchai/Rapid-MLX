@@ -173,6 +173,12 @@ class ServerConfig:
     pin_system_prompt: bool = False
     pinned_system_prompt_hash: str | None = None
 
+    # Keep a mid-conversation ``role="system"`` message at its original
+    # position (folded into the following user turn) instead of hoisting
+    # it into the leading system block. OFF by default — see
+    # ``anthropic_adapter._relocate_mid_system_enabled`` for the trade.
+    relocate_mid_conversation_system: bool = False
+
     # --- Audio lane (task #292) ---
     # Operator opt-in for ``/v1/audio/*`` routes on a TEXT-only server.
     # Pre-fix the audio router was unconditionally attached even when

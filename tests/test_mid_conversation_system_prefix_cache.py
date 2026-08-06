@@ -453,7 +453,8 @@ class TestRelocationIsOptInAndOffByDefault:
 
     The constraint would land inside the very turn asking to override
     it. That trade is not ours to make silently, so the shipped default
-    is the historical hoist and the cache win is opt-in.
+    is the historical hoist and the cache win is opt-in via
+    ``serve --relocate-mid-conversation-system``.
     """
 
     MSGS = [
@@ -463,34 +464,39 @@ class TestRelocationIsOptInAndOffByDefault:
         Message(role="user", content="t1"),
     ]
 
-    def test_default_hoists(self, monkeypatch):
-        from vllm_mlx.api import anthropic_adapter
+    def test_default_is_off(self):
+        from vllm_mlx.config.server_config import ServerConfig
 
-        monkeypatch.delenv(anthropic_adapter.RELOCATE_MID_SYSTEM_ENV, raising=False)
-        assert anthropic_adapter._relocate_mid_system_enabled() is False
+        assert ServerConfig().relocate_mid_conversation_system is False
+
+    def test_default_hoists(self):
         out = _merge_raw(list(self.MSGS))
         assert NUDGE in text(out[0])
         assert all("<system-reminder>" not in text(m) for m in out[1:])
 
-    def test_enabled_relocates(self, monkeypatch):
-        from vllm_mlx.api import anthropic_adapter
-
-        monkeypatch.setenv(anthropic_adapter.RELOCATE_MID_SYSTEM_ENV, "1")
-        assert anthropic_adapter._relocate_mid_system_enabled() is True
+    def test_enabled_relocates(self):
         out = _merge_raw(list(self.MSGS), relocate_mid_conversation=True)
         assert text(out[0]) == "base"
         assert NUDGE in text(out[-1])
 
-    @pytest.mark.parametrize("raw", ["0", "false", "no", "off", "", "  "])
-    def test_falsy_values_stay_off(self, monkeypatch, raw):
+    def test_adapter_consults_the_config_flag(self, monkeypatch):
+        """The switch is a server flag, not an out-of-band env var."""
         from vllm_mlx.api import anthropic_adapter
 
-        monkeypatch.setenv(anthropic_adapter.RELOCATE_MID_SYSTEM_ENV, raw)
+        class _Cfg:
+            relocate_mid_conversation_system = True
+
+        monkeypatch.setattr("vllm_mlx.config.get_config", lambda: _Cfg(), raising=False)
+        assert anthropic_adapter._relocate_mid_system_enabled() is True
+
+        _Cfg.relocate_mid_conversation_system = False
         assert anthropic_adapter._relocate_mid_system_enabled() is False
 
-    @pytest.mark.parametrize("raw", ["1", "true", "yes", "on"])
-    def test_truthy_values_turn_it_on(self, monkeypatch, raw):
+    def test_adapter_defaults_off_when_config_is_absent(self, monkeypatch):
         from vllm_mlx.api import anthropic_adapter
 
-        monkeypatch.setenv(anthropic_adapter.RELOCATE_MID_SYSTEM_ENV, raw)
-        assert anthropic_adapter._relocate_mid_system_enabled() is True
+        def _boom():
+            raise RuntimeError("config not initialised")
+
+        monkeypatch.setattr("vllm_mlx.config.get_config", _boom, raising=False)
+        assert anthropic_adapter._relocate_mid_system_enabled() is False

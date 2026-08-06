@@ -303,6 +303,11 @@ _no_thinking: bool = (
     False  # --no-thinking: force enable_thinking=False in chat template
 )
 
+#: Keep a mid-conversation ``role="system"`` message at its position
+#: instead of hoisting it into the leading system block. Set from
+#: ``serve --relocate-mid-conversation-system``; OFF by default.
+_relocate_mid_conversation_system: bool = False
+
 # Pinned prefix cache (Tier 0 optimization)
 _pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
 _pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
@@ -2056,6 +2061,7 @@ def _sync_config() -> None:
     cfg.body_receive_timeout_seconds = _body_receive_timeout_seconds
     cfg.gc_control = _gc_control
     cfg.no_thinking = _no_thinking
+    cfg.relocate_mid_conversation_system = _relocate_mid_conversation_system
     cfg.thinking_token_budget = _thinking_token_budget
     cfg.pin_system_prompt = _pin_system_prompt
     cfg.pinned_system_prompt_hash = _pinned_system_prompt_hash
