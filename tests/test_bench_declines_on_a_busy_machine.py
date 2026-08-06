@@ -163,24 +163,24 @@ def _harness(monkeypatch, tmp_path, base_ms, pr_ms, git_run=None):
     return result, order, seen
 
 
-def test_the_ab_is_interleaved_by_construction():
-    """Ordering is the whole point — drift must hit both arms alike."""
+def test_the_ab_shares_one_round_loop():
+    """Both arms must be measured inside the same round, not in two passes.
+
+    Two separate loops would mean all of one arm, then all of the other —
+    any drift over the run lands entirely on whichever went second.
+    """
     import inspect
 
     src = inspect.getsource(seb._bench_ab_against_base)
     assert src.count("for round_no") == 1, "both arms must share one round loop"
-    body = src[src.index("for round_no in range(AB_ROUNDS)") :]
-    assert body.index('("base", tmp, base_caps)') < body.index(
-        '("pr", ctx.repo_root, pr_caps)'
-    )
+    assert "for arm in order" in src
 
 
-def test_interleaving_is_observed_at_runtime(monkeypatch, tmp_path):
-    result, order, _ = _harness(
-        monkeypatch, tmp_path, [(250, 400)] * 2, [(251, 401)] * 2
-    )
-    assert order == ["base", "pr", "base", "pr"], order
-    assert result["status"] == "pass", result["summary"]
+def test_both_arms_are_measured_every_round(monkeypatch, tmp_path):
+    _, order, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(251, 401)] * 2)
+    assert len(order) == 4, order
+    assert sorted(order[:2]) == ["base", "pr"], order
+    assert sorted(order[2:]) == ["base", "pr"], order
 
 
 def test_a_regression_survives_the_ab(monkeypatch, tmp_path):
@@ -279,3 +279,60 @@ def test_a_flagged_bench_defers_instead_of_deciding():
     src = inspect.getsource(seb.StressE2EBenchStep.run)
     assert 'pending_failures.append(("bench", bench_result, None))' in src
     assert "_bench_ab_against_base(" in src
+
+
+# --- review round 3 -------------------------------------------------------
+
+
+def test_arm_order_is_counterbalanced_across_rounds(monkeypatch, tmp_path):
+    """Interleaving is not enough — the ORDER has to alternate too.
+
+    base/PR/base/PR still runs base first every round, so a repeatable order
+    effect (thermal buildup, a cache warming across the round, the OS
+    settling after the first model load) lands on the PR arm every time. It
+    is consistent, so the spread check sees nothing, and it reads as a
+    regression.
+    """
+    _, order, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2)
+    assert order == ["base", "pr", "pr", "base"], order
+    assert order.count("base") == order.count("pr") == 2
+    # Each arm goes first exactly once.
+    assert {order[0], order[2]} == {"base", "pr"}
+
+
+def test_the_ab_writes_the_artifact_the_docs_promise(monkeypatch, tmp_path):
+    """`harness/README.md` tells people to read the spreads — so emit them."""
+    result, _, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(350, 400)] * 2)
+    path = pathlib.Path(result["artifact"])
+    assert path.exists(), result
+    data = json.loads(path.read_text())
+    assert set(data["capture_spread_pct"]) == {
+        "base_cold",
+        "base_warm",
+        "pr_cold",
+        "pr_warm",
+    }
+    assert len(data["base_captures"]) == len(data["pr_captures"]) == 2
+    assert "delta_pct" in data
+
+
+def test_an_inconclusive_ab_is_not_reported_as_exoneration():
+    """ "We could not tell" must not become "not this PR".
+
+    Folding `skip` into the same branch as `pass` would clear a possible real
+    regression on the strength of a measurement just declared unusable.
+    """
+    import inspect
+
+    src = inspect.getsource(seb.StressE2EBenchStep.run)
+    block = src[src.index('if kind == "bench":') :]
+    block = block[: block.index("base_result = _run_base_check")]
+    assert 'elif ab["status"] == "pass":' in block, block
+    assert "[INCONCLUSIVE]" in block
+    # The exoneration path must be reachable only from an answered A/B.
+    not_this_pr = block.index("[NOT-THIS-PR]")
+    inconclusive = block.index("[INCONCLUSIVE]")
+    assert not_this_pr < inconclusive
+    # ...and only the answered one counts toward the pre-existing tally.
+    assert block.count("preexisting_count += 1") == 1
+    assert block.index("preexisting_count += 1") < inconclusive

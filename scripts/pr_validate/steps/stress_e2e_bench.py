@@ -299,15 +299,30 @@ class StressE2EBenchStep(Step):
                         summary=ab["summary"],
                         lane="base",
                     )
+                    if ab.get("artifact"):
+                        all_artifacts.append(ab["artifact"])
                     if ab["status"] == "fail":
                         any_fail = True
                         all_findings.append(
                             f"[BLOCKING] bench on {choice.model_id}: {ab['summary']}"
                         )
-                    else:
+                    elif ab["status"] == "pass":
+                        # The A/B answered: the base ref shows the same
+                        # numbers here and now, so the diff did not cause them.
                         preexisting_count += 1
                         all_findings.append(
                             f"[NOT-THIS-PR] bench on {choice.model_id}: {ab['summary']}"
+                        )
+                    else:
+                        # It did NOT answer. "We could not tell" is not "the PR
+                        # is innocent" — reporting it as [NOT-THIS-PR] would
+                        # exonerate a possible real regression on the strength
+                        # of a measurement we had just declared unusable.
+                        # Surface it as its own thing, and do not count it
+                        # toward the pre-existing tally.
+                        all_findings.append(
+                            f"[INCONCLUSIVE] bench on {choice.model_id}: "
+                            f"{ab['summary']}"
                         )
                     continue
                 base_result = _run_base_check(ctx, choice, kind, agent)
@@ -831,11 +846,18 @@ def _bench_ab_against_base(
             check=True,
             timeout=120,
         )
+        arms = {"base": (tmp, base_caps), "pr": (ctx.repo_root, pr_caps)}
         for round_no in range(AB_ROUNDS):
-            for arm, root, sink in (
-                ("base", tmp, base_caps),
-                ("pr", ctx.repo_root, pr_caps),
-            ):
+            # COUNTERBALANCED, not merely interleaved. base/PR/base/PR still
+            # runs base first every round, so any repeatable order effect —
+            # thermal buildup, a cache that warms across the round, the OS
+            # settling after the first model load — lands on the PR arm every
+            # time. It is consistent, so the spread check sees nothing, and it
+            # reads as a regression. Alternating the ORDER (base,PR then
+            # PR,base) makes each arm's position cancel across rounds.
+            order = ("base", "pr") if round_no % 2 == 0 else ("pr", "base")
+            for arm in order:
+                root, sink = arms[arm]
                 with _server_in_repo(
                     choice,
                     ctx,
@@ -905,9 +927,37 @@ def _bench_ab_against_base(
         f"over {AB_ROUNDS} interleaved rounds"
     )
 
+    # Written where they are actually computed. The fast path deliberately
+    # takes a single capture (it must match how the baselines were captured),
+    # so it has no spread to report; the A/B does.
+    ab_path = ctx.artifact_path(f"bench-ab-{_safe_name(choice.model_id)}.json")
+    ab_path.write_text(
+        json.dumps(
+            {
+                "model": choice.model_id,
+                "rounds": AB_ROUNDS,
+                "base_captures": [
+                    {"cold_request_ms_median": c, "warm_request_ms_median": w}
+                    for c, w in base_caps
+                ],
+                "pr_captures": [
+                    {"cold_request_ms_median": c, "warm_request_ms_median": w}
+                    for c, w in pr_caps
+                ],
+                "capture_spread_pct": spreads,
+                "delta_pct": {
+                    "cold_request_ms_median": d_cold,
+                    "warm_request_ms_median": d_warm,
+                },
+            },
+            indent=2,
+        )
+    )
+
     if noisy:
         return {
             "status": "skip",
+            "artifact": str(ab_path),
             "summary": (
                 f"machine not quiet enough to judge: repeats disagree by "
                 f"{', '.join(noisy)}. {detail}. Recorded, not gated — close "
@@ -918,6 +968,7 @@ def _bench_ab_against_base(
     if d_cold > cold_thr or d_warm > warm_thr:
         return {
             "status": "fail",
+            "artifact": str(ab_path),
             "summary": (
                 f"perf regression confirmed against the base ref measured in "
                 f"this session: cold {d_cold:+.1f}%, warm {d_warm:+.1f}%. {detail}"
@@ -926,6 +977,7 @@ def _bench_ab_against_base(
         }
     return {
         "status": "pass",
+        "artifact": str(ab_path),
         "summary": (
             f"not this PR: vs the base ref measured in this session, cold "
             f"{d_cold:+.1f}%, warm {d_warm:+.1f}% — within threshold. {detail}. "
