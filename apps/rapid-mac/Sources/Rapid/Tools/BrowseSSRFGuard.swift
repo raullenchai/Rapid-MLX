@@ -101,38 +101,90 @@ enum BrowseSSRFGuard {
     /// Resolve a hostname to every A / AAAA address. Runs `getaddrinfo` off the
     /// cooperative pool (it blocks). Returns `[]` (→ ``unresolvable``) on
     /// lookup failure rather than throwing a raw errno.
+    ///
+    /// Hard-bounded by ``resolveTimeout``: ``getaddrinfo`` is a blocking syscall
+    /// that neither Swift task cancellation nor a task-group race can interrupt
+    /// (a task group would still await the blocked child). Without a bound, a
+    /// host whose resolver stalls would pin the ``browse`` call — and the chat
+    /// turn awaiting it, unresponsive to Stop — for the OS resolver's own
+    /// timeout (~30 s). We run the lookup fire-and-forget and resume from
+    /// whichever finishes first, the lookup or the deadline; the orphaned
+    /// lookup completes on its own and its late result is dropped by the
+    /// single-resume guard. Throws ``Rejection.unresolvable`` on timeout so the
+    /// fetch fails closed.
+    static let resolveTimeout: TimeInterval = 8
+
     static func resolve(_ host: String) async throws -> [ParsedIP] {
-        try await withCheckedThrowingContinuation { continuation in
+        let gate = SingleResume()
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<[ParsedIP], Error>) in
+            gate.attach(continuation)
             DispatchQueue.global(qos: .userInitiated).async {
-                var hints = addrinfo(
-                    ai_flags: 0,
-                    ai_family: AF_UNSPEC,
-                    ai_socktype: SOCK_STREAM,
-                    ai_protocol: IPPROTO_TCP,
-                    ai_addrlen: 0,
-                    ai_canonname: nil,
-                    ai_addr: nil,
-                    ai_next: nil
-                )
-                var result: UnsafeMutablePointer<addrinfo>?
-                let status = getaddrinfo(host, nil, &hints, &result)
-                guard status == 0, let first = result else {
-                    // NXDOMAIN / no address → treat as unresolvable, not a crash.
-                    continuation.resume(returning: [])
-                    return
-                }
-                defer { freeaddrinfo(first) }
-                var out: [ParsedIP] = []
-                var node: UnsafeMutablePointer<addrinfo>? = first
-                while let cur = node {
-                    if let sa = cur.pointee.ai_addr {
-                        if let ip = ParsedIP(sockaddr: sa) { out.append(ip) }
-                    }
-                    node = cur.pointee.ai_next
-                }
-                continuation.resume(returning: out)
+                gate.resume(.success(blockingLookup(host)))
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + resolveTimeout) {
+                gate.resume(.failure(Rejection.unresolvable(host)))
             }
         }
+    }
+
+    /// Synchronous ``getaddrinfo`` — blocks the calling thread until the OS
+    /// resolver returns. Only ever run on a background queue by ``resolve``.
+    private static func blockingLookup(_ host: String) -> [ParsedIP] {
+        var hints = addrinfo(
+            ai_flags: 0,
+            ai_family: AF_UNSPEC,
+            ai_socktype: SOCK_STREAM,
+            ai_protocol: IPPROTO_TCP,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil
+        )
+        var result: UnsafeMutablePointer<addrinfo>?
+        let status = getaddrinfo(host, nil, &hints, &result)
+        guard status == 0, let first = result else {
+            // NXDOMAIN / no address → treat as unresolvable, not a crash.
+            return []
+        }
+        defer { freeaddrinfo(first) }
+        var out: [ParsedIP] = []
+        var node: UnsafeMutablePointer<addrinfo>? = first
+        while let cur = node {
+            if let sa = cur.pointee.ai_addr {
+                if let ip = ParsedIP(sockaddr: sa) { out.append(ip) }
+            }
+            node = cur.pointee.ai_next
+        }
+        return out
+    }
+}
+
+/// Single-resume bridge so ``getaddrinfo`` and the resolve deadline can race:
+/// the first to fire resumes the continuation, the loser is dropped. The lock
+/// makes the once-only transition safe across the two background threads.
+private final class SingleResume: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<[ParsedIP], Error>?
+    private var resumed = false
+
+    func attach(_ continuation: CheckedContinuation<[ParsedIP], Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.continuation = continuation
+    }
+
+    func resume(_ result: Result<[ParsedIP], Error>) {
+        lock.lock()
+        if resumed {
+            lock.unlock()
+            return
+        }
+        resumed = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
     }
 }
 

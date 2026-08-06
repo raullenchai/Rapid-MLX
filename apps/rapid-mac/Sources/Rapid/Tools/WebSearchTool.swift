@@ -121,11 +121,27 @@ enum WebSearchTool {
 
     // MARK: - Per-provider runners
 
+    /// Build DuckDuckGo's HTML-endpoint URL for a raw query.
+    ///
+    /// Uses ``URLComponents`` + ``URLQueryItem`` rather than hand-splicing a
+    /// percent-encoded string: ``.urlQueryAllowed`` deliberately leaves the
+    /// sub-delimiters ``& = + #`` unescaped, so a query that merely contains an
+    /// ``&`` (``"cats & dogs"``) or ``#`` would otherwise inject extra query
+    /// parameters or truncate the query into a fragment. ``URLQueryItem``
+    /// percent-encodes the value as a single opaque field.
+    static func duckDuckGoSearchURL(query q: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "html.duckduckgo.com"
+        components.path = "/html/"
+        components.queryItems = [URLQueryItem(name: "q", value: q)]
+        return components.url
+    }
+
     static func runDuckDuckGo(query q: String, fallbackNote: String?) async -> ToolCallResult {
         let toolName = "web_search"
         // DDG's HTML endpoint expects ``q=`` URL-encoded.
-        guard let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://html.duckduckgo.com/html/?q=\(encoded)") else {
+        guard let url = duckDuckGoSearchURL(query: q) else {
             return ToolCallResult(toolCallID: "", content: "\(toolName) error: could not build search URL", isError: true)
         }
         var req = URLRequest(url: url)
@@ -303,23 +319,43 @@ enum WebSearchTool {
     /// fire first and we can revisit.
     static func containsResultBodyClassToken(_ html: String) -> Bool {
         let needle = "result__body"
-        let bytes = html
-        var idx = bytes.startIndex
-        while let r = bytes.range(of: needle, range: idx..<bytes.endIndex) {
-            // Look backward for the opening ``class=`` attribute on
-            // the same tag. ``<`` bounds the search so we don't
-            // pull in a class attribute from an earlier element.
-            let scanFrom = bytes.startIndex
-            let scope = bytes[scanFrom..<r.lowerBound]
-            if let openTag = scope.range(of: "<", options: .backwards),
-               let classAttr = scope.range(of: "class=", options: .backwards, range: openTag.upperBound..<scope.endIndex) {
-                // Ensure no closing ``>`` between the ``class=`` and
-                // our match — i.e. the token really sits inside the
-                // attribute value, not in a sibling.
-                let between = scope[classAttr.upperBound...]
-                if !between.contains(">") { return true }
-            }
+        var idx = html.startIndex
+        while let r = html.range(of: needle, range: idx..<html.endIndex) {
             idx = r.upperBound
+            // Look backward for the opening ``class=`` attribute on the same
+            // tag. ``<`` bounds the search so we don't pull in a class
+            // attribute from an earlier element.
+            let scope = html[html.startIndex..<r.lowerBound]
+            guard let openTag = scope.range(of: "<", options: .backwards),
+                  let classAttr = scope.range(
+                      of: "class=",
+                      options: .backwards,
+                      range: openTag.upperBound..<scope.endIndex
+                  )
+            else { continue }
+            // No closing ``>`` between ``class=`` and the token: it must
+            // still be inside the same tag, not a following sibling.
+            if html[classAttr.upperBound..<r.lowerBound].contains(">") { continue }
+            // The token must live inside the QUOTED value that opens right
+            // after ``class=``. Without this, ``result__body`` echoed in a
+            // DIFFERENT attribute of the same tag (e.g.
+            // ``data-x="result__body"`` on an anti-bot page) would sneak past
+            // and mask the block as an ordinary empty result set.
+            guard classAttr.upperBound < html.endIndex else { continue }
+            let quote = html[classAttr.upperBound]
+            guard quote == "\"" || quote == "'" else { continue }
+            let valueStart = html.index(after: classAttr.upperBound)
+            guard let closeQuote = html.range(
+                of: String(quote),
+                range: valueStart..<html.endIndex
+            ) else { continue }
+            guard r.lowerBound >= valueStart, r.upperBound <= closeQuote.lowerBound else { continue }
+            // Whitespace/quote boundaries so ``result__bodyx`` doesn't match a
+            // partial token inside the class value.
+            let isBoundary: (Character) -> Bool = { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" }
+            let before = r.lowerBound == valueStart ? " " : html[html.index(before: r.lowerBound)]
+            let after = r.upperBound == closeQuote.lowerBound ? " " : html[r.upperBound]
+            if isBoundary(before) && isBoundary(after) { return true }
         }
         return false
     }
