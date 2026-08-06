@@ -144,3 +144,45 @@ class TestAssistantMessageEnvelope:
 
         msg = AssistantMessage(content="answer<|im_end|>")
         assert msg.content == "answer"
+
+
+class TestAnthropicThinkingBlockStillStrips:
+    """The `thinking` block is the reasoning channel on /v1/messages.
+
+    Splitting the sanitizers left `_sanitize_reasoning_channel` calling
+    the now content-only `sanitize_output`, so a bare `</tool_call>`
+    started surviving into `thinking`. Caught in review; pinned here.
+    """
+
+    def test_thinking_block_strips_the_closer(self):
+        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+
+        assert _thinking_block_content("x</tool_call>y", "answer") == "xy"
+
+    def test_thinking_block_keeps_ordinary_prose(self):
+        from vllm_mlx.api.anthropic_adapter import _thinking_block_content
+
+        assert (
+            _thinking_block_content("weighing the options", "answer")
+            == "weighing the options"
+        )
+
+
+class TestStreamingContentPathKeepsTheCloser:
+    """codex MINOR: the existing #1508 branch only asserts the OPENER
+    survives, so routing `_fast_sse_chunk` content back through the
+    reasoning sanitizer would still pass. Assert the CLOSER directly.
+    """
+
+    def test_fast_sse_chunk_content_keeps_the_closer(self):
+        assert sanitize_content_for_stream(AGENT_LINE) == AGENT_LINE
+        # ...while the reasoning half of the same helper pair does strip.
+        assert "</tool_call>" not in sanitize_reasoning_for_stream(AGENT_LINE)
+
+    def test_content_delta_and_reasoning_delta_diverge(self):
+        """Both fields, one envelope — the dispatch must not collapse."""
+        delta = ChatCompletionChunkDelta(
+            content=AGENT_LINE, reasoning_content=AGENT_LINE
+        )
+        assert delta.content == AGENT_LINE
+        assert "</tool_call>" not in (delta.reasoning_content or "")

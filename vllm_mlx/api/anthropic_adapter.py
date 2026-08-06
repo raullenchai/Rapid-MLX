@@ -36,7 +36,11 @@ from .models import (
     ToolDefinition,
 )
 from .responses_adapter import _merge_system_messages
-from .utils import sanitize_output, strip_reasoning_channel_markup
+from .utils import (
+    sanitize_output,
+    sanitize_reasoning_content,
+    strip_reasoning_channel_markup,
+)
 
 # F9: Anthropic's public spec uses ``id="toolu_<hex>"`` on every
 # ``tool_use`` block (and every matching ``tool_result.tool_use_id``).
@@ -318,7 +322,11 @@ def _sanitize_reasoning_channel(text: str | None) -> str | None:
     if not text:
         return None
     stripped = strip_reasoning_channel_markup(text)
-    sanitized = sanitize_output(stripped)
+    # Reasoning channel, so use the reasoning sanitizer — it additionally
+    # removes the ``</tool_call>`` closer, which the content sanitizer no
+    # longer does. Routing a thinking block through the content variant
+    # would leak a bare wire marker into ``thinking``.
+    sanitized = sanitize_reasoning_content(stripped)
     if not sanitized or not sanitized.strip():
         return None
     return sanitized
@@ -420,8 +428,9 @@ def _thinking_block_content(
             # structural truncation signal via ``stop_reason="max_tokens"``.
             return None
         # Channel markup already stripped above; only the general
-        # special-token catch-all remains.
-        sanitized = sanitize_output(prefix)
+        # special-token catch-all remains. Reasoning channel -> reasoning
+        # sanitizer (see ``_sanitize_reasoning_channel``).
+        sanitized = sanitize_reasoning_content(prefix)
         if not sanitized or not sanitized.strip():
             return None
         return sanitized
