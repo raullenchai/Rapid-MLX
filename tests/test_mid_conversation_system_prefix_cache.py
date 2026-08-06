@@ -28,6 +28,8 @@ instruction rather than something the human typed. That turn is new on
 this request anyway, so nothing previously cacheable is disturbed.
 """
 
+import textwrap
+
 import pytest
 
 from vllm_mlx.api.models import Message
@@ -578,6 +580,58 @@ class TestFlagReachesTheAdapterEndToEnd:
         assert text(msgs[0]) == "base", "leading system must stay clean"
         assert NUDGE in text(msgs[-1])
         assert "<system-reminder>" in text(msgs[-1])
+
+    def test_cli_publishes_the_parsed_flag_to_the_server_global(self):
+        """Cover the cli.py assignment itself, not just its effect.
+
+        My own mutation check found this gap: with the bridge tests
+        alone, deleting `server._relocate_mid_conversation_system = ...`
+        from cli.py left the suite fully green, because those tests set
+        the global themselves.
+
+        This is a STRUCTURAL assertion rather than a runtime one.
+        `serve_command` cannot be run far enough in a unit test — it
+        resolves the alias, boots a model and starts uvicorn — and every
+        abort point I tried fires either before the assignment or after
+        the expensive work has begun. Asserting the wiring exists in the
+        source does kill the mutation, which is the property that
+        matters here; the bridge tests above cover everything downstream
+        of it.
+        """
+        import ast
+        import inspect
+
+        from vllm_mlx import cli
+
+        src = inspect.getsource(cli.serve_command)
+        tree = ast.parse(textwrap.dedent(src))
+
+        found = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for tgt in node.targets:
+                if (
+                    isinstance(tgt, ast.Attribute)
+                    and tgt.attr == "_relocate_mid_conversation_system"
+                    and isinstance(tgt.value, ast.Name)
+                    and tgt.value.id == "server"
+                ):
+                    # ...and it must read the PARSED arg, not a literal.
+                    assert "relocate_mid_conversation_system" in ast.unparse(
+                        node.value
+                    ), f"assignment does not read the parsed arg: {ast.unparse(node)}"
+                    assert "args" in ast.unparse(node.value), (
+                        f"assignment does not read from args: {ast.unparse(node)}"
+                    )
+                    found = True
+
+        assert found, (
+            "serve_command no longer publishes "
+            "--relocate-mid-conversation-system to "
+            "server._relocate_mid_conversation_system; the flag would parse "
+            "and then do nothing"
+        )
 
     def test_flag_absent_hoists(self):
         from vllm_mlx.api.anthropic_adapter import anthropic_to_openai
