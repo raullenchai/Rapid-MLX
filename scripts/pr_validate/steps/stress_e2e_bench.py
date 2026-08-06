@@ -981,28 +981,67 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         toks = payload.get("usage", {}).get("completion_tokens", 0)
         return dt_ms, toks
 
-    # Cold: 5 different prompts (no cache hits).
-    cold_times = []
-    for i in range(5):
-        dt, _ = call(f"Cold prompt #{i} — say something brief")
-        cold_times.append(dt)
+    def protocol() -> tuple[float, float]:
+        """One capture: cold = 5 different prompts, warm = 5 repeats."""
+        cold_times = []
+        for i in range(5):
+            dt, _ = call(f"Cold prompt #{i} — say something brief")
+            cold_times.append(dt)
 
-    # Warm: 5 repeats of same prompt (full cache hit after warmup).
-    call("warmup", 30)
-    call("warmup", 30)
-    warm_times = []
-    for _ in range(5):
-        dt, _ = call("Warm prompt — say something brief")
-        warm_times.append(dt)
+        call("warmup", 30)
+        call("warmup", 30)
+        warm_times = []
+        for _ in range(5):
+            dt, _ = call("Warm prompt — say something brief")
+            warm_times.append(dt)
 
-    cold = statistics.median(cold_times)
-    warm = statistics.median(warm_times)
+        return statistics.median(cold_times), statistics.median(warm_times)
+
+    # Repeat the protocol and keep the MINIMUM.
+    #
+    # Contention only ever ADDS time. Anything else on the machine — another
+    # process, or the desktop itself; macOS's animated wallpaper decodes
+    # video on the GPU — inflates a capture and can never deflate one, so
+    # the minimum across repeats is the best available estimate of the
+    # uncontaminated value. Observed: a gate run measured cold 346.8ms on a
+    # busy box where an interleaved capture on a quiet one put the same
+    # commit at 252.6ms, a +37% phantom regression against a 5% threshold.
+    #
+    # Spread across repeats is then a direct measure of how quiet the
+    # machine was. If it exceeds the model's own threshold, the environment
+    # is demonstrably noisier than the thing we are trying to detect, and no
+    # honest verdict is available: report that instead of a number. A gate
+    # that declines to measure is worth far more than one that measures
+    # wrong — a perf verdict people learn to re-roll has stopped being a
+    # gate.
+    captures = [protocol()]
+    captures.append(protocol())
+    cold = min(c for c, _ in captures)
+    warm = min(w for _, w in captures)
     speedup = cold / warm if warm else 0
+
+    def _spread_pct(values: list[float]) -> float:
+        lo, hi = min(values), max(values)
+        return (hi / lo - 1) * 100 if lo else 0.0
+
+    cold_spread = _spread_pct([c for c, _ in captures])
+    warm_spread = _spread_pct([w for _, w in captures])
+
     metrics = {
         "model": choice.model_id,
         "cold_request_ms_median": cold,
         "warm_request_ms_median": warm,
         "speedup_x": speedup,
+        # Kept in the artifact so a surprising verdict can be audited
+        # without re-running: a wide spread means the machine was busy.
+        "captures": [
+            {"cold_request_ms_median": c, "warm_request_ms_median": w}
+            for c, w in captures
+        ],
+        "capture_spread_pct": {
+            "cold_request_ms_median": cold_spread,
+            "warm_request_ms_median": warm_spread,
+        },
     }
 
     bench_path = ctx.artifact_path(f"bench-{_safe_name(choice.model_id)}.json")
@@ -1075,6 +1114,23 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         if cold_threshold != warm_threshold
         else f"{cold_threshold:g}%"
     )
+    # Decline before judging. A machine noisier than the threshold cannot
+    # produce a verdict at that threshold, and reporting one anyway is how
+    # a phantom regression gets attributed to whatever PR happened to be
+    # under review.
+    if cold_spread > cold_threshold or warm_spread > warm_threshold:
+        return {
+            "status": "skip",
+            "summary": (
+                f"machine not quiet enough to judge: repeat captures differ by "
+                f"cold {cold_spread:.1f}%, warm {warm_spread:.1f}% "
+                f"(threshold {threshold_text}). Best-case cold {cold_slow:+.1f}%, "
+                f"warm {warm_slow:+.1f}% vs baseline — recorded, not gated. "
+                f"Close other GPU consumers and re-run for a perf verdict."
+            ),
+            "artifact": str(bench_path),
+            "executed": True,
+        }
     if cold_slow > cold_threshold or warm_slow > warm_threshold:
         return {
             "status": "fail",

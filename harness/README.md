@@ -69,6 +69,15 @@ update:
 4. Run `python3.12 scripts/release_baselines.py --strict-stale` and inspect the
    Git diff.
 
+A capture taken on a busy machine is not a candidate. The cold metric is
+the one exposed to it: on a quiet M3 Ultra, eight independent fresh-server
+medians of `Qwen3.5-35B-A3B-8bit` span 2.4%, while a single gate run on the
+same commit with macOS's animated desktop decoding video on the GPU came out
++37%. Close other GPU consumers before capturing, and check
+`capture_spread_pct` in the emitted `bench-<model>.json` — `stress_e2e_bench`
+repeats the protocol and records how far the repeats disagreed. A wide spread
+means the number is not usable, whichever direction it points.
+
 There is deliberately no `--update-baselines` command. Automatically replacing
 the comparison point after every run would turn a real regression into the new
 normal before a maintainer reviews it.
