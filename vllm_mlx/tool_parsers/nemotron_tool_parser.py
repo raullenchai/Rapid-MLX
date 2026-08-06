@@ -53,15 +53,15 @@ class NemotronToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("tool_call_xml_body",)
 
-    # True once a closed-but-refused block has been released as content on the
-    # streaming path. Class-level default so a parser used without a preceding
-    # ``reset()`` still has it; ``extract_tool_calls_streaming`` clears it per
-    # turn. See the release site for why it must fire at most once.
-    _gate_released = False
-    # Characters of ``current_text`` already forwarded verbatim as content
-    # before any tool markup appeared. The release above subtracts them so a
-    # refused block is not sent twice.
-    _passed_through = 0
+    # How much of ``current_text`` this turn has already been accounted for on
+    # the wire — forwarded as prose, consumed into an emitted call, or released
+    # after a refusal. The refusal release below sends only what lies past it.
+    #
+    # A watermark rather than a "released once" boolean: a turn can hold more
+    # than one refused block, and a boolean drops every block after the first.
+    # Class-level default so an instance used without a preceding ``reset()``
+    # still has the attribute.
+    _content_upto = 0
 
     # Pattern for Nemotron-style with parameters.
     #
@@ -88,6 +88,19 @@ class NemotronToolParser(ToolParser):
         r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>",
         re.DOTALL,
     )
+
+    def reset(self) -> None:
+        """Clear per-request state.
+
+        The base reset owns the tool-id counters; the content watermark is
+        just as per-request. Relying on the ``not previous_text`` branch alone
+        is not enough — the postprocessor can forward a new turn's opening
+        prose through its own fast path before this parser sees a delta, so
+        the first call can arrive with ``previous_text`` already non-empty and
+        a stale watermark from the turn before.
+        """
+        super().reset()
+        self._content_upto = 0
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -266,16 +279,13 @@ class NemotronToolParser(ToolParser):
         Extract tool calls from streaming Nemotron model output.
         """
         if not previous_text:
-            # Start of a turn. The base ``reset()`` handles the tool-id
-            # counters; these are per-turn too and the parser instance is
-            # reused across requests in the non-per-call paths.
-            self._gate_released = False
-            self._passed_through = 0
+            # Start of a turn. ``reset()`` covers the caller that calls it;
+            # this covers the paths that reuse an instance without one.
+            self._content_upto = 0
         if "<tool_call>" not in current_text and "<function=" not in current_text:
-            # Ordinary prose, forwarded verbatim. Count it: if a later block
-            # is refused and released below, this prefix is already on the
-            # wire and must not be sent twice.
-            self._passed_through = len(current_text)
+            # Ordinary prose, forwarded verbatim — already on the wire, so a
+            # later refusal must not send it again.
+            self._content_upto = len(current_text)
             return {"content": delta_text}
 
         # Trigger from the COMPLETION STATE of current_text, NOT from a close
@@ -334,8 +344,10 @@ class NemotronToolParser(ToolParser):
                     }
                     if tail:
                         out["content"] = tail
+                    # Consumed into a call: not content, and not replayable.
+                    self._content_upto = len(current_text)
                     return out
-            elif not self._gate_released:
+            elif len(current_text) > self._content_upto:
                 # The block CLOSED and is not a call — the declared-name gate
                 # refused it. Non-streaming answers that with
                 # ``content=model_output``: text the caller never authorised as
@@ -353,14 +365,19 @@ class NemotronToolParser(ToolParser):
                 # content it is about to discard, so nothing is duplicated.
                 # Once per turn: ``</function>`` and ``</tool_call>`` each bump
                 # the close count, and the second must not re-send it.
-                self._gate_released = True
-                unsent = (result.content or "")[self._passed_through :]
+                unsent = current_text[self._content_upto :]
+                self._content_upto = len(current_text)
                 if unsent:
                     return {"content": unsent}
             # Close tag but no NEW call to emit (e.g. the second of </function>
             # + </tool_call> for a call already streamed). Still surface any
             # trailing content that rode in on this delta.
-            if tail:
+            if tail and len(current_text) > self._content_upto:
+                # ``tail`` is a CLEANED view of the whole accumulated text, not
+                # a suffix of it, so emitting it once the watermark already
+                # covers this text re-sends what a refusal release just put on
+                # the wire. Nothing new arrived — say nothing.
+                self._content_upto = len(current_text)
                 return {"content": tail}
             return None
 
@@ -373,6 +390,8 @@ class NemotronToolParser(ToolParser):
         # emit only delta_text (the new chars), never the whole tail, so
         # already-streamed trailing content is not re-sent.
         if self._clean_trailing_content(current_text) is not None:
+            # On the wire now, so a later refusal release must not repeat it.
+            self._content_upto = len(current_text)
             return {"content": delta_text}
 
         return None

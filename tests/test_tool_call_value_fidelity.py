@@ -866,6 +866,59 @@ def test_a_streamed_refusal_still_reaches_the_user_as_text():
     assert content.count("<function=delete_everything>") == 1, content
 
 
+def test_every_refused_block_reaches_the_user_and_none_twice():
+    """One release per BLOCK, not one per turn — and no duplication.
+
+    A boolean "already released" flag drops every refused block after the
+    first; a watermark that ignores the prose passed through between them
+    re-sends that prose. Both were live in earlier revisions of this fix.
+    """
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    first = _render_xml_body("delete_everything", _KEY, "x")
+    second = _render_xml_body("also_undeclared", _KEY, "y")
+    text = first + " BETWEEN " + second
+
+    content, previous = "", ""
+    for i in range(len(text)):
+        current = text[: i + 1]
+        delta = parser.extract_tool_calls_streaming(
+            previous, current, text[i], request=_REQUEST
+        )
+        previous = current
+        content += (delta or {}).get("content") or ""
+
+    assert content.count("<function=delete_everything>") == 1, content
+    assert content.count("<function=also_undeclared>") == 1, content
+    assert content.count("BETWEEN") == 1, content
+
+
+def test_reset_clears_the_content_watermark():
+    """A reused instance must not carry a turn's watermark into the next.
+
+    ``reset()`` is the caller's contract; relying on the ``not previous_text``
+    branch alone is not enough, because the postprocessor can forward a new
+    turn's opening prose through its own fast path before this parser sees a
+    delta.
+    """
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    hostile = _render_xml_body("delete_everything", _KEY, "x")
+
+    def _turn():
+        out, previous = "", ""
+        for i in range(len(hostile)):
+            current = hostile[: i + 1]
+            delta = parser.extract_tool_calls_streaming(
+                previous, current, hostile[i], request=_REQUEST
+            )
+            previous = current
+            out += (delta or {}).get("content") or ""
+        return out
+
+    _turn()
+    parser.reset()
+    assert "delete_everything" in _turn(), "stale state swallowed the second turn"
+
+
 def test_gating_is_off_when_the_request_declares_no_tools():
     """A request with no tools keeps the position-only behaviour.
 
