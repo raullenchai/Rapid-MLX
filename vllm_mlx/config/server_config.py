@@ -9,9 +9,17 @@ accessible from routes and middleware via `get_config()`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..engine.base import BaseEngine
+if TYPE_CHECKING:
+    # Type-only. Importing it for real drags the whole engine in —
+    # ``engine.base`` -> ``engine_core`` -> ``import mlx.core`` — which
+    # makes ``vllm_mlx.config`` unimportable anywhere MLX is absent
+    # (Linux CI, and any pure-adapter unit test). ``ServerConfig`` only
+    # ever names the type in an annotation, and ``from __future__ import
+    # annotations`` above keeps annotations unevaluated, so nothing needs
+    # the symbol at runtime.
+    from ..engine.base import BaseEngine
 
 
 @dataclass

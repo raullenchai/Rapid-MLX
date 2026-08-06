@@ -617,12 +617,21 @@ class TestFlagReachesTheAdapterEndToEnd:
                     and isinstance(tgt.value, ast.Name)
                     and tgt.value.id == "server"
                 ):
-                    # ...and it must read the PARSED arg, not a literal.
-                    assert "relocate_mid_conversation_system" in ast.unparse(
-                        node.value
-                    ), f"assignment does not read the parsed arg: {ast.unparse(node)}"
-                    assert "args" in ast.unparse(node.value), (
-                        f"assignment does not read from args: {ast.unparse(node)}"
+                    # The RHS must be EXACTLY one of the accepted forms.
+                    # Substring matching was not enough (review BLOCKING):
+                    # `not args.relocate_mid_conversation_system` contains
+                    # both "args" and the attribute name, so an inverted
+                    # assignment — the flag doing the opposite of what it
+                    # documents — would have passed.
+                    rhs = ast.unparse(node.value)
+                    accepted = {
+                        "args.relocate_mid_conversation_system",
+                        "getattr(args, 'relocate_mid_conversation_system', False)",
+                        'getattr(args, "relocate_mid_conversation_system", False)',
+                    }
+                    assert rhs in accepted, (
+                        f"unexpected RHS for the flag assignment: {rhs!r}. "
+                        f"Accepted forms: {sorted(accepted)}"
                     )
                     found = True
 
