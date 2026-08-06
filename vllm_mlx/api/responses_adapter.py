@@ -697,12 +697,33 @@ def _relocate_mid_conversation_systems(
     video / audio block on that turn would be silently dropped and an
     MLLM would answer without the image it was given.
     """
-    # Refuse to mix relocation and hoisting — see ALL-OR-NOTHING above.
+    # Relocate ONLY when every mid-conversation system message is
+    # immediately followed (modulo other system messages) by a USER turn.
+    # Otherwise bail and let the caller hoist them all.
+    #
+    # Two hazards this closes, both found in review:
+    #
+    #  * Mixing relocation and hoisting inverts instruction order — see
+    #    ALL-OR-NOTHING in the docstring.
+    #  * A system message sitting before an ASSISTANT turn GOVERNED that
+    #    turn when the reply was generated. Carrying it forward to the
+    #    next user turn renders it AFTER the reply it was meant to
+    #    constrain, silently rewriting the history's meaning::
+    #
+    #        user:      t0
+    #        system:    <governs the next reply>
+    #        assistant: <reply>          <- generated under that system msg
+    #        user:      t1
+    #
+    #    Claude Code's nudges are always immediately before the new user
+    #    turn, so requiring that shape costs nothing on the path this
+    #    optimisation exists for.
     tail = messages[first_body:]
     for i, msg in enumerate(tail):
         if msg.role != "system":
             continue
-        if not any(m.role == "user" for m in tail[i + 1 :]):
+        nxt = next((m for m in tail[i + 1 :] if m.role != "system"), None)
+        if nxt is None or nxt.role != "user":
             return messages
 
     out: list[Message] = list(messages[:first_body])
