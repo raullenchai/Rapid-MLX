@@ -214,6 +214,32 @@ class TestOnlyDeclaredToolsBecomeCalls:
         )
         assert streaming == {"content": text}
 
+    def test_matching_named_choice_allows_a_bare_zero_arg_call(self):
+        text = "<function=write_file></function>"
+        request = {
+            "tools": DECLARED_TOOLS,
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "write_file"},
+            },
+        }
+        result = _qwen3coder().extract_tool_calls(text, request)
+        assert result.tools_called is True
+        assert result.tool_calls[0]["name"] == "write_file"
+
+        parser = _qwen3coder()
+        previous = ""
+        calls = []
+        for chunk in ["<function=write_file>", "</function>"]:
+            current = previous + chunk
+            delta = parser.extract_tool_calls_streaming(
+                previous, current, chunk, request=request
+            )
+            if delta:
+                calls.extend(delta.get("tool_calls", []))
+            previous = current
+        assert any(call["function"]["name"] == "write_file" for call in calls)
+
     @pytest.mark.parametrize(
         "chunks",
         [

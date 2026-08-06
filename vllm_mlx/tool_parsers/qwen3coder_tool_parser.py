@@ -347,7 +347,23 @@ class Qwen3CoderToolParser(ToolParser):
         return [m[0] if m[0] else m[1] for m in raw_function_calls]
 
     @staticmethod
-    def _declared_tool_names(request: dict[str, Any] | None) -> set[str]:
+    def _named_tool_choice(request: dict[str, Any] | None) -> str | None:
+        if not isinstance(request, dict):
+            return None
+        choice = request.get("tool_choice")
+        if isinstance(choice, dict):
+            function = choice.get("function")
+            selected = (
+                function.get("name")
+                if isinstance(function, dict)
+                else choice.get("name")
+            )
+            if isinstance(selected, str) and selected:
+                return selected
+        return None
+
+    @classmethod
+    def _declared_tool_names(cls, request: dict[str, Any] | None) -> set[str]:
         """Return executable tool names offered by this request."""
         if not isinstance(request, dict) or request.get("tool_choice") == "none":
             return set()
@@ -363,16 +379,9 @@ class Qwen3CoderToolParser(ToolParser):
                 name = tool.get("name")
             if isinstance(name, str) and name:
                 names.add(name)
-        choice = request.get("tool_choice")
-        if isinstance(choice, dict):
-            function = choice.get("function")
-            selected = (
-                function.get("name")
-                if isinstance(function, dict)
-                else choice.get("name")
-            )
-            if isinstance(selected, str) and selected:
-                return names.intersection({selected})
+        selected = cls._named_tool_choice(request)
+        if selected:
+            return names.intersection({selected})
         return names
 
     def extract_tool_calls(
@@ -392,12 +401,15 @@ class Qwen3CoderToolParser(ToolParser):
 
             tools = request.get("tools") if isinstance(request, dict) else None
             declared = self._declared_tool_names(request)
+            selected = self._named_tool_choice(request)
 
             tool_calls = []
             for fc_str in function_calls:
+                candidate_name = fc_str.split(">", 1)[0]
                 if (
                     self.tool_call_start_token not in model_output
                     and self.parameter_prefix not in fc_str
+                    and candidate_name != selected
                 ):
                     # Wrapper-less calls are supported for #978 models, but a
                     # zero-argument bare span is indistinguishable from prose
@@ -738,6 +750,10 @@ class Qwen3CoderToolParser(ToolParser):
                     if (
                         not self._pending_tool_wrapped
                         and self.parameter_prefix not in tool_text
+                        and self.current_function_name
+                        != self._named_tool_choice(
+                            request if request is not None else self._streaming_request
+                        )
                     ):
                         if self.function_end_token not in tool_text:
                             # Wait for a possible first parameter before
