@@ -197,3 +197,41 @@ def test_engine_package_defers_its_mlx_dependent_members() -> None:
         """
     )
     assert "LAZY-OK" in proc.stdout, proc.stderr + proc.stdout
+
+
+def test_anthropic_streaming_reasoning_uses_the_reasoning_sanitizer() -> None:
+    """`</tool_call>` must not survive into a streamed `thinking_delta`.
+
+    The non-streaming path removed it while both streaming sites applied
+    only `strip_special_tokens`, which does not. Agents stream, so the leak
+    the fix was written for was still live on the path that matters.
+
+    Asserted structurally against the two call sites plus a behavioural
+    check of the sanitizer itself: driving the full Anthropic SSE loop needs
+    an engine, and this is the property that loop depends on.
+    """
+    import inspect
+
+    from vllm_mlx.api.utils import sanitize_reasoning_for_stream
+    from vllm_mlx.routes import anthropic as route
+
+    # The reasoning channel strips the closer; whitespace is preserved
+    # because streaming clients concatenate deltas verbatim.
+    assert sanitize_reasoning_for_stream(" x</tool_call>y ") == " xy "
+    assert sanitize_reasoning_for_stream(None) == ""
+
+    src = inspect.getsource(route)
+    for anchor in (
+        'if output_channel == "reasoning":',
+        "if delta_msg.reasoning:",
+    ):
+        after = src[src.index(anchor) : src.index(anchor) + 1400]
+        assert "sanitize_reasoning_for_stream(" in after, (
+            f"streaming reasoning site after {anchor!r} does not use the "
+            f"reasoning sanitizer"
+        )
+        head = after[: after.index("sanitize_reasoning_for_stream(")]
+        assert "strip_special_tokens(" not in head, (
+            f"streaming reasoning site after {anchor!r} still reaches "
+            f"strip_special_tokens first"
+        )

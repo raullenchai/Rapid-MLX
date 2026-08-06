@@ -30,6 +30,7 @@ from ..api.utils import (
     clean_output_text,
     extract_multimodal_content,
     sanitize_output,
+    sanitize_reasoning_for_stream,
     strip_special_tokens,
     strip_thinking_tags,
 )
@@ -2117,7 +2118,16 @@ async def _stream_anthropic_messages(
                 # must opt in here before reaching the client.
                 pieces_routed: list[tuple[str, str]] = []
                 if output_channel == "reasoning":
-                    reasoning = strip_special_tokens(delta_text)
+                    # The REASONING sanitizer, not just special-token
+                    # stripping. `strip_special_tokens` leaves `</tool_call>`
+                    # intact, so a reasoning delta carrying that marker
+                    # reached the client verbatim in a `thinking_delta` while
+                    # the non-streaming path removed it. Agents stream, so the
+                    # streaming path is the one that matters. The `_for_stream`
+                    # variant preserves whitespace — deltas are concatenated
+                    # verbatim, so trimming one corrupts the boundary with the
+                    # next.
+                    reasoning = sanitize_reasoning_for_stream(delta_text)
                     if reasoning:
                         # Per-request reasoning cap — split into kept
                         # (thinking) and overflow (text) so Claude-Code
@@ -2243,7 +2253,9 @@ async def _stream_anthropic_messages(
                     continue
                 pieces: list[tuple[str, str]] = []
                 if delta_msg.reasoning:
-                    reasoning = strip_special_tokens(delta_msg.reasoning)
+                    # See the note at the channel-routed site above: the
+                    # reasoning channel needs the reasoning sanitizer.
+                    reasoning = sanitize_reasoning_for_stream(delta_msg.reasoning)
                     if reasoning:
                         kept, overflow = _account_for_reasoning(reasoning)
                         if kept:
