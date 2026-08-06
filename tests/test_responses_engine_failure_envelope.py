@@ -110,7 +110,9 @@ async def test_deepseek_retry_never_sends_heartbeat_before_response_created(
             return f"event: {event_type}\ndata: {payload}\n\n"
 
         state["response"] = {
-            "id": "visible-attempt" if nonprogress_retry else "hidden-attempt"
+            "id": kwargs["response_id_override"]
+            if nonprogress_retry
+            else "hidden-attempt"
         }
         state["sequence_number"] = sequence
         if kwargs.get("emit_initial_lifecycle", True):
@@ -173,6 +175,11 @@ async def test_deepseek_retry_never_sends_heartbeat_before_response_created(
     assert sum(event["type"] == "response.created" for event in data_events) == 1
     assert all(event["type"] != "response.failed" for event in data_events)
     assert any(event["type"] == "response.completed" for event in data_events), events
+    public_id = first_data["response"]["id"]
+    assert all(
+        event.get("response", {}).get("id", public_id) == public_id
+        for event in data_events
+    )
 
 
 class _Tokenizer:

@@ -154,6 +154,13 @@ DECLARED_TOOLS = [
         },
     }
 ]
+READ_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
 
 
 def _qwen3coder():
@@ -188,6 +195,24 @@ class TestOnlyDeclaredToolsBecomeCalls:
         result = _qwen3coder().extract_tool_calls(text, request)
         assert result.tools_called is False
         assert result.content == text
+
+    def test_named_tool_choice_rejects_a_different_declared_name(self):
+        text = "<function=write_file></function>"
+        request = {
+            "tools": [*DECLARED_TOOLS, READ_TOOL],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "read_file"},
+            },
+        }
+        result = _qwen3coder().extract_tool_calls(text, request)
+        assert result.tools_called is False
+        assert result.content == text
+
+        streaming = _qwen3coder().extract_tool_calls_streaming(
+            "", text, text, request=request
+        )
+        assert streaming == {"content": text}
 
     @pytest.mark.parametrize(
         "request_payload",
@@ -273,6 +298,42 @@ class TestOnlyDeclaredToolsBecomeCalls:
                 text,
                 Request(),
                 structured_tool_calls=structured,
+            )
+        finally:
+            cfg.enable_auto_tool_choice, cfg.tool_call_parser = saved
+
+        assert content == text
+        assert calls is None
+
+    def test_service_helper_enforces_named_tool_choice_on_structured_calls(
+        self, monkeypatch
+    ):
+        text = "The model selected a different declared tool."
+
+        class Request:
+            def model_dump(self):
+                return {
+                    "tools": [*DECLARED_TOOLS, READ_TOOL],
+                    "tool_choice": {
+                        "type": "function",
+                        "function": {"name": "read_file"},
+                    },
+                }
+
+        cfg = get_config()
+        saved = (cfg.enable_auto_tool_choice, cfg.tool_call_parser)
+        cfg.enable_auto_tool_choice = True
+        cfg.tool_call_parser = "qwen3_coder_xml"
+        monkeypatch.setattr(
+            helpers,
+            "parse_tool_calls",
+            lambda *args, **kwargs: pytest.fail("named choice was bypassed"),
+        )
+        try:
+            content, calls = helpers._parse_tool_calls_with_parser(
+                text,
+                Request(),
+                structured_tool_calls=[{"name": "write_file", "arguments": "{}"}],
             )
         finally:
             cfg.enable_auto_tool_choice, cfg.tool_call_parser = saved

@@ -19,7 +19,8 @@ extension ChatConversation: ConversationOrderingItem {}
 /// real app's. Writes are atomic; a missing / unreadable file reads as an
 /// empty history (first run).
 enum ConversationStore {
-    static func fileURL() -> URL {
+    static func fileURL(override: URL? = nil) -> URL {
+        if let override { return override }
         // Must go through the locator: a direct FileManager call ignores
         // $HOME overrides, which is the #419/#420 shape a dogfood build
         // depends on (and what ApplicationSupportLocatorTests forbids).
@@ -34,8 +35,8 @@ enum ConversationStore {
         return dir.appendingPathComponent("conversations.json")
     }
 
-    static func load() -> [ChatConversation] {
-        let url = fileURL()
+    static func load(from override: URL? = nil) -> [ChatConversation] {
+        let url = fileURL(override: override)
         let fm = FileManager.default
         // A genuinely MISSING file is a normal first run → empty history.
         guard fm.fileExists(atPath: url.path) else { return [] }
@@ -86,10 +87,14 @@ enum ConversationStore {
     /// growth would stall the UI. The snapshot is passed by value (Codable
     /// value types), so the background write sees a stable copy, and the
     /// serial ``writeQueue`` keeps ordering.
-    static func save(_ conversations: [ChatConversation]) {
+    static func save(_ conversations: [ChatConversation], to override: URL? = nil) {
         writeQueue.async {
             guard let data = try? JSONEncoder().encode(conversations) else { return }
-            let url = fileURL()
+            let url = fileURL(override: override)
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             // Owner-only (0600): chat transcripts are private. The atomic
             // write would otherwise inherit the umask default (often 0644 =
             // world-readable), exposing history to other local users.

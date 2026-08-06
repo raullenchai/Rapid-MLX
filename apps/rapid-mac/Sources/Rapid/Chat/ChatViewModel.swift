@@ -82,6 +82,7 @@ final class ChatViewModel {
     /// transcripts never read or overwrite the user's conversation history.
     /// Production keeps the default enabled.
     private let persistsConversations: Bool
+    private let conversationStoreURL: URL?
 
     /// v0.4.14: user-mutable sampling knobs. Optional in the init
     /// signature so existing tests don't have to spin one up — they
@@ -104,13 +105,17 @@ final class ChatViewModel {
         client: ChatStreamClient = ChatStreamClient(),
         sampling: SamplingConfig? = nil,
         server: ServerManager? = nil,
-        persistsConversations: Bool = true
+        persistsConversations: Bool = true,
+        conversationStoreURL: URL? = nil
     ) {
         self.client = client
         self.sampling = sampling
         self.server = server
         self.persistsConversations = persistsConversations
-        self.conversations = persistsConversations ? ConversationStore.load() : []
+        self.conversationStoreURL = conversationStoreURL
+        self.conversations = persistsConversations
+            ? ConversationStore.load(from: conversationStoreURL)
+            : []
     }
 
     // MARK: - Conversation history (M3)
@@ -153,7 +158,7 @@ final class ChatViewModel {
             )
         }
         if persistsConversations {
-            ConversationStore.save(conversations)
+            ConversationStore.save(conversations, to: conversationStoreURL)
         }
     }
 
@@ -197,7 +202,7 @@ final class ChatViewModel {
         }
         conversations.removeAll { $0.id == id }
         if persistsConversations {
-            ConversationStore.save(conversations)
+            ConversationStore.save(conversations, to: conversationStoreURL)
         }
     }
 

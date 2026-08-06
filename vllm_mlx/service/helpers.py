@@ -2754,6 +2754,14 @@ def _request_declared_tool_names(request_dict: dict | None) -> set[str]:
         name = function.get("name") if isinstance(function, dict) else tool.get("name")
         if isinstance(name, str) and name:
             names.add(name)
+    choice = request_dict.get("tool_choice")
+    if isinstance(choice, dict):
+        function = choice.get("function")
+        selected = (
+            function.get("name") if isinstance(function, dict) else choice.get("name")
+        )
+        if isinstance(selected, str) and selected:
+            return names.intersection({selected})
     return names
 
 

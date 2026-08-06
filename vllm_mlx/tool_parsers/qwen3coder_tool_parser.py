@@ -362,6 +362,16 @@ class Qwen3CoderToolParser(ToolParser):
                 name = tool.get("name")
             if isinstance(name, str) and name:
                 names.add(name)
+        choice = request.get("tool_choice")
+        if isinstance(choice, dict):
+            function = choice.get("function")
+            selected = (
+                function.get("name")
+                if isinstance(function, dict)
+                else choice.get("name")
+            )
+            if isinstance(selected, str) and selected:
+                return names.intersection({selected})
         return names
 
     def extract_tool_calls(

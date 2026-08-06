@@ -2445,11 +2445,11 @@ async def _stream_responses_with_nonprogress_retry(
         sequence_counter=attempt_sequence,
         emit_initial_lifecycle=False,
     ):
-        if heartbeat_state is not None:
-            heartbeat_state.clear()
-            heartbeat_state.update(attempt_heartbeat_state)
-            heartbeat_state["sequence_number"] = public_sequence
         if committed:
+            if heartbeat_state is not None:
+                heartbeat_state.clear()
+                heartbeat_state.update(attempt_heartbeat_state)
+                heartbeat_state["sequence_number"] = public_sequence
             yield _responses_resequence_event(event, public_sequence)
             continue
         event_bytes = len(event.encode("utf-8"))
@@ -2469,6 +2469,10 @@ async def _stream_responses_with_nonprogress_retry(
                 buffered_bytes + event_bytes,
             )
         if committed:
+            if heartbeat_state is not None:
+                heartbeat_state.clear()
+                heartbeat_state.update(attempt_heartbeat_state)
+                heartbeat_state["sequence_number"] = public_sequence
             for pending in buffered:
                 yield _responses_resequence_event(pending, public_sequence)
             buffered.clear()

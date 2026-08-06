@@ -1,9 +1,20 @@
+import Foundation
 import Testing
 @testable import Rapid
 
 @MainActor
 @Suite("Chat message actions")
 struct ChatMessageActionsTests {
+    private func isolatedStoreURL() throws -> (root: URL, file: URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-chat-actions-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        return (root, root.appendingPathComponent("conversations.json"))
+    }
+
     @Test("Editing an older user message drops the later turns and resends the edit")
     func editOlderUserMessageRewindsConversation() {
         let viewModel = ChatViewModel(persistsConversations: false)
@@ -56,8 +67,10 @@ struct ChatMessageActionsTests {
     }
 
     @Test("Retrying an older response preserves the original conversation as a branch")
-    func retryOlderAssistantPreservesOriginalBranch() {
-        let viewModel = ChatViewModel(persistsConversations: false)
+    func retryOlderAssistantPreservesOriginalBranch() throws {
+        let store = try isolatedStoreURL()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let viewModel = ChatViewModel(conversationStoreURL: store.file)
         let firstUser = ChatMessage(role: .user, content: "first question")
         let firstAssistant = ChatMessage(role: .assistant, content: "first answer")
         let secondUser = ChatMessage(role: .user, content: "second question")
@@ -70,17 +83,21 @@ struct ChatMessageActionsTests {
             id: firstAssistant.id,
             alias: "test-model"
         )
-        defer { viewModel.stopAndPersist() }
-
         #expect(retried)
         #expect(viewModel.activeConversationID != originalID)
-        let preserved = viewModel.conversations.first(where: { $0.id == originalID })
+        viewModel.stopAndPersist()
+        ConversationStore.flush()
+
+        let reloaded = ChatViewModel(conversationStoreURL: store.file)
+        let preserved = reloaded.conversations.first(where: { $0.id == originalID })
         #expect(preserved?.messages == original)
     }
 
     @Test("Editing an older message preserves the original conversation as a branch")
-    func editOlderUserPreservesOriginalBranch() {
-        let viewModel = ChatViewModel(persistsConversations: false)
+    func editOlderUserPreservesOriginalBranch() throws {
+        let store = try isolatedStoreURL()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let viewModel = ChatViewModel(conversationStoreURL: store.file)
         let firstUser = ChatMessage(role: .user, content: "first question")
         let firstAssistant = ChatMessage(role: .assistant, content: "first answer")
         let secondUser = ChatMessage(role: .user, content: "second question")
@@ -94,11 +111,13 @@ struct ChatMessageActionsTests {
             newContent: "edited question",
             alias: "test-model"
         )
-        defer { viewModel.stopAndPersist() }
-
         #expect(edited)
         #expect(viewModel.activeConversationID != originalID)
-        let preserved = viewModel.conversations.first(where: { $0.id == originalID })
+        viewModel.stopAndPersist()
+        ConversationStore.flush()
+
+        let reloaded = ChatViewModel(conversationStoreURL: store.file)
+        let preserved = reloaded.conversations.first(where: { $0.id == originalID })
         #expect(preserved?.messages == original)
     }
 }
