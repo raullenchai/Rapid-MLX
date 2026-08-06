@@ -35,6 +35,13 @@ from mlx_lm.generate import BatchGenerator  # noqa: E402
 from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer  # noqa: E402
 
+# ...and the batch-slot guard AFTER, because it patches a class that lives
+# inside the module imported above. Mixing a request that carries logits
+# processors with one that doesn't otherwise puts ``None`` in a per-sequence
+# slot that mlx-lm later iterates, killing the engine loop and 503-ing every
+# in-flight request (#1525).
+_mlx_compat.install_batch_slot_guard()
+
 from ._sampler_fast_path import (  # noqa: E402
     is_fused_top_p_eligible,
     make_fused_top_p_temp_sampler,
