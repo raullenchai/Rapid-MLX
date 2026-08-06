@@ -279,7 +279,12 @@ class NemotronToolParser(ToolParser):
         # arrive in separate deltas (each bumps the count → one re-parse each,
         # but the second finds nothing new to emit).
         if self._close_tag_count(current_text) > self._close_tag_count(previous_text):
-            result = self.extract_tool_calls(current_text)
+            # ``request`` matters here, not just to the non-streaming caller:
+            # ``extract_tool_calls`` derives its declared-name gate from it, so
+            # omitting it let a name the caller never offered through on the
+            # streaming path while the same text was correctly refused when
+            # buffered. Agents stream, so the gate was off where it counts.
+            result = self.extract_tool_calls(current_text, request)
             # Trailing assistant text that arrived in THIS SAME delta, after the
             # close tag (e.g. the tokenizer emits "</function> done" as one
             # chunk). It is new (everything past the just-closed tag) and, being

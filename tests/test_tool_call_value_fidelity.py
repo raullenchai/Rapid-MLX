@@ -800,6 +800,40 @@ def test_the_nemotron_parser_gates_calls_too():
     assert [c["name"] for c in result.tool_calls] == [_NAME]
 
 
+def test_the_nemotron_gate_survives_streaming():
+    """The gate has to hold on the path agents actually use.
+
+    ``extract_tool_calls_streaming`` re-parses the accumulated text once the
+    close tag arrives, and that re-parse called ``extract_tool_calls`` with
+    no ``request`` — so the declared-name check above ran against ``None``
+    and admitted everything. The same bytes were correctly refused when the
+    caller buffered them, which is why the non-streaming test passed while
+    the hole stayed open.
+
+    ``request`` was already a parameter of the enclosing method and
+    ``service/postprocessor.py`` already passes it; only the forwarding was
+    missing. Mutation: drop the argument at that call and this fails with
+    ``['delete_everything']``.
+    """
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    hostile = _render_xml_body("delete_everything", _KEY, "x")
+
+    emitted: list[str] = []
+    previous = ""
+    for i in range(len(hostile)):
+        current = hostile[: i + 1]
+        delta = parser.extract_tool_calls_streaming(
+            previous, current, hostile[i], request=_REQUEST
+        )
+        previous = current
+        for call in (delta or {}).get("tool_calls") or []:
+            name = (call.get("function") or {}).get("name")
+            if name:
+                emitted.append(name)
+
+    assert emitted == [], f"streaming admitted an undeclared call: {emitted}"
+
+
 def test_gating_is_off_when_the_request_declares_no_tools():
     """A request with no tools keeps the position-only behaviour.
 
