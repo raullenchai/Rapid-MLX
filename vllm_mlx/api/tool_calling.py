@@ -19,17 +19,31 @@ from typing import Any
 
 from jsonschema import ValidationError, validate
 
+from ..tool_call_scan import split_marked_calls, split_marked_parameters
 from .models import FunctionCall, ResponseFormat, ToolCall
 
 logger = logging.getLogger(__name__)
 
 
 def _decode_json_like(value: Any) -> Any:
-    """Decode JSON-looking strings, including one level of double encoding."""
+    """Decode JSON-looking strings, including one level of double encoding.
+
+    Whitespace-preserving: stripping is used only to *decide* whether a
+    string looks like JSON, never to build the return value. A string that
+    is not JSON comes back byte-identical.
+
+    That distinction is load-bearing for tool calls. This runs over every
+    string argument, so folding it into a ``.strip()`` silently rewrote
+    file contents an agent asked to write: ``"def f():\\n    return 1\\n"``
+    arrived as ``"def f():\\n    return 1"``. A dropped trailing newline
+    is not cosmetic — it is what makes git report "\\ No newline at end of
+    file" and makes the next diff churn. Indentation-sensitive payloads
+    (YAML fragments, here-docs, patch bodies) have the same exposure.
+    """
     if not isinstance(value, str):
         return value
 
-    current: Any = value.strip()
+    current: Any = value
     for _ in range(3):
         if not isinstance(current, str):
             return current
@@ -496,23 +510,24 @@ def parse_tool_calls(
     # Pattern for Nemotron-style:
     # Format 1: <tool_call><function=name><parameter=key>val</parameter></function></tool_call>
     # Format 2: <toolcall>func_name\n<parameter=key>value</parameter>...</toolcall>
-    nemotron_pattern = r"<tool_call>\s*<function=(\w+)>(.*?)</function>\s*</tool_call>"
-    nemotron_matches = re.findall(nemotron_pattern, text, re.DOTALL)
-    if not nemotron_matches:
-        nemotron_pattern = r"<toolcall>\s*(\w+)\s*\n(.*?)</toolcall>"
-        nemotron_matches = re.findall(nemotron_pattern, text, re.DOTALL)
+    nemotron_matches = split_marked_calls(
+        text, r"<tool_call>\s*<function=(\w+)>", "</function>", "</tool_call>"
+    ) or split_marked_calls(text, r"<toolcall>\s*(\w+)\s*\n", "</toolcall>")
 
-    for name, params_block in nemotron_matches:
-        # Parse parameters from <parameter=name>value</parameter> format
-        param_pattern = r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>"
-        params = re.findall(param_pattern, params_block, re.DOTALL)
+    for name, params_block, _, _ in nemotron_matches:
         arguments = {}
-        for p_name, p_value in params:
-            val = p_value.strip()
+        # Declared parameter names disambiguate a value that contains a
+        # literal ``<parameter=…>``; without them the scan can invent an
+        # argument the model never sent. Empty/unknown tool => None => the
+        # position-only rules, which is still the pre-existing behaviour.
+        declared = set(_get_tool_param_config(name, request)) or None
+        for p_name, val in split_marked_parameters(
+            params_block, r"<parameter=([^>]+)>", "</parameter>", valid_names=declared
+        ):
             try:
-                arguments[p_name.strip()] = json.loads(val)
+                arguments[p_name] = json.loads(val)
             except (json.JSONDecodeError, ValueError):
-                arguments[p_name.strip()] = val
+                arguments[p_name] = val
 
         tool_calls.append(
             ToolCall(
@@ -527,20 +542,17 @@ def parse_tool_calls(
             )
         )
 
-    # Remove Nemotron tool call tags from cleaned text
+    # Remove Nemotron tool call tags from cleaned text.
+    #
+    # By exact substring, using the spans computed above — not a second
+    # regex. A separate non-greedy pass would truncate at a *different*
+    # point than the parser did whenever a value contains a literal
+    # closing marker, leaving a tail of the invocation behind in the
+    # content the user sees. Removal by content (rather than by offset)
+    # because earlier branches may already have edited ``cleaned_text``.
     if nemotron_matches:
-        cleaned_text = re.sub(
-            r"<tool_call>\s*<function=\w+>.*?</function>\s*</tool_call>",
-            "",
-            cleaned_text,
-            flags=re.DOTALL,
-        )
-        cleaned_text = re.sub(
-            r"<toolcall>\s*\w+\s*\n.*?</toolcall>",
-            "",
-            cleaned_text,
-            flags=re.DOTALL,
-        )
+        for _, _, span_start, span_end in nemotron_matches:
+            cleaned_text = cleaned_text.replace(text[span_start:span_end], "", 1)
         cleaned_text = cleaned_text.strip()
 
     # Pattern for Qwen-style tool calls:

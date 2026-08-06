@@ -15,10 +15,12 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
+from ..tool_call_scan import split_marked_calls, split_marked_parameters
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
     ToolParserManager,
+    declared_parameter_names,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,8 +87,16 @@ class NemotronToolParser(ToolParser):
         tool_calls = []
         cleaned_text = model_output
 
-        matches = self.TOOL_CALL_PATTERN.findall(model_output)
-        for func_name, content in matches:
+        # Positional scan, not ``TOOL_CALL_PATTERN.findall``. The compiled
+        # non-greedy patterns above stop at the FIRST closing marker, so a
+        # literal ``</function>`` or ``</parameter>`` inside an argument
+        # truncated the call and dropped the rest in silence — the defect
+        # ``vllm_mlx/api/tool_calling.py`` had, fixed there, and still live
+        # here because this is a second implementation of the same format.
+        # Both now share ``vllm_mlx/tool_call_scan``; the patterns are kept
+        # only as the format's documentation.
+        matches = split_marked_calls(model_output, r"<function=([^>]+)>", "</function>")
+        for func_name, content, _span_start, _span_end in matches:
             func_name = func_name.strip()
 
             # Try to parse content as JSON first
@@ -106,15 +116,20 @@ class NemotronToolParser(ToolParser):
                     pass
 
             # Parse parameter tags
-            params = self.PARAM_PATTERN.findall(content)
+            params = split_marked_parameters(
+                content,
+                r"<parameter=([^>]+)>",
+                "</parameter>",
+                valid_names=declared_parameter_names(func_name, request),
+            )
             if params:
                 arguments = {}
                 for param_name, param_value in params:
                     # Try to parse value as JSON (for nested objects)
                     try:
-                        arguments[param_name.strip()] = json.loads(param_value.strip())
+                        arguments[param_name] = json.loads(param_value)
                     except json.JSONDecodeError:
-                        arguments[param_name.strip()] = param_value.strip()
+                        arguments[param_name] = param_value
 
                 tool_calls.append(
                     {
@@ -136,7 +151,14 @@ class NemotronToolParser(ToolParser):
         # Clean the text: drop the function bodies and any residual bare
         # <tool_call>/</tool_call> wrapper tags so they don't leak as content.
         if matches:
-            cleaned_text = self.TOOL_CALL_PATTERN.sub("", cleaned_text)
+            # Excise the exact spans the scan identified. A second regex pass
+            # would truncate at a different point than the parse did whenever
+            # a value holds a literal marker, leaving a tail of the call in
+            # the content the user sees.
+            for _n, _b, span_start, span_end in matches:
+                cleaned_text = cleaned_text.replace(
+                    model_output[span_start:span_end], "", 1
+                )
             cleaned_text = self.RESIDUAL_WRAPPER_PATTERN.sub("", cleaned_text).strip()
 
         if tool_calls:

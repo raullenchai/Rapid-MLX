@@ -37,6 +37,31 @@ TEXT_TOOL_CALL_FN_PATTERN = re.compile(r"\[Calling\s+tool:\s*(\w+)\((\{.*?\})\)\
 TEXT_TOOL_CALL_ANY = re.compile(r"\[Calling\s+tool[=:]")
 
 
+def declared_parameter_names(
+    tool_name: str | None, request: dict[str, Any] | None
+) -> set[str] | None:
+    """Parameter names the request declared for ``tool_name``, or None.
+
+    Passed to ``vllm_mlx.tool_call_scan`` so a literal ``<parameter=…>``
+    inside a value cannot be mistaken for the next parameter. The ordering
+    ``value </parameter> text <parameter=fake>`` is genuinely ambiguous on
+    the wire — a closer really does sit between the two openers — and only
+    the schema distinguishes it from two real parameters.
+
+    ``None`` (no tools, unknown tool, no properties) leaves the scanner on
+    its position-only rules, which is the pre-existing behaviour.
+    """
+    if not tool_name or not isinstance(request, dict):
+        return None
+    for tool in request.get("tools") or []:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(fn, dict) and fn.get("name") == tool_name:
+            props = (fn.get("parameters") or {}).get("properties")
+            if isinstance(props, dict) and props:
+                return set(props)
+    return None
+
+
 @dataclass
 class ExtractedToolCallInformation:
     """Information extracted from model output about tool calls."""

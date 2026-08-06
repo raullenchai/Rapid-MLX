@@ -12,10 +12,12 @@ import uuid
 from collections.abc import Sequence
 from typing import Any
 
+from ..tool_call_scan import split_marked_parameters
 from .abstract_tool_parser import (
     ExtractedToolCallInformation,
     ToolParser,
     ToolParserManager,
+    declared_parameter_names,
 )
 
 
@@ -24,7 +26,9 @@ def generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-def _parse_function_body(body: str) -> dict[str, Any]:
+def _parse_function_body(
+    body: str, valid_names: set[str] | None = None
+) -> dict[str, Any]:
     """Parse the body of any ``<function=name>...</function>`` block.
 
     Called both for wrapped (``<tool_call><function=...>...``) and
@@ -53,8 +57,15 @@ def _parse_function_body(body: str) -> dict[str, Any]:
             pass
 
     arguments: dict[str, Any] = {}
-    for p_name, p_value in HermesToolParser.PARAM_PATTERN.findall(body):
-        arguments[p_name.strip()] = _parse_param_value(p_value.strip())
+    # Positional split rather than ``PARAM_PATTERN.findall``: the compiled
+    # pattern is non-greedy, so it ended a value at the first literal
+    # ``</parameter>`` the value happened to contain and silently dropped
+    # the rest (jundot/omlx#2507). Shared with the other implementations of
+    # this wire format — see ``vllm_mlx/tool_call_scan``.
+    for p_name, p_value in split_marked_parameters(
+        body, r"<parameter=([^>]+)>", "</parameter>", valid_names=valid_names
+    ):
+        arguments[p_name] = _parse_param_value(p_value)
     return arguments
 
 
@@ -152,7 +163,7 @@ class HermesToolParser(ToolParser):
 
     @classmethod
     def _scan_tool_call_shapes(
-        cls, text: str
+        cls, text: str, request: dict[str, Any] | None = None
     ) -> tuple[list[tuple[int, int, str, str]], str]:
         """Unified left-to-right scan over the three wire shapes.
 
@@ -212,7 +223,7 @@ class HermesToolParser(ToolParser):
             # Emit prefix between cursor and earliest_pos as residual.
             residual_parts.append(text[cursor:earliest_pos])
 
-            consumed = cls._try_consume_at(text, earliest_pos, shape)
+            consumed = cls._try_consume_at(text, earliest_pos, shape, request)
             if consumed is None:
                 # Opener at ``earliest_pos`` didn't form a complete block.
                 # For a ``<tool_call>`` opener that didn't close yet, skip
@@ -250,7 +261,7 @@ class HermesToolParser(ToolParser):
 
     @classmethod
     def _try_consume_at(
-        cls, text: str, pos: int, shape: str
+        cls, text: str, pos: int, shape: str, request: dict[str, Any] | None = None
     ) -> tuple[int, str, str] | None:
         """Anchor the given shape's full pattern at ``pos`` and parse.
 
@@ -282,7 +293,9 @@ class HermesToolParser(ToolParser):
             m = cls.NEMOTRON_PATTERN.match(text, pos)
             if m is not None:
                 name = m.group(1).strip()
-                args = _parse_function_body(m.group(2))
+                args = _parse_function_body(
+                    m.group(2), declared_parameter_names(name, request)
+                )
                 return (m.end(), name, json.dumps(args, ensure_ascii=False))
             return None
         if shape == "function_eq":
@@ -290,7 +303,9 @@ class HermesToolParser(ToolParser):
             m = cls.BARE_FUNCTION_PATTERN.match(text, pos)
             if m is not None:
                 name = m.group(1).strip()
-                args = _parse_function_body(m.group(2))
+                args = _parse_function_body(
+                    m.group(2), declared_parameter_names(name, request)
+                )
                 return (m.end(), name, json.dumps(args, ensure_ascii=False))
             return None
         if shape == "function_open":
@@ -299,7 +314,9 @@ class HermesToolParser(ToolParser):
             if m is not None:
                 name = m.group(1).strip()
                 args_body = m.group(2)
-                args = _parse_function_body(args_body)
+                args = _parse_function_body(
+                    args_body, declared_parameter_names(name, request)
+                )
                 if not args and args_body.strip().startswith("{"):
                     # Body looked like JSON but failed both paths — keep
                     # raw to avoid silently dropping argument content.
@@ -381,7 +398,7 @@ class HermesToolParser(ToolParser):
         # residual text is what's left when each matched span is blanked
         # out; we collapse whitespace below to recover the content
         # surface.
-        scan_matches, residual = self._scan_tool_call_shapes(cleaned_text)
+        scan_matches, residual = self._scan_tool_call_shapes(cleaned_text, request)
         for _start, _end, name, args_json in scan_matches:
             tool_calls.append(
                 {
