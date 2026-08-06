@@ -197,11 +197,12 @@ class StressE2EBenchStep(Step):
                         artifact=bench_result.get("artifact"),
                     )
                     if _is_blocking_status(bench_result["status"]):
-                        any_fail = True
-                        all_findings.append(
-                            f"[BLOCKING] bench on {choice.model_id}: "
-                            + bench_result["summary"]
-                        )
+                        # Deferred, not decided. A delta against the committed
+                        # baseline mixes the PR's effect with every change in
+                        # machine state since that baseline was captured, so it
+                        # is settled below by an interleaved A/B against the
+                        # base ref — which needs this server down first.
+                        pending_failures.append(("bench", bench_result, None))
                     # Registered here, not after the matrix: the bench has
                     # already produced its artifact, and an exception in
                     # stress or in any agent below would otherwise discard
@@ -286,6 +287,29 @@ class StressE2EBenchStep(Step):
                 continue
 
             for kind, pr_result, agent in pending_failures:
+                if kind == "bench":
+                    ab = _bench_ab_against_base(
+                        ctx, choice, pr_result.get("thresholds") or {}
+                    )
+                    _record_manifest(
+                        manifest,
+                        kind="bench",
+                        choice=choice,
+                        status=ab["status"],
+                        summary=ab["summary"],
+                        lane="base",
+                    )
+                    if ab["status"] == "fail":
+                        any_fail = True
+                        all_findings.append(
+                            f"[BLOCKING] bench on {choice.model_id}: {ab['summary']}"
+                        )
+                    else:
+                        preexisting_count += 1
+                        all_findings.append(
+                            f"[NOT-THIS-PR] bench on {choice.model_id}: {ab['summary']}"
+                        )
+                    continue
                 base_result = _run_base_check(ctx, choice, kind, agent)
                 _record_manifest(
                     manifest,
@@ -754,26 +778,50 @@ def _run_agent(
     }
 
 
-def _bench_on_base(ctx: Context, choice: ModelChoice) -> tuple[float, float] | None:
-    """Re-run the bench protocol on the PR's base ref, right now.
+AB_ROUNDS = 2
 
-    Returns ``(cold_ms, warm_ms)``, or ``None`` when the base ref cannot be
-    checked out or served — in which case the caller falls back to the
-    committed baseline and says so.
+
+def _bench_ab_against_base(
+    ctx: Context, choice: ModelChoice, thresholds: dict[str, float]
+) -> dict[str, Any]:
+    """Settle a flagged bench with an INTERLEAVED A/B against the base ref.
 
     The committed baseline was captured on another day with the machine in
-    another state. Comparing against it makes every environmental change
-    look like the PR's doing, and steady contention in particular is
-    invisible to any spread check because it inflates every capture alike.
-    Measuring both arms in the same session under the same conditions is
-    what cancels it. This mirrors ``_run_base_check``, which the stress lane
-    already uses on its own failures for the same reason.
+    another state, so a delta against it contains the PR's effect plus every
+    environmental change since. Measuring both arms here, now, is what
+    separates them.
+
+    Three properties this depends on, each of which was wrong in an earlier
+    attempt:
+
+    * **Interleaved**, base/PR/base/PR — not all of one arm then all of the
+      other. Contention that drifts over the run otherwise lands entirely on
+      whichever arm went second, which fabricates a regression or waives a
+      real one depending on the direction.
+    * **Symmetric**: identical protocol, identical prompt sets, identical
+      server lifecycle (fresh process per capture — two weight-holding
+      serves cannot coexist, each sets a per-process Metal limit at 90% of
+      the whole device), and the same ``min`` aggregation on both sides.
+    * **Spread-checked on BOTH arms**. A noisy base arm is as dangerous as a
+      noisy PR arm — an inflated base becomes the denominator and waives a
+      real regression. If either arm's repeats disagree by more than the
+      threshold, the machine is noisier than the effect being measured and
+      no honest verdict exists.
+
+    Returns a result dict with ``status`` in ``fail`` / ``skip`` / ``pass``.
     """
     base_ref = ctx.base_sha or ctx.base_branch
     if not base_ref:
-        return None
-    tmp = Path(tempfile.mkdtemp(prefix="pr_validate_bench_base_"))
+        return {
+            "status": "fail",
+            "summary": "base ref unavailable — the flagged bench could not be A/B'd",
+            "executed": False,
+        }
+
+    tmp = Path(tempfile.mkdtemp(prefix="pr_validate_bench_ab_"))
     tmp.rmdir()
+    base_caps: list[tuple[float, float]] = []
+    pr_caps: list[tuple[float, float]] = []
     try:
         subprocess.run(  # noqa: S603
             ["git", "worktree", "add", "--detach", str(tmp), base_ref],
@@ -783,30 +831,108 @@ def _bench_on_base(ctx: Context, choice: ModelChoice) -> tuple[float, float] | N
             check=True,
             timeout=120,
         )
-        with _server_in_repo(
-            choice,
-            ctx,
-            repo_root=tmp,
-            artifact_prefix="base-bench-",
-            isolate_pythonpath=True,
-        ):
-            result = _run_bench(ctx, choice, compare=False)
+        for round_no in range(AB_ROUNDS):
+            for arm, root, sink in (
+                ("base", tmp, base_caps),
+                ("pr", ctx.repo_root, pr_caps),
+            ):
+                with _server_in_repo(
+                    choice,
+                    ctx,
+                    repo_root=root,
+                    artifact_prefix=f"ab-{arm}{round_no}-",
+                    isolate_pythonpath=True,
+                ):
+                    measured = _run_bench(ctx, choice, compare=False, run=round_no)
+                sink.append(
+                    (
+                        measured["measured"]["cold_request_ms_median"],
+                        measured["measured"]["warm_request_ms_median"],
+                    )
+                )
     except Exception as e:  # noqa: BLE001
-        print(f"   bench base-ref replay unavailable: {e}", flush=True)
-        return None
+        return {
+            "status": "fail",
+            "summary": f"bench A/B against the base ref could not run ({e})",
+            "executed": False,
+        }
     finally:
-        subprocess.run(  # noqa: S603
-            ["git", "worktree", "remove", "--force", str(tmp)],
-            cwd=str(ctx.repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=120,
-        )
-    measured = result.get("measured")
-    if not measured:
-        return None
-    return measured["cold_request_ms_median"], measured["warm_request_ms_median"]
+        # Its own try/except: a cleanup failure must not replace the result
+        # we came here to report. A leaked worktree is a nuisance; a
+        # validation step that crashes instead of returning its verdict is
+        # not.
+        try:
+            subprocess.run(  # noqa: S603
+                ["git", "worktree", "remove", "--force", str(tmp)],
+                cwd=str(ctx.repo_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except Exception as cleanup_error:  # noqa: BLE001
+            print(
+                f"   warning: could not remove {tmp} ({cleanup_error}); "
+                f"run `git worktree prune`",
+                flush=True,
+            )
+
+    def _spread_pct(values: list[float]) -> float:
+        lo, hi = min(values), max(values)
+        return (hi / lo - 1) * 100 if lo else 0.0
+
+    cold_thr = thresholds["cold_request_ms_median"]
+    warm_thr = thresholds["warm_request_ms_median"]
+
+    spreads = {
+        "base_cold": _spread_pct([c for c, _ in base_caps]),
+        "base_warm": _spread_pct([w for _, w in base_caps]),
+        "pr_cold": _spread_pct([c for c, _ in pr_caps]),
+        "pr_warm": _spread_pct([w for _, w in pr_caps]),
+    }
+    noisy = [
+        f"{k} {v:.1f}%"
+        for k, v in spreads.items()
+        if v > (cold_thr if k.endswith("cold") else warm_thr)
+    ]
+    base_cold, base_warm = min(c for c, _ in base_caps), min(w for _, w in base_caps)
+    pr_cold, pr_warm = min(c for c, _ in pr_caps), min(w for _, w in pr_caps)
+    d_cold = (pr_cold / base_cold - 1) * 100 if base_cold else 0
+    d_warm = (pr_warm / base_warm - 1) * 100 if base_warm else 0
+    detail = (
+        f"base cold={base_cold:.0f}ms warm={base_warm:.0f}ms, "
+        f"PR cold={pr_cold:.0f}ms warm={pr_warm:.0f}ms "
+        f"over {AB_ROUNDS} interleaved rounds"
+    )
+
+    if noisy:
+        return {
+            "status": "skip",
+            "summary": (
+                f"machine not quiet enough to judge: repeats disagree by "
+                f"{', '.join(noisy)}. {detail}. Recorded, not gated — close "
+                f"other GPU consumers and re-run for a perf verdict."
+            ),
+            "executed": True,
+        }
+    if d_cold > cold_thr or d_warm > warm_thr:
+        return {
+            "status": "fail",
+            "summary": (
+                f"perf regression confirmed against the base ref measured in "
+                f"this session: cold {d_cold:+.1f}%, warm {d_warm:+.1f}%. {detail}"
+            ),
+            "executed": True,
+        }
+    return {
+        "status": "pass",
+        "summary": (
+            f"not this PR: vs the base ref measured in this session, cold "
+            f"{d_cold:+.1f}%, warm {d_warm:+.1f}% — within threshold. {detail}. "
+            f"The committed baseline is stale or the machine was busy."
+        ),
+        "executed": True,
+    }
 
 
 def _run_base_check(
@@ -993,7 +1119,7 @@ def _repo_python_env(
 
 
 def _run_bench(
-    ctx: Context, choice: ModelChoice, *, compare: bool = True
+    ctx: Context, choice: ModelChoice, *, compare: bool = True, run: int = 0
 ) -> dict[str, Any]:
     """Inline bench — measure cold TTFT + decode TPS, compare to
     baseline. Implementation borrowed from the inline benchmark we ran
@@ -1062,50 +1188,21 @@ def _run_bench(
 
         return statistics.median(cold_times), statistics.median(warm_times)
 
-    # Repeat the protocol and keep the MINIMUM.
-    #
-    # Contention only ever ADDS time. Anything else on the machine — another
-    # process, or the desktop itself; macOS's animated wallpaper decodes
-    # video on the GPU — inflates a capture and can never deflate one, so
-    # the minimum across repeats is the best available estimate of the
-    # uncontaminated value. Observed: a gate run measured cold 346.8ms on a
-    # busy box where an interleaved capture on a quiet one put the same
-    # commit at 252.6ms, a +37% phantom regression against a 5% threshold.
-    #
-    # Spread across repeats is then a direct measure of how quiet the
-    # machine was. If it exceeds the model's own threshold, the environment
-    # is demonstrably noisier than the thing we are trying to detect, and no
-    # honest verdict is available: report that instead of a number. A gate
-    # that declines to measure is worth far more than one that measures
-    # wrong — a perf verdict people learn to re-roll has stopped being a
-    # gate.
-    captures = [protocol(0), protocol(1)]
-    cold = min(c for c, _ in captures)
-    warm = min(w for _, w in captures)
+    # ONE capture for the committed-baseline comparison — deliberately the
+    # same statistic the baselines were captured with. Repeating and taking
+    # a minimum here would bias the PR measurement downward against a
+    # baseline aggregated differently, so a regression sitting near the
+    # threshold could pass purely because the sampling protocol changed.
+    # Repetition belongs in the A/B below, where both arms get it.
+    captures = [protocol(run)]
+    cold, warm = captures[0]
     speedup = cold / warm if warm else 0
-
-    def _spread_pct(values: list[float]) -> float:
-        lo, hi = min(values), max(values)
-        return (hi / lo - 1) * 100 if lo else 0.0
-
-    cold_spread = _spread_pct([c for c, _ in captures])
-    warm_spread = _spread_pct([w for _, w in captures])
 
     metrics = {
         "model": choice.model_id,
         "cold_request_ms_median": cold,
         "warm_request_ms_median": warm,
         "speedup_x": speedup,
-        # Kept in the artifact so a surprising verdict can be audited
-        # without re-running: a wide spread means the machine was busy.
-        "captures": [
-            {"cold_request_ms_median": c, "warm_request_ms_median": w}
-            for c, w in captures
-        ],
-        "capture_spread_pct": {
-            "cold_request_ms_median": cold_spread,
-            "warm_request_ms_median": warm_spread,
-        },
     }
 
     bench_path = ctx.artifact_path(f"bench-{_safe_name(choice.model_id)}.json")
@@ -1190,81 +1287,22 @@ def _run_bench(
         if cold_threshold != warm_threshold
         else f"{cold_threshold:g}%"
     )
-    # Spread across repeats catches contention that CHANGES between them.
-    # A steady consumer — the animated desktop is exactly that — inflates
-    # both captures alike and slips through, so this is a first filter, not
-    # the answer.
-    if cold_spread > cold_threshold or warm_spread > warm_threshold:
-        return {
-            "status": "skip",
-            "summary": (
-                f"machine not quiet enough to judge: repeat captures differ by "
-                f"cold {cold_spread:.1f}%, warm {warm_spread:.1f}% "
-                f"(threshold {threshold_text}). Best-case cold {cold_slow:+.1f}%, "
-                f"warm {warm_slow:+.1f}% vs baseline — recorded, not gated. "
-                f"Close other GPU consumers and re-run for a perf verdict."
-            ),
-            "artifact": str(bench_path),
-            "executed": True,
-        }
-
     if cold_slow > cold_threshold or warm_slow > warm_threshold:
-        # The committed baseline was captured on some other day, on a
-        # machine in some other state. Steady contention — a background GPU
-        # consumer that inflates every capture equally — is invisible to the
-        # spread check above and lands here as a regression the diff did not
-        # cause. So do what the stress lane already does with its failures:
-        # replay on the BASE REF, in this session, under whatever conditions
-        # are current, and compare PR against base instead of against
-        # history. Contention that affects both arms cancels; a real
-        # regression does not.
-        #
-        # Only paid when the bench flags, so a quiet machine never sees it.
-        base = _bench_on_base(ctx, choice)
-        if base is not None:
-            base_cold_ms, base_warm_ms = base
-            vs_cold = (cold / base_cold_ms - 1) * 100 if base_cold_ms else 0
-            vs_warm = (warm / base_warm_ms - 1) * 100 if base_warm_ms else 0
-            metrics["base_ref_comparison"] = {
-                "cold_request_ms_median": base_cold_ms,
-                "warm_request_ms_median": base_warm_ms,
-                "cold_delta_pct": vs_cold,
-                "warm_delta_pct": vs_warm,
-            }
-            bench_path.write_text(json.dumps(metrics, indent=2))
-            if vs_cold <= cold_threshold and vs_warm <= warm_threshold:
-                return {
-                    "status": "skip",
-                    "summary": (
-                        f"vs committed baseline cold {cold_slow:+.1f}%, warm "
-                        f"{warm_slow:+.1f}% — but base ref measured HERE, NOW "
-                        f"shows cold {vs_cold:+.1f}%, warm {vs_warm:+.1f}% "
-                        f"(threshold {threshold_text}). Not this PR: either the "
-                        f"machine is busy or the baseline is stale. Recorded, "
-                        f"not gated."
-                    ),
-                    "artifact": str(bench_path),
-                    "executed": True,
-                }
-            return {
-                "status": "fail",
-                "summary": (
-                    f"perf regression: cold {vs_cold:+.1f}%, warm {vs_warm:+.1f}% "
-                    f"vs the BASE REF measured in this same session "
-                    f"(threshold {threshold_text}); vs committed baseline "
-                    f"cold {cold_slow:+.1f}%, warm {warm_slow:+.1f}%"
-                ),
-                "artifact": str(bench_path),
-                "executed": True,
-            }
+        # Not a verdict yet. The committed baseline was captured on another
+        # day with the machine in another state, so this delta contains both
+        # the PR's effect and every environmental change since. Flag it and
+        # let the caller settle it with an interleaved A/B against the base
+        # ref (``_bench_ab_against_base``), which can only run once this
+        # server is down.
         return {
             "status": "fail",
             "summary": (
                 f"perf regression: cold {cold_slow:+.1f}%, warm {warm_slow:+.1f}% "
-                f"vs baseline (threshold {threshold_text}); base-ref replay "
-                f"unavailable, so this could not be A/B'd"
+                f"vs baseline (threshold {threshold_text})"
             ),
             "artifact": str(bench_path),
+            "measured": metrics,
+            "thresholds": thresholds,
             "executed": True,
         }
     return {

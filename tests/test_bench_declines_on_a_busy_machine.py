@@ -1,55 +1,55 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The perf gate must not emit a verdict a busy machine cannot support.
+"""A flagged bench is settled by an A/B, not by the committed baseline alone.
 
-#1527. `stress_e2e_bench` compares a request median against a committed
-baseline at a 5% threshold, with nothing isolating the measurement from GPU
-work the machine does on its own behalf. On a developer's Mac that is not
-hypothetical — the animated desktop decodes video on the GPU.
+#1527. `stress_e2e_bench` compared a request median against a baseline
+captured on some other day, on a machine in some other state, with nothing
+isolating the measurement from GPU work the machine does on its own behalf.
+On a developer's Mac that is not hypothetical — the animated desktop decodes
+video on the GPU.
 
-Observed on PR #1526, a change that provably cannot affect the bench path:
+PR #1526 changes a batch-merge helper, and the bench sends requests
+sequentially so no merge occurs. The gate reported `cold +42.5%` anyway; an
+interleaved hand capture put the same commit at `cold -0.2%`.
 
-    [BLOCKING] cold +42.5% vs baseline (threshold 5%)
+The shape that survived review:
 
-while an interleaved capture on a quiet machine put the same commit at
-cold -0.2%. Contamination of tens of percent against a 5% threshold does
-not degrade the signal, it replaces it — and a gate that fails for reasons
-unrelated to the diff teaches everyone to re-roll it, at which point it has
-stopped being a gate.
+* the committed-baseline comparison keeps ONE capture — the same statistic
+  the baselines were captured with, so nothing is biased by a change of
+  sampling protocol;
+* a flag is not a verdict. It defers to `_bench_ab_against_base`, which
+  measures both arms **here, now**, **interleaved** (base/PR/base/PR, so
+  drift cannot land on one arm), **symmetric** (same protocol, same prompt
+  sets, same fresh-server lifecycle, same aggregation), and **spread-checked
+  on both arms** — an inflated BASE is as dangerous as an inflated PR,
+  because it becomes the denominator and waives a real regression.
 
-Two properties, tested here against the real comparison logic with the HTTP
-call stubbed (no model, no server — the defect is in how captures are
-combined and judged):
-
-* **minimum, not mean.** Contention only ever ADDS time, so the minimum
-  across repeats is the best estimate of the uncontaminated value.
-* **decline, don't guess.** When repeats disagree by more than the model's
-  own threshold, the environment is noisier than the effect being measured
-  and no honest verdict exists. Report that.
+These tests drive the real orchestration with the server context and the
+HTTP call stubbed. Stubbing `_bench_ab_against_base` itself would leave them
+green no matter how the A/B behaved, which is the failure mode they exist to
+prevent.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import sys
 import types
-
-import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.pr_validate.steps import stress_e2e_bench as seb  # noqa: E402
 
+THRESHOLDS = {"cold_request_ms_median": 5.0, "warm_request_ms_median": 5.0}
+
 BASELINE = {
     "schema": 1,
     "captured_at": "2026-08-06T00:00:00Z",
     "family": "test",
     "sample_runs": 3,
-    "regression_threshold_pct": {
-        "cold_request_ms_median": 5,
-        "warm_request_ms_median": 5,
-    },
+    "regression_threshold_pct": dict(THRESHOLDS),
     "model": {
         "id": "test/model",
         "revision": "deadbeef",
@@ -76,33 +76,56 @@ BASELINE = {
     },
 }
 
+CHOICE = types.SimpleNamespace(model_id="test/model", quality_tier="full")
+BASE_ROOT = "/base-worktree"
 
-def _run(monkeypatch, cold_per_capture, warm_per_capture, tmp_path, base=None):
-    """Drive ``_run_bench`` with scripted latencies."""
+
+def _ctx(tmp_path):
     baseline_dir = tmp_path / seb.BASELINE_DIR
-    if not baseline_dir.exists():
-        baseline_dir.mkdir(parents=True)
-        (baseline_dir / "bench-test--model.json").write_text(json.dumps(BASELINE))
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    (baseline_dir / "bench-test--model.json").write_text(json.dumps(BASELINE))
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(exist_ok=True)
-
-    ctx = types.SimpleNamespace(
+    return types.SimpleNamespace(
         repo_root=tmp_path,
         artifact_path=lambda name: artifacts / name,
         base_sha="0" * 40,
         base_branch="main",
     )
-    choice = types.SimpleNamespace(model_id="test/model", quality_tier="full")
 
-    monkeypatch.setattr(seb, "_cached_model_revision", lambda _m: "deadbeef")
-    monkeypatch.setattr(seb, "_current_chip", lambda: "Apple M3 Ultra")
 
-    state = {"n": 0}
+def _harness(monkeypatch, tmp_path, base_ms, pr_ms, git_run=None):
+    """Drive the real A/B with servers and HTTP stubbed.
+
+    ``base_ms`` / ``pr_ms`` give ``(cold_ms, warm_ms)`` per round for each
+    arm. Returns ``(result, arm_order, prompts_seen)``.
+    """
+    ctx = _ctx(tmp_path)
+    monkeypatch.setattr(seb.tempfile, "mkdtemp", lambda prefix="": BASE_ROOT)
+    monkeypatch.setattr(pathlib.Path, "rmdir", lambda self: None)
+    monkeypatch.setattr(
+        seb.subprocess,
+        "run",
+        git_run or (lambda *a, **k: types.SimpleNamespace(returncode=0)),
+    )
+
+    live = {"arm": None}
+    order: list[str] = []
+    seen: list[str] = []
+    counts = {"base": 0, "pr": 0}
+
+    @contextlib.contextmanager
+    def fake_server(choice, ctx_, *, repo_root, artifact_prefix="", **kw):
+        live["arm"] = "base" if str(repo_root) == BASE_ROOT else "pr"
+        order.append(live["arm"])
+        try:
+            yield "server.log"
+        finally:
+            live["arm"] = None
+
+    monkeypatch.setattr(seb, "_server_in_repo", fake_server)
 
     class FakeResponse:
-        def __init__(self, ms):
-            self._ms = ms
-
         def __enter__(self):
             return self
 
@@ -112,155 +135,147 @@ def _run(monkeypatch, cold_per_capture, warm_per_capture, tmp_path, base=None):
         def read(self):
             return json.dumps({"usage": {"completion_tokens": 10}}).encode()
 
-    times = {"now": 0.0}
-
-    def fake_time():
-        return times["now"]
+    clock = {"now": 0.0}
 
     def fake_urlopen(req, timeout=None):
-        idx = state["n"] % 12
-        capture = state["n"] // 12
-        state["n"] += 1
-        if idx < 5:
-            ms = cold_per_capture[capture]
-        elif idx < 7:
+        prompt = json.loads(req.data)["messages"][-1]["content"]
+        seen.append(prompt)
+        arm = live["arm"]
+        n = counts[arm]
+        counts[arm] += 1
+        round_no = n // 12
+        table = base_ms if arm == "base" else pr_ms
+        if prompt == "warmup":
             ms = 1.0
+        elif prompt.startswith("Cold prompt"):
+            ms = table[round_no][0]
         else:
-            ms = warm_per_capture[capture]
-        times["now"] += ms / 1000.0
-        return FakeResponse(ms)
+            ms = table[round_no][1]
+        clock["now"] += ms / 1000.0
+        return FakeResponse()
 
     import urllib.request
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(seb.time, "time", fake_time)
+    monkeypatch.setattr(seb.time, "time", lambda: clock["now"])
 
-    # ``base`` is what a base-ref replay would measure: None means the
-    # replay is unavailable, a tuple means it returned those numbers.
-    monkeypatch.setattr(seb, "_bench_on_base", lambda _c, _ch: base)
-
-    return seb._run_bench(ctx, choice)
+    result = seb._bench_ab_against_base(ctx, CHOICE, THRESHOLDS)
+    return result, order, seen
 
 
-def test_minimum_capture_wins_so_one_busy_repeat_cannot_fail_the_gate(
-    monkeypatch, tmp_path
-):
-    """A contaminated first capture must not decide the verdict.
+def test_the_ab_is_interleaved_by_construction():
+    """Ordering is the whole point — drift must hit both arms alike."""
+    import inspect
 
-    250ms then 251ms against a 250ms baseline: the machine hiccuped for one
-    capture in a way the spread still tolerates, and the clean one is the
-    honest number.
-    """
-    result = _run(monkeypatch, [258.0, 250.0], [400.0, 400.0], tmp_path)
+    src = inspect.getsource(seb._bench_ab_against_base)
+    assert src.count("for round_no") == 1, "both arms must share one round loop"
+    body = src[src.index("for round_no in range(AB_ROUNDS)") :]
+    assert body.index('("base", tmp, base_caps)') < body.index(
+        '("pr", ctx.repo_root, pr_caps)'
+    )
+
+
+def test_interleaving_is_observed_at_runtime(monkeypatch, tmp_path):
+    result, order, _ = _harness(
+        monkeypatch, tmp_path, [(250, 400)] * 2, [(251, 401)] * 2
+    )
+    assert order == ["base", "pr", "base", "pr"], order
     assert result["status"] == "pass", result["summary"]
 
-    artifact = json.loads(pathlib.Path(result["artifact"]).read_text())
-    assert artifact["cold_request_ms_median"] == pytest.approx(250.0), artifact
-    assert len(artifact["captures"]) == 2
+
+def test_a_regression_survives_the_ab(monkeypatch, tmp_path):
+    """Both arms quiet, PR consistently slower — that is the PR's doing."""
+    result, _, _ = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(350, 400)] * 2)
+    assert result["status"] == "fail", result
+    assert "regression confirmed" in result["summary"], result["summary"]
 
 
-def test_a_machine_noisier_than_the_threshold_gets_no_verdict(monkeypatch, tmp_path):
-    """The #1526 shape: repeats disagree by far more than 5%."""
-    result = _run(monkeypatch, [347.0, 252.0], [420.0, 376.0], tmp_path)
+def test_steady_contention_cancels(monkeypatch, tmp_path):
+    """A steady consumer inflates both arms; the A/B sees through it.
 
+    No spread check can catch this — repeats agree, because the contention
+    never changes. Only measuring the base ref under the same conditions
+    does.
+    """
+    result, _, _ = _harness(monkeypatch, tmp_path, [(349, 559)] * 2, [(350, 560)] * 2)
+    assert result["status"] == "pass", result
+    assert "not this PR" in result["summary"], result["summary"]
+
+
+def test_a_noisy_base_arm_cannot_waive_a_regression(monkeypatch, tmp_path):
+    """An inflated base is the denominator — as dangerous as a noisy PR arm."""
+    result, _, _ = _harness(
+        monkeypatch, tmp_path, [(350, 400), (250, 400)], [(350, 400)] * 2
+    )
     assert result["status"] == "skip", result
     assert "not quiet enough" in result["summary"], result["summary"]
-    # The numbers are still recorded — declining to gate is not declining
-    # to measure.
-    artifact = json.loads(pathlib.Path(result["artifact"]).read_text())
-    assert artifact["cold_request_ms_median"] == pytest.approx(252.0)
-    assert artifact["capture_spread_pct"]["cold_request_ms_median"] > 5
+    assert "base_cold" in result["summary"], result["summary"]
 
 
-def test_a_real_regression_on_a_quiet_machine_still_fails(monkeypatch, tmp_path):
-    """The gate must not become unfailable.
-
-    Captures agree (quiet machine), the PR is 40% over baseline, and the
-    base ref measured in the same session is NOT. That is a regression the
-    diff caused and has to be reported as one.
-    """
-    result = _run(
-        monkeypatch,
-        [350.0, 351.0],
-        [400.0, 400.0],
-        tmp_path,
-        base=(250.0, 400.0),
+def test_a_noisy_pr_arm_also_declines(monkeypatch, tmp_path):
+    result, _, _ = _harness(
+        monkeypatch, tmp_path, [(250, 400)] * 2, [(350, 400), (250, 400)]
     )
-
-    assert result["status"] == "fail", result
-    assert "perf regression" in result["summary"], result["summary"]
-    assert "BASE REF" in result["summary"], result["summary"]
-
-
-def test_steady_contention_is_caught_by_the_base_ref_arm(monkeypatch, tmp_path):
-    """The hole the spread check cannot see.
-
-    A steady GPU consumer inflates every capture equally, so repeats agree
-    and the spread filter passes them through — and the committed baseline,
-    captured on some other day, then reads the inflation as this PR's doing.
-    Measuring the base ref in the SAME session under the SAME conditions is
-    what cancels it.
-    """
-    result = _run(
-        monkeypatch,
-        [350.0, 351.0],
-        [560.0, 561.0],
-        tmp_path,
-        base=(349.0, 559.0),
-    )
-
     assert result["status"] == "skip", result
-    assert "base ref measured HERE, NOW" in result["summary"], result["summary"]
-
-    artifact = json.loads(pathlib.Path(result["artifact"]).read_text())
-    assert "base_ref_comparison" in artifact, artifact
-    assert artifact["base_ref_comparison"]["cold_delta_pct"] < 5
+    assert "pr_cold" in result["summary"], result["summary"]
 
 
-def test_an_unavailable_base_replay_falls_back_and_says_so(monkeypatch, tmp_path):
-    """No silent pass when the A/B cannot be run."""
-    result = _run(monkeypatch, [350.0, 351.0], [400.0, 400.0], tmp_path, base=None)
+def test_both_arms_see_matched_prompt_sets(monkeypatch, tmp_path):
+    """Symmetry: round N uses the same prompts on both sides.
 
-    assert result["status"] == "fail", result
-    assert "could not be A/B" in result["summary"], result["summary"]
-
-
-def test_cold_prompts_differ_between_captures(monkeypatch, tmp_path):
-    """The second capture must not be able to hit the prefix cache.
-
-    Reusing the same five cold prompts against the same server would make
-    the second capture's "cold" median a WARM measurement, and the minimum
-    across captures would then systematically understate cold — hiding the
-    regressions this exists to catch.
+    A different prompt set per arm would compare two different workloads and
+    call the difference a regression.
     """
-    seen: list[str] = []
-
-    real_dumps = json.dumps
-
-    def spy(obj, *a, **k):
-        if isinstance(obj, dict) and "messages" in obj:
-            seen.append(obj["messages"][-1]["content"])
-        return real_dumps(obj, *a, **k)
-
-    monkeypatch.setattr(seb.json, "dumps", spy)
-    _run(monkeypatch, [250.0, 251.0], [400.0, 401.0], tmp_path, base=None)
-
+    _, _, seen = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2)
     cold = [p for p in seen if p.startswith("Cold prompt")]
-    assert len(cold) == 10, cold
-    assert len(set(cold)) == 10, f"cold prompts repeated across captures: {cold}"
+    assert len(cold) == 20, len(cold)
+    assert len(set(cold)) == 10, sorted(set(cold))
+    assert all(cold.count(p) == 2 for p in set(cold))
 
 
-def test_a_quiet_machine_within_threshold_passes(monkeypatch, tmp_path):
-    result = _run(monkeypatch, [250.0, 251.0], [400.0, 401.0], tmp_path)
-    assert result["status"] == "pass", result["summary"]
-    assert "within" in result["summary"]
+def test_rounds_use_different_cold_prompts(monkeypatch, tmp_path):
+    """Round 2 must not be able to hit round 1's prefix cache."""
+    _, _, seen = _harness(monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2)
+    cold = {p for p in seen if p.startswith("Cold prompt")}
+    assert any(p.startswith("Cold prompt #0.") for p in cold)
+    assert any(p.startswith("Cold prompt #1.") for p in cold)
 
 
-def test_spread_is_recorded_even_when_the_verdict_is_clean(monkeypatch, tmp_path):
-    """A surprising verdict must be auditable without re-running."""
-    result = _run(monkeypatch, [250.0, 251.0], [400.0, 401.0], tmp_path)
-    artifact = json.loads(pathlib.Path(result["artifact"]).read_text())
-    assert "capture_spread_pct" in artifact
-    assert artifact["capture_spread_pct"]["cold_request_ms_median"] == pytest.approx(
-        0.4, abs=0.05
+def test_cleanup_failure_does_not_replace_the_verdict(monkeypatch, tmp_path):
+    """A leaked worktree is a nuisance; a crashed gate step is not."""
+
+    def flaky(*a, **k):
+        if a and "remove" in a[0]:
+            raise seb.subprocess.TimeoutExpired(cmd=a[0], timeout=120)
+        return types.SimpleNamespace(returncode=0)
+
+    result, _, _ = _harness(
+        monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 400)] * 2, git_run=flaky
     )
+    assert result["status"] == "pass", result
+    assert "could not run" not in result["summary"], result["summary"]
+
+
+def test_the_fast_path_keeps_the_baselines_own_statistic():
+    """One capture against the committed baseline — no protocol change.
+
+    Repeating and taking a minimum there would bias the PR measurement
+    downward against a baseline aggregated differently, so a regression near
+    the threshold could pass purely because the sampling changed. Repetition
+    belongs in the A/B, where both arms get it.
+    """
+    import inspect
+
+    src = inspect.getsource(seb._run_bench)
+    assert "captures = [protocol(run)]" in src
+    head = src.split("def protocol")[0]
+    assert "min(" not in head
+
+
+def test_a_flagged_bench_defers_instead_of_deciding():
+    """The committed-baseline delta must not be the final word."""
+    import inspect
+
+    src = inspect.getsource(seb.StressE2EBenchStep.run)
+    assert 'pending_failures.append(("bench", bench_result, None))' in src
+    assert "_bench_ab_against_base(" in src
