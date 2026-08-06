@@ -60,4 +60,12 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(__all__)
+    """Real module contents PLUS the names that are still deferred.
+
+    Returning only ``__all__`` would hide ordinary module attributes and
+    anything already imported, which breaks the introspection and
+    completion that ``dir()`` exists to serve. The union is what a reader
+    expects: everything that is here, and everything that would be if
+    asked for.
+    """
+    return sorted(set(globals()) | set(__all__))
