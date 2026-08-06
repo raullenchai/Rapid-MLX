@@ -160,14 +160,32 @@ def _hf_files(repo_id: str) -> list[FileMeta]:
 # subfolder. A subfolder holds weights and tokenizer; provenance and terms
 # sit at the top level, and a mirror that drops them hands users a copy of
 # the weights with no statement of what they may do with them.
-_ROOT_KEEP = {
-    "LICENSE",
-    "LICENSE.txt",
-    "LICENSE.md",
-    "NOTICE",
-    "NOTICE.txt",
-    "README.md",
-}
+#
+# Matched by STEM, case-insensitively, so a repo shipping ``NOTICE.md``,
+# ``LICENSE-MODEL`` or ``license.txt`` keeps its terms too. An exact-name
+# set silently dropped those while still reporting a successful mirror,
+# which is the worst possible way to get redistribution wrong (review
+# MINOR).
+_ROOT_KEEP_STEMS = ("license", "notice", "readme", "copying")
+
+
+def _is_root_keep(relpath: str) -> bool:
+    """True for a repo-root file that ships with every quantisation."""
+    lowered = relpath.lower()
+    return any(
+        lowered == stem
+        or lowered.startswith(stem + ".")
+        or lowered.startswith(stem + "-")
+        for stem in _ROOT_KEEP_STEMS
+    )
+
+
+# A quantisation subfolder must actually contain a loadable checkpoint.
+# Without this, ``--subfolder docs`` uploads a documentation directory,
+# verifies the objects it just wrote, and reports success — reproducing
+# the "mirror completed but pull still 404s" failure this flag exists to
+# prevent (review MAJOR).
+_WEIGHT_SUFFIXES = (".safetensors", ".npz", ".bin", ".gguf")
 
 
 def _select_subfolder(files: list[FileMeta], subfolder: str) -> list[FileMeta]:
@@ -189,15 +207,38 @@ def _select_subfolder(files: list[FileMeta], subfolder: str) -> list[FileMeta]:
     object layout on R2 stays a faithful copy of the source tree and the
     alias resolver can point at the subfolder directly.
     """
-    prefix = subfolder.strip("/") + "/"
+    stripped = subfolder.strip("/")
+    if not stripped:
+        raise ValueError(
+            f"--subfolder {subfolder!r} is empty. Pass a real subfolder name, "
+            "or omit the flag entirely to mirror the whole repo."
+        )
+
+    prefix = stripped + "/"
     selected = [f for f in files if f.relpath.startswith(prefix)]
+    available = sorted({f.relpath.split("/")[0] for f in files if "/" in f.relpath})
     if not selected:
-        available = sorted({f.relpath.split("/")[0] for f in files if "/" in f.relpath})
         raise ValueError(
             f"--subfolder {subfolder!r} matched no files. "
             f"Available subfolders: {available or '(none — flat repo)'}"
         )
-    roots = [f for f in files if "/" not in f.relpath and f.relpath in _ROOT_KEEP]
+
+    # A directory that exists is not necessarily a checkpoint. Require the
+    # two things a loader cannot start without, as DIRECT children of the
+    # subfolder: a config and at least one weight shard.
+    direct = {f.relpath[len(prefix) :] for f in selected}
+    direct = {name for name in direct if "/" not in name}
+    if "config.json" not in direct or not any(
+        name.endswith(_WEIGHT_SUFFIXES) for name in direct
+    ):
+        raise ValueError(
+            f"--subfolder {subfolder!r} does not look like a checkpoint: "
+            f"expected config.json and a weight file ({', '.join(_WEIGHT_SUFFIXES)}) "
+            f"directly inside it, found {sorted(direct)[:8]}. "
+            f"Available subfolders: {available or '(none — flat repo)'}"
+        )
+
+    roots = [f for f in files if "/" not in f.relpath and _is_root_keep(f.relpath)]
     return roots + selected
 
 
@@ -461,7 +502,11 @@ def mirror_repo(
         print("   MODE:     verify-only (no uploads)", flush=True)
 
     files = _hf_files(repo_id)
-    if subfolder:
+    # ``is not None``, not truthiness: ``--subfolder ""`` (an unset shell
+    # variable expanding to nothing) is a caller mistake, and treating it
+    # as "no filter" silently mirrors the full 20 GB repo the flag exists
+    # to avoid. _select_subfolder rejects it (review MAJOR).
+    if subfolder is not None:
         before = len(files)
         before_bytes = sum((f.size or 0) for f in files)
         files = _select_subfolder(files, subfolder)

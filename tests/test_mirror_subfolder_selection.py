@@ -145,3 +145,95 @@ def test_flat_repo_rejects_subfolder_rather_than_mirroring_nothing():
     with pytest.raises(ValueError) as exc:
         mirror._select_subfolder(FLAT_REPO, "4bit")
     assert "flat repo" in str(exc.value)
+
+
+# --- review round 1 -------------------------------------------------------
+#
+# Three ways the selector reported success while producing something
+# unusable. Each is a "completed mirror that still 404s" — the exact
+# failure this flag exists to prevent, arriving through a different door.
+
+
+def test_empty_subfolder_is_rejected_not_treated_as_no_filter():
+    """``--subfolder "$QUANT"`` with QUANT unset must not mirror 20 GB.
+
+    An unset shell variable expands to an empty string, and a truthiness
+    check reads that as "no subfolder requested". The operator asked for
+    one quantisation and would have silently got the whole repo.
+    """
+    for empty in ("", "/", "//"):
+        with pytest.raises(ValueError) as exc:
+            mirror._select_subfolder(SUBFOLDER_REPO, empty)
+        assert "empty" in str(exc.value).lower(), str(exc.value)
+
+
+def test_non_checkpoint_directory_is_rejected():
+    """A directory that exists is not necessarily a checkpoint.
+
+    ``--subfolder docs`` used to upload the documentation, verify the
+    objects it had just written, and exit 0 — a mirror that completed and
+    served no model.
+    """
+    repo = [*SUBFOLDER_REPO, _f("docs/example.md"), _f("docs/img/diagram.png")]
+    with pytest.raises(ValueError) as exc:
+        mirror._select_subfolder(repo, "docs")
+    assert "checkpoint" in str(exc.value)
+
+
+def test_subfolder_needs_both_config_and_weights():
+    """Neither half alone is enough to load a model."""
+    config_only = [_f("LICENSE"), _f("4bit/config.json")]
+    with pytest.raises(ValueError):
+        mirror._select_subfolder(config_only, "4bit")
+
+    weights_only = [_f("LICENSE"), _f("4bit/model.safetensors")]
+    with pytest.raises(ValueError):
+        mirror._select_subfolder(weights_only, "4bit")
+
+
+def test_nested_config_does_not_satisfy_the_checkpoint_check():
+    """``4bit/extra/config.json`` is not the checkpoint's own config."""
+    nested = [
+        _f("LICENSE"),
+        _f("4bit/extra/config.json"),
+        _f("4bit/model.safetensors"),
+    ]
+    with pytest.raises(ValueError):
+        mirror._select_subfolder(nested, "4bit")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "LICENSE",
+        "LICENSE.txt",
+        "LICENSE.md",
+        "LICENSE-MODEL",
+        "license",
+        "NOTICE",
+        "NOTICE.md",
+        "NOTICE.txt",
+        "README.md",
+        "COPYING",
+    ],
+)
+def test_root_terms_are_kept_whatever_the_upstream_calls_them(name: str):
+    """Redistribution terms must not be dropped over a filename variant.
+
+    An exact-name allowlist omitted ``NOTICE.md`` while keeping
+    ``NOTICE.txt`` and ``LICENSE.md`` — an arbitrary distinction that
+    silently ships weights without their terms.
+    """
+    repo = [_f(name), *[f for f in SUBFOLDER_REPO if "/" in f.relpath]]
+    got = {f.relpath for f in mirror._select_subfolder(repo, "4bit")}
+    assert name in got
+
+
+@pytest.mark.parametrize(
+    "name", [".gitattributes", "config.json", "model.safetensors", "licenses.py"]
+)
+def test_root_noise_is_still_dropped(name: str):
+    """Widening the terms match must not start sweeping in root weights."""
+    repo = [_f(name), *[f for f in SUBFOLDER_REPO if "/" in f.relpath]]
+    got = {f.relpath for f in mirror._select_subfolder(repo, "4bit")}
+    assert name not in got
