@@ -188,7 +188,11 @@ enum WeatherTool {
         // order.
         if ranked.count > 1 {
             let runnerUpPopulation = ranked[1].population ?? 0
-            guard firstPopulation >= max(1, runnerUpPopulation) * 5 else { return nil }
+            // ``population`` is untrusted JSON; ``max(1, runnerUp) * 5`` traps on
+            // a value near ``Int.max``. Report overflow instead of crashing —
+            // an overflowing threshold is unreachable, so the name is ambiguous.
+            let (threshold, overflow) = max(1, runnerUpPopulation).multipliedReportingOverflow(by: 5)
+            guard !overflow, firstPopulation >= threshold else { return nil }
         }
 
         // Accept the top candidate when the user gave an explicit qualifier, or

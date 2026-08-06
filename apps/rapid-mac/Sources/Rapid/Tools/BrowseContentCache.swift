@@ -284,6 +284,10 @@ final class BrowseContentCache: @unchecked Sendable {
         }
         guard let data = try? Data(contentsOf: url),
               let entry = try? JSONDecoder().decode(Entry.self, from: data) else {
+            // Corrupt / unreadable / schema-drifted file: drop it so every
+            // future lookup for this URL doesn't reread and redecode the same
+            // dead bytes forever.
+            try? FileManager.default.removeItem(at: url)
             return nil
         }
         guard isFresh(entry) else {

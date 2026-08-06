@@ -116,15 +116,22 @@ enum BrowseSSRFGuard {
 
     static func resolve(_ host: String) async throws -> [ParsedIP] {
         let gate = SingleResume()
-        return try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<[ParsedIP], Error>) in
-            gate.attach(continuation)
-            DispatchQueue.global(qos: .userInitiated).async {
-                gate.resume(.success(blockingLookup(host)))
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<[ParsedIP], Error>) in
+                gate.attach(continuation)
+                DispatchQueue.global(qos: .userInitiated).async {
+                    gate.resume(.success(blockingLookup(host)))
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + resolveTimeout) {
+                    gate.resume(.failure(Rejection.unresolvable(host)))
+                }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + resolveTimeout) {
-                gate.resume(.failure(Rejection.unresolvable(host)))
-            }
+        } onCancel: {
+            // Stop pressed mid-lookup: settle the caller immediately instead of
+            // waiting out the deadline. The orphaned getaddrinfo finishes on its
+            // own and its result is dropped by the single-resume guard.
+            gate.resume(.failure(CancellationError()))
         }
     }
 
@@ -167,11 +174,20 @@ private final class SingleResume: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<[ParsedIP], Error>?
     private var resumed = false
+    private var pendingResult: Result<[ParsedIP], Error>?
 
+    /// Store the continuation, or settle it right away if a resume (e.g. the
+    /// cancellation handler) already fired before it was attached.
     func attach(_ continuation: CheckedContinuation<[ParsedIP], Error>) {
         lock.lock()
-        defer { lock.unlock() }
+        if resumed {
+            let pending = pendingResult
+            lock.unlock()
+            continuation.resume(with: pending ?? .failure(CancellationError()))
+            return
+        }
         self.continuation = continuation
+        lock.unlock()
     }
 
     func resume(_ result: Result<[ParsedIP], Error>) {
@@ -181,6 +197,7 @@ private final class SingleResume: @unchecked Sendable {
             return
         }
         resumed = true
+        pendingResult = result
         let continuation = self.continuation
         self.continuation = nil
         lock.unlock()

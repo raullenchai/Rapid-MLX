@@ -30,7 +30,38 @@ private func headerSafeKey(_ apiKey: String) -> String? {
 /// search backends (a 6-result Brave/Tavily payload is < 100 KB
 /// in practice). Throws on cap-exceeded so the caller surfaces a
 /// clear error rather than silently truncated JSON.
-func cappedData(for request: URLRequest, byteCap: Int = 1_048_576) async throws -> (Data, URLResponse) {
+func cappedData(
+    for request: URLRequest,
+    byteCap: Int = 1_048_576,
+    deadline: TimeInterval = 20
+) async throws -> (Data, URLResponse) {
+    // ``URLRequest.timeoutInterval`` is an INACTIVITY timer: it resets on every
+    // byte received, so an upstream that dribbles one byte every few seconds
+    // resets it forever and holds the tool call (and its chat turn) open. Race
+    // the streamed read against a hard wall-clock deadline; the byte stream is
+    // cancellable, so the losing task is actually stopped.
+    try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+        group.addTask { try await streamCappedData(for: request, byteCap: byteCap) }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+            throw NSError(
+                domain: "RapidWebSearch",
+                code: 408,
+                userInfo: [NSLocalizedDescriptionKey: "request exceeded \(Int(deadline))s deadline"]
+            )
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw CancellationError()
+        }
+        return result
+    }
+}
+
+private func streamCappedData(
+    for request: URLRequest,
+    byteCap: Int
+) async throws -> (Data, URLResponse) {
     let (stream, response) = try await URLSession.shared.bytes(for: request)
     var data = Data()
     data.reserveCapacity(min(byteCap, 64 * 1024))

@@ -80,4 +80,22 @@ struct WebToolsHardeningTests {
         let ips = try await BrowseSSRFGuard.resolve("nonexistent-host.invalid")
         #expect(ips.isEmpty)
     }
+
+    // MARK: - Weather geocoding overflow
+
+    @Test("An Int.max population in untrusted geocoding JSON doesn't trap")
+    func weatherGeocodingPopulationOverflowIsSafe() {
+        // Two same-named hits force the population-margin check; a runner-up
+        // near Int.max would trap on `max(1, pop) * 5`. The overflow-reporting
+        // multiply must treat the (unreachable) threshold as ambiguous and
+        // return nil instead of crashing the process on hostile JSON.
+        let json = Data(#"""
+        {"results":[
+          {"name":"Springfield","latitude":1,"longitude":2,"population":9223372036854775807},
+          {"name":"Springfield","latitude":3,"longitude":4,"population":9223372036854775807}
+        ]}
+        """#.utf8)
+        let hit = WeatherTool.parseGeocodingResponse(json, location: "Springfield")
+        #expect(hit == nil)
+    }
 }
