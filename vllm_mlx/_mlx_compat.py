@@ -186,14 +186,36 @@ def install_batch_slot_guard() -> None:
         from importlib import import_module
 
         _generate = import_module("mlx_lm.generate")
-    except ImportError:
-        return  # Linux CI / no MLX
+    except ImportError as exc:
+        # "mlx_lm isn't here" is the expected case off Apple Silicon and
+        # stays quiet. "mlx_lm is here but importing it blew up on one of
+        # its dependencies" is a broken install that would otherwise leave
+        # the guard silently disabled in production (review NIT).
+        missing = getattr(exc, "name", None) or ""
+        if missing == "mlx_lm" or missing.startswith("mlx_lm.") or missing == "mlx":
+            return  # Linux CI / no MLX
+        logger.warning(
+            "rapid-mlx compat: could not import mlx_lm.generate (%s) — the "
+            "#1525 logits_processors slot guard is NOT installed. Mixed "
+            "chat+tool-call traffic may 503. Check the mlx-lm install.",
+            exc,
+        )
+        return
 
     batch_cls = getattr(_generate, "PromptProcessingBatch", None)
     original = getattr(batch_cls, "extend", None)
     if original is None:
         # Renamed or restructured upstream. A shim that silently patches
-        # the wrong thing is worse than one that declines.
+        # the wrong thing is worse than one that declines — but declining
+        # quietly is how a crash-prevention guard disappears across an
+        # unattended dependency bump, so say so (review NIT).
+        logger.warning(
+            "rapid-mlx compat: mlx_lm.generate has no "
+            "PromptProcessingBatch.extend to guard (mlx-lm %s) — the #1525 "
+            "slot guard is NOT installed. Either upstream fixed it (then "
+            "drop this shim) or it moved (then retarget it).",
+            getattr(import_module("mlx_lm"), "__version__", "unknown"),
+        )
         return
     if getattr(batch_cls, "_rapid_mlx_slot_guard", False):
         return

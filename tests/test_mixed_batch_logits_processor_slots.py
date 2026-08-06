@@ -195,4 +195,8 @@ def test_scheduler_import_installs_the_guard():
         cwd=REPO_ROOT,
         timeout=300,
     )
+    # Both, not just the marker: a process can print WIRED and then die on
+    # the way out, and a test that only greps stdout would call that a pass
+    # (review NIT).
+    assert proc.returncode == 0, proc.stderr + proc.stdout
     assert "WIRED" in proc.stdout, proc.stderr + proc.stdout
