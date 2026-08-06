@@ -26,7 +26,14 @@ import Foundation
 /// 1. **`RAPID_BIN`** — test / dev override env var. Highest priority so
 ///    integration tests can swap in a fake CLI without touching disk
 ///    and dev-checkout power users can point at their local build.
-/// 2. **runtime-override** — `~/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx`
+/// 2. **managed sidecars, newest version wins** — compares the
+///    runtime-override and bundled `VERSION` files whenever both binaries
+///    exist. A stale or unversioned runtime override cannot shadow a newer,
+///    versioned sidecar shipped by an app update. The runtime override still
+///    wins when it is the same version or newer, and remains the only managed
+///    candidate for slim DMGs whose bundled slot is empty.
+///
+///    **runtime-override** — `~/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx`
 ///    written by ``BootstrapCoordinator`` on first launch of the slim
 ///    bootstrapper DMG, or by the in-app updater when it pulls a
 ///    newer sidecar from `latest.json`. The `rapid-mlx/` wrapper
@@ -36,10 +43,10 @@ import Foundation
 ///    the same final ``rapid-mlx/bin/rapid-mlx`` suffix, so adding a
 ///    fourth lookup slot in the future stays symmetric. Survives
 ///    desktop upgrades because it lives outside `Contents/`.
-/// 3. **bundled** — `Contents/Resources/rapid-mlx/bin/rapid-mlx`
+///    **bundled** — `Contents/Resources/rapid-mlx/bin/rapid-mlx`
 ///    shipped inside a full-bundle DMG (today the slim DMG ships
 ///    empty here and relies entirely on the bootstrapper to
-///    populate slot 2). Last resort before returning nil.
+///    populate the runtime-override slot).
 ///
 /// Return value: ``nil`` when none of the three slots resolves —
 /// callers are expected to surface the missing-install UX (re-run
@@ -68,18 +75,22 @@ enum ServerLocator {
         bundleResourceURL: URL?,
         applicationSupportURL: URL?
     ) -> URL? {
-        var candidates: [(path: String, allowRelative: Bool)] = []
-
         // 1. ``RAPID_BIN`` — test/dev override. TestDriver chat smoke
         // uses this to swap in ``scripts/fake-rapid-mlx.sh`` so the
         // lifecycle test runs in <2 s. Power users running their own
         // dev checkout of rapid-mlx point this at it.
         if let override = environment["RAPID_BIN"],
-           !override.isEmpty {
-            candidates.append((override, true))
+           !override.isEmpty,
+           let resolved = executableURL(path: override, allowRelative: true) {
+            return resolved
         }
 
-        // 2. runtime-override — written by ``BootstrapCoordinator``
+        // Managed sidecars. Resolve both executable slots before choosing:
+        // when both exist, VERSION decides which release the desktop owns.
+        // This prevents an override left by an older app from shadowing the
+        // newer engine that arrived inside a desktop update (#1503).
+        //
+        // 2a. runtime-override — written by ``BootstrapCoordinator``
         // on first launch of the slim DMG, or by the in-app updater
         // when it pulls a newer rapid-mlx than the bundled one. The
         // ``rapid-mlx/`` wrapper directory matches the top-level entry
@@ -93,52 +104,125 @@ enum ServerLocator {
         // exposed v0.8.12 when slim DMG first went live on
         // ``latest.json``; v0.8.10/v0.8.11 silently fell back to the
         // canonical full DMG which hit the bundled slot instead.
-        if let override = applicationSupportURL?
+        let runtimeOverride = applicationSupportURL?
             .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx")
-            .path {
-            candidates.append((override, false))
+        let resolvedRuntimeOverride = runtimeOverride.flatMap {
+            executableURL(path: $0.path, allowRelative: false)
         }
 
-        // 3. bundled — shipped inside the DMG at
+        // 2b. bundled — shipped inside the DMG at
         // ``Contents/Resources/rapid-mlx/bin/rapid-mlx``. The slim
         // bootstrapper DMG (v0.8.9 ε.2) ships this slot EMPTY and
         // relies on slot 2 (populated by ``BootstrapCoordinator`` on
         // first launch) to satisfy the lookup. Full-bundle DMGs
         // (developer builds, future ad-hoc artefacts) keep this slot
-        // populated as a zero-network fallback. RAPID_BIN and runtime-
-        // override still win above — they remain explicit choices the
-        // user made at that level, not a "what desktop ships"
-        // fallback.
-        if let bundled = bundleResourceURL?
+        // populated as a zero-network fallback. RAPID_BIN remains an
+        // unconditional explicit choice; app-managed overrides are compared
+        // with this slot so an old bootstrap artifact cannot pin the desktop
+        // to an older engine forever.
+        let bundled = bundleResourceURL?
             .appendingPathComponent("rapid-mlx/bin/rapid-mlx")
-            .path {
-            candidates.append((bundled, false))
+        let resolvedBundled = bundled.flatMap {
+            executableURL(path: $0.path, allowRelative: false)
         }
 
-        // v0.8.10 cutover: PATH / homebrew / pipx / uv fallback slots
-        // were removed. The desktop release owns its sidecar end-to-
-        // end via the bootstrapper; an unrelated user-installed
-        // ``rapid-mlx`` on PATH would silently shadow the version the
-        // release pipeline shipped, and "Rapid · up to date" would
-        // then describe a different binary than the one actually
-        // answering spawn requests. If all three slots above miss,
-        // ``find()`` returns nil and callers re-run the bootstrapper
-        // (the only supported install path) rather than scavenging
-        // for a sibling rapid-mlx of unknown provenance.
+        // There is intentionally no PATH / Homebrew / pipx / uv fallback:
+        // if both managed slots miss, callers re-run the supported bootstrap.
+        switch (resolvedRuntimeOverride, resolvedBundled) {
+        case let (runtime?, resolvedBundle?):
+            // Read metadata from the managed slot rather than the resolved
+            // executable target. That keeps VERSION discovery correct if a
+            // slot uses a symlinked launcher.
+            let runtimeVersion = runtimeOverride.flatMap { sidecarVersion(forBinary: $0) }
+            let bundledVersion = bundled.flatMap { sidecarVersion(forBinary: $0) }
+            return shouldPreferBundled(
+                runtimeOverrideVersion: runtimeVersion,
+                bundledVersion: bundledVersion
+            ) ? resolvedBundle : runtime
+        case let (runtime?, nil):
+            // Slim DMG: bootstrap owns the only populated sidecar slot.
+            return runtime
+        case let (nil, bundled?):
+            return bundled
+        case (nil, nil):
+            return nil
+        }
+    }
 
+    /// Decide between two executable, app-managed sidecars.
+    ///
+    /// A valid bundled version is the trust anchor because it shipped with the
+    /// app. A runtime override may shadow it only when its own VERSION parses
+    /// and is equal or newer. If the bundle has no valid VERSION we preserve
+    /// the historical override-first behaviour: developer/ad-hoc bundles may
+    /// omit version metadata, and an unverifiable bundle must not displace a
+    /// working bootstrap install.
+    static func shouldPreferBundled(
+        runtimeOverrideVersion: String?,
+        bundledVersion: String?
+    ) -> Bool {
+        guard let bundled = parsedVersion(bundledVersion) else { return false }
+        guard let runtime = parsedVersion(runtimeOverrideVersion) else { return true }
+        return compareVersion(runtime, bundled) == .orderedAscending
+    }
+
+    /// Read `<sidecar-root>/VERSION` for a `.../bin/rapid-mlx` candidate.
+    private static func sidecarVersion(forBinary binary: URL) -> String? {
+        let versionFile = binary
+            .deletingLastPathComponent() // bin/
+            .deletingLastPathComponent() // rapid-mlx/
+            .appendingPathComponent("VERSION")
+        guard let data = try? Data(contentsOf: versionFile),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Strict dotted-numeric parser matching the sidecar build gate.
+    private static func parsedVersion(_ raw: String?) -> [Int]? {
+        guard var value = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        if value.hasPrefix("v") || value.hasPrefix("V") {
+            value.removeFirst()
+        }
+        let fields = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard fields.count >= 2 else { return nil }
+        var parts: [Int] = []
+        parts.reserveCapacity(fields.count)
+        for field in fields {
+            guard !field.isEmpty,
+                  field.allSatisfy({ $0 >= "0" && $0 <= "9" }),
+                  let part = Int(field) else { return nil }
+            parts.append(part)
+        }
+        return parts
+    }
+
+    private static func compareVersion(_ lhs: [Int], _ rhs: [Int]) -> ComparisonResult {
+        let width = max(lhs.count, rhs.count)
+        for index in 0..<width {
+            let left = index < lhs.count ? lhs[index] : 0
+            let right = index < rhs.count ? rhs[index] : 0
+            if left < right { return .orderedAscending }
+            if left > right { return .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    private static func executableURL(path: String, allowRelative: Bool) -> URL? {
+        guard let normalized = normalizedPath(path, allowRelative: allowRelative) else {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
         let fm = FileManager.default
-        for candidate in candidates {
-            guard let path = normalizedPath(candidate.path, allowRelative: candidate.allowRelative) else {
-                continue
-            }
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: path, isDirectory: &isDir),
-               !isDir.boolValue,
-               fm.isExecutableFile(atPath: path) {
-                return URL(fileURLWithPath: path).resolvingSymlinksInPath()
-            }
+        guard fm.fileExists(atPath: normalized, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              fm.isExecutableFile(atPath: normalized) else {
+            return nil
         }
-        return nil
+        return URL(fileURLWithPath: normalized).resolvingSymlinksInPath()
     }
 
     /// Reports which slot in the priority chain a resolved binary came
