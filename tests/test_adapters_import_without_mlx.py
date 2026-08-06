@@ -129,3 +129,26 @@ def test_anthropic_adapter_translates_without_mlx(flag: bool) -> None:
         """
     )
     assert "ADAPTER-OK" in proc.stdout, proc.stderr + proc.stdout
+
+
+def test_annotations_stay_introspectable_without_mlx() -> None:
+    """``TYPE_CHECKING`` must not turn working introspection into NameError.
+
+    Moving the import behind ``TYPE_CHECKING`` leaves no runtime binding
+    for ``BaseEngine``, and ``typing.get_type_hints`` — which is how
+    dataclass-driven serializers and DI containers read annotations —
+    resolves names in the defining module's namespace. Without a runtime
+    alias it raises instead of returning the field types (review NIT).
+    """
+    proc = _run_without_mlx(
+        """
+        import typing
+
+        from vllm_mlx.config import ServerConfig
+
+        hints = typing.get_type_hints(ServerConfig)
+        assert "engine" in hints, sorted(hints)
+        print("HINTS-OK")
+        """
+    )
+    assert "HINTS-OK" in proc.stdout, proc.stderr + proc.stdout

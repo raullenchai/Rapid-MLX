@@ -100,9 +100,16 @@ def to_anthropic_tool_use_id(openai_id: str | None) -> str:
 
 
 def _relocate_mid_system_enabled() -> bool:
-    """Whether to keep mid-conversation system messages at their position.
+    """Whether to fold a mid-conversation system message into the next user turn.
 
     OFF by default; enabled with ``serve --relocate-mid-conversation-system``.
+
+    Note what this does and does not do. The message is NOT left in place
+    as a ``role="system"`` entry — chat templates for Qwen, Llama and
+    Gemma accept at most one system message, at index 0. What it does is
+    prepend the text to the FOLLOWING user turn, so the bytes stay where
+    they were in the sequence instead of being hoisted to the front. That
+    is what preserves the prefix; the role changes (review NIT).
 
     Hoisting destroys the prefix cache. Measured on qwen3.6-35b: a warm
     760-token prefix dropped to ZERO reuse after a single injected system

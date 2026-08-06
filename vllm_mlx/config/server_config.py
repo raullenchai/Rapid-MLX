@@ -20,6 +20,14 @@ if TYPE_CHECKING:
     # annotations`` above keeps annotations unevaluated, so nothing needs
     # the symbol at runtime.
     from ..engine.base import BaseEngine
+else:
+    # ...but a name that exists only for the type checker is a name that
+    # ``typing.get_type_hints(ServerConfig)`` cannot resolve, and that is
+    # how dataclass-introspecting tools read annotations. Without this
+    # binding they would go from working to ``NameError`` (review NIT).
+    # ``Any`` keeps introspection resolvable at runtime while the real
+    # type is what every static checker sees.
+    BaseEngine = Any
 
 
 @dataclass
