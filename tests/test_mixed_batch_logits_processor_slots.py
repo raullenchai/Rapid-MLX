@@ -173,7 +173,7 @@ def test_scheduler_import_installs_the_guard():
     In a SUBPROCESS, and deliberately outside the autouse fixture's reach.
     Asserting the flag in-process proves nothing: the fixture installs the
     guard before every test in this file, so the assertion would hold with
-    the ``scheduler.py`` call site deleted (review BLOCKING). The only
+    the ``scheduler.py`` call site deleted (raised in review). The only
     honest question is whether importing the scheduler — and nothing else —
     arms it.
     """
@@ -197,6 +197,6 @@ def test_scheduler_import_installs_the_guard():
     )
     # Both, not just the marker: a process can print WIRED and then die on
     # the way out, and a test that only greps stdout would call that a pass
-    # (review NIT).
+    # (raised in review).
     assert proc.returncode == 0, proc.stderr + proc.stdout
     assert "WIRED" in proc.stdout, proc.stderr + proc.stdout

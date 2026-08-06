@@ -190,7 +190,7 @@ def install_batch_slot_guard() -> None:
         # "mlx_lm isn't here" is the expected case off Apple Silicon and
         # stays quiet. "mlx_lm is here but importing it blew up on one of
         # its dependencies" is a broken install that would otherwise leave
-        # the guard silently disabled in production (review NIT).
+        # the guard silently disabled in production (raised in review).
         missing = getattr(exc, "name", None) or ""
         if missing == "mlx_lm" or missing.startswith("mlx_lm.") or missing == "mlx":
             return  # Linux CI / no MLX
@@ -208,7 +208,7 @@ def install_batch_slot_guard() -> None:
         # Renamed or restructured upstream. A shim that silently patches
         # the wrong thing is worse than one that declines — but declining
         # quietly is how a crash-prevention guard disappears across an
-        # unattended dependency bump, so say so (review NIT).
+        # unattended dependency bump, so say so (raised in review).
         logger.warning(
             "rapid-mlx compat: mlx_lm.generate has no "
             "PromptProcessingBatch.extend to guard (mlx-lm %s) — the #1525 "
