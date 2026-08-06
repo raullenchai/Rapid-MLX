@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: Apache-2.0
+"""The perf bench must measure a server that has served nothing else.
+
+`stress_e2e_bench` used to run the bench LAST, after the stress battery
+and the whole agent matrix had hammered the same server process. It
+therefore measured residual state rather than the code under review,
+while baselines are captured on a fresh server
+(`harness/README.md`) — two different protocols compared against each
+other.
+
+Measured on Qwen3.5-35B-A3B-8bit / M3 Ultra, each group highly
+reproducible within itself::
+
+    after stress + agents : cold 287.6, 288.2 ms
+    fresh server          : cold 252.8, 253.1, 252.0 ms
+
+A ~14% cold gap with under 0.5% spread inside each group — far past the
+5% threshold, so the gate reported a "regression" for a change that only
+edits prompt assembly and a regex, and the identical delta appeared on
+main. Warm moved the other way (~4% faster once the engine is hot),
+which is what made the symptom look like noise.
+
+Ordering is the fix, so ordering is what this pins.
+"""
+
+import ast
+import inspect
+
+from scripts.pr_validate.steps import stress_e2e_bench
+
+
+def _run_body():
+    return ast.parse(
+        inspect.getsource(stress_e2e_bench.StressE2EBenchStep.run).lstrip()
+    )
+
+
+def _capture_runner_labels_in_order():
+    """Labels passed to `_capture_runner`, in source order."""
+    labels = []
+    for node in ast.walk(_run_body()):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+        if name != "_capture_runner" or not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            labels.append(first.value)
+    return labels
+
+
+def test_bench_runs_before_stress_and_agents():
+    labels = _capture_runner_labels_in_order()
+    assert "bench" in labels, f"no bench runner found; got {labels}"
+    assert "stress" in labels, f"no stress runner found; got {labels}"
+
+    bench_at = labels.index("bench")
+    stress_at = labels.index("stress")
+    assert bench_at < stress_at, (
+        "the bench must run BEFORE the stress battery, on a server that has "
+        f"served nothing else. Runner order is {labels}. Benching afterwards "
+        "measures residual state and cannot be compared against a baseline "
+        "captured on a fresh server — a ~14% cold gap on Qwen3.5-35B-A3B-8bit."
+    )
+
+
+def test_bench_runs_before_the_agent_matrix():
+    """The agent matrix is the heavier half of the contamination."""
+    src = inspect.getsource(stress_e2e_bench.StressE2EBenchStep.run)
+    bench_at = src.index('_capture_runner(\n                        "bench"')
+    agents_at = src.index('for agent in registry["agents"]')
+    assert bench_at < agents_at, (
+        "the bench must run before the agent matrix; benching after it "
+        "measures a server that has already served every agent battery"
+    )

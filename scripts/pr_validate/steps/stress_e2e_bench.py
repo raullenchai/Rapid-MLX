@@ -160,6 +160,49 @@ class StressE2EBenchStep(Step):
             try:
                 with _server(choice, ctx) as server_log:
                     all_artifacts.append(server_log)
+
+                    # Bench FIRST, on a server that has served nothing
+                    # else. It used to run last, after the stress battery
+                    # and the whole agent matrix had hammered this same
+                    # process — so it measured residual state, not the
+                    # code under review.
+                    #
+                    # Measured on Qwen3.5-35B-A3B-8bit, M3 Ultra, both
+                    # highly reproducible within their own context:
+                    #
+                    #   after stress + agents : cold 287.6 / 288.2 ms
+                    #   fresh server          : cold 252.8 / 253.1 / 252.0 ms
+                    #
+                    # A ~14% cold gap with a <0.5% spread inside each
+                    # group. Baselines are captured on a fresh server
+                    # (harness/README.md), so every PR was measured
+                    # against a number produced in a different state and
+                    # the 5% threshold could not survive it — this gate
+                    # flagged a "regression" on a change that only edits
+                    # prompt assembly and a regex, and the same delta
+                    # appeared on main.
+                    #
+                    # Warm moves the other way (~4% faster post-stress,
+                    # the engine is hot), which is why the symptom looked
+                    # like noise rather than a protocol bug.
+                    bench_result = _capture_runner(
+                        "bench", lambda choice=choice: _run_bench(ctx, choice)
+                    )
+                    _record_manifest(
+                        manifest,
+                        kind="bench",
+                        choice=choice,
+                        status=bench_result["status"],
+                        summary=bench_result["summary"],
+                        artifact=bench_result.get("artifact"),
+                    )
+                    if _is_blocking_status(bench_result["status"]):
+                        any_fail = True
+                        all_findings.append(
+                            f"[BLOCKING] bench on {choice.model_id}: "
+                            + bench_result["summary"]
+                        )
+
                     # Stress.
                     stress_result = _capture_runner(
                         "stress", lambda choice=choice: _run_stress(ctx, choice)
@@ -222,24 +265,6 @@ class StressE2EBenchStep(Step):
                         if ag_result.get("artifact"):
                             all_artifacts.append(ag_result["artifact"])
 
-                    # Bench.
-                    bench_result = _capture_runner(
-                        "bench", lambda choice=choice: _run_bench(ctx, choice)
-                    )
-                    _record_manifest(
-                        manifest,
-                        kind="bench",
-                        choice=choice,
-                        status=bench_result["status"],
-                        summary=bench_result["summary"],
-                        artifact=bench_result.get("artifact"),
-                    )
-                    if _is_blocking_status(bench_result["status"]):
-                        any_fail = True
-                        all_findings.append(
-                            f"[BLOCKING] bench on {choice.model_id}: "
-                            + bench_result["summary"]
-                        )
                     if bench_result.get("artifact"):
                         all_artifacts.append(bench_result["artifact"])
 

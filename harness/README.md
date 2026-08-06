@@ -30,6 +30,31 @@ Baseline files use `harness/baseline.schema.json` and record:
 - reviewed cold/warm regression thresholds (5% for stable AR paths; higher
   only when repeated captures document a wider noise floor).
 
+## Capture state: a FRESH server, always
+
+Both sides of the comparison must be measured the same way, so
+`stress_e2e_bench` benches **first** — on a server that has served
+nothing else — before the stress battery and the agent matrix touch it.
+Capture baselines the same way.
+
+This is load-bearing, not a detail. Measured on Qwen3.5-35B-A3B-8bit /
+M3 Ultra, each group highly reproducible within itself:
+
+| capture state | cold median |
+|---|---|
+| after stress + agent matrix | 287.6, 288.2 ms |
+| fresh server | 252.8, 253.1, 252.0 ms |
+
+A ~14% cold gap with under 0.5% spread inside each group. While the
+bench ran last, every PR was measured post-stress against a baseline
+captured fresh, so the 5% threshold could not survive the mismatch: the
+gate reported a "regression" for a change that only edits prompt
+assembly and a regex, and the identical delta showed up on main. Warm
+moves the other way (~4% faster once the engine is hot), which is what
+made the symptom read as noise.
+
+`tests/test_bench_runs_on_a_clean_server.py` pins the ordering.
+
 ## Refreshing a baseline
 
 `pr_validate` writes each fresh measurement to its run directory as
