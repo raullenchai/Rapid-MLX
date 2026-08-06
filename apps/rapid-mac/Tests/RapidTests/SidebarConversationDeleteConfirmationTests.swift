@@ -81,12 +81,17 @@ struct SidebarConversationDeleteConfirmationTests {
             stripped.contains(".confirmationDialog("),
             "SidebarView must present a confirmationDialog before removing a conversation."
         )
-        // The actual removal happens exactly once, inside the dialog's
-        // destructive button.
+        // The removal must live INSIDE the confirmation's destructive button —
+        // the one that also clears `pendingDeletion` (a shape only the dialog
+        // button has; the context-menu button sets `pendingDeletion = conv`).
+        // Asserting the full button body pins the delete to the confirmed path,
+        // so moving it back to an immediate context-menu action fails here even
+        // if a confirmationDialog still exists elsewhere.
         #expect(
-            stripped.contains("chat.deleteConversation(conv.id)"),
-            "The confirmed action must still route through chat.deleteConversation."
+            stripped.contains(#"role:.destructive){chat.deleteConversation(conv.id)pendingDeletion=nil}"#),
+            "chat.deleteConversation must be the body of the confirmation dialog's destructive button (which then clears pendingDeletion), not an unconfirmed call site."
         )
+        // And it is the ONLY delete call site.
         let deleteCallCount = stripped.components(separatedBy: "chat.deleteConversation(").count - 1
         #expect(
             deleteCallCount == 1,
