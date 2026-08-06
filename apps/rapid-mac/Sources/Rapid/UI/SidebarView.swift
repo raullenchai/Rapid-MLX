@@ -44,6 +44,12 @@ struct SidebarView: View {
     /// section builder) so the roll-over is an observable state change.
     @State private var referenceDate = Date()
 
+    /// The conversation a context-menu "Delete" has staged for removal, shown
+    /// in the confirmation dialog. Deleting a conversation is irreversible
+    /// (``ConversationStore.save`` atomically overwrites the on-disk store —
+    /// no trash, no undo), so — unlike navigating — it must be confirmed first.
+    @State private var pendingDeletion: ChatConversation?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             row(
@@ -85,6 +91,37 @@ struct SidebarView: View {
         .padding(.vertical, RapidTheme.Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task { await dayBoundaryTicker() }
+        // A conversation is a HARD delete with no undo, so confirm first —
+        // mirrors the cached-model delete dialog. ``confirmationDialog`` over
+        // ``alert`` so the cancel-role button is Return-bound.
+        .confirmationDialog(
+            Self.deleteConfirmationTitle(for: pendingDeletion),
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { conv in
+            Button("Delete", role: .destructive) {
+                chat.deleteConversation(conv.id)
+                pendingDeletion = nil
+            }
+            Button("Keep", role: .cancel) {
+                pendingDeletion = nil
+            }
+        } message: { _ in
+            Text("This permanently deletes the conversation. It can't be undone.")
+        }
+    }
+
+    /// Confirmation title for deleting a saved conversation. Unlike a cached
+    /// MODEL (re-downloadable, and already gated) a conversation delete is
+    /// irreversible, so this always fronts a confirmation.
+    nonisolated static func deleteConfirmationTitle(for conversation: ChatConversation?) -> String {
+        guard let conversation else { return "Delete this conversation?" }
+        let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "Delete this conversation?" : "Delete “\(title)”?"
     }
 
     /// The history list split into dated sections, newest first.
@@ -185,7 +222,7 @@ struct SidebarView: View {
         }
         .contextMenu {
             Button("Delete", role: .destructive) {
-                chat.deleteConversation(conv.id)
+                pendingDeletion = conv
             }
         }
     }
