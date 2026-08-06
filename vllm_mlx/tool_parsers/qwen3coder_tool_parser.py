@@ -252,6 +252,7 @@ class Qwen3CoderToolParser(ToolParser):
         self.accumulated_params = {}
         self._streaming_request = None
         self._pending_tool_start: int | None = None
+        self._pending_tool_wrapped = False
         self.prev_tool_call_arr = []
         self.in_param_emitted_chars = 0
         self.in_param_opened = False
@@ -394,6 +395,18 @@ class Qwen3CoderToolParser(ToolParser):
 
             tool_calls = []
             for fc_str in function_calls:
+                if (
+                    self.tool_call_start_token not in model_output
+                    and self.parameter_prefix not in fc_str
+                ):
+                    # Wrapper-less calls are supported for #978 models, but a
+                    # zero-argument bare span is indistinguishable from prose
+                    # documenting the wire format. Require either canonical
+                    # framing or parameter structure before model text can
+                    # become executable data.
+                    return ExtractedToolCallInformation(
+                        tools_called=False, tool_calls=[], content=model_output
+                    )
                 tc = self._parse_xml_function_call(fc_str, tools)
                 if not tc:
                     continue
@@ -633,6 +646,15 @@ class Qwen3CoderToolParser(ToolParser):
                 self.is_tool_call_started = True
                 opener_pos = self._first_opener_pos(delta_text)
                 self._pending_tool_start = len(previous_text) + opener_pos
+                wrapper_start = current_text.find(
+                    self.tool_call_start_token, self._pending_tool_start
+                )
+                function_start = current_text.find(
+                    self.tool_call_prefix, self._pending_tool_start
+                )
+                self._pending_tool_wrapped = wrapper_start >= 0 and (
+                    function_start < 0 or wrapper_start <= function_start
+                )
                 header_start = current_text.find(
                     self.tool_call_prefix, self._pending_tool_start
                 )
@@ -642,6 +664,16 @@ class Qwen3CoderToolParser(ToolParser):
                     if header_end >= 0:
                         candidate_name = current_text[name_start:header_end]
                         if candidate_name not in declared:
+                            saved_request = self._streaming_request
+                            self._reset_streaming_state()
+                            self._streaming_request = saved_request
+                            return {"content": delta_text}
+                        candidate_text = current_text[header_start:]
+                        if (
+                            not self._pending_tool_wrapped
+                            and self.function_end_token in candidate_text
+                            and self.parameter_prefix not in candidate_text
+                        ):
                             saved_request = self._streaming_request
                             self._reset_streaming_state()
                             self._streaming_request = saved_request
@@ -695,6 +727,22 @@ class Qwen3CoderToolParser(ToolParser):
                 if func_end != -1:
                     self.current_function_name = tool_text[func_start:func_end]
                     if self.current_function_name not in declared:
+                        start = self._pending_tool_start
+                        rejected = (
+                            current_text[start:] if start is not None else delta_text
+                        )
+                        saved_request = self._streaming_request
+                        self._reset_streaming_state()
+                        self._streaming_request = saved_request
+                        return {"content": rejected}
+                    if (
+                        not self._pending_tool_wrapped
+                        and self.parameter_prefix not in tool_text
+                    ):
+                        if self.function_end_token not in tool_text:
+                            # Wait for a possible first parameter before
+                            # emitting an irreversible tool-call header.
+                            return None
                         start = self._pending_tool_start
                         rejected = (
                             current_text[start:] if start is not None else delta_text

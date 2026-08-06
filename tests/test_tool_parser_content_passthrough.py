@@ -215,6 +215,48 @@ class TestOnlyDeclaredToolsBecomeCalls:
         assert streaming == {"content": text}
 
     @pytest.mark.parametrize(
+        "chunks",
+        [
+            ["Docs: <function=write_file></function> is the wire form."],
+            [
+                "Docs: ",
+                "<function=write_file>",
+                "</function> is the wire form.",
+            ],
+        ],
+    )
+    def test_declared_zero_arg_bare_prose_is_not_executable(self, chunks):
+        text = "".join(chunks)
+        request = {"tools": DECLARED_TOOLS, "tool_choice": "auto"}
+        result = _qwen3coder().extract_tool_calls(text, request)
+        assert result.tools_called is False
+        assert result.content == text
+
+        parser = _qwen3coder()
+        previous = ""
+        content = []
+        calls = []
+        for chunk in chunks:
+            current = previous + chunk
+            delta = parser.extract_tool_calls_streaming(
+                previous, current, chunk, request=request
+            )
+            if delta:
+                content.append(delta.get("content", ""))
+                calls.extend(delta.get("tool_calls", []))
+            previous = current
+        assert calls == []
+        assert "".join(content) == text
+
+    def test_wrapped_zero_arg_declared_call_remains_executable(self):
+        wire = "<tool_call><function=write_file></function></tool_call>"
+        result = _qwen3coder().extract_tool_calls(
+            wire, {"tools": DECLARED_TOOLS, "tool_choice": "auto"}
+        )
+        assert result.tools_called is True
+        assert result.tool_calls[0]["name"] == "write_file"
+
+    @pytest.mark.parametrize(
         "request_payload",
         [
             None,
