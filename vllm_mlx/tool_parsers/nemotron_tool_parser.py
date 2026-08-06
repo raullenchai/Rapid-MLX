@@ -53,6 +53,16 @@ class NemotronToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("tool_call_xml_body",)
 
+    # True once a closed-but-refused block has been released as content on the
+    # streaming path. Class-level default so a parser used without a preceding
+    # ``reset()`` still has it; ``extract_tool_calls_streaming`` clears it per
+    # turn. See the release site for why it must fire at most once.
+    _gate_released = False
+    # Characters of ``current_text`` already forwarded verbatim as content
+    # before any tool markup appeared. The release above subtracts them so a
+    # refused block is not sent twice.
+    _passed_through = 0
+
     # Pattern for Nemotron-style with parameters.
     #
     # The load-bearing signature of a call is ``<function=NAME>...</function>``;
@@ -255,7 +265,17 @@ class NemotronToolParser(ToolParser):
         """
         Extract tool calls from streaming Nemotron model output.
         """
+        if not previous_text:
+            # Start of a turn. The base ``reset()`` handles the tool-id
+            # counters; these are per-turn too and the parser instance is
+            # reused across requests in the non-per-call paths.
+            self._gate_released = False
+            self._passed_through = 0
         if "<tool_call>" not in current_text and "<function=" not in current_text:
+            # Ordinary prose, forwarded verbatim. Count it: if a later block
+            # is refused and released below, this prefix is already on the
+            # wire and must not be sent twice.
+            self._passed_through = len(current_text)
             return {"content": delta_text}
 
         # Trigger from the COMPLETION STATE of current_text, NOT from a close
@@ -315,6 +335,28 @@ class NemotronToolParser(ToolParser):
                     if tail:
                         out["content"] = tail
                     return out
+            elif not self._gate_released:
+                # The block CLOSED and is not a call — the declared-name gate
+                # refused it. Non-streaming answers that with
+                # ``content=model_output``: text the caller never authorised as
+                # a tool is still the model's answer and belongs on the wire.
+                #
+                # Streaming had no equivalent. Every delta of the block was
+                # withheld (``None``), and the postprocessor buffers those only
+                # until a closing tag arrives — at which point it drops the
+                # buffer unemitted (``_tool_suppressed_buffer = ""``) because
+                # the parser "made progress". Its #1359 release is byte-budget
+                # driven, so a short refused call never trips it and the user
+                # gets an EMPTY response instead of the prose.
+                #
+                # Returning the accumulated text hands the postprocessor the
+                # content it is about to discard, so nothing is duplicated.
+                # Once per turn: ``</function>`` and ``</tool_call>`` each bump
+                # the close count, and the second must not re-send it.
+                self._gate_released = True
+                unsent = (result.content or "")[self._passed_through :]
+                if unsent:
+                    return {"content": unsent}
             # Close tag but no NEW call to emit (e.g. the second of </function>
             # + </tool_call> for a call already streamed). Still surface any
             # trailing content that rode in on this delta.

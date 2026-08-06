@@ -834,6 +834,38 @@ def test_the_nemotron_gate_survives_streaming():
     assert emitted == [], f"streaming admitted an undeclared call: {emitted}"
 
 
+def test_a_streamed_refusal_still_reaches_the_user_as_text():
+    """Refusing a call must not swallow the answer.
+
+    Non-streaming answers a refused block with ``content=model_output`` —
+    text the caller never authorised as a tool is still the model's reply.
+    Streaming had no equivalent: every delta of the block was withheld
+    (``None``), and the postprocessor drops its suppression buffer the moment
+    the parser "makes progress" on a closing tag. Its #1359 release is
+    byte-budget driven, so a short refused call never tripped it and the user
+    got an EMPTY response.
+
+    Mutation: delete the release branch and ``content`` comes back ``''``.
+    """
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    hostile = _render_xml_body("delete_everything", _KEY, "x")
+
+    content, previous = "", ""
+    for i in range(len(hostile)):
+        current = hostile[: i + 1]
+        delta = parser.extract_tool_calls_streaming(
+            previous, current, hostile[i], request=_REQUEST
+        )
+        previous = current
+        content += (delta or {}).get("content") or ""
+
+    assert "delete_everything" in content, (
+        f"the refused block vanished instead of reaching the user: {content!r}"
+    )
+    # Released once, not once per closing tag.
+    assert content.count("<function=delete_everything>") == 1, content
+
+
 def test_gating_is_off_when_the_request_declares_no_tools():
     """A request with no tools keeps the position-only behaviour.
 
