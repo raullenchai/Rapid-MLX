@@ -477,11 +477,12 @@ class NemotronToolParser(ToolParser):
             # Close tag but no NEW call to emit (e.g. the second of </function>
             # + </tool_call> for a call already streamed). Still surface any
             # trailing content that rode in on this delta.
-            if unsent_content and safe_end > self._content_upto:
+            if safe_end > self._content_upto:
                 # The projection is a view of the raw range after the watermark,
                 # so a refusal released above cannot be sent twice.
                 self._content_upto = safe_end
-                return {"content": unsent_content}
+                if unsent_content:
+                    return {"content": unsent_content}
             return None
 
         # No new call closed in this delta. If we are past all tool-call markup

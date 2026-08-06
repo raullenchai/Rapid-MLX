@@ -980,6 +980,30 @@ def test_disambiguated_partial_opener_releases_every_withheld_byte():
     assert emitted == "<funx"
 
 
+def test_wrapper_close_is_accounted_before_following_prose():
+    """A decorative close must not leak after an already-emitted call."""
+    parser = ToolParserManager.get_tool_parser("nemotron")(None)
+    function = (
+        f"<tool_call><function={_NAME}><parameter={_KEY}>ok</parameter></function>"
+    )
+    first = parser.extract_tool_calls_streaming(
+        "", function, function, request=_REQUEST
+    )
+    assert len((first or {}).get("tool_calls") or []) == 1
+
+    wrapped = function + "</tool_call>"
+    close = parser.extract_tool_calls_streaming(
+        function, wrapped, "</tool_call>", request=_REQUEST
+    )
+    assert not (close or {}).get("content")
+
+    complete = wrapped + " after"
+    prose = parser.extract_tool_calls_streaming(
+        wrapped, complete, " after", request=_REQUEST
+    )
+    assert (prose or {}).get("content") == " after"
+
+
 def test_gating_is_off_when_the_request_declares_no_tools():
     """A request with no tools keeps the position-only behaviour.
 
