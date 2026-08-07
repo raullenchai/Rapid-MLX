@@ -103,13 +103,13 @@ First run has **two distinct surfaces**, shown in order:
 **Expected.**
 
 1. The Settings window opens at its last-left size (restored from `NSWindow Frame Settings`).
-2. The category rail is a **native, arrow-key-navigable list with VoiceOver semantics** (v0.10.6). It shows the categories in `SettingsView.Category` (`SettingsView.swift`), led by **Model Management, Tools, …**. The standalone **Models** tab was folded into **Model Management** (2026-08-07), so the default selection on open is now **Model Management**. (This enumeration predates several tab changes and is due a full reconciliation — see the smoke note below.) New tabs added after `.app` MUST extend this list in declaration order — the manual walk depends on it.
+2. The category rail is a **native, arrow-key-navigable list with VoiceOver semantics** (v0.10.6). It shows **5 tabs** driven by `ForEach(Category.allCases)` (`SettingsView.Category`, `SettingsView.swift`), in declaration order: **Model Management, Tools, Appearance, Privacy, App**. The standalone **Models** tab was folded into **Model Management** (2026-08-07), which is now the default selection on open. New tabs added after `.app` MUST extend the enum in declaration order — the arrow-key walk depends on it. New tabs added after `.app` MUST extend this list in declaration order — the manual walk depends on it.
 3. Clicking a tab swaps the body; each tab persists to `UserDefaults` / `Keychain` synchronously on every edit. Notables: the **Max Tokens** slider actually caps response length (fixed v0.8.19); the engine/sidecar path lives in **App / Inference Engine**, not the bottom bar (moved v0.8.10); chat-history backup restore lives in **Storage** (v0.8.20).
 4. `Cmd+W` closes Settings without quitting the app.
 
 **Touches.** `UI/SettingsView.swift`, `UI/SettingsModelManagementPanel.swift`, `UI/SettingsConnectorsPanel.swift`, `UI/SettingsPermissionsPanel.swift`, `UI/SettingsRouter.swift`, `QuickAsk/QuickAskShortcutsView.swift`, `Tools/KeychainStore.swift`.
 
-**Last smoke result.** Persistence layer verified 2026-06-13; tab list last reconciled 2026-07-21 (now stale — Models folded into Model Management 2026-08-07; a full re-reconciliation is owed). Tab-switch click test **requires manual local verification** (SwiftUI `.onTapGesture` doesn't fire on synthetic clicks — 3-B).
+**Last smoke result.** Persistence layer verified 2026-06-13; tab list reconciled to the 5 real `Category.allCases` entries on 2026-08-07 (Models folded into Model Management). Tab-switch click test **requires manual local verification** (SwiftUI `.onTapGesture` doesn't fire on synthetic clicks — 3-B).
 
 **Known issues.** Inherits 3-A / 3-B.
 
