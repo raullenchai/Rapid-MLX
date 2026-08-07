@@ -6,9 +6,7 @@ from scripts.benchmark_model_recommendations import huggingface_cache_dir
 def test_huggingface_cache_dir_prefers_explicit_override(monkeypatch):
     monkeypatch.setenv("HF_HUB_CACHE", "/ignored/direct")
     monkeypatch.setenv("HF_HOME", "/ignored/home")
-    assert huggingface_cache_dir("/Volumes/model-cache") == Path(
-        "/Volumes/model-cache"
-    )
+    assert huggingface_cache_dir("/Volumes/model-cache") == Path("/Volumes/model-cache")
 
 
 def test_huggingface_cache_dir_understands_direct_hub_cache(monkeypatch):

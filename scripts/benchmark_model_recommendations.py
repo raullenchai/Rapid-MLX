@@ -326,7 +326,7 @@ def main() -> int:
         "schema_version": 1,
         "environment": environment,
         "method": {
-            "serve_path": "python -m vllm_mlx.cli serve",
+            "serve_path": "python -m vllm_mlx.cli serve --disable-prefix-cache",
             "prefix_cache": "disabled to prevent cross-run contamination",
             "output_tokens": args.output_tokens,
             "long_prompt": "~8K tokens (900 repeated neutral sentences)",
