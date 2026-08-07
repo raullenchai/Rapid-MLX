@@ -12,20 +12,11 @@ struct TrailingSettingsToggleStyle: ToggleStyle {
             set: { configuration.isOn = $0 }
         )
 
-        return HStack(alignment: .center, spacing: 16) {
+        return Toggle(isOn: binding) {
             configuration.label
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            Toggle("", isOn: binding)
-                .toggleStyle(.switch)
-                .labelsHidden()
         }
+        .toggleStyle(.switch)
         .frame(maxWidth: .infinity)
-        .accessibilityRepresentation {
-            Toggle(isOn: binding) {
-                configuration.label
-            }
-            .toggleStyle(.switch)
-        }
     }
 }

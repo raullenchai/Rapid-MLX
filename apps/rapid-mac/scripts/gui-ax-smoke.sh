@@ -23,7 +23,7 @@ observe_app() {
     local destination="$1"
     pb list windows --app "$APP" --json > "$OUT/windows-current.json"
     MAIN_WINDOW_ID="$(jq -r --arg app "$APP" \
-        '.data.windows[] | select(.title == $app and .isMainWindow == true) | .window_id' \
+        '.data.windows | (map(select(.title == $app and .isMainWindow == true))[0] // map(select(.title == $app))[0]) | .window_id // empty' \
         "$OUT/windows-current.json" | head -1)"
     [[ -n "$MAIN_WINDOW_ID" ]] || die "main window for $APP not found"
     pb see --window-id "$MAIN_WINDOW_ID" --json > "$destination" || true
@@ -59,7 +59,7 @@ jq -e '.success and ([.data.permissions[] | select(.isRequired) | .isGranted] | 
 
 pb list windows --app "$APP" --json > "$OUT/windows-initial.json"
 MAIN_WINDOW_ID="$(jq -r --arg app "$APP" \
-    '.data.windows[] | select(.title == $app and .isMainWindow == true) | .window_id' \
+    '.data.windows | (map(select(.title == $app and .isMainWindow == true))[0] // map(select(.title == $app))[0]) | .window_id // empty' \
     "$OUT/windows-initial.json" | head -1)"
 [[ -n "$MAIN_WINDOW_ID" ]] || die "main window for $APP not found"
 observe_app "$OUT/main.json" || die "could not inspect main window or modal sheet"
@@ -96,7 +96,7 @@ if jq -e '.data.ui_elements[]? | select(.identifier == "DockHidePrompt.NoButton"
     observe_app "$OUT/main.json" || die "could not inspect app after Dock prompt"
 fi
 
-for identifier in rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
+for identifier in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
     jq -e --arg id "$identifier" \
         '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/main.json" >/dev/null \
         || die "main window missing AX identifier: $identifier"
@@ -121,8 +121,23 @@ for category in models modelManagement tools appearance privacy app; do
         || die "Settings missing category identifier: $category"
 done
 
-APPEARANCE_ID="$(jq -r '.data.ui_elements[] | select(.identifier == "Settings.Category.appearance") | .id' "$OUT/settings.json")"
-SNAPSHOT="$(jq -r '.data.snapshot_id' "$OUT/settings.json")"
+# The shared trailing-toggle style must preserve the native checkbox role and
+# the identifiers attached by each settings panel. A visually-correct switch
+# can otherwise degrade into inert AX text, which breaks both VoiceOver and
+# semantic automation while remaining invisible in screenshots.
+press_identifier "$OUT/settings.json" "Settings.Category.models" "$OUT/open-models.json" \
+    || die "could not AXPress Settings.Category.models"
+sleep 0.5
+pb see --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/models.json"
+for identifier in Settings.Models.ShowAllModelsToggle Settings.Models.AutoStartOnLaunchToggle; do
+    jq -e --arg id "$identifier" \
+        '.data.ui_elements[]? | select(.identifier == $id and .role == "checkbox")' \
+        "$OUT/models.json" >/dev/null \
+        || die "Models toggle is not exposed as a native AX checkbox: $identifier"
+done
+
+APPEARANCE_ID="$(jq -r '.data.ui_elements[] | select(.identifier == "Settings.Category.appearance") | .id' "$OUT/models.json")"
+SNAPSHOT="$(jq -r '.data.snapshot_id' "$OUT/models.json")"
 pb perform-action --on "$APPEARANCE_ID" --action AXPress --snapshot "$SNAPSHOT" --json \
     > "$OUT/open-appearance.json"
 sleep 0.5

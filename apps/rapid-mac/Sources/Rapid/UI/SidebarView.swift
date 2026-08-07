@@ -102,12 +102,14 @@ struct SidebarView: View {
                 isSelected: false,
                 action: onNewChat
             )
+            .accessibilityIdentifier("Sidebar.NewChat")
             row(
                 title: "Launch",
                 systemImage: "paperplane",
                 isSelected: selection == .launch,
                 action: { selection = .launch }
             )
+            .accessibilityIdentifier("Sidebar.Launch")
 
             if !chat.conversations.isEmpty {
                 // Date-grouped history (#1470), titled with the shared
@@ -345,6 +347,7 @@ struct SidebarView: View {
                         // re-truncates the title instead of overlapping it.
                         .padding(.trailing, showsControls ? Self.rowControlsWidth : 0)
                 }
+                .accessibilityIdentifier("Sidebar.Conversation.\(conv.id.uuidString)")
                 if showsControls {
                     rowControls(conv, showsPin: hovering || isActive)
                 }
