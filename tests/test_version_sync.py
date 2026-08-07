@@ -12,6 +12,7 @@ Pure stdlib — no mlx, no macOS — so this runs on the Linux CI runner.
 
 from __future__ import annotations
 
+import json
 import plistlib
 from pathlib import Path
 
@@ -44,7 +45,11 @@ def write_plist(path: Path, **overrides: object) -> Path:
 def write_pyproject(path: Path, version: str | None = "1.2.3") -> Path:
     body = '[project]\nname = "rapid-mlx"\n'
     if version is not None:
-        body += f'version = "{version}"\n'
+        # json.dumps, not an f-string interpolation: a value containing a
+        # newline or a quote would otherwise produce INVALID TOML, and the
+        # test would pass on a parse error instead of on the check it is
+        # supposed to exercise. TOML basic strings use JSON's escapes.
+        body += f"version = {json.dumps(version)}\n"
     path.write_text(body, encoding="utf-8")
     return path
 
@@ -170,12 +175,18 @@ def test_non_dict_plist_root_fails(tmp_path):
 )
 def test_non_semver_is_rejected_on_both_sides(tmp_path, bad):
     """Release tags are built from these strings; the updater orders them."""
-    plist = write_plist(tmp_path / f"a{len(bad)}.plist", CFBundleShortVersionString=bad)
-    with pytest.raises(VersionSyncError):
+    plist = write_plist(tmp_path / "a.plist", CFBundleShortVersionString=bad)
+    with pytest.raises(VersionSyncError) as plist_exc:
         app_version(plist)
-    pyproject = write_pyproject(tmp_path / f"b{len(bad)}.toml", version=bad)
-    with pytest.raises(VersionSyncError):
+    # Rejected for its VALUE, not because the file failed to parse — a
+    # malformed fixture would make this test green while the SemVer
+    # branch it targets never ran.
+    assert "not a readable plist" not in str(plist_exc.value)
+
+    pyproject = write_pyproject(tmp_path / "b.toml", version=bad)
+    with pytest.raises(VersionSyncError) as toml_exc:
         engine_version(pyproject)
+    assert "not readable TOML" not in str(toml_exc.value)
 
 
 # --- the CLI entry point CI actually calls --------------------------
