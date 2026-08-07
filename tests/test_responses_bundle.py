@@ -462,9 +462,17 @@ class TestDeepSeekV4ResponsesStreaming:
         assert json.loads(completed_calls[0]["arguments"]) == {"cmd": "pwd && ls"}
 
     def test_streaming_rejects_invalid_structured_arguments_for_every_parser(
-        self, make_responses_client
+        self, make_responses_client, monkeypatch
     ):
         """Qwen/Hermes must get the same validation DeepSeek already had."""
+        # ``_check_admission_or_503`` lazily imports this one exception. Keep
+        # the HTTP fixture lightweight on Linux pr_validation, where MLX is
+        # intentionally unavailable and importing the real scheduler would
+        # fail before the mocked engine reaches the Responses route.
+        scheduler_stub = types.ModuleType("vllm_mlx.scheduler")
+        scheduler_stub.BackpressureError = type("BackpressureError", (Exception,), {})
+        monkeypatch.setitem(sys.modules, "vllm_mlx.scheduler", scheduler_stub)
+
         state = make_responses_client(
             tool_calls=[_make_function_call("get_weather", "12")],
             finish_reason="tool_calls",
