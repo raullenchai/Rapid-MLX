@@ -461,6 +461,52 @@ class TestDeepSeekV4ResponsesStreaming:
         assert len(completed_calls) == 1
         assert json.loads(completed_calls[0]["arguments"]) == {"cmd": "pwd && ls"}
 
+    def test_streaming_rejects_invalid_structured_arguments_for_every_parser(
+        self, make_responses_client
+    ):
+        """Qwen/Hermes must get the same validation DeepSeek already had."""
+        state = make_responses_client(
+            tool_calls=[_make_function_call("get_weather", "12")],
+            finish_reason="tool_calls",
+            stream_chunks=["tool preamble", "tool body"],
+        )
+        state.cfg.enable_auto_tool_choice = True
+        state.cfg.tool_call_parser = "hermes"
+
+        with state.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(
+                stream=True,
+                tool_choice="required",
+                tools=[
+                    {
+                        "type": "function",
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    }
+                ],
+            ),
+            headers=_AUTH,
+        ) as resp:
+            assert resp.status_code == 200, resp.text
+            events = _parse_sse("".join(resp.iter_text()))
+
+        failed = [data for name, data in events if name == "response.failed"]
+        assert len(failed) == 1, events
+        assert failed[0]["response"]["error"]["code"] == "invalid_tool_arguments"
+        assert "JSON object" in failed[0]["response"]["error"]["message"]
+        assert not any(name == "response.completed" for name, _ in events)
+        assert not any(
+            name == "response.output_item.added"
+            and data.get("item", {}).get("type") == "function_call"
+            for name, data in events
+        )
+
     def test_empty_dsml_invoke_for_required_tool_fails_instead_of_reaching_codex(
         self, make_responses_client
     ):

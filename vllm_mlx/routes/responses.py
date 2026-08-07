@@ -3802,11 +3802,12 @@ async def _stream_responses(
             tool_calls = _enforce_responses_tool_choice(
                 parsed_tool_calls, responses_request, openai_request
             )
-            if (
-                tool_calls
-                and openai_request.tools
-                and cfg.tool_call_parser == "deepseek_v4_0731"
-            ):
+            # Streaming must enforce the same post-parse schema contract as
+            # the non-streaming Responses lane. This used to be restricted to
+            # DeepSeek, so Hermes/Qwen calls such as ``arguments="12"`` could
+            # reach Codex as response.completed even though the declared tool
+            # requires a JSON object with required properties.
+            if tool_calls and openai_request.tools:
                 _validate_tool_call_params(
                     tool_calls, openai_request.tools, enforce_required=True
                 )
