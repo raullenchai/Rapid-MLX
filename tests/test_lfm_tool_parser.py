@@ -2,6 +2,7 @@
 """Tests for Liquid/LFM tool call parser."""
 
 import json
+import time
 from unittest.mock import MagicMock
 
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
@@ -534,6 +535,64 @@ class TestLfmTextFormatEnvelope:
         assert calls == []
         assert content == "Wait [Calling tool: brow"
 
+    def test_json_literals_are_not_stringified(self):
+        """``true`` / ``false`` / ``null`` are JSON, not Python bare names.
+
+        Parsing the payload with ``ast`` turns them into the strings
+        ``"true"`` / ``"false"`` / ``"null"``, which invokes the tool with
+        materially wrong arguments.
+        """
+        parser = LfmToolParser()
+        expected = {"refresh": True, "cached": False, "cursor": None, "n": 3}
+        for text in (
+            '[Calling tool: browse({"refresh": true, "cached": false, '
+            '"cursor": null, "n": 3})]',
+            '[browse({"refresh": true, "cached": false, "cursor": null, "n": 3})]',
+        ):
+            result = parser.extract_tool_calls(text)
+            assert result.tools_called, text
+            assert json.loads(result.tool_calls[0]["arguments"]) == expected, text
+
+    def test_prose_after_call_in_same_delta_is_not_dropped(self):
+        """Trailing prose sharing the closing delta must still be emitted.
+
+        Once a tool call fires the EOF flush is skipped, so anything the
+        tool-call return does not carry is lost for good.
+        """
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ['[Calling tool: f({"a": 1})] all done'])
+
+        assert [c["function"]["name"] for c in calls] == ["f"]
+        assert content == " all done"
+
+    def test_prose_between_two_calls_in_same_delta_is_not_dropped(self):
+        parser = LfmToolParser()
+        content, calls = _stream(
+            parser, ["[Calling tool: f({})] then [Calling tool: g({})] end"]
+        )
+
+        assert [c["function"]["name"] for c in calls] == ["f", "g"]
+        assert content == " then  end"
+
+    def test_forced_prefix_seeded_by_postprocessor_is_not_re_emitted(self):
+        """``previous_text`` may be seeded with bytes never streamed here.
+
+        ``StreamingPostProcessor.seed_forced_assistant_prefix`` primes
+        ``tool_accumulated_text``; treating those bytes as unemitted would
+        replay the forced prefix into the visible message.
+        """
+        parser = LfmToolParser()
+        seeded = "Already sent. "
+        result = parser.extract_tool_calls_streaming(
+            previous_text=seeded,
+            current_text=seeded + "[f(x=1)]",
+            delta_text="[f(x=1)]",
+        )
+
+        assert result is not None
+        assert result["tool_calls"][0]["function"]["name"] == "f"
+        assert not result.get("content")
+
 
 class TestLfmStreamingProseRegressions:
     """Ordinary prose must keep streaming — the hold is not a censor."""
@@ -558,6 +617,38 @@ class TestLfmStreamingProseRegressions:
 
         assert calls == []
         assert content == "[Calling the doctor] now"
+
+    def test_apostrophe_in_prose_does_not_disable_markup_holding(self):
+        """A stray quote at bracket depth 0 is prose, not an open string.
+
+        Tracking quotes globally would make ``don't`` swallow every later
+        ``[``, so the markup after it would stream out raw.
+        """
+        parser = LfmToolParser()
+        content, calls = _stream(
+            parser, ["I can't do that, but ", '[Calling tool: f({"a": 1})]']
+        )
+
+        assert [c["function"]["name"] for c in calls] == ["f"]
+        assert content == "I can't do that, but "
+
+    def test_bracket_scan_stays_linear(self):
+        """Guard the O(n^2)-per-delta scan the first fix round introduced.
+
+        ``"[!" * n`` is all unbalanced openers: rescanning the suffix for
+        each one took ~0.85s at n=3200 and grew ~4x per doubling.
+        """
+        parser = LfmToolParser()
+        elapsed = []
+        for size in (2000, 8000):
+            text = "[!" * size
+            start = time.perf_counter()
+            parser._safe_content_prefix(text)
+            elapsed.append(time.perf_counter() - start)
+
+        # 4x the input must not cost anywhere near 16x the time.
+        assert elapsed[1] < 0.5
+        assert elapsed[1] < max(elapsed[0], 1e-4) * 8
 
     def test_markdown_link_streams_through(self):
         parser = LfmToolParser()

@@ -176,23 +176,33 @@ def _extract_balanced_bracket_block(
     return None, text
 
 
-def _arguments_object(node: ast.AST) -> dict[str, Any] | None:
-    """Return the arguments mapping for a lone positional argument.
+def _build_json_args_call(name: str, raw_arguments: str) -> list[dict[str, Any]]:
+    """Build a one-element tool-call list from a JSON arguments payload.
 
-    ``[browse({"url": "x"})]`` is the envelope's payload with the
-    ``Calling tool:`` prefix dropped — a single dict positional IS the
-    arguments object, unambiguously. Anything else (scalars, several
-    positionals, non-string keys) stays ``None`` so the caller rejects
-    the block.
+    The payload MUST be parsed as JSON, never as a Python literal: the
+    dialect writes ``true`` / ``false`` / ``null``, which ``ast`` reads as
+    bare names and ``eval_node`` would turn into the strings ``"true"`` /
+    ``"false"`` / ``"null"`` — a tool invoked with materially wrong
+    arguments. Anything that is not a JSON object rejects the block.
     """
-    if not isinstance(node, ast.Dict):
-        return None
-    value = eval_node(node)
-    if not isinstance(value, dict):
-        return None
-    if not all(isinstance(key, str) for key in value):
-        return None
-    return value
+    raw = raw_arguments.strip()
+    if not raw:
+        arguments: Any = {}
+    else:
+        try:
+            arguments = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if not isinstance(arguments, dict):
+            return []
+
+    return [
+        {
+            "id": generate_tool_id(),
+            "name": name,
+            "arguments": json.dumps(arguments, ensure_ascii=False),
+        }
+    ]
 
 
 def _parse_text_format_block(block: str) -> list[dict[str, Any]]:
@@ -212,41 +222,44 @@ def _parse_text_format_block(block: str) -> list[dict[str, Any]]:
     call = _TEXT_CALL_BODY.fullmatch(body[:-1].strip())
     if call is None:
         return []
+    return _build_json_args_call(call.group(1), call.group(2))
 
-    raw_arguments = call.group(2).strip()
-    if not raw_arguments:
-        arguments: Any = {}
-    else:
-        try:
-            arguments = json.loads(raw_arguments)
-        except (json.JSONDecodeError, ValueError):
-            return []
-        if not isinstance(arguments, dict):
-            return []
 
-    return [
-        {
-            "id": generate_tool_id(),
-            "name": call.group(1),
-            "arguments": json.dumps(arguments, ensure_ascii=False),
-        }
-    ]
+def _parse_bracket_json_block(block: str) -> list[dict[str, Any]]:
+    """Parse ``[name({...})]`` — the envelope with its prefix dropped.
+
+    Only a payload that already starts with ``{`` is claimed here; a
+    pythonic call (``[f(x=1)]``, ``[index(0)]``) falls through to the AST
+    path below, which keeps its stricter rules.
+    """
+    inner = block.strip()
+    if not (inner.startswith("[") and inner.endswith("]")):
+        return []
+    call = _TEXT_CALL_BODY.fullmatch(inner[1:-1].strip())
+    if call is None:
+        return []
+    if not call.group(2).strip().startswith("{"):
+        return []
+    return _build_json_args_call(call.group(1), call.group(2))
 
 
 def _parse_call_block(block: str) -> list[dict[str, Any]]:
     """Parse one balanced ``[...]`` block into tool-call dicts.
 
-    Returns an empty list when the block is not a clean LFM call list.
-    A call carrying positional arguments rejects the WHOLE block —
-    positional values cannot be mapped to named tool parameters, and
-    emitting the call with empty/partial arguments would silently invoke
-    the tool wrong. The one exception is a lone dict positional
-    (``[browse({"url": "x"})]``), which is the JSON arguments object of
-    the text-format dialect. Rejected blocks stay in the content instead.
+    Three shapes are accepted: the ``[Calling tool: name({json})]``
+    envelope, its prefix-less ``[name({json})]`` form, and the pythonic
+    ``[name(arg=val), ...]`` list.
+
+    Returns an empty list when the block is none of those. In the
+    pythonic form a call carrying positional arguments rejects the WHOLE
+    block: positional values cannot be mapped to named tool parameters,
+    and emitting the call with empty/partial arguments would silently
+    invoke the tool wrong. Rejected blocks stay in the content instead.
     """
-    text_format_calls = _parse_text_format_block(block)
-    if text_format_calls:
-        return text_format_calls
+    for parse in (_parse_text_format_block, _parse_bracket_json_block):
+        calls = parse(block)
+        if calls:
+            return calls
 
     try:
         tree = ast.parse(block.strip())
@@ -259,18 +272,13 @@ def _parse_call_block(block: str) -> list[dict[str, Any]]:
     if not isinstance(node, ast.List):
         return []
 
-    calls: list[dict[str, Any]] = []
+    calls = []
     for elt in node.elts:
         if not (isinstance(elt, ast.Call) and isinstance(elt.func, ast.Name)):
             return []
-        arguments: dict[str, Any] = {}
         if elt.args:
-            if elt.keywords or len(elt.args) != 1:
-                return []
-            positional = _arguments_object(elt.args[0])
-            if positional is None:
-                return []
-            arguments = positional
+            return []
+        arguments = {}
         for kw in elt.keywords:
             if kw.arg is None:
                 return []
@@ -285,41 +293,57 @@ def _parse_call_block(block: str) -> list[dict[str, Any]]:
     return calls
 
 
-def parse_lfm_tool_calls(model_output: str) -> tuple[list[dict[str, Any]], str]:
-    """Parse LFM pythonic tool calls and return ``(tool_calls, cleaned_text)``.
+def _iter_call_blocks(text: str) -> list[tuple[int, int, list[dict[str, Any]]]]:
+    """Return ``(start, end, calls)`` for every parsed call block, in order.
 
-    Every ``[name(...)]`` block in the output is considered — LFM may emit
-    several separate blocks, not just one list. Blocks that don't parse as
-    clean call lists (prose, positional args) are left in the content.
+    Offsets are into ``text`` itself so callers can tell block bytes from
+    content bytes — the streaming path needs that to emit prose that
+    shares a delta with a completed call instead of dropping it.
     """
-    tool_calls: list[dict[str, Any]] = []
-    text = model_output
+    blocks: list[tuple[int, int, list[dict[str, Any]]]] = []
     search_from = 0
 
     while True:
         start = _find_lfm_call_start(text, search_from)
         if start == -1:
-            break
-        block, remaining = _extract_balanced_bracket_block(text, start)
+            return blocks
+        block, _ = _extract_balanced_bracket_block(text, start)
         if block is None:
-            break
+            return blocks
 
         try:
             block_calls = _parse_call_block(block)
         except Exception as exc:
-            logger.debug("Failed to parse LFM pythonic tool call: %s", exc)
+            logger.debug("Failed to parse LFM tool call: %s", exc)
             block_calls = []
 
         if block_calls:
-            tool_calls.extend(block_calls)
-            text = remaining
-            search_from = start
+            blocks.append((start, start + len(block), block_calls))
+            search_from = start + len(block)
         else:
             search_from = start + 1
 
-    if not tool_calls:
+
+def parse_lfm_tool_calls(model_output: str) -> tuple[list[dict[str, Any]], str]:
+    """Parse LFM tool calls and return ``(tool_calls, cleaned_text)``.
+
+    Every call block in the output is considered — LFM may emit several
+    separate blocks, not just one list. Blocks that don't parse as clean
+    calls (prose, positional args) are left in the content.
+    """
+    blocks = _iter_call_blocks(model_output)
+    if not blocks:
         return [], model_output
-    return tool_calls, text
+
+    tool_calls: list[dict[str, Any]] = []
+    kept: list[str] = []
+    cursor = 0
+    for start, end, block_calls in blocks:
+        tool_calls.extend(block_calls)
+        kept.append(model_output[cursor:start])
+        cursor = end
+    kept.append(model_output[cursor:])
+    return tool_calls, "".join(kept)
 
 
 @ToolParserManager.register_module(["lfm", "liquid"])
@@ -349,10 +373,20 @@ class LfmToolParser(ToolParser):
         # Parser instances are per-request (see StreamingPostProcessor), so
         # this counter never leaks across streams.
         self._emitted_tool_count = 0
+        # Bytes of the accumulated text already accounted for — emitted as
+        # content OR consumed as a tool-call block. Tracking one watermark
+        # instead of diffing ``previous_text`` against ``current_text`` is
+        # what lets the tool-call branch emit prose that shares a delta
+        # with a completed block: after the call is built, everything from
+        # the watermark up to the safe boundary that is not block bytes is
+        # still content and must reach the client. The EOF flush is skipped
+        # once a call fires, so anything not emitted here is lost.
+        self._consumed_len = 0
 
     def reset(self) -> None:
         super().reset()
         self._emitted_tool_count = 0
+        self._consumed_len = 0
 
     def has_pending_tool_call(self, text: str) -> bool:
         return _find_unclosed_lfm_call_start(text) != -1
@@ -381,15 +415,54 @@ class LfmToolParser(ToolParser):
         start = _find_unclosed_markup_start(text)
         return text if start == -1 else text[:start]
 
-    @classmethod
+    def _emitted_boundary(self, previous_text: str) -> int:
+        """Bytes of the accumulated text already accounted for.
+
+        ``previous_text`` is authoritative — the postprocessor may seed it
+        with a forced-``tool_choice`` assistant prefix the parser never
+        saw as a delta (``seed_forced_assistant_prefix``), and those bytes
+        must not be re-emitted as content. ``_consumed_len`` only raises
+        the floor for what the tool-call branch consumed on top.
+        """
+        return max(len(self._safe_content_prefix(previous_text)), self._consumed_len)
+
     def _emit_safe_content(
-        cls, previous_text: str, current_text: str
+        self, previous_text: str, current_text: str
     ) -> dict[str, Any] | None:
-        safe_current = cls._safe_content_prefix(current_text)
-        safe_previous = cls._safe_content_prefix(previous_text)
-        if len(safe_current) <= len(safe_previous):
+        safe_current = self._safe_content_prefix(current_text)
+        boundary = self._emitted_boundary(previous_text)
+        if len(safe_current) <= boundary:
             return None
-        return {"content": safe_current[len(safe_previous) :]}
+        self._consumed_len = len(safe_current)
+        return {"content": safe_current[boundary:]}
+
+    def _unconsumed_content(
+        self,
+        previous_text: str,
+        current_text: str,
+        blocks: list[tuple[int, int, Any]],
+    ) -> str:
+        """Content bytes not yet emitted and not part of a call block.
+
+        Advances the watermark past everything it returns, so a later
+        delta cannot re-emit the same bytes.
+        """
+        pieces: list[str] = []
+        cursor = self._emitted_boundary(previous_text)
+        for start, end, _ in blocks:
+            if end <= cursor:
+                continue
+            if start > cursor:
+                pieces.append(current_text[cursor:start])
+            cursor = max(cursor, end)
+
+        safe_end = len(self._safe_content_prefix(current_text))
+        if safe_end > cursor:
+            pieces.append(current_text[cursor:safe_end])
+            cursor = safe_end
+
+        self._consumed_len = max(self._consumed_len, cursor)
+        return "".join(pieces)
 
     def flush_held_content(self, full_text: str) -> str:
         """Release any held non-tool bracket prefix at stream end."""
@@ -410,14 +483,12 @@ class LfmToolParser(ToolParser):
             return {"content": delta_text}
 
         if _find_lfm_call_start(current_text) != -1 and "]" in delta_text:
-            result = self.extract_tool_calls(current_text)
-            if (
-                result.tools_called
-                and len(result.tool_calls) > self._emitted_tool_count
-            ):
+            blocks = _iter_call_blocks(current_text)
+            total_calls = sum(len(calls) for _, _, calls in blocks)
+            if total_calls > self._emitted_tool_count:
                 base = self._emitted_tool_count
-                new_calls = result.tool_calls[base:]
-                self._emitted_tool_count = len(result.tool_calls)
+                new_calls = [tc for _, _, calls in blocks for tc in calls][base:]
+                self._emitted_tool_count = total_calls
                 out: dict[str, Any] = {
                     "tool_calls": [
                         {
@@ -432,23 +503,16 @@ class LfmToolParser(ToolParser):
                         for i, tc in enumerate(new_calls)
                     ]
                 }
-                # If a prose preface and the first completed call land in
-                # the SAME delta (batched chunk / finalize / single-shot
-                # stream), the leading prose was never emitted — and once a
-                # tool fires, the EOF ``flush_held_content`` path is skipped,
-                # so it would be lost. Emit the un-emitted leading content in
-                # the same return; the postprocessor renders the content
-                # event before the tool-call event (the llama-parser
-                # precedent, StreamingPostProcessor._detect_tool_calls). Only
-                # the FIRST emission needs this — content between/after later
-                # blocks streams through ``_emit_safe_content`` normally.
-                if base == 0:
-                    first_block = _find_lfm_call_start(current_text)
-                    already = len(self._safe_content_prefix(previous_text))
-                    if 0 <= already < first_block:
-                        lead = current_text[already:first_block]
-                        if lead.strip():
-                            out["content"] = lead
+                # Prose that shares a delta with a completed call (batched
+                # chunk / finalize / single-shot stream) was never emitted,
+                # and once a tool fires the EOF ``flush_held_content`` path
+                # is skipped — so it has to go out in this same return or
+                # it is lost. The postprocessor renders the content event
+                # before the tool-call event (the llama-parser precedent,
+                # StreamingPostProcessor._detect_tool_calls).
+                content = self._unconsumed_content(previous_text, current_text, blocks)
+                if content.strip():
+                    out["content"] = content
                 return out
 
         return self._emit_safe_content(previous_text, current_text)
@@ -476,8 +540,56 @@ def _may_grow_into_markup(tail: str) -> bool:
     )
 
 
+def _unclosed_bracket_starts(text: str) -> list[int]:
+    """Indices of every ``[`` still open at the end of ``text``, outermost first.
+
+    One left-to-right pass, so this stays linear where a
+    ``_extract_balanced_bracket_block`` call per ``[`` would be quadratic
+    (``"[!" * n`` re-scans the whole suffix for every opener, and the
+    streaming path runs this on every delta).
+
+    Quote and escape state is tracked only INSIDE a block. At depth 0 an
+    apostrophe is just prose — treating ``don't`` as an open string would
+    swallow every ``[`` in the rest of the turn, including real markup.
+    Inside a block the state matches ``_extract_balanced_bracket_block``
+    exactly, which is what protects ``query="]"``.
+    """
+    stack: list[int] = []
+    in_string = False
+    string_char = ""
+    escaped = False
+
+    for i, char in enumerate(text):
+        if not stack:
+            if char == "[":
+                stack.append(i)
+            continue
+
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if in_string:
+            if char == string_char:
+                in_string = False
+            continue
+        if char in ('"', "'"):
+            in_string = True
+            string_char = char
+            continue
+
+        if char == "[":
+            stack.append(i)
+        elif char == "]":
+            stack.pop()
+
+    return stack
+
+
 def _find_unclosed_markup_start(text: str) -> int:
-    """Index of the first ``[`` that may still grow into tool markup.
+    """Index of the outermost still-open ``[`` that may become tool markup.
 
     Everything from that index on is held back: emitting it would leak
     half-formed markup, and the bytes are cheap to keep until the block
@@ -487,7 +599,7 @@ def _find_unclosed_markup_start(text: str) -> int:
     Two properties matter, and the LFM streaming leak came from missing
     both:
 
-    * The scan runs LEFT to RIGHT. Anchoring on the LAST ``[`` (the old
+    * The scan runs OUTERMOST first. Anchoring on the LAST ``[`` (the old
       behaviour) breaks as soon as the argument payload contains one of
       its own — the opener is released while the rest of the span is
       still held, so the client sees a headless fragment.
@@ -496,21 +608,11 @@ def _find_unclosed_markup_start(text: str) -> int:
       stops looking like ``[name(`` is what let ``[Calling tool`` reach
       the wire, where the global sanitizer stripped exactly that span
       and left ``: browse({...})]`` in the visible message.
-    """
-    search_from = 0
-    while True:
-        idx = text.find("[", search_from)
-        if idx == -1:
-            return -1
 
-        bracket_block, _ = _extract_balanced_bracket_block(text, idx)
-        if bracket_block is not None:
-            # Closed: either an already-extracted call or plain content.
-            # Holding it would suppress the rest of the stream.
-            search_from = idx + len(bracket_block)
-            continue
+    An unbalanced ``[`` that is unmistakably prose (``a[i is fine``) is
+    skipped: a ``[`` nested inside it may still be a real opener.
+    """
+    for idx in _unclosed_bracket_starts(text):
         if _may_grow_into_markup(text[idx:]):
             return idx
-        # Unbalanced but unmistakably prose (``a[i is fine``). A later
-        # ``[`` in the same span may still be a real opener.
-        search_from = idx + 1
+    return -1
