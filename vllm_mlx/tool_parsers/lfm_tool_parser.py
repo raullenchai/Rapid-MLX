@@ -326,14 +326,16 @@ def _iter_call_blocks(text: str) -> list[tuple[int, int, list[dict[str, Any]]]]:
     content bytes — the streaming path needs that to emit prose that
     shares a delta with a completed call instead of dropping it.
 
-    The walk STOPS at the first opener with no matching ``]``, rather than
-    hunting for a later block that might close. Mid-stream that opener is
-    simply the call still being written, and its argument payload can
-    contain anything — including a literal ``[g({})]`` inside a JSON
-    string. Probing past it would dispatch that string's contents as a
-    tool call, at an index the count-based dedup below can never retract
-    once the real call arrives. A malformed opener therefore masks any
-    block after it; that text stays content, which is the safe failure.
+    The walk NEVER descends into a block's payload, whether that block was
+    accepted or rejected, and STOPS at the first opener with no matching
+    ``]``. A payload can contain anything — including a literal
+    ``[g({})]`` inside a JSON string argument — and dispatching a tool
+    call out of another call's string data is irreversible: the
+    count-based dedup below can never retract it once the real call
+    arrives. So a rejected block resumes at its own end, and an
+    unterminated opener (mid-stream, simply the call still being written)
+    masks whatever follows. Both leave the text as content, the safe
+    failure.
     """
     blocks: list[tuple[int, int, list[dict[str, Any]]]] = []
     search_from = 0
@@ -354,9 +356,9 @@ def _iter_call_blocks(text: str) -> list[tuple[int, int, list[dict[str, Any]]]]:
 
         if block_calls:
             blocks.append((start, end, block_calls))
-            search_from = end
-        else:
-            search_from = start + 1
+        # Sibling blocks after this span are still discovered; only its
+        # own payload is off limits.
+        search_from = end
 
 
 def parse_lfm_tool_calls(model_output: str) -> tuple[list[dict[str, Any]], str]:

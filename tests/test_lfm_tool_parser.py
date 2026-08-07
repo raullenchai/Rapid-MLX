@@ -589,6 +589,35 @@ class TestLfmTextFormatEnvelope:
         assert json.loads(calls[0]["function"]["arguments"]) == {"x": "[g({})]"}
         assert content == ""
 
+    def test_call_inside_a_rejected_block_is_never_dispatched(self):
+        """A rejected block's payload is data too, not a place to search.
+
+        Resuming one character into a balanced-but-invalid block finds the
+        markup sitting in its string argument and dispatches it — the same
+        irreversible mistake as probing past an unterminated opener, just
+        with the outer block closed.
+        """
+        text = '[Calling tool: f({"x": "[Calling tool: g({})]"} trailing)]'
+        content, calls = _stream(LfmToolParser(), list(text))
+
+        assert calls == []
+        assert content == text
+        assert not LfmToolParser().extract_tool_calls(text).tools_called
+
+    def test_auto_parser_does_not_dispatch_from_a_rejected_block(self):
+        parser = AutoToolParser()
+        text = '[f(x=0, note="[g({})]", 1)]'
+
+        assert not parser.extract_tool_calls(text).tools_called
+
+    def test_sibling_block_after_a_rejected_one_is_still_found(self):
+        """Skipping a rejected block must not skip what follows it."""
+        parser = LfmToolParser()
+        content, calls = _stream(parser, list('[index(0)] then [f({"a": 1})]'))
+
+        assert [c["function"]["name"] for c in calls] == ["f"]
+        assert content == "[index(0)] then "
+
     def test_unterminated_opener_masks_later_blocks_but_loses_nothing(self):
         """An opener with no ``]`` stops the walk — the safe failure.
 
