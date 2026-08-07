@@ -257,13 +257,26 @@ func isStranded(_ lastServedAlias: String?) -> Bool {
     return retiredStarters.contains(alias)
 }
 
-func isEligible(done: Bool, legacyDone: Bool = false, lastServedAlias: String?, serverState: FakeServerState) -> Bool {
+// Gates 1 + 2 only — the persisted "does this install still owe the user
+// onboarding?" half. #1589 split this out of isEligible in the source so the
+// launch auto-start path could ask the SAME question before it moves
+// serverState; the mirror follows the same shape.
+func onboardingOwed(done: Bool, legacyDone: Bool = false, lastServedAlias: String?) -> Bool {
     guard !done else { return false }
     let stranded = isStranded(lastServedAlias)
     guard !(legacyDone && !stranded) else { return false }
     if lastServedAlias != nil, !stranded {
         return false
     }
+    return true
+}
+
+func isEligible(done: Bool, legacyDone: Bool = false, lastServedAlias: String?, serverState: FakeServerState) -> Bool {
+    guard onboardingOwed(
+        done: done,
+        legacyDone: legacyDone,
+        lastServedAlias: lastServedAlias
+    ) else { return false }
     switch serverState {
     case .idle, .stopped: return true
     case .ready, .starting, .crashed, .missing: return false
@@ -309,8 +322,17 @@ func isRetiredStarter(_ alias: String) -> Bool { retiredStarters.contains(alias)
 
 func decideResume(lastServedAlias: String?, cachedAliases: Set<String>,
                   serverState: FakeServerState, userOptedIn: Bool = true,
-                  quickstartDone: Bool = false) -> FakeDecision {
+                  quickstartDone: Bool = false, legacyDone: Bool = false,
+                  firstRunDecisionPending: Bool = false) -> FakeDecision {
     if !userOptedIn { return .skip("userOptedOut") }
+    // #1589: both first-run gates sit ABOVE the serverState switch. Below it
+    // they could only observe the race, never prevent it — auto-start is the
+    // thing that moves the state every downstream predicate then reads.
+    if firstRunDecisionPending { return .skip("firstRunDecisionPending") }
+    if onboardingOwed(done: quickstartDone, legacyDone: legacyDone,
+                      lastServedAlias: lastServedAlias) {
+        return .skip("onboardingPending")
+    }
     guard case .idle = serverState else { return .skip("serverNotIdle") }
     guard let alias = lastServedAlias else { return .skip("noResolvableAlias") }
     if !quickstartDone && isRetiredStarter(alias) { return .skip("retiredStarter") }
@@ -318,9 +340,12 @@ func decideResume(lastServedAlias: String?, cachedAliases: Set<String>,
 }
 
 print("Auto-start vs retired starters:")
+// A stranded user is one the onboarding gate now catches first — the reason
+// changed from "retiredStarter" to the broader "onboardingPending", the
+// property (nothing is resumed, state stays .idle) did not.
 check(decideResume(lastServedAlias: "bonsai-1.7b-2bit",
                    cachedAliases: ["bonsai-1.7b-2bit"], serverState: .idle)
-        == .skip("retiredStarter"),
+        == .skip("onboardingPending"),
       "retired starter on disk is NOT resumed — state stays .idle so the card can show")
 check(decideResume(lastServedAlias: "qwen3.5-9b-4bit",
                    cachedAliases: ["qwen3.5-9b-4bit"], serverState: .idle)
@@ -342,9 +367,53 @@ check(!isEligible(done: true, lastServedAlias: "bonsai-1.7b-2bit", serverState: 
 // The end-to-end property the two halves buy together.
 check(decideResume(lastServedAlias: "bonsai-1.7b-2bit",
                    cachedAliases: ["bonsai-1.7b-2bit"], serverState: .idle)
-        == .skip("retiredStarter")
+        == .skip("onboardingPending")
       && isEligible(done: false, lastServedAlias: "bonsai-1.7b-2bit", serverState: .idle),
       "end-to-end: stranded user launches → no auto-start → card IS shown")
+
+// ---------------------------------------------------------------------------
+// #1589 — onboarding must win the launch race
+//
+// The reported defect: a never-onboarded user on a Mac with anything in the
+// shared HF cache got a model auto-started, which moved serverState off .idle
+// and made the wizard unreachable. The executable half of that contract.
+
+print("Onboarding vs launch auto-start (#1589):")
+check(decideResume(lastServedAlias: nil, cachedAliases: ["bonsai-27b-2bit"],
+                   serverState: .idle) == .skip("onboardingPending"),
+      "never-onboarded user with a cached model does NOT auto-start")
+check(isEligible(done: false, lastServedAlias: nil, serverState: .idle),
+      "…and because nothing started, the wizard IS eligible")
+check(!isEligible(done: false, lastServedAlias: nil, serverState: .starting),
+      "the pre-fix mechanism: an auto-started model would have hidden the wizard")
+check(decideResume(lastServedAlias: "qwen3.5-9b-4bit",
+                   cachedAliases: ["qwen3.5-9b-4bit"], serverState: .idle,
+                   quickstartDone: true) == .start("qwen3.5-9b-4bit"),
+      "returning user still gets their last-used model restored")
+check(decideResume(lastServedAlias: "qwen3.5-9b-4bit",
+                   cachedAliases: ["qwen3.5-9b-4bit"], serverState: .idle,
+                   quickstartDone: true, firstRunDecisionPending: true)
+        == .skip("firstRunDecisionPending"),
+      "nothing loads behind the unanswered first-run consent sheet")
+// The invariant, over the whole persisted state space: auto-start never
+// starts a model for a user the wizard would still be offered to.
+for done in [false, true] {
+    for legacy in [false, true] {
+        for last in [nil, "qwen3.5-9b-4bit", "bonsai-1.7b-2bit"] as [String?] {
+            let decision = decideResume(
+                lastServedAlias: last,
+                cachedAliases: ["qwen3.5-9b-4bit", "bonsai-1.7b-2bit", "bonsai-27b-2bit"],
+                serverState: .idle, quickstartDone: done, legacyDone: legacy)
+            let eligible = isEligible(done: done, legacyDone: legacy,
+                                      lastServedAlias: last, serverState: .idle)
+            var started = false
+            if case .start = decision { started = true }
+            check(!(eligible && started),
+                  "invariant: wizard eligible ⇒ no auto-start "
+                    + "(done=\(done) legacy=\(legacy) last=\(last ?? "nil"))")
+        }
+    }
+}
 
 print(fails == 0 ? "\nALL PASS" : "\n\(fails) FAILURE(S)")
 exit(fails == 0 ? 0 : 1)

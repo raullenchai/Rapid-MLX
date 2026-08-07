@@ -655,6 +655,31 @@ Open the picker any time to switch models.
         return retiredStarters.contains(alias)
     }
 
+    /// Gates 1 + 2 of ``isEligible`` on their own: does this install still
+    /// owe the user onboarding? Persisted state only — no ``ServerState``,
+    /// no session flags.
+    ///
+    /// ## Why this is split out (issue #1589)
+    ///
+    /// Two code paths need the SAME answer at moments when they see
+    /// different ``ServerState``, so the server-state gate cannot be part
+    /// of the shared question:
+    ///
+    /// * ``ContentView.quickstartVisible`` asks on every render, by which
+    ///   point a server may legitimately be engaged.
+    /// * ``ContentView.runLaunchAutoStart`` must ask *before* it engages
+    ///   one — it is the thing that would move the state.
+    ///
+    /// Pre-fix, auto-start asked neither and simply started a model on any
+    /// Mac with something in the HF cache. That flipped ``serverState`` to
+    /// ``.starting`` before the sheet's predicate ever ran, and BOTH of
+    /// gate 3 here and ``ContentView.serverEngagedWithDifferentAlias`` then
+    /// read the app's own self-inflicted state as "this is not a new user".
+    /// The wizard became unreachable for everyone except users with a
+    /// completely empty cache. Routing both callers through this one
+    /// predicate is what stops the two halves drifting apart again — see
+    /// ``LaunchOnboardingOrderingTests``.
+    ///
     /// - Parameter legacyDone: the pre-v2 completion flag
     ///   (``legacyStorageKey``). Bumping ``storageKey`` to v2 is what
     ///   re-opens onboarding, but on its own it re-opens it for *everyone*
@@ -665,11 +690,10 @@ Open the picker any time to switch models.
     ///   version bump was never about. A v1 dismissal is therefore still
     ///   honoured; it is overridden only for the stranded cohort, which is
     ///   the entire reason the key moved.
-    static func isEligible(
+    static func onboardingOwed(
         done: Bool,
         legacyDone: Bool = false,
-        lastServedAlias: String?,
-        serverState: ServerState
+        lastServedAlias: String?
     ) -> Bool {
         guard !done else { return false }
         let stranded = isStranded(lastServedAlias)
@@ -679,6 +703,23 @@ Open the picker any time to switch models.
         if lastServedAlias != nil, !stranded {
             return false
         }
+        return true
+    }
+
+    /// ``onboardingOwed`` plus gate 3 — the presentation-time question.
+    /// Kept as the sheet's entry point so existing callers and tests read
+    /// unchanged; the persisted half now lives in one place.
+    static func isEligible(
+        done: Bool,
+        legacyDone: Bool = false,
+        lastServedAlias: String?,
+        serverState: ServerState
+    ) -> Bool {
+        guard onboardingOwed(
+            done: done,
+            legacyDone: legacyDone,
+            lastServedAlias: lastServedAlias
+        ) else { return false }
         switch serverState {
         case .idle, .stopped:
             return true

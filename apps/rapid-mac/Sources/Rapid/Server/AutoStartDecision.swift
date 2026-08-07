@@ -147,8 +147,9 @@ enum AutoStartDecision: Equatable {
 
     /// Why a decision came back as ``.skip``. Surfaced as an
     /// associated value so the contract test can pin the precedence
-    /// (user-opt-out beats server-busy beats binary-missing beats
-    /// no-alias) without inspecting log output, and so a future
+    /// (user-opt-out beats consent-pending beats onboarding-pending
+    /// beats server-busy beats binary-missing beats no-alias) without
+    /// inspecting log output, and so a future
     /// telemetry counter can bucket without re-deriving the gate.
     /// ``CaseIterable`` is the load-bearing conformance for the
     /// cardinality contract in ``AutoStartDecisionTests`` (issue
@@ -165,12 +166,37 @@ enum AutoStartDecision: Equatable {
         /// or surface a ``promptDownload`` caption that would suggest
         /// they should click Start.
         case userOptedOut
+        /// #1589: the first-run telemetry consent sheet is still up. It
+        /// is a hard modal (``interactiveDismissDisabled`` + swallowed
+        /// external dismisses), so nothing the user can see benefits from
+        /// a model that loads behind it — while the cost is real: on the
+        /// reporter's Mac an 8.4 GB serve was committed before the user
+        /// had answered the first question the app asks them. Deferring
+        /// costs one button-click of latency, once, and only for the
+        /// upgrade cohort that still owes a consent answer while having a
+        /// model to resume. The launch hook re-runs when the answer lands.
+        case firstRunDecisionPending
+        /// #1589: Quickstart still owes this user onboarding
+        /// (``QuickstartCoordinator.onboardingOwed``). Auto-start exists
+        /// to restore *your last-used model*; a user who has never
+        /// finished onboarding has no last-used model, so there is
+        /// nothing to restore and inventing one both contradicts the
+        /// Settings copy and — because starting moves ``serverState`` off
+        /// ``.idle`` — suppresses the very wizard that was supposed to
+        /// choose the first model. Onboarding wins the race.
+        case onboardingPending
         /// The alias we would resume is a ``QuickstartCoordinator``
         /// retired starter — a model withdrawn for being unusable, not
         /// merely superseded. Auto-starting it would put the user back
         /// in the broken chat AND move ``serverState`` off ``.idle``,
         /// which suppresses the Quickstart rescue card that exists to
         /// get them off it. Skipping leaves the frame to that card.
+        ///
+        /// Narrower than ``onboardingPending`` and still reachable behind
+        /// it: a user who dismissed Quickstart under v1 (``legacyDone``)
+        /// with no ``lastServedAlias`` is not owed onboarding, yet the
+        /// alphabetical cached-fallback can still land on the retired
+        /// alias. This is the gate that catches them.
         case retiredStarter
         /// ``serverState`` is not ``.idle`` — either a previous
         /// ``.task`` already kicked an auto-start (re-entry), the
@@ -234,6 +260,8 @@ enum AutoStartDecision: Equatable {
         serverState: ServerState,
         rejectsAlias: (String) -> Bool = { _ in false },
         userOptedIn: Bool = true,
+        firstRunDecisionPending: Bool = false,
+        onboardingPending: Bool = false,
         isRetiredStarter: (String) -> Bool = { _ in false }
     ) -> AutoStartDecision {
         // FU-1 precedence #0 (highest): if the user has turned the
@@ -251,6 +279,25 @@ enum AutoStartDecision: Equatable {
         // threading the live ``@AppStorage`` value through.
         if !userOptedIn {
             return .skip(reason: .userOptedOut)
+        }
+
+        // #1589 precedence #0.5: the first-run surfaces own the launch
+        // before auto-start gets a turn. Both gates sit ABOVE the
+        // ``serverState`` switch deliberately — the whole defect was that
+        // auto-start moved the state first and every downstream predicate
+        // then read that self-inflicted ``.starting`` as evidence the user
+        // was not new. A gate placed below the switch could only observe
+        // the damage, never prevent it.
+        //
+        // Consent before onboarding, mirroring the identical ordering
+        // comment in ``ContentView.quickstartVisible`` — the two surfaces
+        // must agree on who asks first or they race for the same
+        // presentation channel.
+        if firstRunDecisionPending {
+            return .skip(reason: .firstRunDecisionPending)
+        }
+        if onboardingPending {
+            return .skip(reason: .onboardingPending)
         }
 
         // Idempotency precedence #1: only fire when state is `.idle`.

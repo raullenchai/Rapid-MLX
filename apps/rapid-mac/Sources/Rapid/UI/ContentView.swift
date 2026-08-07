@@ -260,7 +260,14 @@ struct ContentView: View {
         // the user has turned on auto-approve in Settings (resolved before a
         // request is ever published), so it only appears on a real prompt.
         .modifier(BrowseApprovalDialog(store: browseApproval))
-        .task { await runLaunchAutoStart() }
+        // #1589: keyed on the consent decision rather than fire-once, so
+        // the launch auto-start that stood down for the modal sheet gets
+        // its turn the moment the user answers it. The value only ever
+        // moves true → false (once per install), so this is a single
+        // re-run, and the first pass returns at the gate without an
+        // in-flight `server.start` for SwiftUI's task cancellation to
+        // interrupt. Users with no pending decision see one run, as before.
+        .task(id: telemetryConsentPending) { await runLaunchAutoStart() }
         // Keyed exactly as the picker's own catalog task: re-fetch when
         // the engine binary appears and whenever the set of models on
         // disk changes anywhere in the app. Routed through the shared
@@ -721,6 +728,22 @@ struct ContentView: View {
             serverState: server.state,
             rejectsAlias: rejectsAlias,
             userOptedIn: autoStartOnLaunch,
+            // #1589: the two first-run surfaces get the launch before
+            // auto-start does. Nothing loads behind the modal consent
+            // sheet, and nothing loads for a user Quickstart still owes
+            // onboarding to — auto-start restores a last-used model, it
+            // does not invent a first one.
+            firstRunDecisionPending: telemetryConsentPending,
+            // The SAME predicate the Quickstart sheet presents on (via
+            // ``QuickstartCoordinator.isEligible``), minus the server-state
+            // gate that this path is about to move. Asking it here rather
+            // than re-deriving "is this a new user" is the whole fix: the
+            // two paths cannot disagree if there is only one answer.
+            onboardingPending: QuickstartCoordinator.onboardingOwed(
+                done: quickstart.done,
+                legacyDone: quickstart.legacyDone,
+                lastServedAlias: ServerManager.lastServedAlias()
+            ),
             // Skip a retired starter only while the rescue is still on
             // offer. Once the user has completed or dismissed Quickstart,
             // `isEligible` stops showing the card — and an unconditional

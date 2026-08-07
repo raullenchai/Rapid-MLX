@@ -167,6 +167,13 @@ struct SettingsModelsPanel: View {
     /// Sits below ``pickerVisibilitySection`` because both are
     /// "model behavior on launch" toggles; the user reads them as a
     /// natural pair and the panel keeps its existing card rhythm.
+    ///
+    /// The body copy's "your last-used model" was aspirational until
+    /// #1589: on a first run there is no last-used model, and auto-start
+    /// picked one anyway (alphabetically, from whatever happened to be in
+    /// the shared HF cache). ``AutoStartDecision`` now stands down while
+    /// the first-run surfaces are still owed, so the sentence describes
+    /// what actually ships — and the second sentence says so out loud.
     @ViewBuilder
     private var autoStartOnLaunchSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -174,7 +181,7 @@ struct SettingsModelsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Auto-start model on launch")
                         .font(.callout.weight(.medium))
-                    Text("On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending.")
+                    Text("On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Nothing loads while first-run setup is still open. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

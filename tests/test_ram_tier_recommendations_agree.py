@@ -523,8 +523,18 @@ def test_eligibility_check_script_has_not_drifted_from_production():
     *above* that guard — an early return, a new precondition — diverged
     invisibly. The slice was never needed: ``_extract_func_body`` already
     returns brace-matched bodies without the signature, so the two sides
-    are directly comparable."""
-    for signature in ("func isEligible(", "func isStranded("):
+    are directly comparable.
+
+    ``onboardingOwed`` joined the list with #1589. It is now the predicate
+    that actually decides "is this a new user" — ``isEligible`` is a thin
+    wrapper over it, and the launch auto-start path consults it directly —
+    so leaving it unpinned would let the load-bearing half drift while the
+    wrapper above it stayed identical."""
+    for signature in (
+        "func onboardingOwed(",
+        "func isEligible(",
+        "func isStranded(",
+    ):
         prod = _extract_func_body(QUICKSTART_PROD, signature)
         copy = _extract_func_body(VERIFY_SCRIPT, signature)
         assert prod == copy, (
@@ -590,4 +600,63 @@ def test_auto_start_skips_retired_starters():
             f"{label}: the retired-starter guard moved after the on-disk "
             "check — a cached retired starter would be resumed before the "
             "guard ever runs"
+        )
+
+
+def test_launch_auto_start_defers_to_first_run_surfaces():
+    """#1589: the launch auto-start must not outrace the first-run surfaces.
+
+    The Swift suite covers ``AutoStartDecision.decide`` thoroughly, but it
+    calls the function directly. Both new gates default to ``false``, so
+    deleting either argument from the ``ContentView`` call site silently
+    restores the original bug with every unit test still green — the
+    parameter is simply never supplied and the gate never fires. The wiring
+    is the part that broke; it is the part that has to be pinned.
+
+    Source structure is the available lever: ``ContentView`` is a SwiftUI
+    view whose launch hook cannot be invoked from a test, and it is not
+    reachable from Python at all."""
+    caller = (REPO / "apps/rapid-mac/Sources/Rapid/UI/ContentView.swift").read_text()
+
+    assert "firstRunDecisionPending: telemetryConsentPending" in caller, (
+        "the launch hook stopped passing the telemetry-consent gate. The "
+        "parameter defaults to 'not pending', so a model would once again "
+        "load behind the modal first-run consent sheet"
+    )
+    assert "onboardingPending: QuickstartCoordinator.onboardingOwed(" in caller, (
+        "the launch hook stopped asking whether onboarding is still owed. "
+        "The parameter defaults to 'not pending', which is exactly the "
+        "pre-#1589 behaviour: auto-start invents a first model, serverState "
+        "leaves .idle, and the Quickstart wizard becomes unreachable"
+    )
+    # The gate is only worth anything if it consults the SAME predicate the
+    # wizard presents on. A hand-rolled re-derivation here is how the two
+    # halves drifted apart in the first place.
+    assert "QuickstartCoordinator.onboardingOwed(" in caller, (
+        "the launch hook must call QuickstartCoordinator.onboardingOwed "
+        "rather than re-deriving 'is this a new user' locally"
+    )
+
+    # Deferring for the consent sheet is only correct if the hook runs again
+    # once the answer lands. A bare `.task` fires once, which would strand a
+    # returning user on an idle server for the whole session.
+    assert (
+        ".task(id: telemetryConsentPending) { await runLaunchAutoStart() }" in caller
+    ), (
+        "the launch task is no longer keyed on the consent decision. With a "
+        "bare `.task` the auto-start that stood down for the consent sheet "
+        "never gets its turn, and a returning user's model never loads"
+    )
+
+    # And the gates must sit above the serverState switch: below it they can
+    # only observe the race, never prevent it.
+    decision = (
+        REPO / "apps/rapid-mac/Sources/Rapid/Server/AutoStartDecision.swift"
+    ).read_text()
+    for gate in ("firstRunDecisionPending {", "onboardingPending {"):
+        assert gate in decision, f"AutoStartDecision lost its {gate} gate"
+        assert decision.index(gate) < decision.index("switch serverState {"), (
+            f"AutoStartDecision: the {gate} gate moved below the serverState "
+            "switch. Auto-start is what MOVES serverState, so a gate placed "
+            "after it can only observe the damage, never prevent it"
         )
