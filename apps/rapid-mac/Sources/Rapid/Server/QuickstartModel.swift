@@ -374,10 +374,20 @@ enum QuickstartModel {
             return nil
         }
         let refs = cacheDir.appendingPathComponent("refs", isDirectory: true)
+        let refsMain = refs.appendingPathComponent("main")
         let snapshots = cacheDir.appendingPathComponent("snapshots", isDirectory: true)
+        let quickstartSnapshot = snapshots.appendingPathComponent(
+            stubRevisionMarker, isDirectory: true
+        )
         do {
-            try fileManager.removeItem(at: refs)
-            try fileManager.removeItem(at: snapshots)
+            try fileManager.removeItem(at: refsMain)
+            try fileManager.removeItem(at: quickstartSnapshot)
+            if try fileManager.contentsOfDirectory(atPath: refs.path).isEmpty {
+                try fileManager.removeItem(at: refs)
+            }
+            if try fileManager.contentsOfDirectory(atPath: snapshots.path).isEmpty {
+                try fileManager.removeItem(at: snapshots)
+            }
             let remaining = try fileManager.contentsOfDirectory(atPath: cacheDir.path)
             if remaining.isEmpty {
                 try fileManager.removeItem(at: cacheDir)
