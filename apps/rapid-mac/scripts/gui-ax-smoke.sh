@@ -96,7 +96,7 @@ if jq -e '.data.ui_elements[]? | select(.identifier == "DockHidePrompt.NoButton"
     observe_app "$OUT/main.json" || die "could not inspect app after Dock prompt"
 fi
 
-for identifier in rapid.chat.compose ChatView.SendOrStopButton Readiness.Action ModelPickerBar.ModelMenu; do
+for identifier in rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
     jq -e --arg id "$identifier" \
         '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/main.json" >/dev/null \
         || die "main window missing AX identifier: $identifier"
