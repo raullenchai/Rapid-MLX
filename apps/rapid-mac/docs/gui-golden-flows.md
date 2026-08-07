@@ -38,7 +38,7 @@ Run on 2026-08-07, on a build of this checkout:
 
 | Flow | Result |
 | --- | --- |
-| `update-state` | **PASS** — panel reads "Up to date — v0.12.6 is the latest release.", matching `CFBundleShortVersionString` |
+| `update-state` | **PASS** — the panel's version matches `CFBundleShortVersionString` (0.12.6 when recorded; the assertion compares the two, it does not pin a literal) |
 | `catalog-integrity` | **PASS** — `fake-video-alias` reaches neither the chat surface nor Model Management |
 | `no-dead-controls` | **PASS** — all six Settings panels expose controls of their own; see the red → green note below |
 
