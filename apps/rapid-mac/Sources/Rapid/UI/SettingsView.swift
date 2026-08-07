@@ -394,9 +394,15 @@ struct SettingsView: View {
             // "Share" there would otherwise leave this switch reading off while
             // telemetry is running. Re-reading on any defaults change keeps the
             // two surfaces honest without either one knowing about the other.
+            //
+            // `.receive(on: RunLoop.main)` is load-bearing, not ceremony:
+            // `didChangeNotification` is delivered on the thread that made the
+            // write, so a background write to ANY key — not just this one —
+            // would otherwise mutate SwiftUI `@State` off the main thread.
             .onReceive(
-                NotificationCenter.default.publisher(
-                    for: UserDefaults.didChangeNotification)
+                NotificationCenter.default
+                    .publisher(for: UserDefaults.didChangeNotification)
+                    .receive(on: RunLoop.main)
             ) { _ in
                 telemetryEnabled = TelemetryConfig.isEnabled
             }
