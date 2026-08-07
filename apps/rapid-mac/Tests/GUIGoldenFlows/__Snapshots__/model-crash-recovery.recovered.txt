@@ -7,7 +7,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
           AXScrollArea
-            AXHeading desc="Today" enabled=true
+            AXHeading desc="<relative-day>" enabled=true
             AXButton id="pin" desc="Pin conversation" help="Pin conversation" enabled=true
             AXMenuButton desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="golden crash marker" enabled=true
@@ -32,7 +32,5 @@ AXApplication title="Rapid-MLX"
       AXButton desc="Hide Sidebar" enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
-      AXGroup
-        AXGroup
     AXButton subrole=AXMinimizeButton enabled=true
     AXStaticText value=text enabled=true

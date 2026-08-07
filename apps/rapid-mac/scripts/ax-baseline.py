@@ -85,6 +85,15 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bv?\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?\b"),
         "<version>",
     ),
+    # Conversation-list date headings. The transcript a flow just created is
+    # filed under "Today" — until the run straddles local midnight, at which
+    # point the same unchanged UI reports "Yesterday" and every baseline
+    # holding one of these headings goes red for no product reason. Anchored,
+    # so it only rewrites a heading that is *entirely* a relative day word.
+    (
+        re.compile(r"^(?:Today|Yesterday|Tomorrow)$", re.IGNORECASE),
+        "<relative-day>",
+    ),
 )
 
 # Identifiers whose trailing segment is data (a model alias, a status string).
@@ -112,6 +121,24 @@ _TOGGLE_ROLES = frozenset(
     {"AXCheckBox", "AXRadioButton", "AXDisclosureTriangle", "AXMenuItem"}
 )
 _TOGGLE_SUBROLES = frozenset({"AXSwitch", "AXToggle"})
+
+# OS-owned window chrome. The buttons themselves stay in the fingerprint; what
+# gets dropped is everything *below* them, which belongs to AppKit and is
+# realized lazily rather than in response to anything the app does.
+_WINDOW_CONTROL_SUBROLES = frozenset(
+    {
+        "AXCloseButton",
+        "AXMinimizeButton",
+        "AXZoomButton",
+        "AXFullScreenButton",
+        "AXToolbarButton",
+    }
+)
+
+
+def is_window_control(record: dict) -> bool:
+    """True for a traffic-light / toolbar button whose subtree is AppKit's."""
+    return record.get("subrole") in _WINDOW_CONTROL_SUBROLES
 
 
 class Node:
@@ -234,6 +261,15 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
 
     def walk(node: Node, depth: int, sort_children: bool) -> None:
         lines.append("  " * depth + render_node(node, extra_tokens))
+        if is_window_control(node.record):
+            # The traffic-light buttons are AppKit's, not ours. Their anonymous
+            # AXGroup descendants are lazily realized: two dumps taken seconds
+            # apart in the SAME run recorded one group under AXZoomButton in
+            # settings-root and two in models-idle. Keeping the button (so a
+            # missing close box is still a diff) and dropping its private
+            # innards removes a whole class of false failure that no product
+            # change could ever cause.
+            return
         children = node.children
         if sort_children:
             # Only the window level is reordered. AX hands back the app's
@@ -310,11 +346,29 @@ def command_check(args: argparse.Namespace) -> int:
     if args.observed:
         write_lines(Path(args.observed), observed)
 
-    if args.update or not baseline_path.exists():
+    if args.update:
         verb = "updated" if baseline_path.exists() else "recorded"
         write_lines(baseline_path, observed)
         print(f"ax-baseline: {verb} {baseline_path} ({len(observed) - 1} elements)")
         return 0
+
+    if not baseline_path.exists():
+        # Recording on absence would make a typo'd snapshot name — or a
+        # baseline someone forgot to commit — pass CI green while comparing
+        # against nothing. A gate that cannot fail is not a gate.
+        print(
+            f"ax-baseline: no committed baseline for {baseline_path.stem}",
+            file=sys.stderr,
+        )
+        print(f"  expected: {baseline_path}", file=sys.stderr)
+        if args.observed:
+            print(f"  observed: {args.observed}", file=sys.stderr)
+        print(
+            "\n  If this snapshot is new, record it with --update-baselines "
+            "and commit the result.",
+            file=sys.stderr,
+        )
+        return 1
 
     expected = baseline_path.read_text(encoding="utf-8").splitlines()
     if expected == observed:

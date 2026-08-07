@@ -197,6 +197,18 @@ appear in text. `Settings.App.UpToDate` carries the release version and a
 conversation row identifier carries a fresh UUID — recording those verbatim
 would make the baselines flap every release and every run.
 
+Two further things are dropped because they flap without any product change,
+both found by comparing real recorded baselines rather than by reasoning:
+
+- **Everything below a window-control button.** The traffic lights are AppKit's,
+  and their anonymous `AXGroup` descendants are realized lazily: two dumps taken
+  seconds apart in the *same* run recorded one group under `AXZoomButton` in
+  `settings-root` and two in `models-idle`. The buttons themselves stay, so a
+  missing close box is still a diff; their private innards do not.
+- **Relative day headings.** A transcript is filed under `Today` — until a run
+  straddles local midnight, at which point the identical UI says `Yesterday`
+  and every baseline holding one goes red at 00:00 for no reason.
+
 An intended UI change is a deliberate commit:
 
 ```bash
@@ -204,9 +216,11 @@ An intended UI change is a deliberate commit:
 git diff apps/rapid-mac/Tests/GUIGoldenFlows/__Snapshots__
 ```
 
-A baseline file that does not exist yet is recorded on first run and passes,
-matching the PNG snapshot convention in `Tests/RapidTests/SnapshotHelpers.swift`.
-Overwriting an existing one always requires `--update-baselines`.
+Recording is **only** ever done by `--update-baselines`. A missing baseline is a
+failure, not a free pass: recording on absence would mean a typo'd snapshot name,
+or one somebody forgot to `git add`, sails through CI green while comparing
+against nothing. (This deliberately diverges from the PNG convention in
+`Tests/RapidTests/SnapshotHelpers.swift`.)
 
 Inspect a single normalised tree without running a journey:
 
@@ -245,3 +259,19 @@ readiness gate is closed, so the absence of that attribute is a
 copy-independent "ready and not streaming" signal. If a new state turns out to
 be irreducibly unstable, exclude it and say why rather than loosening the
 comparison.
+
+**Never assert that text appears *somewhere* in the tree when a specific place
+is what you mean.** `chat-restore` failed roughly one run in two for a reason
+worth repeating. `start_model` gated on `SendOrStopButton.description ==
+"Send message"`, which is the button's label for the whole startup — its hint
+still read "… is still starting." So the flow pressed Send into a closed
+readiness gate, the press was dropped, and the draft stayed in the composer.
+`assert_tree_text "golden restore marker"` then *found* the prompt — in the
+composer — and reported success for a message that was never sent. The run only
+failed later, on the reply that never came, which is why it looked like a
+flake rather than a broken assertion.
+
+Both halves are now fixed: `start_model` waits on `wait_send_idle`, and
+`send_prompt` requires the composer to actually drain. The general rule: an
+assertion that a string is present anywhere is satisfied by the input field,
+the placeholder, the tooltip and the sidebar. Say *which element*.

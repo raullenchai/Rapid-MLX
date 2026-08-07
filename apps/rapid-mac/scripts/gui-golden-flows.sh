@@ -256,13 +256,19 @@ see_settings() {
 start_model() {
     wait_identifier Readiness.Action "$OUT/readiness-start.json"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
+    # ``server_started`` says the fake bound its port; it does NOT say the app
+    # has finished wiring up to it. The old gate also tested
+    # ``description == "Send message"``, which is the button's label for the
+    # whole startup — including while its hint still reads "<alias> is still
+    # starting." So this returned early, ``send_prompt`` pressed into a closed
+    # readiness gate, and the press was silently dropped (observed: 1 run in 2).
     for _ in {1..120}; do
-        see_main "$OUT/readiness-ready.json"
-        if jq -e '.data.ui_elements[]? | select(.identifier == "ChatView.SendOrStopButton" and .description == "Send message")' "$OUT/readiness-ready.json" >/dev/null \
-            && grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null; then return; fi
+        grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null && break
         sleep 0.25
     done
-    die "fake model did not become ready"
+    grep -q '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null \
+        || die "fake model did not become ready"
+    wait_send_idle "$OUT/readiness-ready.json"
 }
 
 send_prompt() {
@@ -271,6 +277,17 @@ send_prompt() {
     "$AX_DRIVER" set-value "$APP_PID" rapid.chat.compose "$prompt" > "$OUT/${prefix}-type.json"
     see_main "$OUT/${prefix}-draft.json"
     press "$OUT/${prefix}-draft.json" ChatView.SendOrStopButton "$OUT/${prefix}-send.json"
+    # A press that lands while the gate is closed is dropped and the draft
+    # stays in the composer — where ``assert_tree_text`` happily FINDS the
+    # prompt and reports a message that was never sent. Requiring the composer
+    # to drain is what makes that failure loud instead of silent.
+    for _ in {1..40}; do
+        see_main "$OUT/${prefix}-sent.json"
+        jq -e '.data.ui_elements[]? | select(.identifier == "rapid.chat.compose")
+               | select((.value // "") == "")' "$OUT/${prefix}-sent.json" >/dev/null && return
+        sleep 0.25
+    done
+    die "compose field still holds the draft after Send: the message was never sent"
 }
 
 assert_tree_text() {

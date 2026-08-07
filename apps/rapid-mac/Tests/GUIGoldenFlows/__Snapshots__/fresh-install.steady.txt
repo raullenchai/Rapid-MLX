@@ -25,7 +25,5 @@ AXApplication title="Rapid-MLX"
       AXButton desc="Hide Sidebar" enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
-      AXGroup
-        AXGroup
     AXButton subrole=AXMinimizeButton enabled=true
     AXStaticText value=text enabled=true

@@ -25,7 +25,6 @@ AXApplication title="Rapid-MLX"
       AXButton desc="Hide Sidebar" enabled=true
     AXButton subrole=AXCloseButton enabled=false
     AXButton subrole=AXZoomButton enabled=true
-      AXGroup
     AXButton subrole=AXMinimizeButton enabled=true
     AXStaticText value=text enabled=true
     AXSheet
