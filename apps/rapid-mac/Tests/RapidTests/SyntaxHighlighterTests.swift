@@ -472,21 +472,34 @@ struct SyntaxHighlighterTests {
     /// Reproduces the render path — a ``Memo`` re-highlighting the WHOLE
     /// accumulated block on every appended token — and times the complete
     /// ``highlight`` call, including the ``hasPrefix`` prefix check that
-    /// ``scannedCharacterCount`` deliberately excludes. A genuinely
-    /// quadratic blow-up in the end-to-end cost would surface here even
-    /// though the scanned-character assertions would not see it.
-    @Test("Streaming a block token-by-token stays fast end to end")
-    func streamingIsFastEndToEnd() {
-        let memo = SyntaxHighlighter.Memo()
-        let token = "value += compute(x: 42) // step\n"
-        var code = ""
-        let started = Date()
-        for _ in 0..<800 {
-            code += token
-            _ = memo.highlight(code, language: "swift")
+    /// ``scannedCharacterCount`` deliberately excludes. Asserts SCALING
+    /// rather than an absolute deadline: quadrupling the stream length
+    /// multiplies genuinely quadratic total work ~16x, so a ceiling well
+    /// under that catches a blow-up while absorbing timer noise on shared
+    /// hardware (an absolute wall-clock bound would flake there).
+    @Test("Streaming cost scales sub-quadratically with block size")
+    func streamingScalesSubQuadratically() {
+        func timeStreaming(appends: Int) -> TimeInterval {
+            let memo = SyntaxHighlighter.Memo()
+            let token = "value += compute(x: 42) // step\n"
+            var code = ""
+            let started = Date()
+            for _ in 0..<appends {
+                code += token
+                _ = memo.highlight(code, language: "swift")
+            }
+            return Date().timeIntervalSince(started)
         }
-        let elapsed = Date().timeIntervalSince(started)
-        #expect(elapsed < 3.0, "streaming 800 appends took \(elapsed)s — check for quadratic behaviour")
+        _ = timeStreaming(appends: 100)  // warm up allocation paths
+        let small = timeStreaming(appends: 400)
+        let large = timeStreaming(appends: 1_600)  // 4x the tokens
+        // Near-linear-per-append work keeps `large` close to 4x `small`; a
+        // quadratic total would be ~16x. The floor absorbs noise when `small`
+        // is tiny; 10x still fails loudly on a real quadratic regression.
+        #expect(
+            large < small * 10 + 0.05,
+            "streaming 4x the tokens took \(large)s vs \(small)s — superlinear blow-up"
+        )
     }
 
     // MARK: - Line-anchored diff markers
@@ -542,5 +555,45 @@ struct SyntaxHighlighterTests {
         #expect(runs(css, "css", kind: .comment).isEmpty)
         #expect(runs("// note\n.a { color: red }", "scss", kind: .comment).contains("// note"))
         #expect(SyntaxHighlighter.supports(language: "less"))
+    }
+
+    // MARK: - JavaScript multiline template literals
+
+    /// A backtick template literal spans lines and still honours escapes.
+    /// A `//` or keyword inside it is part of the string, and code after
+    /// the closing backtick resumes normal classification.
+    @Test("JavaScript backtick templates span multiple lines")
+    func jsMultilineTemplate() {
+        let code = "const q = `line one\n// still string\nconst inside`\nreturn 1\n"
+        let strings = runs(code, "javascript", kind: .string)
+        #expect(strings.contains { $0.contains("line one") && $0.contains("const inside") })
+        #expect(runs(code, "javascript", kind: .comment).isEmpty)
+        #expect(runs(code, "javascript", kind: .keyword).contains("return"))
+        // An escaped backtick does not close the template.
+        let escaped = "const s = `a\\`b`\nconst t = 1"
+        #expect(runs(escaped, "javascript", kind: .string).contains { $0.contains("a\\`b") })
+    }
+
+    // MARK: - Nested block comments
+
+    /// Swift and Rust nest block comments: an inner `*/` must not close the
+    /// outer comment. C-family languages (no nesting) still close at the
+    /// first delimiter.
+    @Test("Swift and Rust nest block comments; C does not")
+    func nestedBlockComments() {
+        let swift = "/* outer /* inner */ still outer */\nlet x = 1"
+        let comments = runs(swift, "swift", kind: .comment)
+        #expect(comments.contains { $0.contains("still outer") })
+        // `let` after the true close is code, not swallowed into the comment.
+        #expect(runs(swift, "swift", kind: .keyword).contains("let"))
+
+        let rust = "/* a /* b */ c */\nfn f() {}"
+        #expect(runs(rust, "rust", kind: .comment).contains { $0.contains(" c ") })
+        #expect(runs(rust, "rust", kind: .keyword).contains("fn"))
+
+        // C does NOT nest: the first `*/` closes, leaving the tail as code.
+        let c = "/* a /* b */ int x = 1;"
+        #expect(runs(c, "c", kind: .comment).contains { $0.contains("a") && !$0.contains("int") })
+        #expect(runs(c, "c", kind: .type).contains("int"))
     }
 }

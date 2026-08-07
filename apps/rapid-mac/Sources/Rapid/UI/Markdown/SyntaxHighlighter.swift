@@ -238,6 +238,10 @@ enum SyntaxHighlighter {
         /// the minus onward. Off everywhere else, where `//`, `#`, `--` are
         /// genuine mid-line openers.
         let lineCommentAtLineStart: Bool
+        /// Block comments nest — an inner `/*` must be matched by its own
+        /// `*/` before the outer one closes. Swift and Rust both allow this;
+        /// most C-family languages do not. When off, the first close wins.
+        let nestableBlockComments: Bool
         /// Quote characters that open a RAW, newline-spanning string with no
         /// backslash escaping — Go's backtick string. The generic string
         /// scanner stops at a newline (right for a half-typed line during
@@ -245,6 +249,11 @@ enum SyntaxHighlighter {
         /// escape handling so the whole `` `...` `` literal, including any
         /// `//` inside it, scans as one string across lines.
         let rawMultilineQuotes: Set<Character>
+        /// Quote characters that open a newline-spanning string that STILL
+        /// honours backslash escapes — a JavaScript/TypeScript backtick
+        /// template. Same "don't stop at the newline" as ``rawMultilineQuotes``
+        /// but `\`` still escapes, so it is a distinct set rather than a flag.
+        let escapedMultilineQuotes: Set<Character>
 
         init(
             lineComment: [String],
@@ -257,7 +266,9 @@ enum SyntaxHighlighter {
             capitalisedIdentifiersAreTypes: Bool,
             apostrophePrefixedIdentifiers: Bool = false,
             lineCommentAtLineStart: Bool = false,
-            rawMultilineQuotes: Set<Character> = []
+            nestableBlockComments: Bool = false,
+            rawMultilineQuotes: Set<Character> = [],
+            escapedMultilineQuotes: Set<Character> = []
         ) {
             self.lineComment = lineComment
             self.blockComment = blockComment
@@ -269,7 +280,9 @@ enum SyntaxHighlighter {
             self.capitalisedIdentifiersAreTypes = capitalisedIdentifiersAreTypes
             self.apostrophePrefixedIdentifiers = apostrophePrefixedIdentifiers
             self.lineCommentAtLineStart = lineCommentAtLineStart
+            self.nestableBlockComments = nestableBlockComments
             self.rawMultilineQuotes = rawMultilineQuotes
+            self.escapedMultilineQuotes = escapedMultilineQuotes
         }
 
         static func forLanguage(_ raw: String?) -> Grammar? {
@@ -368,8 +381,22 @@ enum SyntaxHighlighter {
             if let pair = grammar.blockComment.first(where: { matches($0.open, chars, i) }) {
                 let start = i
                 i += pair.open.count
-                while i < chars.count && !matches(pair.close, chars, i) { i += 1 }
-                if i < chars.count { i += pair.close.count }
+                // Depth tracking: for a nesting grammar (Swift, Rust) an inner
+                // `/*` must be closed by its own `*/` before the outer one
+                // closes. With nesting off, depth never rises above 1 and the
+                // first close wins — the original single-level behaviour.
+                var depth = 1
+                while i < chars.count && depth > 0 {
+                    if grammar.nestableBlockComments && matches(pair.open, chars, i) {
+                        depth += 1
+                        i += pair.open.count
+                    } else if matches(pair.close, chars, i) {
+                        depth -= 1
+                        i += pair.close.count
+                    } else {
+                        i += 1
+                    }
+                }
                 emit(String(chars[start..<i]), .comment)
                 continue
             }
@@ -417,6 +444,11 @@ enum SyntaxHighlighter {
                 // stops at a newline: it runs to its closing delimiter across
                 // however many lines.
                 let isRawMultiline = grammar.rawMultilineQuotes.contains(quote)
+                // Raw (Go backtick) and escaped-multiline (JS/TS backtick
+                // template) quotes both span newlines; only the raw one skips
+                // escape handling.
+                let spansNewlines = isRawMultiline
+                    || grammar.escapedMultilineQuotes.contains(quote)
                 let start = i
                 i += 1
                 while i < chars.count {
@@ -430,9 +462,9 @@ enum SyntaxHighlighter {
                     // An unterminated string stops at end of line rather
                     // than swallowing the rest of the block — during
                     // streaming, a half-arrived line is the normal case. A
-                    // raw multiline literal is the exception: its newlines
-                    // are part of the string.
-                    if !isRawMultiline && chars[i] == "\n" { break }
+                    // multiline literal (Go raw / JS template) is the
+                    // exception: its newlines are part of the string.
+                    if !spansNewlines && chars[i] == "\n" { break }
                     i += 1
                 }
                 emit(String(chars[start..<i]), .string)
@@ -571,7 +603,8 @@ extension SyntaxHighlighter.Grammar {
             "Dictionary", "Set", "Optional", "Result", "Data", "Date", "URL",
             "Error", "Void", "AnyObject", "Task", "Sendable"
         ],
-        capitalisedIdentifiersAreTypes: true
+        capitalisedIdentifiersAreTypes: true,
+        nestableBlockComments: true
     )
 
     static let python = Self(
@@ -614,7 +647,9 @@ extension SyntaxHighlighter.Grammar {
             "Set", "Symbol", "BigInt", "Date", "RegExp", "Error", "JSON", "Math",
             "console", "document", "window"
         ],
-        capitalisedIdentifiersAreTypes: true
+        capitalisedIdentifiersAreTypes: true,
+        // Template literals span lines and still process `\`` escapes.
+        escapedMultilineQuotes: ["`"]
     )
 
     static let typescript = Self(
@@ -633,7 +668,8 @@ extension SyntaxHighlighter.Grammar {
             "object", "bigint", "symbol", "Record", "Partial", "Readonly",
             "Pick", "Omit", "Awaited"
         ]),
-        capitalisedIdentifiersAreTypes: true
+        capitalisedIdentifiersAreTypes: true,
+        escapedMultilineQuotes: javascript.escapedMultilineQuotes
     )
 
     /// JSON has no keywords beyond the three literals; the payoff is
@@ -716,7 +752,8 @@ extension SyntaxHighlighter.Grammar {
             "String", "Vec", "Option", "Result", "Box", "Rc", "Arc", "HashMap"
         ],
         capitalisedIdentifiersAreTypes: true,
-        apostrophePrefixedIdentifiers: true
+        apostrophePrefixedIdentifiers: true,
+        nestableBlockComments: true
     )
 
     // MARK: C family
