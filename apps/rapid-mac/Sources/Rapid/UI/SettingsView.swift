@@ -385,6 +385,9 @@ struct SettingsView: View {
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
+            // The first-run consent sheet writes the same preference, so the
+            // seeded value can be stale by the time this panel is first shown.
+            .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Where the data goes")
@@ -426,10 +429,29 @@ struct SettingsView: View {
         }
     }
 
+    /// Mirrors the stored consent so SwiftUI has something to invalidate on.
+    ///
+    /// The getter used to read ``TelemetryConfig.isEnabled`` directly — a plain
+    /// `static var` over `UserDefaults.standard`. Reading it records no
+    /// dependency, so pressing the switch wrote the preference and then left
+    /// the control rendering its old value: to the user, a consent switch that
+    /// snaps back to off while they are in fact opted in (#1623). It only
+    /// appeared to correct itself because leaving the panel and returning
+    /// rebuilds the view for unrelated reasons.
+    ///
+    /// Seeded once and re-read in ``onAppear`` so a change made elsewhere —
+    /// the first-run consent sheet writes the same key — is still reflected.
+    @State private var telemetryEnabled = TelemetryConfig.isEnabled
+
     private var telemetryEnabledBinding: Binding<Bool> {
         Binding(
-            get: { TelemetryConfig.isEnabled },
+            get: { telemetryEnabled },
             set: { enabled in
+                // Drive the view from the value the user just chose, then let
+                // the store confirm it. Reading the preference back would
+                // reintroduce the same problem the moment a write is deferred
+                // or rejected.
+                telemetryEnabled = enabled
                 TelemetryConsent.record(enabled: enabled)
                 if enabled {
                     Task { await TelemetrySession.sendStartIfNeeded() }

@@ -80,23 +80,33 @@ It counts identifiers; it does not press them. A panel can be fully addressable
 and still contain a control that does nothing observable, so green here means
 "reachable", not "works".
 
-That is not hypothetical. `Settings.Privacy.TelemetryToggle` is addressable and
-is a real `AXCheckBox`, and `AXPress` on it **does** flip the stored preference
-(`com.rapidmlx.rapid.telemetry.enabled` `0 → 1`, a client ID is minted, the
-shared `~/.rapid-mlx/telemetry-client-id` appears) — but the switch itself does
-not re-render, so its AX value stays `0` until you leave the panel and come
-back, at which point it reads `1`. The cause is that
-`SettingsView.telemetryEnabledBinding`'s getter reads `TelemetryConfig.isEnabled`,
+That was not hypothetical, and the worked example is worth keeping now that it
+has been fixed — because the flow stayed green through the whole of it.
+
+`Settings.Privacy.TelemetryToggle` is addressable and is a real `AXCheckBox`.
+`AXPress` on it flipped the stored preference
+(`com.rapidmlx.rapid.telemetry.enabled` `0 → 1`, a client ID minted, the shared
+`~/.rapid-mlx/telemetry-client-id` written) — and the switch did not re-render,
+so its AX value stayed `0` until you left the panel and came back.
+`SettingsView.telemetryEnabledBinding`'s getter read `TelemetryConfig.isEnabled`,
 a plain `static var` over `UserDefaults.standard`, which gives SwiftUI no
-dependency to invalidate on. To a user, that is a consent switch that appears to
-snap back to off while they are in fact opted in. It is pre-existing (the
-control was previously unaddressable, which is exactly why nothing caught it)
-and it is the same family as [#1608](https://github.com/raullenchai/Rapid-MLX/pull/1608)
-in the table above. **It is not fixed and not yet filed** — it was found while
-naming the control and is reported in the PR that did so, deliberately left out
-of an identifiers-only change because it touches consent semantics. This flow
-will not catch it; a successor that presses each control and asserts the value
-moved would.
+dependency to invalidate on. To a user: a consent switch that appears to refuse
+their choice while they are in fact opted in. Same family as
+[#1608](https://github.com/raullenchai/Rapid-MLX/pull/1608) in the table above.
+
+Fixed in [#1623](https://github.com/raullenchai/Rapid-MLX/issues/1623), measured
+both ways on real builds:
+
+| build | AX value after press | preference |
+| --- | --- | --- |
+| before | `0 → 0` (stuck) | `0 → 1` |
+| after | `0 → 1` | `0 → 1` |
+
+**`no-dead-controls` was green for every one of those runs.** It counts
+identifiers; it does not press them. The gap it leaves is exactly this: a
+control that is reachable and inert. A successor that presses each control and
+asserts the observable value moved is what closes it — until then, read a green
+here as "reachable", never as "works".
 
 Two notes on writing assertions here, both learned the hard way while adding
 these:
