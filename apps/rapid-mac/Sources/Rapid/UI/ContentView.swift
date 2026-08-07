@@ -339,7 +339,13 @@ struct ContentView: View {
         if let pending = autoStartPendingDownload, pending.alias == alias {
             return .notOnDisk
         }
-        guard catalogLoaded else { return .catalogPending }
+        // An EMPTY catalog is not evidence that an alias is unknown.
+        // ``ModelCatalog.load`` returns `[]` as its failure sentinel (the
+        // `rapid-mlx models` subprocess failed), and ``catalogLoaded``
+        // flips to true either way. Treating that as "the catalog has
+        // spoken" would tell the user their model is unrecognised on the
+        // strength of a command that did not run.
+        guard catalogLoaded, !catalogEntries.isEmpty else { return .catalogPending }
         guard let entry = catalogEntries.first(where: { $0.alias == alias }) else {
             // A custom alias the user typed isn't in the catalog. We
             // genuinely don't know whether it's on disk — and unlike the

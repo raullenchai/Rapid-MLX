@@ -339,6 +339,110 @@ struct ModelSurfaceRedesignTests {
         }
     }
 
+    /// The sweep above can only mean something if the two arrays really
+    /// are the labels the card renders — they are hand-maintained, and a
+    /// width derived from them would otherwise be self-certifying.
+    ///
+    /// So: grep the source. Every `Text("…")` inside the card's
+    /// ``actionButton`` and inside ``statusBadgeView``'s pill calls must
+    /// appear in one of the two arrays. Adding "Download again" to the
+    /// button without widening the column trips here rather than shipping
+    /// another ellipsis. Same pattern as
+    /// ``ToolUseCapabilitySourceGuardTests``.
+    @Test("recommended card: the measured label set matches the source")
+    func actionLabelArraysMatchTheSource() throws {
+        let source = try Self.loadPanelSource()
+        let known = Set(
+            RecommendedCardLayout.actionButtonTitles
+                + RecommendedCardLayout.actionPillTitles
+        )
+
+        let buttonBody = try Self.body(
+            of: "private func actionButton(for entry: ModelEntry, badge: ModelCacheActions.StatusBadge) -> some View {",
+            in: source
+        )
+        for label in Self.textLiterals(in: buttonBody) {
+            #expect(
+                known.contains(label),
+                """
+                actionButton renders Text("\(label)") but RecommendedCardLayout \
+                does not measure it, so the card's action column width was \
+                derived without it. Add it to actionButtonTitles.
+                """
+            )
+        }
+
+        let badgeBody = try Self.body(
+            of: "private func statusBadgeView(_ badge: ModelCacheActions.StatusBadge) -> some View {",
+            in: source
+        )
+        // The pills the CARD can reach. ``statusBadgeView`` is shared with
+        // states the card never routes to it, so only these two are
+        // required to be measured.
+        for label in ["On disk", "In use"] {
+            #expect(
+                badgeBody.contains("\"\(label)\""),
+                "statusBadgeView no longer renders the \"\(label)\" pill the card's width was measured against"
+            )
+            #expect(known.contains(label))
+        }
+    }
+
+    /// Panel source, located from ``#filePath`` so the test runs from any
+    /// working directory.
+    private static func loadPanelSource() throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // RapidTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // apps/rapid-mac
+        return try String(
+            contentsOf: root.appendingPathComponent(
+                "Sources/Rapid/UI/SettingsModelManagementPanel.swift"
+            ),
+            encoding: .utf8
+        )
+    }
+
+    /// One function's body, scoped by matching the braces after its
+    /// signature. A "up to the next MARK" heuristic silently swallowed
+    /// the following functions, which would have made this guard pass on
+    /// labels it never actually saw.
+    private static func body(of signature: String, in source: String) throws -> String {
+        struct MissingDeclaration: Error { let signature: String }
+        guard let start = source.range(of: signature) else {
+            throw MissingDeclaration(signature: signature)
+        }
+        // ``signature`` ends with the opening brace, so start at depth 1.
+        var depth = 1
+        var end = start.upperBound
+        while end < source.endIndex, depth > 0 {
+            switch source[end] {
+            case "{": depth += 1
+            case "}": depth -= 1
+            default: break
+            }
+            if depth > 0 { end = source.index(after: end) }
+        }
+        guard depth == 0 else { throw MissingDeclaration(signature: signature) }
+        return String(source[start.upperBound..<end])
+    }
+
+    /// Every `Text("…")` string literal in a fragment of Swift source.
+    private static func textLiterals(in fragment: String) -> [String] {
+        var out: [String] = []
+        var remainder = Substring(fragment)
+        while let open = remainder.range(of: "Text(\"") {
+            let after = remainder[open.upperBound...]
+            guard let close = after.firstIndex(of: "\"") else { break }
+            let literal = String(after[..<close])
+            // Skip interpolated labels — they are not fixed strings and
+            // cannot be width-measured up front.
+            if !literal.contains("\\(") { out.append(literal) }
+            remainder = after[close...]
+        }
+        return out
+    }
+
     /// The specific label that broke, called out on its own so a
     /// regression names the reported symptom rather than a sweep index.
     @Test("recommended card: \"Download\" renders in full")
@@ -390,6 +494,20 @@ struct ModelSurfaceRedesignTests {
             #expect(
                 needed <= ModelTableLayout.sizeColumnWidth,
                 "\"~\(size)\" needs \(needed)pt, column is \(ModelTableLayout.sizeColumnWidth)pt"
+            )
+        }
+    }
+
+    /// The serving row is a cached row too — it owes the same size, and
+    /// the "Serving" label it carries instead of a delete button is wider
+    /// than that button, so it needs its own width check.
+    @Test("size column: a serving cell fits its size next to \"Serving\"")
+    func inUseCellFitsTheSizeColumn() {
+        for size in ["7.9 GiB", "35.2 GiB", "123.4 GiB"] {
+            let needed = ModelTableLayout.inUseCellWidth(size: size)
+            #expect(
+                needed <= ModelTableLayout.sizeColumnWidth,
+                "serving \"\(size)\" needs \(needed)pt, column is \(ModelTableLayout.sizeColumnWidth)pt"
             )
         }
     }

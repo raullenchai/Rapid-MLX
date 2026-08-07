@@ -440,10 +440,13 @@ enum ModelReadiness: Equatable {
         case .needsStart:
             return "It's already downloaded — starting takes a few seconds."
         case .unknownModel:
-            // Deliberately promises nothing about the disk: this alias is
-            // not in the catalog, so we cannot say it is downloaded (the
-            // old copy did) and we cannot quote a download size either.
-            return "Rapid doesn't know this one — starting will download it first if it isn't on your Mac."
+            // Deliberately promises nothing. We cannot say it is
+            // downloaded (the old copy did), we cannot quote a size, and
+            // we must not promise a download either: ``ServerManager``
+            // pulls on demand only for a name it accepts, and this one
+            // came from free text. State the one thing that is true —
+            // that we do not know — and let Start report the rest.
+            return "Rapid doesn't know this one, so it can't say whether it's already on your Mac."
         case .downloading(_, let detail, _):
             return detail ?? "Starting the download…"
         case .starting(_, let detail):

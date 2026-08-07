@@ -769,9 +769,26 @@ struct SettingsModelManagementPanel: View {
                 .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
             }
         case .inUse:
-            Text("Serving")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+            // A serving model is a CACHED model, so it owes the same
+            // answer as any other cached row: how much disk it is using.
+            // Showing only "Serving" left the one model the user is most
+            // likely to be weighing as the single row with no size.
+            // There is still no delete here — the weights are mmap'd
+            // mid-serve — which is what "Serving" says.
+            HStack(spacing: ModelTableLayout.cellSpacing) {
+                if let size = Self.onDiskSizeLabel(entry) {
+                    Text(size)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Measured size on disk. Stop this model before deleting it.")
+                        .accessibilityLabel("On disk, \(size)")
+                }
+                Text("Serving")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         case .notCached:
             HStack(spacing: 8) {
                 if let gb = Self.downloadSizeLabel(entry.alias) {
@@ -1262,6 +1279,12 @@ enum RecommendedCardLayout {
         textWidth(text, font: .systemFont(ofSize: 10))
     }
 
+    /// Width of a `.caption.weight(.medium)` run — the table's "Serving"
+    /// label.
+    static func captionMediumWidth(_ text: String) -> CGFloat {
+        textWidth(text, font: .systemFont(ofSize: 10, weight: .medium))
+    }
+
     fileprivate static func textWidth(_ string: String, font: NSFont) -> CGFloat {
         (string as NSString).size(withAttributes: [.font: font]).width
     }
@@ -1301,5 +1324,13 @@ enum ModelTableLayout {
     /// spacing is the one that branch renders.
     static func notCachedCellWidth(size: String) -> CGFloat {
         RecommendedCardLayout.captionWidth("~" + size) + 8 + glyphWidth
+    }
+
+    /// Width a serving cell needs: measured size + the "Serving" label
+    /// that stands in for the (deliberately absent) delete button.
+    static func inUseCellWidth(size: String) -> CGFloat {
+        RecommendedCardLayout.captionWidth(size)
+            + cellSpacing
+            + RecommendedCardLayout.captionMediumWidth("Serving")
     }
 }

@@ -506,7 +506,7 @@ final class ModelReadinessTests: XCTestCase {
     /// banner simultaneously showed the unknown-model glyph, so the same
     /// row said two different things.
     func testUnknownAliasDoesNotClaimItIsDownloaded() {
-        let unknown = "mlx-community/Some Model With Spaces"
+        let unknown = "mlx-community/Some-Custom-Repo"
         let state = resolveCacheState(
             .idle,
             alias: unknown,
@@ -526,7 +526,7 @@ final class ModelReadinessTests: XCTestCase {
     /// ``needsStart`` — ``ServerManager`` pulls on demand, so Start is
     /// still the right and only button.
     func testUnknownAliasStillOffersStartAndStaysGated() {
-        let unknown = "mlx-community/Some Model With Spaces"
+        let unknown = "mlx-community/Some-Custom-Repo"
         let state = resolveCacheState(.idle, alias: unknown, cacheState: .notInCatalog)
         XCTAssertEqual(state.action, .start(alias: unknown))
         XCTAssertFalse(state.sendAllowed)
@@ -544,7 +544,7 @@ final class ModelReadinessTests: XCTestCase {
     /// a custom model the user started must reach ``ready`` and enable
     /// Send like any other.
     func testUnknownAliasStillReachesReadyWhenServing() {
-        let unknown = "mlx-community/Some Model With Spaces"
+        let unknown = "mlx-community/Some-Custom-Repo"
         let state = resolveCacheState(
             .ready(alias: unknown),
             alias: unknown,
