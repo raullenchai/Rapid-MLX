@@ -119,10 +119,12 @@ def app_version(info_plist: Path = INFO_PLIST) -> str:
     ``plistlib`` rather than ``PlistBuddy`` so this runs on the Linux
     lint runner; the file is XML, which ``plistlib`` reads anywhere.
 
-    ``CFBundleVersion`` (a monotonic build counter, currently 150) is
-    deliberately NOT checked. It is not a release version, nobody quotes
-    it, and tying it to the engine would force a meaningless edit on
-    every engine patch.
+    ``CFBundleVersion`` (a monotonic build counter) is deliberately NOT
+    checked. It is not a release version, nobody quotes it, and tying it
+    to the engine would force a meaningless edit on every engine patch.
+    Its value is deliberately not quoted here either — a literal in a
+    docstring is a second copy of a number that nothing verifies, which
+    is the same class of drift this script exists to prevent.
     """
     if not info_plist.is_file():
         raise VersionSyncError(f"{_rel(info_plist)} not found")
