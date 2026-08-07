@@ -80,9 +80,15 @@ for _home_var in CODEX_HOME HERMES_HOME; do
   # (trailing space) passes an is-a-directory check here while Python strips
   # the space and writes the operator's real ~/.codex/config.toml — which the
   # backup and restore then miss, because they are looking at the other path.
+  # ...and CANONICALIZE, because the comparison below is only as good as the
+  # spelling. `$HOME/.codex/`, `$HOME/.codex/.`, a `..` path and a symlink all
+  # resolve to the protected directory while comparing unequal as strings. A
+  # relative value would also break the run outright, since `seed_repo` changes
+  # cwd before the agent reads the re-exported home.
   _home_val="$(python3 -c 'import os, sys
 v = sys.argv[1].strip()
-sys.stdout.write(os.path.expanduser(v) if v else "")' "${_home_val}" 2>/dev/null)"
+sys.stdout.write(os.path.realpath(os.path.expanduser(v)) if v else "")' \
+    "${_home_val}" 2>/dev/null)"
   if [ -z "${_home_val}" ]; then
     echo "SMOKE-ABORT: $_home_var is blank once resolved — refusing to run, as" >&2
     echo "             \`agents --setup\` would then write the operator's real config." >&2
@@ -95,8 +101,8 @@ sys.stdout.write(os.path.expanduser(v) if v else "")' "${_home_val}" 2>/dev/null
   # redirect exists to protect, and it is a real directory, so every check
   # above passes. There is no legitimate reason for this gate to write there.
   case "$_home_var" in
-    CODEX_HOME)  _home_real="$HOME/.codex" ;;
-    HERMES_HOME) _home_real="$HOME/.hermes" ;;
+    CODEX_HOME)  _home_real="$(python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(os.path.expanduser("~/.codex")))')" ;;
+    HERMES_HOME) _home_real="$(python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(os.path.expanduser("~/.hermes")))')" ;;
     *)           _home_real="" ;;
   esac
   if [ -n "$_home_real" ] && [ "${_home_val}" = "$_home_real" ]; then
@@ -411,12 +417,36 @@ run_aider() {
 # (qwen3.6-35b-8bit → 262144) when it can reach the running server to detect it;
 # without --base-url it falls back to the 32768 default and Hermes refuses to
 # start every time.
+# Assert the invariant directly instead of enumerating the ways it can break.
+# Every guard above stops a *spelling* — a resolved path, a blank value, the
+# protected directory. None of them can see a `home_env` the profile renamed:
+# a user profile in ~/.rapid-mlx/agents/ may legitimately declare
+# `home_env: MY_CODEX_HOME`, and if that variable is unset, `--setup` resolves
+# back to the operator's real config no matter what this script exported.
+# Fingerprinting the real files and checking them afterwards catches that, and
+# anything else nobody has thought of yet.
+_real_fingerprint() {
+  for f in "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml"; do
+    if [ -f "$f" ]; then shasum -a 256 "$f" 2>/dev/null; else echo "absent $f"; fi
+  done
+}
+_REAL_BEFORE="$(_real_fingerprint)"
+
 save_cfg "$CODEX_CFG"
 "$RMLX" agents codex --setup --base-url "$B/v1" >/dev/null 2>&1
 patch_port "$CODEX_CFG"
 save_cfg "$HERMES_CFG"
 "$RMLX" agents hermes --setup --base-url "$B/v1" >/dev/null 2>&1
 patch_port "$HERMES_CFG"
+
+if [ "$(_real_fingerprint)" != "$_REAL_BEFORE" ]; then
+  echo "SMOKE-ABORT: \`agents --setup\` modified the operator's REAL config despite" >&2
+  echo "             the redirect. Refusing to continue. Before / after:" >&2
+  printf '%s\n' "$_REAL_BEFORE" | sed 's/^/               was  /' >&2
+  _real_fingerprint | sed 's/^/               now  /' >&2
+  echo "             A renamed home_env in ~/.rapid-mlx/agents/ is the usual cause." >&2
+  exit 3
+fi
 
 echo "running 4 Tier-1 agents serially (budget ${AGENT_TO}s, hermes ${HERMES_TO}s)…"
 # Serial, NOT backgrounded: overlapping them oversubscribes the single GPU and
