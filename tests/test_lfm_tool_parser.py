@@ -573,6 +573,46 @@ class TestLfmTextFormatEnvelope:
             assert len(calls) == 1, text
             assert json.loads(calls[0]["function"]["arguments"]) == {"a": 1}, text
 
+    def test_unterminated_opener_does_not_mask_a_later_call(self):
+        """A malformed opener must not hide the valid block after it.
+
+        Bailing on the first unbalanced candidate treated everything that
+        followed as nested inside it, so the complete call was never
+        extracted and its raw markup was released as content instead.
+        """
+        text = 'Before [2fa({"oops": 1}) [browse({"q": "x"})]'
+        parser = LfmToolParser()
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert [tc["name"] for tc in result.tool_calls] == ["browse"]
+        assert "[browse(" not in (result.content or "")
+
+        content, calls = _stream(LfmToolParser(), list(text))
+        assert [c["function"]["name"] for c in calls] == ["browse"]
+        assert "[browse(" not in content
+
+    def test_prose_after_a_call_survives_an_earlier_malformed_opener(self):
+        """A settled block ends the hold that an earlier opener started.
+
+        Otherwise a malformed opener before the call keeps holding every
+        byte after it, and the EOF flush is skipped once a call fires — so
+        the trailing prose is dropped instead of streamed.
+        """
+        text = '[oops({"a": 1}) [Calling tool: f({})] all done'
+        content, calls = _stream(LfmToolParser(), list(text))
+
+        assert [c["function"]["name"] for c in calls] == ["f"]
+        assert content.endswith(" all done")
+        assert "Calling tool" not in content
+
+    def test_unterminated_opener_probing_stays_bounded(self):
+        """Many unterminated openers must not make the walk quadratic."""
+        text = '[f({"a": 1}) ' * 4000 + "]"
+        start = time.perf_counter()
+        parse_lfm_tool_calls(text)
+        assert time.perf_counter() - start < 1.0
+
     def test_prose_after_call_in_same_delta_is_not_dropped(self):
         """Trailing prose sharing the closing delta must still be emitted.
 
