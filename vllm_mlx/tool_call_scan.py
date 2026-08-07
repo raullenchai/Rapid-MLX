@@ -36,7 +36,36 @@ from __future__ import annotations
 import re
 from typing import Any
 
+
+def payload_spans(text: str, opener: str, closer: str) -> list[tuple[int, int]]:
+    """Half-open ranges covering ``opener…closer`` element bodies.
+
+    Used to tell an element that CONTAINS marker-shaped text apart from a
+    real sibling. A tool name inside a parameter value is prose the model
+    quoted — a file it read, a page it fetched, a previous tool result —
+    not a call it made, and emitting it as one turns any content an agent
+    ingests into an execution channel.
+
+    Deliberately conservative: the range ends at the FIRST closer, so a
+    value that itself contains a literal closer under-covers rather than
+    over-covers. Under-covering leaves the pre-existing behaviour; the
+    reverse would silently drop calls the model really did make.
+    """
+    spans: list[tuple[int, int]] = []
+    i = 0
+    while True:
+        a = text.find(opener, i)
+        if a == -1:
+            return spans
+        b = text.find(closer, a + len(opener))
+        if b == -1:
+            return spans
+        spans.append((a, b + len(closer)))
+        i = b + len(closer)
+
+
 __all__ = [
+    "payload_spans",
     "segment_by_next_opener",
     "declared_tool_names",
     "split_marked_calls",
@@ -153,6 +182,7 @@ def split_marked_calls(
     closer: str,
     outer: str | None = None,
     valid_names: frozenset[str] | set[str] | None = None,
+    not_inside: list[tuple[int, int]] | None = None,
 ) -> list[tuple[str, str, int, int]]:
     """``(name, body, span_start, span_end)`` for each call in ``text``.
 
@@ -162,8 +192,23 @@ def split_marked_calls(
     invocation from surrounding prose in one step — a second, differently
     truncating regex pass over the same text is how tag fragments leak into
     user-visible content.
+
+    ``not_inside`` lists ranges whose contents are payload — typically the
+    parameter bodies from ``payload_spans``. An opener starting inside one
+    is text the model quoted, not a call it made. Without this filter a
+    tool name appearing in an argument value is emitted as an executable
+    invocation, which turns any content an agent ingests (a file it reads,
+    a page it fetches, a previous tool result) into an execution channel.
+
+    ``valid_names`` cannot cover this: the dangerous names — run_shell,
+    write_file — are exactly the ones the request DID declare, so a
+    name-based filter passes them through.
     """
     openers = list(re.finditer(opener, text, re.DOTALL))
+    if not_inside:
+        openers = [
+            m for m in openers if not any(a <= m.start() < b for a, b in not_inside)
+        ]
     calls: list[tuple[str, str, int, int]] = []
     i = 0
     while i < len(openers):
