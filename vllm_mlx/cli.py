@@ -1550,7 +1550,9 @@ def _try_mirror_prefetch(
     return download_with_mirror_fallback(model_name, on_pull_start=on_pull_start)
 
 
-def _ensure_model_downloaded(model_name: str) -> None:
+def _ensure_model_downloaded(
+    model_name: str, *, force_disk_check: bool = False
+) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
 
     Used by ``rapid-mlx chat``: the chat REPL spawns ``serve`` as a
@@ -1598,7 +1600,7 @@ def _ensure_model_downloaded(model_name: str) -> None:
         # HF cache filesystem. Clear the spinner first on that fatal path so
         # the abort message and the shell prompt after it land on clean lines.
         try:
-            _check_disk_space(model_name)
+            _check_disk_space(model_name, force=force_disk_check)
         except SystemExit:
             spinner.stop()
             raise
@@ -2580,7 +2582,13 @@ def serve_command(args):
     # revision parameter and could otherwise download repository HEAD first,
     # duplicating tens of gigabytes before the pinned snapshot is loaded.
     if not _is_wan_video:
-        _ensure_model_downloaded(args.model)
+        if getattr(args, "force_disk_check", False):
+            _ensure_model_downloaded(args.model, force_disk_check=True)
+        else:
+            # Keep the historical one-argument call on the default path; a
+            # number of embedders/tests replace this hook with a one-argument
+            # prefetch function.
+            _ensure_model_downloaded(args.model)
 
     # Import unified server
     from . import server

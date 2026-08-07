@@ -1513,7 +1513,7 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
     called: list = []
 
     def _fake_check(name, force=False):
-        called.append(name)
+        called.append((name, force))
 
     monkeypatch.setattr(cli, "_check_disk_space", _fake_check)
     # Make snapshot_download a no-op so we don't hit the network.
@@ -1527,7 +1527,13 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
     )
 
     cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
-    assert called == ["mlx-community/Fake-Model-1B"]
+    cli._ensure_model_downloaded(
+        "mlx-community/Fake-Model-1B", force_disk_check=True
+    )
+    assert called == [
+        ("mlx-community/Fake-Model-1B", False),
+        ("mlx-community/Fake-Model-1B", True),
+    ]
 
 
 def test_ensure_model_downloaded_uses_strict_cache_probe(monkeypatch):
