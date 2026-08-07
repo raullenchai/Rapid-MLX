@@ -505,6 +505,9 @@ struct AutoStartDecisionTests {
             aliasAtEntry: "", currentAlias: "bonsai-1.7b-2bit"
         ))
         #expect(ContentView.launchSelectionWasReplaced(
+            aliasAtEntry: "", currentAlias: "qwen3.5-4b-4bit", userSelectionChanged: true
+        ))
+        #expect(ContentView.launchSelectionWasReplaced(
             aliasAtEntry: "bonsai-1.7b-2bit", currentAlias: "qwen3.5-4b-4bit"
         ))
         #expect(!ContentView.launchSelectionWasReplaced(

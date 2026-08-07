@@ -187,6 +187,9 @@ struct ChatView: View {
     /// hero and the composer read their copy off this, so they cannot
     /// describe the same lifecycle differently.
     var readiness: ModelReadiness
+    /// Explicit picker gesture signal used by launch auto-start arbitration.
+    /// Catalog-driven default selection intentionally does not call this.
+    var onUserModelSelection: () -> Void = {}
     /// Perform the readiness banner's next-step action (start, download
     /// & start, retry). Owned by ``ContentView`` because starting a model
     /// is a window-level concern, not a chat-surface one.
@@ -531,7 +534,8 @@ struct ChatView: View {
                 downloads: downloads,
                 alias: $alias,
                 quickstart: quickstart,
-                composerStyle: true
+                composerStyle: true,
+                onUserSelection: onUserModelSelection
             )
             sendOrStopButton
         }
