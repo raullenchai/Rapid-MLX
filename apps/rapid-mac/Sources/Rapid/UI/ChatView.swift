@@ -1597,20 +1597,46 @@ extension MarkdownUI.Theme {
                 .markdownMargin(top: 8, bottom: 8)
         }
 }
+/// Carries the code block's scrollable content span up to
+/// ``CodeBlockWithCopy``. Measured inside the scroll view, so the
+/// value tracks the scroll offset as well as the content width.
+private struct CodeBlockContentSpanKey: PreferenceKey {
+    static let defaultValue = CodeBlockOverflow.ContentSpan.unmeasured
+
+    static func reduce(
+        value: inout CodeBlockOverflow.ContentSpan,
+        nextValue: () -> CodeBlockOverflow.ContentSpan
+    ) {
+        let next = nextValue()
+        if next.isMeasured { value = next }
+    }
+}
+
 /// Code block with a hover-revealed Copy button. ChatGPT Desktop
 /// hangs the copy affordance off the top-right; we mirror that and
 /// fade in on hover so the button doesn't distract during reading.
 /// The button briefly flips to a checkmark on click so the user
 /// knows the clipboard load actually happened.
+///
+/// Wide code scrolls horizontally rather than wrapping — a wrapped
+/// line mangles the indentation that Python and YAML carry meaning
+/// in. That scroll used to be undiscoverable: `showsIndicators:
+/// false` installs no scroller at all, so a line running past the
+/// 720pt message column read as truncated and users assumed the tail
+/// of the answer was gone (2026-08 dogfood). The indicator is on and
+/// the edges dissolve wherever content is hidden — see
+/// ``CodeBlockOverflow`` for the geometry and the measurement that
+/// established the text was never actually clipped.
 private struct CodeBlockWithCopy: View {
     let config: CodeBlockConfiguration
 
     @State private var hovering: Bool = false
     @State private var copiedRecently: Bool = false
+    @State private var contentSpan = CodeBlockOverflow.ContentSpan.unmeasured
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            ScrollView(.horizontal, showsIndicators: false) {
+            ScrollView(.horizontal, showsIndicators: true) {
                 config.label
                     .relativeLineSpacing(.em(0.2))
                     .markdownTextStyle {
@@ -1618,9 +1644,26 @@ private struct CodeBlockWithCopy: View {
                         FontSize(.em(0.92))
                     }
                     .padding(10)
+                    .background(contentSpanReader)
             }
+            // Order matters twice here. ``mask`` before ``background``
+            // fades only the code, leaving the block's fill solid —
+            // the alternative, painting a gradient of the fill colour
+            // over the text, has to guess the composited colour and
+            // gets it wrong in one appearance or the other. And the
+            // mask sits OUTSIDE the scroll view so it stays anchored
+            // to the viewport instead of scrolling away with the
+            // text. Rendering-only: the AppKit scroll view underneath
+            // is untouched, so the gesture still works inside the
+            // faded strip.
+            .mask(fadeMask)
             .background(Color.secondary.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+            // ``$contentSpan`` rather than ``self``: the action is
+            // ``@Sendable`` and ``CodeBlockConfiguration`` is not.
+            .onPreferenceChange(CodeBlockContentSpanKey.self) { [$contentSpan] span in
+                $contentSpan.wrappedValue = span
+            }
 
             copyButton
                 .padding(.top, 6)
@@ -1629,6 +1672,48 @@ private struct CodeBlockWithCopy: View {
                 .rapidAnimation(RapidMotion.quick, value: hovering)
         }
         .onHover { h in hovering = h }
+    }
+
+    /// Publishes the content's horizontal span. Lives in a
+    /// ``background`` so it inherits the content's frame exactly and
+    /// contributes nothing to layout.
+    private var contentSpanReader: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .global)
+            Color.clear.preference(
+                key: CodeBlockContentSpanKey.self,
+                value: CodeBlockOverflow.ContentSpan(minX: frame.minX, maxX: frame.maxX)
+            )
+        }
+    }
+
+    /// Opaque through the middle, transparent at whichever edge is
+    /// hiding content. Falls back to a flat opaque fill before the
+    /// first measurement lands and whenever the block fits, so a short
+    /// code block keeps crisp edges.
+    private var fadeMask: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .global)
+            let fade = CodeBlockOverflow.fade(
+                content: contentSpan,
+                viewportMinX: frame.minX,
+                viewportMaxX: frame.maxX
+            )
+            if fade.isEmpty || frame.width <= 0 {
+                Color.black
+            } else {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(fade.leading > 0 ? 0 : 1), location: 0),
+                        .init(color: .black, location: fade.leading / frame.width),
+                        .init(color: .black, location: 1 - fade.trailing / frame.width),
+                        .init(color: .black.opacity(fade.trailing > 0 ? 0 : 1), location: 1)
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            }
+        }
     }
 
     private var copyButton: some View {
