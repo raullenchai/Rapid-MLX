@@ -144,8 +144,8 @@ if [[ "$MODE" == "publish" ]]; then
     if [[ -z "$RELEASE_REMOTE" ]]; then
         MATCHING_REMOTES=()
         while read -r remote; do
-            fetch_url="$(git remote get-url "$remote" 2>/dev/null || true)"
-            push_url="$(git remote get-url --push "$remote" 2>/dev/null || true)"
+            fetch_url="$(git remote get-url --all "$remote" 2>/dev/null || true)"
+            push_url="$(git remote get-url --push --all "$remote" 2>/dev/null || true)"
             [[ "$fetch_url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
                 && [[ "$push_url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
                 && MATCHING_REMOTES+=("$remote")
@@ -154,8 +154,12 @@ if [[ "$MODE" == "publish" ]]; then
             || fail "cannot uniquely resolve the raullenchai/Rapid-MLX release remote; set RAPID_RELEASE_REMOTE explicitly."
         RELEASE_REMOTE="${MATCHING_REMOTES[0]}"
     fi
-    RELEASE_FETCH_URL="$(git remote get-url "$RELEASE_REMOTE" 2>/dev/null || true)"
-    RELEASE_PUSH_URL="$(git remote get-url --push "$RELEASE_REMOTE" 2>/dev/null || true)"
+    RELEASE_FETCH_URL="$(git remote get-url --all "$RELEASE_REMOTE" 2>/dev/null || true)"
+    RELEASE_PUSH_URL="$(git remote get-url --push --all "$RELEASE_REMOTE" 2>/dev/null || true)"
+    [[ "$(printf '%s\n' "$RELEASE_FETCH_URL" | awk 'NF{n++} END{print n+0}')" -eq 1 ]] \
+        || fail "release remote '$RELEASE_REMOTE' must have exactly one fetch URL."
+    [[ "$(printf '%s\n' "$RELEASE_PUSH_URL" | awk 'NF{n++} END{print n+0}')" -eq 1 ]] \
+        || fail "release remote '$RELEASE_REMOTE' must have exactly one push URL."
     [[ "$RELEASE_FETCH_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
         || fail "release remote '$RELEASE_REMOTE' fetches from '$RELEASE_FETCH_URL', not raullenchai/Rapid-MLX."
     [[ "$RELEASE_PUSH_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
