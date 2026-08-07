@@ -304,7 +304,10 @@ class StressE2EBenchStep(Step):
                 label = _failure_label(kind, agent)
                 if kind == "bench":
                     verdict = _resolve_bench_against_base(
-                        pr_result, base_result, choice.model_id
+                        pr_result,
+                        base_result,
+                        choice.model_id,
+                        files_changed=ctx.files_changed,
                     )
                     if verdict["preexisting"]:
                         preexisting_count += 1
@@ -763,10 +766,34 @@ def _run_agent(
     }
 
 
+# Files whose contents decide what the base worktree actually RUNS rather
+# than what it contains. The control checks out base source, but it uses the
+# environment installed right now — so a slowdown introduced by a dependency
+# bump or a packaging change lands in the base measurement too, and the two
+# agreeing proves nothing. When the diff touches one of these, the frozen
+# baseline keeps the last word.
+_ENVIRONMENT_DEFINING = (
+    "pyproject.toml",
+    "uv.lock",
+    "poetry.lock",
+    "setup.py",
+    "setup.cfg",
+)
+
+
+def _diff_defines_the_environment(files_changed: list[str]) -> bool:
+    return any(
+        Path(f).name in _ENVIRONMENT_DEFINING or Path(f).name.startswith("requirements")
+        for f in files_changed
+    )
+
+
 def _resolve_bench_against_base(
     pr_result: dict[str, Any],
     base_result: dict[str, Any],
     model_id: str,
+    *,
+    files_changed: list[str] | None = None,
 ) -> dict[str, Any]:
     """Decide a bench failure using the base measured in this same run.
 
@@ -805,7 +832,33 @@ def _resolve_bench_against_base(
         (base_warm_now / cmp_["base_warm"] - 1) * 100 if cmp_["base_warm"] else 0
     )
 
-    if cold_vs_base > cmp_["cold_threshold"] or warm_vs_base > cmp_["warm_threshold"]:
+    if _diff_defines_the_environment(files_changed or []):
+        return {
+            "preexisting": False,
+            "finding": (
+                f"[BLOCKING] bench on {model_id}: {pr_result['summary']}; the base "
+                f"measured cold {cold_vs_base:+.1f}%, warm {warm_vs_base:+.1f}% away, "
+                f"but this diff changes dependency/packaging files — the base worktree "
+                f"runs base SOURCE against the CURRENT environment, so it carries the "
+                f"same slowdown and cannot vouch for it"
+            ),
+        }
+
+    # The base is measured after the stress battery and the agent matrix have
+    # run for this model, so the machine is warmer than it was for the PR's
+    # bench on a fresh server. That biases the base SLOW, and a slow base is
+    # exactly what excuses a PR — the wrong direction. Requiring the base to
+    # independently breach the same threshold bounds it: a couple of percent
+    # of thermal drift can never buy an excuse because it never crosses, and
+    # only drift big enough to fail the gate on its own can.
+    base_breaches_baseline = (
+        cold_drift > cmp_["cold_threshold"] or warm_drift > cmp_["warm_threshold"]
+    )
+    if (
+        cold_vs_base > cmp_["cold_threshold"]
+        or warm_vs_base > cmp_["warm_threshold"]
+        or not base_breaches_baseline
+    ):
         return {
             "preexisting": False,
             "finding": (

@@ -254,3 +254,54 @@ def test_an_unmeasurable_base_reports_the_miss_without_claiming_it_is_confirmed(
     assert not verdict["preexisting"], verdict["finding"]
     assert "could not measure the base" in verdict["finding"]
     assert "git worktree add exited 128" in verdict["finding"]
+
+
+def test_thermal_scale_drift_cannot_buy_an_excuse(ctx, choice, baseline, monkeypatch):
+    """The base is measured after stress + the agent matrix, so the machine
+    is warmer than it was for the PR's bench on a fresh server. That biases
+    the base slow, and a slow base is what excuses a PR — the wrong
+    direction. A base that is only a couple of percent off must therefore
+    excuse nothing: it never breaches the gate on its own."""
+    # Numbers chosen to land in the gap this clause exists for — if the
+    # PR/base comparison alone already tripped, the clause would never be
+    # reached and this test would pass without testing it:
+    #   baseline warm 375, threshold 5% (trips above 393.75)
+    #   PR   warm 400  → +6.7% vs baseline, so the bench fails and we land here
+    #   base warm 385  → PR is only +3.9% vs base: WITHIN threshold
+    #   base drift     → +2.7% vs baseline: does NOT breach on its own
+    # Without the clause that combination reads as "drift, excused". With
+    # it, a base that never fails the gate cannot vouch for one that does.
+    pr = _pr_failure(255.0, 400.0, ctx, choice, monkeypatch)
+
+    verdict = stress_e2e_bench._resolve_bench_against_base(
+        pr, _base(252.0, 385.0), choice.model_id
+    )
+
+    assert not verdict["preexisting"], verdict["finding"]
+
+
+def test_a_dependency_change_is_never_excused_by_the_base(
+    ctx, choice, baseline, monkeypatch
+):
+    """The control checks out base SOURCE but runs it against the CURRENTLY
+    installed environment. A slowdown that arrived with a dependency bump
+    therefore lands in the base measurement too, and the two agreeing proves
+    nothing. When the diff touches packaging, the frozen baseline keeps the
+    last word."""
+    pr = _pr_failure(345.0, 418.0, ctx, choice, monkeypatch)
+
+    verdict = stress_e2e_bench._resolve_bench_against_base(
+        pr,
+        _base(344.0, 419.0),
+        choice.model_id,
+        files_changed=["pyproject.toml", "vllm_mlx/engine.py"],
+    )
+
+    assert not verdict["preexisting"], verdict["finding"]
+    assert "dependency/packaging" in verdict["finding"]
+
+    # Same numbers, ordinary source change → the base is allowed to speak.
+    ordinary = stress_e2e_bench._resolve_bench_against_base(
+        pr, _base(344.0, 419.0), choice.model_id, files_changed=["vllm_mlx/engine.py"]
+    )
+    assert ordinary["preexisting"], ordinary["finding"]
