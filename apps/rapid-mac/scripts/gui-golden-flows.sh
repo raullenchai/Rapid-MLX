@@ -253,6 +253,48 @@ see_settings() {
     "$AX_DRIVER" dump "$APP_PID" > "$1"
 }
 
+# AX can expose a newly opened/refocused Settings window before AppKit has
+# finished realizing every window subtree. A single immediate dump therefore
+# sometimes loses the main-window children or the category rail entirely.
+# Require the semantic anchors we care about and two identical normalized
+# trees before snapshotting or pressing from the tree.
+wait_settings_stable() {
+    local destination="$1"
+    shift
+    local candidate="$destination.candidate" previous="$destination.previous.txt"
+    local normalized="$destination.normalized.txt" stable=0
+    rm -f "$previous"
+    for _ in {1..80}; do
+        see_settings "$candidate"
+        local complete=1 identifier
+        for identifier in rapid.chat.compose Settings.Category.modelManagement "$@"; do
+            jq -e --arg id "$identifier" \
+                '.data.ui_elements[]? | select(.identifier == $id)' \
+                "$candidate" >/dev/null || { complete=0; break; }
+        done
+        if [[ "$complete" == 1 ]]; then
+            python3 "$BASELINE_TOOL" normalize "$candidate" --scrub "$FAKE_ALIAS" \
+                --output "$normalized"
+            if [[ -f "$previous" ]] && cmp -s "$previous" "$normalized"; then
+                stable=$((stable + 1))
+                if [[ "$stable" -ge 1 ]]; then
+                    mv "$candidate" "$destination"
+                    rm -f "$previous" "$normalized"
+                    return
+                fi
+            else
+                stable=0
+            fi
+            cp "$normalized" "$previous"
+        else
+            stable=0
+            rm -f "$previous"
+        fi
+        sleep 0.25
+    done
+    die "Settings AX tree did not settle with required identifiers: $*"
+}
+
 start_model() {
     wait_identifier Readiness.Action "$OUT/readiness-start.json"
     press "$OUT/readiness-start.json" Readiness.Action "$OUT/start-model.json"
@@ -388,11 +430,10 @@ flow_settings_persistence() {
     start_persona settings-persistence
     dismiss_first_run
     open_settings
-    see_settings "$OUT/settings-root.json"
+    wait_settings_stable "$OUT/settings-root.json"
     baseline settings-persistence.settings-root "$OUT/settings-root.json"
     press "$OUT/settings-root.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
-    sleep 0.3
-    see_settings "$OUT/models-before.json"
+    wait_settings_stable "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle
     baseline settings-persistence.models-idle "$OUT/models-before.json"
     local preference_key="rapid.picker.show_all_models.v1"
     press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
@@ -402,15 +443,14 @@ flow_settings_persistence() {
     done
     [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 1 ]] \
         || die "GUI toggle did not persist true to isolated preferences"
-    see_settings "$OUT/models-after.json"
+    wait_settings_stable "$OUT/models-after.json" Settings.Models.ShowAllModelsToggle
     baseline settings-persistence.models-toggled "$OUT/models-after.json"
     relaunch_persona
     dismiss_first_run
     open_settings
-    see_settings "$OUT/settings-relaunch.json"
+    wait_settings_stable "$OUT/settings-relaunch.json"
     press "$OUT/settings-relaunch.json" Settings.Category.modelManagement "$OUT/settings-models-reopen.json"
-    sleep 0.3
-    see_settings "$OUT/models-persisted.json"
+    wait_settings_stable "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle
     baseline settings-persistence.models-after-relaunch "$OUT/models-persisted.json"
     press "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
     for _ in {1..20}; do

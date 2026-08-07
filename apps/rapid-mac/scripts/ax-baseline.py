@@ -136,10 +136,25 @@ _WINDOW_CONTROL_SUBROLES = frozenset(
     }
 )
 
+# AppKit exposes the same SwiftUI ``Picker`` as either role depending on the
+# macOS release. Both are the same semantic popup control, so fingerprints
+# use one stable spelling instead of treating an OS upgrade as a product diff.
+_ROLE_EQUIVALENTS = {
+    "AXMenuButton": "AXPopUpButton",
+}
+
 
 def is_window_control(record: dict) -> bool:
     """True for a traffic-light / toolbar button whose subtree is AppKit's."""
-    return record.get("subrole") in _WINDOW_CONTROL_SUBROLES
+    if record.get("subrole") in _WINDOW_CONTROL_SUBROLES:
+        return True
+    # On macOS 15.6 the system sidebar item gained a second, lazily-realized
+    # AXButton child. Keep the public button but ignore its OS-owned internals,
+    # just as we already do for traffic-light controls.
+    return record.get("role") == "AXButton" and record.get("description") in {
+        "Hide Sidebar",
+        "Show Sidebar",
+    }
 
 
 class Node:
@@ -236,7 +251,8 @@ def quote(text: str) -> str:
 
 def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
     record = node.record
-    parts = [record.get("role", "AXUnknown")]
+    raw_role = record.get("role", "AXUnknown")
+    parts = [_ROLE_EQUIVALENTS.get(raw_role, raw_role)]
     subrole = record.get("subrole")
     if subrole:
         parts.append(f"subrole={subrole}")

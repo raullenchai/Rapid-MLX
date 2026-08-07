@@ -9,7 +9,7 @@ AXApplication title="Rapid-MLX"
           AXScrollArea
             AXHeading desc="<relative-day>" enabled=true
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
-            AXMenuButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
+            AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="golden stop marker" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
@@ -26,7 +26,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
-          AXMenuButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+          AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true

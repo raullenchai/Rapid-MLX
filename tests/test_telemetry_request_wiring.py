@@ -86,10 +86,15 @@ def _request(model="test-model"):
 @pytest.mark.asyncio
 async def test_nonstreaming_completion_emits_request_event(monkeypatch):
     from vllm_mlx.routes import chat
+    from vllm_mlx.telemetry import emit
 
     calls: list[dict] = []
     engine = _FakeChatEngine()
     _patch_route(monkeypatch, engine, calls)
+    # Pin the consent state this test documents. Developer machines may have
+    # telemetry opted in already, and the route intentionally computes a
+    # concrete False degeneracy signal in that state (covered below).
+    monkeypatch.setattr(emit, "is_enabled", lambda *a, **k: False)
 
     await chat._create_chat_completion_impl(
         _request(),
