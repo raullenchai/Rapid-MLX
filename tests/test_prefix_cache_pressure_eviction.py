@@ -767,14 +767,18 @@ class TestBlockAwareCacheEviction:
         assert sched.num_prefix_cache_pressure_evictions == 2
 
     def test_pressure_releases_full_kv_request_table_entries(self):
-        """Pressure must also drop the FULL-KV tensor pinned by
-        ``_request_tables`` entries — the block slices are only views
-        into that buffer, so without this active memory never falls.
+        """Pressure must drop the FULL-KV tensor held by ``_request_tables``
+        entries, not just the block-index views.
 
-        Regression: the pre-fix wedge showed ``evictions_total`` growing
-        while ``active`` stayed pinned above cap, because the LRU index
-        eviction cleared block views while the entry's ``cache_data``
-        kept the underlying Metal allocation alive.
+        In production the block slices are views into the request-table
+        entry's buffer, so clearing only the views leaves the underlying
+        Metal allocation alive (the pre-fix wedge: ``evictions_total``
+        grew while ``active`` stayed pinned above cap). These are plain
+        ``MagicMock`` stand-ins — they cannot model the tensor-level
+        aliasing itself — so this test asserts the observable behaviour
+        the fix guarantees: every request-table entry is popped AND every
+        referenced block has its ``cache_data`` cleared, which is exactly
+        the pair of drops needed for the real allocation to fall.
         """
         sched = self._make_paged_scheduler()
         bac = sched.block_aware_cache
@@ -817,8 +821,78 @@ class TestBlockAwareCacheEviction:
         # entry (the rt-first ordering guarantees this).
         assert "req-1" not in bac._request_tables
         assert "req-2" not in bac._request_tables
-        # The block views alias the same buffers as the dropped
-        # request-table tensors — they must be released too, or the
-        # underlying Metal allocation stays alive.
+        # Every referenced block's cache_data must also be cleared — in
+        # production these views alias the dropped request-table buffers,
+        # so leaving them set would keep the Metal allocation alive.
         assert all(b.cache_data is None for b in blocks)
         assert sched.num_prefix_cache_pressure_evictions == 2
+
+    def test_request_table_entry_with_pinned_block_survives(self):
+        """A request-table entry that owns a pinned block (system prompt)
+        must NOT be evicted — dropping its full-KV buffer would invalidate
+        the pinned block's aliased views."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        blocks = []
+        for i in range(4):
+            blk = paged.allocate_block()
+            blk.cache_data = [MagicMock()]
+            blocks.append(blk)
+        blocks[0].is_pinned = True  # system-prompt block owned by req-1
+        bac._request_tables["req-1"] = BlockCacheEntry(
+            block_table=MagicMock(block_ids=[b.block_id for b in blocks[:2]]),
+            cache_data=[MagicMock()],
+            last_access=1.0,
+        )
+        bac._request_tables["req-2"] = BlockCacheEntry(
+            block_table=MagicMock(block_ids=[b.block_id for b in blocks[2:]]),
+            cache_data=[MagicMock()],
+            last_access=2.0,
+        )
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+        # req-2 (no pinned block) is evicted; req-1 is skipped so the
+        # pinned block and the entry's full KV both survive.
+        assert "req-1" in bac._request_tables
+        assert bac._request_tables["req-1"].cache_data is not None
+        assert blocks[0].cache_data is not None
+        assert blocks[1].cache_data is not None
+        assert "req-2" not in bac._request_tables
+        assert blocks[2].cache_data is None
+        assert blocks[3].cache_data is None
+        assert n >= 1
+
+    def test_fetch_guard_rejects_reallocated_block(self):
+        """A prefix-index hit whose block was freed and REALLOCATED for
+        different tokens (fresh cache_data, changed hash) must be rejected
+        by the fetch-side guard — cache_data != None is not enough."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        bs = paged.block_size  # 4 in this fixture
+        tokens = list(range(bs))  # exactly one full block
+
+        blk = paged.allocate_block()
+        blk.cache_data = [MagicMock()]
+        # store_cache registers a full block as hash_value = hash(its tokens);
+        # index is keyed by the prefix hash the fetch path recomputes.
+        blk.hash_value = paged.compute_block_hash(tokens)
+        bac._prefix_index[paged.compute_block_hash(tokens)] = (tokens, [blk.block_id])
+
+        # Correct owner + resident tensor -> live hit.
+        assert bac._find_best_prefix_match(tokens) is not None
+
+        # Reallocation: same block_id, still has fresh cache_data, but now
+        # holds a DIFFERENT block's content (hash for other tokens). The
+        # stale index entry still points here, yet the content no longer
+        # matches — the ownership check must turn this into a miss.
+        blk.hash_value = paged.compute_block_hash([99, 98, 97, 96])
+        assert bac._find_best_prefix_match(tokens) is None

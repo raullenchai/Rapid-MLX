@@ -1187,6 +1187,11 @@ class PagedCacheManager:
                 if block.cache_data is not None and not block.is_pinned:
                     # Drop hash references first so a later prefix hit
                     # does not reconstruct from a now-empty block.
+                    # ``BlockHashToBlockMap.pop(hash, block_id)`` is a
+                    # custom method that removes only the mapping for THIS
+                    # block_id (not dict.pop — the block_id is a real
+                    # argument, not a default), so it is already safe when
+                    # the hash is shared across blocks.
                     if block.block_hash is not None:
                         self.cached_block_hash_to_block.pop(
                             block.block_hash, block.block_id

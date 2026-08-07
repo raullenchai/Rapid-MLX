@@ -5003,7 +5003,12 @@ class Scheduler:
         # the request instead of wedging the server.
         if self.paged_cache_manager is not None:
             try:
-                freed = self.paged_cache_manager.release_pressure_blocks()
+                # Bounded sweep: one admission must not synchronously
+                # discard the entire free-block cache (unbounded latency).
+                # 64 blocks is enough to clear a typical over-cap spike and
+                # re-measure; sustained pressure keeps draining via the
+                # engine tick.
+                freed = self.paged_cache_manager.release_pressure_blocks(max_blocks=64)
             except Exception:
                 freed = 0
             if freed:
@@ -5323,16 +5328,42 @@ class Scheduler:
                     rentry = rt.get(rid)
                     if rentry is None or rentry.cache_data is None:
                         continue
+                    block_ids = rentry.block_table.block_ids
+                    # Never evict an entry that owns a pinned block (e.g.
+                    # the system prompt): dropping its full-KV buffer would
+                    # invalidate the pinned block's aliased views. Skip the
+                    # whole entry so the pinned KV survives pressure.
+                    if any(
+                        (blk := paged.allocated_blocks.get(bid)) is not None
+                        and blk.is_pinned
+                        for bid in block_ids
+                    ):
+                        continue
                     # Drop the full-KV reference first so the block
                     # views below are the last holders of the buffer.
                     rentry.cache_data = None
-                    for bid in rentry.block_table.block_ids:
+                    for bid in block_ids:
                         blk = paged.allocated_blocks.get(bid)
-                        if blk is not None and blk.cache_data is not None:
-                            blk.reset_hash()
-                            blk.cache_data = None
-                            blk.cache_class_name = None
-                            paged.stats.evictions += 1
+                        if blk is None or blk.cache_data is None:
+                            continue
+                        # Remove hash mappings that still point at this
+                        # block BEFORE reset_hash clears them — otherwise
+                        # the maps keep pointing at an emptied block and a
+                        # later hash lookup resurrects it. Mirror the index
+                        # path below.
+                        if (
+                            blk.hash_value
+                            and paged.hash_to_block.get(blk.hash_value) == blk.block_id
+                        ):
+                            del paged.hash_to_block[blk.hash_value]
+                        if blk.block_hash is not None:
+                            paged.cached_block_hash_to_block.pop(
+                                blk.block_hash, blk.block_id
+                            )
+                        blk.reset_hash()
+                        blk.cache_data = None
+                        blk.cache_class_name = None
+                        paged.stats.evictions += 1
                     self.block_aware_cache.release_cache(rid)
                     logger.debug(
                         "[D-METAL-PFX-evict] dropped full-KV entry %s "
@@ -5346,40 +5377,50 @@ class Scheduler:
             # pinning block slices. Stale entries are guarded by the
             # fetch-side live check (blk.cache_data is None => miss).
             if index:
-                # dict preserves insertion order: first key = LRU
-                try:
-                    oldest_hash = next(iter(index))
-                except StopIteration:
-                    return False
-                _, block_ids = index.pop(oldest_hash)
-                evicted = 0
-                for bid in block_ids:
-                    blk = paged.allocated_blocks.get(bid)
-                    if blk is None:
+                # dict preserves insertion order: first key = LRU. Walk in
+                # LRU order and skip any entry whose blocks are ALL pinned
+                # or absent: popping such an entry would make the prefix
+                # unreachable while freeing nothing, and returning False on
+                # it would halt the caller's eviction loop prematurely.
+                for oldest_hash in list(index.keys()):
+                    _, block_ids = index[oldest_hash]
+                    if all(
+                        (blk := paged.allocated_blocks.get(bid)) is None
+                        or blk.is_pinned
+                        for bid in block_ids
+                    ):
                         continue
-                    # Release the block's resident KV tensor regardless
-                    # of hash registration variant. store_cache registers
-                    # blocks via register_block_hash (legacy hash_value
-                    # only, block_hash stays None), so the chain-hash
-                    # gated _maybe_evict_cached_block would short-circuit
-                    # and leak the tensor. Mirror its cleanup directly:
-                    # drop any legacy hash mapping, clear the tensor.
-                    if blk.is_pinned:
-                        continue
-                    if blk.hash_value and blk.hash_value in paged.hash_to_block:
-                        if paged.hash_to_block[blk.hash_value] == blk.block_id:
+                    index.pop(oldest_hash)
+                    evicted = 0
+                    for bid in block_ids:
+                        blk = paged.allocated_blocks.get(bid)
+                        if blk is None or blk.is_pinned:
+                            continue
+                        # Release the block's resident KV tensor regardless
+                        # of hash registration variant. store_cache
+                        # registers blocks via register_block_hash (legacy
+                        # hash_value only, block_hash stays None), so the
+                        # chain-hash gated _maybe_evict_cached_block would
+                        # short-circuit and leak the tensor. Mirror its
+                        # cleanup directly: drop any hash mapping, clear
+                        # the tensor.
+                        if (
+                            blk.hash_value
+                            and paged.hash_to_block.get(blk.hash_value) == blk.block_id
+                        ):
                             del paged.hash_to_block[blk.hash_value]
-                    if blk.block_hash is not None:
-                        paged.cached_block_hash_to_block.pop(
-                            blk.block_hash, blk.block_id
-                        )
-                    if blk.cache_data is not None:
-                        blk.reset_hash()
-                        blk.cache_data = None  # Free tensor memory
-                        blk.cache_class_name = None
-                        paged.stats.evictions += 1
-                        evicted += 1
-                return evicted > 0
+                        if blk.block_hash is not None:
+                            paged.cached_block_hash_to_block.pop(
+                                blk.block_hash, blk.block_id
+                            )
+                        if blk.cache_data is not None:
+                            blk.reset_hash()
+                            blk.cache_data = None  # Free tensor memory
+                            blk.cache_class_name = None
+                            paged.stats.evictions += 1
+                            evicted += 1
+                    return evicted > 0
+                return False
             return False
         return False
 

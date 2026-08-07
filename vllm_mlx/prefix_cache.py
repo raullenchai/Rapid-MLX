@@ -1105,13 +1105,33 @@ class BlockAwarePrefixCache:
                     # blocks no longer hold cache_data — dropping the
                     # prefix from the decode is a correctness bomb.
                     # Require every referenced block to still be live
-                    # with resident tensor data before trusting the hit.
+                    # with resident tensor data AND still own the tokens
+                    # this prefix expects before trusting the hit.
                     live = True
-                    for bid in block_ids:
+                    bs = self.block_size
+                    for j, bid in enumerate(block_ids):
                         blk = self.paged_cache.allocated_blocks.get(bid)
                         if blk is None or blk.cache_data is None:
                             live = False
                             break
+                        # Ownership check. cache_data != None is necessary
+                        # but NOT sufficient: a block freed under pressure
+                        # and then REALLOCATED for different tokens carries
+                        # fresh cache_data yet the wrong KV, so it would
+                        # pass the liveness test above and corrupt decode.
+                        # store_cache registers a full block's
+                        # ``hash_value = compute_block_hash(its tokens)``;
+                        # a reallocation resets/replaces that hash. Re-derive
+                        # the expected hash for this block's token slice and
+                        # require it to still match. Trailing partial blocks
+                        # are never hash-registered (hash_value stays None) —
+                        # there the liveness check above is the only signal.
+                        block_tokens = cached_tokens[j * bs : (j + 1) * bs]
+                        if len(block_tokens) == bs:
+                            expected = self.paged_cache.compute_block_hash(block_tokens)
+                            if blk.hash_value != expected:
+                                live = False
+                                break
                     if not live:
                         continue
                     best_match = (cached_tokens, block_ids)
