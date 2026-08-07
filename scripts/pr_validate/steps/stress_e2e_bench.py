@@ -197,11 +197,10 @@ class StressE2EBenchStep(Step):
                         artifact=bench_result.get("artifact"),
                     )
                     if _is_blocking_status(bench_result["status"]):
-                        any_fail = True
-                        all_findings.append(
-                            f"[BLOCKING] bench on {choice.model_id}: "
-                            + bench_result["summary"]
-                        )
+                        # Deferred like stress and agents: the confirming
+                        # run needs BENCH_PORT, which this server still
+                        # holds. Resolved after the context exits.
+                        pending_failures.append(("bench", bench_result, None))
                     # Registered here, not after the matrix: the bench has
                     # already produced its artifact, and an exception in
                     # stress or in any agent below would otherwise discard
@@ -303,6 +302,16 @@ class StressE2EBenchStep(Step):
                     all_artifacts.append(base_result["server_artifact"])
 
                 label = _failure_label(kind, agent)
+                if kind == "bench":
+                    verdict = _resolve_bench_against_base(
+                        pr_result, base_result, choice.model_id
+                    )
+                    if verdict["preexisting"]:
+                        preexisting_count += 1
+                    else:
+                        any_fail = True
+                    all_findings.append(verdict["finding"])
+                    continue
                 if base_result["status"] == "fail" and base_result.get("executed"):
                     preexisting_count += 1
                     all_findings.append(
@@ -754,6 +763,73 @@ def _run_agent(
     }
 
 
+def _resolve_bench_against_base(
+    pr_result: dict[str, Any],
+    base_result: dict[str, Any],
+    model_id: str,
+) -> dict[str, Any]:
+    """Decide a bench failure using the base measured in this same run.
+
+    The recorded baseline already said "slow". That only means the diff
+    regressed if the code it replaces is faster on this machine, today —
+    see ``_run_bench``. Here the merge base has just been measured on a
+    fresh server, so the comparison is like for like and machine drift
+    appears in both numbers instead of only the PR's.
+
+    Returns ``{"preexisting": bool, "finding": str}``: ``preexisting`` when
+    the base reproduces the slowdown, which is the drift case #1547
+    describes and is reported rather than gated.
+    """
+    cmp_ = pr_result.get("bench_comparison") or {}
+    base_metrics = base_result.get("metrics") if isinstance(base_result, dict) else None
+    if not cmp_ or not base_metrics:
+        # No usable control (worktree failed, base server would not boot).
+        # The baseline verdict stands, but it is reported as unconfirmed
+        # rather than dressed up as a proven regression.
+        return {
+            "preexisting": False,
+            "finding": (
+                f"[BLOCKING] bench on {model_id}: {pr_result['summary']}; could not "
+                f"measure the base to confirm — {base_result.get('summary', 'no detail')}"
+            ),
+        }
+
+    base_cold_now = base_metrics["cold_request_ms_median"]
+    base_warm_now = base_metrics["warm_request_ms_median"]
+    cold_vs_base = (cmp_["cold"] / base_cold_now - 1) * 100 if base_cold_now else 0
+    warm_vs_base = (cmp_["warm"] / base_warm_now - 1) * 100 if base_warm_now else 0
+    cold_drift = (
+        (base_cold_now / cmp_["base_cold"] - 1) * 100 if cmp_["base_cold"] else 0
+    )
+    warm_drift = (
+        (base_warm_now / cmp_["base_warm"] - 1) * 100 if cmp_["base_warm"] else 0
+    )
+
+    if cold_vs_base > cmp_["cold_threshold"] or warm_vs_base > cmp_["warm_threshold"]:
+        return {
+            "preexisting": False,
+            "finding": (
+                f"[BLOCKING] bench on {model_id}: cold {cold_vs_base:+.1f}%, warm "
+                f"{warm_vs_base:+.1f}% vs the base measured in this run "
+                f"(threshold {cmp_['threshold_text']}); the base itself sits "
+                f"cold {cold_drift:+.1f}%, warm {warm_drift:+.1f}% off the recorded "
+                f"baseline, so this is on top of any drift, not explained by it"
+            ),
+        }
+    return {
+        "preexisting": True,
+        "finding": (
+            f"[PRE-EXISTING] bench on {model_id}: cold {cold_vs_base:+.1f}%, warm "
+            f"{warm_vs_base:+.1f}% vs the base measured in this run (within "
+            f"{cmp_['threshold_text']}) — the recorded baseline reads "
+            f"cold {cmp_['cold_slow']:+.1f}%, warm {cmp_['warm_slow']:+.1f}%, but the "
+            f"base reproduces cold {cold_drift:+.1f}%, warm {warm_drift:+.1f}% of it "
+            f"unchanged. The drift is the machine's, not this diff's; the baseline "
+            f"needs a refresh"
+        ),
+    }
+
+
 def _run_base_check(
     ctx: Context,
     choice: ModelChoice,
@@ -807,6 +883,21 @@ def _run_base_check(
                     artifact_prefix="base-",
                     isolate_pythonpath=True,
                 )
+            elif kind == "bench":
+                # Raw measurement only — the caller does the comparing,
+                # because the whole point is to compare PR against THIS
+                # number rather than against the recorded baseline.
+                measured = _measure_bench(ctx, choice, artifact_prefix="base-")
+                result = {
+                    "status": "pass",
+                    "summary": (
+                        f"base cold={measured['metrics']['cold_request_ms_median']:.0f}ms "
+                        f"warm={measured['metrics']['warm_request_ms_median']:.0f}ms"
+                    ),
+                    "artifact": measured["artifact"],
+                    "metrics": measured["metrics"],
+                    "executed": True,
+                }
             else:
                 result = {
                     "status": "error",
@@ -937,10 +1028,17 @@ def _repo_python_env(
     return env
 
 
-def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
-    """Inline bench — measure cold TTFT + decode TPS, compare to
-    baseline. Implementation borrowed from the inline benchmark we ran
-    against PR #200; keeps this step dependency-free."""
+def _measure_bench(
+    ctx: Context, choice: ModelChoice, *, artifact_prefix: str = ""
+) -> dict[str, Any]:
+    """Measure cold + warm request medians against the server on
+    ``BENCH_PORT``, write them as an artifact, and return them.
+
+    Split out of :func:`_run_bench` so the identical measurement can be
+    taken on the PR checkout and on the merge base within one run — see
+    the drift check in ``_run_bench``. Implementation borrowed from the
+    inline benchmark we ran against PR #200; keeps this step
+    dependency-free."""
     import statistics
     import urllib.error
     import urllib.request
@@ -1005,8 +1103,38 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         "speedup_x": speedup,
     }
 
-    bench_path = ctx.artifact_path(f"bench-{_safe_name(choice.model_id)}.json")
+    bench_path = ctx.artifact_path(
+        f"{artifact_prefix}bench-{_safe_name(choice.model_id)}.json"
+    )
     bench_path.write_text(json.dumps(metrics, indent=2))
+    return {"metrics": metrics, "artifact": str(bench_path)}
+
+
+def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
+    """Measure this checkout and gate it against the recorded baseline.
+
+    A frozen baseline answers "is this build slower than the day we
+    recorded it", which is only the question we care about while the
+    machine still behaves the way it did that day. It drifts — thermals,
+    background load, an OS or dependency bump — and when it does, every
+    PR inherits the drift and the gate reds uniformly. A gate that fails
+    everything teaches reviewers to wave it through, which is worse than
+    not having it (#1547: benching the baseline's OWN commit reproduced a
+    +13.8% warm "regression" against its own recorded numbers).
+
+    So the baseline stays the cheap first pass, and a failure is no
+    longer the verdict: it triggers the same on-base re-run this step
+    already trusts for stress and agent failures. The merge base is
+    measured back to back with the PR on this machine, in this session,
+    and the PR is then judged against THAT. Drift moves both numbers and
+    cancels; a real regression does not.
+    """
+    measured = _measure_bench(ctx, choice)
+    metrics = measured["metrics"]
+    cold = metrics["cold_request_ms_median"]
+    warm = metrics["warm_request_ms_median"]
+    speedup = metrics["speedup_x"]
+    bench_path = Path(measured["artifact"])
 
     # Compare to baseline if present.
     baseline_path = (
@@ -1076,6 +1204,13 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
         else f"{cold_threshold:g}%"
     )
     if cold_slow > cold_threshold or warm_slow > warm_threshold:
+        # A baseline miss is a suspicion, not a verdict — see the docstring.
+        # The confirming measurement of the merge base CANNOT happen here:
+        # this runs inside the PR's ``_server`` context, which owns
+        # BENCH_PORT, and ``_server_in_repo`` refuses to boot a second
+        # server on a bound port. So the numbers travel out with the
+        # result and the caller resolves it once the port is free, through
+        # the same ``pending_failures`` path stress and agents already use.
         return {
             "status": "fail",
             "summary": (
@@ -1084,6 +1219,17 @@ def _run_bench(ctx: Context, choice: ModelChoice) -> dict[str, Any]:
             ),
             "artifact": str(bench_path),
             "executed": True,
+            "bench_comparison": {
+                "cold": cold,
+                "warm": warm,
+                "cold_slow": cold_slow,
+                "warm_slow": warm_slow,
+                "cold_threshold": cold_threshold,
+                "warm_threshold": warm_threshold,
+                "threshold_text": threshold_text,
+                "base_cold": base_cold,
+                "base_warm": base_warm,
+            },
         }
     return {
         "status": "pass",
