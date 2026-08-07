@@ -110,23 +110,27 @@ struct TelemetryToggleRerenderTests {
     @Test("The panel also re-reads consent written while it is visible")
     func panelResyncsOnDefaultsChange() throws {
         let stripped = try strippedSettingsSource()
+        // Pinned as ONE expression, publisher through body. Asserting the
+        // pieces separately is not equivalent: a bare
+        // "{telemetryEnabled=TelemetryConfig.isEnabled}" is already satisfied
+        // by the onAppear body above, so the observer could be emptied out and
+        // this would stay green.
         #expect(
             stripped.contains(
-                ".publisher(for:UserDefaults.didChangeNotification)"
-                    + ".receive(on:RunLoop.main)"),
+                ".onReceive(NotificationCenter.default"
+                    + ".publisher(for:UserDefaults.didChangeNotification)"
+                    + ".receive(on:RunLoop.main)"
+                    + "){_intelemetryEnabled=TelemetryConfig.isEnabled}"),
             """
             The Privacy panel must observe UserDefaults.didChangeNotification \
-            ON THE MAIN RUN LOOP. The first-run consent sheet in ContentView \
-            writes the same key and can be answered while this panel is already \
-            on screen — onAppear will not fire again for that. The hop to main \
-            is not ceremony: the notification is delivered on the thread that \
-            made the write, so a background write to any key would otherwise \
-            mutate SwiftUI @State off the main thread.
+            ON THE MAIN RUN LOOP and resync the mirror in the handler. The \
+            first-run consent sheet in ContentView writes the same key and can \
+            be answered while this panel is already on screen — onAppear will \
+            not fire again for that. The hop to main is not ceremony: the \
+            notification is delivered on the thread that made the write, so a \
+            background write to any key would otherwise mutate SwiftUI @State \
+            off the main thread.
             """
-        )
-        #expect(
-            stripped.contains("{telemetryEnabled=TelemetryConfig.isEnabled}"),
-            "The observer must actually resync the mirror."
         )
     }
 
