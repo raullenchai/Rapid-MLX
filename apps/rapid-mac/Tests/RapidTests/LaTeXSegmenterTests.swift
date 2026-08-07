@@ -351,13 +351,19 @@ struct LaTeXSegmenterTests {
         ])
     }
 
-    // MARK: - Bracket anti-cases
+    // MARK: - Bracket anti-cases (opener scan)
     //
     // NOTE for future maintainers: every test in THIS section also
     // passes against the pre-fix segmenter, which treated bracket
     // delimiters as plain text and so could never produce a false
     // positive. They do not pin the fix — they pin that the fix stays
     // conservative. The tests above are the ones that fail on a revert.
+    //
+    // These four also only exercise the OPENER scan: the opener sits
+    // inside the code region, so the run never starts and the closer
+    // scan is never entered. The "closer scan" section below covers
+    // the mirror image — opener in prose, closer inside the region —
+    // which is where the interesting failures live.
 
     @Test("Unclosed \\( stays literal markdown")
     func unclosedBracketOpener() {
@@ -395,6 +401,90 @@ struct LaTeXSegmenterTests {
     func bracketMathInIndentedCodeSurvives() {
         let body = "Before:\n\n    echo \"\\( x \\)\"\n\nAfter."
         #expect(LaTeXSegmenter.segment(body) == [.markdown(body)])
+    }
+
+    // MARK: - Closer scan
+    //
+    // Every test here has an opener in PROSE and a candidate closer
+    // somewhere the scan must not honour, so the run is actually
+    // started and `findBracketClose` actually walks. That is the gap
+    // the opener-side anti-cases above leave open.
+
+    @Test("Nested \\( : the first opener is prose, the second renders")
+    func nestedInlineOpenerIsProse() {
+        // LaTeX cannot nest inline math, so a second \( before any
+        // closer means the first one was never math. Without the bail
+        // the first opener reaches the SECOND expression's closer and
+        // eats the prose between them.
+        let segments = LaTeXSegmenter.segment(#"Use \( to group, then \(x\)."#)
+        #expect(segments == [
+            .markdown(#"Use \( to group, then "#),
+            .math(latex: "x", displayMode: false),
+            .markdown(".")
+        ])
+    }
+
+    @Test("Nested \\[ : the first opener is prose, the second renders")
+    func nestedDisplayOpenerIsProse() {
+        let segments = LaTeXSegmenter.segment(#"Use \[ then \[x\]."#)
+        #expect(segments == [
+            .markdown(#"Use \[ then "#),
+            .math(latex: "x", displayMode: true),
+            .markdown(".")
+        ])
+    }
+
+    @Test("A nested opener of the OTHER kind does not abandon the run")
+    func nestedOtherKindOpenerKeepsRun() {
+        // Deliberate asymmetry: bailing here would hand the formula
+        // back to CommonMark, which strips \[ \] to bare brackets —
+        // the original bug. Keeping it degrades to MathView's
+        // literal-source fallback instead, which shows more.
+        let segments = LaTeXSegmenter.segment(#"\[ a \( b \) c \]"#)
+        #expect(segments == [.math(latex: #" a \( b \) c "#, displayMode: true)])
+    }
+
+    @Test("A closer inside a fenced code block does not close the run")
+    func closerInsideFenceIsNotAClose() {
+        let body = "Use \\[ to open.\n\n```tex\n\\]\n```\n\nDone."
+        #expect(LaTeXSegmenter.segment(body) == [.markdown(body)])
+    }
+
+    @Test("A closer inside a code span does not close the run")
+    func closerInsideCodeSpanIsNotAClose() {
+        let body = #"Use \[ to open, and `\]` to close."#
+        #expect(LaTeXSegmenter.segment(body) == [.markdown(body)])
+    }
+
+    @Test("A closer inside an indented code block does not close the run")
+    func closerInsideIndentedCodeIsNotAClose() {
+        let body = "Use \\[ to open.\n\n    echo \"\\]\"\n\nDone."
+        #expect(LaTeXSegmenter.segment(body) == [.markdown(body)])
+    }
+
+    @Test("An indented CONTINUATION line still closes the run")
+    func indentedContinuationStillCloses() {
+        // The counterweight to the three tests above. Math bodies are
+        // routinely indented, and an indented line that merely follows
+        // the `\[` line is not a CommonMark code block — there is no
+        // blank line before it. Testing indentation alone (what the
+        // opener scan does) would abandon this formula.
+        let segments = LaTeXSegmenter.segment("\\[\n    P = 47 \\]")
+        #expect(segments == [.math(latex: "\n    P = 47 ", displayMode: true)])
+    }
+
+    @Test("First closer wins for a stray opener in plain prose")
+    func firstCloserWinsInProse() {
+        // Pinning the decision, not an accident of the scan: with no
+        // nested opener and no code region in between, the first
+        // closer closes. Accepted because CommonMark would have
+        // rendered both bracket escapes as bare brackets anyway.
+        let segments = LaTeXSegmenter.segment(#"Use \[ then later \] here."#)
+        #expect(segments == [
+            .markdown("Use "),
+            .math(latex: " then later ", displayMode: true),
+            .markdown(" here.")
+        ])
     }
 
     // MARK: - The two dogfood answers, verbatim

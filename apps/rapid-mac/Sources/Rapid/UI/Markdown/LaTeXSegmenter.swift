@@ -284,6 +284,34 @@ enum LaTeXSegmenter {
         return lastConsumedBlockEnd
     }
 
+    /// Strict form of the indented-code test, used by the closer scan.
+    /// True only where CommonMark would actually OPEN an indented code
+    /// block: at a line start, indented 4+ spaces (or a tab), AND
+    /// preceded by a blank line or the start of input.
+    ///
+    /// ``endOfIndentedCodeBlock`` alone answers "does this line look
+    /// indented", which is the right question when deciding whether to
+    /// scan a region for math openers and the wrong one when deciding
+    /// whether to abandon a formula already in progress — see the note
+    /// on ``findBracketClose``.
+    private static func startsIndentedCodeBlock(_ s: String, at index: String.Index) -> Bool {
+        guard isAtLineStart(s, at: index), isIndentedCodeLine(s, lineStart: index) else {
+            return false
+        }
+        if index == s.startIndex { return true }
+        // ``index`` is at a line start, so the character before it is
+        // the newline that ended the previous line. Walk back over that
+        // line and require it to be blank.
+        let newline = s.index(before: index)
+        var previousLineStart = newline
+        while previousLineStart > s.startIndex {
+            let before = s.index(before: previousLineStart)
+            if s[before] == "\n" { break }
+            previousLineStart = before
+        }
+        return isBlankLine(s, lineStart: previousLineStart, lineEnd: newline)
+    }
+
     private static func isIndentedCodeLine(_ s: String, lineStart: String.Index) -> Bool {
         guard lineStart < s.endIndex else { return false }
         if s[lineStart] == "\t" { return true }
@@ -424,15 +452,83 @@ enum LaTeXSegmenter {
     /// break and the ``]`` right after it is a literal bracket, so the
     /// run closes at the final ``\]`` and not at the third character
     /// of ``\\]``.
+    ///
+    /// ## Code regions are skipped, exactly like the opener scan
+    ///
+    /// A closer that lives inside a fenced block, a code span or an
+    /// indented code block does NOT close the run. Without this, an
+    /// unclosed ``\[`` in prose reaches forward and matches the ``\]``
+    /// a user wrote *inside* a code sample — swallowing the prose and
+    /// the code block in between into one "formula". The opener scan
+    /// is careful to skip those three regions; the closer scan has to
+    /// be equally careful or the care is one-sided.
+    ///
+    /// The indented-code test is deliberately STRICTER here than in
+    /// the opener scan, which treats any 4-space line as code. The two
+    /// mistakes are not symmetric: a false skip in the opener scan
+    /// only means "do not look for math here", which loses nothing,
+    /// while a false skip here abandons a real formula. Math bodies
+    /// are very commonly indented —
+    ///
+    /// ```
+    /// \[
+    ///     P = \frac{47}{0.85} \]
+    /// ```
+    ///
+    /// — so this requires what CommonMark actually requires to OPEN an
+    /// indented code block: a preceding blank line (or the start of
+    /// input). The indented continuation of a ``\[`` line is not a
+    /// code block under that rule, and its closer is still honoured.
+    ///
+    /// ## Nested openers: first closer wins, same-kind opener bails
+    ///
+    /// LaTeX cannot nest ``\( … \( … \) … \)`` — a second opener of
+    /// the same kind before any closer is therefore strong evidence
+    /// the FIRST opener was prose, not math. The scan gives up, the
+    /// caller emits that opener as literal text and rescans from just
+    /// past it, so ``Use \( to group, then \(x\).`` keeps the prose
+    /// and still renders ``x``.
+    ///
+    /// A nested opener of the OTHER kind does not bail. Rejecting the
+    /// outer run there would drop the whole formula back to CommonMark,
+    /// which strips the delimiters to bare brackets — the original bug.
+    /// Keeping it degrades instead to ``MathView``'s literal-source
+    /// fallback, which is strictly more informative.
+    ///
+    /// Beyond those two rules the first closer wins. A stray ``\[`` in
+    /// prose followed much later by a stray ``\]`` does become one math
+    /// run; that is accepted, because CommonMark would have rendered
+    /// both as bare brackets anyway, and because models do not emit
+    /// lone bracket escapes in prose.
     private static func findBracketClose(_ s: String, from bodyStart: String.Index, displayMode: Bool) -> String.Index? {
         let closer: Character = displayMode ? "]" : ")"
+        let opener: Character = displayMode ? "[" : "("
         var i = bodyStart
         while i < s.endIndex {
             let c = s[i]
+
+            // Code regions — a closer inside one does not close the run.
+            if startsIndentedCodeBlock(s, at: i),
+               let codeBlockEnd = endOfIndentedCodeBlock(s, lineStart: i) {
+                i = codeBlockEnd
+                continue
+            }
+            if c == "`", isFenceStart(s, at: i) {
+                i = endOfFencedBlock(s, fenceStart: i)
+                continue
+            }
+            if c == "`" {
+                i = endOfInlineCode(s, openStart: i)
+                continue
+            }
+
             if c == "\\" {
                 let next = s.index(after: i)
                 if next == s.endIndex { return nil }
                 if s[next] == closer { return i }
+                // Nested opener of the same kind — the first opener was
+                // prose. Give up so the caller can rescan past it.
+                if s[next] == opener { return nil }
                 i = s.index(after: next)
                 continue
             }
