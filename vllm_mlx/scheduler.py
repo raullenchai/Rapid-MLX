@@ -5011,6 +5011,16 @@ class Scheduler:
                 freed = self.paged_cache_manager.release_pressure_blocks(max_blocks=64)
             except Exception:
                 freed = 0
+                # A broken reclamation path must not masquerade as an
+                # ordinary capacity 503 — surface it once (with traceback)
+                # so recurrence of the wedge is diagnosable.
+                if not getattr(self, "_admission_release_error_logged", False):
+                    self._admission_release_error_logged = True
+                    logger.warning(
+                        "[D-METAL-CAP-force-evict] release_pressure_blocks "
+                        "failed during admission; treating as no memory freed",
+                        exc_info=True,
+                    )
             if freed:
                 active = self._current_metal_active_bytes()
                 reserved_kv = self._sum_in_flight_kv_bytes()
@@ -5360,7 +5370,7 @@ class Scheduler:
                         # later hash lookup resurrects it. Mirror the index
                         # path below.
                         if (
-                            blk.hash_value
+                            blk.hash_value is not None
                             and paged.hash_to_block.get(blk.hash_value) == blk.block_id
                         ):
                             del paged.hash_to_block[blk.hash_value]
@@ -5372,7 +5382,23 @@ class Scheduler:
                         blk.cache_data = None
                         blk.cache_class_name = None
                         paged.stats.evictions += 1
-                    self.block_aware_cache.release_cache(rid)
+                    # release_cache pops the rt entry first, then frees the
+                    # block table — so a raise here cannot leave the entry
+                    # stuck in rt, but guard it anyway so one bad table can't
+                    # tear down the pressure tick, and drop the rt entry
+                    # ourselves as a backstop.
+                    try:
+                        self.block_aware_cache.release_cache(rid)
+                    except Exception:
+                        rt.pop(rid, None)
+                        if not getattr(self, "_pfx_release_error_logged", False):
+                            self._pfx_release_error_logged = True
+                            logger.warning(
+                                "[D-METAL-PFX-evict] release_cache(%s) failed; "
+                                "dropped the entry to keep eviction live",
+                                rid,
+                                exc_info=True,
+                            )
                     logger.debug(
                         "[D-METAL-PFX-evict] dropped full-KV entry %s "
                         "(request_tables=%d)",
@@ -5421,7 +5447,7 @@ class Scheduler:
                         # cleanup directly: drop any hash mapping, clear
                         # the tensor.
                         if (
-                            blk.hash_value
+                            blk.hash_value is not None
                             and paged.hash_to_block.get(blk.hash_value) == blk.block_id
                         ):
                             del paged.hash_to_block[blk.hash_value]
@@ -5435,6 +5461,14 @@ class Scheduler:
                             blk.cache_class_name = None
                             paged.stats.evictions += 1
                             evicted += 1
+                        # Return the block slot to the free queue. Unlike the
+                        # request-table path (which frees via release_cache ->
+                        # delete_block_table), the index path holds its own
+                        # ref, so clearing the tensor alone would leak the
+                        # block from the pool and eventually exhaust
+                        # max_cache_blocks. free_block decrements ref and
+                        # enqueues the (now-empty) block when it reaches 0.
+                        paged.free_block(bid)
                     return evicted > 0
                 return False
             return False

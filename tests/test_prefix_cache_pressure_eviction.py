@@ -898,6 +898,33 @@ class TestBlockAwareCacheEviction:
         assert shared.cache_data is not None  # live KV preserved
         assert private.cache_data is None  # unshared block reclaimed
 
+    def test_index_eviction_returns_blocks_to_free_queue(self):
+        """Index-path eviction must not just clear tensors — it must also
+        return the block slots to the free queue (decrement ref_count),
+        or the pool leaks and eventually exhausts max_cache_blocks."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        blk = paged.allocate_block()  # ref_count == 1
+        blk.cache_data = [MagicMock()]
+        bid = blk.block_id
+        assert bid in paged.allocated_blocks
+        free_before = paged.free_block_queue.num_free_blocks
+        bac._prefix_index["h1"] = ([1, 2, 3, 4], [bid])
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            sched.evict_prefix_cache_under_pressure(max_evict=1)
+
+        # Tensor cleared AND the slot returned to the pool.
+        assert blk.cache_data is None
+        assert bid not in paged.allocated_blocks
+        assert paged.free_block_queue.num_free_blocks == free_before + 1
+
     def test_fetch_guard_rejects_reallocated_block(self):
         """A prefix-index hit whose block was freed and REALLOCATED for
         different tokens (fresh cache_data, changed hash) must be rejected

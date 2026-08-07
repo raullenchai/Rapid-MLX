@@ -1196,7 +1196,10 @@ class PagedCacheManager:
                         self.cached_block_hash_to_block.pop(
                             block.block_hash, block.block_id
                         )
-                    if block.hash_value and block.hash_value in self.hash_to_block:
+                    if (
+                        block.hash_value is not None
+                        and block.hash_value in self.hash_to_block
+                    ):
                         if self.hash_to_block[block.hash_value] == block.block_id:
                             del self.hash_to_block[block.hash_value]
                     block.reset_hash()
