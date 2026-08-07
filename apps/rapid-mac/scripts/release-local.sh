@@ -136,6 +136,12 @@ fi
 
 # ── --publish : guarded tag push → CI does the real release ──────────────
 if [[ "$MODE" == "publish" ]]; then
+    is_canonical_release_url() {
+        [[ "$1" =~ ^https://github\.com/raullenchai/Rapid-MLX(\.git)?$ ]] \
+            || [[ "$1" =~ ^git@github\.com:raullenchai/Rapid-MLX(\.git)?$ ]] \
+            || [[ "$1" =~ ^ssh://git@github\.com/raullenchai/Rapid-MLX(\.git)?$ ]]
+    }
+
     # Resolve the repository that owns the release workflow. ``origin`` is a
     # convention, not an identity: contributor clones commonly point it at
     # upstream. An explicit override wins; otherwise require exactly one
@@ -146,8 +152,8 @@ if [[ "$MODE" == "publish" ]]; then
         while read -r remote; do
             fetch_url="$(git remote get-url --all "$remote" 2>/dev/null || true)"
             push_url="$(git remote get-url --push --all "$remote" 2>/dev/null || true)"
-            [[ "$fetch_url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
-                && [[ "$push_url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+            is_canonical_release_url "$fetch_url" \
+                && is_canonical_release_url "$push_url" \
                 && MATCHING_REMOTES+=("$remote")
         done < <(git remote)
         [[ "${#MATCHING_REMOTES[@]}" -eq 1 ]] \
@@ -160,9 +166,9 @@ if [[ "$MODE" == "publish" ]]; then
         || fail "release remote '$RELEASE_REMOTE' must have exactly one fetch URL."
     [[ "$(printf '%s\n' "$RELEASE_PUSH_URL" | awk 'NF{n++} END{print n+0}')" -eq 1 ]] \
         || fail "release remote '$RELEASE_REMOTE' must have exactly one push URL."
-    [[ "$RELEASE_FETCH_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+    is_canonical_release_url "$RELEASE_FETCH_URL" \
         || fail "release remote '$RELEASE_REMOTE' fetches from '$RELEASE_FETCH_URL', not raullenchai/Rapid-MLX."
-    [[ "$RELEASE_PUSH_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+    is_canonical_release_url "$RELEASE_PUSH_URL" \
         || fail "release remote '$RELEASE_REMOTE' pushes to '$RELEASE_PUSH_URL', not raullenchai/Rapid-MLX."
 
     # Stable tags only — the CI publish + in-app updater have no prerelease
