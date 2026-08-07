@@ -188,7 +188,30 @@ if [[ "$MODE" == "publish" ]]; then
     [[ "$PLIST_VERSION" == "$VERSION" ]] \
         || fail "tag $TAG (=$VERSION) != Resources/Info.plist CFBundleShortVersionString ($PLIST_VERSION). Bump the plist first."
 
-    git fetch "$RELEASE_REMOTE" --tags --quiet
+    # NOT --quiet, and NOT bare: `git fetch --tags` exits non-zero when ANY tag
+    # would clobber a local one, and `set -e` then killed this script with no
+    # output at all — the operator saw a release that simply did not happen and
+    # no reason why. That is the worst way for a release tool to fail: the
+    # natural next step is to cut the release by hand, which bypasses every
+    # check below.
+    #
+    # Here it was five legacy tags (v0.6.53/62/72/76, v0.7.2) that point at
+    # different commits in this fork than in the upstream this clone also has a
+    # remote for. They have nothing to do with the release being cut, so they
+    # must not silently block it — but they must not be force-overwritten
+    # either, because which lineage is authoritative is the operator's call.
+    if ! FETCH_ERR="$(git fetch "$RELEASE_REMOTE" --tags 2>&1)"; then
+        printf '%s\n' "$FETCH_ERR" >&2
+        CLOBBER="$(printf '%s\n' "$FETCH_ERR" | awk '/would clobber existing tag/ {print $3}' | tr '\n' ' ')"
+        if [[ -n "$CLOBBER" ]]; then
+            fail "cannot fetch tags from $RELEASE_REMOTE: these local tags disagree with it — ${CLOBBER}
+       They are unrelated to $TAG, but the fetch cannot complete while they differ.
+       Inspect one with:   git rev-parse <tag>   vs   git ls-remote $RELEASE_REMOTE refs/tags/<tag>
+       If $RELEASE_REMOTE is authoritative, drop the local copies and retry:
+           git tag -d ${CLOBBER}&& git fetch $RELEASE_REMOTE --tags"
+        fi
+        fail "cannot fetch tags from $RELEASE_REMOTE (see the git output above) — refusing to publish against a stale tag list."
+    fi
     [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || fail "publish from main."
 
     # HEAD must be exactly the release remote's main — reject BOTH unpushed local commits

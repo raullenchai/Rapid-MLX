@@ -303,3 +303,46 @@ jobs:
           # Extracted to scripts/create_release.sh so the TOCTOU and recovery
           # paths are testable offline against a mock ``gh``.
           bash scripts/create_release.sh
+
+      # The engine and the desktop app are ONE version, enforced by
+      # scripts/check_version_sync.py — so a release is one event, not two.
+      # Cutting them separately is what produced the 0.12.5-vs-0.12.6 split
+      # that reached users: the engine shipped, the app tag was a manual step
+      # somebody had to remember, and for four releases nobody did.
+      #
+      # Pushing ``rapid-mac-v$VERSION`` here hands off to
+      # .github/workflows/rapid-mac-release.yml, which builds, signs, notarises
+      # and attaches the DMG. It runs only after the engine release succeeded,
+      # so a failed gate never ships a half-release.
+      - name: Tag the desktop app at the same version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          APP_TAG="rapid-mac-v${VERSION}"
+
+          # The app release needs its own CHANGELOG section; rapid-mac-release.yml
+          # extracts ``## [VERSION]`` from apps/rapid-mac/CHANGELOG.md for the
+          # release body. Missing it yields an empty release rather than a loud
+          # failure, so check here where it can still be fixed cheaply.
+          if ! grep -qE "^## \[${VERSION//./\\.}\]" apps/rapid-mac/CHANGELOG.md; then
+            echo "::error::apps/rapid-mac/CHANGELOG.md has no '## [${VERSION}]' section — the app release would ship empty notes."
+            exit 1
+          fi
+
+          # Idempotent: a re-run must not fail on a tag that already exists, and
+          # must not silently move it to a different commit.
+          if EXISTING="$(git ls-remote --tags origin "refs/tags/${APP_TAG}" | awk '{print $1}')" && [[ -n "$EXISTING" ]]; then
+            if [[ "$EXISTING" == "$RELEASE_SHA" ]]; then
+              echo "${APP_TAG} already points at ${RELEASE_SHA} — nothing to do."
+              exit 0
+            fi
+            echo "::error::${APP_TAG} already exists at ${EXISTING}, but this release is ${RELEASE_SHA}. Refusing to move a published tag."
+            exit 1
+          fi
+
+          git tag "$APP_TAG" "$RELEASE_SHA"
+          git push origin "refs/tags/${APP_TAG}"
+          echo "pushed ${APP_TAG} at ${RELEASE_SHA} → rapid-mac-release.yml"
