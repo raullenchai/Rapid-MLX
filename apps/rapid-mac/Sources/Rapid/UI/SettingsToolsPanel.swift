@@ -146,6 +146,11 @@ struct SettingsToolsPanel: View {
             if let url = provider.keyDashboardURL {
                 Link("Get a \(provider.displayName) key", destination: url)
                     .font(.caption)
+                    // Keyed on the provider, not the label: "Get a Brave key"
+                    // is display copy and will be reworded.
+                    .accessibilityIdentifier(
+                        "Settings.Tools.WebSearch.KeyDashboardLink.\(provider.id)"
+                    )
             }
             if let feedback = saveFeedback {
                 Text(Self.feedbackCopy(feedback))

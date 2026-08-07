@@ -289,6 +289,14 @@ First run has **two distinct surfaces**, shown in order:
 
 **Known issues.** Sandbox + connector approval prompts are `confirmationDialog`/`alert` (no AXIdentifier) — manual verification only.
 
+> **Stale — these two flows describe surfaces that are not in the tree.**
+> `ToolApprovalDialog` and `MCPToolApprovalStore` resolve to **zero** files under
+> `apps/rapid-mac/Sources/`, and the cited `ContentView.swift:2135` is past the end of a
+> 1182-line file. This app's only tool-approval prompt today is the `browse` per-fetch
+> sheet inventoried at the end of this document. Left in place rather than deleted
+> because the connector/permissions *product* intent is still wanted; the identifiers,
+> file references and "known issues" above must not be trusted until it is rebuilt.
+
 ---
 
 ## Flow 14 — In-chat controls: system prompt & tools toggle  *(NEW surface — v0.7.x→v0.10.x)*

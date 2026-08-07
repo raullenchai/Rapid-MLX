@@ -79,6 +79,13 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Settings.Tools.WebSearch.Backend.\(provider.id)""#,
                 #""Settings.Tools.WebSearch.KeyField.\(provider.id)""#,
                 #""Settings.Tools.WebSearch.SaveKey.\(provider.id)""#,
+                // The "Get a <provider> key" Link is interactive too — it
+                // opens the provider's dashboard. It was missed on the first
+                // pass precisely because it only renders for a provider that
+                // has a `keyDashboardURL`, so it is absent from an AX dump
+                // taken with any other backend selected. "Every control" has
+                // to mean every control, including the conditional ones.
+                #""Settings.Tools.WebSearch.KeyDashboardLink.\(provider.id)""#,
                 #""Settings.Tools.Browse.AutoApproveToggle""#,
             ],
             in: "Sources/Rapid/UI/SettingsToolsPanel.swift",
@@ -267,11 +274,17 @@ struct AccessibilityIdentifierInventoryTests {
     /// The `browse` per-fetch approval is this app's tool-approval prompt. It
     /// is a real SwiftUI `.sheet`, so — unlike a `confirmationDialog` — its
     /// buttons are ordinary SwiftUI buttons and carry identifiers directly.
-    @Test("The browse tool-approval sheet and its answers are addressable")
+    ///
+    /// The two *answers* are named; the enclosing stack deliberately is not.
+    /// An accessibility modifier on a container that is not its own
+    /// accessibility element applies to the elements it contains, so naming
+    /// the wrapper risks stamping that name across its descendants — including
+    /// over the buttons a flow has to press. A flow asserts the prompt is up
+    /// by waiting for `ToolApproval.Browse.Allow`.
+    @Test("The browse tool-approval answers are addressable")
     func browseApprovalIdentifiers() throws {
         try assertDeclared(
             [
-                #""ToolApproval.Browse.Sheet""#,
                 #""ToolApproval.Browse.Allow""#,
                 #""ToolApproval.Browse.Deny""#,
             ],

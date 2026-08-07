@@ -918,12 +918,14 @@ private struct BrowseApprovalSheet: View {
         }
         .padding(20)
         .frame(width: 460)
-        // The sheet itself is addressable so a flow can assert "the approval
-        // is up" before reaching for a button. This is a real SwiftUI
-        // `.sheet`, not a `confirmationDialog`/`alert`, so identifiers land
-        // on ordinary SwiftUI buttons rather than going through AppKit's
-        // alert bridge.
-        .accessibilityIdentifier("ToolApproval.Browse.Sheet")
+        // Deliberately NOT `.accessibilityIdentifier("…Sheet")` on this stack.
+        // An accessibility modifier on a container that is not its own
+        // accessibility element is applied to the elements it contains, so a
+        // wrapper identifier can be stamped onto the descendants and make the
+        // name ambiguous — including over the two buttons a flow actually
+        // needs to press. "The approval is up" is better asserted by waiting
+        // for `ToolApproval.Browse.Allow`, which is the control the user acts
+        // on rather than a wrapper around it.
     }
 }
 
