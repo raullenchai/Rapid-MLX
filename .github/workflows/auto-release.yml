@@ -249,8 +249,15 @@ jobs:
       # produce exactly the half-release — engine out, app not — that tagging both
       # from one job exists to prevent.
       - name: Pre-check the desktop app CHANGELOG
+        id: appcheck
         env:
           VERSION: ${{ needs.detect.outputs.version }}
+          # Presence only — the value never enters the log. The app tag has to
+          # be created by a real user or the DMG workflow never fires (see the
+          # tag step below), so whether we hold a PAT decides whether this run
+          # can cut the app half at all. Deciding it HERE, before anything is
+          # published, is what makes the skip recoverable.
+          HAVE_PAT: ${{ secrets.RELEASE_PAT != '' }}
         run: |
           set -euo pipefail
           if ! grep -qE "^## \[${VERSION//./\\.}\]" apps/rapid-mac/CHANGELOG.md; then
@@ -258,6 +265,7 @@ jobs:
             exit 1
           fi
           echo "apps/rapid-mac/CHANGELOG.md has a [${VERSION}] section."
+          echo "have_pat=${HAVE_PAT}" >> "$GITHUB_OUTPUT"
 
       - name: Build release notes
         id: changelog
@@ -334,12 +342,18 @@ jobs:
       #
       # RELEASE_PAT for the same reason as the step above: the tag is created
       # through the API under a real user, because a ref written with the
-      # default GITHUB_TOKEN fires no ``push`` event and would leave this step
-      # green with no app build at all. Falls back to GITHUB_TOKEN so forks
-      # don't break — there the tag lands but the DMG must be cut by hand.
+      # default GITHUB_TOKEN fires no ``push`` event.
+      #
+      # Without the PAT this step does NOT fall back to creating the tag anyway.
+      # A GITHUB_TOKEN-authored tag is the worst of both worlds: the ref exists,
+      # so a later re-run (with the PAT restored) finds it already correct and
+      # exits green — while no build, signing, notarisation or DMG ever
+      # happened, and now never can. Refusing to create it keeps the release
+      # recoverable: fix the secret, re-run, and the tag is created for real.
       - name: Tag the desktop app at the same version
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ steps.appcheck.outputs.have_pat }}
           VERSION: ${{ needs.detect.outputs.version }}
           # Resolved once by "Build release notes". The app is built from the
           # same tree the engine released, so the tag must land on that commit.

@@ -35,15 +35,29 @@
 # moving a published tag would ship one version's notes against another's
 # build.
 #
+# WHY A MISSING PAT SKIPS RATHER THAN FALLS BACK
+# ----------------------------------------------
+# Creating the tag under GITHUB_TOKEN would be worse than not creating it. The
+# ref would exist and this step would go green, but the run it should have
+# triggered is suppressed — and the recovery (restore the secret, re-run) then
+# finds a tag that already points at the right commit and exits 0 without
+# emitting any event. The app could never be built for that version again
+# without hand-deleting a published tag. So: no PAT, no tag, loud warning, and
+# a release that is still recoverable by re-running.
+#
 # Required environment:
 #   VERSION            X.Y.Z — the version the engine just released
 #   RELEASE_SHA        the commit the engine release was cut from
 #   GITHUB_REPOSITORY  owner/repo
 #   GH_TOKEN           consumed by ``gh`` (RELEASE_PAT in the workflow)
 # Optional:
+#   HAVE_PAT           "true" when GH_TOKEN is the RELEASE_PAT. Anything else
+#                      skips tag creation (see above). Unset = assume true, so
+#                      a hand-run of this script behaves like it reads.
 #   GH                 path to the gh binary (tests point this at a mock)
 #
-# Exit status: 0 tag created or already correct, 1 anything else.
+# Exit status: 0 tag created, already correct, or deliberately skipped;
+#              1 anything else.
 
 set -euo pipefail
 
@@ -51,6 +65,7 @@ set -euo pipefail
 : "${RELEASE_SHA:?tag_desktop_app.sh: RELEASE_SHA is required}"
 : "${GITHUB_REPOSITORY:?tag_desktop_app.sh: GITHUB_REPOSITORY is required}"
 GH_BIN="${GH:-gh}"
+HAVE_PAT="${HAVE_PAT:-true}"
 
 # The tag is built from this string, so a value the tag namespace cannot
 # carry has to fail here rather than produce ``rapid-mac-v0.12.7\n``.
@@ -67,16 +82,32 @@ fi
 
 APP_TAG="rapid-mac-v${VERSION}"
 
+if [ "$HAVE_PAT" != "true" ]; then
+  echo "::warning::RELEASE_PAT is not set, so ${APP_TAG} was NOT created — a tag written with the default GITHUB_TOKEN triggers no workflow, and its existence would then block every retry. The engine released; the app did not."
+  echo "To finish this release: set the RELEASE_PAT secret and re-run this workflow," >&2
+  echo "or cut the app half by hand from a clean checkout of ${RELEASE_SHA}:" >&2
+  echo "    apps/rapid-mac/scripts/release-local.sh --publish ${APP_TAG}" >&2
+  exit 0
+fi
+
+# Follows at most this many annotated tag objects before giving up. Ordinary
+# tags peel in one hop; the bound only exists so a malformed chain cannot spin.
+MAX_TAG_PEEL_DEPTH=10
+
 resolve_tag_commit() {
   # Start from the explicit tag namespace so a same-named branch can never
   # satisfy verification, then peel annotated tag objects to a commit.
-  local object_line object_type object_sha
+  #
+  # The loop checks the type BEFORE following, and the counter bounds the
+  # number of FOLLOWS. Bounding iterations instead would reject a chain whose
+  # last hop lands on a commit — the answer was in hand and thrown away.
+  local object_line object_type object_sha depth=0
   object_line=$(
     "$GH_BIN" api "repos/$GITHUB_REPOSITORY/git/ref/tags/$APP_TAG" \
       --jq '.object | [.type, .sha] | @tsv' 2>/dev/null
   ) || return 1
   IFS=$'\t' read -r object_type object_sha <<<"$object_line"
-  for _ in 1 2 3 4 5; do
+  while true; do
     case "$object_type" in
       commit)
         [ -n "$object_sha" ] || return 1
@@ -84,6 +115,8 @@ resolve_tag_commit() {
         return 0
         ;;
       tag)
+        depth=$((depth + 1))
+        [ "$depth" -le "$MAX_TAG_PEEL_DEPTH" ] || return 1
         object_line=$(
           "$GH_BIN" api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" \
             --jq '.object | [.type, .sha] | @tsv' 2>/dev/null
@@ -93,7 +126,6 @@ resolve_tag_commit() {
       *) return 1 ;;
     esac
   done
-  return 1
 }
 
 if "$GH_BIN" api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \

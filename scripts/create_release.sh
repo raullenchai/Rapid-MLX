@@ -57,7 +57,11 @@ resolve_tag_commit() {
       --jq '.object | [.type, .sha] | @tsv' 2>/dev/null
   ) || return 1
   IFS=$'\t' read -r object_type object_sha <<<"$object_line"
-  for _ in 1 2 3 4 5; do
+  # Bounds the number of FOLLOWS, not the number of iterations: a bound on
+  # iterations rejects a chain whose last hop lands on a commit, having had the
+  # answer in hand. Same fix as scripts/tag_desktop_app.sh.
+  local depth=0
+  while true; do
     case "$object_type" in
       commit)
         [ -n "$object_sha" ] || return 1
@@ -65,6 +69,8 @@ resolve_tag_commit() {
         return 0
         ;;
       tag)
+        depth=$((depth + 1))
+        [ "$depth" -le 10 ] || return 1
         object_line=$(
           "$GH_BIN" api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" \
             --jq '.object | [.type, .sha] | @tsv' 2>/dev/null
@@ -74,7 +80,6 @@ resolve_tag_commit() {
       *) return 1 ;;
     esac
   done
-  return 1
 }
 
 verify_existing_release() {

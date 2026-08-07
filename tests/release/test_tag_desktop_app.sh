@@ -35,25 +35,43 @@ make_mock_gh() {
   cat > "$TMP/gh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CALLS"
-case "$1 $2" in
-  "api -X")  # POST repos/<r>/git/refs
-    case "$MODE" in
-      free) exit 0 ;;
-      *)    echo "HTTP 422: Reference already exists" >&2; exit 1 ;;
-    esac
-    ;;
-esac
+# The claim is asserted precisely — verb AND endpoint — so a rewrite that
+# POSTs somewhere else, or GETs where it should POST, fails here instead of
+# passing against a mock that accepts anything.
+if [ "$1 $2 $3" = "api -X POST" ]; then
+  [ "$4" = "repos/$GITHUB_REPOSITORY/git/refs" ] || {
+    echo "mock: claim POSTed to '$4', expected repos/$GITHUB_REPOSITORY/git/refs" >&2
+    exit 64
+  }
+  case "$MODE" in
+    free) exit 0 ;;
+    *)    echo "HTTP 422: Reference already exists" >&2; exit 1 ;;
+  esac
+fi
 # read-back paths
 case "$*" in
   *"git/ref/tags/"*)
     case "$MODE" in
       taken_light)      printf 'commit\t%s\n' "$READ_SHA" ;;
       taken_annotated)  printf 'tag\t%s\n' "$TAG_OBJ" ;;
+      # A chain of nested tag objects: each /git/tags/<sha> hop below returns
+      # another tag until the hop count runs out.
+      taken_chain)      printf 'tag\t%s\n' "$TAG_OBJ" ;;
       unreadable)       exit 1 ;;
       *)                exit 1 ;;
     esac
     ;;
   *"git/tags/"*)
+    if [ "$MODE" = "taken_chain" ]; then
+      HOPS=$(( $(cat "$TMP_HOPS" 2>/dev/null || echo 0) + 1 ))
+      printf '%s' "$HOPS" > "$TMP_HOPS"
+      if [ "$HOPS" -lt "$CHAIN_LEN" ]; then
+        printf 'tag\t%s\n' "$TAG_OBJ"
+      else
+        printf 'commit\t%s\n' "$READ_SHA"
+      fi
+      exit 0
+    fi
     printf 'commit\t%s\n' "$READ_SHA"
     ;;
 esac
@@ -68,7 +86,9 @@ make_mock_gh
 # silently drops every later assignment.)
 run() {  # run <MODE> <READ_SHA> [VERSION]
   : > "$TMP/calls"
+  : > "$TMP/hops"
   MODE="$1" READ_SHA="$2" TAG_OBJ="$TAG_OBJ" CALLS="$TMP/calls" \
+  TMP_HOPS="$TMP/hops" CHAIN_LEN="${CHAIN_LEN:-1}" HAVE_PAT="${HAVE_PAT:-true}" \
   GH="$TMP/gh" GITHUB_REPOSITORY="raullenchai/Rapid-MLX" \
   VERSION="${3-0.12.8}" RELEASE_SHA="$SHA_GOOD" \
     bash "$SCRIPT" 2>&1
@@ -131,6 +151,34 @@ for BADV in "0.12" "0.12.8-rc1" "v0.12.8" ""; do
 done
 
 # ==========================================================================
+echo "== 6b. a deep annotated-tag chain still peels to its commit =="
+# ==========================================================================
+# The bound is on FOLLOWS, not iterations. A loop bounded by iterations
+# rejects a chain whose last hop lands on a commit — it had the answer and
+# threw it away, reporting "unreadable" AFTER the engine has published.
+CHAIN_LEN=6 OUT=$(CHAIN_LEN=6 run taken_chain "$SHA_GOOD") && RC=0 || RC=$?
+[ "${RC:-0}" -eq 0 ] && ok "peels a 6-deep annotated chain to the release commit" \
+                     || bad "peels a 6-deep annotated chain to the release commit (got $RC)"
+contains "$OUT" "already points at $SHA_GOOD" "6-deep chain reads as a no-op"
+
+# ...and a chain past the bound is still refused rather than looping forever.
+OUT=$(CHAIN_LEN=99 run taken_chain "$SHA_GOOD") && RC=0 || RC=$?
+[ "${RC:-0}" -ne 0 ] && ok "refuses a chain deeper than the peel bound" \
+                     || bad "refuses a chain deeper than the peel bound"
+
+# ==========================================================================
+echo "== 6c. no PAT: refuse to create the tag at all =="
+# ==========================================================================
+# A tag written with GITHUB_TOKEN fires no workflow AND blocks every retry:
+# the re-run finds it already at the right commit and exits green, so the DMG
+# can never be built for that version without hand-deleting a published tag.
+OUT=$(HAVE_PAT=false run free "") && RC=0 || RC=$?
+[ "${RC:-0}" -eq 0 ] && ok "exit 0 — the engine release stands" || bad "exit 0 — the engine release stands (got $RC)"
+lacks "$(cat "$TMP/calls")" "git/refs" "creates NO tag when the token cannot trigger the build"
+contains "$OUT" "::warning::" "warns in the job log"
+contains "$OUT" "release-local.sh --publish rapid-mac-v0.12.8" "gives the manual command to finish the release"
+
+# ==========================================================================
 echo "== 7. workflow wiring =="
 # ==========================================================================
 # The app tag MUST be created through the API under the PAT. A ``git push``
@@ -141,6 +189,14 @@ APP_STEP=$(sed -n '/Tag the desktop app at the same version/,/^      - name:/p' 
 contains "$APP_STEP" "secrets.RELEASE_PAT" "app tag step runs under the PAT"
 contains "$APP_STEP" "scripts/tag_desktop_app.sh" "app tag step calls the tested script"
 lacks "$APP_STEP" "git push" "app tag step does not git push the tag"
+# Finding RELEASE_PAT in the env is not enough — the step falls back to
+# GITHUB_TOKEN, so it must also be TOLD whether the token it got can trigger a
+# workflow. Without this wiring the script's own guard defaults to "true" and
+# the fallback silently creates a dead tag.
+contains "$APP_STEP" "HAVE_PAT: \${{ steps.appcheck.outputs.have_pat }}" \
+  "app tag step is told whether the PAT is actually present"
+contains "$(sed -n '/Pre-check the desktop app CHANGELOG/,/Build release notes/p' "$WORKFLOW")" \
+  "have_pat=" "the pre-flight step publishes have_pat, before anything is released"
 
 # The CHANGELOG check has to precede the irreversible engine publication, or a
 # missing section ships the engine and then fails — the half-release this whole
