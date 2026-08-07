@@ -359,6 +359,8 @@ First run has **two distinct surfaces**, shown in order:
 
 **No identifier (can't be AX-driven):** nothing on the current surface is known to be unreachable. The note that used to sit here named the MCP `ToolApprovalDialog` and a sandbox approval prompt — neither exists in `apps/rapid-mac`; this app's tool approval is the `browse` sheet listed above. `confirmationDialog`/`alert` buttons were the remaining doubt, and they were measured on a build of the current tree: the presented dialog is an `AXSheet` whose `AXButton` children do carry the identifiers declared at the call site.
 
+**Keeping this inventory from rotting.** The list above used to grow only when someone remembered to add an identifier. It is now defended by a CI gate: `scripts/check_rapid_mac_ax_identifiers.py` (job `accessibility-identifiers` in `.github/workflows/rapid-mac-ci.yml`) fails any PR that *adds* an interactive control under `apps/rapid-mac/Sources/` without `.accessibilityIdentifier(...)`. A control that genuinely cannot carry one opts out with a reasoned, greppable `// ax-exempt: <why>` marker on the control's line or the line above — no such control is known on the current surface (the `confirmationDialog`/`alert` doubt was measured and closed, see above), so `rg ax-exempt apps/rapid-mac` finding nothing is correct. The gate is scoped to added lines, so the *existing* gaps below are not blocked by it; `--audit` enumerates them. See `docs/gui-golden-flows.md` § "The identifier gate".
+
 ---
 
 ## Test harness limits

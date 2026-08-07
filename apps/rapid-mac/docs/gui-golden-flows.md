@@ -285,3 +285,52 @@ Both halves are now fixed: `start_model` waits on `wait_send_idle`, and
 `send_prompt` requires the composer to actually drain. The general rule: an
 assertion that a string is present anywhere is satisfied by the input field,
 the placeholder, the tooltip and the sidebar. Say *which element*.
+## The identifier gate
+
+Because every flow above finds its target by `AXIdentifier`, this suite's
+ceiling is exactly the set of controls that carry one — and that ceiling drops
+silently every time a feature ships an unlabelled control, because the app still
+works by hand. `scripts/check_rapid_mac_ax_identifiers.py` (wired into the
+`accessibility-identifiers` job in `.github/workflows/rapid-mac-ci.yml`) fails a
+PR that **adds** an interactive control under `apps/rapid-mac/Sources/` with no
+`.accessibilityIdentifier(...)`.
+
+It is scoped to lines the diff added. The pre-existing backlog is deliberately
+out of scope — a gate that failed on it would be un-landable, and a disabled
+gate is worse than none. `--audit` lists that backlog when you want to chip at
+it:
+
+```bash
+python scripts/check_rapid_mac_ax_identifiers.py --audit
+python scripts/check_rapid_mac_ax_identifiers.py --base-ref origin/main   # what CI runs
+```
+
+Name new identifiers with the existing `<Surface>.<Thing>` convention (the
+inventory lives in `docs/userflows.md`), and put them on the control itself —
+an identifier on the enclosing `HStack` does not give `AXPress` anything to
+press.
+
+### Opting out
+
+There is currently **no** known control on this surface that cannot carry an
+identifier. `confirmationDialog` / `alert` buttons were the standing suspicion —
+`docs/userflows.md` carried "Approval dialogs lack identifiers" as an open item
+for several releases — and the suspicion was measured rather than inherited: the
+presented dialog is an `AXSheet` whose `AXButton` children *do* carry the
+identifiers declared at the call site. So the escape hatch exists for a case
+nobody has produced yet, and `rg ax-exempt apps/rapid-mac` returning nothing is
+the expected state. If you find a real one, opt out explicitly, with a written
+reason, on the control's line or the line directly above it:
+
+```swift
+// ax-exempt: <what you measured that shows the identifier cannot be reached>
+Button("Allow once") { approve() }
+```
+
+The reason is mandatory — a bare `// ax-exempt:` fails the gate just like a
+missing identifier — and every opt-out is greppable, so the true manual-only
+surface stays countable instead of invisible:
+
+```bash
+rg ax-exempt apps/rapid-mac
+```

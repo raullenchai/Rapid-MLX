@@ -11,6 +11,11 @@
 # and `swift test` can't resolve `import Testing` in this toolchain). Keep the
 # full-app compile gate and run focused dependency-free contract executables for
 # regressions that can be isolated from the removed test stack.
+#
+# Second gate: `accessibility-identifiers` keeps the GUI golden-flow harness from
+# silently losing coverage. It fails a PR that ADDS an interactive control with
+# no `.accessibilityIdentifier(...)` — see the script's module docstring for the
+# rationale, the escape hatch, and the shapes it deliberately does not detect.
 name: rapid-mac CI
 
 on:
@@ -19,6 +24,8 @@ on:
     paths:
       - "apps/rapid-mac/**"
       - ".github/workflows/rapid-mac-ci.yml"
+      # The gate script itself, so a change to the detector re-runs it.
+      - "scripts/check_rapid_mac_ax_identifiers.py"
 
 permissions:
   contents: read
@@ -29,6 +36,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pure text lint over the diff — no Swift toolchain, no simulator, no app
+  # build. It runs on ubuntu in ~15s beside the multi-minute macOS build rather
+  # than inside it, so a missing identifier reads as its own red check with its
+  # own log instead of hiding at the bottom of a compile job.
+  accessibility-identifiers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # The gate is scoped to lines this PR ADDED, which needs the
+          # merge-base with the target branch — not a shallow single commit.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      # checkout@v4 with fetch-depth 0 normally leaves origin/<base> in place;
+      # this is the same belt-and-braces fetch the mlx-bound-guard job in ci.yml
+      # does, so the merge-base lookup cannot fail on a runner that resolved
+      # refs differently.
+      - name: Fetch base branch
+        env:
+          BASE_BRANCH: ${{ github.base_ref || 'main' }}
+        run: git fetch --no-tags origin "${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
+
+      # Stdlib only — deliberately no pip install, so the gate cannot be taken
+      # down by an unrelated dependency resolution failure.
+      - name: Interactive controls carry an accessibility identifier
+        run: |
+          python scripts/check_rapid_mac_ax_identifiers.py \
+            --base-ref "origin/${{ github.base_ref || 'main' }}"
+
   build:
     # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's
     # swift-tools-version and the release workflow's runner. macos-latest still
