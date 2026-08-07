@@ -292,4 +292,23 @@ struct AccessibilityIdentifierInventoryTests {
             surface: "Browse tool approval"
         )
     }
+
+    /// The positive test above would still pass if someone re-added the
+    /// container identifier, bringing the propagation bug back with it. Naming
+    /// the wrapper is the mistake, so the absence has to be asserted directly.
+    @Test("The tool-approval sheet's container stays unnamed")
+    func browseApprovalSheetContainerIsNotNamed() throws {
+        let stripped = try strippedSource("Sources/Rapid/UI/ContentView.swift")
+        #expect(
+            !stripped.contains(#".accessibilityIdentifier("ToolApproval.Browse.Sheet")"#),
+            """
+            The approval sheet's root stack must NOT carry an identifier. An \
+            accessibility modifier on a container that is not its own \
+            accessibility element is applied to the elements it contains, so \
+            naming the wrapper can stamp that name across its descendants — \
+            including over the Allow/Deny buttons a flow has to press. Assert \
+            the prompt is up by waiting for ToolApproval.Browse.Allow instead.
+            """
+        )
+    }
 }
