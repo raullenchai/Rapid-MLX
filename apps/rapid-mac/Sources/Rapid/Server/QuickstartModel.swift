@@ -380,8 +380,11 @@ enum QuickstartModel {
             stubRevisionMarker, isDirectory: true
         )
         do {
-            try fileManager.removeItem(at: refsMain)
             try fileManager.removeItem(at: quickstartSnapshot)
+            // Keep the ownership marker until the destructive step succeeds;
+            // a transient snapshot-removal failure must remain retryable on
+            // the next launch.
+            try fileManager.removeItem(at: refsMain)
             if try fileManager.contentsOfDirectory(atPath: refs.path).isEmpty {
                 try fileManager.removeItem(at: refs)
             }
