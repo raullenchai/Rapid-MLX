@@ -1,0 +1,282 @@
+import Foundation
+import Testing
+@testable import Rapid
+
+/// Inventory pin for the `.accessibilityIdentifier(...)` values the GUI
+/// golden-flow harness addresses controls by.
+///
+/// `scripts/gui-golden-flows.sh` + `scripts/rapid-ax.swift` drive the app by
+/// `AXIdentifier` and nothing else — an unnamed control is a control the suite
+/// cannot reach, and `docs/gui-golden-flows.md` says so out loud ("Prefer a
+/// stable `.accessibilityIdentifier(...)` in product code"). Several surfaces
+/// shipped with either no identifier at all (Settings → Tools, the
+/// conversation-row overflow menu) or with an SF Symbol name leaking through
+/// as one (`pin`, `doc.on.doc`, `pencil`, `arrow.clockwise`) — the latter is
+/// worse than nothing, because it looks deliberate and silently changes the
+/// moment somebody swaps the glyph.
+///
+/// ViewInspector is not in this target (#1492), so — like
+/// ``SidebarConversationDeleteConfirmationTests`` — the wiring is pinned by a
+/// source-grep guard over the canonical (comment- and whitespace-stripped)
+/// form of each view file. Deleting or renaming one of these identifiers trips
+/// the test with the identifier and its file named, so the harness change lands
+/// in the same PR as the product change.
+@Suite("Accessibility identifier inventory")
+struct AccessibilityIdentifierInventoryTests {
+
+    private static var sourceRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // RapidTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // package root
+    }
+
+    private func strippedSource(_ relativePath: String) throws -> String {
+        let url = Self.sourceRoot.appendingPathComponent(relativePath)
+        let body = try String(contentsOf: url, encoding: .utf8)
+        return CapabilityChipRenderGateSourceGuardTests.stripCommentsAndWhitespace(body)
+    }
+
+    /// The literal identifier expression each surface must declare, in the
+    /// canonical stripped form. Interpolated entries keep their `\(…)` so the
+    /// pin also fails if somebody swaps the per-item key (tool name, provider
+    /// id, conversation id, message id) for display text.
+    private func assertDeclared(
+        _ identifiers: [String],
+        in relativePath: String,
+        surface: String
+    ) throws {
+        let stripped = try strippedSource(relativePath)
+        for identifier in identifiers {
+            let shape = ".accessibilityIdentifier(\(identifier))"
+            #expect(
+                stripped.contains(shape),
+                """
+                \(surface): \(relativePath) no longer declares \
+                \(shape). Golden flows address this control by AXIdentifier — \
+                removing or renaming it makes the control unreachable. Update \
+                scripts/gui-golden-flows.sh and this inventory together.
+                """
+            )
+        }
+    }
+
+    // MARK: - Settings → Tools
+
+    /// The whole panel shipped with ZERO identifiers: the three tool switches,
+    /// the web-search backend radio group, and the browsing auto-approve
+    /// switch all had correct AX roles and no name.
+    @Test("Settings → Tools names every control it offers")
+    func settingsToolsPanelIdentifiers() throws {
+        try assertDeclared(
+            [
+                // Keyed on the tool's WIRE name (web_search / browse /
+                // weather), which is also what the request body carries.
+                #""Settings.Tools.Toggle.\(def.function.name)""#,
+                // Radio group, then one radio per backend keyed on the
+                // provider's raw value.
+                #""Settings.Tools.WebSearch.Backend""#,
+                #""Settings.Tools.WebSearch.Backend.\(provider.id)""#,
+                #""Settings.Tools.WebSearch.KeyField.\(provider.id)""#,
+                #""Settings.Tools.WebSearch.SaveKey.\(provider.id)""#,
+                #""Settings.Tools.Browse.AutoApproveToggle""#,
+            ],
+            in: "Sources/Rapid/UI/SettingsToolsPanel.swift",
+            surface: "Settings → Tools"
+        )
+    }
+
+    /// Behaviour guard for the constraint the identifiers ride on: a settings
+    /// switch must stay a REAL `Toggle` with the native `.switch` style, so it
+    /// keeps reporting `AXCheckBox` with a value that tracks state and flips
+    /// when pressed. #1608 already had to walk back a hand-rolled
+    /// `HStack` + `.accessibilityRepresentation` version of this style; naming
+    /// the toggles must not tempt anyone back into it.
+    @Test("TrailingSettingsToggleStyle still renders a native switch Toggle")
+    func trailingToggleStyleKeepsNativeSemantics() throws {
+        let stripped = try strippedSource("Sources/Rapid/UI/SettingsControlStyles.swift")
+        #expect(
+            stripped.contains("returnToggle(isOn:binding){"),
+            "TrailingSettingsToggleStyle must wrap a real Toggle — a hand-rolled row loses the AXCheckBox role and its value."
+        )
+        #expect(
+            stripped.contains(".toggleStyle(.switch)"),
+            "TrailingSettingsToggleStyle must keep the native .switch style."
+        )
+        #expect(
+            !stripped.contains(".accessibilityRepresentation"),
+            "TrailingSettingsToggleStyle must not re-introduce the #1608 .accessibilityRepresentation shim — the real Toggle already carries the semantics."
+        )
+    }
+
+    // MARK: - Settings → Privacy
+
+    /// The second panel `no-dead-controls` stopped on. Same shape of gap as
+    /// Tools: a working telemetry switch and three working policy links, none
+    /// of them addressable.
+    @Test("Settings → Privacy names its toggle and its policy links")
+    func settingsPrivacyPanelIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Settings.Privacy.TelemetryToggle""#,
+                // Named for the document each link opens, not for its visible
+                // label — "License (EULA)" is exactly the sort of string that
+                // gets reworded.
+                #""Settings.Privacy.Link.PrivacyPolicy""#,
+                #""Settings.Privacy.Link.License""#,
+                #""Settings.Privacy.Link.Credits""#,
+            ],
+            in: "Sources/Rapid/UI/SettingsView.swift",
+            surface: "Settings → Privacy"
+        )
+    }
+
+    // MARK: - Sidebar conversation row
+
+    /// The row itself was already addressable; its controls were not. The
+    /// overflow `Menu` reported `missing value`, its items were unreachable,
+    /// and the hover pin button's identifier was the SF Symbol name `pin`.
+    @Test("Conversation row controls and menu items are addressable")
+    func sidebarConversationIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Sidebar.Conversation.Menu.\(conv.id.uuidString)""#,
+                // Menu items — shared by the ··· menu and the right-click
+                // context menu, so exactly one set of ids covers both.
+                #""Sidebar.Conversation.Action.Rename""#,
+                #""Sidebar.Conversation.Action.Delete""#,
+                // Delete confirmation. These ride AppKit's alert bridge
+                // rather than an ordinary SwiftUI button; measured on this
+                // branch the bridge does forward them (the dialog is an
+                // AXSheet whose two AXButton children carry these ids).
+                #""Sidebar.DeleteConversation.Confirm""#,
+                #""Sidebar.DeleteConversation.Keep""#,
+            ],
+            in: "Sources/Rapid/UI/SidebarView.swift",
+            surface: "Sidebar conversation row"
+        )
+        // The state-dependent ids are pure helpers, so they get pinned by
+        // value rather than by grep — and the render sites must go through
+        // them rather than re-deriving the string inline.
+        let stripped = try strippedSource("Sources/Rapid/UI/SidebarView.swift")
+        for shape in [
+            ".accessibilityIdentifier(Self.pinControlIdentifier(for:conv))",
+            ".accessibilityIdentifier(Self.pinMenuItemIdentifier(for:conv))",
+            ".accessibilityIdentifier(Self.archiveMenuItemIdentifier(for:conv))",
+        ] {
+            #expect(
+                stripped.contains(shape),
+                "SidebarView must apply \(shape) — an inline ternary would drift from the helper the tests pin."
+            )
+        }
+    }
+
+    /// The pin / archive controls change what they DO with the row's state, so
+    /// their identifiers change with it: a golden flow presses `…Action.Pin`
+    /// and then asserts `…Action.Unpin` is what is now offered, which is a
+    /// real observable-state assertion rather than a sleep.
+    @Test("Pin and archive identifiers name the action the press performs")
+    func stateDependentIdentifiersFollowTheAction() {
+        let id = UUID()
+        func conversation(pinned: Bool = false, archived: Bool = false) -> ChatConversation {
+            ChatConversation(
+                id: id,
+                title: "Chat",
+                messages: [],
+                createdAt: Date(),
+                updatedAt: Date(),
+                isPinned: pinned,
+                isArchived: archived
+            )
+        }
+
+        #expect(
+            SidebarView.pinControlIdentifier(for: conversation())
+                == "Sidebar.Conversation.Pin.\(id.uuidString)"
+        )
+        #expect(
+            SidebarView.pinControlIdentifier(for: conversation(pinned: true))
+                == "Sidebar.Conversation.Unpin.\(id.uuidString)"
+        )
+        #expect(
+            SidebarView.pinMenuItemIdentifier(for: conversation())
+                == "Sidebar.Conversation.Action.Pin"
+        )
+        #expect(
+            SidebarView.pinMenuItemIdentifier(for: conversation(pinned: true))
+                == "Sidebar.Conversation.Action.Unpin"
+        )
+        #expect(
+            SidebarView.archiveMenuItemIdentifier(for: conversation())
+                == "Sidebar.Conversation.Action.Archive"
+        )
+        #expect(
+            SidebarView.archiveMenuItemIdentifier(for: conversation(archived: true))
+                == "Sidebar.Conversation.Action.Unarchive"
+        )
+    }
+
+    /// The pin control's id must be derived from the conversation id, never
+    /// from the glyph. A bare `"pin"` anywhere in an identifier position is the
+    /// exact regression this closes.
+    @Test("Sidebar identifiers are never SF Symbol names")
+    func sidebarIdentifiersAreNotSymbolNames() throws {
+        let stripped = try strippedSource("Sources/Rapid/UI/SidebarView.swift")
+        for symbol in ["pin", "pin.slash", "ellipsis", "archivebox", "pencil"] {
+            #expect(
+                !stripped.contains(".accessibilityIdentifier(\"\(symbol)\")"),
+                "SidebarView declares the SF Symbol name '\(symbol)' as an accessibility identifier — identifiers must be semantic, not glyph names."
+            )
+        }
+    }
+
+    // MARK: - Chat message actions
+
+    /// Copy / edit / retry (and the two edit-mode controls) previously
+    /// surfaced as `doc.on.doc`, `pencil` and `arrow.clockwise`.
+    @Test("Message action buttons carry semantic, per-message identifiers")
+    func messageActionIdentifiers() throws {
+        let stripped = try strippedSource("Sources/Rapid/UI/ChatView.swift")
+        // The id builder: fixed English action key + the message id, so a
+        // transcript of several rows addresses the right one.
+        #expect(
+            stripped.contains(#""ChatView.Message.\(action).\(message.id.uuidString)""#),
+            "MessageRow.actionIdentifier must key on the action name AND the message id — a shared id would make every row's Copy button the same element."
+        )
+        try assertDeclared(
+            [
+                #"actionIdentifier("Copy")"#,
+                #"actionIdentifier("Edit")"#,
+                #"actionIdentifier("Retry")"#,
+                #"actionIdentifier("CancelEdit")"#,
+                #"actionIdentifier("SaveEdit")"#,
+            ],
+            in: "Sources/Rapid/UI/ChatView.swift",
+            surface: "Chat message actions"
+        )
+        for symbol in ["doc.on.doc", "pencil", "arrow.clockwise", "checkmark", "xmark"] {
+            #expect(
+                !stripped.contains(".accessibilityIdentifier(\"\(symbol)\")"),
+                "ChatView declares the SF Symbol name '\(symbol)' as an accessibility identifier — identifiers must be semantic, not glyph names."
+            )
+        }
+    }
+
+    // MARK: - Tool approval
+
+    /// The `browse` per-fetch approval is this app's tool-approval prompt. It
+    /// is a real SwiftUI `.sheet`, so — unlike a `confirmationDialog` — its
+    /// buttons are ordinary SwiftUI buttons and carry identifiers directly.
+    @Test("The browse tool-approval sheet and its answers are addressable")
+    func browseApprovalIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""ToolApproval.Browse.Sheet""#,
+                #""ToolApproval.Browse.Allow""#,
+                #""ToolApproval.Browse.Deny""#,
+            ],
+            in: "Sources/Rapid/UI/ContentView.swift",
+            surface: "Browse tool approval"
+        )
+    }
+}

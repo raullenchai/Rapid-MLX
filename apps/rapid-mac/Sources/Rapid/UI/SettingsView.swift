@@ -386,6 +386,7 @@ struct SettingsView: View {
                 }
             }
             .toggleStyle(TrailingSettingsToggleStyle())
+            .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Where the data goes")
@@ -405,13 +406,21 @@ struct SettingsView: View {
             // documents; ``RepositoryLinkTargetsTests`` fails the build if
             // either path stops existing. When rapidmlx.com/privacy is
             // published, the privacy link can move back to the website.
+            //
+            // Each link is named for the DOCUMENT it opens, not for its
+            // visible label: "License (EULA)" is the kind of string that gets
+            // reworded, and ``RepositoryLinkTargetsTests`` already pins the
+            // destinations, so the document is the stable half.
             HStack(spacing: 12) {
                 Link("Privacy policy",
                      destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/PRIVACY.md")!)
+                    .accessibilityIdentifier("Settings.Privacy.Link.PrivacyPolicy")
                 Link("License (EULA)",
                      destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/LICENSE")!)
+                    .accessibilityIdentifier("Settings.Privacy.Link.License")
                 Link("Open-source credits",
                      destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/THIRD_PARTY.md")!)
+                    .accessibilityIdentifier("Settings.Privacy.Link.Credits")
             }
             .font(.callout)
 

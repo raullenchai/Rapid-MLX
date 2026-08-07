@@ -31,20 +31,69 @@ were all invisible to journey-shaped tests:
 
 ### Current baseline
 
-Run against `main` on 2026-08-07, on a build of this checkout:
+Run on 2026-08-07, on a build of this checkout:
 
 | Flow | Result |
 | --- | --- |
 | `update-state` | **PASS** — panel reads "Up to date — v0.12.6 is the latest release.", matching `CFBundleShortVersionString` |
 | `catalog-integrity` | **PASS** — `fake-video-alias` reaches neither the chat surface nor Model Management |
-| `no-dead-controls` | **FAILS on `tools`** — see below |
+| `no-dead-controls` | **PASS** — all six Settings panels expose controls of their own; see the red → green note below |
 
-`no-dead-controls` fails today, correctly: Settings → Tools renders three tool
-toggles, a backend radio group and a browsing toggle, and **none of them carry
-an identifier**. The controls work — they are real `AXCheckBox`/`AXRadioButton`
-with correct values — they are simply unaddressable. That is a coverage gap in
-product code, not a harness bug, and it is tracked separately. Expect this flow
-to go green when those identifiers land; until then it is the gate for that work.
+The first two were measured against `main`. `no-dead-controls` was red on `main`
+and is green as of the identifier work described below; the run recorded here is
+the one that made it green.
+
+#### `no-dead-controls`: red → green
+
+This flow shipped red, on purpose, and has since been driven green by fixing
+the product rather than the assertion. Worth recording, because a gate that has
+never moved is a gate nobody has evidence about.
+
+It first failed on **`tools`**: Settings → Tools rendered three tool toggles, a
+backend radio group and a browsing toggle, and **none of them carried an
+identifier**. The controls worked — real `AXCheckBox`/`AXRadioButton` with
+correct values — they were simply unaddressable. Naming them took that panel
+`0 → 8`, and the flow then failed one panel further along, on **`privacy`**,
+which had the same gap: a telemetry toggle and three policy `Link`s, all
+unnamed. Naming those took `privacy` `0 → 4`. Final measured run:
+
+```
+[gui-golden]   models: 2 identified controls
+[gui-golden]   modelManagement: 16 identified controls
+[gui-golden]   tools: 8 identified controls
+[gui-golden]   appearance: 3 identified controls
+[gui-golden]   privacy: 4 identified controls
+[gui-golden]   app: 5 identified controls
+[gui-golden] PASS — no-dead-controls
+```
+
+`app` was never bare — the loop simply died at `privacy` before reaching it.
+Confirmed rather than assumed: `Settings.App.{UpToDate,RecheckCTA,
+ExportDiagnostics,HideDockOnCloseToggle,ResetDockOnboardingCTA}`.
+
+#### What this flow does NOT prove
+
+It counts identifiers; it does not press them. A panel can be fully addressable
+and still contain a control that does nothing observable, so green here means
+"reachable", not "works".
+
+That is not hypothetical. `Settings.Privacy.TelemetryToggle` is addressable and
+is a real `AXCheckBox`, and `AXPress` on it **does** flip the stored preference
+(`com.rapidmlx.rapid.telemetry.enabled` `0 → 1`, a client ID is minted, the
+shared `~/.rapid-mlx/telemetry-client-id` appears) — but the switch itself does
+not re-render, so its AX value stays `0` until you leave the panel and come
+back, at which point it reads `1`. The cause is that
+`SettingsView.telemetryEnabledBinding`'s getter reads `TelemetryConfig.isEnabled`,
+a plain `static var` over `UserDefaults.standard`, which gives SwiftUI no
+dependency to invalidate on. To a user, that is a consent switch that appears to
+snap back to off while they are in fact opted in. It is pre-existing (the
+control was previously unaddressable, which is exactly why nothing caught it)
+and it is the same family as [#1608](https://github.com/raullenchai/Rapid-MLX/pull/1608)
+in the table above. **It is not fixed and not yet filed** — it was found while
+naming the control and is reported in the PR that did so, deliberately left out
+of an identifiers-only change because it touches consent semantics. This flow
+will not catch it; a successor that presses each control and asserts the value
+moved would.
 
 Two notes on writing assertions here, both learned the hard way while adding
 these:

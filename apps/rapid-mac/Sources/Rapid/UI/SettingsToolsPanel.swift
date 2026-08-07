@@ -64,6 +64,11 @@ struct SettingsToolsPanel: View {
                             }
                         }
                         .toggleStyle(TrailingSettingsToggleStyle())
+                        // Keyed on the TOOL NAME (the wire identifier the
+                        // engine and the request body use), not on the row's
+                        // display text — the label is the tool's own
+                        // description and would drift with copy edits.
+                        .accessibilityIdentifier("Settings.Tools.Toggle.\(def.function.name)")
                     }
                 }
             }
@@ -90,11 +95,20 @@ struct SettingsToolsPanel: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Picker("Backend", selection: $config.provider) {
                         ForEach(WebSearchProvider.allCases) { provider in
-                            Text(provider.displayName).tag(provider)
+                            Text(provider.displayName)
+                                .tag(provider)
+                                // Per-radio identifier keyed on the provider's
+                                // stable raw value (duckduckgo / brave /
+                                // tavily), so a flow selects a backend by what
+                                // it IS rather than by its marketing name.
+                                .accessibilityIdentifier(
+                                    "Settings.Tools.WebSearch.Backend.\(provider.id)"
+                                )
                         }
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
+                    .accessibilityIdentifier("Settings.Tools.WebSearch.Backend")
                     .onChange(of: config.provider) { _, _ in
                         resetKeyDraft()
                     }
@@ -120,8 +134,14 @@ struct SettingsToolsPanel: View {
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: keyDraft) { _, _ in keyDraftEdited = true }
                     .onSubmit { commitKey(for: provider) }
+                    .accessibilityIdentifier(
+                        "Settings.Tools.WebSearch.KeyField.\(provider.id)"
+                    )
                 Button("Save") { commitKey(for: provider) }
                     .disabled(!keyDraftEdited)
+                    .accessibilityIdentifier(
+                        "Settings.Tools.WebSearch.SaveKey.\(provider.id)"
+                    )
             }
             if let url = provider.keyDashboardURL {
                 Link("Get a \(provider.displayName) key", destination: url)
@@ -210,6 +230,7 @@ struct SettingsToolsPanel: View {
                     }
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("Settings.Tools.Browse.AutoApproveToggle")
             }
         }
     }

@@ -150,16 +150,57 @@ struct SidebarView: View {
             titleVisibility: .visible,
             presenting: pendingDeletion
         ) { conv in
+            // A ``confirmationDialog`` button is re-hosted by AppKit rather
+            // than rendered as an ordinary SwiftUI button, so it was an open
+            // question whether `AXIdentifier` survives that hop. It does:
+            // measured on a build of this branch, the presented dialog is an
+            // `AXSheet` (description "alert") whose two `AXButton` children
+            // report these identifiers. Keep that in mind if the deployment
+            // target ever moves — the guarantee is empirical, not documented.
             Button("Delete", role: .destructive) {
                 chat.deleteConversation(conv.id)
                 pendingDeletion = nil
             }
+            .accessibilityIdentifier("Sidebar.DeleteConversation.Confirm")
             Button("Keep", role: .cancel) {
                 pendingDeletion = nil
             }
+            .accessibilityIdentifier("Sidebar.DeleteConversation.Keep")
         } message: { _ in
             Text("This permanently deletes the conversation. It can't be undone.")
         }
+    }
+
+    // MARK: - Accessibility identifiers
+
+    /// Identifier for a row's hover pin control.
+    ///
+    /// Named for the ACTION the press performs, not for the control's glyph:
+    /// before this existed the button inherited the SF Symbol name (`pin`) as
+    /// its `AXIdentifier`, which is an implementation detail that changes the
+    /// moment somebody swaps the icon. Keying on the conversation id keeps
+    /// rows distinguishable; flipping between `Pin` and `Unpin` means a golden
+    /// flow asserts the state change by which identifier is now present,
+    /// rather than reading a value off the button.
+    nonisolated static func pinControlIdentifier(for conversation: ChatConversation) -> String {
+        let action = conversation.isPinned ? "Unpin" : "Pin"
+        return "Sidebar.Conversation.\(action).\(conversation.id.uuidString)"
+    }
+
+    /// Identifier for the row menu's pin/unpin item. Not keyed on the
+    /// conversation — only one menu is ever open, and the item is shared by
+    /// the ··· menu and the right-click menu.
+    nonisolated static func pinMenuItemIdentifier(for conversation: ChatConversation) -> String {
+        conversation.isPinned
+            ? "Sidebar.Conversation.Action.Unpin"
+            : "Sidebar.Conversation.Action.Pin"
+    }
+
+    /// Identifier for the row menu's archive/unarchive item.
+    nonisolated static func archiveMenuItemIdentifier(for conversation: ChatConversation) -> String {
+        conversation.isArchived
+            ? "Sidebar.Conversation.Action.Unarchive"
+            : "Sidebar.Conversation.Action.Archive"
     }
 
     /// Confirmation title for deleting a saved conversation. Unlike a cached
@@ -384,6 +425,10 @@ struct SidebarView: View {
                     cancelRename()
                     chat.setConversationPinned(conv.id, !conv.isPinned)
                 }
+                // Without this the button inherits the SF Symbol name
+                // ("pin") as its AXIdentifier — see
+                // ``pinControlIdentifier(for:)``.
+                .accessibilityIdentifier(Self.pinControlIdentifier(for: conv))
             }
             Menu {
                 rowMenuItems(conv)
@@ -400,6 +445,7 @@ struct SidebarView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .accessibilityLabel("Conversation actions")
+            .accessibilityIdentifier("Sidebar.Conversation.Menu.\(conv.id.uuidString)")
         }
         .foregroundStyle(.secondary)
         .padding(.trailing, RapidTheme.Space.xs)
@@ -446,6 +492,7 @@ struct SidebarView: View {
             } label: {
                 Label("Rename", systemImage: "pencil")
             }
+            .accessibilityIdentifier("Sidebar.Conversation.Action.Rename")
             Divider()
             Button {
                 cancelRename()
@@ -456,6 +503,7 @@ struct SidebarView: View {
                     systemImage: conv.isPinned ? "pin.slash" : "pin"
                 )
             }
+            .accessibilityIdentifier(Self.pinMenuItemIdentifier(for: conv))
             Button {
                 cancelRename()
                 chat.setConversationArchived(conv.id, !conv.isArchived)
@@ -465,6 +513,7 @@ struct SidebarView: View {
                     systemImage: conv.isArchived ? "tray.and.arrow.up" : "archivebox"
                 )
             }
+            .accessibilityIdentifier(Self.archiveMenuItemIdentifier(for: conv))
             Divider()
             // Delete is the one item that does NOT need an explicit cancel: it only
             // stages a confirmation, and presenting that dialog takes keyboard
@@ -481,6 +530,7 @@ struct SidebarView: View {
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+            .accessibilityIdentifier("Sidebar.Conversation.Action.Delete")
         }
         .tint(nil)
     }

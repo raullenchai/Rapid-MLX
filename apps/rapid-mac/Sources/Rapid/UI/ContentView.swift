@@ -910,12 +910,20 @@ private struct BrowseApprovalSheet: View {
                 Spacer()
                 Button("Don't allow") { store.answer(.deny) }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("ToolApproval.Browse.Deny")
                 Button("Allow once") { store.answer(.allowOnce) }
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("ToolApproval.Browse.Allow")
             }
         }
         .padding(20)
         .frame(width: 460)
+        // The sheet itself is addressable so a flow can assert "the approval
+        // is up" before reaching for a button. This is a real SwiftUI
+        // `.sheet`, not a `confirmationDialog`/`alert`, so identifiers land
+        // on ordinary SwiftUI buttons rather than going through AppKit's
+        // alert bridge.
+        .accessibilityIdentifier("ToolApproval.Browse.Sheet")
     }
 }
 

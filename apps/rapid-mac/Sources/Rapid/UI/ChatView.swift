@@ -749,6 +749,18 @@ private struct MessageRow: View {
             )
     }
 
+    /// Accessibility identifier for one of this row's action buttons.
+    ///
+    /// Two things it deliberately is NOT: the SF Symbol name (which is what
+    /// these buttons leaked before — `doc.on.doc`, `pencil`,
+    /// `arrow.clockwise`, all of which change the moment the glyph does),
+    /// and the button's spoken label (localizable copy). The action half is
+    /// a fixed English key; the message id makes it addressable in a
+    /// transcript where every row offers the same actions.
+    private func actionIdentifier(_ action: String) -> String {
+        "ChatView.Message.\(action).\(message.id.uuidString)"
+    }
+
     @ViewBuilder
     private var userActions: some View {
         HStack(spacing: 2) {
@@ -760,6 +772,7 @@ private struct MessageRow: View {
                 ) {
                     cancelEditing()
                 }
+                .accessibilityIdentifier(actionIdentifier("CancelEdit"))
                 QuietIconButton(
                     symbol: "checkmark",
                     label: "Save edited message",
@@ -771,6 +784,7 @@ private struct MessageRow: View {
                     isStreaming
                         || editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 )
+                .accessibilityIdentifier(actionIdentifier("SaveEdit"))
             } else {
                 copyButton(text: message.content, label: "Copy message")
                 QuietIconButton(
@@ -782,6 +796,7 @@ private struct MessageRow: View {
                     isEditing = true
                 }
                 .disabled(isStreaming)
+                .accessibilityIdentifier(actionIdentifier("Edit"))
             }
         }
     }
@@ -810,6 +825,7 @@ private struct MessageRow: View {
             copiedRecently = true
         }
         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityIdentifier(actionIdentifier("Copy"))
         .task(id: copiedRecently) {
             guard copiedRecently else { return }
             try? await Task.sleep(nanoseconds: 1_200_000_000)
@@ -905,6 +921,7 @@ private struct MessageRow: View {
             }
             .disabled(isStreaming || !retryEnabled)
             .accessibilityHint(retryEnabled ? "" : retryTooltip)
+            .accessibilityIdentifier(actionIdentifier("Retry"))
         }
     }
 
