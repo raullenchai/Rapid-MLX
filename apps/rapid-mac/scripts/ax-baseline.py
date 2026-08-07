@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""Structural AX baselines for the Rapid-MLX Desktop golden flows.
+
+``rapid-ax dump`` serialises the whole accessibility tree of the running app.
+The golden flows already collect those dumps; this tool turns one into a
+*stable* structural fingerprint that can be committed and diffed, so a change
+that silently drops a button, reparents a control, flips an enabled state or
+renames an identifier shows up as a reviewable diff instead of passing
+unnoticed.
+
+Scope, stated plainly: this is structure only. It cannot see colour, spacing,
+typography, ordering *within* a text run, or anything else that does not reach
+the accessibility layer. The PNG snapshots under
+``Tests/RapidTests/__Snapshots__`` remain the pixel-level check.
+
+What the normalizer keeps
+  * nesting depth and parent/child relationships (rendered as indentation)
+  * ``AXRole`` and ``AXSubrole``
+  * ``accessibilityIdentifier``
+  * ``AXTitle`` / ``AXDescription`` / ``AXHelp`` (scrubbed, see below)
+  * ``AXEnabled``
+  * the *kind* of ``AXValue`` — ``bool:true`` / ``bool:false`` for toggles,
+    ``number`` / ``text`` / ``empty`` for everything else
+  * sibling order below the window level
+
+What it drops or rewrites, and why
+  * ``bounds`` — absolute screen coordinates move whenever the window opens at
+    a different origin; two consecutive launches produced 715,107 and 725,145.
+    Layout size is equally volatile across displays.
+  * ``pid`` — new every launch.
+  * top-level window order — AX returns windows in z-order, so opening
+    Settings reorders the roots. Windows are sorted by identifier/title.
+  * value *contents* — a token/s figure, an on-disk size, a model name or a
+    streamed transcript is data, not structure.
+  * version strings, byte sizes, token rates, durations, dates, clock times,
+    UUIDs and ``/Users/<name>`` paths inside titles/descriptions/identifiers.
+    ``Settings.App.UpToDate`` legitimately carries the release version, and a
+    conversation row identifier legitimately carries a fresh UUID.
+  * caller-supplied tokens (``--scrub``) — the golden flows pass the fake
+    model alias so a rename of the fixture is not a baseline change.
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import json
+import re
+import sys
+from pathlib import Path
+
+SCHEMA_HEADER = "# rapid-mac AX structural baseline v1"
+
+# Applied in order to identifiers, titles, descriptions and help text. Order
+# matters: "1.2 GB" has to be consumed by the size rule before the version
+# rule can mistake "1.2" for a release number.
+_SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}"
+            r"-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b"
+        ),
+        "<uuid>",
+    ),
+    (re.compile(r"/Users/[^/\s\"]+"), "/Users/<user>"),
+    (
+        # Multi-character units only. A bare "B" would swallow "Sub-1B
+        # models", where the B is a parameter count, not a byte count.
+        re.compile(
+            r"\b\d+(?:[.,]\d+)?\s*(?:KB|MB|GB|TB|PB|KiB|MiB|GiB|TiB|bytes?)\b",
+        ),
+        "<size>",
+    ),
+    (re.compile(r"~?\s*\d+(?:\.\d+)?\s*(?:tok/s|tokens/s|t/s)"), "<rate>"),
+    (
+        re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|µs|us|ns|s|min|h)\b"),
+        "<duration>",
+    ),
+    (
+        re.compile(r"\b\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?"),
+        "<date>",
+    ),
+    (re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?\b"), "<time>"),
+    (
+        re.compile(r"\bv?\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?\b"),
+        "<version>",
+    ),
+)
+
+# Identifiers whose trailing segment is data (a model alias, a status string).
+# The prefix is what carries the structural meaning: "there is a Download
+# button on a model row", not "there is a Download button on qwen3-4b".
+_DYNAMIC_ID_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("Quickstart.Choice.", "<model>"),
+    ("Settings.ModelManagement.Recommended.Cancel.", "<model>"),
+    ("Settings.ModelManagement.Recommended.Delete.", "<model>"),
+    ("Settings.ModelManagement.Recommended.Download.", "<model>"),
+    ("Settings.ModelManagement.Recommended.Retry.", "<model>"),
+    ("Settings.ModelManagement.Cancel.", "<model>"),
+    ("Settings.ModelManagement.Delete.", "<model>"),
+    ("Settings.ModelManagement.Download.", "<model>"),
+    ("Settings.ModelManagement.Favorite.", "<model>"),
+    ("Settings.ModelManagement.Retry.", "<model>"),
+    ("Settings.ModelManagement.Row.", "<model>"),
+    ("Settings.ModelManagement.Status.", "<text>"),
+)
+
+# Roles whose AXValue is a two-state control rather than a magnitude. For
+# these the concrete 0/1 is the state we want to catch flipping; everywhere
+# else a number is a measurement and only its presence is structural.
+_TOGGLE_ROLES = frozenset(
+    {"AXCheckBox", "AXRadioButton", "AXDisclosureTriangle", "AXMenuItem"}
+)
+_TOGGLE_SUBROLES = frozenset({"AXSwitch", "AXToggle"})
+
+
+class Node:
+    """One accessibility element plus its children."""
+
+    __slots__ = ("record", "children")
+
+    def __init__(self, record: dict) -> None:
+        self.record = record
+        self.children: list[Node] = []
+
+
+def scrub(text: str, extra_tokens: tuple[str, ...] = ()) -> str:
+    """Replace every volatile substring in ``text`` with a placeholder."""
+    for token in extra_tokens:
+        if token:
+            text = text.replace(token, "<model>")
+    for pattern, replacement in _SCRUBBERS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def normalize_identifier(raw: str, extra_tokens: tuple[str, ...]) -> str:
+    for prefix, placeholder in _DYNAMIC_ID_PREFIXES:
+        if raw.startswith(prefix):
+            return prefix + placeholder
+    return scrub(raw, extra_tokens)
+
+
+def value_kind(record: dict) -> str | None:
+    """Reduce AXValue to its control kind.
+
+    Booleans keep their state — a toggle flipping is exactly the class of
+    regression these baselines exist to catch. Every other value collapses to
+    ``number`` / ``text`` / ``empty`` because the content is data: a token
+    rate, a splitter offset in points, a streamed assistant turn.
+    """
+    if "value" not in record:
+        return None
+    value = record["value"]
+    role = record.get("role", "")
+    subrole = record.get("subrole", "")
+    toggle = role in _TOGGLE_ROLES or subrole in _TOGGLE_SUBROLES
+    if isinstance(value, bool):
+        return f"bool:{str(value).lower()}"
+    if isinstance(value, (int, float)):
+        if toggle and value in (0, 1):
+            return f"bool:{str(bool(value)).lower()}"
+        return "number"
+    if isinstance(value, str):
+        return "text" if value.strip() else "empty"
+    return "other"
+
+
+def build_tree(records: list[dict]) -> Node | None:
+    """Rebuild the parent/child tree from the flat pre-order dump."""
+    root: Node | None = None
+    stack: list[Node] = []
+    for record in records:
+        depth = record.get("depth")
+        if not isinstance(depth, int) or depth < 0:
+            continue
+        node = Node(record)
+        if depth == 0:
+            if root is None:
+                root = node
+                stack = [node]
+            continue
+        if depth > len(stack):
+            # Malformed / truncated dump: the walker caps depth and record
+            # count, so a subtree can be cut mid-descent. Attach to the
+            # deepest known parent rather than dropping the node silently.
+            depth = len(stack)
+        parent = stack[depth - 1]
+        parent.children.append(node)
+        del stack[depth:]
+        stack.append(node)
+    return root
+
+
+def window_sort_key(node: Node) -> tuple[str, str, str, str]:
+    record = node.record
+    return (
+        record.get("identifier", "") or "",
+        record.get("title", "") or "",
+        record.get("subrole", "") or "",
+        record.get("role", "") or "",
+    )
+
+
+def quote(text: str) -> str:
+    return json.dumps(text, ensure_ascii=False)
+
+
+def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
+    record = node.record
+    parts = [record.get("role", "AXUnknown")]
+    subrole = record.get("subrole")
+    if subrole:
+        parts.append(f"subrole={subrole}")
+    identifier = record.get("identifier")
+    if identifier:
+        normalized = normalize_identifier(identifier, extra_tokens)
+        if normalized:
+            parts.append(f"id={quote(normalized)}")
+    for key, label in (("title", "title"), ("description", "desc"), ("help", "help")):
+        text = record.get(key)
+        if text:
+            parts.append(f"{label}={quote(scrub(text, extra_tokens))}")
+    kind = value_kind(record)
+    if kind is not None:
+        parts.append(f"value={kind}")
+    if "enabled" in record:
+        parts.append(f"enabled={str(bool(record['enabled'])).lower()}")
+    return " ".join(parts)
+
+
+def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
+    lines: list[str] = []
+
+    def walk(node: Node, depth: int, sort_children: bool) -> None:
+        lines.append("  " * depth + render_node(node, extra_tokens))
+        children = node.children
+        if sort_children:
+            # Only the window level is reordered. AX hands back the app's
+            # windows in z-order, so merely focusing Settings would otherwise
+            # rewrite the baseline. Deeper sibling order is the view order and
+            # is exactly what we want to detect changing.
+            children = sorted(children, key=window_sort_key)
+        for child in children:
+            walk(child, depth + 1, sort_children=False)
+
+    walk(root, 0, sort_children=True)
+    return lines
+
+
+def normalize_dump(path: Path, extra_tokens: tuple[str, ...]) -> list[str]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    records = payload.get("data", {}).get("ui_elements", [])
+    if not records:
+        raise SystemExit(f"ax-baseline: no ui_elements in {path}")
+    root = build_tree(records)
+    if root is None:
+        raise SystemExit(f"ax-baseline: no root element in {path}")
+    return [SCHEMA_HEADER, *render(root, extra_tokens)]
+
+
+def describe_diff(baseline: list[str], observed: list[str]) -> list[str]:
+    """A change list a reviewer can read, not a JSON dump.
+
+    Every hunk is labelled with what actually happened to the tree — a node
+    appeared, disappeared, or changed in place — with the baseline line number
+    so it can be found in the committed file.
+    """
+    report: list[str] = []
+    matcher = difflib.SequenceMatcher(a=baseline, b=observed, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "replace":
+            report.append(f"  changed at baseline line {i1 + 1}:")
+            for line in baseline[i1:i2]:
+                report.append(f"    - {line}")
+            for line in observed[j1:j2]:
+                report.append(f"    + {line}")
+        elif tag == "delete":
+            report.append(f"  disappeared at baseline line {i1 + 1}:")
+            for line in baseline[i1:i2]:
+                report.append(f"    - {line}")
+        elif tag == "insert":
+            report.append(f"  appeared after baseline line {i1}:")
+            for line in observed[j1:j2]:
+                report.append(f"    + {line}")
+    return report
+
+
+def write_lines(path: Path, lines: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def command_normalize(args: argparse.Namespace) -> int:
+    lines = normalize_dump(Path(args.dump), tuple(args.scrub))
+    if args.output:
+        write_lines(Path(args.output), lines)
+    else:
+        sys.stdout.write("\n".join(lines) + "\n")
+    return 0
+
+
+def command_check(args: argparse.Namespace) -> int:
+    dump = Path(args.dump)
+    baseline_path = Path(args.baseline)
+    observed = normalize_dump(dump, tuple(args.scrub))
+
+    if args.observed:
+        write_lines(Path(args.observed), observed)
+
+    if args.update or not baseline_path.exists():
+        verb = "updated" if baseline_path.exists() else "recorded"
+        write_lines(baseline_path, observed)
+        print(f"ax-baseline: {verb} {baseline_path} ({len(observed) - 1} elements)")
+        return 0
+
+    expected = baseline_path.read_text(encoding="utf-8").splitlines()
+    if expected == observed:
+        return 0
+
+    print(f"ax-baseline: structural mismatch for {baseline_path.stem}", file=sys.stderr)
+    print(f"  baseline: {baseline_path}", file=sys.stderr)
+    if args.observed:
+        print(f"  observed: {args.observed}", file=sys.stderr)
+    print(f"  source dump: {dump}", file=sys.stderr)
+    for line in describe_diff(expected, observed):
+        print(line, file=sys.stderr)
+    print(
+        "\n  If this is an intended UI change, re-run with --update-baselines "
+        "and commit the new baseline.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ax-baseline.py",
+        description="Normalize and compare rapid-ax AX dumps.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("dump", help="rapid-ax dump JSON")
+    common.add_argument(
+        "--scrub",
+        action="append",
+        default=[],
+        metavar="TOKEN",
+        help="literal token to replace with <model> (repeatable)",
+    )
+
+    normalize = sub.add_parser(
+        "normalize", parents=[common], help="print the normalized tree"
+    )
+    normalize.add_argument("-o", "--output", help="write to a file instead of stdout")
+    normalize.set_defaults(func=command_normalize)
+
+    check = sub.add_parser(
+        "check", parents=[common], help="compare a dump against a committed baseline"
+    )
+    check.add_argument("--baseline", required=True, help="committed baseline file")
+    check.add_argument("--observed", help="also write the normalized tree here")
+    check.add_argument(
+        "--update",
+        action="store_true",
+        help="rewrite the baseline instead of comparing",
+    )
+    check.set_defaults(func=command_check)
+
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

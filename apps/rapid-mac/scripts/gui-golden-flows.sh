@@ -10,6 +10,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_SOURCE="${RAPID_GUI_SOURCE_APP:-$ROOT/build/Rapid-MLX Desktop.app}"
 OUT_ROOT="${RAPID_GUI_GOLDEN_OUT:-/tmp/rapid-gui-golden-$(date -u +%Y%m%dT%H%M%SZ)}"
 BRIDGE="${PEEKABOO_BRIDGE_SOCKET:-$HOME/Library/Application Support/Peekaboo/daemon.sock}"
+BASELINE_TOOL="$ROOT/scripts/ax-baseline.py"
+BASELINE_DIR="${RAPID_GUI_BASELINE_DIR:-$ROOT/Tests/GUIGoldenFlows/__Snapshots__}"
+# The fixture alias is scrubbed out of baselines so renaming the fake model
+# is not a structural change to the UI.
+FAKE_ALIAS="fake-alias"
+UPDATE_BASELINES=0
 FLOW="all"
 KEEP=0
 APP_PID=""
@@ -22,15 +28,21 @@ RESULT_WRITTEN=0
 
 usage() {
     cat <<'EOF'
-Usage: gui-golden-flows.sh [--flow NAME] [--keep]
+Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
 Flows: fresh-install, settings-persistence, chat-restore, slow-stream-stop,
        model-crash-recovery, low-memory-choice, update-state, no-dead-controls,
        catalog-integrity, all
 
+Options:
+  --update-baselines  rewrite the committed AX structural baselines instead of
+                      comparing against them. Intended UI changes land as a
+                      reviewable diff under Tests/GUIGoldenFlows/__Snapshots__.
+
 Environment:
   RAPID_GUI_SOURCE_APP   built .app to test
   RAPID_GUI_GOLDEN_OUT  artifact directory
+  RAPID_GUI_BASELINE_DIR AX structural baseline directory
   PEEKABOO_BRIDGE_SOCKET Peekaboo bridge socket
 EOF
 }
@@ -39,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --flow) FLOW="${2:?--flow requires a name}"; shift 2 ;;
         --keep) KEEP=1; shift ;;
+        --update-baselines) UPDATE_BASELINES=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
     esac
@@ -91,9 +104,10 @@ trap 'cleanup_persona; exit 143' TERM
 
 require_tools() {
     [[ -d "$APP_SOURCE" ]] || die "built app not found: $APP_SOURCE"
-    for tool in peekaboo jq; do
+    for tool in peekaboo jq python3; do
         command -v "$tool" >/dev/null || die "$tool is required"
     done
+    [[ -f "$BASELINE_TOOL" ]] || die "AX baseline normalizer not found: $BASELINE_TOOL"
     AX_DRIVER="$OUT_ROOT/rapid-ax"
     swiftc "$ROOT/scripts/rapid-ax.swift" -o "$AX_DRIVER"
     pb permissions status --json > "$OUT_ROOT/permissions.json"
@@ -265,17 +279,62 @@ assert_tree_text() {
         || die "AX tree does not contain expected text: $needle"
 }
 
+# Structural baseline for a settled UI state. The dump is normalized (see
+# scripts/ax-baseline.py) and compared against a committed tree, so a control
+# that vanishes, moves in the hierarchy, changes identifier or flips
+# enabled/disabled becomes a reviewable diff. Colour, spacing and typography
+# are NOT covered — those stay with the PNG snapshots in Tests/RapidTests.
+baseline() {
+    local name="$1" tree="$2"
+    local committed="$BASELINE_DIR/$name.txt"
+    local observed="$OUT/$name.observed.txt"
+    if [[ "$UPDATE_BASELINES" == 1 ]]; then
+        python3 "$BASELINE_TOOL" check "$tree" --scrub "$FAKE_ALIAS" \
+            --baseline "$committed" --observed "$observed" --update \
+            || die "could not update AX structural baseline: $name"
+    else
+        python3 "$BASELINE_TOOL" check "$tree" --scrub "$FAKE_ALIAS" \
+            --baseline "$committed" --observed "$observed" \
+            || die "AX structural baseline mismatch: $name"
+    fi
+}
+
+# Wait until the composer is genuinely idle before fingerprinting the tree.
+#
+# ``ChatView.SendOrStopButton`` publishes ``AXHelp`` only while the readiness
+# gate is closed (``accessibilityHint`` is empty once ``sendAllowed`` is true),
+# so its absence is a copy-independent "the model is ready" signal. The
+# description check adds "no stream in flight". Without this the crash-recovery
+# tree was captured mid-restart on roughly half of all runs: the button already
+# reads "Send message" while the sidecar is still loading, and the transient
+# "Starting …" banner then appeared in one run's baseline and not the next.
+wait_send_idle() {
+    local destination="$1" attempts="${2:-160}"
+    for ((i=0; i<attempts; i++)); do
+        see_main "$destination"
+        if jq -e '.data.ui_elements[]? | select(.identifier == "ChatView.SendOrStopButton"
+                  and .description == "Send message" and (has("help") | not))' \
+            "$destination" >/dev/null; then
+            return
+        fi
+        sleep 0.25
+    done
+    die "composer never settled into a ready, non-streaming state"
+}
+
 flow_fresh_install() {
     log "1/6 fresh install and onboarding"
     start_persona fresh-install
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
+    baseline fresh-install.consent "$OUT/consent-visible.json"
     dismiss_first_run
     for id in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
         jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/steady.json" >/dev/null \
             || die "post-onboarding shell missing $id"
     done
+    baseline fresh-install.steady "$OUT/steady.json"
     pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/final.png" --json > "$OUT/final-image.json"
     cleanup_persona
 }
@@ -286,9 +345,11 @@ flow_settings_persistence() {
     dismiss_first_run
     open_settings
     see_settings "$OUT/settings-root.json"
+    baseline settings-persistence.settings-root "$OUT/settings-root.json"
     press "$OUT/settings-root.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     sleep 0.3
     see_settings "$OUT/models-before.json"
+    baseline settings-persistence.models-idle "$OUT/models-before.json"
     local preference_key="rapid.picker.show_all_models.v1"
     press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
     for _ in {1..20}; do
@@ -298,6 +359,7 @@ flow_settings_persistence() {
     [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 1 ]] \
         || die "GUI toggle did not persist true to isolated preferences"
     see_settings "$OUT/models-after.json"
+    baseline settings-persistence.models-toggled "$OUT/models-after.json"
     relaunch_persona
     dismiss_first_run
     open_settings
@@ -305,6 +367,7 @@ flow_settings_persistence() {
     press "$OUT/settings-relaunch.json" Settings.Category.modelManagement "$OUT/settings-models-reopen.json"
     sleep 0.3
     see_settings "$OUT/models-persisted.json"
+    baseline settings-persistence.models-after-relaunch "$OUT/models-persisted.json"
     press "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
     for _ in {1..20}; do
         [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 0 ]] && break
@@ -328,6 +391,11 @@ flow_chat_restore() {
     done
     assert_tree_text "$OUT/chat-complete.json" "golden restore marker"
     assert_tree_text "$OUT/chat-complete.json" "deterministic content"
+    # The loop above breaks as soon as the transcript mentions "deterministic
+    # content", which the fake emits nine chunks before the stream ends. Settle
+    # first so the baseline is the finished turn, not a partial one.
+    wait_send_idle "$OUT/chat-settled.json"
+    baseline chat-restore.answered "$OUT/chat-settled.json"
     relaunch_persona
     dismiss_first_run
     wait_identifier Sidebar.NewChat "$OUT/chat-restored.json"
@@ -339,6 +407,8 @@ flow_chat_restore() {
     sleep 0.2
     see_main "$OUT/chat-restored-transcript.json"
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
+    wait_send_idle "$OUT/chat-restored-settled.json"
+    baseline chat-restore.transcript-restored "$OUT/chat-restored-settled.json"
     cleanup_persona
 }
 
@@ -374,6 +444,8 @@ flow_slow_stream_stop() {
     fi
     jq -n '{success: true, assertion: "UI returned to Send and server observed cancellation"}' \
         > "$OUT/stop-assertion.json"
+    wait_send_idle "$OUT/slow-settled.json"
+    baseline slow-stream-stop.stopped "$OUT/slow-settled.json"
     cleanup_persona
 }
 
@@ -405,6 +477,8 @@ flow_model_crash_recovery() {
     jq -n --argjson starts "$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl")" \
         '{success: true, assertion: "sidecar crashed once, respawned, and returned to ready", server_starts: $starts}' \
         > "$OUT/recovery-assertion.json"
+    wait_send_idle "$OUT/crash-settled.json"
+    baseline model-crash-recovery.recovered "$OUT/crash-settled.json"
     cleanup_persona
 }
 

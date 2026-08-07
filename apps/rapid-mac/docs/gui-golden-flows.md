@@ -171,6 +171,49 @@ Set `RAPID_GUI_SOURCE_APP` to test a release candidate bundle and
 `RAPID_GUI_GOLDEN_OUT` to choose the artifact directory. Each run records AX
 trees, actions, fake-sidecar events, logs, and a top-level `result.json`.
 
+## AX structural baselines
+
+Ten settled states across the five journeys are also fingerprinted as
+**structural baselines**, committed under
+`Tests/GUIGoldenFlows/__Snapshots__/<flow>.<state>.txt`. `scripts/ax-baseline.py`
+normalises a raw AX dump into an indented tree and the suite fails on any
+difference, so a PR that removes a button, reparents a control, renames an
+identifier, drops an icon or flips an enabled state produces a reviewable diff
+instead of passing silently.
+
+**This is the cheap layer of appearance testing and it is structural only.** It
+cannot see colour, spacing, typography or anything else that never reaches the
+accessibility layer; the PNG snapshots in `Tests/RapidTests/__Snapshots__` stay
+the pixel-level check.
+
+The normaliser keeps hierarchy, role, subrole, `accessibilityIdentifier`,
+`AXTitle`/`AXDescription`/`AXHelp`, enabled state, sibling order below the
+window level, and the *kind* of each value (`bool:true`, `bool:false`,
+`number`, `text`, `empty`). It drops or rewrites everything that is legitimately
+volatile: screen coordinates and sizes, pids, top-level window z-order, value
+contents, and version numbers, byte sizes, token rates, durations, dates, clock
+times, UUIDs, `/Users/<name>` paths and the fake model alias wherever they
+appear in text. `Settings.App.UpToDate` carries the release version and a
+conversation row identifier carries a fresh UUID — recording those verbatim
+would make the baselines flap every release and every run.
+
+An intended UI change is a deliberate commit:
+
+```bash
+./scripts/gui-golden-flows.sh --update-baselines
+git diff apps/rapid-mac/Tests/GUIGoldenFlows/__Snapshots__
+```
+
+A baseline file that does not exist yet is recorded on first run and passes,
+matching the PNG snapshot convention in `Tests/RapidTests/SnapshotHelpers.swift`.
+Overwriting an existing one always requires `--update-baselines`.
+
+Inspect a single normalised tree without running a journey:
+
+```bash
+python3 scripts/ax-baseline.py normalize --scrub fake-alias /tmp/…/steady.json
+```
+
 ## Why this is not coordinate automation
 
 The checked-in `rapid-ax.swift` helper talks directly to macOS Accessibility.
@@ -193,3 +236,12 @@ observable user state rather than sleeps or pixels. Keep model behavior behind
 the fake sidecar unless the purpose of the flow is real inference quality. A
 real-model dogfood pass remains a separate, explicitly memory-budgeted release
 stage.
+
+Fingerprint only *settled* states. Baselines taken mid-transition flap: the
+crash-recovery tree captured while the sidecar was still restarting contained a
+transient "Starting …" banner in one run and not the next. `wait_send_idle`
+exists for this — `ChatView.SendOrStopButton` publishes `AXHelp` only while the
+readiness gate is closed, so the absence of that attribute is a
+copy-independent "ready and not streaming" signal. If a new state turns out to
+be irreducibly unstable, exclude it and say why rather than loosening the
+comparison.

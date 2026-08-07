@@ -62,6 +62,16 @@ func walk(_ element: AXUIElement, depth: Int) {
     var record: [String: Any] = ["depth": depth]
     if let identifier { record["identifier"] = identifier }
     if let role = string(element, kAXRoleAttribute as CFString) { record["role"] = role }
+    if let subrole = string(element, kAXSubroleAttribute as CFString), !subrole.isEmpty {
+        record["subrole"] = subrole
+    }
+    // Structural baselines diff enabled/disabled transitions, so the dump has
+    // to carry the state even though the journeys themselves press by
+    // identifier. AXEnabled is absent on containers; only record the boolean
+    // when the element actually publishes it.
+    if let enabled = attribute(element, kAXEnabledAttribute as CFString) as? NSNumber {
+        record["enabled"] = enabled.boolValue
+    }
     if let title = string(element, kAXTitleAttribute as CFString), !title.isEmpty { record["title"] = title }
     if let description = string(element, kAXDescriptionAttribute as CFString), !description.isEmpty { record["description"] = description }
     if let help = string(element, kAXHelpAttribute as CFString), !help.isEmpty { record["help"] = help }
