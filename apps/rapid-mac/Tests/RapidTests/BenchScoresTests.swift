@@ -13,7 +13,8 @@ import Testing
 ///   3. Round-trip a handful of sample alias scores so a stray edit
 ///      to the JSON (typo in a key, accidental string-vs-number) is
 ///      caught at CI time.
-///   4. Never fabricate a value to fill a gap — gaps stay ``nil``.
+///   4. Never fabricate a value to fill a gap — gaps stay ``nil`` unless a
+///      committed local release eval records the exact suite and raw counts.
 ///
 /// The five-axis order (General & Reasoning → Code → Tool →
 /// Instruction Following → Speed) is the user-signed-off spec; a
@@ -46,6 +47,30 @@ struct BenchScoresTests {
         #expect(closeEnough(s.tool, 66.1))
         #expect(closeEnough(s.ifeval, 91.5))
         #expect(closeEnough(s.speedTps, 106.4))
+    }
+
+    @Test("locally evaluated aliases fill measured slots and preserve honest gaps")
+    func localReleaseEvalRows() {
+        let lfm = BenchScoresCatalog.lookup(alias: "lfm2.5-2.6b-4bit")
+        #expect(closeEnough(lfm?.generalReasoning, 65.0))
+        #expect(closeEnough(lfm?.code, 50.0))
+        #expect(closeEnough(lfm?.tool, 77.0))
+        #expect(closeEnough(lfm?.speedTps, 64.95))
+        #expect(lfm?.ifeval == nil)
+
+        let bonsai = BenchScoresCatalog.lookup(alias: "bonsai-27b-2bit")
+        #expect(closeEnough(bonsai?.generalReasoning, 80.0))
+        #expect(closeEnough(bonsai?.code, 90.0))
+        #expect(closeEnough(bonsai?.tool, 93.0))
+        #expect(closeEnough(bonsai?.speedTps, 15.0))
+        #expect(bonsai?.ifeval == nil)
+
+        let qwen35 = BenchScoresCatalog.lookup(alias: "qwen3.5-35b-4bit")
+        #expect(closeEnough(qwen35?.generalReasoning, 70.0))
+        #expect(closeEnough(qwen35?.code, 100.0))
+        #expect(closeEnough(qwen35?.tool, 97.0))
+        #expect(closeEnough(qwen35?.speedTps, 21.14))
+        #expect(qwen35?.ifeval == nil)
     }
 
     @Test("gemma3-1b-qat-4bit bench row: fast (262 t/s), near-floor reasoning, code is an honest gap")
@@ -284,34 +309,24 @@ struct BenchScoresTests {
                 distinct.insert(pick.alias)
             }
         }
-        // Curated picks that legitimately publish NO standard benchmark —
-        // their capability / speed come from the maintainer's own eval and
-        // surface in the recommendation stats line, not the bench meters.
-        // The picker degrades gracefully for these (no bar block, no card
-        // meters), so a bench JSON row is not required.
-        // The LFM2.5 small picks are genuinely unscored — not on Artificial
-        // Analysis, no comparable published standard bench — so they belong
-        // here rather than getting fabricated rows. The anti-fabrication
-        // check below is what keeps that honest.
-        let noStandardBench: Set<String> = [
+        // These picks have no compatible published standard benchmark, but
+        // now have a committed local release-eval row with raw counts and
+        // engine/hardware provenance. They must resolve just like published
+        // rows; unmeasured axes (currently IFEval) stay nil.
+        let localReleaseEval: Set<String> = [
             "bonsai-27b-2bit", "lfm2.5-1b-4bit", "lfm2.5-8b-a1b-4bit",
             "lfm2.5-2.6b-4bit",
         ]
         let known = Set(BenchScoresCatalog.allAliases)
-        let missing = distinct.subtracting(known).subtracting(noStandardBench)
+        let missing = distinct.subtracting(known)
         #expect(
             missing.isEmpty,
             "Aliases recommended by RAMBucketedDefault but missing a bench JSON row: \(missing.sorted())"
         )
-        // Anti-fabrication: the allowlisted picks publish no standard
-        // benchmark, so they must NOT carry a bench-scores.json row —
-        // otherwise re-introducing fabricated maintainer-eval numbers
-        // into the standard-bench columns would silently pass this test.
-        let fabricated = noStandardBench.intersection(known)
-        #expect(
-            fabricated.isEmpty,
-            "Allowlisted no-standard-bench aliases must not have a bench JSON row (fabrication risk): \(fabricated.sorted())"
-        )
+        #expect(localReleaseEval.isSubset(of: known))
+        for alias in localReleaseEval {
+            #expect(BenchScoresCatalog.lookup(alias: alias)?.ifeval == nil)
+        }
     }
 }
 

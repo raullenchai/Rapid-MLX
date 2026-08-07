@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "date": "2026-08-07",
+    "hardware": "Mac mini M2 Pro 32GB",
+    "macos": "26.5.2",
+    "rapid_mlx": "0.12.7",
+    "engine_git_sha": "850f62135f9c0c718aa493aea47d266443795cc9",
+    "mlx": "0.31.2",
+    "mlx_lm": "0.31.3"
+  },
+  "method": {
+    "runner": "evals/run_eval.py",
+    "server_flags": [
+      "--disable-prefix-cache"
+    ],
+    "suites": {
+      "tool_calling": "30 scenarios",
+      "coding": "10 HumanEval-derived tasks",
+      "reasoning": "10 MATH-500 subset tasks",
+      "general": "10 MMLU-Pro subset tasks"
+    },
+    "general_reasoning_pct": "mean(reasoning, general)",
+    "four_suite_composite_pct": "mean(tool_calling, coding, reasoning, general)",
+    "instruction_following": "not tested; remains null/Untested in the app",
+    "models_are_sequential": true
+  },
+  "measurements": [
+    {
+      "model": "lfm2.5-1b-4bit",
+      "scores": {
+        "tool_calling": {
+          "passed": 14,
+          "total": 30,
+          "score_pct": 47.0
+        },
+        "coding": {
+          "passed": 5,
+          "total": 10,
+          "score_pct": 50.0
+        },
+        "reasoning": {
+          "passed": 4,
+          "total": 10,
+          "score_pct": 40.0
+        },
+        "general": {
+          "passed": 5,
+          "total": 10,
+          "score_pct": 50.0
+        }
+      },
+      "general_reasoning_pct": 45.0,
+      "four_suite_composite_pct": 46.75,
+      "decode_8k_tps": 124.33,
+      "total_eval_time_s": 173.0
+    },
+    {
+      "model": "lfm2.5-2.6b-4bit",
+      "scores": {
+        "tool_calling": {
+          "passed": 23,
+          "total": 30,
+          "score_pct": 77.0
+        },
+        "coding": {
+          "passed": 5,
+          "total": 10,
+          "score_pct": 50.0
+        },
+        "reasoning": {
+          "passed": 5,
+          "total": 10,
+          "score_pct": 50.0
+        },
+        "general": {
+          "passed": 8,
+          "total": 10,
+          "score_pct": 80.0
+        }
+      },
+      "general_reasoning_pct": 65.0,
+      "four_suite_composite_pct": 64.25,
+      "decode_8k_tps": 64.95,
+      "total_eval_time_s": 631.7
+    },
+    {
+      "model": "lfm2.5-8b-a1b-4bit",
+      "scores": {
+        "tool_calling": {
+          "passed": 22,
+          "total": 30,
+          "score_pct": 73.0
+        },
+        "coding": {
+          "passed": 4,
+          "total": 10,
+          "score_pct": 40.0
+        },
+        "reasoning": {
+          "passed": 4,
+          "total": 10,
+          "score_pct": 40.0
+        },
+        "general": {
+          "passed": 8,
+          "total": 10,
+          "score_pct": 80.0
+        }
+      },
+      "general_reasoning_pct": 60.0,
+      "four_suite_composite_pct": 58.25,
+      "decode_8k_tps": 82.52,
+      "total_eval_time_s": 636.0
+    },
+    {
+      "model": "bonsai-27b-2bit",
+      "scores": {
+        "tool_calling": {
+          "passed": 28,
+          "total": 30,
+          "score_pct": 93.0
+        },
+        "coding": {
+          "passed": 9,
+          "total": 10,
+          "score_pct": 90.0
+        },
+        "reasoning": {
+          "passed": 7,
+          "total": 10,
+          "score_pct": 70.0
+        },
+        "general": {
+          "passed": 9,
+          "total": 10,
+          "score_pct": 90.0
+        }
+      },
+      "general_reasoning_pct": 80.0,
+      "four_suite_composite_pct": 85.75,
+      "decode_8k_tps": 15.0,
+      "total_eval_time_s": 1447.7
+    },
+    {
+      "model": "qwen3.5-35b-4bit",
+      "scores": {
+        "tool_calling": {
+          "passed": 29,
+          "total": 30,
+          "score_pct": 97.0
+        },
+        "coding": {
+          "passed": 10,
+          "total": 10,
+          "score_pct": 100.0
+        },
+        "reasoning": {
+          "passed": 6,
+          "total": 10,
+          "score_pct": 60.0
+        },
+        "general": {
+          "passed": 8,
+          "total": 10,
+          "score_pct": 80.0
+        }
+      },
+      "general_reasoning_pct": 70.0,
+      "four_suite_composite_pct": 84.25,
+      "decode_8k_tps": 21.14,
+      "total_eval_time_s": 420.3
+    }
+  ]
+}

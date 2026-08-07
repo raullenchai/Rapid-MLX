@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-30",
-  "default_speed_chip": "Apple M3 Ultra",
+  "generated_at": "2026-08-07",
+  "default_speed_chip": "per-model; see speed_source",
   "axes": {
     "general_reasoning": {
       "label_en": "General & Reasoning",
-      "label_zh": "通识和推理",
+      "label_zh": "\u901a\u8bc6\u548c\u63a8\u7406",
       "definition": "arithmetic_mean(mmlu_pro, gpqa_diamond) when both present; otherwise the single available bench",
       "thresholds": {
         "good": 50.0,
@@ -39,7 +39,7 @@
     "speed": {
       "label_en": "Speed",
       "unit": "tokens/sec",
-      "source_bench": "community-benchmarks/aggregated.json long.decode_tps.median (Apple M3 Ultra)",
+      "source_bench": "community-benchmarks M3 Ultra or release-sweep M2 Pro; see each row's speed_source",
       "thresholds": {
         "good": 80.0,
         "great": 180.0
@@ -259,7 +259,7 @@
     "qwen3-coder-30b-4bit": {
       "general_reasoning": null,
       "code": null,
-      "code_null_reason": "Qwen publishes no LiveCodeBench/HumanEval/SWE-bench pass@1 for the Coder variant; the only available number was Artificial Analysis's Coding *Index* (29.0), a normalized composite on a different scale than the pass@1 family the Code axis renders. Shown beside its bucket-mates it put our dedicated coder below every general-purpose model (#468). Honest gap per the no-fabrication / no-incomparable-substitution policy — leave null rather than display a cross-scale number.",
+      "code_null_reason": "Qwen publishes no LiveCodeBench/HumanEval/SWE-bench pass@1 for the Coder variant; the only available number was Artificial Analysis's Coding *Index* (29.0), a normalized composite on a different scale than the pass@1 family the Code axis renders. Shown beside its bucket-mates it put our dedicated coder below every general-purpose model (#468). Honest gap per the no-fabrication / no-incomparable-substitution policy \u2014 leave null rather than display a cross-scale number.",
       "tool": null,
       "tool_null_reason": "Qwen does not publish BFCL for the Coder variant",
       "ifeval": null,
@@ -278,7 +278,7 @@
       "code": 83.9,
       "code_source": "https://huggingface.co/Qwen/Qwen3.6-27B",
       "tool": null,
-      "tool_null_reason": "Qwen3.6 blog does not publish BFCL — focuses on SWE-bench + Terminal-Bench",
+      "tool_null_reason": "Qwen3.6 blog does not publish BFCL \u2014 focuses on SWE-bench + Terminal-Bench",
       "ifeval": null,
       "ifeval_null_reason": "Qwen3.6 blog does not publish IFEval",
       "speed_tps": 36.5,
@@ -401,6 +401,76 @@
       },
       "general_reasoning_source": "mean(mmlu_pro, gpqa_diamond)",
       "general_reasoning_provenance": "https://arxiv.org/abs/2511.21631 (MMLU-Pro 77.8 + GPQA-Diamond 70.4, high-confidence)"
+    },
+    "lfm2.5-1b-4bit": {
+      "general_reasoning": 45.0,
+      "general_reasoning_source": "rapid-mlx release eval mean(reasoning, general)",
+      "general_reasoning_provenance": "docs/benchmarks/model-capability-measurements.json",
+      "code": 50.0,
+      "code_source": "rapid-mlx release eval (10 HumanEval-derived tasks)",
+      "tool": 47.0,
+      "tool_source": "rapid-mlx release eval (30 tool-calling scenarios)",
+      "ifeval": null,
+      "ifeval_null_reason": "not measured by the local release eval",
+      "speed_tps": 124.33,
+      "speed_source": "Rapid-MLX 0.12.7 M2 Pro 32GB ~8K decode",
+      "local_release_eval_composite": 46.75
+    },
+    "lfm2.5-2.6b-4bit": {
+      "general_reasoning": 65.0,
+      "general_reasoning_source": "rapid-mlx release eval mean(reasoning, general)",
+      "general_reasoning_provenance": "docs/benchmarks/model-capability-measurements.json",
+      "code": 50.0,
+      "code_source": "rapid-mlx release eval (10 HumanEval-derived tasks)",
+      "tool": 77.0,
+      "tool_source": "rapid-mlx release eval (30 tool-calling scenarios)",
+      "ifeval": null,
+      "ifeval_null_reason": "not measured by the local release eval",
+      "speed_tps": 64.95,
+      "speed_source": "Rapid-MLX 0.12.7 M2 Pro 32GB ~8K decode",
+      "local_release_eval_composite": 64.25
+    },
+    "lfm2.5-8b-a1b-4bit": {
+      "general_reasoning": 60.0,
+      "general_reasoning_source": "rapid-mlx release eval mean(reasoning, general)",
+      "general_reasoning_provenance": "docs/benchmarks/model-capability-measurements.json",
+      "code": 40.0,
+      "code_source": "rapid-mlx release eval (10 HumanEval-derived tasks)",
+      "tool": 73.0,
+      "tool_source": "rapid-mlx release eval (30 tool-calling scenarios)",
+      "ifeval": null,
+      "ifeval_null_reason": "not measured by the local release eval",
+      "speed_tps": 82.52,
+      "speed_source": "Rapid-MLX 0.12.7 M2 Pro 32GB ~8K decode",
+      "local_release_eval_composite": 58.25
+    },
+    "bonsai-27b-2bit": {
+      "general_reasoning": 80.0,
+      "general_reasoning_source": "rapid-mlx release eval mean(reasoning, general)",
+      "general_reasoning_provenance": "docs/benchmarks/model-capability-measurements.json",
+      "code": 90.0,
+      "code_source": "rapid-mlx release eval (10 HumanEval-derived tasks)",
+      "tool": 93.0,
+      "tool_source": "rapid-mlx release eval (30 tool-calling scenarios)",
+      "ifeval": null,
+      "ifeval_null_reason": "not measured by the local release eval",
+      "speed_tps": 15.0,
+      "speed_source": "Rapid-MLX 0.12.7 M2 Pro 32GB ~8K decode",
+      "local_release_eval_composite": 85.75
+    },
+    "qwen3.5-35b-4bit": {
+      "general_reasoning": 70.0,
+      "general_reasoning_source": "rapid-mlx release eval mean(reasoning, general)",
+      "general_reasoning_provenance": "docs/benchmarks/model-capability-measurements.json",
+      "code": 100.0,
+      "code_source": "rapid-mlx release eval (10 HumanEval-derived tasks)",
+      "tool": 97.0,
+      "tool_source": "rapid-mlx release eval (30 tool-calling scenarios)",
+      "ifeval": null,
+      "ifeval_null_reason": "not measured by the local release eval",
+      "speed_tps": 21.14,
+      "speed_source": "Rapid-MLX 0.12.7 M2 Pro 32GB ~8K decode",
+      "local_release_eval_composite": 84.25
     }
   },
   "ground_truth_source": "data/benchmark-ground-truth.json"

@@ -28,12 +28,12 @@ import Foundation
 ///
 /// | RAM    | 🧠 Smart            | GB   | Cap | tok/s | 🚀 Fast                          |
 /// | ------ | ------------------- | ---- | --- | ----- | -------------------------------- |
-/// |  8 GB  | lfm2.5-2.6b-4bit    |  3.2 | 62% | 94.2  | lfm2.5-1b-4bit · basic · 214.5   |
-/// | 16 GB  | qwen3.5-4b-4bit     |  5.8 | 78% | 62.2  | lfm2.5-1b-4bit · basic · 214.5   |
-/// | 18 GB  | qwen3.5-9b-4bit     |  8.7 | 82% | 36.2  | qwen3.5-4b-4bit · 78% · 62.2     |
-/// | 24 GB  | bonsai-27b-2bit     | 13.0 | 86% | 17.8  | qwen3.5-4b-4bit · 78% · 62.2     |
-/// | 32 GB  | gemma-4-26b-4bit    | 20.0 | 87% | 50.1  | qwen3.5-4b-4bit · 78% · 62.2     |
-/// | 48 GB  | gemma-4-26b-4bit    | 20.0 | 87% | 50.1  | qwen3.6-35b-4bit · 87% · 60      |
+/// |  8 GB  | lfm2.5-2.6b-4bit    |  3.0 | 64% | 93.5  | lfm2.5-1b-4bit · basic · 208.4   |
+/// | 16 GB  | qwen3.5-4b-4bit     |  6.0 | 78% | 60.7  | lfm2.5-1b-4bit · basic · 208.4   |
+/// | 18 GB  | qwen3.5-9b-4bit     |  8.7 | 82% | 35.7  | qwen3.5-4b-4bit · 78% · 60.7     |
+/// | 24 GB  | bonsai-27b-2bit     | 13.0 | 86% | 17.5  | qwen3.5-4b-4bit · 78% · 60.7     |
+/// | 32 GB  | gemma-4-26b-4bit    | 17.0 | 87% | 49.5  | qwen3.5-4b-4bit · 78% · 60.7     |
+/// | 48 GB  | gemma-4-26b-4bit    | 17.0 | 87% | 49.5  | qwen3.6-35b-4bit · 87% · 60      |
 /// | 64 GB  | qwen3.6-35b-8bit    | 37.7 | 87% | —     | qwen3.6-35b-4bit · 87% · 60      |
 /// | 96 GB+ | qwen3.5-122b-mxfp4  | 65.0 | 88% | —     | qwen3.6-35b-4bit · 87% · 60      |
 ///
@@ -95,46 +95,50 @@ enum RAMBucketedDefault {
     /// Conservative general-purpose laptop picks. Both have verified tool
     /// calling and stay within the same footprint budget enforced at launch.
     private static let qwen4Pick = Pick(
-        alias: "qwen3.5-4b-4bit", footprintGB: 5.8, capabilityPct: 78,
-        tokensPerSec: 62.2, launchFlags: [])
+        alias: "qwen3.5-4b-4bit", footprintGB: 6.0, capabilityPct: 78,
+        tokensPerSec: 60.7, launchFlags: [])
 
     private static let qwen9Pick = Pick(
         alias: "qwen3.5-9b-4bit", footprintGB: 8.7, capabilityPct: 82,
-        tokensPerSec: 36.2, launchFlags: [])
+        tokensPerSec: 35.7, launchFlags: [])
 
+    /// Latest release-eval mean: Tool 47, Code 50, Reasoning 40, General 50
+    /// = 46.75, rounded to 47. The Basic chat caveat remains user-facing.
     private static let lfm1Pick = Pick(
-        alias: "lfm2.5-1b-4bit", footprintGB: 2.1, capabilityPct: 50,
-        tokensPerSec: 214.5, launchFlags: [], caveat: "Basic chat")
+        alias: "lfm2.5-1b-4bit", footprintGB: 1.9, capabilityPct: 47,
+        tokensPerSec: 208.4, launchFlags: [], caveat: "Basic chat")
 
     /// The 8 GB tier's smarter pick: LFM2.5-2.6B, a 2.6 B dense model whose
     /// 30 layers are 22 short-convolution blocks and just 8 GQA. Those 8
     /// attention layers are why it belongs here — the KV cache costs
     /// ~16 KB/token, so a 32 K conversation adds only ~0.5 GB on top of
-    /// 1.6 GB of weights. On an M2 Pro it peaks at 3.2 GB on the standard
+    /// 1.6 GB of weights. On an M2 Pro it peaks at 3.0 GB on the standard
     /// 8K prompt, decodes at
-    /// 94.2 tok/s on the short prompt, and prefills at 488 tok/s at 8K.
+    /// 93.5 tok/s on the short prompt, and prefills at 473 tok/s at 8K.
     ///
     /// It carries a caveat rather than a capability %, and the caveat is
     /// Liquid's own: they publish this model as "not recommended for
     /// agentic coding and knowledge-heavy tasks". It is post-trained for
     /// tool use and instruction following, and on those it beats models
     /// ~4x its size — but our users drive coding agents, and putting a
-    /// bare "62%" on this card would invite exactly the use Liquid warns
+    /// bare "64%" on this card would invite exactly the use Liquid warns
     /// against. ``capabilityPct`` is never rendered for a caveat pick; the
-    /// 62 below exists only to satisfy the monotonic-by-RAM invariant and
-    /// is deliberately the same band as the other caveat pick in the
-    /// family, not an independently measured score.
+    /// 64 below is the mean of the latest local tool, coding, reasoning,
+    /// and general release-eval suites; the caveat remains more useful than
+    /// presenting that small-suite composite as a universal quality score.
     private static let lfm26Pick = Pick(
-        alias: "lfm2.5-2.6b-4bit", footprintGB: 3.2, capabilityPct: 62,
-        tokensPerSec: 94.2, launchFlags: [], caveat: "Not for coding")
+        alias: "lfm2.5-2.6b-4bit", footprintGB: 3.0, capabilityPct: 64,
+        tokensPerSec: 93.5, launchFlags: [], caveat: "Not for coding")
 
+    /// Latest release-eval mean: Tool 93, Code 90, Reasoning 70, General 90
+    /// = 85.75, rounded to 86.
     private static let bonsaiPick = Pick(
         alias: "bonsai-27b-2bit", footprintGB: 13.0, capabilityPct: 86,
-        tokensPerSec: 17.8, launchFlags: [])
+        tokensPerSec: 17.5, launchFlags: [])
 
     private static let gemma26Pick = Pick(
-        alias: "gemma-4-26b-4bit", footprintGB: 20.0, capabilityPct: 87,
-        tokensPerSec: 50.1,
+        alias: "gemma-4-26b-4bit", footprintGB: 17.0, capabilityPct: 87,
+        tokensPerSec: 49.5,
         launchFlags: ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"])
 
     /// Existing reviewed fast/light pick for the unmeasured 48/64/96 GB tiers.

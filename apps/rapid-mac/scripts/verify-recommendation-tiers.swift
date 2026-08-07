@@ -33,18 +33,18 @@ struct Tier: Equatable {
     let alt: Pick?
     var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
 }
-let qwen4Pick = Pick(alias: "qwen3.5-4b-4bit", footprintGB: 5.8, capabilityPct: 78,
-                     tokensPerSec: 62.2, launchFlags: [])
+let qwen4Pick = Pick(alias: "qwen3.5-4b-4bit", footprintGB: 6.0, capabilityPct: 78,
+                     tokensPerSec: 60.7, launchFlags: [])
 let qwen9Pick = Pick(alias: "qwen3.5-9b-4bit", footprintGB: 8.7, capabilityPct: 82,
-                     tokensPerSec: 36.2, launchFlags: [])
-let lfm1Pick = Pick(alias: "lfm2.5-1b-4bit", footprintGB: 2.1, capabilityPct: 50,
-                    tokensPerSec: 214.5, launchFlags: [], caveat: "Basic chat")
-let lfm26Pick = Pick(alias: "lfm2.5-2.6b-4bit", footprintGB: 3.2, capabilityPct: 62,
-                     tokensPerSec: 94.2, launchFlags: [], caveat: "Not for coding")
+                     tokensPerSec: 35.7, launchFlags: [])
+let lfm1Pick = Pick(alias: "lfm2.5-1b-4bit", footprintGB: 1.9, capabilityPct: 47,
+                    tokensPerSec: 208.4, launchFlags: [], caveat: "Basic chat")
+let lfm26Pick = Pick(alias: "lfm2.5-2.6b-4bit", footprintGB: 3.0, capabilityPct: 64,
+                     tokensPerSec: 93.5, launchFlags: [], caveat: "Not for coding")
 let bonsaiPick = Pick(alias: "bonsai-27b-2bit", footprintGB: 13.0, capabilityPct: 86,
-                      tokensPerSec: 17.8, launchFlags: [])
-let gemma26Pick = Pick(alias: "gemma-4-26b-4bit", footprintGB: 20.0, capabilityPct: 87,
-                       tokensPerSec: 50.1,
+                      tokensPerSec: 17.5, launchFlags: [])
+let gemma26Pick = Pick(alias: "gemma-4-26b-4bit", footprintGB: 17.0, capabilityPct: 87,
+                       tokensPerSec: 49.5,
                        launchFlags: ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"])
 let qwen35bFastPick = Pick(alias: "qwen3.6-35b-4bit", footprintGB: 20.0, capabilityPct: 87,
                            tokensPerSec: 60.0, launchFlags: [])
@@ -168,13 +168,13 @@ print("Smallest tier shows an honest capability caveat:")
 let smart8 = picks(forPhysicalRAMGB: 8)[0]
 check(picks(forPhysicalRAMGB: 8).count == 2, "8GB has smart + fast")
 check(smart8.caveat == "Not for coding", "8GB pick carries the coding caveat")
-check(pickStatsLine(smart8) == "3.2 GB · ~94 tok/s · Not for coding", "8GB stats line drops the % for the caveat")
+check(pickStatsLine(smart8) == "3.0 GB · ~94 tok/s · Not for coding", "8GB stats line drops the % for the caveat")
 check(smart8.footprintGB < 4.0, "8GB pick must leave room for macOS on an 8GB machine")
 let fast96 = picks(forPhysicalRAMGB: 96)[1]
 check(fast96.caveat == nil, "96GB fast (qwen3.6-35b-4bit) is general-purpose — no caveat")
 check(pickStatsLine(fast96) == "20.0 GB · 87% capability · ~60 tok/s", "general-purpose fast pick keeps its capability %")
 let smart16 = picks(forPhysicalRAMGB: 16)[0]
-check(pickStatsLine(smart16) == "5.8 GB · 78% capability · ~62 tok/s", "16GB qwen4 renders measured 8K peak")
+check(pickStatsLine(smart16) == "6.0 GB · 78% capability · ~61 tok/s", "16GB qwen4 renders measured 8K peak")
 let smart96 = picks(forPhysicalRAMGB: 96)[0]
 check(pickStatsLine(smart96) == "65.0 GB · 88% capability", "no-tok/s smart pick omits the speed figure")
 

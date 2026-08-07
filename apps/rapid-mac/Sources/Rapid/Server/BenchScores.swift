@@ -1,9 +1,10 @@
 import Foundation
 
-/// Industry-standard benchmark scores for a model alias, plus a
-/// locally-measured decode tok/s number. All four LLM bars sit on a
-/// 0–100 % scale; ``speedTps`` is the raw decode tok/s median from
-/// `community-benchmarks/aggregated.json` (Apple M3 Ultra).
+/// Industry-standard benchmark scores for a model alias, plus measured
+/// decode tok/s. When a model has no compatible published row, a fully
+/// recorded Rapid-MLX release eval may fill the gap; its per-row provenance
+/// names that local suite and the raw counts live under `docs/benchmarks/`.
+/// All four LLM bars sit on a 0–100 % scale.
 ///
 /// The picker hover tooltip renders five bars top → bottom:
 ///
@@ -18,11 +19,12 @@ import Foundation
 ///      comparable magnitude; per the audit's gap-honesty policy
 ///      the UI label stays version-agnostic).
 ///   4. Instruction Following — IFEval prompt-strict accuracy.
-///   5. Speed — `community-benchmarks` long-decode tok/s on
-///      Apple M3 Ultra.
+///   5. Speed — measured long-context decode tok/s; hardware is recorded in
+///      the row's provenance (community rows use M3 Ultra, the release sweep
+///      uses M2 Pro).
 ///
-/// ``nil`` on any axis means the model author did not publish the
-/// number AND it isn't on Artificial Analysis / llm-stats either.
+/// ``nil`` on any axis means neither a compatible published number nor a
+/// recorded local release eval exists for that axis.
 /// The UI must render the dashed track + em-dash value in that row.
 /// **Never** fabricate a value to fill a gap; the explicit user
 /// policy (recorded in `model-recs-audit.md` §1.5) is honest gaps
@@ -51,8 +53,7 @@ struct BenchScores: Equatable, Sendable {
     let tool: Double?
     /// IFEval prompt-strict accuracy, 0–100.
     let ifeval: Double?
-    /// Decode tok/s, raw integer-range value (typical 30–270 on
-    /// Apple M3 Ultra).
+    /// Decode tok/s; see the JSON row's `speed_source` for hardware.
     let speedTps: Double?
 
     /// Axes rendered in the tooltip, top → bottom. The order is the
@@ -109,8 +110,8 @@ struct BenchScores: Equatable, Sendable {
         }
 
         /// Footer copy describing the source bench. Drives a
-        /// "Speed measured on Apple M3 Ultra" note for the speed
-        /// axis and lets the tooltip surface BFCL version pedantry
+        /// speed methodology note and lets the tooltip surface benchmark
+        /// version pedantry
         /// once at the bottom rather than on every row.
         var sourceDescription: String {
             switch self {
@@ -118,7 +119,7 @@ struct BenchScores: Equatable, Sendable {
             case .code:             return "LiveCodeBench v6"
             case .tool:             return "BFCL v3 / v4"
             case .ifeval:           return "IFEval (prompt-strict)"
-            case .speed:            return "Community-bench long decode, Apple M3 Ultra"
+            case .speed:            return "Measured long-context decode (hardware per row)"
             }
         }
     }
