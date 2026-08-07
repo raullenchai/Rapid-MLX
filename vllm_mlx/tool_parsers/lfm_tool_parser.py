@@ -52,8 +52,28 @@ _LFM_PARTIAL_START = re.compile(r"\[\s*(?:[A-Za-z_]\w*\s*\(?)?$", re.DOTALL)
 # markup stream to the client in the first place.
 TEXT_CALL_START = re.compile(r"\[\s*Calling\s+tool\s*:", re.DOTALL)
 
+# Tool names in the text-format dialect follow the OpenAI function-name
+# charset (``api/models._FUNCTION_NAME_PATTERN``) plus ``.``, matching what
+# the cross-format recovery parser accepts — NOT Python identifier rules.
+# ``my-tool`` and ``2fa`` are legal names a client may register, and the
+# streaming path has to hold their markup back for the same reason as any
+# other: otherwise the recovery path extracts the call at finalize while
+# the raw span has already streamed to the user.
+_TOOL_NAME = r"[A-Za-z0-9_.-]{1,64}"
+
+# ``[name({`` — the envelope with its ``Calling tool:`` prefix dropped.
+# The ``{`` is required so this can only claim the JSON-arguments dialect,
+# never a pythonic call (``[index(0)]``) or ordinary prose.
+JSON_CALL_START = re.compile(r"\[\s*" + _TOOL_NAME + r"\s*\(\s*\{", re.DOTALL)
+
+# Suffix that may still grow into ``JSON_CALL_START``. Same no-``.*`` rule
+# as the other partial patterns.
+_JSON_CALL_PARTIAL_START = re.compile(
+    r"\[\s*(?:" + _TOOL_NAME + r"\s*(?:\(\s*\{?)?)?$", re.DOTALL
+)
+
 # ``name(<json object>)`` — the envelope's payload.
-_TEXT_CALL_BODY = re.compile(r"([A-Za-z_][\w.-]*)\s*\((.*)\)", re.DOTALL)
+_TEXT_CALL_BODY = re.compile(r"(" + _TOOL_NAME + r")\s*\((.*)\)", re.DOTALL)
 
 
 def _prefix_alternation(word: str) -> str:
@@ -120,15 +140,17 @@ def eval_node(node: ast.AST) -> Any:
 def _find_lfm_call_start(text: str, start: int = 0) -> int:
     """Return the next LFM call start, or ``-1``.
 
-    Both dialects count: the pythonic ``[name(`` and the text-format
-    ``[Calling tool:`` envelope. Whichever comes first wins so a turn
-    mixing the two is still walked left to right.
+    All three dialects count: the pythonic ``[name(``, the text-format
+    ``[Calling tool:`` envelope, and its prefix-less ``[name({`` form.
+    Whichever comes first wins so a turn mixing them is still walked left
+    to right.
     """
     starts = [
         match.start()
         for match in (
             LFM_CALL_START.search(text, start),
             TEXT_CALL_START.search(text, start),
+            JSON_CALL_START.search(text, start),
         )
         if match is not None
     ]
@@ -361,7 +383,10 @@ class LfmToolParser(ToolParser):
     """
 
     SUPPORTS_NATIVE_TOOL_FORMAT = False
-    EXPECTED_WIRE_FORMATS = ("pythonic_bracket",)
+    # ``calling_tool_text`` is not aspirational: because this parser reports
+    # no native tool format, ``api/utils.py`` writes prior tool calls into
+    # the prompt in exactly that shape and the model echoes it back.
+    EXPECTED_WIRE_FORMATS = ("pythonic_bracket", "calling_tool_text")
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
@@ -551,8 +576,10 @@ def _may_grow_into_markup(text: str, idx: int) -> bool:
     return bool(
         LFM_CALL_START.match(text, idx)
         or TEXT_CALL_START.match(text, idx)
+        or JSON_CALL_START.match(text, idx)
         or _LFM_PARTIAL_START.fullmatch(text, idx)
         or _TEXT_CALL_PARTIAL_START.fullmatch(text, idx)
+        or _JSON_CALL_PARTIAL_START.fullmatch(text, idx)
     )
 
 

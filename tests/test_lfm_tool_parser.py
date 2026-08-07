@@ -553,6 +553,26 @@ class TestLfmTextFormatEnvelope:
             assert result.tools_called, text
             assert json.loads(result.tool_calls[0]["arguments"]) == expected, text
 
+    def test_openai_legal_tool_names_are_recognised(self):
+        """Names follow the OpenAI charset, not Python identifier rules.
+
+        ``^[a-zA-Z0-9_-]{1,64}$`` is what the request validator accepts, so
+        ``my-tool`` and ``2fa`` are names a client can register. Rejecting
+        them here would stream the raw span while the finalize recovery
+        path (which does accept them) extracted the call anyway.
+        """
+        for text in (
+            '[Calling tool: my-tool({"a": 1})]',
+            '[my-tool({"a": 1})]',
+            '[Calling tool: 2fa({"a": 1})]',
+            '[2fa({"a": 1})]',
+        ):
+            parser = LfmToolParser()
+            content, calls = _stream(parser, list(text))
+            assert content == "", text
+            assert len(calls) == 1, text
+            assert json.loads(calls[0]["function"]["arguments"]) == {"a": 1}, text
+
     def test_prose_after_call_in_same_delta_is_not_dropped(self):
         """Trailing prose sharing the closing delta must still be emitted.
 
@@ -672,6 +692,16 @@ class TestLfmStreamingProseRegressions:
 
         assert [c["function"]["name"] for c in calls] == ["f"]
         assert content == "I can't do that, but "
+
+    def test_bracketed_identifier_prose_is_not_held_past_its_token(self):
+        """The wider name charset must not extend the hold into prose."""
+        parser = LfmToolParser()
+        content, calls = _stream(
+            parser, ["Due ", "[2026-08-06", " and later]", " we ship."]
+        )
+
+        assert calls == []
+        assert content == "Due [2026-08-06 and later] we ship."
 
     def test_bracket_scan_stays_linear(self):
         """Guard the O(n^2)-per-delta scan the first fix round introduced.
