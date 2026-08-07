@@ -48,7 +48,7 @@ struct FailureDiagnosisView: View {
 
     private var diagnosisIcon: some View {
         Image(systemName: iconName)
-            .foregroundStyle(.orange)
+            .foregroundStyle(diagnosis.severity == .notice ? Color.secondary : Color.orange)
             .accessibilityHidden(true)
     }
 
@@ -86,6 +86,9 @@ struct FailureDiagnosisView: View {
         case .webSearchOffline, .webSearchUnavailable: return "wifi.exclamationmark"
         case .webSearchRateLimited: return "hourglass"
         case .commandPermissionDenied, .filePermissionDenied: return "hand.raised.fill"
+        // Unfilled, and tinted secondary above: the user turned this down on
+        // purpose, so it reads as a note rather than a stop sign.
+        case .userDeclined: return "hand.raised"
         case .fileNotFound: return "doc.questionmark"
         case .downloadFailed, .downloadSourceUnavailable: return "arrow.down.circle"
         case .commandFailed, .toolFailed, .requestFailed: return "exclamationmark.triangle.fill"

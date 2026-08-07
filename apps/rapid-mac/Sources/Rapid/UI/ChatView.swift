@@ -1039,6 +1039,12 @@ private struct ToolCallChip: View {
 
     /// Stable diagnosis for a failed result. ``nil`` while the tool is still
     /// running or when it succeeded.
+    ///
+    /// A tool the USER declined lands here too — it produced nothing, so it is
+    /// still ``.failed`` for every purpose that asks "did this tool deliver a
+    /// result?" (notably ``ChatViewModel.turnHadSuccessfulTool``). What the
+    /// diagnosis's ``FailureDiagnosis/severity`` changes is only how the chip
+    /// PAINTS it, and whether it offers a button — see ``inlineAction``.
     private var failureDiagnosis: FailureDiagnosis? {
         guard let result, result.status == .failed else { return nil }
         return result.toolFailureDiagnosis(toolName: call.function.name)
@@ -1079,13 +1085,23 @@ private struct ToolCallChip: View {
     }
 
     private var statusIcon: String {
-        guard let result else { return "ellipsis.circle" }
-        return result.status == .failed ? "exclamationmark.octagon.fill" : "checkmark.circle.fill"
+        guard result != nil else { return "ellipsis.circle" }
+        guard let failureDiagnosis else { return "checkmark.circle.fill" }
+        return failureDiagnosis.severity == .notice ? "hand.raised" : "exclamationmark.octagon.fill"
     }
 
     private var statusColor: Color {
-        guard let result else { return .secondary }
-        return result.status == .failed ? RapidTheme.statusError : .green
+        guard result != nil else { return .secondary }
+        guard let failureDiagnosis else { return .green }
+        return failureDiagnosis.severity == .notice ? .secondary : RapidTheme.statusError
+    }
+
+    /// Red is reserved for something that actually went wrong. A decline reads
+    /// in the same quiet secondary tone the transcript uses for its other
+    /// "this ended early, and that's fine" footers (e.g. "Stopped.").
+    private var resultBodyColor: Color {
+        guard let failureDiagnosis else { return .secondary }
+        return failureDiagnosis.severity == .notice ? .secondary : RapidTheme.statusError
     }
 
     var body: some View {
@@ -1127,7 +1143,7 @@ private struct ToolCallChip: View {
                         Divider()
                         Text(body)
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(result?.status == .failed ? RapidTheme.statusError : .secondary)
+                            .foregroundStyle(resultBodyColor)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }

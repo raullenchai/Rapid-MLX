@@ -22,7 +22,15 @@ final class BrowseApprovalStore {
 
     enum Decision: Equatable {
         case allowOnce
+        /// The USER said no — the sheet's "Don't allow", or dismissing it.
         case deny
+        /// The question was never put to the user: the tool call was cancelled
+        /// before (or while) the sheet was up, or a prompt was already open.
+        /// Distinct from ``deny`` because nobody decided anything, and the
+        /// difference is user-visible — a decline is reported as an ordinary
+        /// outcome the user chose, while this is not something to attribute to
+        /// them. See ``FailureDiagnosis.Kind.userDeclined``.
+        case unavailable
     }
 
     /// A pending prompt the UI surfaces as a confirm dialog.
@@ -61,17 +69,18 @@ final class BrowseApprovalStore {
     func requestApproval(url: String, host: String) async -> Decision {
         if mode == .autoApproveAll { return .allowOnce }
         // Re-entrancy guard — tool execution is serial, so a second pending
-        // request means something is wrong; deny rather than hang.
-        if pendingRequest != nil { return .deny }
+        // request means something is wrong; refuse rather than hang. NOT a
+        // decline: the user was never shown this URL.
+        if pendingRequest != nil { return .unavailable }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Decision, Never>) in
                 // Cancellation can land between the re-entrancy check above and
                 // here; the onCancel handler would then have found no
-                // continuation to resume. Re-check inside the body so we deny
+                // continuation to resume. Re-check inside the body so we bail
                 // immediately instead of installing a pending request that would
                 // surface an orphaned, never-answerable sheet.
                 if Task.isCancelled {
-                    continuation.resume(returning: .deny)
+                    continuation.resume(returning: .unavailable)
                     return
                 }
                 self.pendingContinuation = continuation
@@ -87,7 +96,9 @@ final class BrowseApprovalStore {
                 if let cont = self.pendingContinuation {
                     self.pendingContinuation = nil
                     self.pendingRequest = nil
-                    cont.resume(returning: .deny)
+                    // The sheet is being torn down because the turn was
+                    // cancelled, not because the user turned it down.
+                    cont.resume(returning: .unavailable)
                 }
             }
         }

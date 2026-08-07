@@ -56,6 +56,26 @@ enum BrowseTool {
         let refresh: Bool?
     }
 
+    /// The user answered "Don't allow" at an approval prompt.
+    ///
+    /// A distinct type, not a sentence: the decline can surface from deep
+    /// inside ``fetchFollowingRedirects`` (a redirect that leaves the approved
+    /// origin re-prompts), and the only honest way for ``run`` to tell it apart
+    /// from a real fetch error is for the throw site to SAY which it is.
+    /// Matching on the wording instead would misfire the day someone rewords
+    /// this string — or the day a fetched page happens to contain it.
+    ///
+    /// ``message`` is the model-facing wire text. It stays plain and factual;
+    /// what the USER sees is ``FailureDiagnosis/Kind/userDeclined``.
+    struct ApprovalDeclined: LocalizedError, Equatable {
+        let message: String
+        /// Belt-and-braces: ``errorResult`` unwraps this type before anything
+        /// reads `localizedDescription`, but a future caller that doesn't would
+        /// otherwise hand the model Foundation's "The operation couldn't be
+        /// completed." placeholder instead of what actually happened.
+        var errorDescription: String? { message }
+    }
+
     static func run(
         arguments: String,
         approval: BrowseApprovalStore,
@@ -108,7 +128,11 @@ enum BrowseTool {
 
         switch await approval.requestApproval(url: rawURL, host: host) {
         case .deny:
-            return err(tool, "the user did not approve browsing \(host)")
+            return declined(tool, ApprovalDeclined(message: "the user did not approve browsing \(host)"))
+        case .unavailable:
+            // Nobody was asked, so this is NOT the user's decision and must not
+            // be reported as one.
+            return err(tool, approvalUnavailableMessage(host: host))
         case .allowOnce:
             break
         }
@@ -122,10 +146,7 @@ enum BrowseTool {
             // not be able to silently bounce the fetch to an unseen destination.
             let fetched = try await fetchFollowingRedirects(startURL: url) { redirectURL in
                 let rHost = redirectURL.host ?? redirectURL.absoluteString
-                switch await approval.requestApproval(url: redirectURL.absoluteString, host: rHost) {
-                case .allowOnce: return true
-                case .deny: return false
-                }
+                return await approval.requestApproval(url: redirectURL.absoluteString, host: rHost)
             }
             let rendered = await renderMarkdown(from: fetched)
             let entry = BrowseContentCache.Entry(
@@ -142,11 +163,55 @@ enum BrowseTool {
                 bytesFetched: fetched.data.count,
                 cacheExpiresAt: cache.expirationDate(for: entry)
             )
-        } catch let rejection as BrowseSSRFGuard.Rejection {
-            return err(tool, rejection.message)
         } catch {
-            return err(tool, error.localizedDescription)
+            return errorResult(tool: tool, error: error)
         }
+    }
+
+    /// How the redirect gate's answer ends the fetch, as a value: `nil` to
+    /// carry on, otherwise the error to throw.
+    ///
+    /// Pure and separate because the branch is otherwise unreachable from a
+    /// test — a redirect needs a live server, and the SSRF guard (correctly)
+    /// refuses the loopback address a local one would have. This is the exact
+    /// function the fetch loop calls, so the decline/abort distinction is
+    /// covered by the code that ships rather than by a lookalike.
+    static func redirectGateError(
+        _ decision: BrowseApprovalStore.Decision,
+        destination: URL
+    ) -> Error? {
+        let host = destination.host ?? "the destination"
+        switch decision {
+        case .allowOnce:
+            return nil
+        case .deny:
+            return ApprovalDeclined(message: "the user did not approve the redirect to \(host)")
+        case .unavailable:
+            // Never asked, so never declined — a plain failure.
+            return simpleError(approvalUnavailableMessage(host: host))
+        }
+    }
+
+    /// Wire text for "the approval prompt could not be put to the user". Kept
+    /// in one place so the initial gate and the redirect gate say the same
+    /// thing, and so neither is mistaken for the user's own answer.
+    static func approvalUnavailableMessage(host: String) -> String {
+        "the approval prompt for \(host) could not be shown (the request was cancelled, "
+            + "or another approval is already open)"
+    }
+
+    /// Turn a thrown fetch error into the result the model and the transcript
+    /// both read. Kept as one pure function (rather than a chain of `catch`
+    /// clauses) so the decline-vs-failure decision is testable without a
+    /// network round-trip — the redirect decline can only be reached mid-fetch.
+    static func errorResult(tool: String, error: Error) -> ToolCallResult {
+        if let declinedByUser = error as? ApprovalDeclined {
+            return declined(tool, declinedByUser)
+        }
+        if let rejection = error as? BrowseSSRFGuard.Rejection {
+            return err(tool, rejection.message)
+        }
+        return err(tool, error.localizedDescription)
     }
 
     // MARK: - Fetch (manual redirect following, SSRF-checked per hop)
@@ -160,11 +225,12 @@ enum BrowseTool {
 
     /// Follow redirects by hand so every hop is SSRF-validated before a socket
     /// opens. `startURL` is assumed already user-approved; `approveRedirect` is
-    /// consulted only when a redirect leaves an already-approved origin, and a
-    /// `false` return aborts the fetch.
+    /// consulted only when a redirect leaves an already-approved origin, and
+    /// anything but ``BrowseApprovalStore/Decision/allowOnce`` aborts the
+    /// fetch — see ``redirectGateError`` for which abort is which.
     static func fetchFollowingRedirects(
         startURL: URL,
-        approveRedirect: (URL) async -> Bool
+        approveRedirect: (URL) async -> BrowseApprovalStore.Decision
     ) async throws -> Fetched {
         var current = startURL
         var approvedOrigins: Set<String> = [origin(of: startURL)]
@@ -196,9 +262,8 @@ enum BrowseTool {
                 // otherwise a trusted host could bounce the fetch to an unseen one.
                 let nextOrigin = origin(of: next)
                 if !approvedOrigins.contains(nextOrigin) {
-                    guard await approveRedirect(next) else {
-                        throw simpleError("the user did not approve the redirect to \(next.host ?? "the destination")")
-                    }
+                    let decision = await approveRedirect(next)
+                    if let refusal = redirectGateError(decision, destination: next) { throw refusal }
                     if Task.isCancelled { throw simpleError("browse was cancelled") }
                     approvedOrigins.insert(nextOrigin)
                 }
@@ -416,6 +481,21 @@ enum BrowseTool {
 
     private static func err(_ tool: String, _ message: String) -> ToolCallResult {
         ToolCallResult(toolCallID: "", content: "\(tool) error: \(message)", isError: true)
+    }
+
+    /// A fetch the USER turned down. The wire content stays identical in shape
+    /// to any other unsuccessful result — the model still needs to be told, in
+    /// plain words, that it has no page and why — but the result carries an
+    /// explicit ``FailureDiagnosis/Kind/userDeclined`` so the transcript can
+    /// render a deliberate choice as the ordinary outcome it is instead of
+    /// reporting a malfunction and blaming the user's input for it.
+    private static func declined(_ tool: String, _ error: ApprovalDeclined) -> ToolCallResult {
+        ToolCallResult(
+            toolCallID: "",
+            content: "\(tool) error: \(error.message)",
+            isError: true,
+            failureKind: .userDeclined
+        )
     }
 
     private static func simpleError(_ message: String) -> NSError {

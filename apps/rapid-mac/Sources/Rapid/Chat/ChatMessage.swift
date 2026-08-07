@@ -238,6 +238,46 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         case toolNotCalledFlagged
         case toolCallArtifactSuppressed
         case createdAt
+        /// The outcome as THIS build understands it. ``failureKind`` carries
+        /// the same outcome narrowed to a value older builds can decode — see
+        /// ``encode(to:)``.
+        case failureKindV2
+    }
+
+    /// Hand-written so ``failureKind`` is persisted TWICE.
+    ///
+    /// ``FailureDiagnosis.Kind`` decodes strictly in every build already in
+    /// users' hands, and ``ConversationStore.load`` turns ONE undecodable
+    /// message into "the whole history is corrupt": the file is sided to
+    /// `conversations.corrupt-<uuid>.json` and the sidebar comes up empty.
+    /// So a raw value added after a release must never be written into the
+    /// key those builds read — that would cost a user who downgrades their
+    /// entire visible history, which is precisely the failure ``Role.unknown``
+    /// and ``Status.unknown`` exist to prevent on the other two enums.
+    ///
+    /// Hence: ``failureKind`` gets ``legacyPersistedKind`` (always a value
+    /// every shipped build knows, so an old build reads a slightly coarser
+    /// outcome and keeps the conversation), and ``failureKindV2`` — a key old
+    /// builds simply ignore — gets the real one. Adding a future kind needs
+    /// nothing here beyond its ``legacyPersistedKind`` mapping.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(role, forKey: .role)
+        try c.encode(content, forKey: .content)
+        try c.encode(reasoning, forKey: .reasoning)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
+        try c.encodeIfPresent(failureKind?.legacyPersistedKind, forKey: .failureKind)
+        try c.encodeIfPresent(failureKind, forKey: .failureKindV2)
+        try c.encodeIfPresent(toolCalls, forKey: .toolCalls)
+        try c.encodeIfPresent(toolCallID, forKey: .toolCallID)
+        try c.encodeIfPresent(stats, forKey: .stats)
+        try c.encode(reasoningTruncated, forKey: .reasoningTruncated)
+        try c.encode(contentTruncated, forKey: .contentTruncated)
+        try c.encode(toolNotCalledFlagged, forKey: .toolNotCalledFlagged)
+        try c.encode(toolCallArtifactSuppressed, forKey: .toolCallArtifactSuppressed)
+        try c.encode(createdAt, forKey: .createdAt)
     }
 
     init(from decoder: Decoder) throws {
@@ -248,7 +288,16 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.reasoning = try c.decode(String.self, forKey: .reasoning)
         self.status = try c.decode(Status.self, forKey: .status)
         self.errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
-        self.failureKind = try c.decodeIfPresent(FailureDiagnosis.Kind.self, forKey: .failureKind)
+        // Prefer the finer v2 value; fall back to the original key for rows
+        // written before it existed (and for rows an older build re-saved).
+        //
+        // Read v2 as a raw string rather than through ``Kind``'s tolerant
+        // decode: a value this build doesn't recognise came from a NEWER one,
+        // which wrote its closest known ancestor into ``failureKind`` — and
+        // that is strictly better than the blanket degrade to ``.toolFailed``.
+        let modernRaw = try c.decodeIfPresent(String.self, forKey: .failureKindV2)
+        let legacyKind = try c.decodeIfPresent(FailureDiagnosis.Kind.self, forKey: .failureKind)
+        self.failureKind = modernRaw.flatMap(FailureDiagnosis.Kind.init(rawValue:)) ?? legacyKind
         self.toolCalls = try c.decodeIfPresent([ToolCall].self, forKey: .toolCalls)
         self.toolCallID = try c.decodeIfPresent(String.self, forKey: .toolCallID)
         self.stats = try c.decodeIfPresent(MessageStats.self, forKey: .stats)

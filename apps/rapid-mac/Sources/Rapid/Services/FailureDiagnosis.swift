@@ -1,8 +1,13 @@
 import Foundation
 
-/// A user-facing explanation for a known failure mode. Raw process,
-/// transport, and tool output stays in logs/model context; views render only
-/// this stable copy and, when available, one concrete recovery action.
+/// A user-facing explanation for a known outcome that stopped short of a
+/// result. Raw process, transport, and tool output stays in logs/model
+/// context; views render only this stable copy and, when available, one
+/// concrete recovery action.
+///
+/// Most kinds describe a genuine fault. One does not: ``Kind/userDeclined``
+/// is the user answering "no" to a permission prompt, which is an ordinary
+/// outcome and must never be dressed as a malfunction — see ``Severity``.
 struct FailureDiagnosis: Equatable, Sendable {
     enum Kind: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
         case modelOutOfMemory
@@ -20,9 +25,60 @@ struct FailureDiagnosis: Equatable, Sendable {
         case fileNotFound
         case filePermissionDenied
         case toolFailed
+        case userDeclined
         case downloadFailed
         case downloadSourceUnavailable
         case requestFailed
+
+        /// Forward-tolerant decode, matching ``ChatMessage/Role`` and
+        /// ``ChatMessage/Status``: a raw value this build doesn't know (a
+        /// transcript written by a NEWER build, then a downgrade) degrades to
+        /// the generic ``.toolFailed`` rather than throwing. A throw here is
+        /// not local — ``ConversationStore/load`` treats one undecodable
+        /// message as a corrupt library and sides the whole history file, so
+        /// the user's sidebar reads as wiped.
+        init(from decoder: Decoder) throws {
+            let raw = try decoder.singleValueContainer().decode(String.self)
+            self = Kind(rawValue: raw) ?? .toolFailed
+        }
+
+        /// The nearest kind that EVERY shipped build already knows, used when
+        /// writing to a key older builds decode strictly. Cases present since
+        /// the first release map to themselves; anything added later names its
+        /// closest ancestor here. See ``ChatMessage/encode(to:)``.
+        var legacyPersistedKind: Kind {
+            switch self {
+            case .userDeclined:
+                return .toolFailed
+            // Added in #1580, after the same release ``userDeclined`` post-dates,
+            // so it carries the same hazard: an older build decoding this raw
+            // value throws, and one throw sides the ENTIRE history file.
+            // ``webSearchUnavailable`` is the honest ancestor — it is the kind
+            // this very condition used to land on, so an older build shows the
+            // copy it always showed for a throttled search.
+            case .webSearchRateLimited:
+                return .webSearchUnavailable
+            case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
+                 .webSearchOffline, .webSearchUnavailable,
+                 .commandPermissionDenied, .commandFailed,
+                 .fileNotFound, .filePermissionDenied, .toolFailed,
+                 .downloadFailed, .downloadSourceUnavailable, .requestFailed:
+                return self
+            }
+        }
+    }
+
+    /// How a diagnosis should be PRESENTED, independent of what it says.
+    ///
+    /// Something the app (or the network, or the model) got wrong is an
+    /// ``error``: red, alarming, worth interrupting for. Something the USER
+    /// chose is a ``notice``: it explains why nothing came back and then gets
+    /// out of the way. Painting a deliberate "Don't allow" red tells the user
+    /// their own decision was a malfunction, and — because the copy on that
+    /// lane is written for faults — blames their input for it.
+    enum Severity: String, Equatable, Hashable, Sendable {
+        case error
+        case notice
     }
 
     enum Action: String, Equatable, Sendable {
@@ -62,9 +118,16 @@ struct FailureDiagnosis: Equatable, Sendable {
     let message: String
     let action: Action?
 
+    var severity: Severity { kind.severity }
+
     /// The recovery action a tool card may render inline, or nil for "render
-    /// no button". Two gates, both load-bearing:
+    /// no button". Three gates, all load-bearing:
     ///
+    ///   * **Errors only.** A ``Severity/notice`` is an outcome the USER chose
+    ///     (they answered "no" to a permission prompt), so there is nothing for
+    ///     the app to recover and no button to offer. Gating on severity rather
+    ///     than on `action == nil` keeps the card's rule in one place: a notice
+    ///     that ever gains an action still must not sprout a button here.
     ///   * **Settings deep-links only.** ``.retry`` would have to rewind the
     ///     whole chat turn; the assistant row above the card already owns that
     ///     affordance. "Open Settings on the right tab" has nowhere else to
@@ -76,16 +139,44 @@ struct FailureDiagnosis: Equatable, Sendable {
     ///     does nothing is precisely the failure this diagnosis exists to
     ///     remove, so the button must be absent rather than inert.
     ///
+    /// The action switch is exhaustive with no `default` for the same reason
+    /// ``Kind/severity`` is: a newly added action must state whether the tool
+    /// card offers it, rather than being silently swallowed.
+    ///
     /// Pure + static because the view that calls it is `private` inside
     /// ChatView and a SwiftUI body can't be exercised from the test suite.
     static func inlineToolCardAction(
         for diagnosis: FailureDiagnosis?,
         canRouteToSettings: Bool
     ) -> Action? {
-        guard canRouteToSettings else { return nil }
-        switch diagnosis?.action {
-        case .openWebSearchSettings: return .openWebSearchSettings
-        default: return nil
+        guard canRouteToSettings, let diagnosis, diagnosis.severity == .error else { return nil }
+        switch diagnosis.action {
+        case .openWebSearchSettings:
+            return .openWebSearchSettings
+        case .retry, .restart, .openModelManagement, .switchDownloadSource,
+             .openPermissions, .none:
+            return nil
+        }
+    }
+}
+
+extension FailureDiagnosis.Kind {
+    /// Deliberately an exhaustive switch with no `default`: a new kind must
+    /// state whether it is a fault the app is reporting or an outcome the user
+    /// chose, rather than inheriting the alarming lane by omission.
+    var severity: FailureDiagnosis.Severity {
+        switch self {
+        case .userDeclined:
+            return .notice
+        // A throttled backend is something that went wrong out in the world,
+        // not something the user picked — it stays on the error lane, and its
+        // copy and deep-link do the recovering.
+        case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
+             .webSearchOffline, .webSearchUnavailable, .webSearchRateLimited,
+             .commandPermissionDenied, .commandFailed,
+             .fileNotFound, .filePermissionDenied, .toolFailed,
+             .downloadFailed, .downloadSourceUnavailable, .requestFailed:
+            return .error
         }
     }
 }
@@ -146,6 +237,19 @@ enum FailureDiagnoser {
         case .toolFailed:
             message = "The tool couldn't finish. Check its input, then try again."
             action = .retry
+        case .userDeclined:
+            // Nothing went wrong, so the copy states the outcome and stops.
+            // No action button: the app has nothing to fix and nothing to
+            // recover, and a prominent "Retry" would offer to re-run the exact
+            // thing the user just refused — one stray click away from the
+            // permission prompt existing for nothing. A user who declined by
+            // mistake simply asks again, and the transcript's own per-message
+            // Retry is still right there for a mis-click.
+            // "nothing to show" rather than "nothing happened": a redirect can
+            // be declined after the approved page has already been fetched, so
+            // the honest claim is about the result, not the whole exchange.
+            message = "You didn't allow this, so there's nothing to show. Ask again if you change your mind."
+            action = nil
         case .downloadFailed:
             message = "The model download didn't finish. Check your connection, then try again."
             action = .retry
@@ -162,6 +266,16 @@ enum FailureDiagnoser {
     /// Classifies a completed tool result. A non-nil return means the result
     /// should be styled as failed even if the tool itself returned structured
     /// output with `isError == false` (notably `run_command` exit failures).
+    ///
+    /// This is a FALLBACK for tools that report nothing but text. A tool that
+    /// knows what happened says so directly by setting
+    /// ``ToolCallResult/failureKind``, and the dispatch boundary
+    /// (``BuiltinToolRegistry/run``) prefers that over anything inferred here.
+    /// ``FailureDiagnosis/Kind/userDeclined`` in particular is ONLY ever
+    /// producer-set: "the user said no" is a fact the approval gate holds, not
+    /// something to re-derive by pattern-matching an English sentence that any
+    /// tool could word differently tomorrow (or that a fetched page could
+    /// contain verbatim).
     nonisolated static func toolFailureKind(
         toolName: String,
         content: String,

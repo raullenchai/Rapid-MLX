@@ -24,6 +24,15 @@ can actually understand.
   searches from this Mac") and offers a one-click jump to Settings → Tools,
   where you can switch to Brave Search or Tavily. The Settings caption for
   DuckDuckGo no longer claims it "works out of the box."
+- **Turning down a web page is no longer treated as a breakage.** When a model
+  asked to fetch a page and you chose "Don't allow", Rapid showed a red card
+  reading "The tool couldn't finish. Check its input, then try again" — telling
+  you something had gone wrong, blaming what you typed for it, and offering to
+  retry the thing you had just refused. Declining is now shown as what it is: a
+  quiet note saying "You didn't allow this, so there's nothing to show. Ask
+  again if you change your mind," with no error styling and no retry button.
+  Stopping a reply while the permission box is open is no longer recorded as
+  you having said no, either.
 
 ## [0.12.5] — 2026-08-05
 
