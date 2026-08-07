@@ -41,6 +41,36 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def _resolve_config_path(cfg) -> Path:
+    """Where ``--setup`` should write this agent's config.
+
+    Normally the profile's own path (``~/.codex/config.toml``). But every
+    agent CLI we drive lets the user relocate its config directory with an
+    environment variable — ``CODEX_HOME``, ``HERMES_HOME`` — and when the
+    profile names that variable and it is set, we write *there* instead.
+
+    That is what lets a test harness point ``--setup`` at a throwaway
+    directory. The alternative it replaces — back up the operator's config,
+    overwrite it, restore it afterwards — fails in two ways that are hard to
+    notice: the restore is skipped entirely on SIGKILL, and once a config has
+    been clobbered by any run, every subsequent run faithfully backs up and
+    restores the *damaged* file, so the breakage looks freshly caused each
+    time while actually dating from the first incident.
+
+    Only the file name is taken from the profile path, so a relocated home
+    never inherits the real one's directory layout.
+    """
+    assert cfg.path
+    default = Path(os.path.expanduser(cfg.path))
+    home_env = getattr(cfg, "home_env", None)
+    if not home_env:
+        return default
+    override = os.environ.get(home_env, "").strip()
+    if not override:
+        return default
+    return Path(os.path.expanduser(override)) / default.name
+
+
 def _atomic_write(target: Path, content: str) -> None:
     """Write *content* to *target* atomically, preserving symlinks and mode.
 
@@ -115,7 +145,7 @@ def setup_agent_config(
         return summary
 
     if cfg.path:
-        config_path = Path(os.path.expanduser(cfg.path))
+        config_path = _resolve_config_path(cfg)
         config_path.parent.mkdir(parents=True, exist_ok=True)
 
         if profile.name == "codex" and isinstance(rendered, str):

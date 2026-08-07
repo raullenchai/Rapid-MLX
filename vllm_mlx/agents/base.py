@@ -22,6 +22,16 @@ class AgentConfigSpec:
     path: str | None = None  # config file path (for yaml/json/toml)
     template: str | None = None  # config file template with {base_url}, {model_id}
     env_vars: dict[str, str] | None = None  # env vars for "env" type
+    # Name of the environment variable the agent's own CLI uses to relocate
+    # its config directory (codex: CODEX_HOME, hermes: HERMES_HOME). When it
+    # is set, ``--setup`` writes there instead of the operator's real config.
+    #
+    # This is what makes the gate non-destructive. Without it, a harness that
+    # wants an isolated config has only backup-then-restore, which loses on
+    # SIGKILL and — worse — silently re-saves damage: a config clobbered once
+    # is faithfully backed up and restored by every later run, so the break
+    # looks permanent and self-inflicted by each run in turn.
+    home_env: str | None = None
 
 
 @dataclass

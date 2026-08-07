@@ -44,8 +44,23 @@ WORK="$HOME/agent-smoke-work"
 LOG="$HOME/agent-smoke-serve.log"
 SERVE_PID=""
 
-CODEX_CFG="$HOME/.codex/config.toml"
-HERMES_CFG="$HOME/.hermes/config.yaml"
+# Throwaway config homes. codex and hermes both relocate their entire config
+# directory via these variables, and `agents <x> --setup` honours them, so this
+# gate never reads or writes the operator's real ~/.codex or ~/.hermes.
+#
+# This replaces backup-then-restore as the PRIMARY protection. That approach
+# has two failure modes we actually hit: the restore never runs if the script
+# is SIGKILLed, and — the one that did real damage — once a config has been
+# clobbered by any run, every later run faithfully backs it up and restores
+# the *damaged* file. The operator's codex stayed pointed at a local rapid-mlx
+# server for weeks that way, with each run's restore looking like it worked.
+#
+# Exported so `agents --setup`, the agent CLIs, and anything they spawn all
+# agree on the same location.
+export CODEX_HOME="${CODEX_HOME_OVERRIDE:-$(mktemp -d)}"
+export HERMES_HOME="${HERMES_HOME_OVERRIDE:-$(mktemp -d)}"
+CODEX_CFG="$CODEX_HOME/config.toml"
+HERMES_CFG="$HERMES_HOME/config.yaml"
 
 # Portable timeout: coreutils `timeout`, or `gtimeout`, else a bash fallback
 # (background the command, hard-kill after N seconds). macOS ships neither
@@ -93,6 +108,10 @@ cleanup() {
   fi
   restore_cfg "$CODEX_CFG"
   restore_cfg "$HERMES_CFG"
+  # Both live under throwaway homes now, so this is just tidying temp files —
+  # the operator's real ~/.codex and ~/.hermes were never touched.
+  [ -n "${CODEX_HOME_OVERRIDE:-}" ] || rm -rf "$CODEX_HOME"
+  [ -n "${HERMES_HOME_OVERRIDE:-}" ] || rm -rf "$HERMES_HOME"
   rm -rf "$WORK" "$LOG"
 }
 trap cleanup EXIT

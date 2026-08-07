@@ -6,6 +6,8 @@ stars: 64000
 config:
   type: yaml
   path: "~/.hermes/config.yaml"
+  # Same contract as codex: HERMES_HOME relocates the config dir.
+  home_env: HERMES_HOME
   template: |
     model:
       provider: "custom"
