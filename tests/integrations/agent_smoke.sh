@@ -57,8 +57,26 @@ SERVE_PID=""
 #
 # Exported so `agents --setup`, the agent CLIs, and anything they spawn all
 # agree on the same location.
+#
+# Fail CLOSED. This script has no `set -e`, so a failed `mktemp -d` (full or
+# unwritable temp volume) would export an empty value, and an empty or
+# whitespace-only home is treated as *unset* on the Python side — sending
+# `--setup` straight back to the operator's real ~/.codex / ~/.hermes, which
+# is precisely the damage this redirect exists to prevent. An override of
+# "   " is nonempty to the shell but blank after Python strips it, so check
+# the trimmed value rather than trusting `${x:-}`.
 export CODEX_HOME="${CODEX_HOME_OVERRIDE:-$(mktemp -d)}"
 export HERMES_HOME="${HERMES_HOME_OVERRIDE:-$(mktemp -d)}"
+for _home_var in CODEX_HOME HERMES_HOME; do
+  eval "_home_val=\${$_home_var}"
+  case "$(printf '%s' "${_home_val}" | tr -d '[:space:]')" in
+    "") echo "SMOKE-ABORT: $_home_var is blank — refusing to run, as \`agents --setup\`" >&2
+        echo "             would then write the operator's real config." >&2
+        exit 3 ;;
+  esac
+  [ -d "${_home_val}" ] || { echo "SMOKE-ABORT: $_home_var=${_home_val} is not a directory" >&2; exit 3; }
+done
+unset _home_var _home_val
 CODEX_CFG="$CODEX_HOME/config.toml"
 HERMES_CFG="$HERMES_HOME/config.yaml"
 

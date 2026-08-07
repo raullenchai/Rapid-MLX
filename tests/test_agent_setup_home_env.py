@@ -89,3 +89,55 @@ def test_setup_writes_to_the_redirected_home_and_leaves_the_real_one_alone(
     assert "rapid-mlx" in (redirected / "config.toml").read_text()
     # The operator's file is untouched, byte for byte.
     assert sentinel.read_text() == before
+
+
+@pytest.mark.parametrize(
+    ("agent", "home_env", "version"),
+    [
+        ("hermes", "HERMES_HOME", "0.8.5"),
+        ("hermes", "HERMES_HOME", "0.9.1"),
+        ("codex", "CODEX_HOME", "0.8.5"),
+    ],
+)
+def test_version_specific_config_still_honours_the_home_env(agent, home_env, version):
+    """``--agent-version`` must not walk around the redirect.
+
+    A ``versions:`` block in the profile YAML is a *complete replacement* config,
+    so one that simply does not spell out ``home_env`` used to resolve straight
+    back to the operator's real file even with the variable set. Hermes 0.8.x
+    was exactly that shape: ``HERMES_HOME=/tmp/x agents hermes --setup
+    --agent-version 0.8.5`` rewrote the real ``~/.hermes/config.yaml``. The
+    redirect is a safety property of the agent, not a per-version detail.
+    """
+    profile = get_profile(agent)
+    versioned = profile.get_config_for_version(version)
+    assert versioned.home_env == profile.config.home_env == home_env
+
+
+def test_no_resolvable_version_escapes_the_redirect():
+    """Sweep the version axis: every resolution keeps the redirect.
+
+    Structural rather than example-based, so a *future* ``versions:`` block that
+    forgets ``home_env`` fails here instead of silently rewriting someone's real
+    config during a release gate.
+    """
+    candidates = [
+        "0.1.0",
+        "0.7.9",
+        "0.8.0",
+        "0.8.5",
+        "0.9.0",
+        "0.9.1",
+        "1.0.0",
+        "2.5.3",
+    ]
+    for agent in ("codex", "hermes"):
+        profile = get_profile(agent)
+        expected = profile.config.home_env
+        assert expected, f"{agent} base config lost its home_env"
+        for version in [None, *candidates]:
+            resolved = profile.get_config_for_version(version)
+            assert resolved.home_env == expected, (
+                f"{agent} --agent-version {version} resolves to a config with "
+                f"home_env={resolved.home_env!r}, escaping {expected}"
+            )

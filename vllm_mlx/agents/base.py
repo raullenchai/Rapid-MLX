@@ -11,7 +11,7 @@ breaking the old one.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass
@@ -115,6 +115,14 @@ class AgentProfile:
             for vs in self.versions:
                 if _version_matches(agent_version, vs.version_range):
                     if vs.config:
+                        # A version block is a *complete* replacement, so it can
+                        # silently omit ``home_env`` and send ``--setup`` back to
+                        # the operator's real config even when the caller set
+                        # CODEX_HOME/HERMES_HOME. The redirect is a safety
+                        # property of the agent, not a per-version formatting
+                        # detail, so inherit it whenever the override is silent.
+                        if vs.config.home_env is None:
+                            return replace(vs.config, home_env=self.config.home_env)
                         return vs.config
         return self.config
 
