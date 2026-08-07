@@ -65,8 +65,9 @@ def test_measure_disables_prefix_cache_and_passes_selected_hf_cache(
         serve_arg=[],
         cooldown=0,
     )
-    result = benchmark.measure("qwen3-1.7b-4bit", args, {"physical_ram_gb": 32})
+    result = benchmark.measure("gemma-4-12b-4bit", args, {"physical_ram_gb": 32})
 
     assert result["status"] == "ok"
     assert "--disable-prefix-cache" in launched["argv"]
+    assert "--no-mllm" in launched["argv"]
     assert launched["env"]["HF_HUB_CACHE"] == "/Volumes/jetson/hf-cache"

@@ -40,13 +40,14 @@ DEFAULT_MODELS = [
     "qwen3.6-35b-4bit",
 ]
 MODEL_SERVE_ARGS = {
+    "gemma-4-12b-4bit": ["--no-mllm"],
     "gemma-4-26b-4bit": [
         "--no-mllm",
         "--kv-cache-dtype",
         "bf16",
         "--cache-memory-mb",
         "512",
-    ]
+    ],
 }
 
 

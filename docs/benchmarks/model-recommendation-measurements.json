@@ -1,45 +1,175 @@
 {
   "schema_version": 1,
   "environment": {
-    "timestamp_utc": "2026-08-07T20:28:07Z",
-    "hostname": "Raullens-Mini",
-    "machine": "Mac mini",
-    "chip": "Apple M2 Pro (10-core)",
+    "timestamp_utc": "2026-08-07T22:27:20Z",
+    "hostname": "Raullens-Mini.attlocal.net",
     "chip_model": "Mac14,12",
     "physical_ram_gb": 32,
     "macos": "26.5.2",
-    "rapid_mlx": "0.12.5",
-    "git_sha": "aba2fdd11da4636b6372415f7903fc90f45ff3e8",
+    "rapid_mlx": "0.12.7",
     "mlx": "0.31.2",
     "mlx_lm": "0.31.3",
-    "mlx_vlm": "0.6.3",
-    "python": "3.12.13"
+    "git_sha": "850f62135f9c0c718aa493aea47d266443795cc9",
+    "python": "3.12.13",
+    "machine": "Mac mini",
+    "chip": "Apple M2 Pro (10-core)"
   },
   "method": {
     "serve_path": "python -m vllm_mlx.cli serve --disable-prefix-cache",
     "output_tokens": 96,
-    "long_prompt_tokens": 8110,
+    "long_prompt_tokens": 8112,
     "models_are_sequential": true,
     "max_recommended_ram_fraction": 0.75,
     "min_decode_tps": 10.0,
     "min_8k_prefill_tps": 100.0,
     "max_new_swap_mb": 0.0,
     "local_cache": "/Users/raullenmini/.cache/huggingface/hub",
-    "cold_cache": "/Volumes/mac-storage/hf-cache (Jetson over USB-C SMB; load time is not locally comparable)"
+    "cold_cache": "/Volumes/mac-storage/hf-cache (Jetson over USB-C SMB; load time is not locally comparable)",
+    "per_model_serve_args": {
+      "gemma-4-12b-4bit": [
+        "--no-mllm"
+      ],
+      "gemma-4-26b-4bit": [
+        "--no-mllm",
+        "--kv-cache-dtype",
+        "bf16",
+        "--cache-memory-mb",
+        "512"
+      ]
+    }
   },
   "measurements": [
-    {"model":"lfm2.5-1b-4bit","cache":"local","load_s":3.05,"idle_gb":0.783,"peak_8k_gb":1.872,"prefill_8k_tps":1123.22,"decode_short_tps":212.68,"decode_8k_tps":127.23,"swap_delta_mb":0.0},
-    {"model":"lfm2.5-2.6b-4bit","cache":"local","load_s":3.05,"idle_gb":1.729,"peak_8k_gb":3.029,"prefill_8k_tps":488.48,"decode_short_tps":94.46,"decode_8k_tps":65.36,"swap_delta_mb":0.0},
-    {"model":"qwen3-1.7b-4bit","cache":"jetson_smb","load_s":11.10,"idle_gb":1.307,"peak_8k_gb":5.002,"prefill_8k_tps":616.64,"decode_short_tps":133.40,"decode_8k_tps":21.23,"swap_delta_mb":0.0},
-    {"model":"lfm2.5-8b-a1b-4bit","cache":"local","load_s":5.07,"idle_gb":4.692,"peak_8k_gb":5.893,"prefill_8k_tps":634.00,"decode_short_tps":119.82,"decode_8k_tps":83.98,"swap_delta_mb":0.0},
-    {"model":"qwen3.5-4b-4bit","cache":"local","load_s":6.07,"idle_gb":2.789,"peak_8k_gb":5.856,"prefill_8k_tps":313.70,"decode_short_tps":61.78,"decode_8k_tps":41.60,"swap_delta_mb":0.0},
-    {"model":"qwen3.5-9b-4bit","cache":"local","load_s":7.08,"idle_gb":5.403,"peak_8k_gb":8.718,"prefill_8k_tps":172.69,"decode_short_tps":36.13,"decode_8k_tps":31.76,"swap_delta_mb":0.0},
-    {"model":"qwen3.5-9b-8bit","cache":"jetson_smb","load_s":75.51,"idle_gb":9.489,"peak_8k_gb":13.0,"prefill_8k_tps":173.89,"decode_short_tps":21.08,"decode_8k_tps":19.41,"swap_delta_mb":0.0},
-    {"model":"gemma-4-12b-4bit","cache":"local","load_s":6.06,"idle_gb":6.995,"peak_8k_gb":11.0,"prefill_8k_tps":52.42,"decode_short_tps":23.45,"decode_8k_tps":22.16,"swap_delta_mb":0.0},
-    {"model":"deepseek-coder-v2-lite-16b-4bit","cache":"jetson_smb","load_s":67.43,"idle_gb":8.531,"peak_8k_gb":15.0,"prefill_8k_tps":465.56,"decode_short_tps":84.33,"decode_8k_tps":11.29,"swap_delta_mb":0.0},
-    {"model":"bonsai-27b-2bit","cache":"local","load_s":8.09,"idle_gb":7.678,"peak_8k_gb":13.0,"prefill_8k_tps":169.13,"decode_short_tps":17.68,"decode_8k_tps":15.31,"swap_delta_mb":0.0},
-    {"model":"gemma-4-26b-4bit","cache":"local","serve_args":["--no-mllm","--kv-cache-dtype","bf16","--cache-memory-mb","512"],"load_s":12.11,"idle_gb":14.0,"peak_8k_gb":17.0,"prefill_8k_tps":276.77,"decode_short_tps":50.81,"decode_8k_tps":39.62,"swap_delta_mb":0.0},
-    {"model":"qwen3.5-35b-4bit","cache":"local","status":"aborted_after_short_prompt","load_s":14.13,"idle_gb":19.0,"peak_short_gb":19.0,"decode_short_tps":58.49,"swap_delta_mb":1119.8},
-    {"model":"qwen3.6-27b-4bit","cache":"local","load_s":12.13,"idle_gb":15.0,"peak_8k_gb":20.0,"prefill_8k_tps":48.90,"decode_short_tps":11.43,"decode_8k_tps":10.59,"swap_delta_mb":0.0}
+    {
+      "model": "lfm2.5-1b-4bit",
+      "cache": "local",
+      "status": "ok",
+      "load_s": 3.05,
+      "idle_gb": 0.777,
+      "peak_8k_gb": 1.866,
+      "prefill_8k_tps": 1084.13,
+      "decode_short_tps": 208.41,
+      "decode_8k_tps": 124.33,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "lfm2.5-2.6b-4bit",
+      "cache": "jetson_smb",
+      "status": "ok",
+      "load_s": 19.12,
+      "idle_gb": 1.73,
+      "peak_8k_gb": 3.014,
+      "prefill_8k_tps": 472.71,
+      "decode_short_tps": 93.45,
+      "decode_8k_tps": 64.95,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "lfm2.5-8b-a1b-4bit",
+      "cache": "jetson_smb",
+      "status": "ok",
+      "load_s": 39.19,
+      "idle_gb": 4.697,
+      "peak_8k_gb": 5.897,
+      "prefill_8k_tps": 618.31,
+      "decode_short_tps": 117.88,
+      "decode_8k_tps": 82.52,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "qwen3.5-4b-4bit",
+      "cache": "local",
+      "status": "ok",
+      "load_s": 6.06,
+      "idle_gb": 2.911,
+      "peak_8k_gb": 5.977,
+      "prefill_8k_tps": 303.05,
+      "decode_short_tps": 60.68,
+      "decode_8k_tps": 39.94,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "qwen3.5-9b-4bit",
+      "cache": "jetson_smb",
+      "status": "ok",
+      "load_s": 43.2,
+      "idle_gb": 5.403,
+      "peak_8k_gb": 8.718,
+      "prefill_8k_tps": 166.49,
+      "decode_short_tps": 35.74,
+      "decode_8k_tps": 30.51,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "gemma-4-12b-4bit",
+      "cache": "jetson_smb",
+      "status": "ok",
+      "load_s": 56.34,
+      "idle_gb": 7.017,
+      "peak_8k_gb": 11.0,
+      "prefill_8k_tps": 104.75,
+      "decode_short_tps": 22.27,
+      "decode_8k_tps": 19.01,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "bonsai-27b-2bit",
+      "cache": "jetson_smb",
+      "status": "ok",
+      "load_s": 63.28,
+      "idle_gb": 7.685,
+      "peak_8k_gb": 13.0,
+      "prefill_8k_tps": 163.87,
+      "decode_short_tps": 17.47,
+      "decode_8k_tps": 15.0,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "gemma-4-26b-4bit",
+      "cache": "local",
+      "status": "ok",
+      "load_s": 11.2,
+      "idle_gb": 14.0,
+      "peak_8k_gb": 17.0,
+      "prefill_8k_tps": 268.64,
+      "decode_short_tps": 49.5,
+      "decode_8k_tps": 36.9,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "qwen3.5-35b-4bit",
+      "cache": "local",
+      "status": "ok",
+      "load_s": 14.1,
+      "idle_gb": 19.0,
+      "peak_8k_gb": 22.0,
+      "prefill_8k_tps": 287.09,
+      "decode_short_tps": 58.53,
+      "decode_8k_tps": 21.14,
+      "swap_delta_mb": 4.4
+    },
+    {
+      "model": "qwen3.6-27b-4bit",
+      "cache": "jetson_smb",
+      "status": "ok",
+      "load_s": 119.76,
+      "idle_gb": 15.0,
+      "peak_8k_gb": 21.0,
+      "prefill_8k_tps": 46.7,
+      "decode_short_tps": 10.95,
+      "decode_8k_tps": 10.12,
+      "swap_delta_mb": 0.0
+    },
+    {
+      "model": "qwen3.6-35b-4bit",
+      "cache": "jetson_smb",
+      "status": "aborted_swap",
+      "load_s": 155.0,
+      "idle_gb": 19.0,
+      "peak_8k_gb": null,
+      "prefill_8k_tps": null,
+      "decode_short_tps": 59.86,
+      "decode_8k_tps": null,
+      "swap_delta_mb": 648.4
+    }
   ]
 }

@@ -39,34 +39,36 @@ rows live in [`model-recommendation-measurements.json`](model-recommendation-mea
 
 ## Table 1 — chip × RAM × model × engine
 
-First release sweep: Mac mini Mac14,12, Apple M2 Pro (10-core), 32 GB, macOS
-26.5.2; Rapid-MLX 0.12.5 at `aba2fdd1`; MLX 0.31.2; mlx-lm 0.31.3. `Peak` is
+Release refresh: Mac mini Mac14,12, Apple M2 Pro (10-core), 32 GB, macOS
+26.5.2; Rapid-MLX 0.12.7 at `850f6213`; MLX 0.31.2; mlx-lm 0.31.3. `Peak` is
 the process-lifetime `phys_footprint_peak`. Throughput columns show short / 8K.
 
 | Model | Load | Idle | 8K peak | Prefill tok/s | Decode tok/s | New swap | Decision |
 |---|---:|---:|---:|---:|---:|---:|---|
-| `lfm2.5-1b-4bit` | 3.1s | 0.78 GB | 1.87 GB | 1,123 | 213 / 127 | 0 MB | Very fast; basic chat only |
-| `lfm2.5-2.6b-4bit` | 3.1s | 1.73 GB | 3.03 GB | 488 | 94.5 / 65.4 | 0 MB | Smarter small-model option; not for coding |
-| `qwen3-1.7b-4bit`² | 11.1s | 1.31 GB | 5.00 GB | 617 | 133 / 21.2 | 0 MB | Runs well; quality remains untested |
-| `lfm2.5-8b-a1b-4bit` | 5.1s | 4.69 GB | 5.89 GB | 634 | 120 / 84.0 | 0 MB | Fast chat specialist |
-| `qwen3.5-4b-4bit` | 6.1s | 2.79 GB | 5.86 GB | 314 | 61.8 / 41.6 | 0 MB | Fast general-purpose |
-| `qwen3.5-9b-4bit` | 7.1s | 5.40 GB | 8.72 GB | 173 | 36.1 / 31.8 | 0 MB | Strong laptop default |
-| `qwen3.5-9b-8bit`² | 75.5s | 9.49 GB | 13.0 GB | 174 | 21.1 / 19.4 | 0 MB | Fits 18 GB narrowly; slow remote load |
-| `gemma-4-12b-4bit` | 6.1s | 7.00 GB | 11.0 GB | 52 | 23.5 / 22.2 | 0 MB | Fails 8K prefill gate |
-| `deepseek-coder-v2-lite-16b-4bit`² | 67.4s | 8.53 GB | 15.0 GB | 466 | 84.3 / 11.3 | 0 MB | Coding specialist; 32 GB floor |
-| `bonsai-27b-2bit` | 8.1s | 7.68 GB | 13.0 GB | 169 | 17.7 / 15.3 | 0 MB | Smart 24 GB candidate |
-| `gemma-4-26b-4bit`¹ | 12.1s | 14.0 GB | 17.0 GB | 277 | 50.8 / 39.6 | 0 MB | Floor at 32 GB, not 24 GB |
-| `qwen3.5-35b-4bit` | 14.1s | 19.0 GB | — | — | 58.5 / — | **1,120 MB** | Aborted after short prompt; floor above 32 GB |
-| `qwen3.6-27b-4bit` | 12.1s | 15.0 GB | 20.0 GB | 48.9 | 11.4 / 10.6 | 0 MB | Fails 8K prefill gate |
+| `lfm2.5-1b-4bit` | 3.1s | 0.78 GB | 1.87 GB | 1,084 | 208 / 124 | 0 MB | Very fast; basic chat only |
+| `lfm2.5-2.6b-4bit`² | 19.1s | 1.73 GB | 3.01 GB | 473 | 93.5 / 65.0 | 0 MB | Smarter small-model option; not for coding |
+| `lfm2.5-8b-a1b-4bit`² | 39.2s | 4.70 GB | 5.90 GB | 618 | 118 / 82.5 | 0 MB | Fast chat specialist |
+| `qwen3.5-4b-4bit` | 6.1s | 2.91 GB | 5.98 GB | 303 | 60.7 / 39.9 | 0 MB | Fast general-purpose |
+| `qwen3.5-9b-4bit`² | 43.2s | 5.40 GB | 8.72 GB | 166 | 35.7 / 30.5 | 0 MB | Strong laptop default |
+| `gemma-4-12b-4bit`¹² | 56.3s | 7.02 GB | 11.0 GB | 105 | 22.3 / 19.0 | 0 MB | Barely clears prefill gate; 24 GB floor |
+| `bonsai-27b-2bit`² | 63.3s | 7.69 GB | 13.0 GB | 164 | 17.5 / 15.0 | 0 MB | Smart 24 GB candidate |
+| `gemma-4-26b-4bit`¹ | 11.2s | 14.0 GB | 17.0 GB | 269 | 49.5 / 36.9 | 0 MB | Floor at 32 GB, not 24 GB |
+| `qwen3.5-35b-4bit` | 14.1s | 19.0 GB | 22.0 GB | 287 | 58.5 / 21.1 | 4.4 MB | Runs at 32 GB; fails strict zero-new-swap gate |
+| `qwen3.6-27b-4bit`² | 119.8s | 15.0 GB | 21.0 GB | 46.7 | 11.0 / 10.1 | 0 MB | Fails 8K prefill gate |
+| `qwen3.6-35b-4bit`² | 155.0s | 19.0 GB | — | — | 59.9 / — | **648 MB** | Aborted after short prompt; floor above 32 GB |
 
-¹ Text-only launch flags: `--no-mllm --kv-cache-dtype bf16 --cache-memory-mb 512`.
+¹ Text-only launch flags: Gemma 12B uses `--no-mllm`; Gemma 26B uses
+`--no-mllm --kv-cache-dtype bf16 --cache-memory-mb 512`.
 
 ² Weights were read directly from the Jetson-backed SMB cache. Load time is
 not comparable to local-cache rows; steady-state throughput and memory are.
 
-The 32 GB Qwen 35B swap regression is tracked in #1634. The unsafe 24 GB
-Gemma 26B floor is tracked in #1636. Prefix-cache contamination of rerun
-measurements is tracked in #1641 and prevented by the harness now.
+The earlier Qwen 3.5 35B swap regression (#1634) is fixed on this HEAD; the
+different Qwen 3.6 35B alias still crosses the abort threshold on 32 GB
+(#1650). The unsafe 24 GB Gemma 26B floor (#1636) remains excluded. Prefix-cache
+contamination (#1641) is prevented by the harness. The Gemma 12B base-install
+launch omission found by this sweep is tracked in #1648 and covered by a
+regression test in this change.
 
 ## Table 2 — two choices per RAM tier
 
@@ -81,7 +83,7 @@ release change.
 | 16–17 GB | `lfm2.5-1b-4bit` | `qwen3.5-4b-4bit` | Instant basic chat vs reliable general use |
 | 18–23 GB | `qwen3.5-4b-4bit` | `qwen3.5-9b-4bit` | Both tool-capable and comfortably above 10 tok/s |
 | 24–31 GB | `qwen3.5-4b-4bit` | `bonsai-27b-2bit` | 13 GB measured peak; Gemma 26B is too large at 24 GB |
-| 32–47 GB | `qwen3.5-4b-4bit` | `gemma-4-26b-4bit` | 20 GB 8K peak with no new swap on the 32 GB floor |
+| 32–47 GB | `qwen3.5-4b-4bit` | `gemma-4-26b-4bit` | 17 GB 8K peak with no new swap on the 32 GB floor |
 | 48–63 GB | `qwen3.6-35b-4bit` | `gemma-4-26b-4bit` | Retains the existing reviewed fast pick pending a 48 GB host measurement |
 | 64–95 GB | `qwen3.6-35b-4bit` | `qwen3.6-35b-8bit` | Same family: speed vs quantization fidelity |
 | 96 GB+ | `qwen3.6-35b-4bit` | `qwen3.5-122b-mxfp4` | Workhorse speed vs maximum local capability |
