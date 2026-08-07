@@ -59,6 +59,12 @@ from vllm_mlx.coherence import (  # noqa: E402
 
 _DEFAULT_BASE_URL = os.environ.get("RAPID_MLX_BASE_URL", "http://127.0.0.1:8000/v1")
 
+# DeepSeek-R1-Distill can spend roughly 450 tokens reasoning about even a
+# one-word fact before emitting its conclusion.  The ordinary golden budgets
+# intentionally stay tiny, but reasoning mode needs enough room to reach the
+# answer instead of testing truncation behavior.
+_REASONING_BUDGET_MULTIPLIER = 16
+
 
 class InvalidServerResponseError(RuntimeError):
     """The server replied, but not with a valid chat-completion payload."""
@@ -72,7 +78,11 @@ def _generate(
     body = {
         "model": "default",
         "messages": [{"role": "user", "content": case.prompt}],
-        "max_tokens": case.max_tokens * 4 if thinking else case.max_tokens,
+        "max_tokens": (
+            case.max_tokens * _REASONING_BUDGET_MULTIPLIER
+            if thinking
+            else case.max_tokens
+        ),
         "temperature": 0.0,
         "stream": False,
         # Match the gauntlet's --no-thinking boot for ordinary families: the

@@ -63,12 +63,44 @@ _THINK_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A reasoning model may put its terse final result in a terminal LaTeX box
+# after a visible explanation.  Only accept a box at the very end; searching
+# anywhere in the prose would let a model false-green merely by mentioning the
+# expected token before reaching a different conclusion.
+_LATEX_TEXT_WRAPPER_RE = re.compile(
+    r"\\(?:text|mathrm|operatorname)\{([^{}]+)\}", re.IGNORECASE
+)
+
 
 def strip_thinking(text: str) -> str:
     """Remove reasoning-channel markers/blocks, returning only visible text."""
     if not text:
         return text
     return _THINK_BLOCK_RE.sub("", text).strip()
+
+
+def _terminal_boxed_content(text: str) -> str | None:
+    """Return the balanced content of a terminal ``\\boxed{...}``, if any."""
+    marker = r"\boxed{"
+    start = text.rfind(marker)
+    if start < 0:
+        return None
+    content_start = start + len(marker)
+    depth = 1
+    for index in range(content_start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                suffix = text[index + 1 :].strip()
+                if suffix not in {"", r"\]"}:
+                    return None
+                content = text[content_start:index].strip()
+                wrapper = _LATEX_TEXT_WRAPPER_RE.fullmatch(content)
+                return wrapper.group(1) if wrapper else content
+    return None
 
 
 def _max_char_run(s: str) -> int:
@@ -278,6 +310,9 @@ def evaluate_concluded(case: GoldenCase, text: str) -> tuple[bool, str]:
         return False, "no concluded answer after stripping reasoning channel"
     if _matches_exact(concluded, case.expect):
         return True, f"concluded answer exactly matches {case.expect!r}"
+    boxed = _terminal_boxed_content(concluded)
+    if boxed is not None and _matches_exact(boxed, case.expect):
+        return True, f"terminal boxed conclusion exactly matches {case.expect!r}"
     return False, f"concluded answer not an exact match for {case.expect!r}"
 
 

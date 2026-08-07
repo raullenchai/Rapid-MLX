@@ -185,6 +185,29 @@ def test_evaluate_concluded_rejects_coherent_but_wrong() -> None:
     assert not evaluate_concluded(case, "<think>reasoning</think> Osaka")[0]
 
 
+def test_evaluate_concluded_accepts_only_a_terminal_boxed_answer() -> None:
+    case = next(c for c in GOLDEN if c.id == "arithmetic")
+    real_deepseek_shape = (
+        "To find the product, multiply and add the partial results. "
+        "Therefore the product is:\n\\[\n\\boxed{391}\n\\]"
+    )
+    passed, reason = evaluate_concluded(case, real_deepseek_shape)
+    assert passed
+    assert "terminal boxed" in reason
+
+    # Merely mentioning the expected result before a different conclusion must
+    # not turn the strict golden gate green.
+    assert not evaluate_concluded(case, r"Maybe \boxed{391}, but final: 392")[0]
+    assert not evaluate_concluded(case, r"Therefore: \boxed{392}")[0]
+
+    word_case = next(c for c in GOLDEN if c.id == "capital-japan")
+    assert evaluate_concluded(word_case, r"Therefore: \boxed{\text{Tokyo}}")[0]
+    assert evaluate_concluded(word_case, r"Therefore: \boxed{\mathrm{Tokyo}}")[0]
+    assert not evaluate_concluded(
+        word_case, r"Maybe \boxed{\text{Tokyo}}, but final: Osaka"
+    )[0]
+
+
 def test_evaluate_concluded_rejects_pure_reasoning_no_answer() -> None:
     case = next(c for c in GOLDEN if c.id == "arithmetic")
     passed, reason = evaluate_concluded(case, "<think>17 times 23 is 391...")
@@ -202,6 +225,40 @@ def test_reasoning_distill_untagged_prose_does_not_false_pass() -> None:
         "country in East Asia. Its largest city is Tokyo, which is where the "
         "government sits. I'm fairly sure the capital is Tok",
     )[0]
+
+
+@pytest.mark.parametrize(
+    ("thinking", "expected_max_tokens"), [(False, 32), (True, 512)]
+)
+def test_gate_gives_reasoning_distill_enough_budget_to_reach_its_conclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    thinking: bool,
+    expected_max_tokens: int,
+) -> None:
+    case = next(c for c in GOLDEN if c.id == "capital-japan")
+    captured: dict[str, object] = {}
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": "Tokyo"}}]}
+
+    def fake_post(_url: str, *, json: dict[str, object], timeout: float) -> Response:
+        captured.update(json)
+        assert timeout == 120.0
+        return Response()
+
+    monkeypatch.setattr(coherence_gate.httpx, "post", fake_post)
+    assert (
+        coherence_gate._generate(
+            "http://localhost:8000/v1", case, timeout=120.0, thinking=thinking
+        )
+        == "Tokyo"
+    )
+    assert captured["max_tokens"] == expected_max_tokens
+    assert captured["enable_thinking"] is thinking
 
 
 def test_gate_returns_infrastructure_code_for_midrun_transport_failure(
