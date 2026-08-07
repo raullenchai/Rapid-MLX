@@ -362,9 +362,27 @@ class Qwen3CoderToolParser(ToolParser):
         calls = []
         for start in self._function_start_positions(model_output):
             end = self._top_level_function_close(model_output, start)
-            if end == -1:
-                continue
             body_start = start + len(self.tool_call_prefix)
+            if end == -1:
+                # Preserve the established max-token recovery contract: a
+                # function whose parameter blocks are complete is executable
+                # even when generation stopped before ``</function>``.  Do not
+                # recover a partially emitted parameter value.
+                candidate = model_output[body_start:]
+                complete_params = self.parameter_prefix in candidate and (
+                    candidate.rstrip().endswith(self.parameter_end_token)
+                )
+                header_end = candidate.find(">")
+                wrapper_start = model_output.rfind(self.tool_call_start_token, 0, start)
+                wrapper_close = model_output.rfind(self.tool_call_end_token, 0, start)
+                wrapped_zero_arg = (
+                    wrapper_start > wrapper_close
+                    and header_end >= 0
+                    and not candidate[header_end + 1 :].strip()
+                )
+                if complete_params or wrapped_zero_arg:
+                    calls.append(candidate)
+                continue
             calls.append(model_output[body_start:end])
         return calls
 

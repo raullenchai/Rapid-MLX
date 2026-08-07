@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 import tomllib
 from packaging.requirements import Requirement
+from packaging.version import Version
 
 # Load the script directly (scripts/ is not an importable package).
 _SPEC = importlib.util.spec_from_file_location(
@@ -129,7 +130,12 @@ def test_desktop_sidecar_uses_validated_mlx_vlm_bound():
     assert len(matches) == 1, "expected exactly one mlx-vlm sidecar requirement"
 
     desktop_spec = Requirement(matches[0])
-    assert desktop_spec.specifier == vision_specs[0].specifier
+    # The desktop deliberately pins one validated version because its
+    # ``--no-deps`` install must not float.  That exact pin must remain inside
+    # the project's coherence-gated vision range; it need not copy the range
+    # text verbatim.
+    assert desktop_spec.specifier == Requirement("mlx-vlm==0.6.3").specifier
+    assert Version("0.6.3") in vision_specs[0].specifier
 
 
 class TestStrictMode:

@@ -423,6 +423,33 @@ class TestTruncatedCallsStillRecover:
         assert result.tools_called is True
         assert result.tool_calls[0]["name"] == "write_file"
 
+    def test_wrapped_zero_arg_call_truncated_after_header_recovers(self):
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "ping",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+        }
+        result = _qwen3coder().extract_tool_calls(
+            "<tool_call>\n<function=ping>", request
+        )
+        assert result.tools_called is True
+        assert result.tool_calls[0]["name"] == "ping"
+
+        # Without canonical framing, a zero-argument span is indistinguishable
+        # from prose documenting the protocol and remains non-executable.
+        bare = _qwen3coder().extract_tool_calls("<function=ping>", request)
+        assert bare.tools_called is False
+        unrelated_wrapper = _qwen3coder().extract_tool_calls(
+            "<tool_call></tool_call> prose <function=ping>", request
+        )
+        assert unrelated_wrapper.tools_called is False
+
     def test_complete_call_is_unaffected(self):
         wire = (
             "<tool_call>\n<function=write_file>\n"
