@@ -57,6 +57,33 @@ struct SidebarView: View {
     @State private var renamingID: UUID?
     @State private var renameDraft = ""
 
+    /// Keyboard focus for the inline rename editor.
+    ///
+    /// Without this the editor was purely decorative: it never became first
+    /// responder, so every keystroke went to whatever already held focus (the
+    /// chat composer), and `.onSubmit` / `.onExitCommand` — which only fire
+    /// for the FOCUSED view — were unreachable, leaving the row stuck in edit
+    /// mode with no way out. See ``renameField(_:)``.
+    @FocusState private var renameFieldFocused: Bool
+
+    /// Whether the open editor has actually held focus at least once.
+    ///
+    /// Cancel-on-focus-loss has to distinguish "the user clicked away" from
+    /// "focus has not arrived yet": the editor is created unfocused and only
+    /// takes first responder on a later scheduling pass, so reacting to every
+    /// `false` would cancel the rename the instant it opened.
+    @State private var renameFieldDidFocus = false
+
+    /// Bumped once per rename the user opens, and used as the editor's
+    /// `.task` id.
+    ///
+    /// Keying the focus request on the ROW id would tie "re-request focus" to
+    /// "a different row", which is one edit session too coarse: re-opening
+    /// Rename on the row already being edited leaves the id unchanged, so the
+    /// task would not re-run and the editor would sit there unfocused. A
+    /// per-session counter re-runs it for every open, whichever row it lands on.
+    @State private var renameSession = 0
+
     /// Whether the Archived group is expanded. Collapsed by default — the
     /// whole point of archiving is to get those rows out of the way.
     @State private var showArchived = false
@@ -248,6 +275,10 @@ struct SidebarView: View {
         let archived = archivedConversations
         if !archived.isEmpty {
             Button {
+                // Collapsing the group would take an archived row's editor off
+                // screen along with the focus observer that resolves it, so the
+                // rename would sit pending and reappear on the next expand.
+                cancelRename()
                 showArchived.toggle()
             } label: {
                 HStack(spacing: RapidTheme.Space.xs) {
@@ -294,6 +325,12 @@ struct SidebarView: View {
             let showsControls = hovering || isActive || conv.isPinned
             ZStack(alignment: .trailing) {
                 SidebarRow(isSelected: isActive) {
+                    // Navigating away resolves any rename in progress rather
+                    // than leaving a second row in edit mode behind us. The
+                    // focus-loss cancel below normally gets there first; this
+                    // is the belt-and-braces path for the case where the
+                    // editor never took focus at all.
+                    cancelRename()
                     onSelectConversation(conv.id)
                 } content: {
                     // History rows carry no icon but keep the same leading
@@ -329,6 +366,10 @@ struct SidebarView: View {
                     label: conv.isPinned ? "Unpin conversation" : "Pin conversation",
                     size: RapidTheme.ControlHeight.mini
                 ) {
+                    // Same reasoning as the menu's Pin: a pin moves the row
+                    // into its own section, restructuring the list an open
+                    // editor lives in.
+                    cancelRename()
                     chat.setConversationPinned(conv.id, !conv.isPinned)
                 }
             }
@@ -354,21 +395,38 @@ struct SidebarView: View {
 
     /// The row's actions, shared by the hover menu and the right-click menu so
     /// the two can't drift apart.
+    ///
+    /// Every item that immediately mutates or relocates a conversation resolves
+    /// a rename in progress first. Pin and Archive move a row between sections,
+    /// which restructures the list an open editor lives in, taking the editor —
+    /// and with it the focus observer that would have cancelled the edit — off
+    /// screen; so the edit is resolved up front rather than left to a blur that
+    /// may never be observed. Delete is the documented exception (see below).
     @ViewBuilder
     private func rowMenuItems(_ conv: ChatConversation) -> some View {
         Button {
+            // Tear down any rename already in flight FIRST. Rename → Rename is
+            // one continuous edit as far as ``renameFieldFocused`` is
+            // concerned: leaving it `true` would rob the new editor of the
+            // `false → true` transition its focus gate watches for, and its own
+            // eventual blur would then be ignored. Ending the previous cycle
+            // outright is what guarantees the transition happens.
+            endRename()
             renameDraft = conv.title
             renamingID = conv.id
+            renameSession &+= 1
         } label: {
             Label("Rename", systemImage: "pencil")
         }
         Divider()
         Button {
+            cancelRename()
             chat.setConversationPinned(conv.id, !conv.isPinned)
         } label: {
             Label(conv.isPinned ? "Unpin" : "Pin", systemImage: conv.isPinned ? "pin.slash" : "pin")
         }
         Button {
+            cancelRename()
             chat.setConversationArchived(conv.id, !conv.isArchived)
         } label: {
             Label(
@@ -377,29 +435,110 @@ struct SidebarView: View {
             )
         }
         Divider()
+        // Delete is the one item that does NOT need an explicit cancel: it only
+        // stages a confirmation, and presenting that dialog takes keyboard
+        // focus, which the editor's blur handler resolves. Keeping this body a
+        // bare `pendingDeletion = conv` is also what the #1568 delete-gate
+        // guard pins.
         Button("Delete", role: .destructive) {
             pendingDeletion = conv
         }
     }
 
-    /// Inline rename editor, occupying the row it replaces. Return commits,
-    /// Escape (and losing focus) cancels — the standard Finder rename
-    /// contract, so a rename can't be committed by accidentally clicking away.
+    /// Inline rename editor, occupying the row it replaces.
+    ///
+    /// Return commits. Escape cancels, and so does losing focus — clicking
+    /// another row, or anything else that takes keyboard focus — so a rename
+    /// can never be committed by accidentally clicking away. The paths that
+    /// remove the editor WITHOUT necessarily moving focus (opening another
+    /// conversation, New Chat, Launch, collapsing the Archived group) call
+    /// ``cancelRename()`` directly rather than relying on the blur. (Switching
+    /// to another app
+    /// does NOT cancel: AppKit keeps first responder inside the window, so an
+    /// open rename survives a Cmd-Tab, which is the behaviour you want.)
+    ///
+    /// Finder itself commits on click-away; cancelling is the deliberate
+    /// choice here, because a discarded draft costs one retype while a
+    /// silently-committed wrong title is a change the user never sees happen.
+    ///
+    /// Two pieces of wiring make that contract real, and both were missing
+    /// when the editor first shipped:
+    ///
+    ///   * **Focus.** ``renameFieldFocused`` is bound with `.focused(...)` and
+    ///     requested from `.task`. Requesting focus in the same render pass
+    ///     that installs the field is a documented no-op — the backing AppKit
+    ///     field is not in the responder chain yet — whereas `.task` runs once
+    ///     the field is on screen. It is keyed on ``renameSession`` so every
+    ///     edit the user opens re-focuses, whichever row it lands on. Without
+    ///     focus, keystrokes went to the chat composer and `.onSubmit` /
+    ///     `.onExitCommand` (which only fire for the focused view) were both
+    ///     unreachable.
+    ///   * **Hit area.** A bare ``TextField`` is only its intrinsic ~16pt
+    ///     tall, so inside this 30pt row the pill drawn behind it was mostly
+    ///     dead space: a click on the obvious target landed on nothing,
+    ///     resigned first responder and focused nothing at all. The
+    ///     `.contentShape` + tap handler make the whole pill focus the field.
     private func renameField(_ conv: ChatConversation) -> some View {
         TextField("Conversation name", text: $renameDraft)
             .textFieldStyle(.plain)
             .font(RapidFont.body)
+            .focused($renameFieldFocused)
             .padding(.horizontal, RapidTheme.Space.sm)
             .frame(height: RapidTheme.ControlHeight.row)
             .background(
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
                     .fill(RapidTheme.hoverFill)
             )
+            .contentShape(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+            )
+            .onTapGesture { renameFieldFocused = true }
             .onSubmit {
                 chat.renameConversation(conv.id, to: renameDraft)
-                renamingID = nil
+                endRename()
             }
-            .onExitCommand { renamingID = nil }
+            .onExitCommand { cancelRename() }
+            .task(id: renameSession) {
+                renameFieldDidFocus = false
+                // Defer the request to the next scheduling point, so it lands
+                // after the update that installs this field rather than during
+                // it — a request made mid-update reaches no AppKit field and is
+                // silently dropped. (A yield is a scheduler hop, not a
+                // guaranteed runloop turn; it is empirically sufficient here
+                // and preferable to guessing at a sleep.)
+                await Task.yield()
+                guard !Task.isCancelled, renamingID == conv.id else { return }
+                renameFieldFocused = true
+            }
+            .onChange(of: renameFieldFocused) { _, focused in
+                guard renamingID == conv.id else { return }
+                if focused {
+                    renameFieldDidFocus = true
+                    return
+                }
+                // Only a loss AFTER focus was actually held is the user
+                // clicking away; the opening `false` is just the editor
+                // waiting for its first responder.
+                guard renameFieldDidFocus else { return }
+                cancelRename()
+            }
+    }
+
+    /// Dismiss the inline editor without committing. Safe to call when no
+    /// rename is open.
+    private func cancelRename() {
+        guard renamingID != nil else { return }
+        endRename()
+    }
+
+    /// Tear down the editor's state after a commit or a cancel. Clearing
+    /// ``renameFieldDidFocus`` here is what stops the focus-loss that
+    /// FOLLOWS the dismissal from being read as a second cancel.
+    private func endRename() {
+        renamingID = nil
+        renameDraft = ""
+        renameFieldDidFocus = false
+        renameFieldFocused = false
     }
 
     /// One nav row — icon in a fixed-width slot so every label starts on
@@ -410,7 +549,15 @@ struct SidebarView: View {
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        SidebarRow(isSelected: isSelected, action: action) {
+        // Same reasoning as the history rows: leaving for New Chat / Launch
+        // resolves a rename in progress instead of stranding it.
+        SidebarRow(
+            isSelected: isSelected,
+            action: {
+                cancelRename()
+                action()
+            }
+        ) {
             HStack(spacing: RapidTheme.Space.sm) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .medium))

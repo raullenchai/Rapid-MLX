@@ -707,18 +707,33 @@ private struct MessageRow: View {
             userActions
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .task(id: isEditing) {
-            guard isEditing else { return }
-            editFieldFocused = true
-        }
     }
 
+    /// Editor for a sent user message.
+    ///
+    /// The focus request lives HERE, on the editor, rather than on the
+    /// enclosing bubble: a `.task(id: isEditing)` on the bubble runs in the
+    /// same update that flips ``isEditing``, i.e. before this ``TextEditor``
+    /// is in the responder chain, and a focus request made then is silently
+    /// dropped — the editor opened unfocused and everything the user typed
+    /// went to the chat composer instead (the same defect the sidebar's
+    /// inline rename had). Attaching `.task` to the editor means it cannot run
+    /// before the editor exists, and the yield defers the write to the next
+    /// scheduling point so it lands after the update that installs the backing
+    /// text view. (A yield is a scheduler hop, not a guaranteed runloop turn;
+    /// it is empirically sufficient here and preferable to guessing at a
+    /// sleep — same wording as ``SidebarView.renameField(_:)``.)
     private var userEditor: some View {
         TextEditor(text: $editDraft)
             .font(.body)
             .foregroundStyle(RapidTheme.userBubbleText)
             .scrollContentBackground(.hidden)
             .focused($editFieldFocused)
+            .task {
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                editFieldFocused = true
+            }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .frame(minWidth: 240, idealWidth: 420, maxWidth: 560, minHeight: 72, maxHeight: 160)
