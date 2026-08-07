@@ -81,12 +81,36 @@ struct FailureDiagnosis: Equatable, Sendable {
         case notice
     }
 
-    enum Action: String, Equatable, Sendable {
+    /// A recovery affordance a failure card may offer. Every case must be
+    /// something a view can actually carry out in THIS app — an action with no
+    /// destination is the defect this type exists to prevent, and it is worse
+    /// than no button because it fires at the moment the user has already been
+    /// let down once.
+    ///
+    /// ``CaseIterable`` on purpose: it lets the routing table
+    /// (``SettingsRouter/settingsCategory(for:)``) be pinned exhaustively by a
+    /// test, so a new case cannot be added without a stated destination.
+    ///
+    /// **Removed:** `openPermissions`. It titled a button "Open Permissions"
+    /// and had nowhere to send it — this app's ``SettingsView/Category`` set
+    /// is `models, modelManagement, tools, appearance, privacy, app`, and none
+    /// of those holds a folder-grant or file-access control (Settings →
+    /// Privacy is telemetry consent). Nor were the conditions that produced it
+    /// reachable: it was emitted only for ``Kind/commandPermissionDenied`` and
+    /// ``Kind/filePermissionDenied``, which ``FailureDiagnoser/toolFailureKind``
+    /// derives only for the tool names `run_command`, `read_file`,
+    /// `list_directory`, `write_file`, and `edit_file` — none of which this
+    /// build ships (see ``BuiltinToolRegistry``: filesystem and shell tools are
+    /// deliberately absent because there is no sandbox manager to gate them).
+    /// Routing it to the "closest" tab would only have moved the dead end and
+    /// kept a label that lies about what the user will find there, so the two
+    /// kinds now carry no action at all. The ``Kind`` cases stay — they are
+    /// persisted in transcripts and must keep decoding.
+    enum Action: String, CaseIterable, Equatable, Sendable {
         case retry
         case restart
         case openModelManagement
         case switchDownloadSource
-        case openPermissions
         /// Deep-link to Settings → Tools, where the web-search backend is
         /// chosen and its key is pasted. Routed through ``SettingsRouter``
         /// like the other "open Settings on THIS tab" actions.
@@ -98,7 +122,6 @@ struct FailureDiagnosis: Equatable, Sendable {
             case .restart: return "Restart"
             case .openModelManagement: return "Open Model Management"
             case .switchDownloadSource: return "Switch source"
-            case .openPermissions: return "Open Permissions"
             case .openWebSearchSettings: return "Open Web Search Settings"
             }
         }
@@ -108,7 +131,6 @@ struct FailureDiagnosis: Equatable, Sendable {
             case .retry, .restart: return "arrow.clockwise"
             case .openModelManagement: return "square.stack.3d.up"
             case .switchDownloadSource: return "arrow.triangle.2.circlepath"
-            case .openPermissions: return "hand.raised"
             case .openWebSearchSettings: return "magnifyingglass"
             }
         }
@@ -153,8 +175,7 @@ struct FailureDiagnosis: Equatable, Sendable {
         switch diagnosis.action {
         case .openWebSearchSettings:
             return .openWebSearchSettings
-        case .retry, .restart, .openModelManagement, .switchDownloadSource,
-             .openPermissions, .none:
+        case .retry, .restart, .openModelManagement, .switchDownloadSource, .none:
             return nil
         }
     }
@@ -223,8 +244,13 @@ enum FailureDiagnoser {
             message = "DuckDuckGo is rate-limiting web searches from this Mac. Switch to Brave Search or Tavily in Settings → Tools and add a free key."
             action = .openWebSearchSettings
         case .commandPermissionDenied:
-            message = "The command tried to change a protected location. Allow that folder, then try again."
-            action = .openPermissions
+            // No action, and no "allow that folder, then try again" — this app
+            // ships no shell tool and no place to grant a folder, so the old
+            // copy asked for a control that does not exist and the old button
+            // led nowhere. See ``FailureDiagnosis/Action``. What is left states
+            // the outcome and stops.
+            message = "The command tried to change a protected location, so it was blocked."
+            action = nil
         case .commandFailed:
             message = "The command didn't finish successfully. Check the command, then try again."
             action = .retry
@@ -232,8 +258,10 @@ enum FailureDiagnoser {
             message = "That file isn't there. Check its name or location, then try again."
             action = .retry
         case .filePermissionDenied:
-            message = "Rapid doesn't have access to that file. Allow access, then try again."
-            action = .openPermissions
+            // Same reasoning as ``commandPermissionDenied``: no file tools ship
+            // here, so there is no access to grant and nothing to open.
+            message = "Rapid doesn't have access to that file."
+            action = nil
         case .toolFailed:
             message = "The tool couldn't finish. Check its input, then try again."
             action = .retry

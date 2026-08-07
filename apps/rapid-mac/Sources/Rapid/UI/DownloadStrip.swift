@@ -22,6 +22,15 @@ import SwiftUI
 struct DownloadStrip: View {
     @Bindable var downloads: DownloadManager
 
+    /// Deep-link channel into Settings, resolved optionally so the strip still
+    /// renders in a host that never injected one (previews, the snapshot
+    /// harness) — the non-optional form traps at lookup time.
+    @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
+    /// ``openWindow(id: "settings")``, NOT ``@Environment(\.openSettings)``:
+    /// this app declares no SwiftUI ``Settings`` scene, so `OpenSettingsAction`
+    /// is a silent no-op here. See ``SettingsRouter``.
+    @Environment(\.openWindow) private var openWindow
+
     /// All known jobs, ordered: running first (by alias), then
     /// terminal states (alpha) so finished rows fall to the bottom
     /// and don't bury the live progress. Computed each render — the
@@ -104,7 +113,14 @@ struct DownloadStrip: View {
             downloads.retryDownload(alias: job.alias)
         case .switchDownloadSource:
             downloads.retryDownload(alias: job.alias, source: .huggingFace)
-        case .restart, .openModelManagement, .openPermissions, .openWebSearchSettings:
+        case .openModelManagement, .openWebSearchSettings:
+            // A download job only ever produces ``.retry`` /
+            // ``.switchDownloadSource`` today, so these are latent. Wiring
+            // them anyway costs two lines and keeps the strip from growing the
+            // dead button the Quickstart card just lost, the moment a new
+            // failure kind starts routing here.
+            settingsRouter?.route(action) { openWindow(id: "settings") }
+        case .restart:
             break
         }
     }

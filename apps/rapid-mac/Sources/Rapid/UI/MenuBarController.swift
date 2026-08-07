@@ -276,25 +276,15 @@ final class MenuBarController: NSObject {
         }
     }
 
-    /// Open the Settings scene. SwiftUI installs ONE of two selectors on
-    /// ``NSApplication`` depending on the SDK link (``showSettingsWindow:``
-    /// on macOS 13+, ``showPreferencesWindow:`` on macOS 12-); dispatch via
-    /// runtime selector so an unrecognised one lands on NSApp's default as
-    /// a no-op rather than a crash.
-    private func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        // ``NSApp.responds(to:)`` returns FALSE for these — the SwiftUI
-        // ``Settings`` scene installs the handler on the responder CHAIN,
-        // not on ``NSApplication`` itself. Gating on ``responds(to:)``
-        // (the old code) therefore always fell through to the legacy
-        // selector, which no-ops on macOS 14+/26 → the tray "Settings"
-        // item did nothing. ``sendAction(_:to:nil:from:)`` walks the
-        // chain and returns whether it was handled, so try the modern
-        // selector first and only fall back if it genuinely wasn't taken.
-        if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-        }
-    }
+    // NOTE: a private `openSettings()` used to sit here, dispatching
+    // ``showSettingsWindow:`` / ``showPreferencesWindow:`` through
+    // ``NSApp.sendAction``. It was unreferenced — the ``.settings`` case above
+    // has gone through ``AppDelegate.openSettingsWindow`` (the
+    // ``openWindow(id: "settings")`` bridge) since the tray item was fixed —
+    // and it could not have worked if it were called: both selectors are
+    // installed by a SwiftUI ``Settings`` scene, which this app does not
+    // declare. Deleted rather than left as a plausible-looking helper for the
+    // next person to reach for. See ``SettingsRouter``.
 }
 
 // MARK: - NSMenuDelegate

@@ -1091,10 +1091,10 @@ private struct ToolCallChip: View {
             // open of the session) and ``.onChange`` (already-open window
             // being re-focused); setting it after the open would race the
             // ``.onAppear`` read and land the user on the last-used tab.
-            // Same pairing ``QuickstartView`` uses for its deep-links.
-            settingsRouter?.requestedCategory = .tools
-            openWindow(id: "settings")
-        case .retry, .restart, .openModelManagement, .switchDownloadSource, .openPermissions:
+            // ``route`` owns that ordering and the tab choice; the same call
+            // ``QuickstartView`` uses for its deep-links.
+            settingsRouter?.route(action) { openWindow(id: "settings") }
+        case .retry, .restart, .openModelManagement, .switchDownloadSource:
             break
         }
     }

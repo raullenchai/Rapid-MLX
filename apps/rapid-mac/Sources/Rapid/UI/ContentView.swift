@@ -896,11 +896,17 @@ private struct BrowseApprovalSheet: View {
 /// Settings scene (no deep-link override — lands on the user's last
 /// selected tab).
 struct SettingsGearButton: View {
-    @Environment(\.openSettings) private var openSettings
+    /// ``openWindow(id: "settings")``, NOT ``@Environment(\.openSettings)``:
+    /// this app declares a real ``Window("Settings", id: "settings")`` and no
+    /// SwiftUI ``Settings`` scene, so `OpenSettingsAction` targets a scene that
+    /// does not exist and silently does nothing. See ``SettingsRouter``.
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Button {
-            openSettings()
+            // No router assignment: this affordance is "just open Settings",
+            // so it deliberately lands on the user's last selected tab.
+            openWindow(id: "settings")
         } label: {
             Image(systemName: "gearshape")
                 .font(.system(size: 14))
@@ -939,7 +945,9 @@ struct SettingsGearButton: View {
 /// would 404 for end users.
 struct DesktopVersionPill: View {
     @Bindable var updater: UpdateChecker
-    @Environment(\.openSettings) private var openSettings
+    /// ``openWindow(id: "settings")``, NOT ``@Environment(\.openSettings)`` —
+    /// see ``SettingsGearButton`` above and ``SettingsRouter``.
+    @Environment(\.openWindow) private var openWindow
     @Environment(SettingsRouter.self) private var router
 
     enum PillState: Equatable {
@@ -1004,8 +1012,11 @@ struct DesktopVersionPill: View {
 
     var body: some View {
         Button {
-            router.requestedCategory = .app
-            openSettings()
+            // ``route(to:open:)`` rather than an assignment followed by an
+            // open: ``SettingsView`` reads the router from ``.onAppear``, so
+            // the category has to land first, and the closure form makes that
+            // order impossible to invert here.
+            router.route(to: .app) { openWindow(id: "settings") }
         } label: {
             HStack(spacing: 5) {
                 if let tint = dotTint {

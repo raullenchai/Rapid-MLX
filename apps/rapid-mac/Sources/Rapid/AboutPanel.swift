@@ -12,7 +12,14 @@ import SwiftUI
 enum AboutPanel {
     private static let website = "https://rapidmlx.com"
     private static let repoURL = "https://github.com/raullenchai/Rapid-MLX"
-    private static let privacyURL = "https://rapidmlx.com/privacy"
+    /// The policy in the repository, not `rapidmlx.com/privacy` — that page
+    /// has never been published and 404s, so the About window's "Privacy"
+    /// link opened nothing. `apps/rapid-mac/PRIVACY.md` is the real,
+    /// maintained document (and the same one Settings → Privacy now opens).
+    /// Point this back at the website once the page exists.
+    /// ``RepositoryLinkTargetsTests`` pins the path.
+    private static let privacyURL =
+        "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/PRIVACY.md"
 
     /// Retained so the window isn't deallocated the moment ``show``
     /// returns (an unheld ``NSWindow`` closes itself).

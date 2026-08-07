@@ -310,8 +310,8 @@ struct SettingsView: View {
 
     /// Pop the pending deep-link target off the router and apply it.
     /// Clears the field back to nil so a subsequent
-    /// ``openSettings()`` without a request lands on whatever tab
-    /// the user was last on.
+    /// `openWindow(id: "settings")` without a request lands on whatever
+    /// tab the user was last on.
     private func consumeRouterRequest() {
         if let target = router.requestedCategory {
             categorySelection.selected = target
@@ -393,13 +393,22 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            // All three point at documents that exist in the repository. Two
+            // of them did not: "Privacy policy" opened rapidmlx.com/privacy,
+            // which 404s (the page has never been published), and
+            // "Open-source credits" opened blob/main/THIRD_PARTY.md — the
+            // repository ROOT — while the file has always lived one directory
+            // down, under apps/rapid-mac/. Both are now pointed at the real
+            // documents; ``RepositoryLinkTargetsTests`` fails the build if
+            // either path stops existing. When rapidmlx.com/privacy is
+            // published, the privacy link can move back to the website.
             HStack(spacing: 12) {
                 Link("Privacy policy",
-                     destination: URL(string: "https://rapidmlx.com/privacy")!)
+                     destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/PRIVACY.md")!)
                 Link("License (EULA)",
                      destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/LICENSE")!)
                 Link("Open-source credits",
-                     destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/THIRD_PARTY.md")!)
+                     destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/THIRD_PARTY.md")!)
             }
             .font(.callout)
 

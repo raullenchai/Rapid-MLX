@@ -693,12 +693,13 @@ Open the picker any time to switch models.
 /// ``QuickstartCoordinator`` reports the surface should show.
 struct QuickstartView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
-    @Environment(\.openSettings) private var openSettings
-    /// The mechanism that actually opens this app's Settings: it declares a
-    /// real ``Window("Settings", id: "settings")`` and no SwiftUI ``Settings``
-    /// scene, so ``openSettings()`` — used by the three cases below — is a
-    /// silent no-op. Those are a pre-existing dead deep-link, tracked
-    /// separately; the case added here uses the working path.
+    /// The ONLY mechanism that opens this app's Settings. It declares a real
+    /// ``Window("Settings", id: "settings")`` and no SwiftUI ``Settings``
+    /// scene, so ``@Environment(\.openSettings)`` — which this view used to
+    /// hold — targets a scene that does not exist and does nothing at all.
+    /// That is the worst place for a dead button: the failure card is on
+    /// screen precisely because the user's first download or start already
+    /// failed. See ``SettingsRouter`` for the ordering rule.
     @Environment(\.openWindow) private var openWindow
     @Bindable var coordinator: QuickstartCoordinator
     @Bindable var downloads: DownloadManager
@@ -1274,20 +1275,16 @@ struct QuickstartView: View {
         case .restart:
             coordinator.enterStarting()
             Task { await server.start(alias: coordinator.selection.alias) }
-        case .openModelManagement:
-            settingsRouter.requestedCategory = .modelManagement
-            openSettings()
-        case .openPermissions:
-            // The minimal app has no Permissions tab; land on Models.
-            settingsRouter.requestedCategory = .models
-            openSettings()
-        case .openWebSearchSettings:
-            // Not reachable from a download/model failure, but the deep-link
-            // is the same two lines wherever it fires: set the target tab,
-            // then open the window (``SettingsView`` reads the router from
-            // ``.onAppear``, so the assignment has to come first).
-            settingsRouter.requestedCategory = .tools
-            openWindow(id: "settings")
+        case .openModelManagement, .openWebSearchSettings:
+            // One path for every Settings deep-link. ``route`` stages the
+            // target tab and only then runs the open — ``SettingsView`` reads
+            // the router from ``.onAppear``, so the assignment has to land
+            // first, and passing the open as a closure means this call site
+            // cannot get that order wrong.
+            //
+            // ``openWindow(id: "settings")``, NOT ``openSettings()`` — see the
+            // ``openWindow`` property above.
+            settingsRouter.route(action) { openWindow(id: "settings") }
         }
     }
 
@@ -1299,7 +1296,6 @@ struct QuickstartView: View {
         case .restart: return "Quickstart.Restart"
         case .openModelManagement: return "Quickstart.OpenModelManagement"
         case .switchDownloadSource: return "Quickstart.SwitchSource"
-        case .openPermissions: return "Quickstart.OpenPermissions"
         case .openWebSearchSettings: return "Quickstart.OpenWebSearchSettings"
         case nil: return nil
         }
