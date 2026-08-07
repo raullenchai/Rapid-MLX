@@ -39,6 +39,13 @@ jobs:
       - name: CLI ↔ Config fidelity audit
         run: python scripts/audit_cli_config_fidelity.py
 
+      # The engine and the desktop app ship ONE version number. Two
+      # hand-maintained sources (pyproject.toml and the app's Info.plist)
+      # had nothing between them and drifted to 0.12.5 vs 0.12.6, both
+      # called "the latest release". Stdlib only — no mlx, no macOS.
+      - name: Engine ↔ desktop app version sync
+        run: python scripts/check_version_sync.py
+
       # PF-3 — all GitHub Actions are immutable 40-char commit SHA pins.
       # Dependabot or a reviewed PR is required to advance an action.
       - name: GitHub Actions SHA pinning
@@ -180,6 +187,7 @@ jobs:
             tests/test_aliases_contract.py \
             tests/test_alias_subfolder.py \
             tests/test_ram_tier_recommendations_agree.py \
+            tests/test_version_sync.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
