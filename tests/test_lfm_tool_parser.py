@@ -380,6 +380,193 @@ class TestAutoParserLfmStreaming:
         assert result is None or "tool_calls" not in result
 
 
+def _stream(parser, chunks):
+    """Feed ``chunks`` through the streaming parser, return (content, calls).
+
+    Mirrors what ``StreamingPostProcessor._detect_tool_calls`` does with
+    the parser's return value, minus the postprocessor's own sanitizers —
+    so the assertions pin the PARSER's contract rather than the last-mile
+    scrubber that happened to mask half of this leak in production.
+    """
+    previous = ""
+    content = ""
+    calls = []
+    for chunk in chunks:
+        current = previous + chunk
+        result = parser.extract_tool_calls_streaming(previous, current, chunk)
+        if result is not None:
+            if result.get("content"):
+                content += result["content"]
+            for call in result.get("tool_calls") or []:
+                calls.append(call)
+        previous = current
+    # Stream end: held bytes are released only when no call ever fired,
+    # matching ``StreamingPostProcessor.finalize``.
+    if not calls:
+        content += parser.flush_held_content(previous)
+    return content, calls
+
+
+#: The exact wire text behind the reported leak. rapid-mlx itself writes
+#: ``[Calling tool: name({args})]`` into the prompt for every model whose
+#: parser reports no native tool format (``api/utils.py``) — LFM's does,
+#: and LFM2.5's chat template drops ``message.tool_calls`` — so the model
+#: is taught this dialect by its own history and reproduces it verbatim.
+LEAK_TEXT = (
+    '[Calling tool: browse({"url": "https://www.iana.org/help/example-domains", '
+    '"refresh": true})]'
+)
+
+#: Realistic detokenizer chunking for ``LEAK_TEXT``. The reported leak
+#: needs this exact split: ``[Calling tool`` lands in one delta (the
+#: global sanitizer eats it whole) and everything from ``:`` onward
+#: streams to the client.
+LEAK_CHUNKS = [
+    "[",
+    "Calling",
+    " tool",
+    ":",
+    " browse",
+    "({",
+    '"url"',
+    ": ",
+    '"https://www.iana.org/help/example-domains"',
+    ", ",
+    '"refresh"',
+    ": ",
+    "true",
+    "})",
+    "]",
+]
+
+LEAK_ARGS = {
+    "url": "https://www.iana.org/help/example-domains",
+    "refresh": True,
+}
+
+
+class TestLfmTextFormatEnvelope:
+    """``[Calling tool: name({...})]`` — the text-format degradation."""
+
+    def test_non_streaming_extracts_envelope_call(self):
+        parser = LfmToolParser()
+        result = parser.extract_tool_calls(LEAK_TEXT)
+
+        assert result.tools_called
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "browse"
+        assert json.loads(result.tool_calls[0]["arguments"]) == LEAK_ARGS
+        assert not result.content
+
+    def test_streaming_envelope_token_by_token_leaks_nothing(self):
+        """The reported P1: raw markup reached the visible message."""
+        parser = LfmToolParser()
+        content, calls = _stream(parser, LEAK_CHUNKS)
+
+        assert content == ""
+        assert len(calls) == 1
+        assert calls[0]["index"] == 0
+        assert calls[0]["function"]["name"] == "browse"
+        assert json.loads(calls[0]["function"]["arguments"]) == LEAK_ARGS
+
+    def test_streaming_envelope_char_by_char_leaks_nothing(self):
+        """Per-character deltas are the worst case for prefix holding."""
+        parser = LfmToolParser()
+        content, calls = _stream(parser, list(LEAK_TEXT))
+
+        assert content == ""
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"]) == LEAK_ARGS
+
+    def test_streaming_envelope_single_delta_leaks_nothing(self):
+        parser = LfmToolParser()
+        content, calls = _stream(parser, [LEAK_TEXT])
+
+        assert content == ""
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "browse"
+
+    def test_streaming_envelope_keeps_prose_preface(self):
+        """Prose before the call is content; the markup itself is not."""
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ["One moment. "] + LEAK_CHUNKS)
+
+        assert content == "One moment. "
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "browse"
+
+    def test_streaming_two_envelope_blocks_continue_indices(self):
+        parser = LfmToolParser()
+        content, calls = _stream(
+            parser,
+            [
+                '[Calling tool: f({"a": 1})]',
+                " then ",
+                '[Calling tool: g({"b": 2})]',
+            ],
+        )
+
+        assert "Calling tool" not in content
+        assert [c["index"] for c in calls] == [0, 1]
+        assert [c["function"]["name"] for c in calls] == ["f", "g"]
+        assert len({c["id"] for c in calls}) == 2
+
+    def test_streaming_json_args_without_envelope_leaks_nothing(self):
+        """``[name({...})]`` — same dialect with the envelope dropped.
+
+        A single dict positional is unambiguously the arguments object,
+        so it must not be rejected into the visible content the way a
+        genuinely positional call (``[index(0)]``) is.
+        """
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ['[browse({"url": ', '"https://x"})]'])
+
+        assert content == ""
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "browse"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"url": "https://x"}
+
+    def test_unterminated_envelope_is_flushed_not_swallowed(self):
+        """A held prefix must be released when no call ever completes."""
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ["Wait ", "[Calling", " tool", ": brow"])
+
+        assert calls == []
+        assert content == "Wait [Calling tool: brow"
+
+
+class TestLfmStreamingProseRegressions:
+    """Ordinary prose must keep streaming — the hold is not a censor."""
+
+    def test_bare_bracket_in_prose_streams_through(self):
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ["Use ", "a[i", " to index", " the array."])
+
+        assert calls == []
+        assert content == "Use a[i to index the array."
+
+    def test_bracketed_prose_note_is_not_eaten(self):
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ["See ", "[note", ": read", " this]", " ok"])
+
+        assert calls == []
+        assert content == "See [note: read this] ok"
+
+    def test_calling_prose_that_is_not_the_envelope_streams_through(self):
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ["[Calling", " the", " doctor]", " now"])
+
+        assert calls == []
+        assert content == "[Calling the doctor] now"
+
+    def test_markdown_link_streams_through(self):
+        parser = LfmToolParser()
+        content, calls = _stream(parser, ["[docs", "](https://x)", " here"])
+
+        assert calls == []
+        assert content == "[docs](https://x) here"
+
+
 class TestPostprocessorLfmFinalize:
     """End-of-stream recovery must recognize pythonic markup."""
 
@@ -393,6 +580,52 @@ class TestPostprocessorLfmFinalize:
         cfg.tool_call_parser = None
         cfg.tool_parser_instance = parser
         return cfg
+
+    @staticmethod
+    def _make_output(text, finished=False):
+        out = MagicMock()
+        out.new_text = text
+        out.finished = finished
+        out.channel = None
+        out.finish_reason = "stop" if finished else None
+        out.prompt_tokens = 10
+        out.completion_tokens = 5
+        out.tokens = []
+        out.logprobs = None
+        out.tool_calls = None
+        return out
+
+    def test_streaming_envelope_emits_no_visible_content(self):
+        """End-to-end guard on the shipped path (issue: LFM leak).
+
+        Pre-fix this streamed ``: browse({"url": ...})]`` into the chat
+        bubble: the parser released ``[Calling tool`` as one delta, the
+        global sanitizer stripped exactly that span, and every remaining
+        byte reached the client as ordinary content.
+        """
+        pp = StreamingPostProcessor(self._make_cfg(LfmToolParser()))
+        pp.reset()
+        pp.tools_requested = True
+
+        content = ""
+        tool_calls = []
+        last = len(LEAK_CHUNKS) - 1
+        for i, chunk in enumerate(LEAK_CHUNKS):
+            for event in pp.process_chunk(self._make_output(chunk, finished=i == last)):
+                if event.content:
+                    content += event.content
+                if event.type == "tool_call":
+                    tool_calls += event.tool_calls
+        for event in pp.finalize():
+            if event.content:
+                content += event.content
+            if event.type == "tool_call":
+                tool_calls += event.tool_calls
+
+        assert content == ""
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "browse"
+        assert json.loads(tool_calls[0]["function"]["arguments"]) == LEAK_ARGS
 
     def test_finalize_recovers_pythonic_call_missed_by_streaming(self):
         """Regression: the plausible-markup pre-check only looked for
