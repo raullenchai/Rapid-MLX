@@ -59,6 +59,19 @@ jobs:
       - name: Workflow expression sanity
         run: python scripts/check_workflow_expressions.py
 
+      # The release scripts cannot be exercised without cutting a release, so
+      # their tag-claim, recovery and refuse-to-move paths are covered offline
+      # against a mock ``gh``. These existed but nothing ran them, which is how
+      # a release-path regression stays invisible until release day. Pure bash,
+      # no network/gh/git.
+      - name: Release-script offline tests
+        run: |
+          set -euo pipefail
+          for t in tests/release/test_*.sh; do
+            echo "── $t"
+            bash "$t"
+          done
+
       # Parser microbench — catches >10x regressions in tool-call
       # extraction. Pure Python (parsers don't import mlx); thresholds
       # are intentionally generous (3-5x measured M3 numbers) to

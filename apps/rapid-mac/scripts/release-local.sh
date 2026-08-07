@@ -200,7 +200,13 @@ if [[ "$MODE" == "publish" ]]; then
     # remote for. They have nothing to do with the release being cut, so they
     # must not silently block it — but they must not be force-overwritten
     # either, because which lineage is authoritative is the operator's call.
-    if ! FETCH_ERR="$(git fetch "$RELEASE_REMOTE" --tags 2>&1)"; then
+    #
+    # LC_ALL=C because the tag list below is scraped out of git's human-facing
+    # error text. Under a localised git the awk match silently finds nothing,
+    # and the operator gets the generic failure instead of the named tags and
+    # the exact command that fixes them — which is the whole point of this
+    # block.
+    if ! FETCH_ERR="$(LC_ALL=C git fetch "$RELEASE_REMOTE" --tags 2>&1)"; then
         printf '%s\n' "$FETCH_ERR" >&2
         CLOBBER="$(printf '%s\n' "$FETCH_ERR" | awk '/would clobber existing tag/ {print $3}' | tr '\n' ' ')"
         if [[ -n "$CLOBBER" ]]; then
