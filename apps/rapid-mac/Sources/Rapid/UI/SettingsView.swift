@@ -385,9 +385,21 @@ struct SettingsView: View {
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
-            // The first-run consent sheet writes the same preference, so the
-            // seeded value can be stale by the time this panel is first shown.
+            // The first-run consent sheet (ContentView) writes the same
+            // preference, so the seeded value can be stale by the time this
+            // panel is first shown...
             .onAppear { telemetryEnabled = TelemetryConfig.isEnabled }
+            // ...and it can go stale *while* the panel is open: Settings can be
+            // opened over the still-attached first-run sheet, and answering
+            // "Share" there would otherwise leave this switch reading off while
+            // telemetry is running. Re-reading on any defaults change keeps the
+            // two surfaces honest without either one knowing about the other.
+            .onReceive(
+                NotificationCenter.default.publisher(
+                    for: UserDefaults.didChangeNotification)
+            ) { _ in
+                telemetryEnabled = TelemetryConfig.isEnabled
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Where the data goes")

@@ -37,6 +37,22 @@ struct TelemetryToggleRerenderTests {
         return CapabilityChipRenderGateSourceGuardTests.stripCommentsAndWhitespace(body)
     }
 
+    /// Without this, every other assertion here is decorative: the `Toggle`
+    /// could be repointed at a freshly broken binding while the now-unused
+    /// `telemetryEnabledBinding` sits there satisfying the greps.
+    @Test("The consent Toggle is the thing wired to this binding")
+    func toggleUsesTheAuditedBinding() throws {
+        let stripped = try strippedSettingsSource()
+        #expect(
+            stripped.contains("Toggle(isOn:telemetryEnabledBinding)"),
+            """
+            The Privacy consent Toggle must be driven by telemetryEnabledBinding \
+            — the binding the rest of this suite audits. Pointing it at another \
+            binding would move the control outside every check here.
+            """
+        )
+    }
+
     @Test("The binding's getter reads view state, not the UserDefaults static")
     func getterDoesNotReadTheStaticDirectly() throws {
         let stripped = try strippedSettingsSource()
@@ -78,12 +94,29 @@ struct TelemetryToggleRerenderTests {
     func panelResyncsOnAppear() throws {
         let stripped = try strippedSettingsSource()
         #expect(
-            stripped.contains("telemetryEnabled=TelemetryConfig.isEnabled"),
+            stripped.contains(".onAppear{telemetryEnabled=TelemetryConfig.isEnabled}"),
             """
             The panel must re-read the stored value when it appears. The \
             first-run consent sheet writes the same preference, so a value \
             seeded at init can be stale by the time Settings is first opened — \
             which would show the opposite of the truth.
+            """
+        )
+    }
+
+    /// `onAppear` alone leaves a real hole: Settings can be opened *over* the
+    /// still-attached first-run sheet, and answering "Share" there would leave
+    /// this already-visible switch reading off while telemetry is running.
+    @Test("The panel also re-reads consent written while it is visible")
+    func panelResyncsOnDefaultsChange() throws {
+        let stripped = try strippedSettingsSource()
+        #expect(
+            stripped.contains("UserDefaults.didChangeNotification"),
+            """
+            The Privacy panel must observe UserDefaults.didChangeNotification. \
+            The first-run consent sheet in ContentView writes the same key, and \
+            it can be answered while this panel is already on screen — onAppear \
+            will not fire again for that.
             """
         )
     }
