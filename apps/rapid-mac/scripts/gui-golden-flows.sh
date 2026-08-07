@@ -627,16 +627,45 @@ flow_update_state() {
     open_settings
     see_main "$OUT/update-settings.json"
     press "$OUT/update-settings.json" Settings.Category.app "$OUT/update-open-app.json"
-    wait_identifier Settings.App.UpToDate "$OUT/update-app-panel.json"
 
-    local shown expected
-    shown="$(element_field "$OUT/update-app-panel.json" Settings.App.UpToDate value)"
+    # TWO identifiers satisfy this invariant, and which one appears depends on
+    # something outside the app: whether a release for this version has been
+    # published yet.
+    #
+    #   Settings.App.UpToDate        — the build matches the newest published release
+    #   Settings.App.AheadOfManifest — the build is NEWER than anything published
+    #
+    # The second is not an edge case, it is the state every release passes
+    # through: the version is bumped and the app is built before its release is
+    # tagged. Waiting only for UpToDate made this flow fail during exactly the
+    # window it is meant to protect — cutting 0.12.7, with the app correctly
+    # reporting "Up to date — v0.12.7." under the other identifier.
+    #
+    # The invariant is unchanged: whichever state the panel is in, it must name
+    # the version the app actually IS.
+    local state shown expected
+    state=""
+    for _ in {1..80}; do
+        see_settings "$OUT/update-app-panel.json"
+        for candidate in Settings.App.UpToDate Settings.App.AheadOfManifest; do
+            if jq -e --arg id "$candidate" '.data.ui_elements[]? | select(.identifier == $id)' \
+                "$OUT/update-app-panel.json" >/dev/null 2>&1; then
+                state="$candidate"
+                break 2
+            fi
+        done
+        sleep 0.25
+    done
+    [[ -n "$state" ]] \
+        || die "Settings > App reported neither Settings.App.UpToDate nor Settings.App.AheadOfManifest"
+
+    shown="$(element_field "$OUT/update-app-panel.json" "$state" value)"
     expected="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' \
         "$APP_SOURCE/Contents/Info.plist" 2>/dev/null)"
     [[ -n "$expected" ]] || die "could not read CFBundleShortVersionString"
     [[ "$shown" == *"$expected"* ]] \
-        || die "update panel says '$shown' but the app is $expected"
-    log "  update state names the running version ($expected)"
+        || die "update panel ($state) says '$shown' but the app is $expected"
+    log "  update state names the running version ($expected, via ${state##*.})"
     cleanup_persona
 }
 
