@@ -542,8 +542,58 @@ struct QuickstartViewTests {
             isAutoRespawn: false,
             severity: .unsafe,
             footprintGB: 3.25,
-            freeGB: 0.7
+            freeGB: 0.7,
+            totalGB: 18
         )
+    }
+
+    @Test("Low-memory recovery is offered only when it clears the live danger line")
+    func lowMemoryRecoveryMustActuallyBeSafer() {
+        // On an 18 GB Mac, 12.2 GB already used makes the 3.36 GB starter
+        // unsafe (~86.4%) while the 3.03 GB 0.6B fallback stays below 85%.
+        let recoverable = ModelSizing.MemoryWarning(
+            alias: QuickstartCoordinator.defaultChoice.alias,
+            hfPath: QuickstartCoordinator.defaultChoice.hfRepo,
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: ModelSizing.estimate(alias: QuickstartCoordinator.defaultChoice.alias).totalGB,
+            freeGB: 5.8,
+            totalGB: 18
+        )
+        #expect(
+            QuickstartView.lowMemoryRecoveryChoice(for: recoverable)?.alias
+                == QuickstartCoordinator.lowMemoryChoice.alias
+        )
+
+        // Under heavier pressure the 0.6B would trip the same guard. Do not
+        // advertise a reassuring switch that merely opens a second warning.
+        let noSafeEscape = ModelSizing.MemoryWarning(
+            alias: QuickstartCoordinator.defaultChoice.alias,
+            hfPath: nil,
+            isAutoRespawn: false,
+            severity: .unsafe,
+            footprintGB: recoverable.footprintGB,
+            freeGB: 5.0,
+            totalGB: 18
+        )
+        #expect(QuickstartView.lowMemoryRecoveryChoice(for: noSafeEscape) == nil)
+    }
+
+    @Test("The fallback never recommends switching to itself or from an unverifiable snapshot")
+    func lowMemoryRecoveryAvoidsLoopsAndUnknownSnapshots() {
+        let fallback = QuickstartCoordinator.lowMemoryChoice
+        let selfWarning = ModelSizing.MemoryWarning(
+            alias: fallback.alias, hfPath: fallback.hfRepo, isAutoRespawn: false,
+            severity: .unsafe, footprintGB: 3.1, freeGB: 6, totalGB: 18
+        )
+        #expect(QuickstartView.lowMemoryRecoveryChoice(for: selfWarning) == nil)
+
+        let unknown = ModelSizing.MemoryWarning(
+            alias: QuickstartCoordinator.defaultChoice.alias, hfPath: nil,
+            isAutoRespawn: false, severity: .unsafe,
+            footprintGB: 3.4, freeGB: 6, totalGB: 0
+        )
+        #expect(QuickstartView.lowMemoryRecoveryChoice(for: unknown) == nil)
     }
 
     /// The deadlock scenario itself: a serve we handed off has parked on the
@@ -648,6 +698,17 @@ struct QuickstartViewSourceGrepTests {
         #expect(QuickstartCoordinator.defaultChoice.hfRepo == "mlx-community/LFM2.5-1.2B-Instruct-4bit")
         #expect(QuickstartCoordinator.defaultChoice.hfRepo?.contains("4B") != true)
     }
+
+    @Test("Onboarding keeps one explicit, honestly-labelled sub-1B escape hatch")
+    func lowMemoryChoiceIsExplicitAndHonest() {
+        let choice = QuickstartCoordinator.lowMemoryChoice
+        #expect(choice.alias == "qwen3-0.6b-4bit")
+        #expect(choice.tier == .lowMemory)
+        #expect(choice.blurb.localizedCaseInsensitiveContains("lowest memory"))
+        #expect(choice.blurb.localizedCaseInsensitiveContains("less accurate"))
+        #expect(choice.blurb.localizedCaseInsensitiveContains("not recommended for tools"))
+        #expect(QuickstartCoordinator.onboardingChoices.filter(\.isLowMemory) == [choice])
+    }
 }
 
 /// #1503 render-wiring source guard.
@@ -714,6 +775,14 @@ struct QuickstartMemoryWiringSourceGuardTests {
         #expect(
             src.contains("coordinator.returnToChooser()"),
             "Cancel no longer calls returnToChooser — the coordinator stays in .starting and the sheet never releases (#1503)."
+        )
+        #expect(
+            src.contains("Quickstart.Memory.SwitchToLowMemory"),
+            "The in-sheet warning no longer exposes the verified low-memory recovery action."
+        )
+        #expect(
+            src.contains("coordinator.select(fallback)"),
+            "The recovery action no longer retargets Quickstart to the verified fallback."
         )
     }
 

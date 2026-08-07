@@ -124,6 +124,12 @@ import SwiftUI
 /// fall back to tqdm file-count progress; both drive an identical
 /// download → serve → seed pipeline.
 struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
+    enum Tier: Equatable, Sendable {
+        case starter
+        case lowMemory
+        case tradeUp
+    }
+
     var id: String { alias }
     /// Canonical alias resolved in ``vllm_mlx/aliases.json``.
     let alias: String
@@ -135,9 +141,14 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     let hfRepo: String?
     /// One-line blurb shown under the name in the chooser.
     let blurb: String
-    /// True for the recommended starter — the default selection, the
-    /// "START HERE" badge, and the qualitative (meter-free) card.
-    let isStarter: Bool
+    /// Where this choice belongs in the deliberately short onboarding
+    /// ladder. Sub-1B models stay hidden from the normal picker because
+    /// they are materially less capable, but ``lowMemory`` gives a user
+    /// who cannot safely load the starter an honest escape hatch.
+    let tier: Tier
+
+    var isStarter: Bool { tier == .starter }
+    var isLowMemory: Bool { tier == .lowMemory }
 }
 
 /// Persistent state owner + state machine for the Quickstart surface.
@@ -228,7 +239,20 @@ final class QuickstartCoordinator {
         displayName: "LFM2.5 · 1.2B",
         hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
         blurb: "Small download (~0.6 GB), runs on any Mac. Answers instantly and follows instructions well. Upgrade anytime for more depth.",
-        isStarter: true
+        tier: .starter
+    )
+
+    /// Deliberately weaker than the starter. The normal model picker hides
+    /// sub-1B models to protect users from accidentally choosing quality
+    /// below the product floor; onboarding surfaces this one explicitly as
+    /// a memory-first fallback and names the trade-off instead of pretending
+    /// it is an equivalent recommendation.
+    static let lowMemoryChoice = QuickstartModelChoice(
+        alias: "qwen3-0.6b-4bit",
+        displayName: "Qwen 3 · 0.6B",
+        hfRepo: "mlx-community/Qwen3-0.6B-4bit",
+        blurb: "Lowest memory and fastest startup. Good for basic chat, but less accurate and not recommended for tools.",
+        tier: .lowMemory
     )
 
     /// The curated onboarding ladder: the starter first (default
@@ -241,19 +265,20 @@ final class QuickstartCoordinator {
     /// ``ModelSizing`` / ``BenchScoresCatalog`` at render.
     static let onboardingChoices: [QuickstartModelChoice] = [
         defaultChoice,
+        lowMemoryChoice,
         QuickstartModelChoice(
             alias: "qwen3.5-4b-4bit",
             displayName: "Qwen 3.5 · 4B",
             hfRepo: nil,
             blurb: "Better everyday quality. Still light on disk.",
-            isStarter: false
+            tier: .tradeUp
         ),
         QuickstartModelChoice(
             alias: "qwen3.5-9b-4bit",
             displayName: "Qwen 3.5 · 9B",
             hfRepo: nil,
             blurb: "Strong all-rounder if you have the RAM to spare.",
-            isStarter: false
+            tier: .tradeUp
         ),
     ]
 
@@ -446,7 +471,7 @@ Open the picker any time to switch models.
             displayName: alias,
             hfRepo: nil,
             blurb: "",
-            isStarter: alias == defaultChoice.alias
+            tier: alias == defaultChoice.alias ? .starter : .tradeUp
         )
     }
 
@@ -978,7 +1003,8 @@ struct QuickstartView: View {
     }
 
     /// Step 2 — the model chooser: recommended starter (default
-    /// selection) + bigger trade-ups + "Browse all models". The primary
+    /// selection) + an honest low-memory fallback + bigger trade-ups +
+    /// "Browse all models". The primary
     /// footer button kicks off the download for the current selection.
     @ViewBuilder
     private var chooseModelStep: some View {
@@ -1004,13 +1030,27 @@ struct QuickstartView: View {
                         .padding(.bottom, 16)
                     }
 
+                    Text("NEED THE LIGHTEST OPTION?")
+                        .scaledSystemFont(10, weight: .semibold).tracking(1)
+                        .foregroundStyle(.tertiary)
+                        .padding(.bottom, 9)
+
+                    ForEach(choices.filter { $0.isLowMemory }) { choice in
+                        QuickstartLowMemoryCard(
+                            choice: choice,
+                            selected: coordinator.selection.alias == choice.alias,
+                            sizeText: Self.sizeText(for: choice.alias)
+                        ) { coordinator.select(choice) }
+                        .padding(.bottom, 16)
+                    }
+
                     Text("OR PICK A BIGGER ONE")
                         .scaledSystemFont(10, weight: .semibold).tracking(1)
                         .foregroundStyle(.tertiary)
                         .padding(.bottom, 9)
 
                     VStack(spacing: 9) {
-                        ForEach(choices.filter { !$0.isStarter }) { choice in
+                        ForEach(choices.filter { $0.tier == .tradeUp }) { choice in
                             QuickstartCompactCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
@@ -1124,6 +1164,7 @@ struct QuickstartView: View {
     /// than dismissing the sheet out from under the decision.
     @ViewBuilder
     private func memoryWarningCard(_ warning: ModelSizing.MemoryWarning) -> some View {
+        let fallback = Self.lowMemoryRecoveryChoice(for: warning)
         ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(RapidTheme.amberTint)
@@ -1147,6 +1188,24 @@ struct QuickstartView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(warning.title). \(warning.message)")
 
+        if let fallback {
+            Button {
+                server.cancelPendingMemoryLoad()
+                coordinator.returnToChooser()
+                coordinator.select(fallback)
+                startQuickstart()
+            } label: {
+                Text("Switch to \(fallback.displayName)")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("Quickstart.Memory.SwitchToLowMemory")
+            .accessibilityLabel("Switch to \(fallback.displayName), the lowest-memory option")
+        }
+
         Button {
             // Re-enters ``start`` with the guard bypassed. We stay in
             // ``.starting``; ``handleServerStateChange`` seeds the welcome
@@ -1157,7 +1216,7 @@ struct QuickstartView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.bordered)
         .controlSize(.large)
         .accessibilityIdentifier("Quickstart.Memory.LoadAnyway")
 
@@ -1174,6 +1233,29 @@ struct QuickstartView: View {
         .controlSize(.large)
         .keyboardShortcut(.cancelAction)
         .accessibilityIdentifier("Quickstart.Memory.Cancel")
+    }
+
+    /// Return the curated low-memory fallback only when the same snapshot
+    /// that blocked the original load says the replacement falls below the
+    /// 85% danger line. This prevents a reassuring "Switch" button from
+    /// merely leading to a second warning. If the snapshot is unavailable,
+    /// Cancel still returns to the chooser and the fallback remains visible,
+    /// but the warning does not claim it is safe.
+    static func lowMemoryRecoveryChoice(
+        for warning: ModelSizing.MemoryWarning
+    ) -> QuickstartModelChoice? {
+        let fallback = QuickstartCoordinator.lowMemoryChoice
+        guard warning.alias != fallback.alias, warning.totalGB > 0 else { return nil }
+        let footprint = ModelSizing.estimate(alias: fallback.alias)
+        guard footprint.totalGB < warning.footprintGB else { return nil }
+        let gib = Double(1 << 30)
+        let usedGB = max(0, warning.totalGB - warning.freeGB)
+        let safety = ModelSizing.memorySafety(
+            footprint: footprint,
+            usedBytes: UInt64((usedGB * gib).rounded()),
+            totalBytes: UInt64((warning.totalGB * gib).rounded())
+        )
+        return safety == .unsafe ? nil : fallback
     }
 
     /// Which memory warning, if any, the Quickstart sheet must present

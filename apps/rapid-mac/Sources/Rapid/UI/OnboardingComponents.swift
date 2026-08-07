@@ -141,6 +141,52 @@ struct OnboardingAttrChip: View {
 
 // MARK: - Model choice cards
 
+/// The explicit below-quality-floor escape hatch. It looks distinct from
+/// both the recommended starter and benchmarked trade-ups, and puts the
+/// capability cost on screen so "lower memory" is never read as "same model,
+/// only faster".
+struct QuickstartLowMemoryCard: View {
+    let choice: QuickstartModelChoice
+    let selected: Bool
+    let sizeText: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(alignment: .top, spacing: 11) {
+                BrandIcon(alias: choice.alias, size: 32)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(choice.displayName).scaledSystemFont(13, weight: .semibold)
+                        Text("LOWEST MEMORY")
+                            .scaledSystemFont(8.5, weight: .bold)
+                            .foregroundStyle(RapidTheme.green)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(RapidTheme.green.opacity(0.12)))
+                        Spacer()
+                        if !sizeText.isEmpty {
+                            Text(sizeText).scaledSystemFont(11).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(choice.blurb)
+                        .scaledSystemFont(11)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                selectionGlyph(selected: selected, size: 18)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 11)
+            .background(cardFill(selected: selected))
+            .overlay(cardStroke(selected: selected))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pressableCard)
+        .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("\(choice.displayName). Lowest memory. \(choice.blurb) Download \(sizeText)")
+    }
+}
+
 /// The recommended starter card: brand icon + name + "START HERE" badge
 /// + a qualitative blurb + attribute chips (NO meters — the starter
 /// card is deliberately qualitative; decision (b)). Selectable; the whole card is the

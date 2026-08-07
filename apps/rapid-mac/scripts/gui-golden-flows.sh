@@ -25,7 +25,7 @@ usage() {
 Usage: gui-golden-flows.sh [--flow NAME] [--keep]
 
 Flows: fresh-install, settings-persistence, chat-restore, slow-stream-stop,
-       model-crash-recovery, update-state, no-dead-controls,
+       model-crash-recovery, low-memory-choice, update-state, no-dead-controls,
        catalog-integrity, all
 
 Environment:
@@ -266,7 +266,7 @@ assert_tree_text() {
 }
 
 flow_fresh_install() {
-    log "1/5 fresh install and onboarding"
+    log "1/6 fresh install and onboarding"
     start_persona fresh-install
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
@@ -281,7 +281,7 @@ flow_fresh_install() {
 }
 
 flow_settings_persistence() {
-    log "2/5 settings and persistence"
+    log "2/6 settings and persistence"
     start_persona settings-persistence
     dismiss_first_run
     open_settings
@@ -316,7 +316,7 @@ flow_settings_persistence() {
 }
 
 flow_chat_restore() {
-    log "3/5 basic chat and session restore"
+    log "3/6 basic chat and session restore"
     start_persona chat-restore
     dismiss_first_run
     start_model
@@ -343,7 +343,7 @@ flow_chat_restore() {
 }
 
 flow_slow_stream_stop() {
-    log "4/5 controlled slow stream and Stop"
+    log "4/6 controlled slow stream and Stop"
     start_persona slow-stream-stop FAKE_INTER_TOKEN_SLEEP_S=0.01 FAKE_CONTENT_REPEAT=20000
     dismiss_first_run
     start_model
@@ -378,7 +378,7 @@ flow_slow_stream_stop() {
 }
 
 flow_model_crash_recovery() {
-    log "5/5 model lifecycle and crash recovery"
+    log "5/6 model lifecycle and crash recovery"
     start_persona model-crash-recovery FAKE_DIE_AFTER_CHUNKS=2 \
         FAKE_DIE_ONCE_STATE="$OUT_ROOT/model-crash-recovery/died-once"
     dismiss_first_run
@@ -405,6 +405,47 @@ flow_model_crash_recovery() {
     jq -n --argjson starts "$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl")" \
         '{success: true, assertion: "sidecar crashed once, respawned, and returned to ready", server_starts: $starts}' \
         > "$OUT/recovery-assertion.json"
+    cleanup_persona
+}
+
+flow_low_memory_choice() {
+    log "6/6 low-memory onboarding escape"
+    start_persona low-memory-choice
+
+    local tree="$OUT/onboarding.json"
+    see_main "$tree"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$tree" >/dev/null; then
+        press "$tree" TelemetryConsent.DontShare "$OUT/consent.json"
+    fi
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier Quickstart.Choice.qwen3-0.6b-4bit "$OUT/model-choices.json"
+
+    local fallback_label
+    fallback_label="$(element_field "$OUT/model-choices.json" Quickstart.Choice.qwen3-0.6b-4bit description)"
+    [[ "$fallback_label" == *"Lowest memory"* ]] \
+        || die "low-memory choice is missing its spoken category label"
+    [[ "$fallback_label" == *"less accurate"* ]] \
+        || die "low-memory choice hides its quality trade-off"
+    [[ "$fallback_label" == *"not recommended for tools"* ]] \
+        || die "low-memory choice hides its tool-use limitation"
+    press "$OUT/model-choices.json" Quickstart.Choice.qwen3-0.6b-4bit "$OUT/select-low-memory.json"
+    see_main "$OUT/low-memory-selected.json"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Choice.qwen3-0.6b-4bit")' \
+        "$OUT/low-memory-selected.json" >/dev/null \
+        || die "selecting the low-memory choice dismissed or replaced the chooser"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Footer.Primary")' \
+        "$OUT/low-memory-selected.json" >/dev/null \
+        || die "selecting the low-memory choice left no Download & start action"
+    local sheet_region
+    sheet_region="$(jq -r '.data.ui_elements[] | select(.role == "AXSheet") | [.bounds.x, .bounds.y, .bounds.width, .bounds.height] | map(round) | @csv' "$OUT/low-memory-selected.json" | head -1)"
+    [[ -n "$sheet_region" ]] || die "Quickstart sheet bounds are absent from AX"
+    pb app switch --to "PID:$APP_PID" --verify --json > "$OUT/focus-before-image.json"
+    pb image --mode area --region "$sheet_region" --path "$OUT/low-memory-selected.png" --json \
+        > "$OUT/low-memory-selected-image.json"
+
+    jq -n '{success: true, assertion: "onboarding exposes and selects an honestly labelled sub-1B low-memory fallback"}' \
+        > "$OUT/low-memory-assertion.json"
     cleanup_persona
 }
 
@@ -508,6 +549,7 @@ case "$FLOW" in
     chat-restore) flow_chat_restore ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
+    low-memory-choice) flow_low_memory_choice ;;
     update-state) flow_update_state ;;
     no-dead-controls) flow_no_dead_controls ;;
     catalog-integrity) flow_catalog_integrity ;;
@@ -517,6 +559,7 @@ case "$FLOW" in
         flow_chat_restore
         flow_slow_stream_stop
         flow_model_crash_recovery
+        flow_low_memory_choice
         flow_update_state
         flow_no_dead_controls
         flow_catalog_integrity

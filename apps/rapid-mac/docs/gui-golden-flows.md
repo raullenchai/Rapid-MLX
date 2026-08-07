@@ -10,14 +10,17 @@ Rapid-MLX Desktop app without loading a real model.
 3. basic chat, persisted conversation row, and restored transcript;
 4. a deliberately slow stream and semantic **Stop generating** action;
 5. model start, a one-shot sidecar crash, automatic respawn, and ready state.
+6. a memory-constrained user can see and select an honestly labelled sub-1B
+   fallback instead of being sent back to a chooser whose smallest visible
+   model is the one that just failed the live-memory guard.
 
 **Invariants** — properties that must hold, not paths a user walks. These were
 added after a release where every escaped defect landed on a surface no journey
 covered, and each one names the defect it would have caught:
 
-6. `update-state` — Settings → App must name the version the app actually is.
-7. `no-dead-controls` — every Settings panel must expose controls of its own.
-8. `catalog-integrity` — a model that cannot chat must never be offered as one.
+7. `update-state` — Settings → App must name the version the app actually is.
+8. `no-dead-controls` — every Settings panel must expose controls of its own.
+9. `catalog-integrity` — a model that cannot chat must never be offered as one.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below
@@ -63,6 +66,31 @@ Every journey gets a unique bundle identifier and throwaway `HOME` through
 lifecycle evidence, so the suite does not download a model or put meaningful
 pressure on unified memory.
 
+### Low-memory recovery
+
+The normal model picker intentionally hides sub-1B models: they fall below the
+default quality and tool-use floor, and presenting them beside normal choices
+without context makes a faster but worse answer look like a product failure.
+That policy cannot govern a recovery path. If the live memory guard says the
+starter is unsafe and tells the user to “pick a smaller model,” onboarding must
+actually contain one.
+
+`low-memory-choice` pins the visible half of that contract through AX:
+
+1. open fresh onboarding and advance to **Choose your first model**;
+2. find `Quickstart.Choice.qwen3-0.6b-4bit` under **LOWEST MEMORY**;
+3. assert that the card says **less accurate** and **not recommended for
+   tools**, so lower memory is not presented as equivalent quality;
+4. select it through AX and retain the before/after trees as evidence.
+
+The warning-to-switch half is deterministic Swift coverage rather than a host-
+RAM-dependent GUI trick. `QuickstartView.lowMemoryRecoveryChoice(for:)` replays
+the original live-memory snapshot against the fallback footprint and exposes
+`Quickstart.Memory.SwitchToLowMemory` only when the replacement falls below the
+85% danger line. Under heavier pressure the button is absent, avoiding a false
+promise or a warning loop; **Cancel** still returns to the chooser where the
+low-memory category remains visible.
+
 ## Run
 
 Build the current checkout, then run all flows:
@@ -77,6 +105,7 @@ Run one journey or retain its isolated persona for diagnosis:
 
 ```bash
 ./scripts/gui-golden-flows.sh --flow slow-stream-stop
+./scripts/gui-golden-flows.sh --flow low-memory-choice
 ./scripts/gui-golden-flows.sh --flow chat-restore --keep
 ./scripts/gui-golden-flows.sh --flow no-dead-controls
 ```
