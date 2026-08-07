@@ -745,7 +745,7 @@ struct ContentView: View {
     /// override. Once launch entered with a concrete selection, however, a
     /// different non-empty alias means the user took control and auto-start
     /// must stand down.
-    static func launchSelectionWasReplaced(
+    nonisolated static func launchSelectionWasReplaced(
         aliasAtEntry: String,
         currentAlias: String
     ) -> Bool {
