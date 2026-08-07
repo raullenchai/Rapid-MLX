@@ -88,8 +88,8 @@ AXApplication title="Rapid-MLX"
           AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin <model>" enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXUnknown desc="Accuracy: not published" enabled=true
-          AXUnknown desc="Speed: not published" enabled=true
+          AXUnknown desc="Accuracy: untested" enabled=true
+          AXUnknown desc="Speed: untested" enabled=true
           AXStaticText help="Measured size on disk. Deleting frees this much." value=text enabled=true
           AXButton id="Settings.ModelManagement.Delete.<model>" desc="Delete <model> from disk" enabled=true
         AXStaticText id="Settings.ModelManagement.Footer" value=text enabled=true

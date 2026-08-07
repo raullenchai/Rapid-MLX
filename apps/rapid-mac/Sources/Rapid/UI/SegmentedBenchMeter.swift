@@ -6,8 +6,7 @@ import SwiftUI
 /// painted in the rating colour, and a right-aligned numeric readout.
 ///
 /// A meter with `level == nil` (the author published no score for the
-/// axis) draws a single dashed empty track + an em-dash value — never a
-/// fabricated fill.
+/// axis) says "Untested" — never a blank-looking track or fabricated fill.
 ///
 /// Segmented blocks (not a continuous bar) are the deliberate style
 /// choice from the #507 design review: five discrete blocks read faster
@@ -40,16 +39,15 @@ struct SegmentedBenchMeter: View {
                 .frame(width: labelWidth, alignment: .trailing)
 
             if meter.level == nil {
-                dashedTrack
+                untestedLabel
             } else {
                 segments
-            }
-
-            if showValue {
-                Text(meter.formattedValue)
-                    .font(.system(size: valueSize, weight: .medium).monospacedDigit())
-                    .foregroundStyle(meter.level == nil ? .tertiary : .secondary)
-                    .frame(width: 30, alignment: .trailing)
+                if showValue {
+                    Text(meter.formattedValue)
+                        .font(.system(size: valueSize, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, alignment: .trailing)
+                }
             }
         }
         .accessibilityElement(children: .ignore)
@@ -66,11 +64,11 @@ struct SegmentedBenchMeter: View {
         }
     }
 
-    private var dashedTrack: some View {
-        RoundedRectangle(cornerRadius: 3, style: .continuous)
-            .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            .foregroundStyle(Color.secondary.opacity(0.4))
-            .frame(height: segmentHeight + 2)
+    private var untestedLabel: some View {
+        Text("Untested")
+            .font(.system(size: valueSize, weight: .medium))
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var fillColor: Color {
@@ -88,7 +86,7 @@ struct SegmentedBenchMeter: View {
     /// sighted users read off the blocks. Pure + static for testability.
     static func accessibilityLabel(for meter: ResolvedMeter) -> String {
         guard let level = meter.level else {
-            return "\(meter.label): not published"
+            return "\(meter.label): untested"
         }
         let rating: String
         switch level {

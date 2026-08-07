@@ -171,22 +171,22 @@ struct ModelSurfaceRedesignTests {
 
     // MARK: - ModelMeter resolved meters (catalog integration)
 
-    @Test("qualityMeter: an unscored alias yields a dashed, em-dash meter")
+    @Test("qualityMeter: an unscored alias is explicitly untested")
     func qualityMeterUnscored() {
         let meter = ModelMeter.qualityMeter(for: "definitely-not-a-real-alias-xyz")
         #expect(meter.level == nil)
         #expect(meter.filledSegments == 0)
-        #expect(meter.formattedValue == "—")
+        #expect(meter.formattedValue == "Untested")
         // Still labelled so the row renders a quality track, not a blank.
         #expect(meter.label == "Accuracy")
     }
 
-    @Test("speedMeter: an unscored alias yields a dashed, em-dash meter")
+    @Test("speedMeter: an unscored alias is explicitly untested")
     func speedMeterUnscored() {
         let meter = ModelMeter.speedMeter(for: "definitely-not-a-real-alias-xyz")
         #expect(meter.level == nil)
         #expect(meter.filledSegments == 0)
-        #expect(meter.formattedValue == "—")
+        #expect(meter.formattedValue == "Untested")
         #expect(meter.label == "Speed")
     }
 

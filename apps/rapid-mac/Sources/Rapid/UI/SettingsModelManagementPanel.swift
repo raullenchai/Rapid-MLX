@@ -658,7 +658,7 @@ struct SettingsModelManagementPanel: View {
         }
     }
 
-    /// One-line meaning of the two meters + the em-dash. Rendered inside
+    /// One-line meaning of the two meters + the explicit unknown state. Rendered inside
     /// the "All models" section, immediately above the only rows that
     /// carry the Quality · Speed bars. (It used to sit at the panel top,
     /// but the recommendation cards no longer show meters — they show the
@@ -666,7 +666,7 @@ struct SettingsModelManagementPanel: View {
     /// misattributed those curated numbers as published benchmarks.)
     @ViewBuilder
     private var meterLegend: some View {
-        Text("Quality = the author's published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = tokens/sec on this class of Mac · “—” = the author hasn't published that score.")
+        Text("Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = measured tokens/sec on this class of Mac · Untested = no compatible result recorded yet.")
             .scaledSystemFont(10)
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)

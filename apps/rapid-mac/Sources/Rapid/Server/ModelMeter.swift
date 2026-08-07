@@ -23,7 +23,7 @@ enum MeterLevel: String, Equatable, Sendable {
 /// One resolved meter: which axis it represents, the label to show, the
 /// number of filled segments (0…5), the rating, and the formatted value.
 /// ``value``/``level`` are ``nil`` when the model author didn't publish
-/// the axis — the view renders a dashed empty track + em-dash (never a
+/// the axis — the view renders an explicit "Untested" state (never a
 /// fabricated number, per the standing benchmark-honesty policy).
 struct ResolvedMeter: Equatable, Sendable {
     let axis: BenchScores.Axis
@@ -95,7 +95,7 @@ enum ModelMeter {
     }
 
     /// Resolve the quality meter for an alias. Returns a meter whose
-    /// `value`/`level` are `nil` (dashed) when no quality axis is
+    /// `value`/`level` are `nil` when no quality axis is
     /// published, so the caller always has a labelled row to render.
     static func qualityMeter(for alias: String) -> ResolvedMeter {
         guard let scores = BenchScoresCatalog.lookup(alias: alias),
@@ -108,7 +108,7 @@ enum ModelMeter {
                 label: shortLabel(for: .generalReasoning),
                 filledSegments: 0,
                 level: nil,
-                formattedValue: "—"
+                formattedValue: "Untested"
             )
         }
         return ResolvedMeter(
@@ -129,7 +129,7 @@ enum ModelMeter {
         )
     }
 
-    /// Resolve the speed meter for an alias. `nil`-dashed when the
+    /// Resolve the speed meter for an alias. `nil` / "Untested" when the
     /// alias has no measured decode tok/s (many vision + newest models).
     static func speedMeter(for alias: String) -> ResolvedMeter {
         guard let scores = BenchScoresCatalog.lookup(alias: alias),
@@ -139,7 +139,7 @@ enum ModelMeter {
                 label: shortLabel(for: .speed),
                 filledSegments: 0,
                 level: nil,
-                formattedValue: "—"
+                formattedValue: "Untested"
             )
         }
         return ResolvedMeter(

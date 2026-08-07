@@ -99,12 +99,26 @@ def physical_ram_gb() -> int:
     return round(int(command("sysctl", "-n", "hw.memsize")) / GIB)
 
 
-def cached_repo_for(alias: str) -> bool:
+def huggingface_cache_dir(override: str | None = None) -> Path:
+    """Return the concrete HF Hub cache directory.
+
+    ``HF_HUB_CACHE`` is the direct cache path; ``HF_HOME`` contains a
+    ``hub`` child.  Keeping both forms straight matters when the cache is a
+    mounted NAS/Jetson volume rather than the default local disk.
+    """
+    if override:
+        return Path(override).expanduser()
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    return Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface")) / "hub"
+
+
+def cached_repo_for(alias: str, cache_dir: Path | None = None) -> bool:
     # Resolve through Rapid-MLX so aliases and HF cache directory names cannot drift.
     from vllm_mlx.model_aliases import resolve_model
 
     repo = resolve_model(alias)
-    root = Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface")) / "hub"
+    root = cache_dir or huggingface_cache_dir()
     return (root / ("models--" + repo.replace("/", "--"))).is_dir()
 
 
@@ -160,7 +174,8 @@ def stop(proc: subprocess.Popen[str]) -> None:
 
 
 def measure(alias: str, args: argparse.Namespace, environment: dict) -> dict:
-    if not args.allow_download and not cached_repo_for(alias):
+    cache_dir = huggingface_cache_dir(args.hf_cache)
+    if not args.allow_download and not cached_repo_for(alias, cache_dir):
         return {"model": alias, "status": "skipped_not_cached"}
 
     log_path = Path(args.log_dir) / f"{alias}.log"
@@ -168,6 +183,8 @@ def measure(alias: str, args: argparse.Namespace, environment: dict) -> dict:
     swap_before = swap_used_mb()
     started = time.monotonic()
     with log_path.open("w") as log:
+        process_environment = os.environ.copy()
+        process_environment["HF_HUB_CACHE"] = str(cache_dir)
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -182,12 +199,16 @@ def measure(alias: str, args: argparse.Namespace, environment: dict) -> dict:
                 "127.0.0.1",
                 "--port",
                 str(args.port),
+                # A benchmark rerun must measure prefill, not a persisted
+                # prefix-cache hit from an earlier run of the same prompt.
+                "--disable-prefix-cache",
                 *MODEL_SERVE_ARGS.get(alias, []),
                 *args.serve_arg,
             ],
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
+            env=process_environment,
         )
         try:
             wait_ready(proc, args.port, args.load_timeout)
@@ -274,6 +295,10 @@ def main() -> int:
     parser.add_argument("--abort-swap-mb", type=float, default=256)
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument(
+        "--hf-cache",
+        help="HF Hub cache directory (for example a mounted Jetson/NAS cache)",
+    )
+    parser.add_argument(
         "--serve-arg",
         action="append",
         default=[],
@@ -302,12 +327,14 @@ def main() -> int:
         "environment": environment,
         "method": {
             "serve_path": "python -m vllm_mlx.cli serve",
+            "prefix_cache": "disabled to prevent cross-run contamination",
             "output_tokens": args.output_tokens,
             "long_prompt": "~8K tokens (900 repeated neutral sentences)",
             "abort_ram_fraction": args.abort_ram_fraction,
             "abort_swap_mb": args.abort_swap_mb,
             "extra_serve_args": args.serve_arg,
             "per_model_serve_args": MODEL_SERVE_ARGS,
+            "hf_cache": str(huggingface_cache_dir(args.hf_cache)),
             "models_are_sequential": True,
         },
         "measurements": [],

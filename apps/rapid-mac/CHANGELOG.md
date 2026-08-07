@@ -13,6 +13,12 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Models without a compatible benchmark now say “Untested”.** Empty dashed
+  capability and speed tracks looked like zero scores. The model list now
+  distinguishes missing measurements from poor results explicitly.
+
 ## [0.12.6] — 2026-08-07
 
 Rapid can now look things up. The headline is a set of built-in tools —
