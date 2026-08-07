@@ -286,11 +286,11 @@ flow_settings_persistence() {
     dismiss_first_run
     open_settings
     see_settings "$OUT/settings-root.json"
-    press "$OUT/settings-root.json" Settings.Category.models "$OUT/settings-models-open.json"
+    press "$OUT/settings-root.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     sleep 0.3
     see_settings "$OUT/models-before.json"
     local preference_key="rapid.picker.show_all_models.v1"
-    press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
+    press "$OUT/models-before.json" Settings.ModelManagement.ShowAllModelsToggle "$OUT/models-toggle.json"
     for _ in {1..20}; do
         [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 1 ]] && break
         sleep 0.1
@@ -302,10 +302,10 @@ flow_settings_persistence() {
     dismiss_first_run
     open_settings
     see_settings "$OUT/settings-relaunch.json"
-    press "$OUT/settings-relaunch.json" Settings.Category.models "$OUT/settings-models-reopen.json"
+    press "$OUT/settings-relaunch.json" Settings.Category.modelManagement "$OUT/settings-models-reopen.json"
     sleep 0.3
     see_settings "$OUT/models-persisted.json"
-    press "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
+    press "$OUT/models-persisted.json" Settings.ModelManagement.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
     for _ in {1..20}; do
         [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 0 ]] && break
         sleep 0.1
@@ -447,7 +447,7 @@ flow_no_dead_controls() {
     see_main "$OUT/dead-before.json"
 
     local category
-    for category in models modelManagement tools appearance privacy app; do
+    for category in modelManagement tools appearance privacy app; do
         press "$OUT/dead-before.json" "Settings.Category.$category" \
             "$OUT/dead-open-$category.json" \
             || die "Settings category $category is not pressable"

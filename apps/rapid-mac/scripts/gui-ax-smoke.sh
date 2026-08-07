@@ -115,7 +115,7 @@ done
 [[ -n "${SETTINGS_WINDOW_ID:-}" ]] || die "Settings window did not open"
 
 pb see --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/settings.json"
-for category in models modelManagement tools appearance privacy app; do
+for category in modelManagement tools appearance privacy app; do
     jq -e --arg id "Settings.Category.$category" \
         '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/settings.json" >/dev/null \
         || die "Settings missing category identifier: $category"
@@ -125,11 +125,11 @@ done
 # the identifiers attached by each settings panel. A visually-correct switch
 # can otherwise degrade into inert AX text, which breaks both VoiceOver and
 # semantic automation while remaining invisible in screenshots.
-press_identifier "$OUT/settings.json" "Settings.Category.models" "$OUT/open-models.json" \
-    || die "could not AXPress Settings.Category.models"
+press_identifier "$OUT/settings.json" "Settings.Category.modelManagement" "$OUT/open-models.json" \
+    || die "could not AXPress Settings.Category.modelManagement"
 sleep 0.5
 pb see --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/models.json"
-for identifier in Settings.Models.ShowAllModelsToggle Settings.Models.AutoStartOnLaunchToggle; do
+for identifier in Settings.ModelManagement.ShowAllModelsToggle Settings.ModelManagement.AutoStartOnLaunchToggle; do
     jq -e --arg id "$identifier" \
         '.data.ui_elements[]? | select(.identifier == $id and .role == "checkbox")' \
         "$OUT/models.json" >/dev/null \

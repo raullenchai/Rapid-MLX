@@ -64,9 +64,11 @@ struct SettingsView: View {
     // no orphan toggle button.
 
     enum Category: String, CaseIterable, Identifiable {
-        case models
         /// Issue #210 — file-manager-style cache inspector (what's on
-        /// disk, what to delete or download).
+        /// disk, what to delete or download) plus the model-behaviour
+        /// preferences. The single home for everything about models;
+        /// the older stand-alone "Models" tab was folded in here so
+        /// users don't face two competing model surfaces.
         case modelManagement
         /// Built-in tools the model can call: on/off per tool, the
         /// web-search backend + key, and the browse approval mode.
@@ -80,7 +82,6 @@ struct SettingsView: View {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .models: return "Models"
             case .modelManagement: return "Model Management"
             case .tools: return "Tools"
             case .appearance: return "Appearance"
@@ -90,7 +91,6 @@ struct SettingsView: View {
         }
         var iconName: String {
             switch self {
-            case .models: return "cylinder.split.1x2.fill"
             case .modelManagement: return "externaldrive.fill"
             case .tools: return "wrench.and.screwdriver.fill"
             case .appearance: return "paintpalette.fill"
@@ -105,7 +105,7 @@ struct SettingsView: View {
     final class CategorySelection {
         var selected: Category
 
-        init(selected: Category = .models) {
+        init(selected: Category = .modelManagement) {
             self.selected = selected
         }
     }
@@ -322,8 +322,6 @@ struct SettingsView: View {
     @ViewBuilder
     private func detailPanel(for category: Category) -> some View {
         switch category {
-        case .models:
-            SettingsModelsPanel()
         case .modelManagement:
             SettingsModelManagementPanel()
         case .tools:

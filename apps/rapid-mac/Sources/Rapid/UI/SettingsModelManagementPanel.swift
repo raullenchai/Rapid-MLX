@@ -1,21 +1,24 @@
 import AppKit
 import SwiftUI
 
-/// Settings → Model Management — the file-manager-style surface
-/// for cache state (issue #210).
+/// Settings → Model Management — the single surface for everything
+/// about your models: the file-manager-style cache inspector (issue
+/// #210) plus the model-behaviour preferences.
 ///
-/// Why this exists, given the older ``SettingsModelsPanel`` was
-/// already shipping a download / delete UI: user feedback
-/// (2026-06-16) called out that the picker dropdown is
-/// overloaded — it conflates "switch active alias" with "manage
-/// the on-disk cache", and casual users miss the right-click
-/// affordances. ``SettingsModelManagementPanel`` is the dedicated
-/// sidebar tab that owns cache state. The picker stays a
-/// switcher; the panel is the inspector.
+/// Why it owns all of it: user feedback (2026-06-16) called out that
+/// the picker dropdown is overloaded — it conflates "switch active
+/// alias" with "manage the on-disk cache", and casual users miss the
+/// right-click affordances. This dedicated sidebar tab took over cache
+/// state; the picker stays a switcher and this panel is the inspector.
+/// A separate, older "Models" tab used to duplicate the download/delete
+/// list and carry two behaviour toggles; it was folded in here so users
+/// no longer face two competing model surfaces.
 ///
 /// Layout (top to bottom):
+///   * ``Models folder`` + ``Preferences`` cards — where models live,
+///     and the picker-visibility / auto-start toggles.
 ///   * Search box + ``All / Cached / Not cached`` segmented
-///     filter + sort menu — top of the panel so a user with 60
+///     filter + sort menu — so a user with 60
 ///     aliases doesn't scroll to find the one they want.
 ///   * One row per alias — alias name + family/quant chip + size
 ///     line, a status badge in the middle, and a single action
@@ -33,9 +36,9 @@ struct SettingsModelManagementPanel: View {
     @Environment(ServerManager.self) private var server
     @Environment(DownloadManager.self) private var downloads
 
-    // Seeded from the process-wide cache — see the matching note in
-    // ``SettingsModelsPanel``. An empty start re-rendered the spinner on every
-    // visit regardless of whether the data was already cached.
+    // Seeded from the process-wide cache rather than starting empty: an
+    // empty start re-rendered the spinner on every visit regardless of
+    // whether the data was already cached.
     @State private var catalog: [ModelEntry] = ModelCatalogCache.seed(generation: 0) ?? []
     @State private var loading: Bool = ModelCatalogCache.seed(generation: 0) == nil
     @State private var pendingDeletion: ModelEntry?
@@ -62,6 +65,18 @@ struct SettingsModelManagementPanel: View {
     /// "All models" table regardless of sort. Seeded from defaults;
     /// toggled in-row via the star.
     @State private var favorites: Set<String> = ModelFavorites.load()
+
+    /// Power-user override for the picker's sub-1B filter (cycle-7).
+    /// Defaults OFF so first-time users don't meet `qwen3-0.6b-*` in the
+    /// dropdown — those tinies hallucinate within 1-2 turns and read as
+    /// broken during evaluation. Lives here, alongside the cache it
+    /// governs, rather than in a second "Models" tab.
+    @AppStorage(ModelPickerVisibility.showAllStorageKey) private var showAllModels: Bool = false
+
+    /// Launch-time auto-start opt-out (FU-1). Defaults ON (the v0.7.x
+    /// behaviour) so upgrades see no change; flipping OFF skips the
+    /// next-launch spawn while leaving every manual start path untouched.
+    @AppStorage(AutoStartPreference.storageKey) private var autoStartOnLaunch: Bool = AutoStartPreference.defaultValue
 
     /// codex r1 P2 (#210): without this we'd ride the stale catalog
     /// snapshot after a background download finishes — the row
@@ -101,6 +116,7 @@ struct SettingsModelManagementPanel: View {
         VStack(alignment: .leading, spacing: 16) {
             header
             modelsFolderSection
+            preferencesSection
             controlsRow
             if showRecommendedSection {
                 recommendedSection
@@ -251,6 +267,68 @@ struct SettingsModelManagementPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
+                    .fill(RapidTheme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
+                    .stroke(RapidTheme.hairline, lineWidth: 1)
+            )
+        }
+    }
+
+    // MARK: - Preferences
+
+    /// The two model-behaviour toggles that used to live in a separate
+    /// "Models" tab. Folded in here — the surface that already owns
+    /// everything about your models — as one labelled card so the app
+    /// has a single place to manage models rather than two competing
+    /// ones. Styled to match ``modelsFolderSection`` above: a secondary
+    /// section label over a hairline card, the two toggles split by a
+    /// divider so they read as a pair without two floating boxes.
+    @ViewBuilder
+    private var preferencesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Preferences")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Toggle(isOn: $showAllModels) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Show small (<1B) models in the picker")
+                            .font(.callout.weight(.medium))
+                        Text("Sub-1B models (qwen3-0.6b-*) are hidden from the model picker by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat. Turn on to see every model, including the tiny ones.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityLabel("Show small models in the picker")
+                .accessibilityHint("Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat.")
+                .accessibilityIdentifier("Settings.ModelManagement.ShowAllModelsToggle")
+
+                Divider()
+                    .padding(.vertical, 12)
+
+                Toggle(isOn: $autoStartOnLaunch) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto-start model on launch")
+                            .font(.callout.weight(.medium))
+                        Text("On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Nothing loads while first-run setup is still open. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityLabel("Auto-start model on launch")
+                .accessibilityHint("When off, opening Rapid-MLX will not load a model until you start one manually from the picker.")
+                .accessibilityIdentifier("Settings.ModelManagement.AutoStartOnLaunchToggle")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
                     .fill(RapidTheme.card)

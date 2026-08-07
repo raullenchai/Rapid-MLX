@@ -555,36 +555,3 @@ struct GrowthDetectionTests {
         #expect(progress.startupActivity == .starting)
     }
 }
-
-/// Truth-table for ``SettingsModelsPanel.runningCaption`` byte-takeover.
-@MainActor
-@Suite("SettingsModelsPanel.runningCaption — byte takeover")
-struct SettingsModelsRunningCaptionByteTests {
-
-    @Test("Bytes subtitle replaces 'Downloading N/M files' caption")
-    func bytesReplaceFetching() {
-        let caption = SettingsModelsPanel.runningCaption(
-            phase: .fetching(done: 0, total: 9, percent: 0),
-            bytesSubtitle: "1.2 / 6.8 GB · 18%"
-        )
-        #expect(caption == "1.2 / 6.8 GB · 18%")
-    }
-
-    @Test("Bytes subtitle replaces 'Preparing…' caption")
-    func bytesReplacePreparing() {
-        let caption = SettingsModelsPanel.runningCaption(
-            phase: .preparing,
-            bytesSubtitle: "0.4 GB downloaded"
-        )
-        #expect(caption == "0.4 GB downloaded")
-    }
-
-    @Test("Without bytes subtitle, runningCaption matches pre-existing copy")
-    func fallbackKeepsFileCount() {
-        let caption = SettingsModelsPanel.runningCaption(
-            phase: .fetching(done: 3, total: 16, percent: 18),
-            bytesSubtitle: nil
-        )
-        #expect(caption == "Downloading 3/16 files")
-    }
-}
