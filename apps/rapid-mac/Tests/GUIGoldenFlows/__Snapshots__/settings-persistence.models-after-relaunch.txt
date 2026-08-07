@@ -33,9 +33,6 @@ AXApplication title="Rapid-MLX"
         AXOutline desc="Settings categories" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
-              AXButton id="Settings.Category.models" desc="Models" enabled=true
-          AXRow subrole=AXOutlineRow
-            AXCell enabled=true
               AXButton id="Settings.Category.modelManagement" desc="Model Management" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
@@ -55,18 +52,53 @@ AXApplication title="Rapid-MLX"
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
+        AXStaticText id="Settings.ModelManagement.FolderPath" value=text enabled=true
+        AXButton id="Settings.ModelManagement.ChooseFolder" desc="Choose…" enabled=true
+        AXStaticText value=text enabled=true
+        AXStaticText value=text enabled=true
+        AXStaticText value=text enabled=true
+        AXStaticText value=text enabled=true
         AXCheckBox subrole=AXSwitch id="Settings.Models.ShowAllModelsToggle" desc="Show small models in the picker" help="Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat." value=bool:true enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
         AXCheckBox subrole=AXSwitch id="Settings.Models.AutoStartOnLaunchToggle" desc="Auto-start model on launch" help="When off, opening Rapid-MLX will not load a model until you start one manually from the picker." value=bool:true enabled=true
+        AXTextField id="Settings.ModelManagement.Search" value=empty enabled=true
+        AXMenuButton id="Settings.ModelManagement.SortMenu" title="Sort" enabled=true
+        AXRadioGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true
+          AXRadioButton subrole=AXSegment desc="All" value=bool:true enabled=true
+          AXRadioButton subrole=AXSegment desc="Cached" value=bool:false enabled=true
+          AXRadioButton subrole=AXSegment desc="Not cached" value=bool:false enabled=true
+        AXStaticText id="Settings.ModelManagement.RecommendedHeader" value=text enabled=true
+        AXGroup id="Settings.ModelManagement.Recommended.primary" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXButton id="Settings.ModelManagement.Recommended.Download.<model>" desc="Download" enabled=true
+        AXGroup id="Settings.ModelManagement.Recommended.alt" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXButton id="Settings.ModelManagement.Recommended.Download.<model>" desc="Download" enabled=true
+        AXStaticText id="Settings.ModelManagement.VisibleCount" value=text enabled=true
+        AXStaticText id="Settings.ModelManagement.MeterLegend" value=text enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXButton desc="Delete" enabled=true
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
+        AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
+          AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin <model>" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXUnknown desc="Accuracy: not published" enabled=true
+          AXUnknown desc="Speed: not published" enabled=true
+          AXStaticText help="Measured size on disk. Deleting frees this much." value=text enabled=true
+          AXButton id="Settings.ModelManagement.Delete.<model>" desc="Delete <model> from disk" enabled=true
+        AXStaticText id="Settings.ModelManagement.Footer" value=text enabled=true
+        AXScrollBar value=number enabled=true
+          AXValueIndicator value=number
+          AXButton subrole=AXIncrementArrow
+          AXButton subrole=AXDecrementArrow
+          AXButton subrole=AXIncrementPage
+          AXButton subrole=AXDecrementPage
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true
