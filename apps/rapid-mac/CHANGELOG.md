@@ -13,11 +13,47 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.7] — 2026-08-07
+
+The privacy switch does what it looks like it does, and the models Rapid
+suggests for your Mac are now the ones that were actually measured on hardware
+rather than the ones that seemed reasonable.
+
+From this release Rapid and its engine share **one** version number. 0.12.6 is
+skipped on purpose: the app already shipped as 0.12.6 before this work landed,
+and reusing that number would have made it mean two different things.
+
+Bundles the **Rapid-MLX 0.12.7** engine.
+
 ### Fixed
 
-- **Models without a compatible benchmark now say “Untested”.** Empty dashed
-  capability and speed tracks looked like zero scores. The model list now
-  distinguishes missing measurements from poor results explicitly.
+- **The "Send anonymous usage data" switch stays where you put it.** Turning it
+  on recorded your choice correctly, but the switch itself sprang back to off
+  until you left Privacy and came back — so a setting about your privacy looked
+  like it had refused you. The natural response is to press it again, which
+  left people unsure what had actually been saved.
+- **The link to get a Brave search key goes to the right page.**
+
+### Changed
+
+- **The suggested models for your Mac are now measured, not estimated.** Each
+  memory size offers exactly two: a faster one and a smarter one, with the
+  memory each really uses and how quickly it answers taken from runs on real
+  hardware. Laptops get more conservative suggestions than desktops with the
+  same memory, because sustained speed is not the same thing.
+- **Models and Model Management are one screen** instead of two that overlapped.
+
+### Added
+
+- **A recovery path when a model is too big for your Mac.** If the memory check
+  says the suggested model will not fit, you are offered a smaller one that is
+  honestly labelled as less capable — rather than being sent back to a list
+  whose smallest option is the one that just failed.
+- **Code and tables render properly in chat** — syntax highlighting, and
+  markdown tables that look like tables.
+- **Models with no compatible benchmark now say "Untested"** instead of showing
+  an empty dashed track that read as a score of zero. A missing measurement and
+  a poor result should not look the same.
 
 ## [0.12.6] — 2026-08-07
 
