@@ -158,6 +158,46 @@ struct WebSearchThrottleTests {
         #expect(FailureDiagnoser.diagnosis(for: .webSearchRateLimited).action == .openWebSearchSettings)
     }
 
+    // MARK: - Inline tool-card button
+
+    @Test("The rate-limited card offers its button when Settings is reachable")
+    func inlineActionOfferedWhenRoutable() {
+        let diagnosis = FailureDiagnoser.diagnosis(for: .webSearchRateLimited)
+        #expect(FailureDiagnosis.inlineToolCardAction(
+            for: diagnosis,
+            canRouteToSettings: true
+        ) == .openWebSearchSettings)
+    }
+
+    @Test("No router, no button — an inert button is the bug being fixed")
+    func inlineActionSuppressedWithoutRouter() {
+        // The card resolves ``SettingsRouter`` optionally so it renders in
+        // hosts that never injected one. Those hosts also have no Settings
+        // window to open, so the button must be ABSENT, not merely harmless.
+        let diagnosis = FailureDiagnoser.diagnosis(for: .webSearchRateLimited)
+        #expect(FailureDiagnosis.inlineToolCardAction(
+            for: diagnosis,
+            canRouteToSettings: false
+        ) == nil)
+    }
+
+    @Test("Retry-shaped diagnoses get no inline button")
+    func inlineActionIgnoresRetry() {
+        // Retry has to rewind the chat turn; the assistant row above the card
+        // owns that. Rendering it here would be a second, weaker Retry.
+        for kind in [FailureDiagnosis.Kind.webSearchUnavailable, .webSearchOffline, .toolFailed] {
+            #expect(FailureDiagnosis.inlineToolCardAction(
+                for: FailureDiagnoser.diagnosis(for: kind),
+                canRouteToSettings: true
+            ) == nil)
+        }
+    }
+
+    @Test("A still-running or successful tool call gets no inline button")
+    func inlineActionNilWithoutDiagnosis() {
+        #expect(FailureDiagnosis.inlineToolCardAction(for: nil, canRouteToSettings: true) == nil)
+    }
+
     @Test("Other web_search failures keep their existing copy")
     func unrelatedWebSearchCopyUnchanged() {
         let unavailable = FailureDiagnoser.diagnosis(for: .webSearchUnavailable)

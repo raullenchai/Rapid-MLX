@@ -694,6 +694,12 @@ Open the picker any time to switch models.
 struct QuickstartView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
     @Environment(\.openSettings) private var openSettings
+    /// The mechanism that actually opens this app's Settings: it declares a
+    /// real ``Window("Settings", id: "settings")`` and no SwiftUI ``Settings``
+    /// scene, so ``openSettings()`` — used by the three cases below — is a
+    /// silent no-op. Those are a pre-existing dead deep-link, tracked
+    /// separately; the case added here uses the working path.
+    @Environment(\.openWindow) private var openWindow
     @Bindable var coordinator: QuickstartCoordinator
     @Bindable var downloads: DownloadManager
     @Bindable var server: ServerManager
@@ -1277,9 +1283,11 @@ struct QuickstartView: View {
             openSettings()
         case .openWebSearchSettings:
             // Not reachable from a download/model failure, but the deep-link
-            // is the same two lines wherever it fires.
+            // is the same two lines wherever it fires: set the target tab,
+            // then open the window (``SettingsView`` reads the router from
+            // ``.onAppear``, so the assignment has to come first).
             settingsRouter.requestedCategory = .tools
-            openSettings()
+            openWindow(id: "settings")
         }
     }
 

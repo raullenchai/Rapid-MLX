@@ -993,9 +993,16 @@ private struct ToolCallChip: View {
 
     /// Deep-link channel into Settings. Optional so the chip still renders in
     /// any host that hasn't injected the router (previews, snapshot harness) —
-    /// the non-optional form traps at lookup time.
+    /// the non-optional form traps at lookup time. Absence also suppresses the
+    /// inline button entirely; see ``FailureDiagnosis.inlineToolCardAction``.
     @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
-    @Environment(\.openSettings) private var openSettings
+    /// ``openWindow(id: "settings")``, NOT ``@Environment(\.openSettings)``.
+    /// This app has no SwiftUI ``Settings`` scene — it declares a real
+    /// ``Window("Settings", id: "settings")`` so the tray item can reach it
+    /// (see ``RapidApp``), and ``OpenSettingsAction`` against a missing
+    /// ``Settings`` scene is a silent no-op. ⌘, and the tray's "Settings…"
+    /// item both go through ``openWindow`` for the same reason.
+    @Environment(\.openWindow) private var openWindow
 
     /// Manual override. Tracks the user's last toggle so a click always wins
     /// over the auto-collapse-on-success rule; without it, expanding a
@@ -1041,23 +1048,27 @@ private struct ToolCallChip: View {
         return ChatTextSanitizer.sanitizeForDisplay(result.content)
     }
 
-    /// The one recovery action the chip offers inline. Only the Settings
-    /// deep-links are honoured here: "Retry" would need to rewind the whole
-    /// chat turn (the row-level Retry above already owns that), while
-    /// "open Settings on the right tab" is exactly what a tool-configuration
-    /// failure needs and has nowhere else to live.
+    /// The one recovery action the chip offers inline, or nil for no button.
+    /// Policy lives in ``FailureDiagnosis`` so it can be pinned by a test —
+    /// this view is private and a SwiftUI body isn't reachable from the suite.
     private var inlineAction: FailureDiagnosis.Action? {
-        switch failureDiagnosis?.action {
-        case .openWebSearchSettings: return .openWebSearchSettings
-        default: return nil
-        }
+        FailureDiagnosis.inlineToolCardAction(
+            for: failureDiagnosis,
+            canRouteToSettings: settingsRouter != nil
+        )
     }
 
     private func perform(_ action: FailureDiagnosis.Action) {
         switch action {
         case .openWebSearchSettings:
+            // Order matters: the router field must be set BEFORE the window
+            // opens. ``SettingsView`` consumes it from ``.onAppear`` (first
+            // open of the session) and ``.onChange`` (already-open window
+            // being re-focused); setting it after the open would race the
+            // ``.onAppear`` read and land the user on the last-used tab.
+            // Same pairing ``QuickstartView`` uses for its deep-links.
             settingsRouter?.requestedCategory = .tools
-            openSettings()
+            openWindow(id: "settings")
         case .retry, .restart, .openModelManagement, .switchDownloadSource, .openPermissions:
             break
         }

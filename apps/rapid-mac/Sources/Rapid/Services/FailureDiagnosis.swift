@@ -61,6 +61,33 @@ struct FailureDiagnosis: Equatable, Sendable {
     let kind: Kind
     let message: String
     let action: Action?
+
+    /// The recovery action a tool card may render inline, or nil for "render
+    /// no button". Two gates, both load-bearing:
+    ///
+    ///   * **Settings deep-links only.** ``.retry`` would have to rewind the
+    ///     whole chat turn; the assistant row above the card already owns that
+    ///     affordance. "Open Settings on the right tab" has nowhere else to
+    ///     live, so it is the one action the card offers.
+    ///   * **Only when the deep-link can actually run.** The card resolves
+    ///     ``SettingsRouter`` optionally so it still renders in a host that
+    ///     never injected one (previews, the snapshot harness). Those hosts
+    ///     have no Settings window to open either — and a visible button that
+    ///     does nothing is precisely the failure this diagnosis exists to
+    ///     remove, so the button must be absent rather than inert.
+    ///
+    /// Pure + static because the view that calls it is `private` inside
+    /// ChatView and a SwiftUI body can't be exercised from the test suite.
+    static func inlineToolCardAction(
+        for diagnosis: FailureDiagnosis?,
+        canRouteToSettings: Bool
+    ) -> Action? {
+        guard canRouteToSettings else { return nil }
+        switch diagnosis?.action {
+        case .openWebSearchSettings: return .openWebSearchSettings
+        default: return nil
+        }
+    }
 }
 
 /// Rule-based classification for common failures. Matching deliberately uses
