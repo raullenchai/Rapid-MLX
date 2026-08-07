@@ -429,21 +429,18 @@ struct SettingsModelManagementPanel: View {
         // window — a fixed brand + meters + action row overflows and clips
         // the action button there (design review B1).
         HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Label(isPrimary ? "Best pick" : "Faster",
-                      systemImage: isPrimary ? "star.fill" : "hare.fill")
-                    .font(.caption.weight(.bold))
-                    .labelStyle(.titleAndIcon)
-                if isPrimary {
-                    Text("BEST PICK")
-                        .scaledSystemFont(9, weight: .bold)
-                        .foregroundStyle(RapidTheme.brand)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(RapidTheme.brand.opacity(0.12)))
-                }
-            }
-            .frame(width: 74, alignment: .leading)
+            // One marker, not two. This column used to render "Best pick"
+            // as a label AND "BEST PICK" as a capsule directly beneath it
+            // — the same two words, stacked, on the same card. The label
+            // stays because it carries the star and reads at a glance; the
+            // capsule goes because the card's own brand tint, brand border
+            // and shadow already say "this is the featured one", and the
+            // table below still pills the same alias as RECOMMENDED.
+            Label(isPrimary ? "Best pick" : "Faster",
+                  systemImage: isPrimary ? "star.fill" : "hare.fill")
+                .font(.caption.weight(.bold))
+                .labelStyle(.titleAndIcon)
+                .frame(width: RecommendedCardLayout.markerColumnWidth, alignment: .leading)
 
             BrandIcon(alias: alias)
 
@@ -467,8 +464,20 @@ struct SettingsModelManagementPanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
+            // ``fixedSize`` is the actual guarantee: it hands the action
+            // its intrinsic width so a label can never be compressed into
+            // an ellipsis. The frame is alignment only — a floor wide
+            // enough for the longest label this slot renders, so the two
+            // stacked cards line up, with no ceiling to clip against.
+            //
+            // The bug this replaces: a hard ``.frame(width: 92)`` around a
+            // caption + button cluster. The caption ate ~50pt and the
+            // prominent "Download" button was left with ~40, rendering as
+            // "Dow…" for every user whose best pick wasn't cached. Widening
+            // the Settings window did nothing — the clamp was on the card.
             recommendedAction(entry: entry, badge: badge)
-                .frame(width: 92, alignment: .trailing)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: RecommendedCardLayout.actionColumnWidth, alignment: .trailing)
         }
         .padding(13)
         .background(
@@ -510,18 +519,24 @@ struct SettingsModelManagementPanel: View {
         return parts.joined(separator: " · ")
     }
 
+    /// The card's trailing slot: a status pill when there is nothing to
+    /// do, otherwise the one action button.
+    ///
+    /// No size caption here. ``pickStatsLine`` already opens with the
+    /// pick's footprint two columns to the left ("7.6 GB · 86%
+    /// capability · ~17 tok/s"), so a second "7.6 GB" beside the button
+    /// was the same fact twice on one card — and the two were computed
+    /// from different sources (the curated ``Pick.footprintGB`` vs
+    /// ``ModelSizing.estimate``), so they could disagree by a rounding
+    /// step while claiming to be the same number. It was also what
+    /// starved the button into "Dow…".
     @ViewBuilder
     private func recommendedAction(entry: ModelEntry, badge: ModelCacheActions.StatusBadge) -> some View {
         switch badge {
         case .cached, .inUse:
             statusBadgeView(badge)
         default:
-            HStack(spacing: 8) {
-                if case .notCached = badge, let gb = downloadSizeLabel(entry.alias) {
-                    Text(gb).font(.caption).foregroundStyle(.secondary)
-                }
-                actionButton(for: entry, badge: badge)
-            }
+            actionButton(for: entry, badge: badge)
         }
     }
 
@@ -529,19 +544,25 @@ struct SettingsModelManagementPanel: View {
 
     @ViewBuilder
     private var allModelsSection: some View {
+        // Resolved once and handed to both the heading and the list, so
+        // the number in the heading and the rows under it can never
+        // describe different sets.
+        let entries = visibleEntries
+        let heading = ModelCacheActions.listHeading(
+            filter: filterMode,
+            query: query,
+            visibleCount: entries.count,
+            totalCount: catalog.count
+        )
         VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 6) {
-                Text("All models").font(.caption.weight(.semibold)).textCase(.uppercase)
-                Text("· \(catalog.count)").font(.caption).foregroundStyle(.tertiary)
-            }
-            .foregroundStyle(.secondary)
+            ModelsTableHeading(heading: heading)
             // The meter legend belongs HERE — these are the only rows that
             // render the Quality · Speed bars. The recommendation cards
             // above show the curated capability / speed stats instead, so a
             // top-of-panel legend misattributed them.
             meterLegend
             columnHeader
-            listSection
+            listSection(entries)
             if let footer = ModelCacheActions.diskUsageFooter(
                 ModelCacheActions.aggregateOnDiskBytes(catalog)
             ) {
@@ -576,7 +597,7 @@ struct SettingsModelManagementPanel: View {
             Spacer().frame(width: 30)
             Text("Model").frame(maxWidth: .infinity, alignment: .leading)
             Text("Quality · Speed").frame(width: 158, alignment: .leading)
-            Text("Size").frame(width: 84, alignment: .trailing)
+            Text("Size").frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
         }
         .scaledSystemFont(10, weight: .semibold)
         .foregroundStyle(.tertiary)
@@ -635,10 +656,27 @@ struct SettingsModelManagementPanel: View {
         return "\(ctx)"
     }
 
-    private func downloadSizeLabel(_ alias: String) -> String? {
+    /// ESTIMATED download size for a model that is not on disk, derived
+    /// from the alias string by ``ModelSizing`` — not a measurement of
+    /// anything. The caller renders it with a leading "~" so it can't be
+    /// mistaken for the measured on-disk figure cached rows in the same
+    /// column now show; #1550 has a case where this estimate lands ~12%
+    /// under the real download.
+    nonisolated static func downloadSizeLabel(_ alias: String) -> String? {
         let fp = ModelSizing.estimate(alias: alias)
         guard fp.weightsGB > 0 else { return nil }
         return String(format: "%.1f GB", fp.weightsGB)
+    }
+
+    /// MEASURED size of a cached model, exactly as ``rapid-mlx ls``
+    /// reported it (and as Settings → Models quotes it, so the two
+    /// surfaces can't print different numbers for the same model).
+    /// Never an estimate: if the measurement is missing, the row shows no
+    /// size rather than substituting ``ModelSizing``'s guess.
+    nonisolated static func onDiskSizeLabel(_ entry: ModelEntry) -> String? {
+        guard let raw = entry.sizeOnDisk?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        return raw
     }
 
     @ViewBuilder
@@ -694,11 +732,32 @@ struct SettingsModelManagementPanel: View {
     private func sizeAction(entry: ModelEntry, badge: ModelCacheActions.StatusBadge) -> some View {
         switch badge {
         case .cached:
-            HStack(spacing: 8) {
+            // The size is the point of this tab. A cached row used to show
+            // the check and the trash and nothing else, so the one surface
+            // whose job is reclaiming space never said how much any given
+            // model would reclaim — while its own "Size (largest first)"
+            // sort ordered the table by exactly that number.
+            HStack(spacing: ModelTableLayout.cellSpacing) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(RapidTheme.green)
-                    .accessibilityLabel("On disk")
+                    .accessibilityHidden(true)
+                if let size = Self.onDiskSizeLabel(entry) {
+                    Text(size)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Measured size on disk. Deleting frees this much.")
+                        .accessibilityLabel("On disk, \(size)")
+                } else {
+                    // No measurement from ``rapid-mlx ls``. Say "On disk"
+                    // and stop — substituting the alias-derived estimate
+                    // here would quote a guess as a measurement.
+                    Text("On disk")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Button(role: .destructive) {
                     pendingDeletion = entry
                 } label: {
@@ -715,8 +774,13 @@ struct SettingsModelManagementPanel: View {
                 .foregroundStyle(.secondary)
         case .notCached:
             HStack(spacing: 8) {
-                if let gb = downloadSizeLabel(entry.alias) {
-                    Text(gb).font(.caption).foregroundStyle(.secondary)
+                if let gb = Self.downloadSizeLabel(entry.alias) {
+                    Text("~\(gb)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Estimated download size.")
+                        .accessibilityLabel("Estimated download, about \(gb)")
                 }
                 Button {
                     _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
@@ -761,8 +825,7 @@ struct SettingsModelManagementPanel: View {
     }
 
     @ViewBuilder
-    private var listSection: some View {
-        let entries = visibleEntries
+    private func listSection(_ entries: [ModelEntry]) -> some View {
         if entries.isEmpty {
             Text(noMatchesCopy)
                 .font(.callout)
@@ -832,7 +895,7 @@ struct SettingsModelManagementPanel: View {
             metersView(alias: entry.alias)
                 .frame(width: 158)
             sizeAction(entry: entry, badge: badge)
-                .frame(width: 84, alignment: .trailing)
+                .frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .contain)
@@ -1113,5 +1176,130 @@ struct SettingsModelManagementPanel: View {
         case .failure(let message):
             lastError = message
         }
+    }
+}
+
+/// The heading above the models table: the subset on screen and how many
+/// rows that is.
+///
+/// Its own view so the dev snapshot harness can render every filter state
+/// side by side without re-implementing markup the panel ships — the
+/// heading is the thing this pass changed, so it has to be reviewable in
+/// all four of its states, not just the one a running panel happens to be
+/// in.
+struct ModelsTableHeading: View {
+    let heading: ModelCacheActions.ListHeading
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(heading.title).font(.caption.weight(.semibold)).textCase(.uppercase)
+            Text("· \(heading.countText)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .accessibilityIdentifier("Settings.ModelManagement.VisibleCount")
+        }
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(heading.accessibilityLabel)
+    }
+}
+
+/// Fixed geometry of a Recommended card, lifted out of the view body so
+/// the widths that decide whether a label renders in full are values a
+/// test can measure instead of literals buried in a modifier chain.
+///
+/// The card clipped its primary call to action to "Dow…" because the
+/// trailing slot was pinned to a hard 92pt that its own contents did not
+/// fit inside. Deriving the floor from the labels — rather than picking
+/// another literal and hoping — means adding a longer label, or bumping
+/// the control size, moves the column with it.
+enum RecommendedCardLayout {
+    /// Leading marker column ("Best pick" / "Faster").
+    static let markerColumnWidth: CGFloat = 74
+
+    /// Horizontal chrome around a ``controlSize(.small)`` push-button's
+    /// title: the bezel plus its internal padding. Deliberately generous
+    /// — an over-estimate only widens a right-aligned column by a couple
+    /// of points, while an under-estimate is the ellipsis we are fixing.
+    static let smallButtonChrome: CGFloat = 26
+
+    /// Horizontal chrome around a status pill's text — 8pt of capsule
+    /// padding on each side (see ``SettingsModelManagementPanel.pill``).
+    static let pillChrome: CGFloat = 16
+
+    /// Every button label the card's trailing slot can render. "Delete"
+    /// is included because ``actionButton`` still carries that branch,
+    /// even though the cached card currently resolves to a pill.
+    static let actionButtonTitles = ["Download", "Delete", "Cancel", "Retry"]
+
+    /// Every status pill the same slot can render.
+    static let actionPillTitles = ["On disk", "In use", "Serving"]
+
+    /// Intrinsic width of a small push-button with this title.
+    static func buttonWidth(title: String) -> CGFloat {
+        textWidth(title, font: .systemFont(ofSize: NSFont.smallSystemFontSize))
+            + smallButtonChrome
+    }
+
+    /// Intrinsic width of a status pill with this text.
+    static func pillWidth(text: String) -> CGFloat {
+        textWidth(text, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium))
+            + pillChrome
+    }
+
+    /// Floor for the card's trailing slot: the widest thing it renders.
+    /// The slot is free to grow past this (its content is `fixedSize`d);
+    /// the floor exists so the stacked cards' buttons line up.
+    static let actionColumnWidth: CGFloat = {
+        let widest = actionButtonTitles.map(buttonWidth(title:))
+            + actionPillTitles.map(pillWidth(text:))
+        return (widest.max() ?? 92).rounded(.up)
+    }()
+
+    /// Width of a `.caption` run — the font the removed size caption used,
+    /// kept so a test can show why it could not share the slot.
+    static func captionWidth(_ text: String) -> CGFloat {
+        textWidth(text, font: .systemFont(ofSize: 10))
+    }
+
+    fileprivate static func textWidth(_ string: String, font: NSFont) -> CGFloat {
+        (string as NSString).size(withAttributes: [.font: font]).width
+    }
+}
+
+/// Geometry of the "All models" table's trailing Size column.
+///
+/// The column is a fixed width shared by the header and every row —
+/// variable widths would put each row's meters at a different x and make
+/// the table ragged — so the width has to be chosen against the widest
+/// cell rather than the narrowest.
+///
+/// It was 84pt, sized when a cached cell held two glyphs and nothing
+/// between them. Now that it also carries the measured size, the biggest
+/// caches on a large Mac ("123.4 GiB") need ~88pt, so the column moves to
+/// 100 and the flexible model-name column gives up 16.
+enum ModelTableLayout {
+    /// Shared width of the Size column.
+    static let sizeColumnWidth: CGFloat = 100
+
+    /// Spacing between the glyph, the figure and the button in a cell.
+    static let cellSpacing: CGFloat = 6
+
+    /// A `.caption`-sized SF Symbol (state glyph) or the 11pt trash.
+    static let glyphWidth: CGFloat = 15
+
+    /// Width a cached cell needs: state glyph + measured size + delete.
+    static func cachedCellWidth(size: String) -> CGFloat {
+        glyphWidth
+            + cellSpacing
+            + RecommendedCardLayout.captionWidth(size)
+            + cellSpacing
+            + glyphWidth
+    }
+
+    /// Width a not-cached cell needs: estimate + download glyph. The 8pt
+    /// spacing is the one that branch renders.
+    static func notCachedCellWidth(size: String) -> CGFloat {
+        RecommendedCardLayout.captionWidth("~" + size) + 8 + glyphWidth
     }
 }

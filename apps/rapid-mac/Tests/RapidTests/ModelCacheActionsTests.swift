@@ -426,4 +426,98 @@ struct ModelCacheActionsTests {
         #expect(ModelCacheActions.SortOrder.nameAscending.displayLabel == "Name")
         #expect(ModelCacheActions.SortOrder.sizeDescending.displayLabel == "Size (largest first)")
     }
+
+    // MARK: - List heading
+
+    @Test("listHeading: unfiltered, the count is the whole catalog")
+    func listHeadingUnfiltered() {
+        let heading = ModelCacheActions.listHeading(
+            filter: .all, query: "", visibleCount: 175, totalCount: 175
+        )
+        #expect(heading.title == "All models")
+        #expect(heading.countText == "175")
+    }
+
+    /// The defect: the heading rendered ``catalog.count`` regardless of
+    /// what the search box had done to the rows beneath it, so four
+    /// visible models sat under a header claiming 175.
+    @Test("listHeading: a search query makes the count describe the rows shown")
+    func listHeadingWithQuery() {
+        let heading = ModelCacheActions.listHeading(
+            filter: .all, query: "qwen", visibleCount: 4, totalCount: 175
+        )
+        #expect(heading.countText == "4 of 175")
+        #expect(heading.countText.contains("4"))
+    }
+
+    /// Same defect through the other control: the segmented filter.
+    @Test("listHeading: the segment names itself and counts only its rows")
+    func listHeadingWithSegment() {
+        let cached = ModelCacheActions.listHeading(
+            filter: .cached, query: "", visibleCount: 3, totalCount: 175
+        )
+        #expect(cached.title == "Cached")
+        #expect(cached.countText == "3 of 175")
+
+        let notCached = ModelCacheActions.listHeading(
+            filter: .notCached, query: "", visibleCount: 172, totalCount: 175
+        )
+        #expect(notCached.title == "Not cached")
+        #expect(notCached.countText == "172 of 175")
+    }
+
+    /// A filter that happens to match everything still says so, rather
+    /// than collapsing to a bare total that would read as "unfiltered".
+    @Test("listHeading: a filter matching everything still reads N of N")
+    func listHeadingFilterMatchingEverything() {
+        let heading = ModelCacheActions.listHeading(
+            filter: .notCached, query: "", visibleCount: 175, totalCount: 175
+        )
+        #expect(heading.countText == "175 of 175")
+    }
+
+    /// Whitespace is not a search. The clear button leaves an empty
+    /// string but a stray space must not flip the heading into its
+    /// narrowed form while every row is still on screen.
+    @Test("listHeading: whitespace-only query is not narrowing")
+    func listHeadingWhitespaceQuery() {
+        let heading = ModelCacheActions.listHeading(
+            filter: .all, query: "   ", visibleCount: 175, totalCount: 175
+        )
+        #expect(heading.countText == "175")
+    }
+
+    /// Zero matches is the state most likely to be read as a bug, so it
+    /// has to be stated plainly rather than showing the catalog size.
+    @Test("listHeading: no matches counts zero, not the catalog")
+    func listHeadingNoMatches() {
+        let heading = ModelCacheActions.listHeading(
+            filter: .all, query: "zzz", visibleCount: 0, totalCount: 175
+        )
+        #expect(heading.countText == "0 of 175")
+        #expect(heading.accessibilityLabel == "All models, 0 of 175")
+    }
+
+    /// The count and the rows come from one filter pass, so whatever
+    /// ``filter`` returns is what the heading must report.
+    @Test("listHeading: the count agrees with filter() for the same inputs")
+    func listHeadingAgreesWithFilter() {
+        let entries = [
+            entry("qwen3.6-27b-4bit", cached: true),
+            entry("qwen3.5-9b-4bit", cached: false),
+            entry("phi-4-4bit", cached: true),
+        ]
+        for mode in ModelCacheActions.FilterMode.allCases {
+            for query in ["", "qwen", "phi", "nope"] {
+                let visible = ModelCacheActions.filter(entries, by: mode, query: query)
+                let heading = ModelCacheActions.listHeading(
+                    filter: mode,
+                    query: query,
+                    visibleCount: visible.count,
+                    totalCount: entries.count
+                )
+                #expect(heading.countText.hasPrefix("\(visible.count)"))
+            }
+        }
+    }
 }

@@ -293,7 +293,7 @@ struct ContentView: View {
         ModelReadiness.resolve(
             serverState: server.state,
             alias: alias,
-            isAliasCached: cachedState(for: alias),
+            cacheState: cacheState(for: alias),
             sizeText: sizeText(for: alias),
             progress: progressSnapshot,
             failure: chat.lastError.map {
@@ -327,25 +327,27 @@ struct ContentView: View {
         )
     }
 
-    /// `nil` while the catalog is still loading — see the ``resolve``
-    /// docs for why that resolves to "start" rather than "download".
-    private func cachedState(for alias: String) -> Bool? {
-        guard !alias.isEmpty else { return nil }
+    /// What we know about this alias' weights — see the ``resolve`` docs
+    /// for why neither unknown state resolves to "download".
+    private func cacheState(for alias: String) -> ModelReadiness.CacheState {
+        guard !alias.isEmpty else { return .catalogPending }
         // #223's launch-time decision already established that this
         // alias needs pulling, and it lands before the catalog snapshot
         // does. Trusting it here means a cold first launch says
         // "isn't downloaded yet" immediately instead of flashing
         // "isn't running" for the second the catalog takes to load.
         if let pending = autoStartPendingDownload, pending.alias == alias {
-            return false
+            return .notOnDisk
         }
-        guard catalogLoaded else { return nil }
+        guard catalogLoaded else { return .catalogPending }
         guard let entry = catalogEntries.first(where: { $0.alias == alias }) else {
             // A custom alias the user typed isn't in the catalog. We
-            // genuinely don't know whether it's on disk.
-            return nil
+            // genuinely don't know whether it's on disk — and unlike the
+            // still-loading case, nothing is coming to tell us, so the
+            // banner must not claim it is already downloaded.
+            return .notInCatalog
         }
-        return entry.cached
+        return entry.cached ? .onDisk : .notOnDisk
     }
 
     /// Human download size for the readiness copy. Shares

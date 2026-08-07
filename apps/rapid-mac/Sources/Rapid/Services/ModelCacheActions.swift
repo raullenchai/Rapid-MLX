@@ -281,6 +281,56 @@ enum ModelCacheActions {
         }
     }
 
+    /// The heading above the models table: what the table is showing,
+    /// and how many rows that actually is.
+    struct ListHeading: Equatable, Sendable {
+        /// Names the subset on screen. Rendered uppercased.
+        let title: String
+        /// "175" when nothing is narrowing the list, "4 of 175" when
+        /// something is.
+        let countText: String
+
+        /// One sentence for VoiceOver, since the rendered form is two
+        /// fragments separated by a middle dot.
+        var accessibilityLabel: String { "\(title), \(countText)" }
+    }
+
+    /// Derive the models-table heading.
+    ///
+    /// The panel used to render a fixed "All models" beside
+    /// ``catalog.count`` — the size of the WHOLE catalog — no matter what
+    /// the filter or the search box had done to the rows underneath. Type
+    /// three characters and the table showed four rows under a heading
+    /// that still said 175.
+    ///
+    /// So the count always describes what is on screen, and when
+    /// something has narrowed it the total follows as context ("4 of
+    /// 175") rather than the number silently changing meaning. The title
+    /// names the segment, which is the other half of "what am I looking
+    /// at". The search term is deliberately NOT echoed here: it is
+    /// legible in the field a few points above, and repeating it would be
+    /// the same duplication this panel is being cleaned of.
+    static func listHeading(
+        filter: FilterMode,
+        query: String,
+        visibleCount: Int,
+        totalCount: Int
+    ) -> ListHeading {
+        let title: String = {
+            switch filter {
+            case .all: return "All models"
+            case .cached: return "Cached"
+            case .notCached: return "Not cached"
+            }
+        }()
+        let searching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let narrowed = searching || filter != .all || visibleCount != totalCount
+        return ListHeading(
+            title: title,
+            countText: narrowed ? "\(visibleCount) of \(totalCount)" : "\(totalCount)"
+        )
+    }
+
     /// How the panel orders the filtered list.
     enum SortOrder: String, CaseIterable, Identifiable, Sendable {
         /// Family A→Z, then ascending size within each family.

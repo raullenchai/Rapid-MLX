@@ -57,6 +57,18 @@ enum ModelReadiness: Equatable {
     case needsDownload(alias: String, sizeText: String?)
     /// A real alias is chosen and cached, but nothing is serving it.
     case needsStart(alias: String)
+    /// A real alias is chosen, nothing is serving it, and the catalog has
+    /// finished loading WITHOUT listing it — a custom model name the user
+    /// typed into "Type a model name…".
+    ///
+    /// Distinct from ``needsStart`` in exactly one respect, and it is the
+    /// reason the case exists: we have no evidence the weights are on
+    /// disk, so the copy must not claim they are. ``needsStart``'s detail
+    /// ("It's already downloaded") was being shown for these aliases,
+    /// contradicting the picker's own unknown-model glyph in the same row.
+    /// The action is identical — ``ServerManager`` pulls on demand — so
+    /// this changes only what the user is told, not what the button does.
+    case unknownModel(alias: String)
     /// Weights are being pulled. ``detail`` carries bytes/speed/ETA when
     /// the byte monitor has a signal; ``fraction`` drives a determinate bar.
     case downloading(alias: String, detail: String?, fraction: Double?)
@@ -150,6 +162,30 @@ enum ModelReadiness: Equatable {
         }
     }
 
+    /// What the app knows about the chosen alias' weights.
+    ///
+    /// A four-state value rather than a `Bool?` because "we don't know"
+    /// has two meanings with opposite consequences for the copy, and
+    /// collapsing them into `nil` is what let an unknown custom alias be
+    /// told "It's already downloaded":
+    ///
+    ///   * ``catalogPending`` is transient — the answer is seconds away,
+    ///     and guessing "not downloaded" would flash a scary
+    ///     multi-gigabyte warning at a model that is probably on disk.
+    ///   * ``notInCatalog`` is permanent for as long as the alias stays
+    ///     unknown. Nothing will arrive to correct it, so the copy has to
+    ///     be honest about not knowing.
+    enum CacheState: Equatable, Sendable {
+        /// The catalog lists this alias and its weights are on disk.
+        case onDisk
+        /// The catalog lists this alias and its weights are not on disk.
+        case notOnDisk
+        /// The catalog has not answered yet. Transient.
+        case catalogPending
+        /// The catalog has loaded and does not list this alias.
+        case notInCatalog
+    }
+
     /// A chat-level failure worth surfacing as a readiness problem.
     /// Only consulted when the server is not itself in flight — an
     /// in-progress start always outranks a stale error from the turn
@@ -180,18 +216,23 @@ enum ModelReadiness: Equatable {
     ///   5. A chat-level failure.
     ///   6. No model chosen.
     ///   7. Chosen but not cached → ``needsDownload``.
-    ///   8. Otherwise → ``needsStart``.
+    ///   8. Chosen but absent from a loaded catalog → ``unknownModel``.
+    ///   9. Otherwise → ``needsStart``.
     ///
-    /// - Parameter isAliasCached: `nil` means the catalog has not loaded
-    ///   yet. We resolve to ``needsStart`` in that case rather than
-    ///   ``needsDownload``: claiming a download is required when we do
-    ///   not know is the more misleading of the two errors, and the
-    ///   Start action behaves identically either way (``ServerManager``
-    ///   pulls on demand).
+    /// - Parameter cacheState: what we know about the weights. Both
+    ///   "don't know" states resolve to a start rather than a download —
+    ///   claiming a multi-gigabyte pull is required when we cannot prove
+    ///   it is the more misleading error, and the Start action behaves
+    ///   identically either way (``ServerManager`` pulls on demand). They
+    ///   differ only in the copy: ``catalogPending`` keeps
+    ///   ``needsStart``'s "it's already downloaded" (in a second the
+    ///   catalog will confirm it, and for the launch model it is nearly
+    ///   always true), while ``notInCatalog`` gets ``unknownModel``,
+    ///   which promises nothing about the disk.
     static func resolve(
         serverState: ServerState,
         alias: String,
-        isAliasCached: Bool?,
+        cacheState: CacheState,
         sizeText: String? = nil,
         progress: ProgressSnapshot? = nil,
         failure: Failure? = nil
@@ -274,10 +315,14 @@ enum ModelReadiness: Equatable {
 
         guard let name = selected else { return .noModel }
 
-        if isAliasCached == false {
+        switch cacheState {
+        case .notOnDisk:
             return .needsDownload(alias: name, sizeText: normalizedSize(sizeText))
+        case .notInCatalog:
+            return .unknownModel(alias: name)
+        case .onDisk, .catalogPending:
+            return .needsStart(alias: name)
         }
-        return .needsStart(alias: name)
     }
 
     // MARK: - Derived presentation
@@ -303,7 +348,7 @@ enum ModelReadiness: Equatable {
         switch self {
         case .engineMissing, .failed:      return .error
         case .noModel, .needsDownload,
-             .needsStart:                  return .idle
+             .needsStart, .unknownModel:   return .idle
         case .downloading, .starting:      return .working
         case .ready:                       return .ready
         }
@@ -322,7 +367,7 @@ enum ModelReadiness: Equatable {
         switch self {
         case .engineMissing, .noModel:
             return nil
-        case .needsDownload(let a, _), .needsStart(let a),
+        case .needsDownload(let a, _), .needsStart(let a), .unknownModel(let a),
              .downloading(let a, _, _), .starting(let a, _), .ready(let a):
             return a
         case .failed(let a, _, _):
@@ -341,7 +386,8 @@ enum ModelReadiness: Equatable {
         case .engineMissing:                    return nil
         case .noModel:                          return .chooseModel
         case .needsDownload(let a, _):          return .downloadAndStart(alias: a)
-        case .needsStart(let a):                return .start(alias: a)
+        case .needsStart(let a),
+             .unknownModel(let a):              return .start(alias: a)
         case .downloading, .starting, .ready:   return nil
         case .failed(_, _, let action):         return action
         }
@@ -364,7 +410,7 @@ enum ModelReadiness: Equatable {
             return "No model chosen"
         case .needsDownload(let a, _):
             return "\(a) isn't downloaded yet"
-        case .needsStart(let a):
+        case .needsStart(let a), .unknownModel(let a):
             return "\(a) isn't running"
         case .downloading(let a, _, _):
             return "Downloading \(a)"
@@ -393,6 +439,11 @@ enum ModelReadiness: Equatable {
             return "It downloads once, then starts in seconds."
         case .needsStart:
             return "It's already downloaded — starting takes a few seconds."
+        case .unknownModel:
+            // Deliberately promises nothing about the disk: this alias is
+            // not in the catalog, so we cannot say it is downloaded (the
+            // old copy did) and we cannot quote a download size either.
+            return "Rapid doesn't know this one — starting will download it first if it isn't on your Mac."
         case .downloading(_, let detail, _):
             return detail ?? "Starting the download…"
         case .starting(_, let detail):
@@ -412,7 +463,8 @@ enum ModelReadiness: Equatable {
         case .engineMissing:            return "Setup didn't finish"
         case .noModel:                  return "Choose a model first"
         case .needsDownload(let a, _):  return "Download \(a) first"
-        case .needsStart(let a):        return "Start \(a) first"
+        case .needsStart(let a),
+             .unknownModel(let a):      return "Start \(a) first"
         case .downloading(let a, _, _): return "Downloading \(a)…"
         case .starting(let a, _):       return "Starting \(a)…"
         case .ready:                    return "Send a message…"
@@ -430,7 +482,7 @@ enum ModelReadiness: Equatable {
             return "Choose a model before sending."
         case .needsDownload(let a, _):
             return "Download \(a) before sending."
-        case .needsStart(let a):
+        case .needsStart(let a), .unknownModel(let a):
             return "Start \(a) before sending."
         case .downloading(let a, _, _):
             return "\(a) is still downloading."
@@ -456,7 +508,7 @@ enum ModelReadiness: Equatable {
             return "Choose a model to start"
         case .needsDownload(let a, _):
             return "Download \(a) to start"
-        case .needsStart(let a):
+        case .needsStart(let a), .unknownModel(let a):
             return "Start \(a) to begin"
         case .downloading:
             return "Downloading your local model…"

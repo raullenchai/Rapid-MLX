@@ -35,6 +35,15 @@ enum DevSnapshot {
         try? FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true)
 
+        // ``ContentView`` reads this from the environment (the browse
+        // tool's per-fetch approval dialog). Without it every capture
+        // below traps with "No Observable object of type
+        // BrowseApprovalStore found" before the first PNG is written —
+        // the harness had been dead since that dependency landed. A
+        // throwaway instance is right here: the snapshot never approves
+        // anything, it only needs the object to exist.
+        let browseApproval = BrowseApprovalStore()
+
         // Erase to AnyView so the long environment chain stays cheap to
         // type-check and the render call is monomorphic.
         func contentView(width: CGFloat, height: CGFloat) -> AnyView {
@@ -51,6 +60,7 @@ enum DevSnapshot {
                     .environment(installTracker)
                     .environment(quickstart)
                     .environment(dockPromptStore)
+                    .environment(browseApproval)
                     .frame(width: width, height: height)
             )
         }
@@ -175,6 +185,7 @@ enum DevSnapshot {
                 .noModel,
                 .needsDownload(alias: "qwen3.5-9b-4bit", sizeText: "5.0 GB"),
                 .needsStart(alias: "bonsai-1.7b-2bit"),
+                .unknownModel(alias: "mlx-community/Some-Custom-Repo"),
                 .downloading(
                     alias: "qwen3.5-9b-4bit",
                     detail: "1.2 GB / 5.0 GB · 24% · 8.4 MB/s · 7 min left",
@@ -239,6 +250,67 @@ enum DevSnapshot {
                      appearance: .aqua, to: "\(dir)/sidebar-light.png")
         renderHosted(sidebarOnly(), size: sidebarSize,
                      appearance: .darkAqua, to: "\(dir)/sidebar-dark.png")
+
+        // Settings → Model Management. The panel seeds its catalog
+        // synchronously from ``ModelCatalogCache``'s mirror, so warm the
+        // cache first or every capture is the spinner.
+        if let binary = server.binaryPath {
+            _ = await ModelCatalogCache.shared.entries(
+                binary: binary, generation: downloads.cacheGeneration
+            )
+        }
+        func modelManagement(width: CGFloat) -> AnyView {
+            AnyView(
+                SettingsModelManagementPanel()
+                    .environment(server)
+                    .environment(downloads)
+                    .frame(width: width, alignment: .top)
+                    .padding(20)
+                    .background(RapidTheme.surfaceCanvas)
+                    .tint(RapidTheme.brandAmber)
+            )
+        }
+        // Both the Settings window's default content width and its 720pt
+        // floor: the recommended card's action button clipped at BOTH, so
+        // a single wide capture would not have shown the bug or its fix.
+        renderHosted(modelManagement(width: 660), size: CGSize(width: 700, height: 1100),
+                     appearance: .aqua, to: "\(dir)/model-management-light.png")
+        renderHosted(modelManagement(width: 480), size: CGSize(width: 520, height: 1100),
+                     appearance: .aqua, to: "\(dir)/model-management-narrow.png")
+
+        // The table heading in every state the filter + search can put it
+        // in. A running panel can only ever be captured in one of them,
+        // and the heading is what this pass changed.
+        func headingStates() -> AnyView {
+            let cases: [(String, ModelCacheActions.ListHeading)] = [
+                ("no filter", ModelCacheActions.listHeading(
+                    filter: .all, query: "", visibleCount: 175, totalCount: 175)),
+                ("search \"qwen3.6\"", ModelCacheActions.listHeading(
+                    filter: .all, query: "qwen3.6", visibleCount: 4, totalCount: 175)),
+                ("Cached segment", ModelCacheActions.listHeading(
+                    filter: .cached, query: "", visibleCount: 3, totalCount: 175)),
+                ("Not cached + search", ModelCacheActions.listHeading(
+                    filter: .notCached, query: "gemma", visibleCount: 6, totalCount: 175)),
+                ("no matches", ModelCacheActions.listHeading(
+                    filter: .all, query: "zzz", visibleCount: 0, totalCount: 175)),
+            ]
+            return AnyView(
+                VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                    ForEach(Array(cases.enumerated()), id: \.offset) { _, item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.0).font(.caption2).foregroundStyle(.tertiary)
+                            ModelsTableHeading(heading: item.1)
+                        }
+                    }
+                }
+                .padding(RapidTheme.Space.xl)
+                .frame(width: 420, alignment: .leading)
+                .background(RapidTheme.surfaceCanvas)
+                .tint(RapidTheme.brandAmber)
+            )
+        }
+        renderHosted(headingStates(), size: CGSize(width: 420, height: 300),
+                     appearance: .aqua, to: "\(dir)/model-management-heading-states.png")
 
         // Scenario 2: a populated chat transcript, so we can eyeball the
         // streaming bubble / markdown render path that an empty transcript

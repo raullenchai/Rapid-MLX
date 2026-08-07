@@ -308,4 +308,136 @@ struct ModelSurfaceRedesignTests {
         #expect(!ModelFavorites.isFavorite("qwen3.6-35b-4bit", defaults: defaults))
         #expect(ModelFavorites.load(defaults: defaults).isEmpty)
     }
+
+    // MARK: - Recommended card geometry
+
+    /// The reported defect: the best-pick card's primary call to action
+    /// rendered as "Dow…". Nothing truncated the label directly — the
+    /// slot it sat in was pinned to 92pt and its contents did not fit,
+    /// so AppKit ellipsised the title. Widening the window did not help
+    /// because the clamp was on the card, not the window.
+    ///
+    /// This measures the real thing: AppKit's own metrics for the small
+    /// system font, plus the button's chrome, against the width the card
+    /// gives that slot. Any future label, control size or padding change
+    /// that reintroduces the squeeze fails here.
+    @Test("recommended card: every action label fits the slot it renders in")
+    func recommendedActionLabelsFitTheirColumn() {
+        for title in RecommendedCardLayout.actionButtonTitles {
+            let needed = RecommendedCardLayout.buttonWidth(title: title)
+            #expect(
+                needed <= RecommendedCardLayout.actionColumnWidth,
+                "\"\(title)\" needs \(needed)pt but the action column offers \(RecommendedCardLayout.actionColumnWidth)pt"
+            )
+        }
+        for text in RecommendedCardLayout.actionPillTitles {
+            let needed = RecommendedCardLayout.pillWidth(text: text)
+            #expect(
+                needed <= RecommendedCardLayout.actionColumnWidth,
+                "\"\(text)\" needs \(needed)pt but the action column offers \(RecommendedCardLayout.actionColumnWidth)pt"
+            )
+        }
+    }
+
+    /// The specific label that broke, called out on its own so a
+    /// regression names the reported symptom rather than a sweep index.
+    @Test("recommended card: \"Download\" renders in full")
+    func downloadLabelIsNotTruncated() {
+        let needed = RecommendedCardLayout.buttonWidth(title: "Download")
+        #expect(needed <= RecommendedCardLayout.actionColumnWidth)
+        // And the width is genuinely derived from the labels rather than
+        // being a literal that happens to be large today.
+        #expect(RecommendedCardLayout.actionColumnWidth >= needed)
+        #expect(RecommendedCardLayout.actionColumnWidth < needed + 40)
+    }
+
+    /// Why the size caption had to leave the action slot: with it, the
+    /// old 92pt column could not fit "Download" alongside it, which is
+    /// exactly the arithmetic that produced "Dow…". Pinned so nobody
+    /// re-adds a caption there without hitting this.
+    @Test("recommended card: a caption beside the button re-creates the squeeze")
+    func sizeCaptionBesideTheButtonDoesNotFit() {
+        let legacyColumn: CGFloat = 92
+        let caption = RecommendedCardLayout.captionWidth("7.6 GB")
+        let button = RecommendedCardLayout.buttonWidth(title: "Download")
+        #expect(caption + 8 + button > legacyColumn)
+    }
+
+    // MARK: - Models table geometry
+
+    /// Defect 3's other half: now that a cached cell carries a figure and
+    /// not just two glyphs, the Size column has to be wide enough to hold
+    /// it — including on the machines with the largest caches, which are
+    /// exactly the users who go looking for this tab.
+    @Test("size column: a cached cell fits glyph + measured size + delete")
+    func cachedCellFitsTheSizeColumn() {
+        for size in ["7.9 GiB", "512 MiB", "123.4 GiB"] {
+            let needed = ModelTableLayout.cachedCellWidth(size: size)
+            #expect(
+                needed <= ModelTableLayout.sizeColumnWidth,
+                "\"\(size)\" needs \(needed)pt, column is \(ModelTableLayout.sizeColumnWidth)pt"
+            )
+        }
+        // Why the column had to move at all: the 84pt it replaced would
+        // have clipped the largest caches.
+        #expect(ModelTableLayout.cachedCellWidth(size: "123.4 GiB") > 84)
+    }
+
+    @Test("size column: a not-cached cell still fits after the ~ marker")
+    func notCachedCellFitsTheSizeColumn() {
+        for size in ["0.5 GB", "42.7 GB", "123.4 GB"] {
+            let needed = ModelTableLayout.notCachedCellWidth(size: size)
+            #expect(
+                needed <= ModelTableLayout.sizeColumnWidth,
+                "\"~\(size)\" needs \(needed)pt, column is \(ModelTableLayout.sizeColumnWidth)pt"
+            )
+        }
+    }
+
+    // MARK: - Size column: measured vs. estimated
+
+    /// A cached row must quote what was MEASURED on disk
+    /// (``ModelEntry.sizeOnDisk``, from `rapid-mlx ls`), verbatim, so the
+    /// Model Management table and Settings → Models cannot print
+    /// different numbers for the same model.
+    @Test("size column: a cached row quotes the measured on-disk size")
+    func cachedRowUsesMeasuredSize() {
+        let entry = ModelEntry(
+            alias: "bonsai-27b-2bit", hfRepo: nil, sizeOnDisk: "7.9 GiB", cached: true
+        )
+        #expect(SettingsModelManagementPanel.onDiskSizeLabel(entry) == "7.9 GiB")
+    }
+
+    /// No measurement, no number. Substituting the alias-derived
+    /// estimate here would dress a guess as a measurement — #1550 is the
+    /// same confusion in the download strip, where the estimate came in
+    /// ~12% under the real bytes.
+    @Test("size column: an unmeasured cached row shows nothing, not an estimate")
+    func cachedRowWithoutMeasurementFallsBackToNothing() {
+        let unmeasured = ModelEntry(
+            alias: "qwen3.5-9b-4bit", hfRepo: nil, sizeOnDisk: nil, cached: true
+        )
+        #expect(SettingsModelManagementPanel.onDiskSizeLabel(unmeasured) == nil)
+        // The estimate for that alias exists and is NOT what we show.
+        #expect(SettingsModelManagementPanel.downloadSizeLabel("qwen3.5-9b-4bit") != nil)
+
+        let blank = ModelEntry(
+            alias: "qwen3.5-9b-4bit", hfRepo: nil, sizeOnDisk: "   ", cached: true
+        )
+        #expect(SettingsModelManagementPanel.onDiskSizeLabel(blank) == nil)
+    }
+
+    /// The two numbers now share a column, so they must not share a
+    /// format: the estimate is rendered with a leading "~" by the row,
+    /// and the helper hands back the bare figure for that to be added to
+    /// exactly once.
+    @Test("size column: the download estimate is a bare figure the row marks as approximate")
+    func downloadEstimateIsBare() {
+        let estimate = SettingsModelManagementPanel.downloadSizeLabel("qwen3.5-9b-4bit")
+        #expect(estimate?.hasPrefix("~") == false)
+        #expect(estimate?.hasSuffix(" GB") == true)
+        // An alias ``ModelSizing`` cannot size at all yields no figure
+        // rather than "~0.0 GB".
+        #expect(SettingsModelManagementPanel.downloadSizeLabel("") == nil)
+    }
 }

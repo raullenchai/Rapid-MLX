@@ -19,6 +19,11 @@ final class ModelReadinessTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// `cached: nil` is the TRANSIENT unknown — the catalog has not
+    /// answered yet. The permanently-unknown alias (a custom name the
+    /// catalog has loaded and does not contain) is a different input and
+    /// gets its own tests below; it is never reachable through this
+    /// helper, so every existing case here keeps its original meaning.
     private func resolve(
         _ state: ServerState,
         alias: String? = nil,
@@ -30,11 +35,34 @@ final class ModelReadinessTests: XCTestCase {
         ModelReadiness.resolve(
             serverState: state,
             alias: alias ?? self.alias,
-            isAliasCached: cached,
+            cacheState: cacheState(cached),
             sizeText: sizeText,
             progress: progress,
             failure: failure
         )
+    }
+
+    /// Same, for the cache states ``Bool?`` cannot express.
+    private func resolveCacheState(
+        _ state: ServerState,
+        alias: String? = nil,
+        cacheState: ModelReadiness.CacheState,
+        sizeText: String? = nil
+    ) -> ModelReadiness {
+        ModelReadiness.resolve(
+            serverState: state,
+            alias: alias ?? self.alias,
+            cacheState: cacheState,
+            sizeText: sizeText
+        )
+    }
+
+    private func cacheState(_ cached: Bool?) -> ModelReadiness.CacheState {
+        switch cached {
+        case .some(true):  return .onDisk
+        case .some(false): return .notOnDisk
+        case .none:        return .catalogPending
+        }
     }
 
     /// Every case, for sweeps that must hold universally.
@@ -45,6 +73,7 @@ final class ModelReadinessTests: XCTestCase {
             .needsDownload(alias: alias, sizeText: "5.0 GB"),
             .needsDownload(alias: alias, sizeText: nil),
             .needsStart(alias: alias),
+            .unknownModel(alias: alias),
             .downloading(alias: alias, detail: "1.2 / 5.0 GB · 24%", fraction: 0.24),
             .downloading(alias: alias, detail: nil, fraction: nil),
             .starting(alias: alias, detail: "Warming up…"),
@@ -460,6 +489,81 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertEqual(state, .needsStart(alias: alias))
     }
 
+    /// The same input stated explicitly: a still-loading catalog keeps
+    /// ``needsStart`` and its "already downloaded" copy. This is the
+    /// transient case the fallback was designed for, and it must not
+    /// regress when the permanently-unknown case is split out below.
+    func testCatalogPendingKeepsTheAlreadyDownloadedCopy() {
+        let state = resolveCacheState(.idle, cacheState: .catalogPending)
+        XCTAssertEqual(state, .needsStart(alias: alias))
+        XCTAssertEqual(state.detail, "It's already downloaded — starting takes a few seconds.")
+    }
+
+    /// The defect: an alias the loaded catalog does NOT contain — a
+    /// custom model name typed into "Type a model name…" — was falling
+    /// through to ``needsStart``, whose detail asserts the weights are
+    /// on disk. Nothing establishes that, and the picker chip beside the
+    /// banner simultaneously showed the unknown-model glyph, so the same
+    /// row said two different things.
+    func testUnknownAliasDoesNotClaimItIsDownloaded() {
+        let unknown = "mlx-community/Some Model With Spaces"
+        let state = resolveCacheState(
+            .idle,
+            alias: unknown,
+            cacheState: .notInCatalog
+        )
+        XCTAssertEqual(state, .unknownModel(alias: unknown))
+        let detail = state.detail ?? ""
+        XCTAssertFalse(
+            detail.lowercased().contains("already downloaded"),
+            "an alias we cannot find must not be described as downloaded: \(detail)"
+        )
+        XCTAssertFalse(detail.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+
+    /// Copy is the ONLY thing that changes. The step the user takes, the
+    /// gate on Send, and the status colour are identical to
+    /// ``needsStart`` — ``ServerManager`` pulls on demand, so Start is
+    /// still the right and only button.
+    func testUnknownAliasStillOffersStartAndStaysGated() {
+        let unknown = "mlx-community/Some Model With Spaces"
+        let state = resolveCacheState(.idle, alias: unknown, cacheState: .notInCatalog)
+        XCTAssertEqual(state.action, .start(alias: unknown))
+        XCTAssertFalse(state.sendAllowed)
+        XCTAssertFalse(state.isFailure)
+        XCTAssertEqual(state.statusRole, .idle)
+        XCTAssertEqual(state.headline, ModelReadiness.needsStart(alias: unknown).headline)
+        XCTAssertEqual(
+            state.composerPlaceholder,
+            ModelReadiness.needsStart(alias: unknown).composerPlaceholder
+        )
+    }
+
+    /// An unknown alias is only unknown while it is not running. Once the
+    /// engine is serving it, the live serve-state outranks the catalog —
+    /// a custom model the user started must reach ``ready`` and enable
+    /// Send like any other.
+    func testUnknownAliasStillReachesReadyWhenServing() {
+        let unknown = "mlx-community/Some Model With Spaces"
+        let state = resolveCacheState(
+            .ready(alias: unknown),
+            alias: unknown,
+            cacheState: .notInCatalog
+        )
+        XCTAssertEqual(state, .ready(alias: unknown))
+        XCTAssertTrue(state.sendAllowed)
+    }
+
+    /// A blank alias is "no model chosen" regardless of how the cache
+    /// state describes it — the unknown-alias branch must not intercept
+    /// the empty selection and start naming a placeholder.
+    func testUnknownCacheStateWithNoAliasIsStillNoModel() {
+        XCTAssertEqual(
+            resolveCacheState(.idle, alias: "", cacheState: .notInCatalog),
+            .noModel
+        )
+    }
+
     /// An empty size string means ``ModelSizing`` had no estimate. It
     /// must be dropped, not rendered as empty parentheses.
     func testBlankSizeTextIsDropped() {
@@ -678,6 +782,7 @@ final class ModelReadinessTests: XCTestCase {
         let named: [ModelReadiness] = [
             .needsDownload(alias: alias, sizeText: nil),
             .needsStart(alias: alias),
+            .unknownModel(alias: alias),
             .downloading(alias: alias, detail: nil, fraction: nil),
             .starting(alias: alias, detail: nil),
             .ready(alias: alias),
