@@ -29,10 +29,13 @@
 #
 # Example:
 #   APP=$(./scripts/dogfood-isolate.sh "build/Rapid-MLX Desktop.app" /tmp/persona2-alex)
-#   open -n "$APP"
+#   /tmp/persona2-alex/launch.sh &        # NOT `open -n` — that drops $HOME
+#                                         # and silently re-shares the user's
+#                                         # Application Support (#1561)
 #   # ... run test ...
 #   pkill -f "$APP"                       # path-qualified — NEVER bare 'pkill -f Rapid'
 #   defaults delete "com.rapidmlx.rapid.dogfood-<id>"   # isolated bundle only
+#   rm -rf /tmp/persona2-alex             # takes the throwaway $HOME with it
 
 set -euo pipefail
 
@@ -281,13 +284,32 @@ log "signature verified"
 # inherit launchd's environment, not the caller's. The launcher therefore
 # execs the bundle's Mach-O directly, which does inherit it.
 HOME_DIR="$TARGET_ABS/home"
-rm -rf "$HOME_DIR"
+HOME_MARKER="$HOME_DIR/.dogfood-throwaway-home"
+# `rm -rf` on a path the caller half-chose needs its own guard. The layers
+# above vet <target-dir>, but they permit any ordinary directory — so
+# `dogfood-isolate.sh app.app ~/projects` would take `~/projects/home` with
+# it. Only ever delete a directory this script created and marked.
+if [[ -e "$HOME_DIR" ]]; then
+    if [[ ! -f "$HOME_MARKER" ]]; then
+        die "refusing to remove '$HOME_DIR' — it exists but carries no $(basename "$HOME_MARKER") marker, so this script did not create it. Pick an empty <target-dir>."
+    fi
+    rm -rf "$HOME_DIR"
+fi
 mkdir -p "$HOME_DIR/Library/Application Support"
+printf 'Created by dogfood-isolate.sh. Safe to delete with the target dir.\n' \
+    > "$HOME_MARKER"
 
-# The model cache is the one thing worth SHARING: it is tens of gigabytes,
-# read-mostly, and re-downloading it per run makes isolation unaffordable
-# (a fresh $HOME alone turns a 2-second launch into a 7.6 GB download).
-# Point HF_HOME at the real cache unless the caller wants a cold one.
+# The model cache is the one thing worth SHARING by default: it is tens of
+# gigabytes and mostly read, and re-downloading it per run makes isolation
+# unaffordable (a fresh $HOME alone turns a 2-second launch into a 7.6 GB
+# download — 67 GB on a machine whose RAM tier recommends the 122B).
+#
+# "Mostly" read, though, not read-only: auto-start rewrites bundled-model
+# symlinks and rebuilds Quickstart stubs inside the cache, and those can be
+# left pointing into this throwaway directory after it is deleted. So the
+# sharing is a deliberate, stated trade — use the cold cache whenever the
+# run is about model management, downloads, or first-start, and accept the
+# download cost there.
 REAL_HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
 if [[ "${DOGFOOD_COLD_MODEL_CACHE:-0}" == "1" ]]; then
     HF_HOME_FOR_RUN="$HOME_DIR/.cache/huggingface"
@@ -320,6 +342,11 @@ cat > "$LAUNCHER" <<LAUNCHEOF
 set -euo pipefail
 export HOME="$HOME_DIR"
 export HF_HOME="$HF_HOME_FOR_RUN"
+# HF_HUB_CACHE wins over HF_HOME wherever both are read (see
+# BundledModel.userHFCacheURL), so an inherited one from the caller's shell
+# would quietly point the run back at their real cache — including under
+# DOGFOOD_COLD_MODEL_CACHE=1, where the whole point is that there isn't one.
+unset HF_HUB_CACHE
 exec "$TARGET_APP/Contents/MacOS/$EXECUTABLE" "\$@"
 LAUNCHEOF
 chmod +x "$LAUNCHER"
@@ -334,7 +361,10 @@ log "  cleanup later: defaults delete '$NEW_ID' && rm -rf '$TARGET_ABS'"
 log "  shutdown:      pkill -f '$TARGET_APP'    # path-qualified, do NOT use bare 'pkill -f Rapid'"
 log ""
 log "  STILL SHARED (not isolated by this script):"
-log "    * the model cache above, on purpose — see DOGFOOD_COLD_MODEL_CACHE=1"
+log "    * the model cache above, on purpose — and the app WRITES to it"
+log "      (bundled-model symlinks, Quickstart stubs). Use"
+log "      DOGFOOD_COLD_MODEL_CACHE=1 for anything about downloads,"
+log "      model management, or first-start."
 log "    * anything the app reaches by absolute path rather than via \$HOME"
 log "    * macOS TCC decisions are per bundle-id, so they DO reset — a run"
 log "      will re-prompt for permissions the user's real app already has"
