@@ -192,6 +192,10 @@ enum QuickstartModel {
         /// No Quickstart install under the install root for this
         /// alias (slim-DMG never ran, or user pruned the install).
         case noQuickstartModel
+        /// The Quickstart source is gone and the stale HF-cache stub we
+        /// previously fabricated was removed. A real cache entry is never
+        /// eligible for this cleanup.
+        case removedStaleStub
         /// Resolving the user HF cache failed (no HOME / HF_HOME).
         case userCacheUnavailable
         /// FileManager raised during mkdir / symlink / write.
@@ -244,15 +248,18 @@ enum QuickstartModel {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> InstallOutcome {
-        guard let flatModelDir = resolveFlatModelDir(
+        let flatModelDir = resolveFlatModelDir(
             alias: spec.alias,
             installRoot: installRoot,
             fileManager: fileManager
-        ) else {
-            return .noQuickstartModel
-        }
+        )
         guard let userCache = BundledModel.userHFCacheURL(environment: environment) else {
             return .userCacheUnavailable
+        }
+        let cacheDir = userCache.appendingPathComponent(spec.cacheDirName, isDirectory: true)
+        guard let flatModelDir else {
+            return removeStaleStubIfOwned(cacheDir: cacheDir, fileManager: fileManager)
+                ?? .noQuickstartModel
         }
         do {
             try fileManager.createDirectory(
@@ -263,8 +270,6 @@ enum QuickstartModel {
         } catch {
             return .failed("create user cache dir: \(error.localizedDescription)")
         }
-
-        let cacheDir = userCache.appendingPathComponent(spec.cacheDirName, isDirectory: true)
 
         // Three "already correct" shapes — return early without
         // mutation. Order matters:
@@ -353,6 +358,34 @@ enum QuickstartModel {
             .appendingPathComponent(stubRevisionMarker, isDirectory: true)
         var isDir: ObjCBool = false
         return fileManager.fileExists(atPath: snapshotDir.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    /// Remove only the two directories this installer owns when its source
+    /// model disappeared. Keeping an unrelated ``blobs`` directory avoids
+    /// deleting data from a partial/real Hub download that happened to share
+    /// the cache entry after our stub was created.
+    private static func removeStaleStubIfOwned(
+        cacheDir: URL,
+        fileManager: FileManager
+    ) -> InstallOutcome? {
+        let attrs = try? fileManager.attributesOfItem(atPath: cacheDir.path)
+        guard attrs?[.type] as? FileAttributeType == .typeDirectory,
+              isOurStub(cacheDir: cacheDir, fileManager: fileManager) else {
+            return nil
+        }
+        let refs = cacheDir.appendingPathComponent("refs", isDirectory: true)
+        let snapshots = cacheDir.appendingPathComponent("snapshots", isDirectory: true)
+        do {
+            try fileManager.removeItem(at: refs)
+            try fileManager.removeItem(at: snapshots)
+            let remaining = try fileManager.contentsOfDirectory(atPath: cacheDir.path)
+            if remaining.isEmpty {
+                try fileManager.removeItem(at: cacheDir)
+            }
+            return .removedStaleStub
+        } catch {
+            return .failed("remove stale Quickstart stub: \(error.localizedDescription)")
+        }
     }
 
     /// Verify every leaf symlink in our stub still points at the

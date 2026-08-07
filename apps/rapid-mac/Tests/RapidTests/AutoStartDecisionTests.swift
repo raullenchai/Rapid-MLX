@@ -499,6 +499,19 @@ struct AutoStartDecisionTests {
         #expect(AutoStartPreference.defaultValue == true)
     }
 
+    @Test("launch catalog initialization does not cancel auto-start")
+    func launchCatalogInitializationIsNotUserOverride() {
+        #expect(!ContentView.launchSelectionWasReplaced(
+            aliasAtEntry: "", currentAlias: "bonsai-1.7b-2bit"
+        ))
+        #expect(ContentView.launchSelectionWasReplaced(
+            aliasAtEntry: "bonsai-1.7b-2bit", currentAlias: "qwen3.5-4b-4bit"
+        ))
+        #expect(!ContentView.launchSelectionWasReplaced(
+            aliasAtEntry: "bonsai-1.7b-2bit", currentAlias: "bonsai-1.7b-2bit"
+        ))
+    }
+
     /// FU-1 mid-session flip safety: a user who toggles the pref ON
     /// mid-session (the toggle was OFF at process launch, the user
     /// then flipped it on in Settings) must still be able to use

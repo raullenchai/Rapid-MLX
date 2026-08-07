@@ -686,7 +686,7 @@ struct ContentView: View {
             autoStartPendingDownload = nil
             return
         }
-        if alias != aliasAtEntry, !alias.isEmpty {
+        if Self.launchSelectionWasReplaced(aliasAtEntry: aliasAtEntry, currentAlias: alias) {
             autoStartPendingDownload = nil
             return
         }
@@ -738,6 +738,18 @@ struct ContentView: View {
         case .skip:
             autoStartPendingDownload = nil
         }
+    }
+
+    /// Catalog loading may populate an initially-empty picker while the
+    /// launch probe awaits subprocesses. That is initialization, not a user
+    /// override. Once launch entered with a concrete selection, however, a
+    /// different non-empty alias means the user took control and auto-start
+    /// must stand down.
+    static func launchSelectionWasReplaced(
+        aliasAtEntry: String,
+        currentAlias: String
+    ) -> Bool {
+        !aliasAtEntry.isEmpty && !currentAlias.isEmpty && currentAlias != aliasAtEntry
     }
 
     // MARK: - Pure helpers (testable seams)
