@@ -281,13 +281,22 @@ send_prompt() {
     # stays in the composer — where ``assert_tree_text`` happily FINDS the
     # prompt and reports a message that was never sent. Requiring the composer
     # to drain is what makes that failure loud instead of silent.
+    #
+    # ``has("value")`` rather than ``.value // ""``: rapid-ax OMITS an attribute
+    # whose AX read failed, so a defaulting test reads a failed read as "drained"
+    # and rebuilds the very false green this exists to stop. And the composer
+    # clearing is the app's story about itself — the fake's ``chat_request`` is
+    # the independent witness that a request actually left the process.
     for _ in {1..40}; do
         see_main "$OUT/${prefix}-sent.json"
-        jq -e '.data.ui_elements[]? | select(.identifier == "rapid.chat.compose")
-               | select((.value // "") == "")' "$OUT/${prefix}-sent.json" >/dev/null && return
+        if jq -e '.data.ui_elements[]? | select(.identifier == "rapid.chat.compose")
+                  | select(has("value") and .value == "")' "$OUT/${prefix}-sent.json" >/dev/null \
+           && grep -q '"event": "chat_request"' "$OUT/fake-events.jsonl" 2>/dev/null; then
+            return
+        fi
         sleep 0.25
     done
-    die "compose field still holds the draft after Send: the message was never sent"
+    die "no chat_request reached the sidecar, or the composer never drained: the message was never sent"
 }
 
 assert_tree_text() {
@@ -325,14 +334,32 @@ baseline() {
 # tree was captured mid-restart on roughly half of all runs: the button already
 # reads "Send message" while the sidecar is still loading, and the transient
 # "Starting …" banner then appeared in one run's baseline and not the next.
+#
+# Readiness is the ABSENCE of AXHelp, and there is deliberately no positive
+# attribute to test instead: the button is `enabled=false` in every settled
+# state, because a drained composer has nothing to send. So "not ready" and
+# "ready with an empty box" differ only by the hint.
+#
+# That makes a *failed* AX read indistinguishable from readiness — rapid-ax
+# omits an attribute it could not read. Mitigated by requiring the element's
+# other attributes to have been read successfully in the same pass
+# (`has("description")`, `has("enabled")`): an isolated failure of the help
+# read alone, with its siblings intact, is the only remaining hole, and it has
+# to happen twice in a row because the state must also be STABLE across two
+# consecutive dumps. The dump walks the readiness banner before the send
+# button, so a single dump can be a hybrid of two states.
 wait_send_idle() {
-    local destination="$1" attempts="${2:-160}"
+    local destination="$1" attempts="${2:-160}" stable=0
     for ((i=0; i<attempts; i++)); do
         see_main "$destination"
         if jq -e '.data.ui_elements[]? | select(.identifier == "ChatView.SendOrStopButton"
-                  and .description == "Send message" and (has("help") | not))' \
+                  and has("description") and .description == "Send message"
+                  and has("enabled") and (has("help") | not))' \
             "$destination" >/dev/null; then
-            return
+            stable=$((stable + 1))
+            [[ "$stable" -ge 2 ]] && return
+        else
+            stable=0
         fi
         sleep 0.25
     done
@@ -418,7 +445,14 @@ flow_chat_restore() {
     wait_identifier Sidebar.NewChat "$OUT/chat-restored.json"
     assert_tree_text "$OUT/chat-restored.json" "golden restore marker"
     local conversation_id
-    conversation_id="$(jq -r '.data.ui_elements[] | select((.identifier // "") | startswith("Sidebar.Conversation.")) | .identifier' "$OUT/chat-restored.json" | head -1)"
+    # Match the ROW exactly. `Sidebar.Conversation.` is now a namespace, not a
+    # row: it also contains `…Pin.<uuid>`, `…Unpin.<uuid>`, `…Menu.<uuid>` and
+    # `…Action.*`. A prefix match can select the pin button or the ··· menu and
+    # press that instead of opening the conversation — and because the restored
+    # transcript is asserted *before* this press, the flow would still pass.
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/chat-restored.json" | head -1)"
     [[ -n "$conversation_id" ]] || die "restored conversation row was not exposed to AX"
     press "$OUT/chat-restored.json" "$conversation_id" "$OUT/open-restored-conversation.json"
     sleep 0.2

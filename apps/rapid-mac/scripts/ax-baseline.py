@@ -88,12 +88,13 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Conversation-list date headings. The transcript a flow just created is
     # filed under "Today" — until the run straddles local midnight, at which
     # point the same unchanged UI reports "Yesterday" and every baseline
-    # holding one of these headings goes red for no product reason. Anchored,
-    # so it only rewrites a heading that is *entirely* a relative day word.
-    (
-        re.compile(r"^(?:Today|Yesterday|Tomorrow)$", re.IGNORECASE),
-        "<relative-day>",
-    ),
+    # holding one of these headings goes red for no product reason.
+    #
+    # Anchored and case-sensitive, and deliberately NOT including "Tomorrow":
+    # a conversation filed in the future is an impossible state worth failing
+    # on, and collapsing it would hide exactly that bug. Only the two headings
+    # a legitimate midnight crossing can produce are rewritten.
+    (re.compile(r"^(?:Today|Yesterday)$"), "<relative-day>"),
 )
 
 # Identifiers whose trailing segment is data (a model alias, a status string).
