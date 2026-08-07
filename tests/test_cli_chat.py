@@ -1527,9 +1527,7 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
     )
 
     cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
-    cli._ensure_model_downloaded(
-        "mlx-community/Fake-Model-1B", force_disk_check=True
-    )
+    cli._ensure_model_downloaded("mlx-community/Fake-Model-1B", force_disk_check=True)
     assert called == [
         ("mlx-community/Fake-Model-1B", False),
         ("mlx-community/Fake-Model-1B", True),
