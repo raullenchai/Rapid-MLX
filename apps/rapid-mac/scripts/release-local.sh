@@ -136,6 +136,26 @@ fi
 
 # ── --publish : guarded tag push → CI does the real release ──────────────
 if [[ "$MODE" == "publish" ]]; then
+    # Resolve the repository that owns the release workflow. ``origin`` is a
+    # convention, not an identity: contributor clones commonly point it at
+    # upstream. An explicit override wins; otherwise require exactly one
+    # remote whose URL names the canonical release repository.
+    RELEASE_REMOTE="${RAPID_RELEASE_REMOTE:-}"
+    if [[ -z "$RELEASE_REMOTE" ]]; then
+        MATCHING_REMOTES=()
+        while read -r remote; do
+            url="$(git remote get-url --push "$remote" 2>/dev/null || true)"
+            [[ "$url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+                && MATCHING_REMOTES+=("$remote")
+        done < <(git remote)
+        [[ "${#MATCHING_REMOTES[@]}" -eq 1 ]] \
+            || fail "cannot uniquely resolve the raullenchai/Rapid-MLX release remote; set RAPID_RELEASE_REMOTE explicitly."
+        RELEASE_REMOTE="${MATCHING_REMOTES[0]}"
+    fi
+    RELEASE_URL="$(git remote get-url --push "$RELEASE_REMOTE" 2>/dev/null || true)"
+    [[ "$RELEASE_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+        || fail "release remote '$RELEASE_REMOTE' points to '$RELEASE_URL', not raullenchai/Rapid-MLX."
+
     # Stable tags only — the CI publish + in-app updater have no prerelease
     # channel, so an RC would be offered to stable users (codex r2 MAJOR).
     [[ "$TAG" =~ ^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
@@ -153,28 +173,28 @@ if [[ "$MODE" == "publish" ]]; then
     [[ "$PLIST_VERSION" == "$VERSION" ]] \
         || fail "tag $TAG (=$VERSION) != Resources/Info.plist CFBundleShortVersionString ($PLIST_VERSION). Bump the plist first."
 
-    git fetch origin --tags --quiet
+    git fetch "$RELEASE_REMOTE" --tags --quiet
     [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || fail "publish from main."
 
-    # HEAD must be exactly origin/main — reject BOTH unpushed local commits
+    # HEAD must be exactly the release remote's main — reject BOTH unpushed local commits
     # (which the tag would ship) AND being behind.
     LOCAL_SHA="$(git rev-parse HEAD)"
-    REMOTE_SHA="$(git rev-parse origin/main)"
+    REMOTE_SHA="$(git rev-parse "$RELEASE_REMOTE/main")"
     [[ "$LOCAL_SHA" == "$REMOTE_SHA" ]] \
-        || fail "local main ($LOCAL_SHA) != origin/main ($REMOTE_SHA) — push or pull --ff-only so they match before publishing."
+        || fail "local main ($LOCAL_SHA) != $RELEASE_REMOTE/main ($REMOTE_SHA) — push or pull --ff-only so they match before publishing."
     [[ -z "$(git status --porcelain)" ]] || fail "working tree is dirty — commit before publishing."
 
     # Tag must be new AND strictly newer than the highest published tag —
     # a v0.9.0 after v0.10.3 would roll latest.json backwards.
     if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
-       || git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+       || git ls-remote --exit-code --tags "$RELEASE_REMOTE" "$TAG" >/dev/null 2>&1; then
         fail "tag $TAG already exists — pick the next version."
     fi
     HIGHEST=""
     while read -r t; do
         [[ "$t" =~ ^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue   # ignore prereleases / odd tags / engine tags
         if [[ -z "$HIGHEST" ]] || version_gt "$t" "$HIGHEST"; then HIGHEST="$t"; fi
-    done < <(git ls-remote --tags --refs origin 'rapid-mac-v[0-9]*' 2>/dev/null | sed 's#.*/##')
+    done < <(git ls-remote --tags --refs "$RELEASE_REMOTE" 'rapid-mac-v[0-9]*' 2>/dev/null | sed 's#.*/##')
     if [[ -n "$HIGHEST" ]]; then
         version_gt "$TAG" "$HIGHEST" \
             || fail "tag $TAG is not newer than the latest release $HIGHEST — refusing a backwards release."
@@ -189,9 +209,9 @@ if [[ "$MODE" == "publish" ]]; then
         [[ "${FORCE_PUBLISH:-0}" == 1 ]] || fail "aborting (set FORCE_PUBLISH=1 to push the tag anyway)."
     fi
 
-    note "pushing $TAG → CI will build, notarise, and attach the DMG to the GitHub Release"
+    note "pushing $TAG to $RELEASE_REMOTE → CI will build, notarise, and attach the DMG to the GitHub Release"
     git tag "$TAG"
-    git push origin "$TAG"
+    git push "$RELEASE_REMOTE" "$TAG"
     note 'watch it: gh run watch $(gh run list --workflow=rapid-mac-release.yml --limit=1 --json databaseId -q ".[0].databaseId")'
     printf '\033[32m✅ %s pushed. CI is cutting the public release. (Nothing was built locally.)\033[0m\n' "$TAG"
     exit 0

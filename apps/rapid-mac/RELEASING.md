@@ -180,11 +180,13 @@ scripts/release-local.sh --publish rapid-mac-v0.11.0
 
 `--publish` does **not** build locally. It preflights (stable
 `rapid-mac-vX.Y.Z` tag, CHANGELOG entry present, tag == plist version, local
-`main` == `origin/main`, tag is new and strictly newer than the latest
+`main` == the release remote's `main`, tag is new and strictly newer than the latest
 rapid-mac release, and the root workflow triggers on the tag) then pushes the
 tag. `.github/workflows/rapid-mac-release.yml` then builds → signs →
 notarises → size-gates → attaches `rapid-mlx-desktop.dmg` to the GitHub
-Release. (You can equally `git push origin rapid-mac-v0.11.0` by hand;
+Release. The script auto-detects the remote whose URL is
+`raullenchai/Rapid-MLX`; set `RAPID_RELEASE_REMOTE=<name>` to select it
+explicitly. (You can equally `git push <release-remote> rapid-mac-v0.11.0` by hand;
 `--publish` only adds the guardrails.)
 
 Watch it:
@@ -213,8 +215,7 @@ already in homebrew-core); the desktop app never claims it.
 
 ## Open TODO(owner) items
 
-- **Release repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`). The
-  release-local `--publish` lane pushes to whatever `origin` points at.
+- **Release repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`).
 - **CDN mirror infra** (`RAPID_MAC_DIST_R2_BUCKET` / `RAPID_MAC_DIST_CDN_BASE`
   + Cloudflare secrets) only needs provisioning if you want a stable
   non-GitHub download URL. Optional.
