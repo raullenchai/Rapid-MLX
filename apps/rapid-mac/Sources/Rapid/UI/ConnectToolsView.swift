@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// "Connect your tools" — the second post-install call-to-action.
+/// "Connect your agents" — the second post-install call-to-action.
 ///
 /// Once the local server is running it speaks the OpenAI and Anthropic
 /// wire formats on `127.0.0.1`, so any coding tool that lets you point
@@ -152,8 +152,8 @@ struct ConnectToolsView: View {
         HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 SectionHeader(
-                    "Connect your tools",
-                    subtitle: "Connect tools that support a local base URL. It's free and stays on your Mac.",
+                    "Connect your agents",
+                    subtitle: "Connect any agent or editor that supports a local base URL. It's free and stays on your Mac.",
                     emphasis: .page
                 )
                 // The #1470 "start a chat to generate the key" hint used

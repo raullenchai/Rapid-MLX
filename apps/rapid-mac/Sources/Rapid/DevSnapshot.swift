@@ -369,7 +369,7 @@ enum DevSnapshot {
             to: "\(dir)/chat-bubbles.png"
         )
 
-        // Scenario 3: the "Connect your tools" sheet (pure SwiftUI, so it
+        // Scenario 3: the "Connect your agents" sheet (pure SwiftUI, so it
         // renders faithfully — unlike the NSViewRepresentable composer).
         render(
             AnyView(

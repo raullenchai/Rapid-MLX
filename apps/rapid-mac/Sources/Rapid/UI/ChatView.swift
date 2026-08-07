@@ -391,7 +391,7 @@ struct ChatView: View {
                 // Availability is expressed by ENABLEMENT, not by
                 // presence:
                 //
-                //   * Connect your tools is always actionable. The sheet
+                //   * Connect your agents is always actionable. The sheet
                 //     itself explains when the endpoint isn't ready yet
                 //     and refuses to hand out incomplete values.
                 //   * Speed needs a live model to measure, so it
@@ -399,7 +399,7 @@ struct ChatView: View {
                 Button {
                     showConnectTools = true
                 } label: {
-                    Label("Connect your tools", systemImage: "link")
+                    Label("Connect your agents", systemImage: "link")
                 }
                 .help("Point an editor or agent at your local server")
 
