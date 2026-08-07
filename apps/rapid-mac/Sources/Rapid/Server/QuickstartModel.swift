@@ -347,17 +347,20 @@ enum QuickstartModel {
         let refsMain = cacheDir
             .appendingPathComponent("refs", isDirectory: true)
             .appendingPathComponent("main")
-        guard let data = try? Data(contentsOf: refsMain),
-              let content = String(data: data, encoding: .utf8) else {
-            return false
-        }
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed == stubRevisionMarker else { return false }
+        guard markerMatches(at: refsMain) else { return false }
         let snapshotDir = cacheDir
             .appendingPathComponent("snapshots", isDirectory: true)
             .appendingPathComponent(stubRevisionMarker, isDirectory: true)
         var isDir: ObjCBool = false
         return fileManager.fileExists(atPath: snapshotDir.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    private static func markerMatches(at refsMain: URL) -> Bool {
+        guard let data = try? Data(contentsOf: refsMain),
+              let content = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        return content.trimmingCharacters(in: .whitespacesAndNewlines) == stubRevisionMarker
     }
 
     /// Remove only the two directories this installer owns when its source
@@ -369,8 +372,7 @@ enum QuickstartModel {
         fileManager: FileManager
     ) -> InstallOutcome? {
         let attrs = try? fileManager.attributesOfItem(atPath: cacheDir.path)
-        guard attrs?[.type] as? FileAttributeType == .typeDirectory,
-              isOurStub(cacheDir: cacheDir, fileManager: fileManager) else {
+        guard attrs?[.type] as? FileAttributeType == .typeDirectory else {
             return nil
         }
         let refs = cacheDir.appendingPathComponent("refs", isDirectory: true)
@@ -379,8 +381,26 @@ enum QuickstartModel {
         let quickstartSnapshot = snapshots.appendingPathComponent(
             stubRevisionMarker, isDirectory: true
         )
+        guard markerMatches(at: refsMain) else { return nil }
+        // Never traverse a cache-internal directory symlink. The marker read
+        // above can follow one, so ownership alone is insufficient for safe
+        // deletion; both parents must lstat as real directories.
+        let refsAttrs = try? fileManager.attributesOfItem(atPath: refs.path)
+        guard refsAttrs?[.type] as? FileAttributeType == .typeDirectory else {
+            return .failed("stale Quickstart refs path is not a real directory; refusing cleanup")
+        }
+        let snapshotsAttrs = try? fileManager.attributesOfItem(atPath: snapshots.path)
+        if let snapshotsType = snapshotsAttrs?[.type] as? FileAttributeType,
+           snapshotsType != .typeDirectory {
+            return .failed("stale Quickstart snapshots path is not a real directory; refusing cleanup")
+        }
         do {
-            try fileManager.removeItem(at: quickstartSnapshot)
+            // A previous attempt may already have removed the snapshot. The
+            // marker remains the retry token until every destructive step is
+            // complete.
+            if (try? fileManager.attributesOfItem(atPath: quickstartSnapshot.path)) != nil {
+                try fileManager.removeItem(at: quickstartSnapshot)
+            }
             // Keep the ownership marker until the destructive step succeeds;
             // a transient snapshot-removal failure must remain retryable on
             // the next launch.
@@ -388,7 +408,8 @@ enum QuickstartModel {
             if try fileManager.contentsOfDirectory(atPath: refs.path).isEmpty {
                 try fileManager.removeItem(at: refs)
             }
-            if try fileManager.contentsOfDirectory(atPath: snapshots.path).isEmpty {
+            if snapshotsAttrs != nil,
+               try fileManager.contentsOfDirectory(atPath: snapshots.path).isEmpty {
                 try fileManager.removeItem(at: snapshots)
             }
             let remaining = try fileManager.contentsOfDirectory(atPath: cacheDir.path)
