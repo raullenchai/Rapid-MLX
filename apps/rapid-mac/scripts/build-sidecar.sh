@@ -270,21 +270,41 @@ fi
 # path. All other eager deps (transformers, requests, huggingface_hub,
 # safetensors, numpy, mlx) are already bundled by rapid-mlx's own
 # install above, so Pillow is the only additional dep we need.
-# We pin to the same ``>=0.6.3,!=0.6.4,<0.7`` range that rapid-mlx's
-# pyproject.toml [vision] extras pin so the bundled mlx-vlm tracks the
-# DiffusionGemma + gemma4_unified architecture support the loader needs.
-# (0.6.4 excluded: garbage vision output — rapid-mlx 0.11.1 serves Bonsai
-# 27B text-only via mlx-lm because of it; this ``--upgrade`` step would
-# otherwise resolve to that broken build.)
+# Pin exactly: this install deliberately uses --no-deps, so a range would let
+# the desktop silently float to an mlx-vlm release whose declared transformers
+# requirement conflicts with the engine's validated <5.13 cap (#1501).
 echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader path)"
 "$STAGE/python/bin/python3.12" -m pip install \
     --target "$STAGE/site-packages" \
     --no-warn-script-location \
     --no-compile \
     --no-deps \
-    --upgrade \
-    'mlx-vlm>=0.6.3,!=0.6.4,<0.7' \
+    'mlx-vlm==0.6.3' \
     'Pillow>=10.0'
+
+# ``--no-deps`` is intentional for bundle size, but it must not hide version
+# conflicts among distributions that ARE present. Missing optional heavy deps
+# remain allowed; every installed-to-installed edge must satisfy its metadata.
+PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -s - <<'PY'
+from importlib import metadata
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
+installed = {canonicalize_name(dist.metadata["Name"]): dist.version for dist in metadata.distributions()}
+errors = []
+for dist in metadata.distributions():
+    owner = dist.metadata["Name"]
+    for raw in dist.requires or ():
+        req = Requirement(raw)
+        if req.marker and not req.marker.evaluate():
+            continue
+        actual = installed.get(canonicalize_name(req.name))
+        if actual is not None and req.specifier and actual not in req.specifier:
+            errors.append(f"{owner} requires {req}, but bundled {req.name}=={actual}")
+if errors:
+    raise SystemExit("incompatible bundled distributions:\n  " + "\n  ".join(sorted(errors)))
+print("==> bundled distribution metadata constraints: OK")
+PY
 
 # ----- step 3: strip dev / unused artifacts ----------------------------
 
