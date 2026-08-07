@@ -36,6 +36,9 @@ struct AppearanceConfigTests {
         #expect(AppearanceMode.light.displayName == "Light")
         #expect(AppearanceMode.dark.displayName == "Dark")
         let names = AppearanceMode.allCases.map(\.displayName)
+        #expect(AppearanceMode.system.accessibilityIdentifier == "Settings.Appearance.Theme.system")
+        #expect(AppearanceMode.light.accessibilityIdentifier == "Settings.Appearance.Theme.light")
+        #expect(AppearanceMode.dark.accessibilityIdentifier == "Settings.Appearance.Theme.dark")
         #expect(Set(names).count == names.count)
     }
 

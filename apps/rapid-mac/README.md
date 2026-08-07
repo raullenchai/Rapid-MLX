@@ -77,7 +77,18 @@ macOS 14+.
 ```bash
 bash scripts/smoke.sh      # fast end-to-end smoke against a fake rapid-mlx
 swift test                 # unit + snapshot suite
+
+# With a built app already running, exercise real macOS Accessibility UI.
+# Requires Peekaboo + jq and never starts or downloads a model.
+bash scripts/gui-ax-smoke.sh
 ```
+
+`gui-ax-smoke.sh` is the deterministic layer of GUI dogfood: it reads the
+Accessibility tree, targets stable identifiers, invokes native AX actions,
+and saves both JSON trees and screenshots under `/tmp`. Coordinate input is
+reserved for explicitly logged fallbacks when a system/SwiftUI surface does
+not expose a usable AX action. Exploratory agents can use the same Peekaboo
+commands, while assertions in this script remain model-independent.
 
 ## Architecture
 

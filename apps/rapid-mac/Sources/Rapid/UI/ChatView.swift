@@ -559,6 +559,7 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .help("Stop generating")
             .accessibilityLabel("Stop generating")
+            .accessibilityIdentifier("ChatView.SendOrStopButton")
         } else {
             Button(action: send) {
                 Image(systemName: "arrow.up")
@@ -583,6 +584,7 @@ struct ChatView: View {
             .disabled(!sendEnabled)
             .help(readiness.sendTooltip)
             .accessibilityLabel("Send message")
+            .accessibilityIdentifier("ChatView.SendOrStopButton")
             // The tooltip alone is mouse-only. VoiceOver users get the
             // same sentence as the control's hint, so "why is this
             // dimmed" is answerable without a pointer.

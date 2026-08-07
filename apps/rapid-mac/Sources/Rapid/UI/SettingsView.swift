@@ -351,7 +351,10 @@ struct SettingsView: View {
             settingsCard {
                 Picker("Theme", selection: $a.mode) {
                     ForEach(AppearanceMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                        Text(mode.displayName)
+                            .accessibilityLabel(mode.displayName)
+                            .accessibilityIdentifier(mode.accessibilityIdentifier)
+                            .tag(mode)
                     }
                 }
                 .pickerStyle(.radioGroup)

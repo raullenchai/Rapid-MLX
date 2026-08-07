@@ -74,6 +74,13 @@ enum AppearanceMode: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// Stable selector for VoiceOver, XCUITest, and AX-first dogfood agents.
+    /// Keep this independent of localized display copy so automation does not
+    /// fall back to screen coordinates when labels change.
+    var accessibilityIdentifier: String {
+        "Settings.Appearance.Theme.\(rawValue)"
+    }
+
     /// Picker label — human-friendly, matches the macOS System
     /// Settings → Appearance row text.
     var displayName: String {

@@ -49,11 +49,13 @@ struct TelemetryConsentView: View {
                 Button("Don't share", role: .cancel) {
                     onDecision(false)
                 }
+                .accessibilityIdentifier("TelemetryConsent.DontShare")
                 Button("Share anonymous data") {
                     onDecision(true)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("TelemetryConsent.Share")
             }
         }
         .padding(24)
