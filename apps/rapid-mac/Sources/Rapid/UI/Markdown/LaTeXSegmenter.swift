@@ -20,6 +20,30 @@ import Foundation
 ///   Single-line only (a literal newline ends the inline run so a
 ///   stray dollar sign in prose doesn't swallow the rest of the
 ///   reply into "math").
+/// * ``\[ ... \]`` — display math, LaTeX bracket form.
+/// * ``\( ... \)`` — inline math, LaTeX bracket form.
+///
+/// The bracket forms are NOT optional extras: they are what
+/// instruction-tuned models actually emit. A 2026-08 dogfood run
+/// (`bonsai-27b-2bit`, reproduced on a DeepSeek model) emitted only
+/// bracket delimiters for a plain word problem — no ``$`` anywhere.
+/// Missing them is not a cosmetic gap, because the raw body then
+/// reaches MarkdownUI and CommonMark's backslash-escape rule eats
+/// the delimiters: ``\(``, ``\)``, ``\[`` and ``\]`` all wrap ASCII
+/// punctuation, so they collapse to bare ``(``, ``)``, ``[``, ``]``
+/// while ``\frac`` / ``\times`` (backslash + letter, not a valid
+/// escape) survive verbatim. The user sees
+/// ``( P = \frac{47}{0.85} \approx 55.29 )`` — delimiters silently
+/// stripped, LaTeX left as source. Verified directly:
+/// ``AttributedString(markdown: #"So: \[ 0.85P = 47 \]"#)`` yields
+/// ``So: [ 0.85P = 47 ]``.
+///
+/// Delimiter STYLE is not preserved. ``\( x \)`` and ``$x$`` both
+/// produce ``.math(latex: "x", displayMode: false)`` — the choice
+/// carries no meaning downstream, and normalising keeps the segment
+/// enum (and every equality assertion built on it) unchanged. The
+/// round-trip property below therefore holds up to that
+/// normalisation.
 ///
 /// Anti-cases we intentionally do NOT treat as math:
 ///
@@ -32,6 +56,12 @@ import Foundation
 ///   shell prose, not math. The segmenter skips ``...`` runs.
 /// * **Escaped dollar** — ``\$`` stays a literal dollar sign and
 ///   never opens a math run.
+/// * **Escaped backslash before a bracket** — ``\\(`` is CommonMark's
+///   escaped backslash followed by a literal paren, so it does NOT
+///   open inline math. Same for ``\\[``.
+/// * **Unclosed bracket opener** — ``Use \( to group`` has no ``\)``,
+///   so the opener stays literal markdown rather than swallowing the
+///   rest of the reply.
 /// * **Bare dollar in prose** — ``it costs $20 today`` has only one
 ///   ``$`` so there's no closing pair; the segmenter requires a
 ///   close before the next blank line / EOF before opening math.
@@ -69,8 +99,10 @@ enum LaTeXSegmenter {
     /// Split ``input`` into alternating ``.markdown`` / ``.math``
     /// segments. The returned array reconstructs ``input`` exactly
     /// when ``.markdown`` bodies are concatenated and ``.math``
-    /// bodies are re-wrapped with their delimiters, so a future
-    /// "round-trip" sanity test can pin the contract.
+    /// bodies are re-wrapped with ``$``/``$$``, so a "round-trip"
+    /// sanity test can pin the contract. Bodies written with the
+    /// bracket delimiters round-trip onto their ``$``-form (see the
+    /// normalisation note in the type doc).
     ///
     /// Empty ``.markdown("")`` segments are NOT emitted — the caller
     /// just sees ``[.math, .math]`` if two math runs sit
@@ -112,11 +144,38 @@ enum LaTeXSegmenter {
                 continue
             }
 
-            // Escaped dollar — literal, skip both characters.
-            if c == "\\",
-               input.index(after: cursor) < input.endIndex,
-               input[input.index(after: cursor)] == "$" {
-                cursor = input.index(cursor, offsetBy: 2)
+            // Backslash: either a LaTeX bracket-delimiter opener
+            // (``\(`` / ``\[``) or a CommonMark escape (``\$``, ``\\``,
+            // ``\_``, …). Both consume TWO characters, so a doubled
+            // backslash can never be re-read as a delimiter opener:
+            // ``\\(`` is an escaped backslash followed by a literal
+            // paren, not math.
+            if c == "\\", input.index(after: cursor) < input.endIndex {
+                let markerIndex = input.index(after: cursor)
+                let marker = input[markerIndex]
+                if marker == "(" || marker == "[" {
+                    // ``\[`` is display, ``\(`` is inline — the
+                    // bracket forms carry the same meaning as
+                    // ``$$``/``$`` and normalise onto the same cases.
+                    let isDisplay = (marker == "[")
+                    let bodyStart = input.index(after: markerIndex)
+                    if let bodyEnd = findBracketClose(input, from: bodyStart, displayMode: isDisplay) {
+                        // Emit any leading plain markdown.
+                        if plainStart < cursor {
+                            segments.append(.markdown(String(input[plainStart..<cursor])))
+                        }
+                        let latex = String(input[bodyStart..<bodyEnd])
+                        segments.append(.math(latex: latex, displayMode: isDisplay))
+                        // The closer is two characters: ``\)`` / ``\]``.
+                        let closeEnd = input.index(bodyEnd, offsetBy: 2)
+                        plainStart = closeEnd
+                        cursor = closeEnd
+                        continue
+                    }
+                }
+                // ``\$``, an opener with no closer, or any other
+                // backslash escape — literal. Skip both characters.
+                cursor = input.index(after: markerIndex)
                 continue
             }
 
@@ -351,6 +410,48 @@ enum LaTeXSegmenter {
             i = s.index(after: i)
         }
         return bodyStart  // unclosed → consume only the open
+    }
+
+    /// Find the closing ``\)`` (inline) / ``\]`` (display) for a
+    /// bracket-delimited math run whose body starts at ``bodyStart``.
+    /// Returns the index of the closing BACKSLASH — the body is
+    /// ``bodyStart..<result`` and the closer occupies two characters —
+    /// or ``nil`` when no closer is found.
+    ///
+    /// A backslash inside the body always consumes the character that
+    /// follows it. That is what keeps LaTeX's own row break, ``\\``,
+    /// from faking a closer: in ``\[ a \\] b \]`` the ``\\`` is a row
+    /// break and the ``]`` right after it is a literal bracket, so the
+    /// run closes at the final ``\]`` and not at the third character
+    /// of ``\\]``.
+    private static func findBracketClose(_ s: String, from bodyStart: String.Index, displayMode: Bool) -> String.Index? {
+        let closer: Character = displayMode ? "]" : ")"
+        var i = bodyStart
+        while i < s.endIndex {
+            let c = s[i]
+            if c == "\\" {
+                let next = s.index(after: i)
+                if next == s.endIndex { return nil }
+                if s[next] == closer { return i }
+                i = s.index(after: next)
+                continue
+            }
+            // Inline-math paragraph guard: an unclosed ``\(`` must not
+            // swallow the rest of the reply. Unlike ``$``, a bare
+            // ``\(`` in prose is vanishingly rare (it is CommonMark's
+            // escape for a literal paren, which models never emit), so
+            // a SINGLE newline is tolerated — models do wrap long
+            // inline runs — and only a blank line ends the search.
+            // Display math keeps the lenient ``$$`` behaviour because
+            // multi-line ``\[ … \]`` blocks are the norm.
+            if !displayMode, c == "\n" {
+                let next = s.index(after: i)
+                if next == s.endIndex { return nil }
+                if s[next] == "\n" { return nil }
+            }
+            i = s.index(after: i)
+        }
+        return nil
     }
 
     /// Find the closing ``$`` (or ``$$``) for a math run starting

@@ -2,9 +2,9 @@ import SwiftUI
 import MarkdownUI
 
 /// Issue #131: drop-in replacement for ``Markdown(content)`` that
-/// renders ``$$...$$`` **display math** through ``SwiftMath``
-/// while leaving inline ``$...$`` math as literal source inside
-/// the surrounding markdown.
+/// renders **display math** (``$$...$$`` and ``\[...\]``) through
+/// ``SwiftMath`` while leaving inline math (``$...$`` / ``\(...\)``)
+/// as literal source inside the surrounding markdown.
 ///
 /// ## v1 scope: display math only
 ///
@@ -26,6 +26,20 @@ import MarkdownUI
 /// ``$...$`` source — same as before this PR, no regression.
 /// A follow-up issue can iterate inline math with a flow layout
 /// or a Markdown-block-aware splitter.
+///
+/// The 2026-08 bracket-delimiter fix (see ``LaTeXSegmenter``) did
+/// NOT lift that deferral, and one more constraint was found while
+/// re-checking it: routing inline math through MarkdownUI's
+/// ``InlineImageProvider`` — the one composition path that keeps a
+/// table row or list item intact — caches the rendered image on
+/// ``.task(id: inlines)`` in MarkdownUI's ``InlineText``. The cache
+/// key is the parsed inline nodes, so it does not re-fire when only
+/// the colour scheme or Dynamic-Type size changes, and glyph colour
+/// is baked into the image. A light/dark toggle would leave stale
+/// black-on-black formulas behind unless the rendering parameters
+/// are smuggled into the image URL to perturb the key. That is a
+/// design worth doing deliberately, not as a rider on a delimiter
+/// fix.
 ///
 /// ## Hot path
 ///
