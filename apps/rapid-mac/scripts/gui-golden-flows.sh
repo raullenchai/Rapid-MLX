@@ -290,7 +290,7 @@ flow_settings_persistence() {
     sleep 0.3
     see_settings "$OUT/models-before.json"
     local preference_key="rapid.picker.show_all_models.v1"
-    press "$OUT/models-before.json" Settings.ModelManagement.ShowAllModelsToggle "$OUT/models-toggle.json"
+    press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
     for _ in {1..20}; do
         [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 1 ]] && break
         sleep 0.1
@@ -305,7 +305,7 @@ flow_settings_persistence() {
     press "$OUT/settings-relaunch.json" Settings.Category.modelManagement "$OUT/settings-models-reopen.json"
     sleep 0.3
     see_settings "$OUT/models-persisted.json"
-    press "$OUT/models-persisted.json" Settings.ModelManagement.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
+    press "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
     for _ in {1..20}; do
         [[ "$(defaults read "$BUNDLE_ID" "$preference_key" 2>/dev/null || true)" == 0 ]] && break
         sleep 0.1

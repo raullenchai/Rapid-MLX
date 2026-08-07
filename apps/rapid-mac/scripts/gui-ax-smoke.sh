@@ -129,7 +129,7 @@ press_identifier "$OUT/settings.json" "Settings.Category.modelManagement" "$OUT/
     || die "could not AXPress Settings.Category.modelManagement"
 sleep 0.5
 pb see --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/models.json"
-for identifier in Settings.ModelManagement.ShowAllModelsToggle Settings.ModelManagement.AutoStartOnLaunchToggle; do
+for identifier in Settings.Models.ShowAllModelsToggle Settings.Models.AutoStartOnLaunchToggle; do
     jq -e --arg id "$identifier" \
         '.data.ui_elements[]? | select(.identifier == $id and .role == "checkbox")' \
         "$OUT/models.json" >/dev/null \

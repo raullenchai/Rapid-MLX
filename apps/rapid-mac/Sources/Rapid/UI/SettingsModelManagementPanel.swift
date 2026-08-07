@@ -307,7 +307,11 @@ struct SettingsModelManagementPanel: View {
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityLabel("Show small models in the picker")
                 .accessibilityHint("Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat.")
-                .accessibilityIdentifier("Settings.ModelManagement.ShowAllModelsToggle")
+                // Identifier intentionally KEPT as `Settings.Models.*` after
+                // the move from the old Models tab: it is a stable AX hook, so
+                // relocating the control shouldn't rename it out from under any
+                // VoiceOver/automation client that already targets it.
+                .accessibilityIdentifier("Settings.Models.ShowAllModelsToggle")
 
                 Divider()
                     .padding(.vertical, 12)
@@ -325,7 +329,8 @@ struct SettingsModelManagementPanel: View {
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityLabel("Auto-start model on launch")
                 .accessibilityHint("When off, opening Rapid-MLX will not load a model until you start one manually from the picker.")
-                .accessibilityIdentifier("Settings.ModelManagement.AutoStartOnLaunchToggle")
+                // Stable AX hook kept as `Settings.Models.*` across the move.
+                .accessibilityIdentifier("Settings.Models.AutoStartOnLaunchToggle")
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
