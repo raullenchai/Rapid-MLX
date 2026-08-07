@@ -75,12 +75,14 @@ enum WebSearchProvider: String, CaseIterable, Codable, Identifiable, Sendable {
     ///
     /// For Tavily this resolves to the same /home page as
     /// ``keyConsoleURL`` (the dashboard IS the home view). Brave
-    /// splits: ``keyConsoleURL`` points at the public api docs
-    /// landing, ``keyDashboardURL`` jumps straight to /app/keys.
+    /// splits: ``keyConsoleURL`` points at the public API landing,
+    /// while ``keyDashboardURL`` uses the dedicated dashboard host
+    /// and jumps straight to /app/keys. The API-serving host returns
+    /// HTTP 403 for that UI route.
     var keyDashboardURL: URL? {
         switch self {
         case .duckduckgo: return nil
-        case .brave:      return URL(string: "https://api.search.brave.com/app/keys")
+        case .brave:      return URL(string: "https://api-dashboard.search.brave.com/app/keys")
         case .tavily:     return URL(string: "https://app.tavily.com/home")
         }
     }

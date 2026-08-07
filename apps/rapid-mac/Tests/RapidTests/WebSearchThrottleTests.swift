@@ -264,4 +264,17 @@ struct WebSearchThrottleTests {
         #expect(WebSearchProvider.brave.subtitle.contains("Brave Search API key"))
         #expect(WebSearchProvider.tavily.subtitle.contains("Tavily API key"))
     }
+
+    @Test("Key links use each provider's live dashboard host")
+    func keyDashboardLinksAreCurrent() {
+        #expect(
+            WebSearchProvider.brave.keyDashboardURL?.absoluteString
+                == "https://api-dashboard.search.brave.com/app/keys"
+        )
+        #expect(
+            WebSearchProvider.tavily.keyDashboardURL?.absoluteString
+                == "https://app.tavily.com/home"
+        )
+        #expect(WebSearchProvider.duckduckgo.keyDashboardURL == nil)
+    }
 }
