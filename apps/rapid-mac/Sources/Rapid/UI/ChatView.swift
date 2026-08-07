@@ -1680,8 +1680,62 @@ extension MarkdownUI.Theme {
         }
         .table { config in
             config.label
+                // ``fixedSize`` vertically: without it a cell whose text
+                // wraps gets its height clipped to one line, because the
+                // table lays rows out before the wrapped measurement lands.
+                .fixedSize(horizontal: false, vertical: true)
                 .markdownTableBorderStyle(.init(color: .secondary.opacity(0.4)))
                 .markdownMargin(top: 8, bottom: 8)
+        }
+        // 2026-08: the theme set a table BORDER but never a cell style, so
+        // MarkdownUI fell back to ``Theme.tableCell``'s default — the bare
+        // label, zero padding. Rendered output put the border hard against
+        // the glyphs and ran adjacent cells together ("列1列2" with no gap),
+        // which reads as a layout bug rather than a table. Padding is the
+        // whole fix; the header weight and fill are what make the first row
+        // scan as a header once the columns are actually separated.
+        //
+        // Values follow the surrounding rhythm rather than MarkdownUI's
+        // GitHub theme: 13pt horizontal there is calibrated for a 16px web
+        // body, and at our 15pt root inside a 720pt message column it
+        // pushes three-column tables into horizontal overflow. 10/5 keeps
+        // the columns distinct without spending the measure.
+        .tableCell { config in
+            config.label
+                .markdownTextStyle {
+                    if config.row == 0 { FontWeight(.semibold) }
+                }
+                // The default block text style cannot override an inline
+                // code run: ``Theme.code`` is applied afterwards. Replace
+                // that specific style inside table cells so inline code
+                // keeps its face and size without painting a grey pill that
+                // fights the row fill below.
+                .markdownTextStyle(\.code) {
+                    FontFamilyVariant(.monospaced)
+                    FontSize(.em(0.92))
+                    BackgroundColor(nil)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .relativeLineSpacing(.em(0.2))
+                // ``frame`` BEFORE ``background``, and it is not
+                // optional. A cell's label is only as wide as its text,
+                // while the column is as wide as its widest cell, so
+                // filling the label paints a header stripe that stops
+                // partway across every column it doesn't own — which
+                // reads as phantom empty columns in the header row
+                // rather than as a fill. Stretching first makes the
+                // fill cover the cell it is supposed to describe.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Header fill only. Alternating row stripes were tried and
+                // dropped: against the transcript's warm parchment they
+                // read as selection highlights on the model's own answer.
+                .background(
+                    config.row == 0
+                        ? Color.secondary.opacity(0.08)
+                        : Color.clear
+                )
         }
 }
 /// Carries the code block's scrollable content span up to
@@ -1720,16 +1774,48 @@ private struct CodeBlockWithCopy: View {
     @State private var hovering: Bool = false
     @State private var copiedRecently: Bool = false
     @State private var contentSpan = CodeBlockOverflow.ContentSpan.unmeasured
+    @State private var syntaxHighlightMemo = SyntaxHighlighter.Memo()
+    @ScaledMetric(relativeTo: .body)
+    private var highlightedCodeLineSpacing = 15 * 0.92 * 0.2
+
+    /// Highlighted when we have a grammar for the fence's language,
+    /// otherwise MarkdownUI's own label.
+    ///
+    /// The two branches are NOT interchangeable. ``config.label`` carries
+    /// MarkdownUI's inline styling and reacts to ``markdownTextStyle``;
+    /// the highlighted branch is a plain ``Text`` over an
+    /// ``AttributedString``, so it has to set the monospaced face and the
+    /// 0.92em size itself. Both end up at the same measurements — keep
+    /// them in lockstep if either moves, or a highlighted block will
+    /// render a different size from an unhighlighted one in the same
+    /// reply.
+    ///
+    /// ``.textSelection`` is not applied here: the assistant block
+    /// already enables it for the whole message, and re-applying it to
+    /// the inner ``Text`` makes the horizontal scroll gesture fight
+    /// text-drag selection.
+    @ViewBuilder
+    private var codeBody: some View {
+        if SyntaxHighlighter.supports(language: config.language) {
+            Text(syntaxHighlightMemo.highlight(config.content, language: config.language))
+                .scaledSystemFont(15 * 0.92, design: .monospaced)
+                .lineSpacing(highlightedCodeLineSpacing)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            config.label
+                .relativeLineSpacing(.em(0.2))
+                .markdownTextStyle {
+                    FontFamilyVariant(.monospaced)
+                    FontSize(.em(0.92))
+                }
+        }
+    }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             ScrollView(.horizontal, showsIndicators: true) {
-                config.label
-                    .relativeLineSpacing(.em(0.2))
-                    .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(.em(0.92))
-                    }
+                codeBody
                     .padding(10)
                     .background(contentSpanReader)
             }
