@@ -130,11 +130,15 @@ for MODEL in $MODELS; do
     tail -20 "$LOG" >&2
     infra_failed="$infra_failed $MODEL(boot)"
   else
-    GATE_ARGS=()
     if [ "$DISTILL" = "1" ]; then
-      GATE_ARGS+=(--reasoning-distill)
+      gate_command=("$PY" evals/coherence_gate.py --reasoning-distill)
+    else
+      # macOS still ships bash 3.2. With ``set -u``, expanding an empty
+      # array is an unbound-variable error there, so keep the no-argument
+      # command explicit instead of appending to an empty GATE_ARGS array.
+      gate_command=("$PY" evals/coherence_gate.py)
     fi
-    if "$PY" evals/coherence_gate.py "${GATE_ARGS[@]}"; then
+    if "${gate_command[@]}"; then
       echo "  ✓ $MODEL coherent"
     else
       gate_status=$?

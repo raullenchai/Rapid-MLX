@@ -264,3 +264,10 @@ def test_release_gauntlet_invokes_manifest_driven_sweep():
     script = (REPO_ROOT / "scripts" / "release_check_m3.sh").read_text()
     assert "bash scripts/coherence_sweep.sh" in script
     assert 'FLEET_SCOPE="${FLEET_SCOPE:-auto}"' in script
+
+
+def test_coherence_sweep_avoids_empty_array_expansion_on_macos_bash():
+    script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
+    assert 'gate_command=("$PY" evals/coherence_gate.py)' in script
+    assert 'gate_command=("$PY" evals/coherence_gate.py --reasoning-distill)' in script
+    assert '"${GATE_ARGS[@]}"' not in script
