@@ -618,6 +618,47 @@ class TestLfmStreamingProseRegressions:
         assert calls == []
         assert content == "[Calling the doctor] now"
 
+    def test_unfinished_prose_bracket_does_not_hide_the_real_opener(self):
+        """A quote inside an unclosed prose bracket must not mask markup.
+
+        Carrying quote state across the turn made everything after
+        ``[note "`` look like one long string, so the ``[Calling tool:``
+        that followed was never treated as an opener and streamed out raw.
+        """
+        parser = LfmToolParser()
+        content, calls = _stream(
+            parser,
+            [
+                'See [note "unfinished ',
+                "[",
+                "Calling",
+                " tool",
+                ":",
+                " f({})",
+                "]",
+            ],
+        )
+
+        assert [c["function"]["name"] for c in calls] == ["f"]
+        assert content == 'See [note "unfinished '
+
+    def test_backslash_in_prose_bracket_does_not_hide_the_real_opener(self):
+        parser = LfmToolParser()
+        content, calls = _stream(
+            parser, ["Path [dir\\ ", '[Calling tool: f({"a": 1})]']
+        )
+
+        assert [c["function"]["name"] for c in calls] == ["f"]
+        assert content == "Path [dir\\ "
+
+    def test_whitespace_between_call_and_prose_survives_chunk_boundary(self):
+        """Output must not depend on where the chunk boundary falls."""
+        together = _stream(LfmToolParser(), ["[f(x=1)] done"])
+        split = _stream(LfmToolParser(), ["[f(x=1)] ", "done"])
+
+        assert together[0] == " done"
+        assert split[0] == " done"
+
     def test_apostrophe_in_prose_does_not_disable_markup_holding(self):
         """A stray quote at bracket depth 0 is prose, not an open string.
 

@@ -36,7 +36,12 @@ logger = logging.getLogger(__name__)
 # AutoToolParser and the streaming postprocessor's plausible-markup
 # pre-check so all three agree on what counts as LFM markup.
 LFM_CALL_START = re.compile(r"\[\s*([A-Za-z_]\w*)\s*\(", re.DOTALL)
-_LFM_PARTIAL_START = re.compile(r"\[\s*(?:[A-Za-z_]\w*\s*(?:\(.*)?)?$", re.DOTALL)
+
+# Suffix that may still GROW into ``LFM_CALL_START``. Deliberately free of
+# any ``.*``: it is evaluated once per ``[`` on every streamed delta, and a
+# trailing ``.*`` made each test cost the length of the remaining text. The
+# already-complete opener is matched by ``LFM_CALL_START`` itself.
+_LFM_PARTIAL_START = re.compile(r"\[\s*(?:[A-Za-z_]\w*\s*\(?)?$", re.DOTALL)
 
 # ``[Calling tool: name({...})]`` — the text-format envelope described in
 # the module docstring. Case-sensitive on purpose: it mirrors both the
@@ -64,14 +69,15 @@ def _prefix_alternation(word: str) -> str:
     return pattern
 
 
-# Suffix of the accumulated text that may still GROW into ``TEXT_CALL_START``
-# (or into its argument payload, once the ``:`` has landed).
+# Suffix that may still GROW into ``TEXT_CALL_START``. Same no-``.*`` rule as
+# ``_LFM_PARTIAL_START``: once the ``:`` has landed ``TEXT_CALL_START`` itself
+# matches, so this only has to cover the opener still being typed.
 _TEXT_CALL_PARTIAL_START = re.compile(
     r"\[\s*(?:"
     + _prefix_alternation("Calling")
     + r"(?:\s+(?:"
     + _prefix_alternation("tool")
-    + r"(?:\s*(?::.*)?)?)?)?)?$",
+    + r"\s*:?)?)?)?$",
     re.DOTALL,
 )
 
@@ -129,14 +135,14 @@ def _find_lfm_call_start(text: str, start: int = 0) -> int:
     return min(starts) if starts else -1
 
 
-def _extract_balanced_bracket_block(
-    text: str, start_idx: int
-) -> tuple[str | None, str]:
-    """
-    Return the balanced bracket block at ``start_idx`` and remaining text.
+def _balanced_block_end(text: str, start_idx: int) -> int:
+    """Index just past the balanced bracket block at ``start_idx``, or ``-1``.
 
     Nested brackets and quoted strings are accounted for so values like
     ``items=[1, 2]`` or ``query="]"`` do not prematurely close the block.
+    Quote state starts fresh at ``start_idx`` — a stray quote earlier in the
+    turn ("can't", an unfinished prose bracket) must never hide the markup
+    that follows it.
     """
     depth = 0
     in_string = False
@@ -169,11 +175,9 @@ def _extract_balanced_bracket_block(
         elif char == "]":
             depth -= 1
             if depth == 0:
-                bracket_block = text[start_idx : i + 1]
-                remaining = text[:start_idx] + text[i + 1 :]
-                return bracket_block, remaining
+                return i + 1
 
-    return None, text
+    return -1
 
 
 def _build_json_args_call(name: str, raw_arguments: str) -> list[dict[str, Any]]:
@@ -307,19 +311,19 @@ def _iter_call_blocks(text: str) -> list[tuple[int, int, list[dict[str, Any]]]]:
         start = _find_lfm_call_start(text, search_from)
         if start == -1:
             return blocks
-        block, _ = _extract_balanced_bracket_block(text, start)
-        if block is None:
+        end = _balanced_block_end(text, start)
+        if end == -1:
             return blocks
 
         try:
-            block_calls = _parse_call_block(block)
+            block_calls = _parse_call_block(text[start:end])
         except Exception as exc:
             logger.debug("Failed to parse LFM tool call: %s", exc)
             block_calls = []
 
         if block_calls:
-            blocks.append((start, start + len(block), block_calls))
-            search_from = start + len(block)
+            blocks.append((start, end, block_calls))
+            search_from = end
         else:
             search_from = start + 1
 
@@ -511,7 +515,11 @@ class LfmToolParser(ToolParser):
                 # before the tool-call event (the llama-parser precedent,
                 # StreamingPostProcessor._detect_tool_calls).
                 content = self._unconsumed_content(previous_text, current_text, blocks)
-                if content.strip():
+                if content:
+                    # Every byte, whitespace included: ``_unconsumed_content``
+                    # has already advanced the watermark past them, so
+                    # dropping whitespace here would make the output depend
+                    # on where the chunk boundary happened to fall.
                     out["content"] = content
                 return out
 
@@ -526,80 +534,40 @@ def _find_unclosed_lfm_call_start(text: str) -> int:
         if start == -1:
             return -1
 
-        bracket_block, _ = _extract_balanced_bracket_block(text, start)
-        if bracket_block is None:
+        end = _balanced_block_end(text, start)
+        if end == -1:
             return start
 
-        search_from = start + len(bracket_block)
+        search_from = end
 
 
-def _may_grow_into_markup(tail: str) -> bool:
-    """True when ``tail`` (which begins at a ``[``) may still become markup."""
+def _may_grow_into_markup(text: str, idx: int) -> bool:
+    """True when the suffix at ``idx`` (a ``[``) is or may become markup.
+
+    Matched with ``pos`` rather than a slice: this runs once per ``[`` on
+    every streamed delta, and slicing the tail would make each test cost
+    the length of the remaining text.
+    """
     return bool(
-        _LFM_PARTIAL_START.fullmatch(tail) or _TEXT_CALL_PARTIAL_START.fullmatch(tail)
+        LFM_CALL_START.match(text, idx)
+        or TEXT_CALL_START.match(text, idx)
+        or _LFM_PARTIAL_START.fullmatch(text, idx)
+        or _TEXT_CALL_PARTIAL_START.fullmatch(text, idx)
     )
 
 
-def _unclosed_bracket_starts(text: str) -> list[int]:
-    """Indices of every ``[`` still open at the end of ``text``, outermost first.
-
-    One left-to-right pass, so this stays linear where a
-    ``_extract_balanced_bracket_block`` call per ``[`` would be quadratic
-    (``"[!" * n`` re-scans the whole suffix for every opener, and the
-    streaming path runs this on every delta).
-
-    Quote and escape state is tracked only INSIDE a block. At depth 0 an
-    apostrophe is just prose — treating ``don't`` as an open string would
-    swallow every ``[`` in the rest of the turn, including real markup.
-    Inside a block the state matches ``_extract_balanced_bracket_block``
-    exactly, which is what protects ``query="]"``.
-    """
-    stack: list[int] = []
-    in_string = False
-    string_char = ""
-    escaped = False
-
-    for i, char in enumerate(text):
-        if not stack:
-            if char == "[":
-                stack.append(i)
-            continue
-
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if in_string:
-            if char == string_char:
-                in_string = False
-            continue
-        if char in ('"', "'"):
-            in_string = True
-            string_char = char
-            continue
-
-        if char == "[":
-            stack.append(i)
-        elif char == "]":
-            stack.pop()
-
-    return stack
-
-
 def _find_unclosed_markup_start(text: str) -> int:
-    """Index of the outermost still-open ``[`` that may become tool markup.
+    """Index of the first ``[`` that is markup and has no matching ``]``.
 
     Everything from that index on is held back: emitting it would leak
     half-formed markup, and the bytes are cheap to keep until the block
     either closes (tool call, or plain content released in one piece) or
     the stream ends (``flush_held_content``).
 
-    Two properties matter, and the LFM streaming leak came from missing
-    both:
+    Three properties matter, and the LFM streaming leak came from missing
+    the first two:
 
-    * The scan runs OUTERMOST first. Anchoring on the LAST ``[`` (the old
+    * The scan runs LEFT to RIGHT. Anchoring on the LAST ``[`` (the old
       behaviour) breaks as soon as the argument payload contains one of
       its own — the opener is released while the rest of the span is
       still held, so the client sees a headless fragment.
@@ -608,11 +576,28 @@ def _find_unclosed_markup_start(text: str) -> int:
       stops looking like ``[name(`` is what let ``[Calling tool`` reach
       the wire, where the global sanitizer stripped exactly that span
       and left ``: browse({...})]`` in the visible message.
+    * Balance is judged per candidate, with quote state starting fresh at
+      that ``[``. Carrying quote state across the whole turn would let an
+      unfinished prose bracket (``See [note "unfinished``) hide the real
+      opener that follows it inside the apparent string.
 
-    An unbalanced ``[`` that is unmistakably prose (``a[i is fine``) is
-    skipped: a ``[`` nested inside it may still be a real opener.
+    Cost is linear in ``len(text)``: the markup test is bounded (no
+    ``.*``), so the balance scan only runs for genuine candidates, and
+    each balanced candidate advances the cursor past its own block.
     """
-    for idx in _unclosed_bracket_starts(text):
-        if _may_grow_into_markup(text[idx:]):
+    search_from = 0
+    while True:
+        idx = text.find("[", search_from)
+        if idx == -1:
+            return -1
+        if not _may_grow_into_markup(text, idx):
+            # Unmistakably prose (``a[i is fine``). A ``[`` nested inside
+            # it may still be a real opener, so keep looking.
+            search_from = idx + 1
+            continue
+        end = _balanced_block_end(text, idx)
+        if end == -1:
             return idx
-    return -1
+        # Closed: either an already-extracted call or plain content.
+        # Holding it would suppress the rest of the stream.
+        search_from = end
