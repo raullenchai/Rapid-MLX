@@ -991,6 +991,12 @@ private struct ToolCallChip: View {
     let call: ToolCall
     let result: ChatMessage?
 
+    /// Deep-link channel into Settings. Optional so the chip still renders in
+    /// any host that hasn't injected the router (previews, snapshot harness) —
+    /// the non-optional form traps at lookup time.
+    @Environment(SettingsRouter.self) private var settingsRouter: SettingsRouter?
+    @Environment(\.openSettings) private var openSettings
+
     /// Manual override. Tracks the user's last toggle so a click always wins
     /// over the auto-collapse-on-success rule; without it, expanding a
     /// completed chip would be silently re-collapsed on the next body pass.
@@ -1020,14 +1026,41 @@ private struct ToolCallChip: View {
         return ChatTextSanitizer.sanitizeForDisplay(str)
     }
 
+    /// Stable diagnosis for a failed result. ``nil`` while the tool is still
+    /// running or when it succeeded.
+    private var failureDiagnosis: FailureDiagnosis? {
+        guard let result, result.status == .failed else { return nil }
+        return result.toolFailureDiagnosis(toolName: call.function.name)
+    }
+
     /// A failed result renders its stable diagnosis, never the raw tool
     /// payload — that stays in the model's context, not on screen.
     private var resultBody: String? {
         guard let result else { return nil }
-        if result.status == .failed {
-            return result.toolFailureDiagnosis(toolName: call.function.name).message
-        }
+        if let failureDiagnosis { return failureDiagnosis.message }
         return ChatTextSanitizer.sanitizeForDisplay(result.content)
+    }
+
+    /// The one recovery action the chip offers inline. Only the Settings
+    /// deep-links are honoured here: "Retry" would need to rewind the whole
+    /// chat turn (the row-level Retry above already owns that), while
+    /// "open Settings on the right tab" is exactly what a tool-configuration
+    /// failure needs and has nowhere else to live.
+    private var inlineAction: FailureDiagnosis.Action? {
+        switch failureDiagnosis?.action {
+        case .openWebSearchSettings: return .openWebSearchSettings
+        default: return nil
+        }
+    }
+
+    private func perform(_ action: FailureDiagnosis.Action) {
+        switch action {
+        case .openWebSearchSettings:
+            settingsRouter?.requestedCategory = .tools
+            openSettings()
+        case .retry, .restart, .openModelManagement, .switchDownloadSource, .openPermissions:
+            break
+        }
     }
 
     private var statusIcon: String {
@@ -1082,6 +1115,16 @@ private struct ToolCallChip: View {
                             .foregroundStyle(result?.status == .failed ? RapidTheme.statusError : .secondary)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let action = inlineAction {
+                        Button {
+                            perform(action)
+                        } label: {
+                            Label(action.title, systemImage: action.systemImage)
+                        }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                        .accessibilityIdentifier("ToolCallChip.\(action.rawValue)")
                     }
                 }
                 .padding(.horizontal, 10)

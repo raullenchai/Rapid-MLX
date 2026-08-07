@@ -84,6 +84,7 @@ struct FailureDiagnosisView: View {
         case .modelOutOfMemory: return "memorychip"
         case .engineNotRunning, .modelLoadFailed: return "bolt.slash"
         case .webSearchOffline, .webSearchUnavailable: return "wifi.exclamationmark"
+        case .webSearchRateLimited: return "hourglass"
         case .commandPermissionDenied, .filePermissionDenied: return "hand.raised.fill"
         case .fileNotFound: return "doc.questionmark"
         case .downloadFailed, .downloadSourceUnavailable: return "arrow.down.circle"

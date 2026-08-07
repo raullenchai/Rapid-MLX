@@ -1275,6 +1275,11 @@ struct QuickstartView: View {
             // The minimal app has no Permissions tab; land on Models.
             settingsRouter.requestedCategory = .models
             openSettings()
+        case .openWebSearchSettings:
+            // Not reachable from a download/model failure, but the deep-link
+            // is the same two lines wherever it fires.
+            settingsRouter.requestedCategory = .tools
+            openSettings()
         }
     }
 
@@ -1287,6 +1292,7 @@ struct QuickstartView: View {
         case .openModelManagement: return "Quickstart.OpenModelManagement"
         case .switchDownloadSource: return "Quickstart.SwitchSource"
         case .openPermissions: return "Quickstart.OpenPermissions"
+        case .openWebSearchSettings: return "Quickstart.OpenWebSearchSettings"
         case nil: return nil
         }
     }

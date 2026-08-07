@@ -13,6 +13,18 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Web search now says what actually went wrong.** DuckDuckGo — the free
+  backend Rapid uses out of the box — starts refusing searches from your Mac
+  after the first few, and Rapid read that refusal as an ordinary success with
+  no results. The tool card said "Web search couldn't finish. Check its
+  settings, then try again," which sent you to a Settings page where nothing
+  was wrong. It now names the situation ("DuckDuckGo is rate-limiting web
+  searches from this Mac") and offers a one-click jump to Settings → Tools,
+  where you can switch to Brave Search or Tavily. The Settings caption for
+  DuckDuckGo no longer claims it "works out of the box."
+
 ## [0.12.5] — 2026-08-05
 
 A stability release. The headline is a crash: a reply with a formula in it

@@ -36,10 +36,17 @@ enum WebSearchProvider: String, CaseIterable, Codable, Identifiable, Sendable {
     /// Plain-English subtitle for the Settings picker. Tells the
     /// user what they're trading off (cost / signup) without
     /// having to read the docs.
+    ///
+    /// The DuckDuckGo line used to end "works out of the box." It
+    /// doesn't: the free HTML endpoint throttles per IP after a
+    /// handful of searches (measured 2026-08-05 — one 200, then 202
+    /// non-results pages for every query after it). A user who hits
+    /// that throttle and comes here looking for the problem must not
+    /// be told the backend is fine.
     var subtitle: String {
         switch self {
         case .duckduckgo:
-            return "No key required. HTML scrape; works out of the box."
+            return "No key required. Best-effort — throttled after a few searches; the keyed backends aren't."
         case .brave:
             return "Requires a free Brave Search API key. 2 000 queries/month."
         case .tavily:

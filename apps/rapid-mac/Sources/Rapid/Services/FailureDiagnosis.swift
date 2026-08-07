@@ -10,6 +10,11 @@ struct FailureDiagnosis: Equatable, Sendable {
         case engineNotRunning
         case webSearchOffline
         case webSearchUnavailable
+        /// The free DuckDuckGo backend throttled this machine. Distinct from
+        /// ``webSearchUnavailable`` because the remedy is different: nothing in
+        /// Settings is misconfigured, so "check its settings" sends the user to
+        /// a dead end. The only real fix is a different backend.
+        case webSearchRateLimited
         case commandPermissionDenied
         case commandFailed
         case fileNotFound
@@ -26,6 +31,10 @@ struct FailureDiagnosis: Equatable, Sendable {
         case openModelManagement
         case switchDownloadSource
         case openPermissions
+        /// Deep-link to Settings → Tools, where the web-search backend is
+        /// chosen and its key is pasted. Routed through ``SettingsRouter``
+        /// like the other "open Settings on THIS tab" actions.
+        case openWebSearchSettings
 
         var title: String {
             switch self {
@@ -34,6 +43,7 @@ struct FailureDiagnosis: Equatable, Sendable {
             case .openModelManagement: return "Open Model Management"
             case .switchDownloadSource: return "Switch source"
             case .openPermissions: return "Open Permissions"
+            case .openWebSearchSettings: return "Open Web Search Settings"
             }
         }
 
@@ -43,6 +53,7 @@ struct FailureDiagnosis: Equatable, Sendable {
             case .openModelManagement: return "square.stack.3d.up"
             case .switchDownloadSource: return "arrow.triangle.2.circlepath"
             case .openPermissions: return "hand.raised"
+            case .openWebSearchSettings: return "magnifyingglass"
             }
         }
     }
@@ -84,6 +95,15 @@ enum FailureDiagnoser {
         case .webSearchUnavailable:
             message = "Web search couldn't finish. Check its settings, then try again."
             action = .retry
+        case .webSearchRateLimited:
+            // Deliberately NOT "check its settings": everything in Settings is
+            // already correct when this fires. DuckDuckGo rate-limits the free
+            // endpoint per IP within a handful of searches, so the honest
+            // remedy is a different backend, and the message has to say which
+            // ones and where. Kept to one sentence of situation + one of
+            // remedy so it still reads inside the tool card.
+            message = "DuckDuckGo is rate-limiting web searches from this Mac. Switch to Brave Search or Tavily in Settings → Tools and add a free key."
+            action = .openWebSearchSettings
         case .commandPermissionDenied:
             message = "The command tried to change a protected location. Allow that folder, then try again."
             action = .openPermissions
@@ -135,6 +155,15 @@ enum FailureDiagnoser {
         guard isError else { return nil }
 
         if toolName == "web_search" {
+            // ``WebSearchTool`` stamps ``.webSearchRateLimited`` on the result
+            // directly, so this branch only matters for rows restored from an
+            // older transcript (no stored kind) — hence the narrow, DDG-anchored
+            // signals. A Brave/Tavily quota error must NOT land here: telling a
+            // Brave user to "switch to Brave" is the same dead end this fix is
+            // removing.
+            if raw.contains("duckduckgo"), containsAny(raw, duckDuckGoThrottleSignals) {
+                return .webSearchRateLimited
+            }
             return containsAny(raw, offlineSignals) ? .webSearchOffline : .webSearchUnavailable
         }
         if ["read_file", "list_directory", "write_file", "edit_file"].contains(toolName) {
@@ -235,6 +264,13 @@ enum FailureDiagnoser {
         "not connected to the internet", "network is unreachable", "network connection was lost",
         "could not resolve host", "cannot find host", "cannot connect", "connection refused",
         "connection reset", "dns", "offline", "timed out", "timeout",
+    ]
+
+    /// Throttle wording DuckDuckGo results have carried across releases.
+    /// Only consulted together with a ``duckduckgo`` mention (see
+    /// ``toolFailureKind``).
+    nonisolated private static let duckDuckGoThrottleSignals = [
+        "throttl", "rate limit", "rate-limit", "anti-bot", "blocked this request",
     ]
 
     nonisolated private static let missingFileSignals = [

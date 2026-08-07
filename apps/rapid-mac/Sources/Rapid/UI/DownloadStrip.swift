@@ -104,7 +104,7 @@ struct DownloadStrip: View {
             downloads.retryDownload(alias: job.alias)
         case .switchDownloadSource:
             downloads.retryDownload(alias: job.alias, source: .huggingFace)
-        case .restart, .openModelManagement, .openPermissions:
+        case .restart, .openModelManagement, .openPermissions, .openWebSearchSettings:
             break
         }
     }

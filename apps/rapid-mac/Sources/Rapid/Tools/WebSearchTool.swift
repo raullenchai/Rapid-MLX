@@ -157,34 +157,91 @@ enum WebSearchTool {
         req.timeoutInterval = 15
         do {
             let (data, response) = try await cappedData(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let html = String(data: data, encoding: .utf8)
+            // Throttle check runs BEFORE the 2xx guard. DDG answers a
+            // throttled caller two different ways and the old ordering
+            // mishandled both: HTTP 202 + a non-results page sailed
+            // through the ``(200..<300)`` guard as "success", and HTTP
+            // 429 fell out as a bare "returned HTTP 429". Both are the
+            // same situation for the user, so classify first.
+            if isDuckDuckGoThrottled(statusCode: code, html: html ?? "") {
+                return duckDuckGoThrottledResult(fallbackNote: fallbackNote)
+            }
+            guard (200..<300).contains(code) else {
                 return ToolCallResult(toolCallID: "", content: "\(toolName) error: DuckDuckGo returned HTTP \(code)", isError: true)
             }
-            guard let html = String(data: data, encoding: .utf8) else {
+            guard let html else {
                 return ToolCallResult(toolCallID: "", content: "\(toolName) error: non-UTF8 response", isError: true)
-            }
-            // DDG silently rate-limits repeat callers from a single
-            // IP/UA: the HTTP response is still 200 but the body is
-            // the "Unfortunately, bots use DuckDuckGo too." modal
-            // instead of result blocks. Without an explicit check
-            // ``parseDDGHTML`` returns an empty list and the model
-            // hears "no results found" — indistinguishable from a
-            // query that genuinely matched nothing. Surface the
-            // block so the assistant can either back off or tell
-            // the user to configure a paid backend.
-            if detectDDGAntiBot(html) {
-                return ToolCallResult(
-                    toolCallID: "",
-                    content: "\(toolName) error: DuckDuckGo blocked this request (anti-bot rate limit). Either wait a few minutes, or configure a paid backend in Settings → Tools → Web search (Brave: 2000 queries/month free; Tavily: 1000 queries/month free).",
-                    isError: true
-                )
             }
             let results = parseDDGHTML(html, cap: resultCap)
             return formatOutput(query: q, provider: .duckduckgo, results: results, fallbackNote: fallbackNote)
         } catch {
             return ToolCallResult(toolCallID: "", content: "\(toolName) error: \(error.localizedDescription)", isError: true)
         }
+    }
+
+    /// True when DuckDuckGo answered with its throttle signature instead of a
+    /// results page.
+    ///
+    /// Measured against ``https://html.duckduckgo.com/html/`` on 2026-08-05:
+    /// the first request of a session returns **200** with ten ``result__a``
+    /// blocks, and every request after it returns **202** with a ~14 KB page
+    /// that carries no result blocks — for five different queries, under both
+    /// a plain Safari UA and the tool's own UA. So it is per-IP throttling,
+    /// not UA sniffing, and 202 is its fingerprint.
+    ///
+    /// Three signals, in order:
+    ///
+    /// 1. **A real results page is never a throttle.** If the body carries a
+    ///    ``result__body`` class token we have hits to parse, whatever the
+    ///    status line says. This is what keeps a hypothetical 202-with-results
+    ///    from being misread: the signature is "202 with a *non-results*
+    ///    body", not 202 on its own.
+    /// 2. **202 / 429 / 403 with no result blocks** — 202 is the observed
+    ///    soft-throttle, 429 the explicit one, 403 the hard block.
+    /// 3. **The anti-bot modal on a 200** — the older, still-live shape that
+    ///    ``detectDDGAntiBot`` recognises.
+    static func isDuckDuckGoThrottled(statusCode: Int, html: String) -> Bool {
+        if containsResultBodyClassToken(html) { return false }
+        if statusCode == 202 || statusCode == 429 || statusCode == 403 { return true }
+        return detectDDGAntiBot(html)
+    }
+
+    /// Model-visible payload for a throttled DuckDuckGo search.
+    ///
+    /// Written as **facts about the backend**, not as instructions to the
+    /// assistant. The failure it replaced ("DuckDuckGo blocked this request
+    /// (anti-bot rate limit)") left enough room for a small model to conclude
+    /// it has no web access at all and answer "I can't browse the web" — which
+    /// contradicts the tool card the user is looking at. Naming the tool as
+    /// enabled, and the backend as the thing that ran out, closes that gap
+    /// without steering the model's prose.
+    static let duckDuckGoThrottleContent = """
+        web_search error: the DuckDuckGo backend rate-limited this Mac, so this query \
+        returned no results. The web_search tool is enabled and working — DuckDuckGo \
+        throttles its free endpoint per IP after a few searches, and usually recovers \
+        after a few minutes. The user can also switch the backend to Brave Search or \
+        Tavily in Settings → Tools → Web search (Brave: 2000 queries/month free; \
+        Tavily: 1000 queries/month free), which are not throttled this way.
+        """
+
+    /// Wraps ``duckDuckGoThrottleContent`` with the stable UI classification.
+    /// ``failureKind`` is stamped here rather than sniffed back out of the
+    /// prose by ``FailureDiagnoser`` so the tool card can never disagree with
+    /// what actually happened.
+    static func duckDuckGoThrottledResult(fallbackNote: String? = nil) -> ToolCallResult {
+        var content = duckDuckGoThrottleContent
+        // A user who picked Brave/Tavily but hasn't pasted a key yet is
+        // silently on DDG — that context matters far more once DDG has
+        // throttled, so carry the note through instead of dropping it.
+        if let fallbackNote { content += "\n\n" + fallbackNote }
+        return ToolCallResult(
+            toolCallID: "",
+            content: content,
+            isError: true,
+            failureKind: .webSearchRateLimited
+        )
     }
 
     static func runBrave(query q: String, apiKey: String) async -> ToolCallResult {
