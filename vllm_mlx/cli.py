@@ -4739,27 +4739,103 @@ def _format_bytes(n: int) -> str:
 
 
 def _dir_size_bytes(path: str) -> int:
-    """Recursive on-disk size of ``path`` (follows blob symlinks).
+    """Bytes of the distinct files under ``path``, each counted once.
 
-    HF cache stores model weights as ``blobs/<sha>`` files referenced via
-    symlinks under ``snapshots/<rev>/<file>``. ``os.scandir`` recurses
-    through both — we follow links so a snapshot's reported size matches
-    the user's mental model of "how much disk this model uses".
+    The HF cache keeps one copy of every model file under
+    ``blobs/<sha>`` and references it from ``snapshots/<rev>/<file>``.
+    Counting both sides tallies the same bytes twice, plus once more for
+    every extra cached revision, so a 7.9 GB model was reported as
+    15.9 GiB in ``ls --cached`` and in the macOS app's Settings → Models
+    panel. That number is what tells a user how much disk deleting the
+    model would free, so being 2x off is a lie — and it disagreed with
+    ``rapid-mlx rm``, which gets its figure from
+    ``huggingface_hub``'s own (correct) ``size_on_disk``.
+
+    Two rules keep the count honest:
+
+    * Only regular files are measured. Symlinks found during the walk
+      are skipped, not followed: their bytes live somewhere else and a
+      snapshot link is just a second name for a blob already counted.
+      A dangling link therefore costs nothing and raises nothing, and
+      a link cannot be descended into, so the walk neither loops nor
+      leaves the tree it was pointed at.
+    * Files are deduped by ``(st_dev, st_ino)``, so a hardlinked layout
+      (``cp -al`` cache clones, restored CI caches, older hub versions)
+      and a blob shared by several revisions each contribute once. When
+      the hub genuinely *copies* a blob into a snapshot instead of
+      linking it, the two copies have distinct inodes and are counted
+      twice — which is right, because they really do occupy twice the
+      disk.
+
+    Deduping by identity rather than by the ``blobs``/``snapshots``
+    directory names is deliberate: the name-based shortcut breaks on
+    hardlinked caches and on directories holding several revisions.
+    ``HFCacheByteMonitor.directoryByteCount`` in the macOS app takes the
+    same approach via ``fileResourceIdentifierKey``, so the two agree on
+    the same directory up to allocation granularity: this sums logical
+    ``st_size``, the Swift side sums allocated blocks, so every file
+    differs a little through block rounding and sparse or compressed
+    files can differ a lot (model weights are neither). ``st_size`` is
+    also the quantity ``huggingface_hub`` reports as
+    ``CachedRepoInfo.size_on_disk``, which is what ``rapid-mlx rm``
+    already prints — matching it makes the two surfaces agree.
+
+    ``path`` itself is resolved through symlinks before the walk starts:
+    it names the directory the caller wants measured, so a relocated
+    cache entry reports its real contents rather than 0, which would be
+    a fresh lie in the same column. Callers pass a
+    ``models--<org>--<repo>`` cache root (or any plain directory of real
+    files), never a bare ``snapshots/<rev>`` — that subtree owns no
+    bytes of its own, and sizing one is ``_snapshot_size_bytes``' job.
+
+    Missing or unreadable paths report 0 rather than raising: this feeds
+    a listing, not a decision. For the same reason the walk is not
+    hardened against another process swapping a subdirectory for a
+    symlink between the moment it is queued and the moment it is
+    scanned. Racing that window inflates a number in a table the user
+    asked for about their own cache; anyone able to run it can rewrite
+    the weights outright. Descriptor-relative traversal
+    (``O_DIRECTORY | O_NOFOLLOW`` plus ``dir_fd``) would close it and is
+    not worth the fd bookkeeping here.
     """
     total = 0
+    seen: set[tuple[int, int]] = set()
+    # Resolve once, up front, so the walk starts inside a real directory
+    # and every subdirectory below is reached without crossing a link.
     try:
-        for entry in os.scandir(path):
+        root = os.path.realpath(path)
+    except OSError:
+        return 0
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                entries = list(it)
+        except OSError:
+            # Vanished mid-walk, or a directory we may not read.
+            continue
+        for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    total += _dir_size_bytes(entry.path)
-                else:
-                    # follow_symlinks=True so blob symlinks count their
-                    # underlying file size, matching ``du -sL``.
-                    total += entry.stat(follow_symlinks=True).st_size
+                    stack.append(entry.path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    # Symlink, fifo, socket, device — nothing this
+                    # directory owns on disk.
+                    continue
+                st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
-    except OSError:
-        return total
+            # A few network/FUSE mounts report ``st_ino == 0`` for every
+            # file. Deduping on that would collapse the whole tree into
+            # a single file, so fall back to counting each entry.
+            if st.st_ino:
+                key = (st.st_dev, st.st_ino)
+                if key in seen:
+                    continue
+                seen.add(key)
+            total += st.st_size
     return total
 
 

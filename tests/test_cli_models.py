@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from unittest.mock import patch
+
+import pytest
 
 from vllm_mlx import cli
 from vllm_mlx.model_aliases import list_profiles
@@ -286,3 +289,243 @@ def test_scan_hf_cache_models_filters_to_models_only(tmp_path, monkeypatch):
     assert "mlx-community/FakeModel" in repos
     assert all("squad" not in r for r in repos)
     assert all("demo" not in r for r in repos)
+
+
+# ---------------------------------------------------------------------------
+# _dir_size_bytes — HF cache blob/snapshot double counting
+#
+# The HF cache stores every file once under ``blobs/<sha>`` and links it
+# from ``snapshots/<rev>/<file>``. Following those links tallies the same
+# bytes twice, which is how a 7.9 GB model came to be advertised as
+# "15.9 GiB on disk" in ``ls --cached`` and in the macOS app's
+# Settings → Models panel. These tests pin the count at "each distinct
+# file exactly once".
+# ---------------------------------------------------------------------------
+
+
+def _make_hf_cache_repo(root, blobs: dict[str, int]):
+    """Build ``root/blobs/<sha>`` files of the given byte sizes.
+
+    Returns the created ``blobs`` directory; callers add snapshots on top.
+    """
+    blob_dir = root / "blobs"
+    blob_dir.mkdir(parents=True)
+    for sha, size in blobs.items():
+        (blob_dir / sha).write_bytes(b"\0" * size)
+    return blob_dir
+
+
+def test_dir_size_counts_snapshot_symlinks_once(tmp_path):
+    """A blob plus its snapshot symlink is one file's worth of bytes."""
+    repo = tmp_path / "models--acme--Widget-4bit"
+    blob_dir = _make_hf_cache_repo(repo, {"sha_weights": 4096, "sha_config": 64})
+
+    snap = repo / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").symlink_to(blob_dir / "sha_weights")
+    (snap / "config.json").symlink_to(blob_dir / "sha_config")
+
+    assert cli._dir_size_bytes(str(repo)) == 4096 + 64
+
+
+def test_dir_size_counts_blob_shared_by_two_revisions_once(tmp_path):
+    """Two cached revisions sharing one blob must not triple it.
+
+    ``rev2`` re-downloads only the weights; ``config.json`` is unchanged
+    so both snapshots link the same blob. The old follow-links walk
+    charged the user for three copies of a file that exists once.
+    """
+    repo = tmp_path / "models--acme--Widget-4bit"
+    blob_dir = _make_hf_cache_repo(
+        repo, {"sha_w1": 4096, "sha_w2": 2048, "sha_config": 64}
+    )
+
+    rev1 = repo / "snapshots" / "rev1"
+    rev1.mkdir(parents=True)
+    (rev1 / "model.safetensors").symlink_to(blob_dir / "sha_w1")
+    (rev1 / "config.json").symlink_to(blob_dir / "sha_config")
+
+    rev2 = repo / "snapshots" / "rev2"
+    rev2.mkdir(parents=True)
+    (rev2 / "model.safetensors").symlink_to(blob_dir / "sha_w2")
+    (rev2 / "config.json").symlink_to(blob_dir / "sha_config")
+
+    assert cli._dir_size_bytes(str(repo)) == 4096 + 2048 + 64
+
+
+def test_dir_size_counts_hardlinked_snapshot_once(tmp_path):
+    """Hardlinked caches need inode dedupe — skipping symlinks won't do it.
+
+    ``cp -al`` cache clones, restored CI caches and older hub versions
+    all produce a snapshot entry hardlinked to its blob. Both names are
+    regular files, so only ``(st_dev, st_ino)`` dedupe stops the double
+    count.
+    """
+    repo = tmp_path / "models--acme--Widget-4bit"
+    blob_dir = _make_hf_cache_repo(repo, {"sha_weights": 4096})
+
+    snap = repo / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    os.link(blob_dir / "sha_weights", snap / "model.safetensors")
+
+    assert cli._dir_size_bytes(str(repo)) == 4096
+
+
+def test_dir_size_counts_copied_snapshot_twice(tmp_path):
+    """A genuinely *copied* blob really does occupy twice the disk.
+
+    Dedupe is by inode, not by name or content, so the count must not
+    collapse two independent copies — reporting 4096 here would
+    under-report what deleting the model frees.
+    """
+    repo = tmp_path / "models--acme--Widget-4bit"
+    blob_dir = _make_hf_cache_repo(repo, {"sha_weights": 4096})
+
+    snap = repo / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").write_bytes(
+        (blob_dir / "sha_weights").read_bytes()  # real copy, distinct inode
+    )
+
+    assert cli._dir_size_bytes(str(repo)) == 8192
+
+
+def test_dir_size_follows_symlinked_root(tmp_path):
+    """A relocated cache entry reports its contents, not 0.
+
+    ``path`` is what the caller asked to measure, so it is resolved
+    before the walk. Links found *inside* are still skipped, so the
+    blob/snapshot pair is not double counted through the far side.
+    """
+    real = tmp_path / "elsewhere" / "Widget-4bit"
+    blob_dir = _make_hf_cache_repo(real, {"sha_weights": 4096})
+    snap = real / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").symlink_to(blob_dir / "sha_weights")
+
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    link = hub / "models--acme--Widget-4bit"
+    link.symlink_to(real, target_is_directory=True)
+
+    assert cli._dir_size_bytes(str(link)) == 4096
+
+
+def test_dir_size_does_not_traverse_symlinked_subdirectory(tmp_path):
+    """A directory symlink is not descended — no escapes, no loops."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "huge.bin").write_bytes(b"\0" * 100_000)
+
+    repo = tmp_path / "models--acme--Widget-4bit"
+    _make_hf_cache_repo(repo, {"sha_weights": 4096})
+    (repo / "escape").symlink_to(outside, target_is_directory=True)
+    (repo / "loop").symlink_to(repo, target_is_directory=True)
+
+    assert cli._dir_size_bytes(str(repo)) == 4096
+
+
+def test_dir_size_skips_unreadable_subdirectory(tmp_path):
+    """A directory we cannot open contributes 0 instead of raising."""
+    if os.geteuid() == 0:
+        pytest.skip("root can read any directory, so the mode has no effect")
+
+    repo = tmp_path / "models--acme--Widget-4bit"
+    _make_hf_cache_repo(repo, {"sha_weights": 4096})
+    locked = repo / "locked"
+    locked.mkdir()
+    (locked / "hidden.bin").write_bytes(b"\0" * 512)
+    os.chmod(locked, 0o000)
+    try:
+        assert cli._dir_size_bytes(str(repo)) == 4096
+    finally:
+        os.chmod(locked, 0o700)  # let tmp_path cleanup succeed
+
+
+def test_dir_size_without_usable_inodes_counts_every_file(tmp_path):
+    """Some network/FUSE mounts report ``st_ino == 0`` for everything.
+
+    Deduping on that identity would collapse the whole tree into one
+    file, so the fallback is to count each entry.
+    """
+    repo = tmp_path / "models--acme--Widget-4bit"
+    _make_hf_cache_repo(repo, {"sha_a": 4096, "sha_b": 2048})
+
+    real_scandir = os.scandir
+
+    class _NoInodeEntry:
+        def __init__(self, entry):
+            self._entry = entry
+
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def stat(self, *, follow_symlinks=True):
+            st = self._entry.stat(follow_symlinks=follow_symlinks)
+            fields = list(st)
+            fields[1] = 0  # st_ino
+            return os.stat_result(fields)
+
+    class _NoInodeScandir:
+        def __init__(self, path):
+            self._it = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._it.close()
+            return False
+
+        def __iter__(self):
+            for entry in self._it:
+                yield _NoInodeEntry(entry)
+
+    with patch.object(cli.os, "scandir", _NoInodeScandir):
+        assert cli._dir_size_bytes(str(repo)) == 4096 + 2048
+
+
+def test_dir_size_ignores_dangling_symlink(tmp_path):
+    """A broken link (interrupted pull, pruned blob) neither crashes nor counts."""
+    repo = tmp_path / "models--acme--Widget-4bit"
+    blob_dir = _make_hf_cache_repo(repo, {"sha_weights": 4096})
+
+    snap = repo / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").symlink_to(blob_dir / "sha_weights")
+    (snap / "gone.safetensors").symlink_to(blob_dir / "sha_missing")
+
+    assert cli._dir_size_bytes(str(repo)) == 4096
+
+
+def test_dir_size_counts_plain_directory_normally(tmp_path):
+    """No HF structure at all — every regular file still counts, recursively."""
+    plain = tmp_path / "my-converted-model"
+    (plain / "nested").mkdir(parents=True)
+    (plain / "model.safetensors").write_bytes(b"\0" * 1000)
+    (plain / "config.json").write_bytes(b"\0" * 24)
+    (plain / "nested" / "tokenizer.json").write_bytes(b"\0" * 7)
+
+    assert cli._dir_size_bytes(str(plain)) == 1031
+
+
+def test_dir_size_missing_path_is_zero(tmp_path):
+    """A vanished directory reports 0, not an exception."""
+    assert cli._dir_size_bytes(str(tmp_path / "nope")) == 0
+
+
+def test_scan_hf_cache_models_reports_blob_bytes_not_double(tmp_path, monkeypatch):
+    """End-to-end: the ``ls --cached`` row carries the honest byte count."""
+    cache_root = tmp_path / "hub"
+    repo = cache_root / "models--acme--Widget-4bit"
+    blob_dir = _make_hf_cache_repo(repo, {"sha_weights": 8192})
+    snap = repo / "snapshots" / "rev1"
+    snap.mkdir(parents=True)
+    (snap / "model.safetensors").symlink_to(blob_dir / "sha_weights")
+
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(cache_root), raising=False
+    )
+    rows = cli._scan_hf_cache_models()
+    sizes = {repo_id: size for repo_id, size, _mtime in rows}
+    assert sizes["acme/Widget-4bit"] == 8192
