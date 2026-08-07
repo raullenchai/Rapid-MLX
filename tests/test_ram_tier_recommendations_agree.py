@@ -115,8 +115,7 @@ def test_both_tables_parse():
 def test_same_alias_at_every_ram_size():
     """The comparison that matters: for a real Mac's RAM, both front doors
     name the same model. Compared by RAM size rather than by row so the
-    app's 18 GB tier (which deliberately mirrors 16) doesn't register as a
-    mismatch against install.sh's single 16-23 branch."""
+    app's explicit laptop tiers are checked at both sides of each boundary."""
     sh = sorted(_parse_install_sh(), key=lambda t: t[0], reverse=True)
     app = sorted(_parse_app_tiers(), key=lambda t: t[0], reverse=True)
 
@@ -230,10 +229,15 @@ def test_every_recommended_alias_exists():
 
 
 @pytest.mark.parametrize(
-    "ram,expected", [(8, "lfm2.5-2.6b-4bit"), (16, "bonsai-27b-2bit")]
+    "ram,expected",
+    [
+        (8, "lfm2.5-2.6b-4bit"),
+        (16, "qwen3.5-4b-4bit"),
+        (18, "qwen3.5-9b-4bit"),
+    ],
 )
 def test_small_macs_get_something_that_fits(ram, expected):
-    """Pinned literally: these two tiers are the ones that changed, and a
+    """Pinned literally: these laptop tiers are the ones that changed, and a
     regression here is the difference between an 8 GB Mac running a model
     and being told nothing fits."""
     sh = sorted(_parse_install_sh(), key=lambda t: t[0], reverse=True)
@@ -298,7 +302,8 @@ def test_readme_table_matches_the_app_tier_for_tier():
     boundary moved, while still reporting that the tables agree.
     """
     app = [(f, a) for f, a, _ in sorted(_parse_app_tiers())]
-    # The app splits 16 and 18; the README covers both with one 16-23 row.
+    # Collapse only genuinely identical adjacent picks, if a future table
+    # expresses the same recommendation at two consecutive floors.
     app_collapsed = []
     for floor, alias in app:
         if app_collapsed and app_collapsed[-1][1] == alias:

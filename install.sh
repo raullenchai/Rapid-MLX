@@ -109,7 +109,8 @@ elif [ "$RAM_GB" -ge 64 ]; then RECOMMENDED_MODEL="qwen3.6-35b-8bit";    RAM_TIE
 elif [ "$RAM_GB" -ge 32 ]; then RECOMMENDED_MODEL="qwen3.6-35b-4bit";    RAM_TIER="32-63 GB"
 elif [ "$RAM_GB" -ge 24 ]; then RECOMMENDED_MODEL="gemma-4-26b-4bit";    RAM_TIER="24-31 GB"
                                 RECOMMENDED_FLAGS=" --no-mllm --kv-cache-dtype bf16 --cache-memory-mb 512"
-elif [ "$RAM_GB" -ge 16 ]; then RECOMMENDED_MODEL="bonsai-27b-2bit";     RAM_TIER="16-23 GB"
+elif [ "$RAM_GB" -ge 18 ]; then RECOMMENDED_MODEL="qwen3.5-9b-4bit";     RAM_TIER="18-23 GB"
+elif [ "$RAM_GB" -ge 16 ]; then RECOMMENDED_MODEL="qwen3.5-4b-4bit";     RAM_TIER="16-17 GB"
 else                            RECOMMENDED_MODEL="lfm2.5-2.6b-4bit";    RAM_TIER="8-15 GB"
 fi
 
