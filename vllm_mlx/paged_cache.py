@@ -1157,6 +1157,66 @@ class PagedCacheManager:
 
             return self.free_block_queue.num_free_blocks >= requested_blocks
 
+    def release_pressure_blocks(self, max_blocks: int = 0) -> int:
+        """Release KV tensor memory from free (unreferenced) cache blocks.
+
+        vLLM-style paged cache keeps ``cache_data`` resident on freed
+        blocks for reuse; under Metal pressure that resident tensor
+        memory is exactly what D-METAL-CAP sees as ``active`` and
+        refuses to admit against. This method walks the free queue and
+        drops ``cache_data`` (and hash references) so the next
+        ``mx.clear_cache()`` actually returns the slabs to the Metal
+        pool.
+
+        Returns the number of blocks whose tensor memory was released.
+        ``max_blocks`` bounds the sweep (0 = no bound) so a single
+        pressure tick cannot trash the entire prefix cache on a
+        transient spike.
+
+        Safe for blocks with or without a chain hash: blocks WITHOUT a
+        hash never get released by ``_maybe_evict_cached_block`` (it
+        early-returns on ``block_hash is None``), so they are exactly
+        the ones that permanently pin Metal memory after
+        ``free_block`` — this sweep covers them too.
+        """
+        released = 0
+        with self._lock:
+            block = self.free_block_queue.fake_head.next_free_block
+            while block is not self.free_block_queue.fake_tail:
+                nxt = block.next_free_block
+                if block.cache_data is not None and not block.is_pinned:
+                    # Drop hash references first so a later prefix hit
+                    # does not reconstruct from a now-empty block.
+                    if block.block_hash is not None:
+                        self.cached_block_hash_to_block.pop(
+                            block.block_hash, block.block_id
+                        )
+                    if block.hash_value and block.hash_value in self.hash_to_block:
+                        if self.hash_to_block[block.hash_value] == block.block_id:
+                            del self.hash_to_block[block.hash_value]
+                    block.reset_hash()
+                    block.cache_data = None
+                    block.cache_class_name = None
+                    released += 1
+                    self.stats.evictions += 1
+                    if max_blocks and released >= max_blocks:
+                        break
+                block = nxt
+        if released:
+            try:
+                import mlx.core as mx
+
+                mx.clear_cache()
+            except Exception:
+                pass
+        if released:
+            logger.info(
+                "[paged-pressure-release] released %d free block(s) "
+                "KV tensor memory",
+                released,
+            )
+        return released
+
     # =========================================================================
     # Statistics and Properties
     # =========================================================================

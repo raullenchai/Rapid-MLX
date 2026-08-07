@@ -487,6 +487,17 @@ class EngineCore:
         """
         try:
             self.scheduler.evict_prefix_cache_under_pressure()
+            # ── Hermes patch: prefix-cache eviction is a no-op for
+            # the block-aware (paged) cache variant — the paged cache
+            # keeps KV tensor memory resident on FREE blocks. Drive
+            # the paged manager's own pressure release so D-METAL-CAP
+            # pressure actually drains instead of wedging (permanent
+            # 503 until restart). Bounded sweep per tick so a single
+            # tick cannot trash the whole prefix cache on a transient
+            # spike.
+            paged = getattr(self.scheduler, "paged_cache_manager", None)
+            if paged is not None:
+                paged.release_pressure_blocks(max_blocks=32)
         except Exception as evict_exc:
             if not getattr(self, "_pressure_evict_error_logged", False):
                 self._pressure_evict_error_logged = True

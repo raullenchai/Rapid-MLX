@@ -32,6 +32,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from vllm_mlx.prefix_cache import BlockCacheEntry
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
 
@@ -626,3 +627,200 @@ class TestMetalCacheMemoryMetric:
             stats = sched.get_stats()
         assert stats.get("metal_cache_memory_gb") == pytest.approx(5.0, abs=0.01)
         assert stats.get("metal_active_memory_gb") == pytest.approx(1.0, abs=0.01)
+
+
+class TestBlockAwareCacheEviction:
+    """Pressure-driven eviction on the paged ``BlockAwarePrefixCache``.
+
+    Regression: pre-fix this variant was a deliberate no-op in
+    ``_evict_one_prefix_cache_entry`` ("blocks are released by
+    PagedCacheManager ref-counts"), but completed requests never call
+    ``release_cache`` — their blocks keep ref_count=1 and never re-enter
+    the free queue, so every release path that scans the free queue
+    (``release_pressure_blocks`` / ``evict_lru_blocks``) starves. Under
+    Metal pressure the admission gate then rejects ALL new requests while
+    ``active`` stays pinned above cap — a permanent 503 wedge. These tests
+    pin the fix: pressure evicts the LRU prefix-index entry and drops its
+    resident block tensors so active memory falls back under cap.
+    """
+
+    def _make_paged_scheduler(self, gpu_memory_utilization: float = 0.5):
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=True,
+            paged_cache_block_size=4,
+            max_cache_blocks=256,
+            gpu_memory_utilization=gpu_memory_utilization,
+        )
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+        model = MagicMock()
+        return Scheduler(model=model, tokenizer=tokenizer, config=config)
+
+    def test_pressure_evicts_block_aware_entries(self):
+        """Pressure must evict LRU prefix-index entries and drop the
+        resident KV tensors of their blocks (the pre-fix wedge)."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        assert bac is not None
+        paged = bac.paged_cache
+
+        # Manually populate the prefix index + resident block tensors the
+        # way store_cache does: hash entry -> (tokens, block_ids) with
+        # blocks that carry cache_data (resident Metal memory).
+        blocks = []
+        for i in range(4):
+            blk = paged.allocate_block()
+            blk.cache_data = [MagicMock()]  # resident tensor
+            blk.cache_class_name = "cache"
+            blocks.append(blk)
+        bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
+        bac._prefix_index["h2"] = ([5, 6, 7, 8], [b.block_id for b in blocks[2:]])
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        # Pressure stays high, so BOTH entries are evicted (max_evict=10
+        # is not the binding constraint; the empty index is). Each entry's
+        # resident block tensors must be dropped.
+        assert n == 2
+        assert "h1" not in bac._prefix_index
+        assert "h2" not in bac._prefix_index
+        assert all(b.cache_data is None for b in blocks)
+        assert sched.num_prefix_cache_pressure_evictions == 2
+
+    def test_pressure_drains_until_index_empty(self):
+        """Persistent pressure drains entries until the index is empty."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        blocks = []
+        for i in range(4):
+            blk = paged.allocate_block()
+            blk.cache_data = [MagicMock()]
+            blocks.append(blk)
+        bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
+        bac._prefix_index["h2"] = ([5, 6, 7, 8], [b.block_id for b in blocks[2:]])
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        assert n == 2  # both entries evicted
+        assert len(bac._prefix_index) == 0
+        assert all(b.cache_data is None for b in blocks)
+        assert sched.num_prefix_cache_pressure_evictions == 2
+
+    def test_no_eviction_when_index_empty(self):
+        """Empty prefix index -> no-op (no crash, no counter tick)."""
+        sched = self._make_paged_scheduler()
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        assert n == 0
+        assert sched.num_prefix_cache_pressure_evictions == 0
+
+    def test_pinned_blocks_not_evicted(self):
+        """Pinned blocks (system prompt) must survive pressure eviction."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        blocks = []
+        for i in range(4):
+            blk = paged.allocate_block()
+            blk.cache_data = [MagicMock()]
+            blocks.append(blk)
+        # Pin the first block of entry h1 — its tensor must survive.
+        blocks[0].is_pinned = True
+        bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
+        bac._prefix_index["h2"] = ([5, 6, 7, 8], [b.block_id for b in blocks[2:]])
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        # Both entries are evicted under sustained pressure, but the
+        # pinned block (h1's first block) keeps its tensor — only
+        # non-pinned resident tensors are released.
+        assert n == 2
+        assert blocks[0].cache_data is not None  # pinned survives
+        assert blocks[1].cache_data is None
+        assert blocks[2].cache_data is None
+        assert blocks[3].cache_data is None
+        assert sched.num_prefix_cache_pressure_evictions == 2
+
+    def test_pressure_releases_full_kv_request_table_entries(self):
+        """Pressure must also drop the FULL-KV tensor pinned by
+        ``_request_tables`` entries — the block slices are only views
+        into that buffer, so without this active memory never falls.
+
+        Regression: the pre-fix wedge showed ``evictions_total`` growing
+        while ``active`` stayed pinned above cap, because the LRU index
+        eviction cleared block views while the entry's ``cache_data``
+        kept the underlying Metal allocation alive.
+        """
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+
+        # Simulate two completed requests whose store_cache left both a
+        # prefix-index entry AND a full-KV request-table entry resident.
+        blocks = []
+        for i in range(4):
+            blk = paged.allocate_block()
+            blk.cache_data = [MagicMock()]  # resident view
+            blocks.append(blk)
+        bac._prefix_index["h1"] = ([1, 2, 3, 4], [b.block_id for b in blocks[:2]])
+        bac._request_tables["req-1"] = BlockCacheEntry(
+            block_table=MagicMock(block_ids=[b.block_id for b in blocks[:2]]),
+            cache_data=[MagicMock()],  # full KV tensor
+            last_access=1.0,
+        )
+        bac._request_tables["req-2"] = BlockCacheEntry(
+            block_table=MagicMock(block_ids=[b.block_id for b in blocks[2:]]),
+            cache_data=[MagicMock()],
+            last_access=2.0,
+        )
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+        # One eviction per full-KV request-table entry (the resident
+        # allocation owner). The LRU index entry is drained on the same
+        # call, so a second tick releases the second request table.
+        assert n == 2
+        # Request-table entries must have been popped (their full-KV
+        # tensors released) — the actual wedge fix. Under sustained
+        # pressure both are drained, even though the index only had one
+        # entry (the rt-first ordering guarantees this).
+        assert "req-1" not in bac._request_tables
+        assert "req-2" not in bac._request_tables
+        # The block views alias the same buffers as the dropped
+        # request-table tensors — they must be released too, or the
+        # underlying Metal allocation stays alive.
+        assert all(b.cache_data is None for b in blocks)
+        # Its resident block views were dropped too.
+        assert all(b.cache_data is None for b in blocks)
+        assert sched.num_prefix_cache_pressure_evictions == 2

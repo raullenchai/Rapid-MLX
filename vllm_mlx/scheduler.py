@@ -4993,6 +4993,29 @@ class Scheduler:
         # would exceed the cap.
         if active < cap and (active + reserved_kv + projected_kv) < cap:
             return
+
+        # ── Hermes patch: force-evict paged KV before rejecting ──
+        # D-METAL-CAP wedge root cause: the paged cache keeps KV
+        # tensor memory resident on FREE blocks for reuse, so once
+        # active exceeds cap every request is rejected and nothing
+        # ever frees — permanent 503 until restart. Try to release
+        # free-block KV tensor memory first; if enough returns, admit
+        # the request instead of wedging the server.
+        if self.paged_cache_manager is not None:
+            try:
+                freed = self.paged_cache_manager.release_pressure_blocks()
+            except Exception:
+                freed = 0
+            if freed:
+                active = self._current_metal_active_bytes()
+                reserved_kv = self._sum_in_flight_kv_bytes()
+                if active < cap and (active + reserved_kv + projected_kv) < cap:
+                    logger.info(
+                        "[D-METAL-CAP-force-evict] released %d paged KV "
+                        "block(s); admitted request after pressure drop",
+                        freed,
+                    )
+                    return
         self.num_metal_cap_violations += 1
         if not self._metal_cap_warning_logged:
             self._metal_cap_warning_logged = True
@@ -5264,6 +5287,104 @@ class Scheduler:
                 return False
             self.prefix_cache._evict_lru()  # noqa: SLF001 — coordinated eviction
             return True
+        if self.block_aware_cache is not None:
+            # Hermes patch: pressure-trigger eviction for the paged
+            # (block-aware) prefix cache. Previously this branch was a
+            # deliberate no-op on the theory that PagedCacheManager
+            # ref-counts release blocks — but completed requests never
+            # call release_cache (blocks persist for sharing, see the
+            # store_cache call site), so their blocks keep ref_count=1,
+            # never re-enter the free queue, and every release path
+            # (release_pressure_blocks / evict_lru_blocks / free_block)
+            # only scans the free queue. Under Metal pressure the
+            # admission gate then rejects ALL new requests while active
+            # stays pinned above cap — a permanent 503 wedge (the
+            # D-METAL-CAP symptom) with no in-process recovery. Fix:
+            # evict the LRU prefix-index entry and drop its resident
+            # block tensors so active memory falls back under cap and
+            # admission resumes. Stale index entries are guarded by the
+            # fetch-side live check (blk.cache_data is None => miss).
+            index = getattr(self.block_aware_cache, "_prefix_index", None)
+            paged = self.block_aware_cache.paged_cache
+            logger.info(
+                "[D-METAL-PFX-dbg] block_aware evict: index_size=%d request_tables=%d",
+                len(index) if index else 0,
+                len(getattr(self.block_aware_cache, "_request_tables", {})),
+            )
+            # 1) Release the FULL-KV tensor pinned by the oldest
+            # request-table entry FIRST — this is the actual Metal
+            # allocation owner. The block slices are only views into
+            # the same underlying buffer; the entry's ``cache_data`` is
+            # what pins it. Without this, pressure eviction clears
+            # slices forever while active memory never drops (the
+            # observed D-METAL-CAP wedge: evictions_total grows, active
+            # stays pinned above cap). Pop the entry so its block
+            # ref-counts drop and the blocks can re-enter the free
+            # queue. Doing this before the index pop also guarantees
+            # full-KV entries drain even when the LRU index is empty.
+            rt = getattr(self.block_aware_cache, "_request_tables", None)
+            if rt:
+                for rid in list(rt.keys()):
+                    rentry = rt.get(rid)
+                    if rentry is None or rentry.cache_data is None:
+                        continue
+                    # Drop the full-KV reference first so the block
+                    # views below are the last holders of the buffer.
+                    rentry.cache_data = None
+                    for bid in rentry.block_table.block_ids:
+                        blk = paged.allocated_blocks.get(bid)
+                        if blk is not None and blk.cache_data is not None:
+                            blk.reset_hash()
+                            blk.cache_data = None
+                            blk.cache_class_name = None
+                            paged.stats.evictions += 1
+                    self.block_aware_cache.release_cache(rid)
+                    logger.info(
+                        "[D-METAL-PFX-evict] dropped full-KV entry %s "
+                        "(request_tables=%d)",
+                        rid, len(rt),
+                    )
+                    return True
+            # 2) Then evict the LRU prefix-index entry and drop its
+            # resident block tensors, so stale index entries stop
+            # pinning block slices. Stale entries are guarded by the
+            # fetch-side live check (blk.cache_data is None => miss).
+            if index:
+                # dict preserves insertion order: first key = LRU
+                try:
+                    oldest_hash = next(iter(index))
+                except StopIteration:
+                    return False
+                _, block_ids = index.pop(oldest_hash)
+                evicted = 0
+                for bid in block_ids:
+                    blk = paged.allocated_blocks.get(bid)
+                    if blk is None:
+                        continue
+                    # Release the block's resident KV tensor regardless
+                    # of hash registration variant. store_cache registers
+                    # blocks via register_block_hash (legacy hash_value
+                    # only, block_hash stays None), so the chain-hash
+                    # gated _maybe_evict_cached_block would short-circuit
+                    # and leak the tensor. Mirror its cleanup directly:
+                    # drop any legacy hash mapping, clear the tensor.
+                    if blk.is_pinned:
+                        continue
+                    if blk.hash_value and blk.hash_value in paged.hash_to_block:
+                        if paged.hash_to_block[blk.hash_value] == blk.block_id:
+                            del paged.hash_to_block[blk.hash_value]
+                    if blk.block_hash is not None:
+                        paged.cached_block_hash_to_block.pop(
+                            blk.block_hash, blk.block_id
+                        )
+                    if blk.cache_data is not None:
+                        blk.reset_hash()
+                        blk.cache_data = None  # Free tensor memory
+                        blk.cache_class_name = None
+                        paged.stats.evictions += 1
+                        evicted += 1
+                return evicted > 0
+            return False
         return False
 
     def add_request(self, request: Request) -> None:

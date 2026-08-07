@@ -1096,6 +1096,24 @@ class BlockAwarePrefixCache:
             if prefix_hash in self._prefix_index:
                 cached_tokens, block_ids = self._prefix_index[prefix_hash]
                 if cached_tokens == prefix_tokens and len(cached_tokens) > best_len:
+                    # Hermes patch: stale-block guard. The prefix index
+                    # is never pruned when a block is released to the
+                    # free queue (ref_count -> 0) or when the paged
+                    # manager force-releases KV tensor memory under
+                    # Metal pressure (release_pressure_blocks). A stale
+                    # hit would truncate ``remaining`` past tokens whose
+                    # blocks no longer hold cache_data — dropping the
+                    # prefix from the decode is a correctness bomb.
+                    # Require every referenced block to still be live
+                    # with resident tensor data before trusting the hit.
+                    live = True
+                    for bid in block_ids:
+                        blk = self.paged_cache.allocated_blocks.get(bid)
+                        if blk is None or blk.cache_data is None:
+                            live = False
+                            break
+                    if not live:
+                        continue
                     best_match = (cached_tokens, block_ids)
                     best_len = len(cached_tokens)
 
