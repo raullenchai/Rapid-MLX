@@ -319,26 +319,24 @@ def _parse_call_block(block: str) -> list[dict[str, Any]]:
     return calls
 
 
-#: How many unterminated openers ``_iter_call_blocks`` steps over before
-#: giving up. An opener whose ``]`` never arrives makes every later block
-#: look nested inside it, so bailing on the first one loses a perfectly
-#: good call that follows malformed markup. Stepping over it costs one
-#: full-tail scan, hence a budget: well-formed output needs none, real
-#: malformed output needs one or two, and a crafted response full of
-#: unterminated openers cannot turn the walk quadratic.
-_MAX_UNTERMINATED_PROBES = 8
-
-
 def _iter_call_blocks(text: str) -> list[tuple[int, int, list[dict[str, Any]]]]:
     """Return ``(start, end, calls)`` for every parsed call block, in order.
 
     Offsets are into ``text`` itself so callers can tell block bytes from
     content bytes — the streaming path needs that to emit prose that
     shares a delta with a completed call instead of dropping it.
+
+    The walk STOPS at the first opener with no matching ``]``, rather than
+    hunting for a later block that might close. Mid-stream that opener is
+    simply the call still being written, and its argument payload can
+    contain anything — including a literal ``[g({})]`` inside a JSON
+    string. Probing past it would dispatch that string's contents as a
+    tool call, at an index the count-based dedup below can never retract
+    once the real call arrives. A malformed opener therefore masks any
+    block after it; that text stays content, which is the safe failure.
     """
     blocks: list[tuple[int, int, list[dict[str, Any]]]] = []
     search_from = 0
-    probes_left = _MAX_UNTERMINATED_PROBES
 
     while True:
         start = _find_lfm_call_start(text, search_from)
@@ -346,12 +344,7 @@ def _iter_call_blocks(text: str) -> list[tuple[int, int, list[dict[str, Any]]]]:
             return blocks
         end = _balanced_block_end(text, start)
         if end == -1:
-            # Nothing later can close either when no ``]`` remains at all.
-            if probes_left <= 0 or text.find("]", start) == -1:
-                return blocks
-            probes_left -= 1
-            search_from = start + 1
-            continue
+            return blocks
 
         try:
             block_calls = _parse_call_block(text[start:end])
@@ -455,18 +448,10 @@ class LfmToolParser(ToolParser):
         )
 
     @classmethod
-    def _safe_content_prefix(cls, text: str, floor: int = 0) -> str:
-        """Return text safe to emit without leaking partial LFM markup.
-
-        ``floor`` is the offset past which the text is already settled —
-        everything before it has been emitted as content or consumed as a
-        call block. Markup that starts before the floor must not keep
-        holding bytes that come after a completed call: a malformed opener
-        earlier in the turn would otherwise swallow the rest of the reply,
-        and the EOF flush is skipped once a call has fired.
-        """
-        start = _find_unclosed_markup_start(text[floor:] if floor else text)
-        return text if start == -1 else text[: floor + start]
+    def _safe_content_prefix(cls, text: str) -> str:
+        """Return text safe to emit without leaking partial LFM markup."""
+        start = _find_unclosed_markup_start(text)
+        return text if start == -1 else text[:start]
 
     def _emitted_boundary(self, previous_text: str) -> int:
         """Bytes of the accumulated text already accounted for.
@@ -477,13 +462,12 @@ class LfmToolParser(ToolParser):
         must not be re-emitted as content. ``_consumed_len`` only raises
         the floor for what the tool-call branch consumed on top.
         """
-        settled = self._safe_content_prefix(previous_text, self._consumed_len)
-        return max(len(settled), self._consumed_len)
+        return max(len(self._safe_content_prefix(previous_text)), self._consumed_len)
 
     def _emit_safe_content(
         self, previous_text: str, current_text: str
     ) -> dict[str, Any] | None:
-        safe_current = self._safe_content_prefix(current_text, self._consumed_len)
+        safe_current = self._safe_content_prefix(current_text)
         boundary = self._emitted_boundary(previous_text)
         if len(safe_current) <= boundary:
             return None
@@ -510,9 +494,10 @@ class LfmToolParser(ToolParser):
                 pieces.append(current_text[cursor:start])
             cursor = max(cursor, end)
 
-        # Past the last block only markup that starts THERE can still hold
-        # bytes back; anything earlier is settled by construction.
-        safe_end = len(self._safe_content_prefix(current_text, cursor))
+        # No unterminated opener can precede an extracted block — the walk
+        # in ``_iter_call_blocks`` stops at the first one — so the hold, if
+        # any, starts after the blocks and this prefix is never short.
+        safe_end = len(self._safe_content_prefix(current_text))
         if safe_end > cursor:
             pieces.append(current_text[cursor:safe_end])
             cursor = safe_end
@@ -522,8 +507,7 @@ class LfmToolParser(ToolParser):
 
     def flush_held_content(self, full_text: str) -> str:
         """Release any held non-tool bracket prefix at stream end."""
-        settled = self._safe_content_prefix(full_text, self._consumed_len)
-        return full_text[len(settled) :]
+        return full_text[len(self._safe_content_prefix(full_text)) :]
 
     def extract_tool_calls_streaming(
         self,

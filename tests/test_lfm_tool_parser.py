@@ -573,45 +573,39 @@ class TestLfmTextFormatEnvelope:
             assert len(calls) == 1, text
             assert json.loads(calls[0]["function"]["arguments"]) == {"a": 1}, text
 
-    def test_unterminated_opener_does_not_mask_a_later_call(self):
-        """A malformed opener must not hide the valid block after it.
+    def test_call_inside_a_string_argument_is_never_dispatched(self):
+        """Markup inside another call's JSON string is data, not a call.
 
-        Bailing on the first unbalanced candidate treated everything that
-        followed as nested inside it, so the complete call was never
-        extracted and its raw markup was released as content instead.
+        Mid-stream the outer block is just unterminated, so hunting past
+        it for a block that closes finds the ``[g({})]`` sitting inside
+        ``f``'s argument and dispatches it at index 0 — which the
+        count-based dedup can never retract once ``f`` actually arrives.
+        The walk stops at the unterminated opener instead.
         """
-        text = 'Before [2fa({"oops": 1}) [browse({"q": "x"})]'
-        parser = LfmToolParser()
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert [tc["name"] for tc in result.tool_calls] == ["browse"]
-        assert "[browse(" not in (result.content or "")
-
-        content, calls = _stream(LfmToolParser(), list(text))
-        assert [c["function"]["name"] for c in calls] == ["browse"]
-        assert "[browse(" not in content
-
-    def test_prose_after_a_call_survives_an_earlier_malformed_opener(self):
-        """A settled block ends the hold that an earlier opener started.
-
-        Otherwise a malformed opener before the call keeps holding every
-        byte after it, and the EOF flush is skipped once a call fires — so
-        the trailing prose is dropped instead of streamed.
-        """
-        text = '[oops({"a": 1}) [Calling tool: f({})] all done'
+        text = '[Calling tool: f({"x": "[g({})]"})]'
         content, calls = _stream(LfmToolParser(), list(text))
 
         assert [c["function"]["name"] for c in calls] == ["f"]
-        assert content.endswith(" all done")
-        assert "Calling tool" not in content
+        assert json.loads(calls[0]["function"]["arguments"]) == {"x": "[g({})]"}
+        assert content == ""
 
-    def test_unterminated_opener_probing_stays_bounded(self):
-        """Many unterminated openers must not make the walk quadratic."""
-        text = '[f({"a": 1}) ' * 4000 + "]"
-        start = time.perf_counter()
-        parse_lfm_tool_calls(text)
-        assert time.perf_counter() - start < 1.0
+    def test_unterminated_opener_masks_later_blocks_but_loses_nothing(self):
+        """An opener with no ``]`` stops the walk — the safe failure.
+
+        Its payload may contain anything, so a later block that closes is
+        not provably a separate call (see the string-argument test above).
+        Nothing is dispatched and nothing is swallowed: the whole span is
+        released as content at EOF.
+        """
+        text = 'Before [oops({"a": 1}) [browse({"q": "x"})]'
+        content, calls = _stream(LfmToolParser(), list(text))
+
+        assert calls == []
+        assert content == text
+
+        result = LfmToolParser().extract_tool_calls(text)
+        assert not result.tools_called
+        assert result.content == text
 
     def test_prose_after_call_in_same_delta_is_not_dropped(self):
         """Trailing prose sharing the closing delta must still be emitted.
