@@ -1027,11 +1027,13 @@ final class ChatViewModel {
             // Ambient anti-confabulation guidance, prepended for the wire body
             // only (never appended to the transcript) so the user's history
             // stays prose-only. Skipped when the transcript already opens with
-            // a system row, and when no tools are advertised.
+            // a system row, when no tools are advertised, and — the point of
+            // #1549 — on rounds that carry no tool result for it to talk about.
             history.insert(
                 contentsOf: ChatViewModel.ambientSystemMessages(
                     historyOpensWithSystem: history.first?.role == .system,
-                    toolsAdvertised: !definitions.isEmpty
+                    toolsAdvertised: !definitions.isEmpty,
+                    toolResultPresent: history.contains { $0.role == .tool }
                 ),
                 at: 0
             )
@@ -1232,19 +1234,39 @@ final class ChatViewModel {
         return "unknown tool '\(name)'\(list.isEmpty ? "" : " — available: \(list)"). Answer directly instead."
     }
 
-    /// Ambient anti-confabulation guidance — prepended to the wire body
-    /// whenever at least one tool is advertised.
+    /// Ambient anti-confabulation guidance — prepended to the wire body on
+    /// rounds where a tool result is actually in play.
     ///
     /// Small models routinely fire a tool, get faithful snippets back, then
     /// fabricate the rest of the list from training-data priors. The preamble
-    /// is the cheapest mitigation and costs nothing when no tool is offered.
+    /// is the cheapest mitigation against that.
+    ///
+    /// It is gated on a tool RESULT being present, not merely on a tool being
+    /// advertised. The rules it states ("if a fact is not in the tool result,
+    /// you DO NOT KNOW IT") describe how to read a result that exists; a model
+    /// shown them with no result in context can only conclude it knows nothing.
+    /// That is not hypothetical — issue #1549: with the built-in web tools
+    /// advertised by default, the preamble rode along on every first turn and
+    /// the shipped starter model answered "I don't have access to current or
+    /// external data" to *what is the capital of France?*, a question it
+    /// answers correctly the moment the preamble is absent.
+    ///
+    /// Both conditions are required rather than just the result: a transcript
+    /// can carry ``.tool`` rows from an earlier round after the user has since
+    /// disabled the tool, and re-asserting "your only source of truth is the
+    /// tool result" would then bind the model to a result it can no longer
+    /// refresh.
+    ///
     /// Returns an empty array when the transcript already opens with a
     /// ``role: "system"`` row so we never ship competing system messages.
     static func ambientSystemMessages(
         historyOpensWithSystem: Bool,
-        toolsAdvertised: Bool
+        toolsAdvertised: Bool,
+        toolResultPresent: Bool
     ) -> [ChatMessage] {
-        guard !historyOpensWithSystem, toolsAdvertised else { return [] }
+        guard !historyOpensWithSystem, toolsAdvertised, toolResultPresent else {
+            return []
+        }
         return [ChatMessage(role: .system, content: toolGuidancePreamble, status: .complete)]
     }
 
