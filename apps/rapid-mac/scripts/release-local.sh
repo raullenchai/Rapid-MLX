@@ -144,17 +144,22 @@ if [[ "$MODE" == "publish" ]]; then
     if [[ -z "$RELEASE_REMOTE" ]]; then
         MATCHING_REMOTES=()
         while read -r remote; do
-            url="$(git remote get-url --push "$remote" 2>/dev/null || true)"
-            [[ "$url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+            fetch_url="$(git remote get-url "$remote" 2>/dev/null || true)"
+            push_url="$(git remote get-url --push "$remote" 2>/dev/null || true)"
+            [[ "$fetch_url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+                && [[ "$push_url" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
                 && MATCHING_REMOTES+=("$remote")
         done < <(git remote)
         [[ "${#MATCHING_REMOTES[@]}" -eq 1 ]] \
             || fail "cannot uniquely resolve the raullenchai/Rapid-MLX release remote; set RAPID_RELEASE_REMOTE explicitly."
         RELEASE_REMOTE="${MATCHING_REMOTES[0]}"
     fi
-    RELEASE_URL="$(git remote get-url --push "$RELEASE_REMOTE" 2>/dev/null || true)"
-    [[ "$RELEASE_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
-        || fail "release remote '$RELEASE_REMOTE' points to '$RELEASE_URL', not raullenchai/Rapid-MLX."
+    RELEASE_FETCH_URL="$(git remote get-url "$RELEASE_REMOTE" 2>/dev/null || true)"
+    RELEASE_PUSH_URL="$(git remote get-url --push "$RELEASE_REMOTE" 2>/dev/null || true)"
+    [[ "$RELEASE_FETCH_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+        || fail "release remote '$RELEASE_REMOTE' fetches from '$RELEASE_FETCH_URL', not raullenchai/Rapid-MLX."
+    [[ "$RELEASE_PUSH_URL" =~ github\.com[:/]raullenchai/Rapid-MLX(\.git)?$ ]] \
+        || fail "release remote '$RELEASE_REMOTE' pushes to '$RELEASE_PUSH_URL', not raullenchai/Rapid-MLX."
 
     # Stable tags only — the CI publish + in-app updater have no prerelease
     # channel, so an RC would be offered to stable users (codex r2 MAJOR).
