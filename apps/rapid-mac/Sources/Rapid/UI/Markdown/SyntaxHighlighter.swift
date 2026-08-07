@@ -238,6 +238,12 @@ enum SyntaxHighlighter {
         /// the minus onward. Off everywhere else, where `//`, `#`, `--` are
         /// genuine mid-line openers.
         let lineCommentAtLineStart: Bool
+        /// A line comment opens only at a WORD boundary — start of line, or
+        /// right after whitespace or a command separator. Shell's `#` is a
+        /// comment only at the start of a word, so `$#`, `${#arr}` and
+        /// `echo a#b` are NOT comments. Off elsewhere, where a `#`/`//`
+        /// mid-token still opens a comment (Python's `a#b` does).
+        let lineCommentNeedsWordBoundary: Bool
         /// Block comments nest — an inner `/*` must be matched by its own
         /// `*/` before the outer one closes. Swift and Rust both allow this;
         /// most C-family languages do not. When off, the first close wins.
@@ -266,6 +272,7 @@ enum SyntaxHighlighter {
             capitalisedIdentifiersAreTypes: Bool,
             apostrophePrefixedIdentifiers: Bool = false,
             lineCommentAtLineStart: Bool = false,
+            lineCommentNeedsWordBoundary: Bool = false,
             nestableBlockComments: Bool = false,
             rawMultilineQuotes: Set<Character> = [],
             escapedMultilineQuotes: Set<Character> = []
@@ -280,6 +287,7 @@ enum SyntaxHighlighter {
             self.capitalisedIdentifiersAreTypes = capitalisedIdentifiersAreTypes
             self.apostrophePrefixedIdentifiers = apostrophePrefixedIdentifiers
             self.lineCommentAtLineStart = lineCommentAtLineStart
+            self.lineCommentNeedsWordBoundary = lineCommentNeedsWordBoundary
             self.nestableBlockComments = nestableBlockComments
             self.rawMultilineQuotes = rawMultilineQuotes
             self.escapedMultilineQuotes = escapedMultilineQuotes
@@ -407,7 +415,11 @@ enum SyntaxHighlighter {
             // newline. `chars[start..<i]` reaching a stable prefix always
             // begins a line, so this holds identically on the streamed tail.
             let atLineStart = i == 0 || chars[i - 1] == "\n"
+            // Shell's `#` opens a comment only at a word boundary, so `$#`
+            // and `${#x}` are parameter expansions, not comments.
+            let atWordBoundary = i == 0 || isCommentWordBoundary(chars[i - 1])
             if (!grammar.lineCommentAtLineStart || atLineStart),
+               (!grammar.lineCommentNeedsWordBoundary || atWordBoundary),
                let opener = grammar.lineComment.first(where: { matches($0, chars, i) }) {
                 let start = i
                 i += opener.count
@@ -548,6 +560,14 @@ enum SyntaxHighlighter {
 
     private static func isIdentifierStart(_ c: Character) -> Bool {
         c.isLetter || c == "_" || c == "$" || c == "@" || c == "#"
+    }
+
+    /// A shell `#` comment opens only after one of these — start of line
+    /// (handled by the caller), whitespace, or a command separator. After a
+    /// `$`, `{`, or an identifier character the `#` is part of an expansion
+    /// or a word, not a comment.
+    private static func isCommentWordBoundary(_ c: Character) -> Bool {
+        c.isWhitespace || c == ";" || c == "&" || c == "|" || c == "(" || c == "`"
     }
 
     private static func isIdentifierChar(_ c: Character) -> Bool {
@@ -707,7 +727,9 @@ extension SyntaxHighlighter.Grammar {
             "mkdir", "rm", "cp", "mv", "chmod", "sudo", "apt", "brew", "npm",
             "pip", "python", "node", "swift", "cargo", "go", "docker", "make"
         ],
-        capitalisedIdentifiersAreTypes: false
+        capitalisedIdentifiersAreTypes: false,
+        // `#` is a comment only at a word boundary — `$#` and `${#x}` are not.
+        lineCommentNeedsWordBoundary: true
     )
 
     static let go = Self(
@@ -764,19 +786,22 @@ extension SyntaxHighlighter.Grammar {
     private static func cLike(
         lineComment: [String] = ["//"],
         quotes: [Character] = ["\"", "'"],
+        tripleQuotes: [String] = [],
         keywords: Set<String>,
         types: Set<String>,
-        capitalisedAreTypes: Bool
+        capitalisedAreTypes: Bool,
+        nestableBlockComments: Bool = false
     ) -> Self {
         Self(
             lineComment: lineComment,
             blockComment: [("/*", "*/")],
             quotes: quotes,
-            tripleQuotes: [],
+            tripleQuotes: tripleQuotes,
             backslashEscapes: true,
             keywords: keywords,
             types: types,
-            capitalisedIdentifiersAreTypes: capitalisedAreTypes
+            capitalisedIdentifiersAreTypes: capitalisedAreTypes,
+            nestableBlockComments: nestableBlockComments
         )
     }
 
@@ -869,6 +894,7 @@ extension SyntaxHighlighter.Grammar {
 
     static let kotlin = cLike(
         lineComment: ["///", "//"],
+        tripleQuotes: ["\"\"\""],
         keywords: [
             "as", "break", "class", "continue", "do", "else", "false", "for",
             "fun", "if", "in", "interface", "is", "null", "object", "package",
@@ -1082,7 +1108,9 @@ extension SyntaxHighlighter.Grammar {
             "Maybe", "Either", "IO", "Ordering", "Word", "Rational",
             "Functor", "Applicative", "Monad", "Show", "Eq", "Ord"
         ],
-        capitalisedIdentifiersAreTypes: true
+        capitalisedIdentifiersAreTypes: true,
+        // Haskell `{- ... -}` block comments nest.
+        nestableBlockComments: true
     )
 
     // MARK: Data / markup / config
