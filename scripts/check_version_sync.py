@@ -68,7 +68,14 @@ INFO_PLIST = ROOT / "apps" / "rapid-mac" / "Resources" / "Info.plist"
 # entirely plausible from a hand-edited ``<string>`` element — would pass
 # and then build the tag ``v0.12.6\n``. ``\d`` additionally accepts
 # non-ASCII digits, which no release tag can carry.
-SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+#
+# Leading zeros are refused for a sharper reason than pedantry: PEP 440
+# NORMALISES them, so ``01.02.3`` in pyproject.toml publishes to PyPI as
+# ``1.2.3`` while the plist and the git tag keep ``01.02.3``. Both files
+# would agree and this check would pass, having produced exactly the
+# split version it exists to prevent.
+_NUM = r"(?:0|[1-9][0-9]*)"
+SEMVER = re.compile(rf"{_NUM}\.{_NUM}\.{_NUM}")
 
 
 class VersionSyncError(Exception):

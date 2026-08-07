@@ -171,6 +171,11 @@ def test_non_dict_plist_root_fails(tmp_path):
         " 1.2.3",
         # ``\d`` is Unicode-aware; no release tag can carry these.
         "١.٢.٣",
+        # PEP 440 normalises leading zeros, so these would publish to
+        # PyPI as 1.2.3 while the plist and tag kept the literal string —
+        # two files agreeing on a version that ships as three.
+        "01.02.3",
+        "1.2.03",
     ],
 )
 def test_non_semver_is_rejected_on_both_sides(tmp_path, bad):
