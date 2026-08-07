@@ -747,6 +747,7 @@ struct SettingsModelManagementPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Measured size on disk. Deleting frees this much.")
                         .accessibilityLabel("On disk, \(size)")
                 } else {
@@ -757,6 +758,7 @@ struct SettingsModelManagementPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 }
                 Button(role: .destructive) {
                     pendingDeletion = entry
@@ -781,6 +783,7 @@ struct SettingsModelManagementPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Measured size on disk. Stop this model before deleting it.")
                         .accessibilityLabel("On disk, \(size)")
                 }
@@ -788,6 +791,7 @@ struct SettingsModelManagementPanel: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
             }
         case .notCached:
             HStack(spacing: 8) {
@@ -796,6 +800,7 @@ struct SettingsModelManagementPanel: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Estimated download size.")
                         .accessibilityLabel("Estimated download, about \(gb)")
                 }
@@ -1307,6 +1312,31 @@ enum ModelTableLayout {
 
     /// Spacing between the glyph, the figure and the button in a cell.
     static let cellSpacing: CGFloat = 6
+
+    /// How far a figure in the Size column may shrink before it starts
+    /// truncating. The cells apply this as `.minimumScaleFactor`.
+    ///
+    /// Settings is NOT inside ``rapidChatDynamicTypeClamp``, so these
+    /// `.caption` runs scale with the system text size, and a fixed-width
+    /// column plus `lineLimit(1)` means growth eventually clips the
+    /// number — which is the defect this column was widened to fix. A
+    /// 20% shrink floor buys roughly 1.25x of text growth before that
+    /// happens, covering the non-accessibility sizes. It is a bound, not
+    /// a Dynamic Type pass: at the AX sizes this table needs to reflow,
+    /// which is a change to every column and not this fix's business.
+    static let cellMinimumScaleFactor: CGFloat = 0.8
+
+    /// Does a cell of intrinsic width ``needed`` survive ``scale`` times
+    /// text growth without truncating, given the shrink floor?
+    ///
+    /// Deliberately conservative: it grows the WHOLE cell, including the
+    /// fixed glyphs and spacing that do not scale. The real cell grows by
+    /// less, so a pass here is a real pass; a fail may be pessimistic.
+    /// That is the right direction for a guard whose failure mode is a
+    /// clipped number.
+    static func fits(_ needed: CGFloat, atTextScale scale: CGFloat) -> Bool {
+        needed * scale * cellMinimumScaleFactor <= sizeColumnWidth
+    }
 
     /// A `.caption`-sized SF Symbol (state glyph) or the 11pt trash.
     static let glyphWidth: CGFloat = 15

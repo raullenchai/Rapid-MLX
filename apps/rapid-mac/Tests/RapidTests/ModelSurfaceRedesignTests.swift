@@ -498,6 +498,48 @@ struct ModelSurfaceRedesignTests {
         }
     }
 
+    /// Settings is not inside the chat surface's Dynamic Type clamp, so
+    /// these `.caption` figures grow with the system text size against a
+    /// fixed-width column — the exact shape of the truncation this pass
+    /// is fixing, just triggered by the user's text setting instead of
+    /// the layout. The cells carry a shrink floor; this pins that the
+    /// floor actually covers the non-accessibility sizes (~1.25x) with
+    /// the largest figures.
+    @Test("size column: cells survive non-accessibility text growth")
+    func sizeCellsSurviveTextScaling() {
+        let scale: CGFloat = 1.25
+        for size in ["7.9 GiB", "123.4 GiB"] {
+            #expect(
+                ModelTableLayout.fits(
+                    ModelTableLayout.cachedCellWidth(size: size), atTextScale: scale
+                ),
+                "cached \"\(size)\" truncates at \(scale)x text"
+            )
+            #expect(
+                ModelTableLayout.fits(
+                    ModelTableLayout.inUseCellWidth(size: size), atTextScale: scale
+                ),
+                "serving \"\(size)\" truncates at \(scale)x text"
+            )
+        }
+        for size in ["0.5 GB", "123.4 GB"] {
+            #expect(
+                ModelTableLayout.fits(
+                    ModelTableLayout.notCachedCellWidth(size: size), atTextScale: scale
+                ),
+                "not cached \"~\(size)\" truncates at \(scale)x text"
+            )
+        }
+        // The floor is a bound, not a Dynamic Type pass — say so in the
+        // suite rather than implying the AX sizes are covered.
+        #expect(
+            !ModelTableLayout.fits(
+                ModelTableLayout.inUseCellWidth(size: "123.4 GiB"), atTextScale: 2.0
+            ),
+            "if this now passes, the column reflows and the comment on cellMinimumScaleFactor is stale"
+        )
+    }
+
     /// The serving row is a cached row too — it owes the same size, and
     /// the "Serving" label it carries instead of a delete button is wider
     /// than that button, so it needs its own width check.
