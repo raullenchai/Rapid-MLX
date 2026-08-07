@@ -1,0 +1,110 @@
+name: Desktop App Issue (Mac)
+description: A problem with the Rapid-MLX Desktop app — the window, chat, model downloads, settings, or updates
+labels: ["bug", "desktop-app"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This form is for the **desktop app** — the thing you install from a `.dmg` and click.
+
+        If you run `rapid-mlx serve` in a terminal, use the **Bug Report** form instead; it asks
+        for the serve command and server logs, which this one deliberately does not.
+
+        **The fastest way to get this fixed:** open **Settings → App → Diagnostics →
+        "Export diagnostics…"**, then drag the saved file into the "Diagnostics report" box
+        below. It carries your app version, Mac model, macOS version and a scrubbed log tail —
+        no prompts, no file contents, no personal data — and it answers most of what we would
+        otherwise have to ask you for.
+  - type: input
+    id: app_version
+    attributes:
+      label: App version
+      description: Menu bar → **About Rapid-MLX…**. Copy the whole line, including the number in brackets.
+      placeholder: "e.g. 0.12.6 (150)"
+    validations:
+      required: true
+  - type: input
+    id: prior_version
+    attributes:
+      label: Last version where it worked (if this is a regression)
+      description: Leave blank if this is your first install, or you don't know.
+      placeholder: "e.g. 0.12.5"
+  - type: input
+    id: hardware
+    attributes:
+      label: Mac model and memory
+      description: Apple menu → **About This Mac**.
+      placeholder: "e.g. MacBook Pro M3 Max, 64 GB"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      description: Apple menu → **About This Mac**. The app needs macOS 14 (Sonoma) or newer.
+      placeholder: "e.g. Sequoia 15.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where in the app does this happen?
+      description: Pick the closest one — it decides who picks the issue up.
+      options:
+        - "First-run setup wizard"
+        - "Chat window (asking, answering, tools, formatting)"
+        - "Conversation list / sidebar (rename, pin, archive, delete)"
+        - "Models — downloading, picking, or starting one"
+        - "Settings"
+        - "Menu-bar icon / Dock / window behaviour"
+        - "Updating the app"
+        - "Installing or launching for the first time"
+        - "Speed — answers arrive slowly, or the app feels sluggish"
+        - "Somewhere else / not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened? What did you expect instead?
+      placeholder: |
+        Actual: <what the app did>
+        Expected: <what you thought it would do>
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Click by click, starting from opening the app. Say which button you pressed and what
+        you saw after each one. If it only happens sometimes, say roughly how often.
+      placeholder: |
+        1. Open Rapid-MLX
+        2. Right-click a conversation in the sidebar → Rename
+        3. Type a new name and press Return
+        4. What I saw: the name didn't change and my text ended up in the message box
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or screen recording
+      description: >
+        Drag the file in here. For anything visual — a wrong layout, a button that does
+        nothing, text that overflows — this is usually worth more than any description.
+        Screenshot: ⇧⌘4. Screen recording: ⇧⌘5.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics report
+      description: >
+        Settings → App → Diagnostics → "Export diagnostics…", then drag the saved file in here
+        (or paste its contents). Optional, but it is the difference between us reproducing this
+        today and asking you three follow-up questions first.
+  - type: input
+    id: model
+    attributes:
+      label: Which model was loaded?
+      description: Leave blank if no model was running, or if this happened before you picked one.
+      placeholder: "e.g. lfm2.5-2.6b-4bit"

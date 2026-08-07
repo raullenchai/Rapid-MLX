@@ -11,6 +11,10 @@ body:
 
         For non-perf bugs (crashes, wrong output, broken tool calls), use **Bug Report** instead.
 
+        Using the **desktop app** (installed from a `.dmg`, no terminal)? Use the **Desktop App
+        Issue** template and pick the "Speed" area — this form requires a serve command and
+        per-request timings that the app never shows you.
+
   - type: input
     id: current_version
     attributes:

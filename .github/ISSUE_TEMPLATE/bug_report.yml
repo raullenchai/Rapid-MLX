@@ -8,6 +8,10 @@ body:
         Thanks for reporting! Please fill in every required field — issues missing a serve command or repro steps usually can't be acted on.
 
         For **slowdowns / low throughput**, use the **Performance Issue** template instead.
+
+        Using the **desktop app** (installed from a `.dmg`, no terminal)? Use the
+        **Desktop App Issue** template instead — this form requires a serve command and
+        server logs that the app never shows you.
   - type: input
     id: version
     attributes:
