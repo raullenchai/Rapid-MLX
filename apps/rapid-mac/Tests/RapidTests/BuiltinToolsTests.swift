@@ -182,6 +182,39 @@ final class BuiltinToolsTests {
         ).isEmpty)
     }
 
+    @Test("A tool result only counts for the turn it belongs to")
+    func toolResultScopedToTheCurrentTurn() {
+        func msg(_ role: ChatMessage.Role, _ text: String) -> ChatMessage {
+            ChatMessage(role: role, content: text, status: .complete)
+        }
+
+        // Turn 1 used a tool; turn 2 is an ordinary question. Scanning the
+        // whole transcript would re-arm the preamble here and reproduce
+        // #1549 from the second question onward.
+        let laterPlainTurn = [
+            msg(.user, "weather in Tokyo?"),
+            msg(.assistant, ""),
+            msg(.tool, "{\"temp_c\": 29.2}"),
+            msg(.assistant, "It's 29.2°C in Tokyo."),
+            msg(.user, "what is the capital of France?"),
+        ]
+        #expect(!ChatViewModel.carriesToolResultForThisTurn(laterPlainTurn))
+
+        // The round right after a tool returned — this is what the preamble
+        // exists for, so it must still count.
+        let midToolLoop = [
+            msg(.user, "weather in Tokyo?"),
+            msg(.assistant, ""),
+            msg(.tool, "{\"temp_c\": 29.2}"),
+        ]
+        #expect(ChatViewModel.carriesToolResultForThisTurn(midToolLoop))
+
+        // A transcript with no user row at all (defensive: the tool loop
+        // never produces one, but the helper must not crash or misread it).
+        #expect(!ChatViewModel.carriesToolResultForThisTurn([]))
+        #expect(ChatViewModel.carriesToolResultForThisTurn([msg(.tool, "{}")]))
+    }
+
     @Test("No second system row is injected when the transcript already opens with one")
     func ambientGuidanceDefersToExistingSystemRow() {
         // Two competing system messages is a documented chat-template foot-gun.

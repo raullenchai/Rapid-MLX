@@ -1029,14 +1029,15 @@ final class ChatViewModel {
             // stays prose-only. Skipped when the transcript already opens with
             // a system row, when no tools are advertised, and — the point of
             // #1549 — on rounds that carry no tool result for it to talk about.
-            history.insert(
-                contentsOf: ChatViewModel.ambientSystemMessages(
-                    historyOpensWithSystem: history.first?.role == .system,
-                    toolsAdvertised: !definitions.isEmpty,
-                    toolResultPresent: history.contains { $0.role == .tool }
-                ),
-                at: 0
+            let ambient = ChatViewModel.ambientSystemMessages(
+                historyOpensWithSystem: history.first?.role == .system,
+                toolsAdvertised: !definitions.isEmpty,
+                toolResultPresent: ChatViewModel.carriesToolResultForThisTurn(history)
             )
+            // Inserted BEFORE the trim so its tokens are inside the budget the
+            // trim works to, not added on top of a body already sized to fill
+            // the window.
+            history.insert(contentsOf: ambient, at: 0)
             // v0.5.11 / issue #363: silent context-window trim against the
             // engine-reported window (captured on the last profile fetch),
             // falling back to the per-family heuristic in ``ModelInfoCatalog``.
@@ -1051,6 +1052,19 @@ final class ChatViewModel {
                 history,
                 contextWindow: ctxWindow
             )
+            // The trim drops the oldest rows to fit and deliberately preserves
+            // a leading system row, so on an over-budget turn it can carry the
+            // preamble through while taking the tool result it describes. That
+            // puts "your only source of truth is the tool result" on the wire
+            // with no tool result behind it — #1549 again, just needing a long
+            // enough conversation to reach. If the evidence didn't survive,
+            // neither does the instruction.
+            if !ambient.isEmpty,
+                history.first?.content == ChatViewModel.toolGuidancePreamble,
+                !ChatViewModel.carriesToolResultForThisTurn(history)
+            {
+                history.removeFirst()
+            }
             let request: ChatStreamClient.Request
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
@@ -1259,6 +1273,20 @@ final class ChatViewModel {
     ///
     /// Returns an empty array when the transcript already opens with a
     /// ``role: "system"`` row so we never ship competing system messages.
+    /// Does this wire body carry a tool result for the turn being answered?
+    ///
+    /// Scoped to the rows after the last ``.user`` message, because a
+    /// ``.tool`` row from an earlier question is not evidence about this one.
+    /// Asking the whole transcript instead means a single weather lookup
+    /// re-arms the preamble for every ordinary question that follows it —
+    /// #1549 again, wearing a longer conversation.
+    static func carriesToolResultForThisTurn(_ history: [ChatMessage]) -> Bool {
+        let start =
+            history.lastIndex { $0.role == .user }
+            .map { history.index(after: $0) } ?? history.startIndex
+        return history[start...].contains { $0.role == .tool }
+    }
+
     static func ambientSystemMessages(
         historyOpensWithSystem: Bool,
         toolsAdvertised: Bool,
