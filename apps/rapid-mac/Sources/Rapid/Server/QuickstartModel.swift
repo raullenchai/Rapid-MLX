@@ -395,6 +395,20 @@ enum QuickstartModel {
             return .failed("stale Quickstart snapshots path is not a real directory; refusing cleanup")
         }
         do {
+            // Re-lstat immediately before mutation. A sync daemon may swap
+            // any checked directory between ownership validation and here.
+            let rootRecheck = try fileManager.attributesOfItem(atPath: cacheDir.path)
+            let refsRecheck = try fileManager.attributesOfItem(atPath: refs.path)
+            guard rootRecheck[.type] as? FileAttributeType == .typeDirectory,
+                  refsRecheck[.type] as? FileAttributeType == .typeDirectory else {
+                return .failed("stale Quickstart cache path changed during cleanup; refusing mutation")
+            }
+            if snapshotsAttrs != nil {
+                let snapshotsRecheck = try fileManager.attributesOfItem(atPath: snapshots.path)
+                guard snapshotsRecheck[.type] as? FileAttributeType == .typeDirectory else {
+                    return .failed("stale Quickstart snapshots path changed during cleanup; refusing mutation")
+                }
+            }
             // A previous attempt may already have removed the snapshot. The
             // marker remains the retry token until every destructive step is
             // complete.

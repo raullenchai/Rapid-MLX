@@ -1707,7 +1707,10 @@ struct ModelPickerBar: View {
     /// button so both paths behave identically.
     private func commitCustomAlias() {
         let trimmed = customDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { alias = trimmed }
+        if !trimmed.isEmpty {
+            onUserSelection()
+            alias = trimmed
+        }
         showCustom = false
     }
 
