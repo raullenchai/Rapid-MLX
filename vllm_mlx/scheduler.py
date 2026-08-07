@@ -5306,11 +5306,6 @@ class Scheduler:
             # fetch-side live check (blk.cache_data is None => miss).
             index = getattr(self.block_aware_cache, "_prefix_index", None)
             paged = self.block_aware_cache.paged_cache
-            logger.info(
-                "[D-METAL-PFX-dbg] block_aware evict: index_size=%d request_tables=%d",
-                len(index) if index else 0,
-                len(getattr(self.block_aware_cache, "_request_tables", {})),
-            )
             # 1) Release the FULL-KV tensor pinned by the oldest
             # request-table entry FIRST — this is the actual Metal
             # allocation owner. The block slices are only views into
@@ -5339,10 +5334,11 @@ class Scheduler:
                             blk.cache_class_name = None
                             paged.stats.evictions += 1
                     self.block_aware_cache.release_cache(rid)
-                    logger.info(
+                    logger.debug(
                         "[D-METAL-PFX-evict] dropped full-KV entry %s "
                         "(request_tables=%d)",
-                        rid, len(rt),
+                        rid,
+                        len(rt),
                     )
                     return True
             # 2) Then evict the LRU prefix-index entry and drop its

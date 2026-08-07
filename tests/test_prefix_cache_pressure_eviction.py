@@ -821,6 +821,4 @@ class TestBlockAwareCacheEviction:
         # request-table tensors — they must be released too, or the
         # underlying Metal allocation stays alive.
         assert all(b.cache_data is None for b in blocks)
-        # Its resident block views were dropped too.
-        assert all(b.cache_data is None for b in blocks)
         assert sched.num_prefix_cache_pressure_evictions == 2

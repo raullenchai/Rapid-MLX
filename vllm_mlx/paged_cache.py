@@ -1210,9 +1210,8 @@ class PagedCacheManager:
             except Exception:
                 pass
         if released:
-            logger.info(
-                "[paged-pressure-release] released %d free block(s) "
-                "KV tensor memory",
+            logger.debug(
+                "[paged-pressure-release] released %d free block(s) KV tensor memory",
                 released,
             )
         return released
