@@ -688,7 +688,13 @@ class BlockAwarePrefixCache:
                         f"tokens [{global_start}:{global_end}], {len(block_kv_data)} layers"
                     )
 
-            # Register hash for full blocks (for deduplication)
+            # Record the block's content hash so the fetch-side ownership
+            # guard can detect a freed-then-reallocated block for EVERY
+            # block, including the trailing partial one. Only FULL blocks
+            # are additionally registered in ``hash_to_block`` for dedup —
+            # partial blocks must never be shared, but they still need a
+            # hash_value the guard can re-derive and compare.
+            block.hash_value = self.paged_cache.compute_block_hash(block_tokens)
             if len(block_tokens) == self.block_size:
                 self.paged_cache.register_block_hash(block, block_tokens)
 
@@ -1119,19 +1125,19 @@ class BlockAwarePrefixCache:
                         # and then REALLOCATED for different tokens carries
                         # fresh cache_data yet the wrong KV, so it would
                         # pass the liveness test above and corrupt decode.
-                        # store_cache registers a full block's
-                        # ``hash_value = compute_block_hash(its tokens)``;
-                        # a reallocation resets/replaces that hash. Re-derive
+                        # store_cache records EVERY block's
+                        # ``hash_value = compute_block_hash(its tokens)`` —
+                        # full and trailing partial alike — and a
+                        # reallocation resets/replaces that hash. Re-derive
                         # the expected hash for this block's token slice and
-                        # require it to still match. Trailing partial blocks
-                        # are never hash-registered (hash_value stays None) —
-                        # there the liveness check above is the only signal.
+                        # require it to still match, so a reallocated block
+                        # (full or partial) is rejected even though its
+                        # cache_data is non-None.
                         block_tokens = cached_tokens[j * bs : (j + 1) * bs]
-                        if len(block_tokens) == bs:
-                            expected = self.paged_cache.compute_block_hash(block_tokens)
-                            if blk.hash_value != expected:
-                                live = False
-                                break
+                        expected = self.paged_cache.compute_block_hash(block_tokens)
+                        if blk.hash_value != expected:
+                            live = False
+                            break
                     if not live:
                         continue
                     best_match = (cached_tokens, block_ids)

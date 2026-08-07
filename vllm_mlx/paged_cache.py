@@ -1213,7 +1213,18 @@ class PagedCacheManager:
 
                 mx.clear_cache()
             except Exception:
-                pass
+                # A failed clear_cache means the freed slabs are NOT
+                # actually returned to the Metal pool, so pressure will not
+                # drop even though we report blocks released — surface it
+                # once so persistent cap pressure is diagnosable rather than
+                # silent.
+                if not getattr(self, "_clear_cache_error_logged", False):
+                    self._clear_cache_error_logged = True
+                    logger.warning(
+                        "[paged-pressure-release] mx.clear_cache() failed; "
+                        "released slabs may not return to the Metal pool",
+                        exc_info=True,
+                    )
         if released:
             logger.debug(
                 "[paged-pressure-release] released %d free block(s) KV tensor memory",

@@ -828,27 +828,29 @@ class TestBlockAwareCacheEviction:
         assert sched.num_prefix_cache_pressure_evictions == 2
 
     def test_request_table_entry_with_pinned_block_survives(self):
-        """A request-table entry that owns a pinned block (system prompt)
-        must NOT be evicted — dropping its full-KV buffer would invalidate
-        the pinned block's aliased views."""
+        """A request-table entry may be evicted for its own full-KV, but a
+        PINNED block it references (system prompt) must keep its tensor —
+        pressure must reclaim the request's own buffer + private blocks
+        while leaving the pinned block's KV live.
+
+        (A blanket 'skip the whole entry' would be wrong: the system-prompt
+        block is shared into nearly every request, so skipping any entry
+        that touches it would reclaim almost nothing and re-open the wedge.)
+        """
         sched = self._make_paged_scheduler()
         bac = sched.block_aware_cache
         paged = bac.paged_cache
         blocks = []
-        for i in range(4):
+        for i in range(2):
             blk = paged.allocate_block()
             blk.cache_data = [MagicMock()]
+            blk.ref_count = 1
             blocks.append(blk)
-        blocks[0].is_pinned = True  # system-prompt block owned by req-1
+        blocks[0].is_pinned = True  # system-prompt block, referenced by req-1
         bac._request_tables["req-1"] = BlockCacheEntry(
-            block_table=MagicMock(block_ids=[b.block_id for b in blocks[:2]]),
+            block_table=MagicMock(block_ids=[b.block_id for b in blocks]),
             cache_data=[MagicMock()],
             last_access=1.0,
-        )
-        bac._request_tables["req-2"] = BlockCacheEntry(
-            block_table=MagicMock(block_ids=[b.block_id for b in blocks[2:]]),
-            cache_data=[MagicMock()],
-            last_access=2.0,
         )
 
         with (
@@ -857,18 +859,44 @@ class TestBlockAwareCacheEviction:
                 sched, "_current_metal_active_bytes", return_value=200 * 10**9
             ),
         ):
-            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+            n = sched.evict_prefix_cache_under_pressure(max_evict=1)
 
-        # req-2 (no pinned block) is evicted; req-1 is skipped so the
-        # pinned block and the entry's full KV both survive.
-        assert "req-1" in bac._request_tables
-        assert bac._request_tables["req-1"].cache_data is not None
-        assert blocks[0].cache_data is not None
-        assert blocks[1].cache_data is not None
-        assert "req-2" not in bac._request_tables
-        assert blocks[2].cache_data is None
-        assert blocks[3].cache_data is None
-        assert n >= 1
+        # The entry is evicted (its own full-KV buffer reclaimed) and its
+        # private block cleared, but the pinned block keeps its KV.
+        assert "req-1" not in bac._request_tables
+        assert blocks[0].cache_data is not None  # pinned survives
+        assert blocks[1].cache_data is None  # private block reclaimed
+        assert n == 1
+
+    def test_shared_block_not_cleared_under_pressure(self):
+        """A block still referenced by a live request (ref_count > 1) must
+        NOT have its KV cleared during pressure eviction — doing so would
+        corrupt the active request that still holds it."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        shared = paged.allocate_block()
+        shared.cache_data = [MagicMock()]
+        shared.ref_count = 2  # cached prefix + one live request
+        private = paged.allocate_block()
+        private.cache_data = [MagicMock()]
+        private.ref_count = 1
+        bac._request_tables["req-1"] = BlockCacheEntry(
+            block_table=MagicMock(block_ids=[shared.block_id, private.block_id]),
+            cache_data=[MagicMock()],
+            last_access=1.0,
+        )
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            sched.evict_prefix_cache_under_pressure(max_evict=1)
+
+        assert shared.cache_data is not None  # live KV preserved
+        assert private.cache_data is None  # unshared block reclaimed
 
     def test_fetch_guard_rejects_reallocated_block(self):
         """A prefix-index hit whose block was freed and REALLOCATED for

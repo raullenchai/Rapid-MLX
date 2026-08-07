@@ -5324,27 +5324,35 @@ class Scheduler:
             # full-KV entries drain even when the LRU index is empty.
             rt = getattr(self.block_aware_cache, "_request_tables", None)
             if rt:
-                for rid in list(rt.keys()):
-                    rentry = rt.get(rid)
-                    if rentry is None or rentry.cache_data is None:
-                        continue
+                # True LRU: evict the least-recently-used entry
+                # (BlockCacheEntry tracks last_access), not merely the first
+                # in insertion order.
+                evictable = [
+                    (rid, rentry)
+                    for rid in list(rt.keys())
+                    if (rentry := rt.get(rid)) is not None
+                    and rentry.cache_data is not None
+                ]
+                if evictable:
+                    rid, rentry = min(evictable, key=lambda kv: kv[1].last_access)
                     block_ids = rentry.block_table.block_ids
-                    # Never evict an entry that owns a pinned block (e.g.
-                    # the system prompt): dropping its full-KV buffer would
-                    # invalidate the pinned block's aliased views. Skip the
-                    # whole entry so the pinned KV survives pressure.
-                    if any(
-                        (blk := paged.allocated_blocks.get(bid)) is not None
-                        and blk.is_pinned
-                        for bid in block_ids
-                    ):
-                        continue
-                    # Drop the full-KV reference first so the block
-                    # views below are the last holders of the buffer.
+                    # Drop this request's OWN full-KV buffer. Its per-block
+                    # tensors are independent MLX slice arrays, so this does
+                    # not invalidate a pinned or shared block's tensor — the
+                    # buffer's memory stays live through whichever slices
+                    # still reference it. Reclaiming the entry's own buffer
+                    # is worthwhile even when every block is pinned/shared.
                     rentry.cache_data = None
                     for bid in block_ids:
                         blk = paged.allocated_blocks.get(bid)
                         if blk is None or blk.cache_data is None:
+                            continue
+                        # Keep the KV of blocks that must survive: pinned
+                        # (system prompt) or still referenced by another
+                        # live request (ref_count > 1). Clearing a shared
+                        # block would corrupt the request that still holds
+                        # it — pressure must not reach into live KV.
+                        if blk.is_pinned or blk.ref_count > 1:
                             continue
                         # Remove hash mappings that still point at this
                         # block BEFORE reset_hash clears them — otherwise
@@ -5384,9 +5392,15 @@ class Scheduler:
                 # it would halt the caller's eviction loop prematurely.
                 for oldest_hash in list(index.keys()):
                     _, block_ids = index[oldest_hash]
+                    # Skip an entry only when NONE of its blocks are
+                    # clearable — absent, pinned, or still shared with a
+                    # live request (ref_count > 1). Popping such an entry
+                    # would make the prefix unreachable while freeing
+                    # nothing and would halt the caller's eviction loop.
                     if all(
                         (blk := paged.allocated_blocks.get(bid)) is None
                         or blk.is_pinned
+                        or blk.ref_count > 1
                         for bid in block_ids
                     ):
                         continue
@@ -5394,7 +5408,9 @@ class Scheduler:
                     evicted = 0
                     for bid in block_ids:
                         blk = paged.allocated_blocks.get(bid)
-                        if blk is None or blk.is_pinned:
+                        # Never clear a pinned or still-shared block: its KV
+                        # is live for another request.
+                        if blk is None or blk.is_pinned or blk.ref_count > 1:
                             continue
                         # Release the block's resident KV tensor regardless
                         # of hash registration variant. store_cache
