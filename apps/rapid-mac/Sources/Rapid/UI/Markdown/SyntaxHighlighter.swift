@@ -575,11 +575,14 @@ enum SyntaxHighlighter {
     }
 
     /// A shell `#` comment opens only after one of these — start of line
-    /// (handled by the caller), whitespace, or a command separator. After a
-    /// `$`, `{`, or an identifier character the `#` is part of an expansion
-    /// or a word, not a comment.
+    /// (handled by the caller), whitespace, or a command separator /
+    /// redirection operator. After a `$`, `{`, or an identifier character the
+    /// `#` is part of an expansion or a word, not a comment.
     private static func isCommentWordBoundary(_ c: Character) -> Bool {
-        c.isWhitespace || c == ";" || c == "&" || c == "|" || c == "(" || c == "`"
+        c.isWhitespace
+            || c == ";" || c == "&" || c == "|"
+            || c == "(" || c == ")" || c == "`"
+            || c == "<" || c == ">"
     }
 
     private static func isIdentifierChar(_ c: Character) -> Bool {

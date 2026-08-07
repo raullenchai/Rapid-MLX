@@ -614,6 +614,9 @@ struct SyntaxHighlighterTests {
         #expect(comments == ["# real comment"])
         // A leading-of-line comment still classifies.
         #expect(runs("# top\nls", "bash", kind: .comment).contains("# top"))
+        // A `#` right after a separator / redirection operator IS a comment.
+        #expect(runs("(true)# c\n", "bash", kind: .comment).contains("# c"))
+        #expect(runs("echo x ># c\n", "bash", kind: .comment).contains("# c"))
     }
 
     // MARK: - Kotlin triple-quoted strings
