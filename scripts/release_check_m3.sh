@@ -375,7 +375,7 @@ run_g7b() {
       -d '{
         "model": "gpt-5",
         "stream": true,
-        "max_output_tokens": 64,
+        "max_output_tokens": 128,
         "instructions": "You are a helpful agent.",
         "input": [
           {"type": "message", "role": "user", "content": "Call get_weather with city=SF"},

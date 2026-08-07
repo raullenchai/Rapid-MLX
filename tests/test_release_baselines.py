@@ -387,3 +387,9 @@ def test_stress_consumer_rejects_unverifiable_revision(tmp_path, contents):
 def test_release_gauntlet_runs_baseline_audit():
     script = (REPO_ROOT / "scripts" / "release_check_m3.sh").read_text()
     assert '"$PY" scripts/release_baselines.py' in script
+
+
+def test_release_gauntlet_gives_codex_tool_probe_enough_output_budget():
+    script = (REPO_ROOT / "scripts" / "release_check_m3.sh").read_text()
+    codex_probe = script[script.index("# Part B.2 — codex-shape SSE") :]
+    assert '"max_output_tokens": 128' in codex_probe
