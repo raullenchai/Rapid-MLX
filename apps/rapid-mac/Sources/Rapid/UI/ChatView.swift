@@ -1776,7 +1776,7 @@ private struct CodeBlockWithCopy: View {
     @State private var contentSpan = CodeBlockOverflow.ContentSpan.unmeasured
     @State private var syntaxHighlightMemo = SyntaxHighlighter.Memo()
     @ScaledMetric(relativeTo: .body)
-    private var highlightedCodeLineSpacing = 15 * 0.92 * 0.2
+    private var highlightedCodeLineSpacing: CGFloat = 15 * 0.92 * 0.2
 
     /// Highlighted when we have a grammar for the fence's language,
     /// otherwise MarkdownUI's own label.

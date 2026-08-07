@@ -364,7 +364,6 @@ enum SyntaxHighlighter {
         let chars = Array(code)
         var i = 0
         var stableCharacterCount = 0
-        var stableOutput = AttributedString()
         // Accumulate consecutive plain characters and emit them as one
         // run rather than one attributed run per character.
         var plainBuffer = ""
@@ -535,18 +534,31 @@ enum SyntaxHighlighter {
                 // A newline reached by the top-level scanner is outside a
                 // multiline comment/string. All tokens through it are final;
                 // only the following line can change on the next append.
+                // Record just the boundary offset — snapshotting `out` here
+                // instead shared its storage and forced a full copy-on-write
+                // clone on the very next append, making a cold scan quadratic
+                // in line count. The stable slice is taken once, below.
                 flushPlain()
                 stableCharacterCount = i
-                stableOutput = out
             }
         }
 
         flushPlain()
+        // Slice the finished output to the stable boundary a single time.
+        // `out`'s characters are exactly the source characters (highlighting
+        // preserves text), so a character offset indexes it directly.
+        let stableResult: AttributedString
+        if stableCharacterCount > 0 {
+            let end = out.index(out.startIndex, offsetByCharacters: stableCharacterCount)
+            stableResult = AttributedString(out[out.startIndex..<end])
+        } else {
+            stableResult = AttributedString()
+        }
         let stableSource = String(chars.prefix(stableCharacterCount))
         return ScanResult(
             result: out,
             stableSourceByteCount: stableSource.utf8.count,
-            stableResult: stableOutput
+            stableResult: stableResult
         )
     }
 
