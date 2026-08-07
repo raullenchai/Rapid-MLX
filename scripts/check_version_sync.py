@@ -62,7 +62,13 @@ INFO_PLIST = ROOT / "apps" / "rapid-mac" / "Resources" / "Info.plist"
 # Both numbers feed release tags and an updater that compares them, so a
 # value neither side can order (``0.12``, ``1.0.0-rc1``, an empty string)
 # is a defect wherever it appears, not merely a mismatch.
-SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+#
+# Matched with ``fullmatch`` and an explicit ASCII class, not ``^…$`` and
+# ``\d``. ``$`` matches before a trailing newline, so ``"0.12.6\n"`` —
+# entirely plausible from a hand-edited ``<string>`` element — would pass
+# and then build the tag ``v0.12.6\n``. ``\d`` additionally accepts
+# non-ASCII digits, which no release tag can carry.
+SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 
 class VersionSyncError(Exception):
@@ -92,7 +98,7 @@ def engine_version(pyproject: Path = PYPROJECT) -> str:
     version = project.get("version")
     if not isinstance(version, str) or not version:
         raise VersionSyncError(f"{_rel(pyproject)} has no [project] version")
-    if not SEMVER.match(version):
+    if not SEMVER.fullmatch(version):
         raise VersionSyncError(
             f"{_rel(pyproject)} [project] version is {version!r}, "
             "which is not X.Y.Z — release tags are built from it"
@@ -127,7 +133,7 @@ def app_version(info_plist: Path = INFO_PLIST) -> str:
     version = data.get("CFBundleShortVersionString")
     if not isinstance(version, str) or not version:
         raise VersionSyncError(f"{_rel(info_plist)} has no CFBundleShortVersionString")
-    if not SEMVER.match(version):
+    if not SEMVER.fullmatch(version):
         raise VersionSyncError(
             f"{_rel(info_plist)} CFBundleShortVersionString is {version!r}, "
             "which is not X.Y.Z — the rapid-mac-v tag is built from it"

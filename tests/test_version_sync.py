@@ -152,7 +152,22 @@ def test_non_dict_plist_root_fails(tmp_path):
         app_version(plist)
 
 
-@pytest.mark.parametrize("bad", ["0.12", "1.0.0-rc1", "v1.2.3", ""])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "0.12",
+        "1.0.0-rc1",
+        "v1.2.3",
+        "",
+        # ``$`` matches BEFORE a trailing newline, so an ``^…$`` check
+        # would accept this and then build the tag ``v1.2.3\n``. A
+        # hand-edited ``<string>`` element is how it gets in.
+        "1.2.3\n",
+        " 1.2.3",
+        # ``\d`` is Unicode-aware; no release tag can carry these.
+        "١.٢.٣",
+    ],
+)
 def test_non_semver_is_rejected_on_both_sides(tmp_path, bad):
     """Release tags are built from these strings; the updater orders them."""
     plist = write_plist(tmp_path / f"a{len(bad)}.plist", CFBundleShortVersionString=bad)
