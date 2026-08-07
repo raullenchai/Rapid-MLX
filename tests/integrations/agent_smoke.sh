@@ -62,18 +62,23 @@ SERVE_PID=""
 # unwritable temp volume) would export an empty value, and an empty or
 # whitespace-only home is treated as *unset* on the Python side — sending
 # `--setup` straight back to the operator's real ~/.codex / ~/.hermes, which
-# is precisely the damage this redirect exists to prevent. An override of
-# "   " is nonempty to the shell but blank after Python strips it, so check
-# the trimmed value rather than trusting `${x:-}`.
+# is precisely the damage this redirect exists to prevent.
+#
+# The blankness test is delegated to Python on purpose. The shell and Python do
+# not agree on what whitespace is: BSD `tr -d '[:space:]'` keeps U+0085 while
+# `str.strip()` removes it, so a shell-side check passes a value that Python
+# then treats as unset — the guard reports safe and the real config is written
+# anyway. One definition, owned by the side that actually makes the decision.
 export CODEX_HOME="${CODEX_HOME_OVERRIDE:-$(mktemp -d)}"
 export HERMES_HOME="${HERMES_HOME_OVERRIDE:-$(mktemp -d)}"
 for _home_var in CODEX_HOME HERMES_HOME; do
   eval "_home_val=\${$_home_var}"
-  case "$(printf '%s' "${_home_val}" | tr -d '[:space:]')" in
-    "") echo "SMOKE-ABORT: $_home_var is blank — refusing to run, as \`agents --setup\`" >&2
-        echo "             would then write the operator's real config." >&2
-        exit 3 ;;
-  esac
+  if ! python3 -c 'import sys; raise SystemExit(0 if sys.argv[1].strip() else 1)' \
+       "${_home_val}" 2>/dev/null; then
+    echo "SMOKE-ABORT: $_home_var is blank to Python — refusing to run, as" >&2
+    echo "             \`agents --setup\` would then write the operator's real config." >&2
+    exit 3
+  fi
   [ -d "${_home_val}" ] || { echo "SMOKE-ABORT: $_home_var=${_home_val} is not a directory" >&2; exit 3; }
 done
 unset _home_var _home_val

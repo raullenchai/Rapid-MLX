@@ -141,3 +141,27 @@ def test_no_resolvable_version_escapes_the_redirect():
                 f"{agent} --agent-version {version} resolves to a config with "
                 f"home_env={resolved.home_env!r}, escaping {expected}"
             )
+
+
+def test_a_version_that_declares_its_own_home_env_keeps_it():
+    """Inheritance fills a hole; it never overrides a deliberate choice.
+
+    A version block that genuinely relocates says so, and that has to win —
+    otherwise the redirect would point at the *old* agent's home and the new
+    one's real config would be written instead.
+    """
+    from dataclasses import replace as _replace
+
+    from vllm_mlx.agents.base import AgentConfigSpec, AgentVersionSpec
+
+    profile = get_profile("hermes")
+    relocated = AgentConfigSpec(
+        type="yaml", path="~/.new/settings.yaml", home_env="NEW_AGENT_HOME"
+    )
+    probe = _replace(
+        profile,
+        versions=[AgentVersionSpec(version_range=">=99", config=relocated)],
+    )
+    assert probe.get_config_for_version("99.1").home_env == "NEW_AGENT_HOME"
+    # ...and a version with no block of its own still falls back to the base.
+    assert probe.get_config_for_version("1.0").home_env == profile.config.home_env

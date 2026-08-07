@@ -121,6 +121,13 @@ class AgentProfile:
                         # CODEX_HOME/HERMES_HOME. The redirect is a safety
                         # property of the agent, not a per-version formatting
                         # detail, so inherit it whenever the override is silent.
+                        #
+                        # A version that genuinely relocates declares its own
+                        # ``home_env`` and that declaration wins — inheritance
+                        # only fills a hole. There is deliberately no way to
+                        # spell "this version honours no variable at all",
+                        # because that means "always write the operator's real
+                        # file", which is the bug this exists to remove.
                         if vs.config.home_env is None:
                             return replace(vs.config, home_env=self.config.home_env)
                         return vs.config
