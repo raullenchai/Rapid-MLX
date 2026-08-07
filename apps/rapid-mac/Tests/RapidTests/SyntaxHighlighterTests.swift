@@ -468,4 +468,79 @@ struct SyntaxHighlighterTests {
         #expect(plainText(out) == big)
         #expect(elapsed < 3.0, "took \(elapsed)s — check for quadratic behaviour")
     }
+
+    /// Reproduces the render path — a ``Memo`` re-highlighting the WHOLE
+    /// accumulated block on every appended token — and times the complete
+    /// ``highlight`` call, including the ``hasPrefix`` prefix check that
+    /// ``scannedCharacterCount`` deliberately excludes. A genuinely
+    /// quadratic blow-up in the end-to-end cost would surface here even
+    /// though the scanned-character assertions would not see it.
+    @Test("Streaming a block token-by-token stays fast end to end")
+    func streamingIsFastEndToEnd() {
+        let memo = SyntaxHighlighter.Memo()
+        let token = "value += compute(x: 42) // step\n"
+        var code = ""
+        let started = Date()
+        for _ in 0..<800 {
+            code += token
+            _ = memo.highlight(code, language: "swift")
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(elapsed < 3.0, "streaming 800 appends took \(elapsed)s — check for quadratic behaviour")
+    }
+
+    // MARK: - Line-anchored diff markers
+
+    /// A unified diff's `+`/`-` are line prefixes, not mid-line comment
+    /// openers: an unchanged context line with an infix minus must not
+    /// colour from the minus onward, while a real change line still does.
+    @Test("Diff change markers colour only at the line start")
+    func diffMarkersAnchoredToLineStart() {
+        let code = " value = a - b\n-removed\n+added\n"
+        let comments = runs(code, "diff", kind: .comment)
+        #expect(!comments.contains { $0.contains("- b") })
+        #expect(comments.contains("-removed"))
+        #expect(comments.contains("+added"))
+    }
+
+    // MARK: - Go multiline raw strings
+
+    /// Go's backtick string is raw and spans lines; a `//` inside it is
+    /// part of the string, and code after the closing backtick resumes
+    /// normal classification.
+    @Test("Go backtick raw strings span multiple lines")
+    func goMultilineRawString() {
+        let code = "s := `line one\n// still string\nend`\nreturn 1\n"
+        let strings = runs(code, "go", kind: .string)
+        #expect(strings.contains { $0.contains("line one") && $0.contains("end") })
+        #expect(runs(code, "go", kind: .comment).isEmpty)
+        #expect(runs(code, "go", kind: .keyword).contains("return"))
+    }
+
+    // MARK: - Scientific notation
+
+    @Test("Scientific-notation literals scan as one number")
+    func scientificNotation() {
+        for literal in ["1.5e-3", "2E+10", "6.02e23", "1e10"] {
+            let numbers = runs("let v = \(literal)", "swift", kind: .number)
+            #expect(numbers.contains(literal), "failed for \(literal)")
+        }
+        // An infix minus outside an exponent is still its own token.
+        let numbers = runs("let d = 5 - 3", "swift", kind: .number)
+        #expect(numbers.contains("5"))
+        #expect(numbers.contains("3"))
+        #expect(!numbers.contains { $0.contains("-") })
+    }
+
+    // MARK: - CSS vs SCSS comments
+
+    /// Plain CSS has no `//` comment, so the `//` in an unquoted URL must
+    /// not comment out the rest of the declaration. SCSS/Less keep `//`.
+    @Test("Plain CSS does not treat // in a URL as a comment; SCSS still does")
+    func cssUrlIsNotAComment() {
+        let css = ".a { background: url(https://example.com/x.png); }"
+        #expect(runs(css, "css", kind: .comment).isEmpty)
+        #expect(runs("// note\n.a { color: red }", "scss", kind: .comment).contains("// note"))
+        #expect(SyntaxHighlighter.supports(language: "less"))
+    }
 }

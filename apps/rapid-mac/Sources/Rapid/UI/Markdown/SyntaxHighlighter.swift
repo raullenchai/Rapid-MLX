@@ -231,6 +231,20 @@ enum SyntaxHighlighter {
         /// Rust-style apostrophe-prefixed identifiers (`'a`, `'static`).
         /// These must be distinguished from single-quoted character literals.
         let apostrophePrefixedIdentifiers: Bool
+        /// Line comments open only at the START of a line (`i == 0` or right
+        /// after a newline). This is what a unified diff needs: its `+`/`-`
+        /// markers are line-prefixes, not mid-line comment openers, so an
+        /// unchanged context line like `value = a - b` must not colour from
+        /// the minus onward. Off everywhere else, where `//`, `#`, `--` are
+        /// genuine mid-line openers.
+        let lineCommentAtLineStart: Bool
+        /// Quote characters that open a RAW, newline-spanning string with no
+        /// backslash escaping — Go's backtick string. The generic string
+        /// scanner stops at a newline (right for a half-typed line during
+        /// streaming); a raw multiline quote overrides both that stop and
+        /// escape handling so the whole `` `...` `` literal, including any
+        /// `//` inside it, scans as one string across lines.
+        let rawMultilineQuotes: Set<Character>
 
         init(
             lineComment: [String],
@@ -241,7 +255,9 @@ enum SyntaxHighlighter {
             keywords: Set<String>,
             types: Set<String>,
             capitalisedIdentifiersAreTypes: Bool,
-            apostrophePrefixedIdentifiers: Bool = false
+            apostrophePrefixedIdentifiers: Bool = false,
+            lineCommentAtLineStart: Bool = false,
+            rawMultilineQuotes: Set<Character> = []
         ) {
             self.lineComment = lineComment
             self.blockComment = blockComment
@@ -252,6 +268,8 @@ enum SyntaxHighlighter {
             self.types = types
             self.capitalisedIdentifiersAreTypes = capitalisedIdentifiersAreTypes
             self.apostrophePrefixedIdentifiers = apostrophePrefixedIdentifiers
+            self.lineCommentAtLineStart = lineCommentAtLineStart
+            self.rawMultilineQuotes = rawMultilineQuotes
         }
 
         static func forLanguage(_ raw: String?) -> Grammar? {
@@ -276,7 +294,8 @@ enum SyntaxHighlighter {
             case "php": return .php
             case "sql", "postgres", "postgresql", "mysql", "sqlite": return .sql
             case "html", "xml", "svg", "vue", "svelte": return .markup
-            case "css", "scss", "sass", "less": return .css
+            case "css": return .css
+            case "scss", "sass", "less": return .scss
             case "yaml", "yml": return .yaml
             case "toml", "ini", "cfg", "conf": return .toml
             case "dockerfile", "docker": return .dockerfile
@@ -356,7 +375,13 @@ enum SyntaxHighlighter {
             }
 
             // --- line comment ---
-            if let opener = grammar.lineComment.first(where: { matches($0, chars, i) }) {
+            // When the grammar anchors line comments to the line start (diff),
+            // a marker only opens one at `i == 0` or immediately after a
+            // newline. `chars[start..<i]` reaching a stable prefix always
+            // begins a line, so this holds identically on the streamed tail.
+            let atLineStart = i == 0 || chars[i - 1] == "\n"
+            if (!grammar.lineCommentAtLineStart || atLineStart),
+               let opener = grammar.lineComment.first(where: { matches($0, chars, i) }) {
                 let start = i
                 i += opener.count
                 while i < chars.count && chars[i] != "\n" { i += 1 }
@@ -388,10 +413,14 @@ enum SyntaxHighlighter {
             // --- string ---
             if grammar.quotes.contains(chars[i]) {
                 let quote = chars[i]
+                // A raw multiline quote (Go's backtick) neither escapes nor
+                // stops at a newline: it runs to its closing delimiter across
+                // however many lines.
+                let isRawMultiline = grammar.rawMultilineQuotes.contains(quote)
                 let start = i
                 i += 1
                 while i < chars.count {
-                    if grammar.backslashEscapes && chars[i] == "\\" {
+                    if !isRawMultiline && grammar.backslashEscapes && chars[i] == "\\" {
                         // Escape consumes the next character, so an
                         // escaped quote cannot terminate the string.
                         i += min(2, chars.count - i)
@@ -400,8 +429,10 @@ enum SyntaxHighlighter {
                     if chars[i] == quote { i += 1; break }
                     // An unterminated string stops at end of line rather
                     // than swallowing the rest of the block — during
-                    // streaming, a half-arrived line is the normal case.
-                    if chars[i] == "\n" { break }
+                    // streaming, a half-arrived line is the normal case. A
+                    // raw multiline literal is the exception: its newlines
+                    // are part of the string.
+                    if !isRawMultiline && chars[i] == "\n" { break }
                     i += 1
                 }
                 emit(String(chars[start..<i]), .string)
@@ -413,7 +444,19 @@ enum SyntaxHighlighter {
             // of the identifier.
             if chars[i].isNumber && (i == 0 || !isIdentifierChar(chars[i - 1])) {
                 let start = i
-                while i < chars.count && isNumberChar(chars[i]) { i += 1 }
+                while i < chars.count && isNumberChar(chars[i]) {
+                    let c = chars[i]
+                    i += 1
+                    // A scientific exponent's sign is part of the literal:
+                    // `1.5e-3` is one number, not `1.5e`, `-`, `3`. Only a
+                    // sign IMMEDIATELY after e/E is absorbed, so `2 - 3`
+                    // outside an exponent is untouched.
+                    if (c == "e" || c == "E"),
+                       i < chars.count,
+                       chars[i] == "+" || chars[i] == "-" {
+                        i += 1
+                    }
+                }
                 emit(String(chars[start..<i]), .number)
                 continue
             }
@@ -648,7 +691,10 @@ extension SyntaxHighlighter.Grammar {
             "float64", "int", "int8", "int16", "int32", "int64", "rune", "string",
             "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "any"
         ],
-        capitalisedIdentifiersAreTypes: false
+        capitalisedIdentifiersAreTypes: false,
+        // Go's backtick string is raw and spans lines; `"` and `'` keep the
+        // ordinary single-line, escape-aware behaviour.
+        rawMultilineQuotes: ["`"]
     )
 
     static let rust = Self(
@@ -1069,29 +1115,39 @@ extension SyntaxHighlighter.Grammar {
         capitalisedIdentifiersAreTypes: false
     )
 
-    static let css = Self(
-        lineComment: ["//"],
-        blockComment: [("/*", "*/")],
-        quotes: ["\"", "'"],
-        tripleQuotes: [],
-        backslashEscapes: false,
-        keywords: [
-            "@media", "@import", "@charset", "@font-face", "@keyframes",
-            "@supports", "@namespace", "@page", "@use", "@forward", "@mixin",
-            "@include", "@extend", "@function", "@return", "@if", "@else",
-            "@each", "@for", "@while", "important", "inherit", "initial",
-            "unset", "revert", "var", "calc", "url", "from", "to"
-        ],
-        types: [
-            "color", "background", "background-color", "border", "margin",
-            "padding", "display", "position", "top", "right", "bottom", "left",
-            "width", "height", "font", "font-size", "font-family",
-            "font-weight", "text-align", "line-height", "flex", "grid", "gap",
-            "opacity", "overflow", "z-index", "transform", "transition",
-            "animation", "content", "cursor", "visibility", "box-shadow"
-        ],
-        capitalisedIdentifiersAreTypes: false
-    )
+    /// Plain CSS has ONLY `/* */` block comments — no `//`. Recognising
+    /// `//` here mis-fires on the `//` in an unquoted `url(https://…)`,
+    /// colouring the rest of the declaration as a comment. The `//`
+    /// line comment belongs to the SCSS/Less preprocessors, which get their
+    /// own grammar (``scss``) that adds it back.
+    private static func cssFamily(lineComment: [String]) -> Self {
+        Self(
+            lineComment: lineComment,
+            blockComment: [("/*", "*/")],
+            quotes: ["\"", "'"],
+            tripleQuotes: [],
+            backslashEscapes: false,
+            keywords: [
+                "@media", "@import", "@charset", "@font-face", "@keyframes",
+                "@supports", "@namespace", "@page", "@use", "@forward", "@mixin",
+                "@include", "@extend", "@function", "@return", "@if", "@else",
+                "@each", "@for", "@while", "important", "inherit", "initial",
+                "unset", "revert", "var", "calc", "url", "from", "to"
+            ],
+            types: [
+                "color", "background", "background-color", "border", "margin",
+                "padding", "display", "position", "top", "right", "bottom", "left",
+                "width", "height", "font", "font-size", "font-family",
+                "font-weight", "text-align", "line-height", "flex", "grid", "gap",
+                "opacity", "overflow", "z-index", "transform", "transition",
+                "animation", "content", "cursor", "visibility", "box-shadow"
+            ],
+            capitalisedIdentifiersAreTypes: false
+        )
+    }
+
+    static let css = cssFamily(lineComment: [])
+    static let scss = cssFamily(lineComment: ["//"])
 
     static let yaml = Self(
         lineComment: ["#"],
@@ -1201,6 +1257,7 @@ extension SyntaxHighlighter.Grammar {
         backslashEscapes: false,
         keywords: [],
         types: [],
-        capitalisedIdentifiersAreTypes: false
+        capitalisedIdentifiersAreTypes: false,
+        lineCommentAtLineStart: true
     )
 }
