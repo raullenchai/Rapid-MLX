@@ -28,6 +28,15 @@ disagrees with the plist. With this check the chain closes:
 Run by ``ci.yml`` on every PR (stdlib only — no mlx, no macOS, so it runs
 on the Linux lint runner) and pinned by ``tests/test_version_sync.py``.
 
+SCOPE: this check enforces that the two numbers AGREE. It does not
+enforce that they increase — ``version-check.yml`` already does that,
+rejecting any ``pyproject.toml`` version that is not strictly greater
+than the base branch's. The two compose: a PR that lowers both files in
+step is refused by ``version-check.yml``, and a PR that lowers only the
+plist is refused here as a mismatch. Re-deriving monotonicity from this
+script would mean reading git history from a stdlib-only linter, to
+duplicate a rule that is already enforced one layer up.
+
 Exit status: 0 in sync, 1 out of sync or unreadable. "Unreadable" is a
 FAILURE, not a skip: a guard that passes when it cannot find its inputs
 is indistinguishable from no guard at all, and this one has to survive a
@@ -64,13 +73,23 @@ def engine_version(pyproject: Path = PYPROJECT) -> str:
     """``[project] version`` from ``pyproject.toml``."""
     if not pyproject.is_file():
         raise VersionSyncError(f"{_rel(pyproject)} not found")
+    # OSError as well as the parse errors: a PermissionError here would
+    # otherwise escape ``main``'s handler as a bare traceback, which is
+    # exactly the "unreadable silently isn't a failure" hole this script
+    # exists to close.
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as exc:
         raise VersionSyncError(
             f"{_rel(pyproject)} is not readable TOML: {exc}"
         ) from exc
-    version = (data.get("project") or {}).get("version")
+    # ``[project]`` is only a table by convention. ``project = "x"`` is
+    # valid TOML, and ``.get`` on the str would be an AttributeError that
+    # never reaches the VersionSyncError path.
+    project = data.get("project")
+    if not isinstance(project, dict):
+        raise VersionSyncError(f"{_rel(pyproject)} has no [project] version")
+    version = project.get("version")
     if not isinstance(version, str) or not version:
         raise VersionSyncError(f"{_rel(pyproject)} has no [project] version")
     if not SEMVER.match(version):
@@ -101,6 +120,10 @@ def app_version(info_plist: Path = INFO_PLIST) -> str:
         raise VersionSyncError(
             f"{_rel(info_plist)} is not a readable plist: {exc}"
         ) from exc
+    # A plist's root need not be a dict — ``<plist><array/></plist>``
+    # parses fine and would AttributeError on ``.get``.
+    if not isinstance(data, dict):
+        raise VersionSyncError(f"{_rel(info_plist)} has no CFBundleShortVersionString")
     version = data.get("CFBundleShortVersionString")
     if not isinstance(version, str) or not version:
         raise VersionSyncError(f"{_rel(info_plist)} has no CFBundleShortVersionString")
@@ -124,10 +147,12 @@ def check(
             f"  {_rel(pyproject)}  [project] version           = {engine}\n"
             f"  {_rel(info_plist)}  CFBundleShortVersionString = {app}\n"
             f"\n"
-            f"They ship as one product and must carry one number. Set both to\n"
-            f"the same X.Y.Z in the same PR — and only ever move it UP: a\n"
+            f"They ship as one product and must carry one number. Set both\n"
+            f"to the same X.Y.Z in the same PR, and move the number UP — a\n"
             f"rapid-mac-vX.Y.Z tag already exists for every version the app\n"
-            f"has shipped, and the in-app updater compares these values."
+            f"has shipped, and the in-app updater orders these values.\n"
+            f"(The increase itself is enforced by version-check.yml; this\n"
+            f"check only enforces that the two files agree.)"
         )
     return engine, app
 

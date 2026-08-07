@@ -121,6 +121,37 @@ def test_unreadable_pyproject_fails(tmp_path):
         engine_version(pyproject)
 
 
+def test_unreadable_pyproject_oserror_is_not_a_traceback(tmp_path, monkeypatch):
+    """A PermissionError must land on the ``::error::`` path like any other
+    unreadable input — escaping as a traceback would make ``main`` exit
+    non-zero for a reason nobody can act on."""
+    pyproject = write_pyproject(tmp_path / "pyproject.toml")
+
+    def denied(*_a, **_k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(VersionSyncError, match="not readable TOML"):
+        engine_version(pyproject)
+
+
+def test_non_table_project_fails(tmp_path):
+    """``project = "x"`` is valid TOML; ``.get`` on the str is not."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('project = "not-a-table"\n', encoding="utf-8")
+    with pytest.raises(VersionSyncError, match="no \\[project\\] version"):
+        engine_version(pyproject)
+
+
+def test_non_dict_plist_root_fails(tmp_path):
+    """``<plist><array/></plist>`` parses fine and has no ``.get``."""
+    plist = tmp_path / "Info.plist"
+    with plist.open("wb") as fh:
+        plistlib.dump(["not", "a", "dict"], fh)
+    with pytest.raises(VersionSyncError, match="CFBundleShortVersionString"):
+        app_version(plist)
+
+
 @pytest.mark.parametrize("bad", ["0.12", "1.0.0-rc1", "v1.2.3", ""])
 def test_non_semver_is_rejected_on_both_sides(tmp_path, bad):
     """Release tags are built from these strings; the updater orders them."""
