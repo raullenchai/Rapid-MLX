@@ -110,7 +110,10 @@ for MODEL in $MODELS; do
   fi
   SERVE_ARGS=(--port "$PORT")
   if [ "$DISTILL" = "1" ]; then
-    SERVE_ARGS+=(--thinking)
+    # The serve CLI exposes the reasoning profile as ``--reasoning``;
+    # ``--thinking`` has never been a valid serve flag. The stale flag made
+    # every reasoning-distill fleet member fail before model load.
+    SERVE_ARGS+=(--reasoning)
   else
     SERVE_ARGS+=(--no-thinking)
   fi

@@ -271,3 +271,9 @@ def test_coherence_sweep_avoids_empty_array_expansion_on_macos_bash():
     assert 'gate_command=("$PY" evals/coherence_gate.py)' in script
     assert 'gate_command=("$PY" evals/coherence_gate.py --reasoning-distill)' in script
     assert '"${GATE_ARGS[@]}"' not in script
+
+
+def test_reasoning_distill_sweep_uses_supported_serve_flag():
+    script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
+    assert "SERVE_ARGS+=(--reasoning)" in script
+    assert "SERVE_ARGS+=(--thinking)" not in script
