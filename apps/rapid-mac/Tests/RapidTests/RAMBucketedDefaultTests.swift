@@ -11,8 +11,8 @@ import Testing
 /// numbers):
 ///
 ///    8 GB  → lfm2.5-2.6b-4bit  (· Not for coding — only model that fits)
-///   16 GB  → bonsai-27b-2bit   (+ fast lfm2.5-8b-a1b-4bit · Chat only)
-///   18 GB  → bonsai-27b-2bit   (mirrors 16 GB) (+ fast lfm2.5-8b-a1b-4bit)
+///   16 GB  → qwen3.5-4b-4bit
+///   18 GB  → qwen3.5-9b-4bit   (+ fast qwen3.5-4b-4bit)
 ///   24 GB  → gemma-4-26b-4bit  (--no-mllm --kv-cache-dtype bf16 --cache-memory-mb 512)
 ///   32 GB  → qwen3.6-35b-4bit
 ///   64 GB  → qwen3.6-35b-8bit  (+ fast qwen3.6-35b-4bit)
@@ -31,9 +31,9 @@ struct RAMBucketedDefaultTests {
     @Test("Each RAM lands on the tier whose floor is the largest ≤ its RAM")
     func aliasPerRAM() {
         #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 8) == "lfm2.5-2.6b-4bit")   // 8 GB is its own tier now
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 16) == "bonsai-27b-2bit")
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 17) == "bonsai-27b-2bit")
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 18) == "bonsai-27b-2bit")   // 18 mirrors 16
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 16) == "qwen3.5-4b-4bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 17) == "qwen3.5-4b-4bit")
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 18) == "qwen3.5-9b-4bit")
         #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 24) == "gemma-4-26b-4bit")
         #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 32) == "qwen3.6-35b-4bit")
         #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 48) == "qwen3.6-35b-4bit")   // 32 tier
@@ -44,7 +44,7 @@ struct RAMBucketedDefaultTests {
 
     @Test("A 20 GB Mac rounds DOWN to the 18 GB pick (fits), not up to 24 GB")
     func roundsDownNotUp() {
-        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 20) == "bonsai-27b-2bit")   // 18 tier (mirrors 16)
+        #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 20) == "qwen3.5-9b-4bit")
         #expect(RAMBucketedDefault.alias(forPhysicalRAMGB: 30) == "gemma-4-26b-4bit")
     }
 
@@ -64,17 +64,15 @@ struct RAMBucketedDefaultTests {
         #expect(smallest.count == 1)
         #expect(smallest[0].alias == "lfm2.5-2.6b-4bit")
         #expect(smallest[0].caveat == "Not for coding")
-        // 16/18 GB: slow smart pick → a fast lfm2.5 alt (chat specialist).
+        // 16 GB: conservative general-purpose default, no duplicate alt.
         let tier16 = RAMBucketedDefault.picks(forPhysicalRAMGB: 16)
-        #expect(tier16.count == 2)
-        #expect(tier16[0].alias == "bonsai-27b-2bit")
-        #expect(tier16[1].alias == "lfm2.5-8b-a1b-4bit")
-        #expect(tier16[1].caveat == "Chat only")
-        // 18 GB mirrors 16 GB (bonsai smart + lfm2.5 fast).
+        #expect(tier16.count == 1)
+        #expect(tier16[0].alias == "qwen3.5-4b-4bit")
+        // 18 GB: 9B smart + 4B fast, both verified for tools.
         let tier18 = RAMBucketedDefault.picks(forPhysicalRAMGB: 18)
         #expect(tier18.count == 2)
-        #expect(tier18[0].alias == "bonsai-27b-2bit")
-        #expect(tier18[1].alias == "lfm2.5-8b-a1b-4bit")
+        #expect(tier18[0].alias == "qwen3.5-9b-4bit")
+        #expect(tier18[1].alias == "qwen3.5-4b-4bit")
         // 24/32 GB: smart pick is already MoE-fast → stands alone.
         #expect(RAMBucketedDefault.picks(forPhysicalRAMGB: 24).count == 1)
         #expect(RAMBucketedDefault.picks(forPhysicalRAMGB: 32).count == 1)
@@ -92,7 +90,7 @@ struct RAMBucketedDefaultTests {
 
     @Test("Flags apply only when the alias IS the pick for that Mac's RAM")
     func launchFlagsAreRAMGated() {
-        #expect(RAMBucketedDefault.launchFlags(forAlias: "bonsai-27b-2bit", physicalRAMGB: 18).isEmpty)
+        #expect(RAMBucketedDefault.launchFlags(forAlias: "qwen3.5-9b-4bit", physicalRAMGB: 18).isEmpty)
         #expect(RAMBucketedDefault.launchFlags(forAlias: "gemma-4-26b-4bit", physicalRAMGB: 24)
             == ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"])
         #expect(RAMBucketedDefault.launchFlags(forAlias: "qwen3.6-35b-4bit", physicalRAMGB: 32).isEmpty)
@@ -104,9 +102,10 @@ struct RAMBucketedDefaultTests {
 
     @Test("isRecommendedPick is true only for this Mac's primary or alt, and is floor-gated")
     func isRecommendedPickContract() {
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 16))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-8b-a1b-4bit", physicalRAMGB: 16))
-        #expect(RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18))   // 18 mirrors 16
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 16))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-9b-4bit", physicalRAMGB: 18))
+        #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 18))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18))
         #expect(!RAMBucketedDefault.isRecommendedPick(alias: "gemma-4-12b-4bit", physicalRAMGB: 18)) // dropped from picks
         // An 8 GB Mac now SITS IN a tier, so its own pick is exempt from the
         // .tooBig gate — that exemption is the whole point of the tier, since
@@ -115,13 +114,30 @@ struct RAMBucketedDefaultTests {
         // The bigger models are still NOT exempt there: they are not this
         // tier's picks, so the OOM hole stays closed.
         #expect(!RAMBucketedDefault.isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8))
-        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-8b-a1b-4bit", physicalRAMGB: 8))
+        #expect(!RAMBucketedDefault.isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 8))
         // Below the lowest floor there is still no exemption for anything.
         #expect(!RAMBucketedDefault.isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 4))
         // The fast alt is a recommended pick on its own tiers (64/96 GB),
         // so it also skips the .tooBig gate there.
         #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 64))
         #expect(RAMBucketedDefault.isRecommendedPick(alias: "qwen3.6-35b-4bit", physicalRAMGB: 96))
+    }
+
+    @Test("Laptop recommendations agree with the conservative launch sizing guard")
+    func laptopRecommendationsDoNotRequireSizingBypass() {
+        for ram in [16.0, 18.0] {
+            let hardware = MacHardware(
+                brandString: "Apple Silicon", family: .m3, tier: .base,
+                physicalRAMBytes: UInt64(ram * Double(1 << 30)),
+                memoryBandwidthGBs: 100
+            )
+            for pick in RAMBucketedDefault.picks(forPhysicalRAMGB: ram) {
+                #expect(
+                    ModelSizing.classify(ModelSizing.estimate(alias: pick.alias), on: hardware) != .tooBig,
+                    "\(pick.alias) must not be recommended and then rejected by the launch budget"
+                )
+            }
+        }
     }
 
     // MARK: - Table invariants

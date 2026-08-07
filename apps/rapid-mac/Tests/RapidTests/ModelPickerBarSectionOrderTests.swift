@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Rapid
 
-/// F-LWT-1 contract — the picker dropdown surfaces THREE sections in
+/// F-LWT-1 contract — the picker dropdown surfaces four sections in
 /// a pinned order:
 ///
 ///   ┌── Quickstart ──────────────────────────────────────┐
@@ -11,6 +11,8 @@ import Testing
 ///   │  Default | Speed | Quality | Coding | Vision       │ ← RAM-aware, role-anchored
 ///   ├── All models (alphabetical) ───────────────────────┤
 ///   │  alpha … omega                                     │ ← dedup: Quickstart alias excluded
+///   ├── Not fit for this Mac ────────────────────────────┤
+///   │  oversized aliases remain downloadable            │
 ///   └────────────────────────────────────────────────────┘
 ///
 /// The Quickstart section is a NEW row landed in F-LWT-1 (the 0.6B
@@ -25,8 +27,9 @@ import Testing
 ///     matching the Quickstart card's promise.
 ///   * Recommended goes SECOND because it's RAM-aware (different
 ///     advice on a 16 GB Mac vs a 64 GB Mac).
-///   * All models goes LAST because it's the long-tail browse
-///     surface for power users.
+///   * All models contains runnable long-tail choices.
+///   * Not fit for this Mac stays last: oversized choices remain
+///     downloadable, but cannot masquerade as normal recommendations.
 ///
 /// Dedup invariant: the Quickstart alias must NEVER appear in BOTH
 /// the Quickstart section AND the All models section — otherwise
@@ -36,6 +39,22 @@ import Testing
 @MainActor
 @Suite("ModelPickerBar section order — F-LWT-1 Quickstart section")
 struct ModelPickerBarSectionOrderTests {
+
+    @Test("Oversized aliases are separated from runnable All models")
+    func partitionsByConservativeFit() {
+        let hardware = MacHardware(
+            brandString: "Apple M3 Pro", family: .m3, tier: .pro,
+            physicalRAMBytes: 18 * 1024 * 1024 * 1024,
+            memoryBandwidthGBs: 150
+        )
+        let entries = [
+            entry("qwen3.5-4b-4bit", hfRepo: "stub/qwen4", cached: false),
+            entry("gemma-4-26b-4bit", hfRepo: "stub/gemma26", cached: false),
+        ]
+        let result = ModelPickerBar.partitionByFit(entries, hardware: hardware)
+        #expect(result.fits.map(\.alias) == ["qwen3.5-4b-4bit"])
+        #expect(result.notFit.map(\.alias) == ["gemma-4-26b-4bit"])
+    }
 
     /// Synthetic catalog covering all three sections: one Quickstart
     /// alias, three Recommended-bucket aliases, four miscellaneous

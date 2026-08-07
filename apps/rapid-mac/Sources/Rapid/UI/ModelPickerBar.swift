@@ -13,9 +13,9 @@ import SwiftUI
 ///   │  lfm2.5-1b-4bit · Smallest model — fastest   │ ← RAM-blind, F-LWT-1
 ///   │  first install                                │
 ///   ├── Recommended for your 18 GB Mac ─────────────┤
-///   │  Best pick   bonsai-27b-2bit   [amber row     │ ← the RAM tier's
+///   │  Recommended qwen3.5-9b-4bit   [amber row     │ ← the RAM tier's
 ///   │              when selected]                   │   smart pick
-///   │  Faster      lfm2.5-8b-a1b-4bit               │ ← optional fast/light alt
+///   │  Faster      qwen3.5-4b-4bit                  │ ← optional fast/light alt
 ///   ├── All models (alphabetical) ──────────────────┤
 ///   │  bonsai-1.7b-unpacked                         │
 ///   │  deepseek-coder-v2-lite-16b-4bit            ● │ ← green dot = cached
@@ -838,7 +838,9 @@ struct ModelPickerBar: View {
             filtered: filtered,
             quickstartRowRendered: quickstartEntry() != nil
         )
-        let sorted = ModelPickerBar.orderedAllModels(deduped)
+        let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
+        let sorted = ModelPickerBar.orderedAllModels(partition.fits)
+        let notFit = ModelPickerBar.orderedAllModels(partition.notFit)
         let hiddenCount = ModelPickerVisibility.hiddenCount(
             catalog,
             selectedAlias: alias,
@@ -877,6 +879,33 @@ struct ModelPickerBar: View {
                 }
             }
         }
+        if !notFit.isEmpty {
+            Section("Not fit for this Mac") {
+                ForEach(notFit) { entry in
+                    aliasButton(entry, notFit: true)
+                }
+            }
+        }
+    }
+
+    /// Keep oversized aliases discoverable without presenting them beside
+    /// models this Mac can actually run. Download remains available; the
+    /// launch-time live-memory guard is still the final safety boundary.
+    static func partitionByFit(
+        _ entries: [ModelEntry],
+        hardware: MacHardware
+    ) -> (fits: [ModelEntry], notFit: [ModelEntry]) {
+        var fits: [ModelEntry] = []
+        var notFit: [ModelEntry] = []
+        for entry in entries {
+            let fit = ModelSizing.classify(ModelSizing.estimate(alias: entry.alias), on: hardware)
+            if fit == .tooBig {
+                notFit.append(entry)
+            } else {
+                fits.append(entry)
+            }
+        }
+        return (fits, notFit)
     }
 
     /// One row inside the "Recommended for your N GB Mac" section.
@@ -1040,13 +1069,18 @@ struct ModelPickerBar: View {
     /// Rows are no longer disabled by ``.tooBig``: a user can pick
     /// any alias from the picker, and the Start CTA wires the actual
     /// guardrail via the confirmation alert.
-    private func aliasButton(_ entry: ModelEntry) -> some View {
+    private func aliasButton(_ entry: ModelEntry, notFit: Bool = false) -> some View {
         let bucket = ModelPickerVisibility.qualityBucket(for: entry.alias)
+        let footprint = ModelSizing.estimate(alias: entry.alias)
         return Button {
             onUserSelection()
             alias = entry.alias
         } label: {
-            entryLabel(entry, bucket: bucket)
+            Label(
+                ModelPickerBar.aliasButtonTitle(alias: entry.alias, bucket: bucket)
+                    + (notFit ? " · needs ~\(Int(footprint.totalGB.rounded())) GB" : ""),
+                systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
+            )
         }
         .disabled(deleting == entry.alias)
         // cycle-10: rows in the .tiny (< 1B) and .small (>= 1B,
@@ -1055,8 +1089,9 @@ struct ModelPickerBar: View {
         // the cache-state cue. Combined into one string via
         // ``qualityRowHelpText`` so the help() modifier stays a single
         // value and tests can pin the multi-line copy.
-        .help(
-            ModelPickerBar.aliasRowHelpText(
+        .help(notFit
+            ? "Estimated to need about \(Int(footprint.totalGB.rounded())) GB; this Mac has \(Int(hardware.usableRAMGB.rounded())) GB available for models. You can download it, but starting it may fail or destabilize the Mac."
+            : ModelPickerBar.aliasRowHelpText(
                 alias: entry.alias,
                 bucket: bucket,
                 cached: entry.cached
@@ -1074,7 +1109,7 @@ struct ModelPickerBar: View {
                 alias: entry.alias,
                 cached: entry.cached,
                 bucket: bucket
-            )
+            ) + (notFit ? ". Not fit for this Mac. Needs about \(Int(footprint.totalGB.rounded())) gigabytes" : "")
         )
         // v0.5.2: right-click → "Delete from disk". Cached rows
         // only — uncached models would just trigger "alias not

@@ -33,20 +33,18 @@ struct Tier: Equatable {
     let alt: Pick?
     var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
 }
-let lfm2FastPick = Pick(alias: "lfm2.5-8b-a1b-4bit", footprintGB: 5.3, capabilityPct: 62,
-                        tokensPerSec: 121.2, launchFlags: [], caveat: "Chat only")
+let qwen4Pick = Pick(alias: "qwen3.5-4b-4bit", footprintGB: 5.9, capabilityPct: 78,
+                     tokensPerSec: 157.6, launchFlags: [])
+let qwen9Pick = Pick(alias: "qwen3.5-9b-4bit", footprintGB: 8.7, capabilityPct: 82,
+                     tokensPerSec: 106.4, launchFlags: [])
 let lfm26Pick = Pick(alias: "lfm2.5-2.6b-4bit", footprintGB: 2.0, capabilityPct: 62,
                      tokensPerSec: 97.8, launchFlags: [], caveat: "Not for coding")
 let qwen35bFastPick = Pick(alias: "qwen3.6-35b-4bit", footprintGB: 20.0, capabilityPct: 87,
                            tokensPerSec: 60.0, launchFlags: [])
 let tiers: [Tier] = [
     Tier(floorGB: 8, primary: lfm26Pick, alt: nil),
-    Tier(floorGB: 16,
-         primary: Pick(alias: "bonsai-27b-2bit", footprintGB: 8.4, capabilityPct: 86, tokensPerSec: 17.8, launchFlags: []),
-         alt: lfm2FastPick),
-    Tier(floorGB: 18,  // mirrors 16 GB (bonsai + lfm2.5) — no "more RAM, worse pick" dip
-         primary: Pick(alias: "bonsai-27b-2bit", footprintGB: 8.4, capabilityPct: 86, tokensPerSec: 17.8, launchFlags: []),
-         alt: lfm2FastPick),
+    Tier(floorGB: 16, primary: qwen4Pick, alt: nil),
+    Tier(floorGB: 18, primary: qwen9Pick, alt: qwen4Pick),
     Tier(floorGB: 24,
          primary: Pick(alias: "gemma-4-26b-4bit", footprintGB: 14.6, capabilityPct: 87, tokensPerSec: 41.7,
                        launchFlags: ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"]),
@@ -107,10 +105,10 @@ check(alias(forPhysicalRAMGB: 4)  == "lfm2.5-2.6b-4bit",    "sub-8GB clamps DOWN
 check(alias(forPhysicalRAMGB: 0)  == "lfm2.5-2.6b-4bit",    "0GB clamps to the smallest tier")
 check(alias(forPhysicalRAMGB: -1) == "lfm2.5-2.6b-4bit",    "negative RAM clamps to the smallest tier")
 check(alias(forPhysicalRAMGB: 15) == "lfm2.5-2.6b-4bit",    "15GB rounds DOWN to 8, not up to 16")
-check(alias(forPhysicalRAMGB: 16) == "bonsai-27b-2bit",     "16GB → bonsai-27b-2bit")
-check(alias(forPhysicalRAMGB: 17) == "bonsai-27b-2bit",     "17GB → still 16 tier")
-check(alias(forPhysicalRAMGB: 18) == "bonsai-27b-2bit",     "18GB → bonsai (mirrors 16 tier)")
-check(alias(forPhysicalRAMGB: 20) == "bonsai-27b-2bit",     "20GB rounds DOWN to 18 (bonsai), not 24")
+check(alias(forPhysicalRAMGB: 16) == "qwen3.5-4b-4bit",     "16GB → qwen3.5-4b")
+check(alias(forPhysicalRAMGB: 17) == "qwen3.5-4b-4bit",     "17GB → still 16 tier")
+check(alias(forPhysicalRAMGB: 18) == "qwen3.5-9b-4bit",     "18GB → qwen3.5-9b")
+check(alias(forPhysicalRAMGB: 20) == "qwen3.5-9b-4bit",     "20GB rounds DOWN to 18 (qwen9), not 24")
 check(alias(forPhysicalRAMGB: 24) == "gemma-4-26b-4bit",    "24GB → gemma-4-26b")
 check(alias(forPhysicalRAMGB: 30) == "gemma-4-26b-4bit",    "30GB → 24 tier")
 check(alias(forPhysicalRAMGB: 32) == "qwen3.6-35b-4bit",    "32GB → qwen3.6-35b-4bit")
@@ -120,11 +118,9 @@ check(alias(forPhysicalRAMGB: 96) == "qwen3.5-122b-mxfp4",  "96GB → 122b-mxfp4
 check(alias(forPhysicalRAMGB: 256) == "qwen3.5-122b-mxfp4", "256GB → 96 tier (122b-mxfp4)")
 
 print("Smart + fast picks per tier (fast alt only where it beats the smart pick on speed):")
-// 16/18 GB → slow smart pick, so a fast lfm2.5 alt.
-check(picks(forPhysicalRAMGB: 16).count == 2, "16GB has smart + fast")
-check(picks(forPhysicalRAMGB: 16)[1].alias == "lfm2.5-8b-a1b-4bit", "16GB fast is lfm2.5")
+check(picks(forPhysicalRAMGB: 16).count == 1, "16GB conservative pick stands alone")
 check(picks(forPhysicalRAMGB: 18).count == 2, "18GB has smart + fast")
-check(picks(forPhysicalRAMGB: 18)[1].alias == "lfm2.5-8b-a1b-4bit", "18GB fast is lfm2.5")
+check(picks(forPhysicalRAMGB: 18)[1].alias == "qwen3.5-4b-4bit", "18GB fast is qwen3.5-4b")
 // 24/32 GB → smart pick is already MoE-fast, so it stands alone.
 check(picks(forPhysicalRAMGB: 24).count == 1, "24GB smart pick stands alone (already fast)")
 check(picks(forPhysicalRAMGB: 32).count == 1, "32GB smart pick stands alone (already fast)")
@@ -158,13 +154,10 @@ for (a, b) in zip(floors, floors.dropFirst()) {
 }
 // 18 GB mirrors 16 GB (bonsai smart + lfm2.5 fast) — the old gemma-4-12b that
 // read 72 % (below 16 GB's 86 %) was dropped from the tier picks.
-check(picks(forPhysicalRAMGB: 18)[0].alias == "bonsai-27b-2bit" && picks(forPhysicalRAMGB: 18)[0].capabilityPct == 86, "18GB smart = bonsai 86% (mirrors 16GB)")
+check(picks(forPhysicalRAMGB: 18)[0].alias == "qwen3.5-9b-4bit" && picks(forPhysicalRAMGB: 18)[0].capabilityPct == 82, "18GB smart = qwen9 82%")
 check(!tiers.flatMap(\.picks).contains { $0.alias == "gemma-4-12b-4bit" }, "gemma-4-12b is no longer a tier pick")
 
-print("Fast chat-specialist shows a 'Chat only' caveat instead of a misleading capability %:")
-let fast16 = picks(forPhysicalRAMGB: 16)[1]
-check(fast16.caveat == "Chat only", "16GB fast (lfm2.5) carries the Chat only caveat")
-check(pickStatsLine(fast16) == "5.3 GB · ~121 tok/s · Chat only", "lfm2.5 stats line drops the % for the caveat")
+print("Smallest tier shows an honest capability caveat:")
 // Liquid publishes 2.6B as "not recommended for agentic coding" — our users
 // drive coding agents, so the card must say so instead of showing a bare %.
 let smart8 = picks(forPhysicalRAMGB: 8)[0]
@@ -176,13 +169,13 @@ let fast96 = picks(forPhysicalRAMGB: 96)[1]
 check(fast96.caveat == nil, "96GB fast (qwen3.6-35b-4bit) is general-purpose — no caveat")
 check(pickStatsLine(fast96) == "20.0 GB · 87% capability · ~60 tok/s", "general-purpose fast pick keeps its capability %")
 let smart16 = picks(forPhysicalRAMGB: 16)[0]
-check(pickStatsLine(smart16) == "8.4 GB · 86% capability · ~18 tok/s", "bonsai renders its served PEAK, not its weight bytes")
+check(pickStatsLine(smart16) == "5.9 GB · 78% capability · ~158 tok/s", "16GB qwen4 renders conservative footprint")
 let smart96 = picks(forPhysicalRAMGB: 96)[0]
 check(pickStatsLine(smart96) == "65.0 GB · 88% capability", "no-tok/s smart pick omits the speed figure")
 
 print("Launch flags travel with the recommendation, gated by RAM:")
 check(launchFlags(forAlias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8).isEmpty, "8GB lfm2.5-2.6b → no flags")
-check(launchFlags(forAlias: "bonsai-27b-2bit", physicalRAMGB: 18).isEmpty, "18GB bonsai → no flags")
+check(launchFlags(forAlias: "qwen3.5-9b-4bit", physicalRAMGB: 18).isEmpty, "18GB qwen9 → no flags")
 check(launchFlags(forAlias: "gemma-4-26b-4bit", physicalRAMGB: 24) == ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"], "24GB gemma-26b → kv trio")
 check(launchFlags(forAlias: "qwen3.6-35b-4bit", physicalRAMGB: 32).isEmpty, "35b-4bit → no flags")
 // Key: hand-picking gemma-26b on a big Mac (where it is NOT the pick) → no forced flags.
@@ -190,12 +183,12 @@ check(launchFlags(forAlias: "gemma-4-26b-4bit", physicalRAMGB: 64).isEmpty, "gem
 check(launchFlags(forAlias: "some-random", physicalRAMGB: 32).isEmpty, "unknown alias → no flags")
 
 print("isRecommendedPick is floor-gated (the floor is now 8 GB, not 16):")
-check(isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 16), "bonsai IS recommended on 16GB (in tier)")
-check(isRecommendedPick(alias: "lfm2.5-8b-a1b-4bit", physicalRAMGB: 16), "lfm2.5 alt IS recommended on 16GB")
+check(isRecommendedPick(alias: "qwen3.5-4b-4bit", physicalRAMGB: 16), "qwen4 IS recommended on 16GB")
 check(isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 8), "lfm2.5-2.6b IS recommended on 8GB (its own tier)")
 check(!isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 8), "bonsai still NOT recommended on 8GB (not in the 8 tier)")
 check(!isRecommendedPick(alias: "lfm2.5-2.6b-4bit", physicalRAMGB: 4), "sub-floor 4GB Mac gets NO exemption even from its own tier pick")
-check(isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18), "bonsai recommended on 18GB (mirrors 16 tier)")
+check(isRecommendedPick(alias: "qwen3.5-9b-4bit", physicalRAMGB: 18), "qwen9 recommended on 18GB")
+check(!isRecommendedPick(alias: "bonsai-27b-2bit", physicalRAMGB: 18), "bonsai is never recommended on laptop tiers")
 check(!isRecommendedPick(alias: "gemma-4-12b-4bit", physicalRAMGB: 18), "gemma-12b NOT recommended anywhere (dropped from picks)")
 check(isRecommendedPick(alias: "gemma-4-26b-4bit", physicalRAMGB: 24), "gemma-26b recommended on 24GB")
 check(isRecommendedPick(alias: "qwen3.5-122b-mxfp4", physicalRAMGB: 96), "122b-mxfp4 recommended on 96GB")
@@ -216,11 +209,8 @@ func rejectsForAutoStart(alias a: String, modelSizingSaysTooBig tooBig: Bool, ph
 }
 
 print("Launch auto-start never rejects the curated recommendation (codex r6 MAJOR):")
-// bonsai-27b-2bit is really 7.6GB but ModelSizing over-estimates it as
-// ~14.8GB → .tooBig on a 16GB Mac. It IS the 16-tier pick, so auto-start
-// must keep it (not fall through to .noResolvableAlias / an unrelated model).
-check(!rejectsForAutoStart(alias: "bonsai-27b-2bit", modelSizingSaysTooBig: true, physicalRAMGB: 16),
-      "16GB: recommended bonsai NOT rejected despite ModelSizing .tooBig")
+check(rejectsForAutoStart(alias: "bonsai-27b-2bit", modelSizingSaysTooBig: true, physicalRAMGB: 16),
+      "16GB: bonsai is no longer exempt from ModelSizing .tooBig")
 check(rejectsForAutoStart(alias: "bonsai-27b-2bit", modelSizingSaysTooBig: true, physicalRAMGB: 8),
       "8GB: bonsai is not this tier's pick → auto-start still rejects .tooBig")
 // The hole this tier closes: before it, EVERY pick offered to an 8 GB Mac was
