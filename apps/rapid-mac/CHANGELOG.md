@@ -37,11 +37,12 @@ Bundles the **Rapid-MLX 0.12.7** engine.
 ### Changed
 
 - **The suggested models for your Mac are now measured, not estimated.** Each
-  memory size offers exactly two: a faster one and a smarter one. For every
-  size up to 48 GB, the memory each really uses and how quickly it answers come
-  from runs on real hardware. The 64 GB and 96 GB+ suggestions are the previous
-  reviewed picks, carried forward unmeasured — they are larger than the machine
-  the benchmarks ran on.
+  memory size offers exactly two: a faster one and a smarter one, with the
+  memory each really uses and how quickly it answers taken from runs on real
+  hardware. Two exceptions: on Macs with 64 GB or more, the *smarter* choice is
+  a previous recommendation carried over without a measurement, because those
+  models are bigger than the machine the benchmarks ran on. The faster choice
+  is measured on every size.
 - **Models and Model Management are one screen** instead of two that overlapped.
 
 ### Added
