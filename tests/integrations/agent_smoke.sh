@@ -73,15 +73,40 @@ export CODEX_HOME="${CODEX_HOME_OVERRIDE:-$(mktemp -d)}"
 export HERMES_HOME="${HERMES_HOME_OVERRIDE:-$(mktemp -d)}"
 for _home_var in CODEX_HOME HERMES_HOME; do
   eval "_home_val=\${$_home_var}"
-  if ! python3 -c 'import sys; raise SystemExit(0 if sys.argv[1].strip() else 1)' \
-       "${_home_val}" 2>/dev/null; then
-    echo "SMOKE-ABORT: $_home_var is blank to Python — refusing to run, as" >&2
+  # Resolve it EXACTLY as _resolve_config_path will (strip, then expanduser)
+  # and re-export the result, so the value this script validates, backs up and
+  # cleans up is byte-for-byte the one setup writes to. Validating the raw
+  # value instead lets the two diverge: a real directory named "$HOME/.codex "
+  # (trailing space) passes an is-a-directory check here while Python strips
+  # the space and writes the operator's real ~/.codex/config.toml — which the
+  # backup and restore then miss, because they are looking at the other path.
+  _home_val="$(python3 -c 'import os, sys
+v = sys.argv[1].strip()
+sys.stdout.write(os.path.expanduser(v) if v else "")' "${_home_val}" 2>/dev/null)"
+  if [ -z "${_home_val}" ]; then
+    echo "SMOKE-ABORT: $_home_var is blank once resolved — refusing to run, as" >&2
     echo "             \`agents --setup\` would then write the operator's real config." >&2
     exit 3
   fi
   [ -d "${_home_val}" ] || { echo "SMOKE-ABORT: $_home_var=${_home_val} is not a directory" >&2; exit 3; }
+  # Belt and braces: refuse to run against the operator's REAL config dir, no
+  # matter how the value spelled its way here. Agreeing with Python is not the
+  # same as being safe — "$HOME/.codex " resolves to exactly the directory this
+  # redirect exists to protect, and it is a real directory, so every check
+  # above passes. There is no legitimate reason for this gate to write there.
+  case "$_home_var" in
+    CODEX_HOME)  _home_real="$HOME/.codex" ;;
+    HERMES_HOME) _home_real="$HOME/.hermes" ;;
+    *)           _home_real="" ;;
+  esac
+  if [ -n "$_home_real" ] && [ "${_home_val}" = "$_home_real" ]; then
+    echo "SMOKE-ABORT: $_home_var resolves to the operator's real config dir" >&2
+    echo "             ($_home_real). Refusing — this gate must never write there." >&2
+    exit 3
+  fi
+  export "$_home_var=${_home_val}"
 done
-unset _home_var _home_val
+unset _home_var _home_val _home_real
 CODEX_CFG="$CODEX_HOME/config.toml"
 HERMES_CFG="$HERMES_HOME/config.yaml"
 

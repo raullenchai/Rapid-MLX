@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import yaml
@@ -109,6 +110,35 @@ def _load_profile_from_yaml(path: Path) -> AgentProfile:
     )
 
 
+def _keep_home_env(
+    profile: AgentProfile, shadowed: AgentProfile | None
+) -> AgentProfile:
+    """Carry ``home_env`` across a user profile that shadows a built-in.
+
+    A file in ``~/.rapid-mlx/agents/`` replaces a built-in profile *wholesale*,
+    so a hand-written ``codex.yaml`` that never mentions ``home_env`` silently
+    removes the redirect and sends ``agents --setup`` back to the operator's
+    real ``~/.codex/config.toml`` — the exact bug the redirect exists to stop,
+    reintroduced by a file whose author was thinking about models, not safety.
+
+    Overriding the *variable* is still allowed; only dropping it is refused.
+    """
+    if shadowed is None or not shadowed.config.home_env:
+        return profile
+    if profile.config.home_env:
+        return profile
+    logger.warning(
+        "User profile %r omits config.home_env; inheriting %r from the built-in "
+        "so `agents --setup` cannot write the real config.",
+        profile.name,
+        shadowed.config.home_env,
+    )
+    return dc_replace(
+        profile,
+        config=dc_replace(profile.config, home_env=shadowed.config.home_env),
+    )
+
+
 def load_profiles(profiles_dir: Path | str | None = None):
     """Load all agent profiles from YAML files.
 
@@ -139,6 +169,7 @@ def load_profiles(profiles_dir: Path | str | None = None):
         for yaml_file in sorted(user_profiles.glob("*.yaml")):
             try:
                 profile = _load_profile_from_yaml(yaml_file)
+                profile = _keep_home_env(profile, _PROFILES.get(profile.name))
                 _PROFILES[profile.name] = profile
                 logger.debug(f"Loaded user agent profile: {profile.name}")
             except Exception as e:

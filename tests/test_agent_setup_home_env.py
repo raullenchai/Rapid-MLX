@@ -143,6 +143,39 @@ def test_no_resolvable_version_escapes_the_redirect():
             )
 
 
+def test_a_user_profile_cannot_drop_the_redirect():
+    """`~/.rapid-mlx/agents/codex.yaml` replaces the built-in wholesale.
+
+    A hand-written profile that never mentions ``home_env`` would otherwise
+    remove the redirect entirely and send ``--setup`` back to the operator's
+    real config — reintroduced by a file whose author was thinking about
+    models, not about config safety.
+    """
+    from vllm_mlx.agents import _keep_home_env
+    from vllm_mlx.agents.base import AgentConfigSpec
+
+    builtin = get_profile("codex")
+    assert builtin.config.home_env == "CODEX_HOME"
+
+    from dataclasses import replace as _replace
+
+    silent = _replace(
+        builtin,
+        config=AgentConfigSpec(type="toml", path="~/.codex/config.toml"),
+    )
+    assert silent.config.home_env is None  # what the loader would have produced
+    assert _keep_home_env(silent, builtin).config.home_env == "CODEX_HOME"
+
+    # Choosing a *different* variable is still the profile author's call.
+    relocated = _replace(
+        builtin,
+        config=AgentConfigSpec(
+            type="toml", path="~/.codex/config.toml", home_env="MY_CODEX_HOME"
+        ),
+    )
+    assert _keep_home_env(relocated, builtin).config.home_env == "MY_CODEX_HOME"
+
+
 def test_a_version_that_declares_its_own_home_env_keeps_it():
     """Inheritance fills a hole; it never overrides a deliberate choice.
 
