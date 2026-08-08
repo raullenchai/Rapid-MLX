@@ -13,15 +13,18 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 import httpx
 
@@ -706,8 +709,51 @@ def _test_tag_suppression(
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
+def _e2e_workspace():
+    """A throwaway directory for the agent to work in.
+
+    The e2e tests hand a real coding agent a real working directory, and
+    two things follow from that.
+
+    First, correctness: `_test_e2e_file_read` asks the agent to read
+    ``pyproject.toml``. Run from the caller's cwd that only works when
+    the caller happened to be standing in a Python project — from
+    anywhere else the agent hunts for a file that isn't there and burns
+    the whole timeout. The fixture below makes the task the same task
+    every time.
+
+    Second, blast radius: Codex is launched with ``--skip-git-repo-check``
+    (it refuses to run outside a trusted repo, and the runner cannot
+    assume one). Bypassing that check in an inherited, caller-controlled
+    directory would expose whatever the caller happened to be standing in
+    — including files and agent instructions from an untrusted checkout.
+    Bypassing it in a directory we just created, containing one file we
+    wrote, does not.
+    """
+    workdir = tempfile.mkdtemp(prefix="rapid-mlx-agent-e2e-")
+    try:
+        # Minimal but real: the first line is what `_test_e2e_file_read`
+        # asks for, and both of its accepted substrings ("build",
+        # "project") appear, so the assertion does not depend on which
+        # part of the file the agent chooses to quote back.
+        Path(workdir, "pyproject.toml").write_text(
+            "[build-system]\n"
+            'requires = ["hatchling"]\n'
+            'build-backend = "hatchling.build"\n'
+            "\n"
+            "[project]\n"
+            'name = "rapid-mlx-agent-e2e-fixture"\n'
+            'version = "0.0.0"\n',
+            encoding="utf-8",
+        )
+        yield workdir
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def _agent_query(
-    binary: str, query_cmd: str, query: str, timeout: int = 120
+    binary: str, query_cmd: str, query: str, timeout: int = 120, cwd: str | None = None
 ) -> tuple[str | None, str | None]:
     """Run a single agent query. Returns (output, error).
 
@@ -746,7 +792,10 @@ def _agent_query(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=os.getcwd(),
+            # An explicit workspace, not the caller's cwd — see
+            # ``_e2e_workspace``. Falling back to os.getcwd() keeps any
+            # caller that hasn't opted in behaving exactly as before.
+            cwd=cwd or os.getcwd(),
             # Close stdin. Without this the child inherits ours, and a CLI
             # that reads stdin when it isn't a TTY blocks until `timeout`
             # instead of answering the query it was handed on argv. Codex
@@ -826,11 +875,13 @@ def _err_to_status(err: str | None) -> TestStatus:
     return TestStatus.ERROR
 
 
-def _test_e2e_chat(binary: str, query_cmd: str, timeout: int) -> TestResult:
+def _test_e2e_chat(
+    binary: str, query_cmd: str, timeout: int, cwd: str | None = None
+) -> TestResult:
     """Agent basic chat."""
     t0 = time.time()
     out, err = _agent_query(
-        binary, query_cmd, "What is 2+2? Reply with just the number.", timeout
+        binary, query_cmd, "What is 2+2? Reply with just the number.", timeout, cwd
     )
     if err:
         status = _err_to_status(err)
@@ -857,11 +908,13 @@ def _test_e2e_chat(binary: str, query_cmd: str, timeout: int) -> TestResult:
     )
 
 
-def _test_e2e_file_read(binary: str, query_cmd: str, timeout: int) -> TestResult:
+def _test_e2e_file_read(
+    binary: str, query_cmd: str, timeout: int, cwd: str | None = None
+) -> TestResult:
     """Agent reads a file via tool call."""
     t0 = time.time()
     out, err = _agent_query(
-        binary, query_cmd, "Read the first line of pyproject.toml", timeout
+        binary, query_cmd, "Read the first line of pyproject.toml", timeout, cwd
     )
     if err:
         status = _err_to_status(err)
@@ -889,13 +942,13 @@ def _test_e2e_file_read(binary: str, query_cmd: str, timeout: int) -> TestResult
 
 
 def _test_e2e_terminal(
-    binary: str, query_cmd: str, timeout: int, agent_name: str
+    binary: str, query_cmd: str, timeout: int, agent_name: str, cwd: str | None = None
 ) -> TestResult:
     """Agent runs a shell command."""
     t0 = time.time()
     marker = f"rapidmlx_{agent_name}_test"
     out, err = _agent_query(
-        binary, query_cmd, f"Run 'echo {marker}' and show me the output", timeout
+        binary, query_cmd, f"Run 'echo {marker}' and show me the output", timeout, cwd
     )
     if err:
         status = _err_to_status(err)
@@ -1108,23 +1161,29 @@ class AgentTestRunner:
         # --- E2E tests ---
         if self._agent_binary_available() and testing.binary and testing.query_cmd:
             binary = os.path.expanduser(testing.binary)
-            report.results.append(
-                _test_e2e_chat(binary, testing.query_cmd, testing.query_timeout)
-            )
-            if self.profile.needs_function_calling:
+            # One workspace for all three: the agent gets a directory we
+            # built, not whatever the caller happened to be standing in.
+            with _e2e_workspace() as workdir:
                 report.results.append(
-                    _test_e2e_file_read(
-                        binary, testing.query_cmd, testing.query_timeout
+                    _test_e2e_chat(
+                        binary, testing.query_cmd, testing.query_timeout, workdir
                     )
                 )
-                report.results.append(
-                    _test_e2e_terminal(
-                        binary,
-                        testing.query_cmd,
-                        testing.query_timeout,
-                        self.profile.name,
+                if self.profile.needs_function_calling:
+                    report.results.append(
+                        _test_e2e_file_read(
+                            binary, testing.query_cmd, testing.query_timeout, workdir
+                        )
                     )
-                )
+                    report.results.append(
+                        _test_e2e_terminal(
+                            binary,
+                            testing.query_cmd,
+                            testing.query_timeout,
+                            self.profile.name,
+                            workdir,
+                        )
+                    )
         elif testing.binary:
             # Two distinct skip reasons land here:
             #   (a) binary on PATH but profile has `query_cmd: null`
