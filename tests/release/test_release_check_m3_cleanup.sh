@@ -122,5 +122,65 @@ else
   bad "G12 no longer calls cleanup inline — re-read this test's premise"
 fi
 
+echo "── old_server_alive() (the G12 port/GPU handoff)"
+
+# Extract the nested helper — it lives inside the G12 `else` branch, indented.
+sed -n '/^  old_server_alive() {/,/^  }/p' "$SCRIPT" | sed 's/^  //' > "$TMP/alive.sh"
+if [ ! -s "$TMP/alive.sh" ]; then
+  printf '  \033[31mFAIL\033[0m could not extract old_server_alive() from %s\n' "$SCRIPT"
+  exit 1
+fi
+
+# `kill` and `ps` are shadowed so each process state can be posed exactly.
+# A zombie is the case that matters: `kill -0` succeeds on one, because a child
+# that has exited but has not been reaped still owns a pid — and owns no GPU.
+# Reading that as "still running" burns the whole 60s deadline and then SIGKILLs
+# a corpse, turning a clean shutdown into a gate failure.
+alive_with() {  # $1 = ps stat output, $2 = kill -0 status
+  bash -c '
+      set -uo pipefail
+      OLD_SERVER_PID=4242
+      kill() { return '"$2"'; }
+      ps() { printf "%s" "'"$1"'"; }
+      . "'"$TMP"'/alive.sh"
+      old_server_alive
+    ' 2>/dev/null
+}
+
+if alive_with "S+" 0; then
+  ok "a running process reads as alive"
+else
+  bad "a running process read as gone — the handoff would proceed onto a busy GPU"
+fi
+
+if alive_with "Z" 0; then
+  bad "a ZOMBIE read as alive — the deadline would expire and SIGKILL a corpse"
+else
+  ok "a zombie reads as gone (kill -0 succeeds on one; ps says Z)"
+fi
+
+if alive_with "" 0; then
+  bad "an unreadable process state read as alive"
+else
+  ok "a process ps cannot describe reads as gone"
+fi
+
+if alive_with "S+" 1; then
+  bad "kill -0 failing still read as alive"
+else
+  ok "a pid that no longer exists reads as gone"
+fi
+
+if bash -c '
+      set -uo pipefail
+      OLD_SERVER_PID=""
+      . "'"$TMP"'/alive.sh"
+      old_server_alive
+    ' 2>/dev/null; then
+  bad "an empty pid read as alive — nothing to wait for"
+else
+  ok "an empty pid reads as gone"
+fi
+
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

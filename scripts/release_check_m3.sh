@@ -657,6 +657,20 @@ else
   command -v lsof >/dev/null 2>&1 \
     || { echo "  ✗ lsof is required to verify the port handoff to G12" >&2; exit 1; }
   OLD_SERVER_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  # `kill -0` succeeds on a ZOMBIE — a child that has exited but whose status
+  # the shell has not collected still owns a pid, and it owns no GPU. Waiting
+  # for one to "go away" burns the whole deadline and then SIGKILLs a corpse,
+  # turning a clean shutdown into a gate failure. Read the state instead.
+  # Non-blocking on purpose: a plain `wait` would hang forever on the shutdown
+  # this deadline exists to catch.
+  old_server_alive() {
+    [ -n "$OLD_SERVER_PID" ] || return 1
+    kill -0 "$OLD_SERVER_PID" 2>/dev/null || return 1
+    case "$(ps -o stat= -p "$OLD_SERVER_PID" 2>/dev/null)" in
+      Z*|"") return 1 ;;
+      *)    return 0 ;;
+    esac
+  }
   cleanup
   sleep 2
   # Wait for the old server to be GONE, not merely for the port to look
@@ -672,7 +686,7 @@ else
   server_gone=0
   handoff_deadline=$((SECONDS + 60))
   while [ "$SECONDS" -lt "$handoff_deadline" ]; do
-    if [ -n "$OLD_SERVER_PID" ] && kill -0 "$OLD_SERVER_PID" 2>/dev/null; then
+    if old_server_alive; then
       sleep 1
       continue
     fi
@@ -698,9 +712,11 @@ else
     # can no longer reach it: exiting here would leave the process alive with
     # the GPU allocated, poisoning the retry this failure is telling us to
     # run. Kill it for real before giving up.
-    if [ -n "$OLD_SERVER_PID" ] && kill -0 "$OLD_SERVER_PID" 2>/dev/null; then
+    if old_server_alive; then
       echo "    SIGKILLing $OLD_SERVER_PID so the retry starts on a free GPU" >&2
       kill -9 "$OLD_SERVER_PID" 2>/dev/null || true
+      # It IS a child of this shell (started with `&` above), so this reaps it
+      # rather than returning 127; SIGKILL cannot be caught, so it cannot hang.
       wait "$OLD_SERVER_PID" 2>/dev/null || true
     fi
     exit 1
