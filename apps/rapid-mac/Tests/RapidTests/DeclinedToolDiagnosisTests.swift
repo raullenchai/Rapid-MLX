@@ -211,6 +211,20 @@ final class DeclinedToolDiagnosisTests {
         #expect(result.failureKind?.severity == .error)
     }
 
+    @Test("An oversized browse page gets specific recovery copy")
+    func oversizedBrowsePageIsSpecific() throws {
+        let kind = FailureDiagnoser.toolFailureKind(
+            toolName: "browse",
+            content: "browse error: page exceeded 2 MB cap",
+            isError: true
+        )
+        #expect(kind == .browsePageTooLarge)
+        let diagnosis = FailureDiagnoser.diagnosis(for: try #require(kind))
+        #expect(diagnosis.message ==
+                "This page is too large for Rapid to read at once. Search it or open a smaller page instead.")
+        #expect(diagnosis.action == nil)
+    }
+
     @Test("Text that merely LOOKS like a decline is not promoted to one")
     func declineIsNeverInferredFromWording() {
         // The marker is carried by the approval gate, so a page (or a future
@@ -327,6 +341,7 @@ final class DeclinedToolDiagnosisTests {
         // The condition this kind describes used to land on webSearchUnavailable,
         // so that is what an older build should keep showing for it.
         #expect(FailureDiagnosis.Kind.webSearchRateLimited.legacyPersistedKind == .webSearchUnavailable)
+        #expect(FailureDiagnosis.Kind.browsePageTooLarge.legacyPersistedKind == .toolFailed)
     }
 
     @Test("A rate-limited row is downgrade-safe and reopens as itself")

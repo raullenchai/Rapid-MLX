@@ -248,17 +248,17 @@ struct ConnectToolsView: View {
                 id: "codex",
                 name: "Codex",
                 symbol: "chevron.left.forwardslash.chevron.right",
-                blurb: "Launch with this connection for one session. Your shell environment stays unchanged.",
-                snippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKey) codex",
-                displaySnippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKeyMasked) codex"
+                blurb: "Launch with an isolated Rapid provider for one session. Your existing Codex provider and shell environment stay unchanged.",
+                snippet: "env OPENAI_API_KEY=\(snippetKey) codex --ignore-user-config -m \(snippetModel) -c 'model_provider=\"rapid-mlx\"' -c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(openAIBaseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'",
+                displaySnippet: "env OPENAI_API_KEY=\(snippetKeyMasked) codex --ignore-user-config -m \(snippetModel) -c 'model_provider=\"rapid-mlx\"' -c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(openAIBaseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'"
             ),
             ConnectTool(
                 id: "hermes",
                 name: "Hermes",
                 symbol: "bolt.horizontal.circle",
                 blurb: "Launch with this connection and model for one session. Your shell environment stays unchanged.",
-                snippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKey) HERMES_INFERENCE_MODEL=\(snippetModel) hermes",
-                displaySnippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKeyMasked) HERMES_INFERENCE_MODEL=\(snippetModel) hermes"
+                snippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKey) HERMES_INFERENCE_MODEL=\(snippetModel) hermes --provider openai-api --ignore-user-config",
+                displaySnippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKeyMasked) HERMES_INFERENCE_MODEL=\(snippetModel) hermes --provider openai-api --ignore-user-config"
             ),
         ]
     }

@@ -20,6 +20,9 @@ struct FailureDiagnosis: Equatable, Sendable {
         /// Settings is misconfigured, so "check its settings" sends the user to
         /// a dead end. The only real fix is a different backend.
         case webSearchRateLimited
+        /// A browse fetch crossed the bounded response cap. The agent can
+        /// normally recover by searching or choosing a narrower page.
+        case browsePageTooLarge
         case commandPermissionDenied
         case commandFailed
         case fileNotFound
@@ -58,6 +61,8 @@ struct FailureDiagnosis: Equatable, Sendable {
             // copy it always showed for a throttled search.
             case .webSearchRateLimited:
                 return .webSearchUnavailable
+            case .browsePageTooLarge:
+                return .toolFailed
             case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
                  .webSearchOffline, .webSearchUnavailable,
                  .commandPermissionDenied, .commandFailed,
@@ -194,6 +199,7 @@ extension FailureDiagnosis.Kind {
         // copy and deep-link do the recovering.
         case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
              .webSearchOffline, .webSearchUnavailable, .webSearchRateLimited,
+             .browsePageTooLarge,
              .commandPermissionDenied, .commandFailed,
              .fileNotFound, .filePermissionDenied, .toolFailed,
              .downloadFailed, .downloadSourceUnavailable, .requestFailed:
@@ -243,6 +249,9 @@ enum FailureDiagnoser {
             // remedy so it still reads inside the tool card.
             message = "DuckDuckGo is rate-limiting web searches from this Mac. Switch to Brave Search or Tavily in Settings → Tools and add a free key."
             action = .openWebSearchSettings
+        case .browsePageTooLarge:
+            message = "This page is too large for Rapid to read at once. Search it or open a smaller page instead."
+            action = nil
         case .commandPermissionDenied:
             // No action, and no "allow that folder, then try again" — this app
             // ships no shell tool and no place to grant a folder, so the old
@@ -322,6 +331,12 @@ enum FailureDiagnoser {
         }
 
         guard isError else { return nil }
+
+        if toolName == "browse",
+           raw.contains("page exceeded"),
+           raw.contains("mb cap") {
+            return .browsePageTooLarge
+        }
 
         if toolName == "web_search" {
             // ``WebSearchTool`` stamps ``.webSearchRateLimited`` on the result

@@ -85,6 +85,7 @@ struct FailureDiagnosisView: View {
         case .engineNotRunning, .modelLoadFailed: return "bolt.slash"
         case .webSearchOffline, .webSearchUnavailable: return "wifi.exclamationmark"
         case .webSearchRateLimited: return "hourglass"
+        case .browsePageTooLarge: return "doc.text.magnifyingglass"
         case .commandPermissionDenied, .filePermissionDenied: return "hand.raised.fill"
         // Unfilled, and tinted secondary above: the user turned this down on
         // purpose, so it reads as a note rather than a stop sign.

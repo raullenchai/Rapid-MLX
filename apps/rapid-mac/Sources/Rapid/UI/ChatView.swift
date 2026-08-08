@@ -961,16 +961,43 @@ private struct MessageRow: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
-            Label(message.reasoningTruncated ? "Thinking trace (cut off)" : "Reasoning",
-                  systemImage: "brain")
+            HStack(spacing: RapidTheme.Space.xs) {
+                Label(message.reasoningTruncated ? "Thinking trace (cut off)" : reasoningTitle,
+                      systemImage: "brain")
+                if reasoningInProgress {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityHidden(true)
+                }
+            }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(reasoningAccessibilityLabel)
         }
         .onAppear {
             // Auto-expand a truncated reasoning-only turn so the user
             // sees the partial trace instead of an empty bubble.
             if message.reasoningTruncated { reasoningExpanded = true }
         }
+    }
+
+    /// A reasoning trace can begin well before answer tokens arrive. Keeping
+    /// its disclosure label static during that interval made a healthy stream
+    /// look frozen. Key this to the ROW's status (not the view model's global
+    /// streaming flag) so completed history never keeps animating while a
+    /// later turn is running.
+    private var reasoningInProgress: Bool {
+        message.status == .streaming && !message.reasoningTruncated
+    }
+
+    private var reasoningTitle: String {
+        reasoningInProgress ? "Reasoning…" : "Reasoning"
+    }
+
+    private var reasoningAccessibilityLabel: String {
+        if message.reasoningTruncated { return "Thinking trace, cut off" }
+        return reasoningInProgress ? "Reasoning in progress" : "Reasoning"
     }
 
     private var showTypingIndicator: Bool {
@@ -1121,13 +1148,17 @@ private struct ToolCallChip: View {
     private var statusIcon: String {
         guard result != nil else { return "ellipsis.circle" }
         guard let failureDiagnosis else { return "checkmark.circle.fill" }
-        return failureDiagnosis.severity == .notice ? "hand.raised" : "exclamationmark.octagon.fill"
+        if failureDiagnosis.severity == .notice { return "hand.raised" }
+        if failureDiagnosis.kind == .browsePageTooLarge { return "exclamationmark.triangle.fill" }
+        return "exclamationmark.octagon.fill"
     }
 
     private var statusColor: Color {
         guard result != nil else { return .secondary }
         guard let failureDiagnosis else { return .green }
-        return failureDiagnosis.severity == .notice ? .secondary : RapidTheme.statusError
+        if failureDiagnosis.severity == .notice { return .secondary }
+        if failureDiagnosis.kind == .browsePageTooLarge { return .orange }
+        return RapidTheme.statusError
     }
 
     /// Red is reserved for something that actually went wrong. A decline reads
@@ -1135,7 +1166,9 @@ private struct ToolCallChip: View {
     /// "this ended early, and that's fine" footers (e.g. "Stopped.").
     private var resultBodyColor: Color {
         guard let failureDiagnosis else { return .secondary }
-        return failureDiagnosis.severity == .notice ? .secondary : RapidTheme.statusError
+        if failureDiagnosis.severity == .notice { return .secondary }
+        if failureDiagnosis.kind == .browsePageTooLarge { return .orange }
+        return RapidTheme.statusError
     }
 
     var body: some View {
