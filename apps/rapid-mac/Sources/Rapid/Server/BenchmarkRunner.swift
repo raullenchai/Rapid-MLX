@@ -322,7 +322,11 @@ final class BenchmarkRunner {
         baseURL: URL, bearer: String, alias: String,
         maxTokens: Int, prompt: String
     ) throws -> URLRequest {
-        let url = baseURL.appendingPathComponent("chat/completions")
+        // NOT ``baseURL.appendingPathComponent("chat/completions")``. The
+        // base URL is ``http://127.0.0.1:<port>`` with no path, so that built
+        // ``/chat/completions``, which the engine does not serve — every run
+        // 404'd and reported "The benchmark didn't finish" (#1668).
+        let url = ChatStreamClient.chatCompletionsURL(base: baseURL)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 180

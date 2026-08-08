@@ -15,6 +15,10 @@ can actually understand.
 
 ### Fixed
 
+- **"Speed on this Mac" actually measures something.** It was posting to the
+  wrong path on the local server, so every run 404'd and reported "The
+  benchmark didn't finish. Try again." without ever having measured anything.
+
 - **"Browse all models" in the setup wizard opens the model catalogue.** It used
   to close the wizard instead — your chosen model was discarded and you landed
   on the chat surface pinned to a model you never picked. It now opens

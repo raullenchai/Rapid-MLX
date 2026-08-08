@@ -222,6 +222,19 @@ struct ChatStreamClient {
         URL(string: "http://127.0.0.1:\(port)")!
     }
 
+    /// The chat-completions endpoint for a port-only base URL.
+    ///
+    /// Written exactly once, for the same reason `loopbackURL` is: the base
+    /// URL every caller holds is `http://127.0.0.1:<port>` with NO path, so
+    /// each one has to remember to add `v1/`. The benchmark forgot, POSTed to
+    /// `/chat/completions`, got a 404 from the engine and reported "The
+    /// benchmark didn't finish" — a shipped feature that could never once have
+    /// worked (#1668). Anything that talks to the local engine's chat endpoint
+    /// goes through here.
+    static func chatCompletionsURL(base: URL) -> URL {
+        base.appendingPathComponent("v1/chat/completions")
+    }
+
     /// Default startup-time base URL — pulled from
     /// `PortSweep.defaultPort` (the single source of truth) so the
     /// literal port doesn't live in two places. ChatViewModel
@@ -319,7 +332,7 @@ struct ChatStreamClient {
         bearerToken: String? = nil,
         onEvent: @escaping @MainActor (Event) -> Void
     ) async throws {
-        let url = baseURL.appendingPathComponent("v1/chat/completions")
+        let url = Self.chatCompletionsURL(base: baseURL)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
