@@ -545,6 +545,58 @@ def test_harness_timeout_forces_server_restart_isolation(capsys):
     )
 
 
+def test_attached_harness_timeout_stops_before_next_profile(capsys):
+    """An attached server cannot isolate an orphan, so fail closed."""
+    import threading
+
+    invocations: list[str] = []
+
+    def _runner_factory(profile, base_url, model_id=None, **kwargs):
+        invocations.append(profile.name)
+        runner = MagicMock()
+        if profile.name == "codex":
+            runner.run.side_effect = lambda: threading.Event().wait()
+        else:
+            runner.run.return_value = _make_fake_report()
+        return runner
+
+    def _fake_get_profile(name):
+        profile = MagicMock()
+        profile.name = name
+        profile.display_name = name.title()
+        return profile
+
+    class _FakeResp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    with (
+        patch("urllib.request.urlopen", return_value=_FakeResp()),
+        patch("vllm_mlx.agents.get_profile", _fake_get_profile),
+        patch("vllm_mlx.agents.testing.AgentTestRunner", side_effect=_runner_factory),
+        patch("vllm_mlx.bench.tier_runner._health_check", return_value=True),
+        patch("vllm_mlx.bench.tier_runner.HARNESS_PROFILE_TIMEOUT_S", 1),
+    ):
+        rc = run_tier(
+            model="qwen3.5-4b-4bit",
+            tier="harness",
+            base_url="http://127.0.0.1:8000/v1",
+        )
+
+    assert invocations == ["codex"]
+    assert rc == 1
+    output = capsys.readouterr().out
+    assert "server isolation FAILED" in output
+    assert "not run: prior profile timed out" in output
+    for profile_name in HARNESS_PROFILES[1:]:
+        assert f"FAIL {profile_name}" in output
+
+
 def test_harness_restart_tears_down_old_server_before_booting_new(capsys):
     """Reboot must kill the current server BEFORE spawning the replacement.
 

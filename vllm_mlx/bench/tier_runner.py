@@ -653,18 +653,16 @@ class _HarnessServerSession:
         race against the new profile's measurements / failure modes.
         Force a fresh server so the next profile starts on a clean slate.
 
-        No-op (returns ``(True, None)``) when we don't own the server —
-        we can't restart what the user is hosting, so the next profile
-        will simply contend with whatever ghost requests the orphan
-        emits. Surface a clear note in that case so the gauntlet
-        operator knows the next profile's numbers are suspect.
+        Returns ``False`` when we don't own the server. We cannot restart
+        what the user is hosting, so clean isolation cannot be restored;
+        the caller must stop the sweep instead of reporting subsequent
+        profiles whose measurements may be contaminated by the orphan.
         """
         if not self._owns:
             return (
-                True,
+                False,
                 "profile timed out and --base-url is attached — "
-                "subsequent profile measurements may be polluted by the "
-                "orphaned worker",
+                "cannot isolate subsequent profiles from the orphaned worker",
             )
         return self._restart()
 
@@ -944,7 +942,7 @@ def _run_harness(
     # profiles not in the active sweep. G12 (random-coverage) uses this
     # to scope to e.g. 2 of the 5 harnesses per (model × round) pick.
     profiles_to_run = HARNESS_PROFILES_FILTER or HARNESS_PROFILES
-    for profile_name in profiles_to_run:
+    for profile_index, profile_name in enumerate(profiles_to_run):
         profile = get_profile(profile_name)
         if profile is None:
             per_harness.append(
@@ -1018,6 +1016,21 @@ def _run_harness(
                         dur,
                         f"{base_detail} | server isolation FAILED: {suffix}",
                     )
+                # Do not manufacture results from a contaminated server.
+                # This is especially important in --base-url attach mode,
+                # where we cannot kill the timed-out profile's in-flight
+                # requests. Mark the untouched profiles explicitly and stop.
+                for remaining_name in profiles_to_run[profile_index + 1 :]:
+                    per_harness.append(
+                        (
+                            remaining_name,
+                            False,
+                            0.0,
+                            "not run: prior profile timed out and clean "
+                            "server isolation could not be restored",
+                        )
+                    )
+                break
 
     elapsed = time.perf_counter() - t0
     all_passed = all(ok for _, ok, _, _ in per_harness)
