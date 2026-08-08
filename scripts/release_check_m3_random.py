@@ -64,6 +64,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -399,9 +400,31 @@ def _as_text(payload: str | bytes | None) -> str:
     return payload
 
 
+# One private directory per run, created 0700, holding every per-alias log.
+#
+# The paths used to be `/tmp/release-check-m3-random-<alias>.log`, which is
+# predictable and sits in a world-writable directory: any other local process
+# can pre-create that name as a symlink, and this script's `write_text("")`
+# follows it and truncates whatever it points at. Owning the directory removes
+# the name-guessing step entirely — nobody else can create entries in it.
+_LOG_DIR: Path | None = None
+
+
+def _log_dir() -> Path:
+    """The per-run log directory, created on first use."""
+    global _LOG_DIR
+    if _LOG_DIR is None:
+        _LOG_DIR = Path(tempfile.mkdtemp(prefix="release-check-m3-random-"))
+        # mkdtemp is already 0700; make that a stated requirement rather than
+        # an implementation detail we inherited.
+        _LOG_DIR.chmod(0o700)
+        print(f"  logs:     {_LOG_DIR}")
+    return _LOG_DIR
+
+
 def _serve_log_path(alias: str) -> Path:
     """Where the sampled server's own stdout goes."""
-    return Path(f"/tmp/release-check-m3-random-{alias}.log")
+    return _log_dir() / f"{alias}.log"
 
 
 def _bench_log_path(alias: str) -> Path:
@@ -414,7 +437,7 @@ def _bench_log_path(alias: str) -> Path:
     them offset-based, corrupts the artifact on exactly the runs someone
     needs to read.
     """
-    return Path(f"/tmp/release-check-m3-random-{alias}.bench.log")
+    return _log_dir() / f"{alias}.bench.log"
 
 
 def _parent_pid(pid: int) -> int | None:

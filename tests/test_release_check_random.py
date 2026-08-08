@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -789,3 +790,33 @@ def test_ownership_against_a_real_listener(g12):
         time.sleep(0.1)
     assert not g12._listening_pids(port)
     assert not g12._owns_port(proc, port), "a freed port belongs to nobody"
+
+
+def test_logs_live_in_a_private_directory_not_a_guessable_tmp_path(g12):
+    """A predictable name in a world-writable directory is a truncation gadget.
+
+    The per-alias logs used to be `/tmp/release-check-m3-random-<alias>.log`.
+    Any other local process can pre-create that exact name as a symlink, and
+    this script opens the path with `write_text("")` — which follows the link
+    and truncates whatever it points at, as the user running the gauntlet.
+    Owning the directory removes the guess: nobody else can create entries in
+    it.
+    """
+    serve = g12._serve_log_path("qwen3-8b-4bit")
+    bench = g12._bench_log_path("qwen3-8b-4bit")
+
+    assert serve.parent == bench.parent, "both logs belong to the same run"
+    parent = serve.parent
+    assert parent != Path("/tmp"), (
+        f"logs are written straight into a world-writable directory: {serve}"
+    )
+    assert parent.is_dir()
+    mode = stat.S_IMODE(parent.stat().st_mode)
+    assert mode == 0o700, (
+        f"log directory is {mode:o}, not 0700 — another user can plant "
+        f"symlinks in it: {parent}"
+    )
+    # Same run, same directory: a second call must not mint a new one, or the
+    # per-alias logs of one sweep end up scattered.
+    assert g12._serve_log_path("another-alias").parent == parent
+    assert serve != bench, "the serve and bench logs must not share a path"
