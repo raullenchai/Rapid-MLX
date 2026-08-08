@@ -26,10 +26,13 @@ import uuid
 
 import httpx
 
+from vllm_mlx.http_auth import rapid_mlx_auth_headers
+
 BASE_URL = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+AUTH_HEADERS = rapid_mlx_auth_headers()
 # Auto-detect model from server
 try:
-    resp = httpx.get(f"{BASE_URL}/models", timeout=5)
+    resp = httpx.get(f"{BASE_URL}/models", headers=AUTH_HEADERS, timeout=5)
     MODEL_ID = resp.json()["data"][0]["id"]
 except Exception:
     MODEL_ID = "default"
@@ -59,6 +62,7 @@ def api_call(messages, tools=None, stream=False, max_tokens=300, temperature=0.3
     resp = httpx.post(
         f"{BASE_URL}/chat/completions",
         json=payload,
+        headers=AUTH_HEADERS,
         timeout=120,
     )
     resp.raise_for_status()
@@ -68,7 +72,7 @@ def api_call(messages, tools=None, stream=False, max_tokens=300, temperature=0.3
 def _detect_context_window() -> int:
     """Fetch context_window for MODEL_ID from the running server, default 32768."""
     try:
-        resp = httpx.get(f"{BASE_URL}/models", timeout=5)
+        resp = httpx.get(f"{BASE_URL}/models", headers=AUTH_HEADERS, timeout=5)
         models = resp.json().get("data", [])
         # Exact match by MODEL_ID first
         for m in models:
@@ -104,6 +108,19 @@ def ensure_hermes_config():
         f.write(config)
 
 
+def _hermes_subprocess_env():
+    """Pass local-server auth to Hermes without persisting the secret."""
+    env = os.environ.copy()
+    api_key = os.environ.get("RAPID_MLX_API_KEY")
+    if api_key:
+        # Hermes custom providers fall back to these variables. Override them
+        # only for this child process so an unrelated user key cannot be sent
+        # to the Rapid-MLX endpoint and the parent environment stays untouched.
+        env["OPENAI_API_KEY"] = api_key
+        env["CUSTOM_API_KEY"] = api_key
+    return env
+
+
 def hermes_query(query, timeout_sec=120):
     """Run a single Hermes query in non-interactive mode.
 
@@ -123,6 +140,7 @@ def hermes_query(query, timeout_sec=120):
             text=True,
             timeout=timeout_sec,
             cwd=os.getcwd(),
+            env=_hermes_subprocess_env(),
         )
         output = proc.stdout + proc.stderr
         # Detect Hermes-level errors
@@ -392,7 +410,11 @@ def test_api_streaming_tool_call():
         "stream": True,
     }
     with httpx.stream(
-        "POST", f"{BASE_URL}/chat/completions", json=payload, timeout=60
+        "POST",
+        f"{BASE_URL}/chat/completions",
+        json=payload,
+        headers=AUTH_HEADERS,
+        timeout=60,
     ) as resp:
         tool_call_chunks = []
         content_chunks = []

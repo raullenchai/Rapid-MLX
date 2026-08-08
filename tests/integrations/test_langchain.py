@@ -6,6 +6,8 @@ from collections.abc import Mapping
 
 import httpx as _httpx
 
+from vllm_mlx.http_auth import rapid_mlx_auth_headers
+
 # ``results`` is read by the ``rapid-mlx bench --tier harness`` path
 # (``vllm_mlx/agents/testing.py::_run_specific_tests`` does
 # ``getattr(mod, "results", {})`` after ``spec.loader.exec_module``).
@@ -46,15 +48,18 @@ def _run_tests() -> None:
     from pydantic import BaseModel, Field
 
     base_url = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+    auth_headers = rapid_mlx_auth_headers()
     try:
-        model_id = _httpx.get(f"{base_url}/models", timeout=5).json()["data"][0]["id"]
+        model_id = _httpx.get(
+            f"{base_url}/models", headers=auth_headers, timeout=5
+        ).json()["data"][0]["id"]
     except Exception:
         model_id = "default"
 
     llm = ChatOpenAI(
         model=model_id,
         base_url=base_url,
-        api_key="not-needed",
+        api_key=os.environ.get("RAPID_MLX_API_KEY") or "not-needed",
         temperature=0.0,
     )
 

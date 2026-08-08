@@ -41,10 +41,19 @@ def test_test_hermes_populates_results_under_exec_module(monkeypatch):
     # on a real server. The point of this test is the harness invocation
     # contract — not the integration tests' substance.
     class _FailHTTPX:
+        def __init__(self):
+            self.calls = []
+
         def get(self, *a, **kw):
+            self.calls.append(("get", a, kw))
             raise RuntimeError("mocked: no server")
 
         def post(self, *a, **kw):
+            self.calls.append(("post", a, kw))
+            raise RuntimeError("mocked: no server")
+
+        def stream(self, *a, **kw):
+            self.calls.append(("stream", a, kw))
             raise RuntimeError("mocked: no server")
 
     import httpx
@@ -52,6 +61,7 @@ def test_test_hermes_populates_results_under_exec_module(monkeypatch):
     fake = _FailHTTPX()
     monkeypatch.setattr(httpx, "get", fake.get)
     monkeypatch.setattr(httpx, "post", fake.post)
+    monkeypatch.setattr(httpx, "stream", fake.stream)
 
     # Force HERMES_BIN to a path that cannot exist so the E2E branch
     # (which would write ~/.hermes/config.yaml and invoke real hermes
@@ -60,6 +70,7 @@ def test_test_hermes_populates_results_under_exec_module(monkeypatch):
     # block would be a side effect, not part of the contract.
     monkeypatch.setenv("HERMES_BIN", "/nonexistent/hermes-binary-for-contract-test")
     monkeypatch.setenv("RAPID_MLX_BASE_URL", "http://localhost:0/v1")
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "harness-secret")
 
     # Mirror vllm_mlx/agents/testing.py:_run_specific_tests exactly.
     spec = importlib.util.spec_from_file_location(
@@ -92,3 +103,9 @@ def test_test_hermes_populates_results_under_exec_module(monkeypatch):
     # Every entry should carry a status string (PASS / FAIL / ERROR).
     for name, status in results.items():
         assert isinstance(status, str), f"non-str status for {name!r}: {status!r}"
+
+    assert fake.calls, "Hermes integration module must exercise its HTTP client"
+    for method, _args, kwargs in fake.calls:
+        assert kwargs.get("headers") == {"Authorization": "Bearer harness-secret"}, (
+            f"Hermes {method} did not propagate RAPID_MLX_API_KEY: {kwargs}"
+        )
