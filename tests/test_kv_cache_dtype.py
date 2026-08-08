@@ -169,6 +169,18 @@ def test_deepseek_v3_config_triggers_downgrade():
     assert "mla" in decision.reason.lower()
 
 
+def test_sarvam_mla_config_triggers_downgrade_without_q_lora_rank():
+    """Sarvam uses direct q_proj, so its MLA signal is the model type."""
+    decision = resolve_kv_cache_dtype(
+        "int4",
+        model_name="sarvam-105b-mock",
+        hf_config={"model_type": "sarvam_mla", "kv_lora_rank": 512},
+    )
+    assert decision.dtype == "bf16"
+    assert decision.downgraded is True
+    assert "mla" in decision.reason.lower()
+
+
 def test_deepseek_v4_substring_triggers_downgrade():
     decision = resolve_kv_cache_dtype(
         "int4",

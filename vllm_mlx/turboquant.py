@@ -218,6 +218,8 @@ MODELS_INCOMPATIBLE_WITH_TURBOQUANT: dict[str, str] = {
     r"deepseek[-_]?v4": SKIP_REASON_MLA,
     r"kimi[-_]?k2\.?5": SKIP_REASON_MLA,
     r"kimi[-_]?k2\.?6": SKIP_REASON_MLA,
+    r"sarvam[-_]?105b": SKIP_REASON_MLA,
+    r"sarvam[-_]?mla": SKIP_REASON_MLA,
 }
 
 _COMPILED_SKIP_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
@@ -263,7 +265,7 @@ def is_incompatible_with_turboquant(
             mt = model_type.lower()
             if mt in {"gemma3", "gemma3_text", "gpt_oss"}:
                 return True, SKIP_REASON_SLIDING
-            if mt in {"deepseek_v3", "deepseek_v4"}:
+            if mt in {"deepseek_v3", "deepseek_v4", "sarvam_mla"}:
                 return True, SKIP_REASON_MLA
         # MLA rank-pair check (DeepSeek-class): rank pair only counts
         # when paired with a known MLA family name, mirroring
@@ -271,7 +273,15 @@ def is_incompatible_with_turboquant(
         needle = f"{model_name or ''} {hf_path or ''}".lower()
         if any(
             pat in needle
-            for pat in ("deepseek-v3", "deepseek_v3", "deepseek-v4", "deepseek_v4")
+            for pat in (
+                "deepseek-v3",
+                "deepseek_v3",
+                "deepseek-v4",
+                "deepseek_v4",
+                "sarvam-105b",
+                "sarvam_105b",
+                "sarvam_mla",
+            )
         ):
             q_rank = hf_config.get("q_lora_rank")
             kv_rank = hf_config.get("kv_lora_rank")

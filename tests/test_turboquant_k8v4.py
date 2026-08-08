@@ -419,6 +419,7 @@ class TestSkipList:
             ("gpt_oss_20b", SKIP_REASON_SLIDING),
             ("deepseek-ai/deepseek-v3", SKIP_REASON_MLA),
             ("deepseek_v4_lite", SKIP_REASON_MLA),
+            ("sarvam-105b-instruct", SKIP_REASON_MLA),
             ("kimi-k2.5-flash", SKIP_REASON_MLA),
             ("Kimi-K2.6-Preview", SKIP_REASON_MLA),
         ],
@@ -460,6 +461,13 @@ class TestSkipList:
     def test_skip_by_model_type_deepseek_v3(self):
         skip, reason = is_incompatible_with_turboquant(
             model_name="generic", hf_config={"model_type": "deepseek_v3"}
+        )
+        assert skip is True
+        assert reason == SKIP_REASON_MLA
+
+    def test_skip_by_model_type_sarvam_mla(self):
+        skip, reason = is_incompatible_with_turboquant(
+            model_name="generic", hf_config={"model_type": "sarvam_mla"}
         )
         assert skip is True
         assert reason == SKIP_REASON_MLA
