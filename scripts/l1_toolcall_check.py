@@ -81,8 +81,7 @@ def _sse_payloads(lines: list[str]) -> list[dict]:
 def _validate_forced_stream(lines: list[str]) -> None:
     if not lines or lines[-1].strip() != "data: [DONE]":
         raise ValueError("forced stream did not terminate with data: [DONE]")
-    names: list[str] = []
-    argument_chunks: list[str] = []
+    streamed_calls: dict[int, dict[str, list[str]]] = {}
     saw_tool_delta = False
     visible_chunks: list[str] = []
     for payload in _sse_payloads(lines):
@@ -93,16 +92,27 @@ def _validate_forced_stream(lines: list[str]) -> None:
             )
             for tool_call in delta.get("tool_calls") or []:
                 saw_tool_delta = True
+                index = tool_call.get("index", 0)
+                if not isinstance(index, int):
+                    raise ValueError(f"streamed tool-call index is invalid: {index!r}")
+                fragments = streamed_calls.setdefault(
+                    index, {"name": [], "arguments": []}
+                )
                 function = tool_call.get("function") or {}
-                if function.get("name"):
-                    names.append(function["name"])
+                if function.get("name") is not None:
+                    fragments["name"].append(str(function["name"]))
                 if function.get("arguments") is not None:
-                    argument_chunks.append(str(function["arguments"]))
+                    fragments["arguments"].append(str(function["arguments"]))
     if not saw_tool_delta:
         raise ValueError("forced stream returned no structured tool_calls delta")
-    if names != ["release_probe"]:
-        raise ValueError(f"forced stream tool name is invalid: {names!r}")
-    raw_arguments = "".join(argument_chunks)
+    if set(streamed_calls) != {0}:
+        raise ValueError(
+            f"forced stream tool-call indexes are invalid: {streamed_calls!r}"
+        )
+    name = "".join(streamed_calls[0]["name"])
+    if name != "release_probe":
+        raise ValueError(f"forced stream tool name is invalid: {name!r}")
+    raw_arguments = "".join(streamed_calls[0]["arguments"])
     if json.loads(raw_arguments) != {}:
         raise ValueError(f"forced stream arguments are not {{}}: {raw_arguments!r}")
     leaked = _visible_wire_marker("".join(visible_chunks))
@@ -278,8 +288,21 @@ def main() -> int:
         )
         nonstream.raise_for_status()
         nonstream_data = nonstream.json()
-        if not (nonstream_data.get("choices") or []):
+        nonstream_choices = nonstream_data.get("choices") or []
+        if not nonstream_choices:
             raise ValueError("non-stream replay returned no choices")
+        replay_message = nonstream_choices[0].get("message")
+        if not isinstance(replay_message, dict):
+            raise ValueError("non-stream replay returned no message object")
+        replay_visible = "\n".join(
+            str(replay_message.get(key) or "")
+            for key in ("content", "reasoning_content")
+        )
+        leaked = _visible_wire_marker(replay_visible)
+        if leaked:
+            raise ValueError(
+                f"native wire marker leaked into non-stream replay: {leaked!r}"
+            )
 
         with httpx.stream(
             "POST",

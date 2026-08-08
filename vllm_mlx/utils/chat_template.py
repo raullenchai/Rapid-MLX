@@ -1355,6 +1355,7 @@ def apply_chat_template(
     try:
         return _apply_with_alternating_fallback(messages, template_kwargs)
     except TypeError as e:
+        retry_messages = messages
         # DeepSeek-R1's published template concatenates historical tool-call
         # arguments as text, while the majority of HF templates iterate them as
         # mappings.  The shared boundary normalises to the majority mapping
@@ -1365,6 +1366,7 @@ def apply_chat_template(
                 messages
             )
             if string_argument_messages is not messages:
+                retry_messages = string_argument_messages
                 try:
                     return _apply_with_alternating_fallback(
                         string_argument_messages, template_kwargs
@@ -1383,7 +1385,7 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return _apply_with_alternating_fallback(messages, template_kwargs)
+            return _apply_with_alternating_fallback(retry_messages, template_kwargs)
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
             # actually names it (codex R8 BLOCKING: unconditionally popping it
@@ -1432,7 +1434,7 @@ def apply_chat_template(
                 "injecting %d tool definitions into system prompt",
                 len(tools),
             )
-            injected = _inject_tools_into_messages(messages, tools)
+            injected = _inject_tools_into_messages(retry_messages, tools)
             try:
                 return _apply_with_alternating_fallback(injected, template_kwargs)
             except TypeError:
@@ -1440,4 +1442,4 @@ def apply_chat_template(
                 template_kwargs.pop("enable_thinking", None)
                 return _apply_with_alternating_fallback(injected, template_kwargs)
 
-        return _apply_with_alternating_fallback(messages, template_kwargs)
+        return _apply_with_alternating_fallback(retry_messages, template_kwargs)

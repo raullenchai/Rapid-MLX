@@ -51,12 +51,18 @@ def _forced_payload():
 
 def test_gate_replays_tool_result_in_both_modes(monkeypatch):
     requests = []
-    posts = iter([_Response(_forced_payload()), _Response({"choices": [{}]})])
+    posts = iter(
+        [
+            _Response(_forced_payload()),
+            _Response({"choices": [{"message": {"content": "ack"}}]}),
+        ]
+    )
     streams = iter(
         [
             _Response(
                 lines=[
-                    'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"release_probe","arguments":"{}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"release_","arguments":"{"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"probe","arguments":"}"}}]}}]}',
                     "data: [DONE]",
                 ]
             ),
@@ -104,7 +110,12 @@ def test_gate_replays_tool_result_in_both_modes(monkeypatch):
 
 
 def test_gate_fails_closed_when_stream_replay_has_no_done(monkeypatch):
-    posts = iter([_Response(_forced_payload()), _Response({"choices": [{}]})])
+    posts = iter(
+        [
+            _Response(_forced_payload()),
+            _Response({"choices": [{"message": {"content": "ack"}}]}),
+        ]
+    )
     streams = iter(
         [
             _Response(
@@ -114,6 +125,25 @@ def test_gate_fails_closed_when_stream_replay_has_no_done(monkeypatch):
                 ]
             ),
             _Response(lines=["data: {}"]),
+        ]
+    )
+    monkeypatch.setattr(gate.httpx, "post", lambda *args, **kwargs: next(posts))
+    monkeypatch.setattr(gate.httpx, "stream", lambda *args, **kwargs: next(streams))
+    monkeypatch.setattr(sys, "argv", ["l1_toolcall_check.py"])
+
+    assert gate.main() == 1
+
+
+def test_gate_fails_closed_when_nonstream_replay_has_no_message(monkeypatch):
+    posts = iter([_Response(_forced_payload()), _Response({"choices": [{}]})])
+    streams = iter(
+        [
+            _Response(
+                lines=[
+                    'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"release_probe","arguments":"{}"}}]}}]}',
+                    "data: [DONE]",
+                ]
+            )
         ]
     )
     monkeypatch.setattr(gate.httpx, "post", lambda *args, **kwargs: next(posts))

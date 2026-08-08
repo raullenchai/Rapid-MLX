@@ -39,12 +39,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# The minimal PR-validation environment intentionally omits optional template
-# dependencies. These tests exercise real Jinja rendering, so absence of Jinja
-# means the environment cannot execute the contract (rather than a product
-# failure). Full unit/L1 CI installs it and executes this module normally.
-pytest.importorskip("jinja2")
-
 from vllm_mlx.utils.chat_template import (
     _normalize_assistant_tool_call_arguments,
     apply_chat_template,
@@ -294,7 +288,10 @@ def _fake_tokenizer_with_template(chat_template_str: str) -> MagicMock:
     lists), so the sanitisation layer and the tool-call normalisation layer
     both run end-to-end.
     """
-    import jinja2
+    # The minimal PR-validation environment intentionally omits optional
+    # template dependencies. Helper-level normalisation tests above remain
+    # runnable there; only real rendering cases skip when Jinja is unavailable.
+    jinja2 = pytest.importorskip("jinja2")
 
     env = jinja2.Environment(  # noqa: S701 - test scaffolding
         keep_trailing_newline=True,
@@ -704,6 +701,29 @@ def test_deepseek_r1_retry_accepts_internal_dict_arguments():
         tokenizer, _messages_with_assistant_tool_call({"city": "東京"})
     )
     assert '{"city":"東京"}' in prompt
+
+
+def test_deepseek_serialized_retry_survives_unsupported_kwarg():
+    """The serialized candidate must survive later kwarg compatibility retries."""
+    tokenizer = _fake_tokenizer_with_template(DEEPSEEK_R1_LIKE_TEMPLATE)
+    render = tokenizer.apply_chat_template.side_effect
+    calls = 0
+
+    def concat_then_reject_kwarg(messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1 and "enable_thinking" in kwargs:
+            raise TypeError(
+                "apply_chat_template() got an unexpected keyword argument "
+                "'enable_thinking'"
+            )
+        return render(messages, **kwargs)
+
+    tokenizer.apply_chat_template.side_effect = concat_then_reject_kwarg
+    prompt = apply_chat_template(
+        tokenizer, _messages_with_assistant_tool_call('{"city":"Paris"}')
+    )
+    assert 'get_weather\n```json\n{"city":"Paris"}\n```' in prompt
 
 
 ALTERNATING_ONLY_TEMPLATE = r"""
