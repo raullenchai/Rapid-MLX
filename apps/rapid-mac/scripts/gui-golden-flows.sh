@@ -219,12 +219,15 @@ wait_identifier() {
 ax_window_present() {
     local title="$1" destination="$2" status
     "$AX_DRIVER" dump "$APP_PID" > "$destination" 2>/dev/null || return 2
-    # A dump the driver refused to vouch for says nothing either way.
-    jq -e '.success == true and (.data.ui_elements | type) == "array"' \
+    # `data.windows`, NOT `ui_elements`: the driver enumerates the root's
+    # children once and vouches for that list with `complete`. The element
+    # array cannot answer this, because every way it comes up short — a role
+    # read that failed, a title that would not read, the record cap — removes a
+    # window from it silently and is indistinguishable from the window closing.
+    jq -e '.success == true and .data.windows.complete == true' \
         "$destination" >/dev/null 2>&1 || return 2
     status=0
-    jq -e --arg t "$title" \
-        '[.data.ui_elements[]? | select(.role == "AXWindow" and .title == $t)] | length > 0' \
+    jq -e --arg t "$title" '[.data.windows.titles[]? | select(. == $t)] | length > 0' \
         "$destination" >/dev/null 2>&1 || status=$?
     # jq exits 1 only for a well-formed query whose answer was false; anything
     # else (2 usage, 3 compile, 4 no output) is a broken observation.
@@ -859,8 +862,11 @@ flow_browse_all_destination() {
     SETTINGS_WINDOW_ID=""
     for ((i=0; i<40; i++)); do
         pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json" 2>/dev/null || true
+        # `|| true` on the whole pipeline: a failed `pb` leaves empty or partial
+        # JSON, jq then exits non-zero, and under `set -euo pipefail` that would
+        # abort the very loop written to survive it.
         SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' \
-            "$OUT/ba-windows.json" 2>/dev/null | head -1)"
+            "$OUT/ba-windows.json" 2>/dev/null | head -1 || true)"
         if [[ -n "$SETTINGS_WINDOW_ID" ]]; then break; fi
         sleep 0.25
     done
