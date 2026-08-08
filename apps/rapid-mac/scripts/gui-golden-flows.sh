@@ -422,6 +422,37 @@ if offenders:
 PYEOF
 }
 
+# The Nth assistant message, as a dump of its own.
+#
+# Pairing a prompt with an answer is not enough on its own: every other shape
+# assertion searched the WHOLE transcript, so a restore that moved the table
+# cells into the CJK bubble, or the code block under the wrong question, still
+# satisfied all of them. Each shape now has to be found in the message that
+# shape was sent to.
+assistant_message_only() {
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import json, sys
+src, wanted, dst = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+els = json.load(open(src))["data"]["ui_elements"]
+messages, buffer = [], []
+for element in els:
+    identifier = str(element.get("identifier") or "")
+    buffer.append(element)
+    if ".Edit." in identifier:
+        messages.append(("user", buffer))
+        buffer = []
+    elif ".Retry." in identifier:
+        messages.append(("model", buffer))
+        buffer = []
+models = [group for side, group in messages if side == "model"]
+if len(models) < wanted:
+    sys.exit(
+        f"transcript holds {len(models)} assistant message(s); wanted #{wanted}"
+    )
+json.dump({"data": {"ui_elements": models[wanted - 1]}}, open(dst, "w"))
+PYEOF
+}
+
 # Everything this suite can say about what the renderer did with the five
 # shapes, in one place so the restored transcript is held to the SAME bar as
 # the live one. Checking the shapes only before the relaunch leaves a restore
@@ -440,30 +471,41 @@ PYEOF
 # gap in what the app publishes, not something an assertion here can close —
 # tracked in #1689.
 assert_rendered_shapes() {
-    local transcript="$1"
+    local transcript="$1" scratch="$2"
+    # These two hold anywhere in the transcript: no source syntax survives,
+    # in any message.
     assert_markdown_rendered "$transcript"
     assert_no_literal_list_markers "$transcript"
-    assert_code_block_is_its_own_view "$transcript" \
+
+    # Everything else is checked INSIDE the assistant message that shape was
+    # sent to. The endings matter as much as the openings: a distinctive
+    # phrase near the start of a long answer passes on a stream that stopped
+    # early, and the fake is deterministic, so the last words are knowable.
+    local m1="$scratch-m1.json" m2="$scratch-m2.json" m3="$scratch-m3.json"
+    local m4="$scratch-m4.json" m5="$scratch-m5.json"
+
+    assistant_message_only "$transcript" 1 "$m1"
+    assert_tree_text "$m1" "Only the first was ever read by anyone else."
+
+    assistant_message_only "$transcript" 2 "$m2"
+    assert_code_block_is_its_own_view "$m2" \
         "Here is the function you asked for" "def fib(n)"
-    assert_rendered_as_separate_nodes "$transcript" "table cells" \
+    assert_tree_text "$m2" "    return a"
+
+    assistant_message_only "$transcript" 3 "$m3"
+    assert_rendered_as_separate_nodes "$m3" "table cells" \
         "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
-    assert_rendered_as_separate_nodes "$transcript" "list items" \
+    assert_tree_text "$m3" "Both fit comfortably in 16 GB."
+
+    assistant_message_only "$transcript" 4 "$m4"
+    assert_rendered_as_separate_nodes "$m4" "list items" \
         "First, read the prompt." "Second, plan the answer." \
         "a nested point" "another one" "Third, write it down."
-    # The CJK turn, past its first six characters. Asserting only the prefix
-    # would pass on an answer that corrupted or dropped everything after it —
-    # which is exactly what a text-encoding regression looks like.
-    assert_tree_text "$transcript" "🎯🚀"
-    assert_tree_text "$transcript" "مرحبا"
-    assert_tree_text "$transcript" "用来检查换行和字宽"
-    # The LAST words of the two long answers. A distinctive substring near the
-    # start passes on a stream that stopped early or a code block that kept
-    # only its first line — both of which lose most of the response while
-    # satisfying every other check here. The fake is deterministic, so the
-    # ending is knowable.
-    assert_tree_text "$transcript" "Only the first was ever read by anyone else."
-    assert_tree_text "$transcript" "    return a"
-    assert_tree_text "$transcript" "Both fit comfortably in 16 GB."
+
+    assistant_message_only "$transcript" 5 "$m5"
+    assert_tree_text "$m5" "🎯🚀"
+    assert_tree_text "$m5" "مرحبا"
+    assert_tree_text "$m5" "用来检查换行和字宽"
 }
 
 # Markdown reached the renderer as markdown, not as source text.
@@ -1357,7 +1399,7 @@ flow_chat_depth() {
     # The shapes are only worth sending if something asserts on what the
     # renderer did with them — positively, not just "the source syntax is
     # absent".
-    assert_rendered_shapes "$OUT/turn5-transcript.json"
+    assert_rendered_shapes "$OUT/turn5-transcript.json" "$OUT/turn5"
     log "  markdown rendered: table cells and list items are their own elements,"
     log "  no raw fences, pipe rows or list markers, code block nested and intact,"
     log "  and the CJK answer kept its emoji and its right-to-left run"
@@ -1388,7 +1430,7 @@ flow_chat_depth() {
     # every turn back but flattened the table, dropped the emoji or printed
     # the list markers would pass — the counts survive it, and the structural
     # baseline normalizes every value to `text`, so neither can see it.
-    assert_rendered_shapes "$OUT/depth-restored-scoped.json"
+    assert_rendered_shapes "$OUT/depth-restored-scoped.json" "$OUT/depth-restored"
     log "  all 5 turns restored, each answer still under its own prompt,"
     log "  and every shape still rendered the way it was before the relaunch"
     baseline chat-depth.restored "$OUT/depth-restored-transcript.json"
