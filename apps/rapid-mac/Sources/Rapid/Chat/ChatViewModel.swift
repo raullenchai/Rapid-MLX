@@ -1363,7 +1363,7 @@ You have access to tools that fetch real-time information. When you use one of t
 
 5. When the user's question is ambiguous about which subject the tool result covers, ask a clarifying question before answering.
 
-6. If you find yourself wanting to write a long enumerated list, STOP. The tool result likely doesn't contain that list. Issue another tool call with a more specific query instead.
+6. If the search result only contains site homepages, section pages, or snippets that do not support an answer, do not stop at "insufficient information." Call web_search again with a more specific subject/date query, or call browse on the most relevant concrete article URL. If you find yourself wanting to write a long enumerated list, STOP and retrieve the missing evidence first.
 
 These rules apply to every tool, not just web search.
 """

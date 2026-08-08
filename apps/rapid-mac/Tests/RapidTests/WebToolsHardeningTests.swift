@@ -7,6 +7,48 @@ import Testing
 /// logic that previously had no direct unit tests.
 @Suite("Web tools hardening")
 struct WebToolsHardeningTests {
+    // MARK: - Relative-date query grounding
+
+    @Test("Last-week news query gets an explicit seven-day date window")
+    func lastWeekQueryGetsConcreteDates() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 8, hour: 19
+        )))
+
+        let prepared = WebSearchTool.preparedQuery(
+            "What's a major news story from the last week?",
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(prepared.contains("2026-08-01 through 2026-08-08"))
+        #expect(prepared.hasPrefix("What's a major news story from the last week?"))
+    }
+
+    @Test("Chinese last-week query gets the same explicit date window")
+    func chineseLastWeekQueryGetsConcreteDates() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 8
+        )))
+
+        let prepared = WebSearchTool.preparedQuery(
+            "上周有什么重大新闻？",
+            now: now,
+            calendar: calendar
+        )
+        #expect(prepared.contains("2026-08-01 through 2026-08-08"))
+    }
+
+    @Test("Timeless query is not rewritten")
+    func timelessQueryPassesThrough() {
+        let query = "Swift concurrency actor isolation"
+        #expect(WebSearchTool.preparedQuery(query) == query)
+    }
+
     // MARK: - #4 DuckDuckGo query encoding
 
     @Test("A query with & and # is one opaque q value, not injected parameters")
