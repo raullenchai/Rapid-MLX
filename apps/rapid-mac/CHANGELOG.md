@@ -13,6 +13,14 @@ can actually understand.
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Browse all models" in the setup wizard opens the model catalogue.** It used
+  to close the wizard instead — your chosen model was discarded and you landed
+  on the chat surface pinned to a model you never picked. It now opens
+  Settings → Models with the wizard still behind it, so closing Settings puts
+  you back on your selection.
+
 ## [0.12.7] — 2026-08-07
 
 The privacy switch does what it looks like it does, and the models Rapid

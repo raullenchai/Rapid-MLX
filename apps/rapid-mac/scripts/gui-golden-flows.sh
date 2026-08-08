@@ -730,6 +730,63 @@ flow_no_dead_controls() {
     cleanup_persona
 }
 
+flow_browse_all_destination() {
+    # An advertised destination must actually be one.
+    #
+    # "Browse all models →" on Quickstart step 2 was implemented as one line
+    # that set a dismiss flag (#1653). It was present, enabled, correctly
+    # labelled and carried an AXIdentifier, so every structural check passed —
+    # the wizard simply vanished, the user's pick was discarded, and they
+    # landed on whatever the alphabetical fallback chose (a 7.6 GB download
+    # nobody asked for). Nothing here can be asserted from a tree dump alone:
+    # this flow PRESSES the control and asserts where the user ends up.
+    start_persona browse-all-destination
+
+    # Only the consent sheet — the wizard has to stay up, it is the subject.
+    local tree="$OUT/ba-first-run.json"
+    see_main "$tree"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$tree" >/dev/null; then
+        press "$tree" TelemetryConsent.DontShare "$OUT/ba-consent.json" \
+            || die "could not answer the telemetry consent sheet"
+        sleep 0.5
+    fi
+
+    wait_identifier Quickstart.GetStarted "$OUT/ba-welcome.json"
+    press "$OUT/ba-welcome.json" Quickstart.GetStarted "$OUT/ba-get-started.json" \
+        || die "Quickstart.GetStarted is not pressable"
+    wait_identifier Quickstart.BrowseAll "$OUT/ba-chooser.json"
+
+    press "$OUT/ba-chooser.json" Quickstart.BrowseAll "$OUT/ba-press.json" \
+        || die "Quickstart.BrowseAll is not pressable"
+
+    # 1. It opened the catalogue. `open_settings` drives the menu, so assert
+    #    the window the BUTTON opened rather than opening one ourselves.
+    local i
+    for ((i=0; i<40; i++)); do
+        pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json"
+        SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' "$OUT/ba-windows.json" | head -1)"
+        [[ -n "$SETTINGS_WINDOW_ID" ]] && break
+        sleep 0.25
+    done
+    [[ -n "$SETTINGS_WINDOW_ID" ]] \
+        || die "Browse all models did not open anything — it is a dismiss button again (#1653)"
+
+    # 2. On the models tab, not merely "Settings somewhere". The wizard's own
+    #    copy promises the catalogue; landing on the user's last-used tab is a
+    #    different bug wearing the same green check.
+    wait_settings_stable "$OUT/ba-settings.json" Settings.Models.ShowAllModelsToggle
+    log "  landed on Model Management"
+
+    # 3. The wizard is still standing. "Show me the options" is not "I give
+    #    up": closing Settings has to put the user back on their pick.
+    see_main "$OUT/ba-after.json"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.BrowseAll")' \
+        "$OUT/ba-after.json" >/dev/null \
+        || die "the wizard was dismissed — browsing must not discard the user's selection (#1653)"
+    log "  wizard still up behind Settings"
+    cleanup_persona
+}
+
 flow_catalog_integrity() {
     # A model that cannot chat must never be offered as one.
     #
@@ -775,6 +832,7 @@ case "$FLOW" in
     update-state) flow_update_state ;;
     no-dead-controls) flow_no_dead_controls ;;
     catalog-integrity) flow_catalog_integrity ;;
+    browse-all-destination) flow_browse_all_destination ;;
     all)
         flow_fresh_install
         flow_settings_persistence
@@ -786,6 +844,7 @@ case "$FLOW" in
         flow_update_state
         flow_no_dead_controls
         flow_catalog_integrity
+        flow_browse_all_destination
         ;;
     *) die "unknown flow: $FLOW" ;;
 esac

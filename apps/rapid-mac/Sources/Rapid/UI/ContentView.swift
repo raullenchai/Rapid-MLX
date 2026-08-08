@@ -460,8 +460,15 @@ struct ContentView: View {
             get: { quickstartVisible },
             set: { presented in
                 // A swipe-down / Esc means "let me look around first" — the
-                // same intent as the card's own "Browse all models", so route
-                // it to the same session flag rather than dropping it.
+                // same intent as the card's own "Skip for now", so route it to
+                // the same session flag rather than dropping it.
+                //
+                // NOT the same intent as "Browse all models", which used to
+                // land here too: that one asks to see the catalogue, and
+                // answering it by closing the wizard discarded the user's
+                // selection and left them on the alphabetical fallback
+                // (#1653). It opens Settings → Models now and leaves the
+                // wizard standing.
                 if !presented { quickstartDismissedThisSession = true }
             }
         )
@@ -473,7 +480,7 @@ struct ContentView: View {
             coordinator: quickstart,
             downloads: downloads,
             server: server,
-            onBrowseAll: { quickstartDismissedThisSession = true },
+            onSkip: { quickstartDismissedThisSession = true },
             onSeedWelcome: { true }
         )
         // QuickstartView was written for the detail column and its comments

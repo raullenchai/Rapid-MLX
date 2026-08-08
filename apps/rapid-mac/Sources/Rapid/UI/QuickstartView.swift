@@ -771,13 +771,20 @@ struct QuickstartView: View {
     @Bindable var downloads: DownloadManager
     @Bindable var server: ServerManager
 
-    /// Callback the parent supplies for the "or browse all models →"
-    /// link. The parent dismisses the Quickstart surface for the
-    /// current session (without flipping the persisted flag) so the
-    /// existing picker becomes visible. Lifted out as a closure so
-    /// this view can stay agnostic of how the parent toggles its own
-    /// state.
-    var onBrowseAll: () -> Void
+    /// Callback the parent supplies for "Skip for now". The parent
+    /// dismisses the Quickstart surface for the current session (without
+    /// flipping the persisted flag) so the existing picker becomes visible.
+    /// Lifted out as a closure so this view can stay agnostic of how the
+    /// parent toggles its own state.
+    ///
+    /// This is ONLY the skip path. "Browse all models" used to share it, on
+    /// the theory that both mean "let me look around first" — but they differ
+    /// in exactly the thing that matters: skipping accepts whatever the app
+    /// picks, browsing is a request to choose. Sharing the closure made the
+    /// link a dismiss button that dropped the user's selection and left them
+    /// on the alphabetical fallback (#1653). Browsing is handled in this view
+    /// now, by ``browseAllModels()``.
+    var onSkip: () -> Void
 
     /// Callback the parent supplies for seeding the welcome message
     /// into the active session. Closing over ``SessionStore`` /
@@ -981,12 +988,16 @@ struct QuickstartView: View {
             // #549 (§16 wayfinding): the hero must answer "how do I get
             // out?" — before this the only exit was the "Browse all
             // models" link on step 2, trapping a first-run user sitting
-            // on step 1. A low-emphasis Skip drops straight into the app
-            // (same `onBrowseAll` dismiss path the chooser uses), and
-            // `.cancelAction` makes Esc leave onboarding — mirroring the
-            // Skip control OnboardingTour already ships.
+            // on step 1. A low-emphasis Skip drops straight into the app,
+            // and `.cancelAction` makes Esc leave onboarding — mirroring
+            // the Skip control OnboardingTour already ships.
+            //
+            // This is the app's one genuine "dismiss onboarding" control.
+            // "Browse all models" on step 2 shared it until #1653; it does
+            // not any more, because a user asking to see the catalogue has
+            // not asked to leave setup.
             Button("Skip for now") {
-                onBrowseAll()
+                onSkip()
             }
             .buttonStyle(.plain)
             .scaledSystemFont(12, weight: .medium)
@@ -1060,7 +1071,7 @@ struct QuickstartView: View {
                     }
 
                     Button {
-                        onBrowseAll()
+                        browseAllModels()
                     } label: {
                         Text("Browse all models →")
                             .scaledSystemFont(12, weight: .medium)
@@ -1364,12 +1375,29 @@ struct QuickstartView: View {
         )
 
         Button {
-            onBrowseAll()
+            browseAllModels()
         } label: {
             Text("or browse all models →")
                 .font(.callout)
         }
         .buttonStyle(.borderless)
+    }
+
+    /// Open Settings on the model catalogue, leaving Quickstart standing.
+    ///
+    /// The wizard deliberately stays up behind the Settings window. "Browse all
+    /// models" is a request to see the other options, not to abandon setup, so
+    /// closing Settings has to put the user back where they were with the pick
+    /// they had already made. Dismissing instead is what made the link a dead
+    /// end (#1653): the wizard vanished, the selection was discarded, and the
+    /// user landed on whatever the alphabetical fallback chose — a 7.6 GB
+    /// download they never asked for.
+    ///
+    /// Routed through ``SettingsRouter`` for its ordering rule (stage the tab,
+    /// THEN open), and through ``openWindow(id: "settings")`` rather than
+    /// ``openSettings()`` — see the ``openWindow`` property above.
+    private func browseAllModels() {
+        settingsRouter.route(to: .modelManagement) { openWindow(id: "settings") }
     }
 
     private func handleQuickstartFailureAction(_ action: FailureDiagnosis.Action) {
