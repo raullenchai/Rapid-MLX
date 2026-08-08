@@ -30,7 +30,8 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, slow-stream-stop,
+Flows: fresh-install, settings-persistence, chat-restore, chat-depth,
+       slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
        browse-all-destination, all
@@ -251,6 +252,216 @@ ax_window_present() {
         1) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+# Does the element dump contain anything matching `filter`?
+#
+# Same three outcomes as ax_window_present, for the same reason: 0 = matched,
+# 1 = the dump is a complete observation and holds no match, 2 = could not
+# observe. A caller looking for something PRESENT can ignore the distinction —
+# a match proves itself. A caller proving something ABSENT cannot: the walk has
+# three silent ways to fall short of a full inventory (an AXChildren read that
+# failed, the depth cap, the record cap), and every one of them leaves
+# `success: true` with the subtree missing. `data.walk.complete` is the driver
+# saying whether it can vouch for `ui_elements` at all.
+ax_elements_match() {
+    local dump="$1" filter="$2" status
+    # `ui_elements` must be a NON-EMPTY array as well as vouched-for. `[]?`
+    # inside the filters below swallows a structural failure, so without the
+    # type check a malformed dump would read as a confident "absent" — and a
+    # complete dump always holds at least the application record, so an empty
+    # array is not an empty app, it is a dump that is not one of ours.
+    jq -e '.success == true and .data.walk.complete == true
+           and (.data.ui_elements | type) == "array"
+           and (.data.ui_elements | length) > 0' "$dump" >/dev/null 2>&1 || return 2
+    status=0
+    # Wrapped, not run bare: `jq -e` reports the LAST value a filter emits, so a
+    # streaming filter that yields `true, false` exits 1 and reads as "absent"
+    # having just matched. Require exactly one boolean and make anything else an
+    # error, which lands in the third outcome where it belongs.
+    jq -e "[ $filter ] | if length == 1 and (.[0] | type) == \"boolean\"
+                         then .[0]
+                         else error(\"filter must emit exactly one boolean\") end" \
+        "$dump" >/dev/null 2>&1 || status=$?
+    # jq exits 1 only for a well-formed query whose answer was false or null;
+    # anything else (2 usage, 3 compile, 5 runtime error) is a broken query, not
+    # an answer, and must not be reported as "absent".
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Refresh a dump in place without destroying it on failure.
+#
+# The file a caller passes in is both the evidence a human debugs from and the
+# only place the driver's reason for giving up is written down, so a driver that
+# cannot produce a usable dump must leave the previous one alone. Exit status is
+# not enough on its own — a driver that exits 0 having written nothing would
+# still clobber it.
+redump_evidence() {
+    local dump="$1"
+    if "$AX_DRIVER" dump "$APP_PID" > "$dump.retry" 2>/dev/null \
+       && jq -e 'type == "object"' "$dump.retry" >/dev/null 2>&1; then
+        mv "$dump.retry" "$dump"
+    fi
+    rm -f "$dump.retry"
+}
+
+# Wait until the tree positively contains a match, and die if it never does.
+#
+# A positive match proves itself and needs no completeness gate. What this is
+# for is the assertion that comes AFTER it: "no video-gen alias in the
+# catalogue" observed while the catalogue is still a spinner is not an
+# observation of the filter under test, it is an observation of a spinner, and
+# it passes. Proving the fixture's ordinary alias has arrived first is what
+# makes the absence claim about the catalogue at all.
+wait_ax_match() {
+    local dump="$1" filter="$2" what="$3" attempts="${4:-80}" status i
+    for ((i=0; i<attempts; i++)); do
+        if (( i > 0 )); then
+            sleep 0.25
+            redump_evidence "$dump"
+        fi
+        status=0
+        ax_elements_match "$dump" "$filter" || status=$?
+        if [[ "$status" == 0 ]]; then return 0; fi
+    done
+    die "timed out waiting for $what ($dump: $(walk_reasons "$dump"))"
+}
+
+# Prove that nothing in the app's accessibility tree matches `filter`, and
+# refuse to conclude anything from a dump that cannot support the claim.
+#
+# `[…] | length == 0` on its own is satisfied by never having looked, which is
+# how the guard against #1603 — eight video-generation aliases reaching the
+# picker and dead-ending after a 64 GB download — could go green without
+# observing the catalogue at all. An incomplete dump is usually a lost race, so
+# re-dump a few times before giving up; then fail loudly rather than issue a
+# clean bill of health that was not earned.
+assert_ax_absent() {
+    local dump="$1" filter="$2" present_message="$3" status=0 i
+    for ((i=0; i<20; i++)); do
+        if (( i > 0 )); then
+            sleep 0.25
+            redump_evidence "$dump"
+        fi
+        status=0
+        ax_elements_match "$dump" "$filter" || status=$?
+        if [[ "$status" != 2 ]]; then break; fi
+    done
+    case "$status" in
+        1) return 0 ;;
+        0) die "$present_message" ;;
+        *) die "no complete AX dump in 5s ($dump: $(walk_reasons "$dump")) — cannot rule out: $present_message" ;;
+    esac
+}
+
+# Why a dump cannot be trusted as an inventory, in the driver's own words —
+# never empty, because "it failed and I will not say why" is how a flake becomes
+# unfixable.
+walk_reasons() {
+    local reasons
+    reasons="$(jq -r '(.data.walk.reasons // []) | join("; ")' "$1" 2>/dev/null || true)"
+    [[ -n "$reasons" ]] || reasons="the dump could not be read at all"
+    printf '%s' "$reasons"
+}
+
+# Markdown reached the renderer as markdown, not as source text.
+#
+# The cheapest regression here is the loudest one for a user: the renderer
+# falls back to plain text and the answer arrives full of ``` fences and | pipe
+# rows. Every "does the text appear" assertion in this file passes on that,
+# because the text does appear — wearing its syntax.
+assert_markdown_rendered() {
+    local tree="$1"
+    jq -e '[.data.ui_elements[]? | ((.value // "") | tostring)
+            | select(contains("```"))] | length == 0' "$tree" >/dev/null \
+        || die "a code fence reached the screen verbatim — markdown was printed, not rendered"
+    jq -e '[.data.ui_elements[]? | ((.value // "") | tostring)
+            | select(test("\\| *-{2,} *\\|"))] | length == 0' "$tree" >/dev/null \
+        || die "a table separator row reached the screen verbatim — the table was not rendered"
+}
+
+# A fenced block is its own view, not a paragraph that happens to contain code.
+#
+# Measured: the surrounding prose sits at one depth and the code block one
+# level deeper, with its newlines and indentation intact. If a refactor
+# flattens that, the code still "appears" — as a wrapped, unindented,
+# uncopyable smear.
+assert_code_block_is_its_own_view() {
+    local tree="$1" prose="$2" code="$3"
+    python3 - "$tree" "$prose" "$code" <<'PYEOF'
+import json, sys
+tree, prose, code = sys.argv[1], sys.argv[2], sys.argv[3]
+elements = json.load(open(tree))["data"]["ui_elements"]
+def find(needle):
+    return next((e for e in elements if needle in str(e.get("value", ""))), None)
+prose_el, code_el = find(prose), find(code)
+if prose_el is None:
+    sys.exit(f"prose not found: {prose}")
+if code_el is None:
+    sys.exit(f"code not found: {code}")
+if code_el["depth"] <= prose_el["depth"]:
+    sys.exit(
+        f"code block is not nested below its paragraph "
+        f"(code depth {code_el['depth']} <= prose depth {prose_el['depth']})"
+    )
+if "\n" not in str(code_el.get("value", "")):
+    sys.exit("code block lost its line breaks")
+PYEOF
+}
+
+# How many messages of each side the transcript is showing.
+#
+# User turns carry an Edit button, assistant turns carry a Retry button — the
+# app's own distinction, not one this harness invents. Counting them is how a
+# multi-turn flow proves nothing was dropped, merged or duplicated; asserting
+# only that the LAST answer is on screen cannot tell a five-turn conversation
+# from a one-turn one.
+transcript_counts() {
+    local tree="$1"
+    jq -r '[.data.ui_elements[]? | (.identifier // "")]
+           | { user:  [ .[] | select(startswith("ChatView.Message.Edit."))  ] | length,
+               model: [ .[] | select(startswith("ChatView.Message.Retry.")) ] | length }
+           | "\(.user) \(.model)"' "$tree"
+}
+
+assert_transcript_turns() {
+    local tree="$1" expected="$2" counts user model
+    counts="$(transcript_counts "$tree")"
+    user="${counts% *}"
+    model="${counts#* }"
+    [[ "$user" == "$expected" && "$model" == "$expected" ]] \
+        || die "expected $expected user + $expected model message(s), tree shows ${user} + ${model}"
+}
+
+# Do these strings appear in the transcript IN THIS ORDER?
+#
+# A conversation that shows every turn but in the wrong order is still broken,
+# and every "does the text appear" assertion in this file would pass on it.
+# `ui_elements` is emitted in tree order, so position in that array is reading
+# order.
+assert_text_order() {
+    local tree="$1"
+    shift
+    local needles=("$@")
+    python3 - "$tree" "${needles[@]}" <<'PYEOF'
+import json, sys
+tree, needles = sys.argv[1], sys.argv[2:]
+elements = json.load(open(tree))["data"]["ui_elements"]
+haystack = [str(e.get("value", "")) + " " + str(e.get("title", "")) for e in elements]
+positions = []
+for needle in needles:
+    hit = next((i for i, text in enumerate(haystack) if needle in text), None)
+    if hit is None:
+        sys.exit(f"transcript never shows: {needle}")
+    positions.append(hit)
+if positions != sorted(positions):
+    order = ", ".join(f"{n}@{p}" for n, p in zip(needles, positions))
+    sys.exit(f"transcript is out of order: {order}")
+PYEOF
 }
 
 element_field() {
@@ -960,15 +1171,95 @@ flow_browse_all_destination() {
     fi
 
     wait_identifier Quickstart.BrowseAll "$OUT/ba-after.json"
-    jq -e '[.data.ui_elements[]? | select(.identifier == "Settings.BackToQuickstart")] | length == 0' \
-        "$OUT/ba-after.json" >/dev/null \
-        || die "Settings remained interactive after returning to setup"
+    assert_ax_absent "$OUT/ba-after.json" \
+        '[.data.ui_elements[]? | select(.identifier == "Settings.BackToQuickstart")] | length > 0' \
+        "Settings remained interactive after returning to setup"
     pb image --mode screen --screen-index 0 --path "$OUT/ba-after.png" --json \
         > "$OUT/ba-after-image.json"
     jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
         "$OUT/ba-after.json" >/dev/null \
         || die "the wizard came back without the user's selection — browsing must not discard it (#1653)"
     log "  back on the wizard, $chosen still selected"
+    cleanup_persona
+}
+
+flow_chat_depth() {
+    # One message is not a conversation.
+    #
+    # `chat-restore` sends a single prompt and checks it comes back after a
+    # relaunch — that covers persistence and almost nothing about chatting. It
+    # cannot see a second turn landing above the first, a turn being dropped
+    # when the next one starts, or a restore that brings back only the last
+    # exchange. And every answer it has ever rendered was the same paragraph of
+    # plain text, so the code block, the table, the list and the CJK line have
+    # never once been through the renderer in this suite.
+    #
+    # Each turn here asks the fake for a different SHAPE of answer. The fake has
+    # no model, so this is not about whether an answer is any good — judging
+    # that belongs to the eval suites against a real model. It is about the work
+    # the APP does differently per shape, which is exactly what a GUI gate can
+    # hold.
+    start_persona chat-depth
+    dismiss_first_run
+    start_model
+
+    # marker | what the user would be asking | a distinctive string the answer must contain
+    local -a turns=(
+        "shape:prose|write the opening of a story about a lighthouse|lighthouse keeper"
+        "shape:code|show me fibonacci in python|def fib(n)"
+        "shape:table|compare those two models for me|qwen3.5-9b"
+        "shape:list|give me three steps|nested point"
+        "shape:unicode|用中文回答并带上 emoji|中文排版测试"
+    )
+
+    local -a prompts=()
+    local index=0 spec marker prompt expect
+    for spec in "${turns[@]}"; do
+        index=$((index + 1))
+        marker="${spec%%|*}"
+        prompt="${spec#*|}"; prompt="${prompt%%|*}"
+        expect="${spec##*|}"
+        # The marker travels in the prompt so the fake can pick the shape, and
+        # it doubles as the per-turn needle for the ordering assertion below.
+        prompts+=("$marker")
+        send_prompt "$marker $prompt" "turn$index"
+        wait_send_idle "$OUT/turn$index-settled.json"
+        assert_tree_text "$OUT/turn$index-settled.json" "$expect"
+        # After turn N there must be exactly N of each, every time — not just
+        # at the end, so a turn that vanishes is attributed to the turn that
+        # dropped it.
+        assert_transcript_turns "$OUT/turn$index-settled.json" "$index"
+        log "  turn $index ($marker) rendered and both sides counted"
+    done
+
+    assert_text_order "$OUT/turn5-settled.json" "${prompts[@]}"
+    log "  all 5 turns present, in the order they were sent"
+
+    # The shapes are only worth sending if something asserts on what the
+    # renderer did with them.
+    assert_markdown_rendered "$OUT/turn5-settled.json"
+    assert_code_block_is_its_own_view "$OUT/turn5-settled.json" \
+        "Here is the function you asked for" "def fib(n)"
+    log "  markdown rendered: no raw fences or pipe rows, code block nested and intact"
+    baseline chat-depth.five-turns "$OUT/turn5-settled.json"
+
+    # Restore has to bring back the WHOLE conversation. `chat-restore` only
+    # ever proved that one message survived, which a store that keeps the last
+    # exchange would also pass.
+    relaunch_persona
+    dismiss_first_run
+    wait_identifier Sidebar.NewChat "$OUT/depth-restored.json"
+    local conversation_id
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/depth-restored.json" | head -1)"
+    [[ -n "$conversation_id" ]] || die "restored conversation row was not exposed to AX"
+    press "$OUT/depth-restored.json" "$conversation_id" "$OUT/depth-open-restored.json"
+    wait_send_idle "$OUT/depth-restored-transcript.json"
+    assert_transcript_turns "$OUT/depth-restored-transcript.json" 5
+    assert_text_order "$OUT/depth-restored-transcript.json" "${prompts[@]}"
+    log "  all 5 turns restored, still in order"
+    baseline chat-depth.restored "$OUT/depth-restored-transcript.json"
     cleanup_persona
 }
 
@@ -980,23 +1271,38 @@ flow_catalog_integrity() {
     # again" forever, reachable AFTER downloading up to 64 GB (#1603). The
     # fake sidecar emits a `[video:gen]`-tagged row so this proves the FILTER,
     # not today's registry contents.
+    # Any surface at all: the alias could show up as a row identifier, a picker
+    # label, a menu title or an accessibility description, and all four are the
+    # bug.
+    local VIDEO_ALIAS_FILTER='[.data.ui_elements[]?
+        | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")]
+                 | map(tostring) | join(" ") | test("fake-video-alias"))] | length > 0'
+    # The same search for the fixture's ORDINARY alias. Asserting this first is
+    # what makes the assertion after it mean something: a surface still
+    # fetching its model list contains neither alias, and would pass the
+    # absence check without the filter under test having been exercised once.
+    local PLAIN_ALIAS_FILTER='[.data.ui_elements[]?
+        | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")]
+                 | map(tostring) | join(" ") | test("fake-alias"))] | length > 0'
     start_persona catalog-integrity
     dismiss_first_run
     see_main "$OUT/catalog-main.json"
 
-    jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
-        "$OUT/catalog-main.json" >/dev/null \
-        || die "a video-gen alias reached the chat surface"
+    wait_ax_match "$OUT/catalog-main.json" "$PLAIN_ALIAS_FILTER" \
+        "the chat surface to offer the fixture's chat-capable alias — until it does, it is not offering anything and proves nothing about the filter"
+    assert_ax_absent "$OUT/catalog-main.json" "$VIDEO_ALIAS_FILTER" \
+        "a video-gen alias reached the chat surface"
 
     open_settings
     see_main "$OUT/catalog-settings.json"
     press "$OUT/catalog-settings.json" Settings.Category.modelManagement \
         "$OUT/catalog-open-mm.json"
     see_main "$OUT/catalog-model-management.json"
-    jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
-        "$OUT/catalog-model-management.json" >/dev/null \
-        || die "a video-gen alias reached Model Management"
-    log "  no video-gen alias on either catalog surface"
+    wait_ax_match "$OUT/catalog-model-management.json" "$PLAIN_ALIAS_FILTER" \
+        "Model Management to finish listing models — an empty or still-loading list contains no alias of any kind"
+    assert_ax_absent "$OUT/catalog-model-management.json" "$VIDEO_ALIAS_FILTER" \
+        "a video-gen alias reached Model Management"
+    log "  both catalog surfaces listed models, and neither offered a video-gen alias"
     cleanup_persona
 }
 
@@ -1010,6 +1316,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
+    chat-depth) flow_chat_depth ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
     low-memory-choice) flow_low_memory_choice ;;
@@ -1022,6 +1329,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_settings_persistence
         flow_chat_restore
+        flow_chat_depth
         flow_slow_stream_stop
         flow_model_crash_recovery
         flow_low_memory_choice

@@ -308,7 +308,22 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
 
 def normalize_dump(path: Path, extra_tokens: tuple[str, ...]) -> list[str]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    records = payload.get("data", {}).get("ui_elements", [])
+    data = payload.get("data", {})
+    # A structural baseline is a claim about the whole tree, including that
+    # nothing is there that the committed snapshot does not list — the same
+    # claim `assert_ax_absent` makes, at a larger scale. A dump the driver
+    # cannot vouch for cannot support it: comparison would pass on a clipped
+    # tree whose recorded prefix happens to match, and `--update` would commit
+    # the clipped tree as the new truth.
+    walk = data.get("walk")
+    if not isinstance(walk, dict) or walk.get("complete") is not True:
+        reasons = "; ".join(walk.get("reasons", [])) if isinstance(walk, dict) else ""
+        raise SystemExit(
+            f"ax-baseline: {path} is not a complete observation"
+            + (f" ({reasons})" if reasons else " (no walk.complete signal)")
+            + " — a baseline taken from it would claim absence it did not see"
+        )
+    records = data.get("ui_elements", [])
     if not records:
         raise SystemExit(f"ax-baseline: no ui_elements in {path}")
     root = build_tree(records)
