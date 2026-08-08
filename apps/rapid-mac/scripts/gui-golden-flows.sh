@@ -201,6 +201,24 @@ wait_identifier() {
     die "timed out waiting for AX identifier $identifier"
 }
 
+# Is a window with this title in the app's OWN accessibility tree?
+#
+# ``peekaboo list windows`` is NOT an oracle for this. It reports a window that
+# has already been destroyed — measured: immediately after Settings closes,
+# ``pb list windows`` still lists it while the AX tree does not, and it never
+# catches up. A flow that polls the window list for a title to DISAPPEAR
+# therefore waits forever and then reports a product bug that is not there;
+# one that polls for a title to APPEAR can be satisfied by a window a previous
+# persona in the same run opened. The app's own AX tree is authoritative for
+# both directions.
+ax_window_present() {
+    local title="$1" destination="$2"
+    "$AX_DRIVER" dump "$APP_PID" > "$destination" 2>/dev/null || return 1
+    jq -e --arg t "$title" \
+        '[.data.ui_elements[]? | select(.role == "AXWindow" and .title == $t)] | length > 0' \
+        "$destination" >/dev/null
+}
+
 element_field() {
     local tree="$1" identifier="$2" field="$3"
     jq -r --arg id "$identifier" --arg field "$field" \
@@ -780,15 +798,17 @@ flow_browse_all_destination() {
 
     # 1. It opened the catalogue. `open_settings` drives the menu, so assert
     #    the window the BUTTON opened rather than opening one ourselves.
-    local i
+    local i opened=0
     for ((i=0; i<40; i++)); do
-        pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json"
-        SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' "$OUT/ba-windows.json" | head -1)"
-        [[ -n "$SETTINGS_WINDOW_ID" ]] && break
+        if ax_window_present Settings "$OUT/ba-settings-window.json"; then opened=1; break; fi
         sleep 0.25
     done
-    [[ -n "$SETTINGS_WINDOW_ID" ]] \
+    [[ "$opened" == 1 ]] \
         || die "Browse all models did not open anything — it is a dismiss button again (#1653)"
+    # Only NOW ask peekaboo for the id, purely to target focus/click/menu at it.
+    pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json"
+    SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' "$OUT/ba-windows.json" | head -1)"
+    [[ -n "$SETTINGS_WINDOW_ID" ]] || die "Settings is in the AX tree but peekaboo will not name its window"
 
     # 2. On the models tab, not merely "Settings somewhere". The wizard's own
     #    copy promises the catalogue; landing on the user's last-used tab is a
@@ -838,9 +858,7 @@ flow_browse_all_destination() {
         || die "could not close the Settings window"
     local closed=0
     for ((i=0; i<40; i++)); do
-        pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows-after.json"
-        if jq -e '[.data.windows[]? | select(.title == "Settings")] | length == 0' \
-            "$OUT/ba-windows-after.json" >/dev/null; then closed=1; break; fi
+        if ! ax_window_present Settings "$OUT/ba-windows-after.json"; then closed=1; break; fi
         sleep 0.25
     done
     # Not a cosmetic check: with Settings still open, the app-wide AX dump
