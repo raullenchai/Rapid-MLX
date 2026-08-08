@@ -879,18 +879,24 @@ def main() -> int:
                 with report_path.open("a") as fh:
                     fh.write(f"FAIL  {msg}\n")
                 failures.append(msg)
-                continue
-            print(f"     server up ({alias}); harnesses={harnesses}")
-            round_failures, drifted = _run_model_rounds(
-                proc=proc,
-                port=args.port,
-                alias=alias,
-                harnesses=harnesses,
-                rounds=args.rounds,
-                bench_log=bench_log,
-                report_path=report_path,
-            )
-            failures.extend(round_failures)
+                # Deliberately NOT `continue`. A `continue` here runs the
+                # `finally` and then starts the next model, stepping straight
+                # over the `if drifted: break` below — so a stranger detected
+                # during boot recorded the failure and then carried on
+                # benchmarking into the same contaminated port, which is the
+                # exact outcome the drift check exists to prevent.
+            else:
+                print(f"     server up ({alias}); harnesses={harnesses}")
+                round_failures, drifted = _run_model_rounds(
+                    proc=proc,
+                    port=args.port,
+                    alias=alias,
+                    harnesses=harnesses,
+                    rounds=args.rounds,
+                    bench_log=bench_log,
+                    report_path=report_path,
+                )
+                failures.extend(round_failures)
         finally:
             print(f"  << Stopping {alias}…")
             _stop_server(proc, args.port)

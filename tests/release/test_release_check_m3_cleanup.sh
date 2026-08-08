@@ -159,6 +159,27 @@ else
   ok "a zombie reads as gone (kill -0 succeeds on one; ps says Z)"
 fi
 
+# `ps -o stat=` right-aligns into a column sized by the widest state on the
+# machine, so the very same zombie arrives as " Z+" on a box that has, say, an
+# "SNs+" process running. Matching Z* against the padded string fails, the
+# zombie reads as ALIVE, and the handoff burns its full 60s and then SIGKILLs
+# a corpse — the exact failure the Z check was added to remove, reappearing
+# only on machines with a wide stat column.
+for padded in " Z" " Z+" "  Z+ "; do
+  if alive_with "$padded" 0; then
+    bad "a zombie printed as '$padded' read as alive — ps pads its stat column"
+  else
+    ok "a zombie printed as '$padded' still reads as gone"
+  fi
+done
+
+# The padding must not swallow a genuinely live state either.
+if alive_with "  S+ " 0; then
+  ok "a padded running state still reads as alive"
+else
+  bad "a padded running state read as gone — the handoff would proceed onto a busy GPU"
+fi
+
 # The direction that matters. `kill -0` already succeeded, so SOMETHING is
 # there; `ps` failing to describe it is not evidence that it left. Reading
 # "I could not tell" as "gone" hands the GPU over while the old server may
@@ -196,17 +217,41 @@ fi
 # shellcheck source=/dev/null
 . "$TMP/port_busy.sh"
 
-st=0; port_busy 59999 5 || st=$?
+# Ephemeral ports, not fixed ones. A hard-coded 59997-59999 turns any
+# unrelated local or CI listener into a failure of THIS gate — the free-port
+# assertion sees a stranger, or the fixture cannot bind at all. Ask the kernel
+# for ports nobody is using and hand those to each check.
+#
+# `free_port` closes the socket before returning, so the number is
+# "unused a moment ago" rather than "reserved". That is exactly the property
+# the free-port case wants, and the occupied case binds its own listener
+# immediately afterwards.
+free_port() {
+  python3 -c 'import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()'
+}
+PORT_FREE="$(free_port)"
+PORT_BUSY="$(free_port)"
+PORT_HUNG="$(free_port)"
+
+st=0; port_busy "$PORT_FREE" 5 || st=$?
 if [ "$st" = 1 ]; then
   ok "a free port reports 1 (nothing listening)"
 else
   bad "a free port reported $st — the handoff would never release"
 fi
 
-python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",59998)); s.listen(1); time.sleep(8)' &
+python3 -c 'import socket,sys,time
+s = socket.socket()
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(1)
+time.sleep(8)' "$PORT_BUSY" &
 LISTENER=$!
 sleep 1
-st=0; port_busy 59998 5 || st=$?
+st=0; port_busy "$PORT_BUSY" 5 || st=$?
 if [ "$st" = 0 ]; then
   ok "an occupied port reports 0"
 else
@@ -221,7 +266,7 @@ mkdir -p "$TMP/fakebin"
 printf '#!/bin/sh\nsleep 300\n' > "$TMP/fakebin/lsof"
 chmod +x "$TMP/fakebin/lsof"
 STARTED=$SECONDS
-st=0; PATH="$TMP/fakebin:$PATH" port_busy 59997 2 || st=$?
+st=0; PATH="$TMP/fakebin:$PATH" port_busy "$PORT_HUNG" 2 || st=$?
 ELAPSED=$((SECONDS - STARTED))
 if [ "$st" = 2 ] && [ "$ELAPSED" -le 6 ]; then
   ok "a hung lsof is killed and reported as unknown (${ELAPSED}s)"
@@ -230,7 +275,7 @@ else
 fi
 
 printf '#!/bin/sh\nexit 9\n' > "$TMP/fakebin/lsof"
-st=0; st_out=$(PATH="$TMP/fakebin:$PATH"; port_busy 59997 2 || echo $?)
+st=0; st_out=$(PATH="$TMP/fakebin:$PATH"; port_busy "$PORT_HUNG" 2 || echo $?)
 if [ "$st_out" = 2 ]; then
   ok "an lsof that fails is unknown, not 'free'"
 else

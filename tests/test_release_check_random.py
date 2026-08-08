@@ -510,17 +510,78 @@ def test_a_model_that_simply_will_not_boot_is_not_reported_as_a_takeover(
     assert not saw_stranger
 
 
-def test_a_stolen_port_during_boot_aborts_the_sweep():
-    """Pin the caller's half: `main` must set `drifted` on that second value,
-    or the next model boots into the same contaminated machine — the failure
-    the round-loop abort already prevents, arriving one step earlier."""
-    source = SCRIPT_PATH.read_text()
-    sweep = source[source.index("    # ===== Sweep =====") :]
-    sweep = sweep[: sweep.index("    # ===== Verdict =====")]
-    boot = sweep[
-        sweep.index("ready, saw_stranger") : sweep.index('print(f"     server up')
-    ]
-    assert "if saw_stranger:" in boot and "drifted = True" in boot, boot
+def test_a_stolen_port_during_boot_aborts_the_sweep(g12, monkeypatch, tmp_path):
+    """A stranger on the port during boot must stop the sweep, not just log it.
+
+    Driven through `main()` on purpose. The previous version of this test read
+    the source and asserted that `drifted = True` appears near `if
+    saw_stranger:` — which it did, while a `continue` on the same path ran the
+    `finally` and jumped straight over the `if drifted: break` underneath it.
+    The text was right and the behaviour was wrong, so the test could not tell.
+    Counting how many models actually get booted can.
+    """
+    booted: list[str] = []
+    ran_rounds: list[str] = []
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def _popen(cmd, **kwargs):
+        # `serve <alias>` — the alias is the argument after "serve".
+        booted.append(cmd[cmd.index("serve") + 1])
+        return _Proc()
+
+    aliases = tmp_path / "aliases.json"
+    aliases.write_text(json.dumps(_fake_aliases()))
+    report = tmp_path / "report.log"
+
+    monkeypatch.setattr(g12.subprocess, "Popen", _popen)
+    monkeypatch.setattr(g12, "_free_disk_gb", lambda path: 10_000.0)
+    # The stranger arrives while the FIRST model is booting.
+    monkeypatch.setattr(
+        g12, "_wait_for_server", lambda proc, port, timeout, log: (False, True)
+    )
+    monkeypatch.setattr(
+        g12,
+        "_run_model_rounds",
+        lambda **kw: ran_rounds.append(kw["alias"]) or ([], False),
+    )
+    monkeypatch.setattr(g12, "_stop_server", lambda proc, port: None)
+    monkeypatch.setattr(g12, "_hf_cache_dir", lambda hf_path: tmp_path / "nonexistent")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_check_m3_random.py",
+            "--models",
+            "3",
+            "--harnesses",
+            "1",
+            "--rounds",
+            "1",
+            "--seed",
+            "7",
+            "--aliases-json",
+            str(aliases),
+            "--report",
+            str(report),
+        ],
+    )
+
+    rc = g12.main()
+
+    assert len(booted) == 1, (
+        f"the sweep booted {len(booted)} models after detecting a stranger on "
+        f"the port during the first one's boot: {booted} — every model after "
+        "the first is measured against a machine we know is contaminated"
+    )
+    assert ran_rounds == [], (
+        f"benchmark rounds ran against the contaminated port: {ran_rounds}"
+    )
+    assert rc != 0, "a drifted sweep must not report success"
 
 
 def test_a_takeover_is_noticed_and_named(g12, monkeypatch):

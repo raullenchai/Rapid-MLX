@@ -725,6 +725,12 @@ else
     # exact overlap this two-condition handoff exists to prevent.
     local state
     state="$(ps -o stat= -p "$OLD_SERVER_PID" 2>/dev/null)"
+    # Trim. `ps -o stat=` right-aligns into a column whose width comes from the
+    # widest state on the machine, so a zombie can arrive as " Z+" rather than
+    # "Z+". Matching `Z*` against the padded string fails, the zombie reads as
+    # ALIVE, and the handoff burns its whole 60 s and fails — which is the
+    # false failure this helper was written to remove.
+    state="${state#"${state%%[![:space:]]*}"}"
     case "$state" in
       Z*) return 1 ;;
       *)  return 0 ;;
