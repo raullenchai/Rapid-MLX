@@ -651,6 +651,11 @@ else
   # ``cleanup`` is the trap-installed teardown defined at the top of
   # this script — calling it manually here releases the PID file too, so
   # read the PID before calling it.
+  # `lsof` decides below whether the port is free. Without it every check
+  # silently answers "free", which is the one answer that must never be
+  # guessed — so require it rather than degrade.
+  command -v lsof >/dev/null 2>&1 \
+    || { echo "  ✗ lsof is required to verify the port handoff to G12" >&2; exit 1; }
   OLD_SERVER_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
   cleanup
   sleep 2
@@ -661,8 +666,12 @@ else
   # model next; overlapping that with a process still holding weights is how
   # a gauntlet earns a metal::malloc "Resource limit" that reads like a code
   # bug. Both conditions, then, and neither on its own.
+  #
+  # Wall-clock bounded, not iteration-bounded: a slow or stuck `lsof` would
+  # otherwise stretch "60s" into as long as it likes.
   server_gone=0
-  for _ in $(seq 1 60); do
+  handoff_deadline=$((SECONDS + 60))
+  while [ "$SECONDS" -lt "$handoff_deadline" ]; do
     if [ -n "$OLD_SERVER_PID" ] && kill -0 "$OLD_SERVER_PID" 2>/dev/null; then
       sleep 1
       continue
@@ -685,6 +694,15 @@ else
     echo "    refusing to hand the port and the GPU to G12" >&2
     [ -n "$OLD_SERVER_PID" ] && ps -p "$OLD_SERVER_PID" >&2 || true
     lsof -i ":$PORT" >&2 || true
+    # `cleanup` already TERM'd it and deleted the pidfile, so the EXIT trap
+    # can no longer reach it: exiting here would leave the process alive with
+    # the GPU allocated, poisoning the retry this failure is telling us to
+    # run. Kill it for real before giving up.
+    if [ -n "$OLD_SERVER_PID" ] && kill -0 "$OLD_SERVER_PID" 2>/dev/null; then
+      echo "    SIGKILLing $OLD_SERVER_PID so the retry starts on a free GPU" >&2
+      kill -9 "$OLD_SERVER_PID" 2>/dev/null || true
+      wait "$OLD_SERVER_PID" 2>/dev/null || true
+    fi
     exit 1
   fi
   "$PY" scripts/release_check_m3_random.py \

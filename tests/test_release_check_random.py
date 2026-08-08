@@ -175,19 +175,25 @@ def test_the_measured_agentic_failure_is_out_of_the_pool(g12):
 
 
 def test_the_floor_applies_to_active_params_not_total(g12, tmp_path):
-    """A MoE's ability to hold an agentic loop follows its ACTIVE parameters.
-    ``LFM2.5-8B-A1B`` is in-band on total size and hopeless on the work."""
+    """A MoE's ability to hold an agentic loop follows its ACTIVE parameters,
+    so the SAME floor applies to them.
+
+    The cases straddle the new floor rather than the old one: A4 and A5 were
+    admitted before this change and are not now, A6 is the boundary and stays.
+    Picking A1-vs-A8 would pass either way and prove nothing about the move.
+    """
     p = tmp_path / "aliases.json"
     p.write_text(
         json.dumps(
             {
-                "lfm-8b-a1b-4bit": {"hf_path": "mlx-community/LFM2.5-8B-A1B-4bit"},
-                "big-moe-9b-a8b-4bit": {"hf_path": "fake/Big-9B-A8B-4bit"},
+                "moe-12b-a4b-4bit": {"hf_path": "fake/MoE-12B-A4B-4bit"},
+                "moe-12b-a5b-4bit": {"hf_path": "fake/MoE-12B-A5B-4bit"},
+                "moe-12b-a6b-4bit": {"hf_path": "fake/MoE-12B-A6B-4bit"},
             }
         )
     )
     names = {name for name, _ in g12._eligible_aliases(p)}
-    assert names == {"big-moe-9b-a8b-4bit"}
+    assert names == {"moe-12b-a6b-4bit"}
 
 
 def test_real_aliases_json_yields_nonzero_pool(g12):
@@ -364,3 +370,124 @@ def test_a_round_appends_its_transcript_to_the_bench_log(g12, tmp_path, monkeypa
     )
     assert ok
     assert "harness ok" in bench_log.read_text()
+
+
+# ---------------------------------------------------------------------------
+# The ownership check has to be WIRED IN, and it has to keep being asked.
+#
+# Testing `_owns_port` alone proves nothing: delete its call site and every
+# test above stays green while the sweep goes back to benchmarking strangers.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    status = 200
+
+    def read(self):
+        return b'{"object":"list","data":[{"id":"x"}]}'
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _AliveProc:
+    """A child that never exits — readiness must be decided by the port."""
+
+    def __init__(self, pid: int = 900) -> None:
+        self.pid = pid
+
+    def poll(self):
+        return None
+
+
+def test_readiness_refuses_a_port_answering_from_someone_elses_process(
+    g12, monkeypatch, tmp_path
+):
+    """A 200 is not ownership. Our child is alive the whole time it loads
+    weights, so a stranger already on the port answers first (#1618)."""
+    monkeypatch.setattr(g12.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(g12, "_owns_port", lambda proc, port: False)
+    monkeypatch.setattr(g12.time, "sleep", lambda *_: None)
+    assert not g12._wait_for_server(_AliveProc(), 8000, 0.3, tmp_path / "serve.log")
+
+
+def test_readiness_accepts_the_port_once_it_is_ours(g12, monkeypatch, tmp_path):
+    monkeypatch.setattr(g12.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
+    monkeypatch.setattr(g12, "_owns_port", lambda proc, port: True)
+    monkeypatch.setattr(g12.time, "sleep", lambda *_: None)
+    assert g12._wait_for_server(_AliveProc(), 8000, 5, tmp_path / "serve.log")
+
+
+def test_a_takeover_is_noticed_and_named(g12, monkeypatch):
+    """`_still_ours` is what the round loop asks before and after every round.
+    Its answer has to be a reason, not a bare False — a sweep that says "round
+    3 failed" without saying the port changed hands sends someone hunting a
+    regression that is not there."""
+    monkeypatch.setattr(g12, "_owns_port", lambda proc, port: False)
+    monkeypatch.setattr(g12, "_listening_pids", lambda port: [555])
+    reason = g12._still_ours(_AliveProc(), 8000)
+    assert "no longer served by our process" in reason
+    assert "555" in reason
+
+
+def test_a_dead_server_is_noticed_by_the_same_check(g12, monkeypatch):
+    class _Dead(_AliveProc):
+        def poll(self):
+            return 137
+
+    monkeypatch.setattr(g12, "_owns_port", lambda proc, port: True)
+    assert "exited (rc=137)" in g12._still_ours(_Dead(), 8000)
+
+
+def test_ownership_is_asked_around_every_round_not_once():
+    """Pin the wiring. `_wait_for_server` returns permanently after the first
+    owned 200, so without these calls a takeover during round 1 of 6 is
+    invisible and every later round is attributed to the sampled alias."""
+    source = SCRIPT_PATH.read_text()
+    loop = source[source.index("for harness in harnesses:") :]
+    loop = loop[: loop.index("finally:")]
+    before, _, after = loop.partition("_run_harness_round(")
+    assert "_still_ours(" in before, "nothing checks ownership before the round"
+    assert "_still_ours(" in after, (
+        "nothing checks ownership after the round — a takeover DURING one is "
+        "then reported as that model's result"
+    )
+
+
+def test_a_partial_lsof_run_is_not_read_as_a_listener_list(g12, monkeypatch):
+    """lsof can print some rows and then fail. Half a listener list reads as
+    "all of these are ours", so the row it did not print is exactly the
+    stranger the caller asked about."""
+
+    class _Partial:
+        returncode = 1
+        stdout = "900\n"
+
+    monkeypatch.setattr(g12.subprocess, "run", lambda *a, **k: _Partial())
+    assert g12._listening_pids(8000) == []
+
+
+def test_a_timed_out_round_still_leaves_a_transcript(g12, tmp_path, monkeypatch):
+    """The failure class that most needs evidence produced none: the timeout
+    path returned before anything was written."""
+    bench_log = tmp_path / "bench.log"
+    bench_log.write_text("")
+
+    def _boom(*a, **k):
+        raise g12.subprocess.TimeoutExpired(
+            cmd="bench", timeout=1, output=b"got as far as tier=harness\n", stderr=b""
+        )
+
+    monkeypatch.setattr(g12.subprocess, "run", _boom)
+    ok, _, excerpt = g12._run_harness_round(
+        alias="qwen3-8b-4bit",
+        harness="hermes",
+        base_url="http://127.0.0.1:8000",
+        bench_log=bench_log,
+    )
+    assert not ok
+    assert "timed out" in excerpt
+    assert "got as far as tier=harness" in bench_log.read_text()

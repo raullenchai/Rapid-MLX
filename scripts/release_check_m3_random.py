@@ -118,9 +118,16 @@ ROUND_TIMEOUT_S = 1080
 # share the 4B ceiling, this constant moves again — that is how the gemma-4 and
 # hybrid excludes got here.
 #
-# Excluding the 4B tier does not leave it unobserved: ``qwen3.5-4b-4bit`` is a
-# release-fleet coherence model, so G0a boots it every gauntlet. What it loses
-# is agentic coverage, which is the coverage it cannot provide.
+# What this costs, stated plainly rather than waved away: the 4B tier keeps
+# only the coverage it already had, and that is thin. ``qwen3.5-4b-4bit`` is a
+# release-fleet coherence model, so G0a boots it every gauntlet — but
+# ``evals/coherence_gate.py`` sends short, single-turn, tool-free prompts at
+# temperature 0. CI's ``l1-smoke`` adds one forced tool-call format check on the
+# same alias, and is not a required check. Neither covers multi-turn contexts,
+# streaming tool calls, parser stress under repeated agent traffic, or the other
+# three 4B aliases at all. Buying that back needs a small-model tier that is
+# sized for what small models can finish, not a sweep that hands them the same
+# agentic profiles as a 12B — tracked separately.
 _MIN_PARAMS_B = 6.0
 # Ceiling: larger models bust the disk budget on M3 16/32 GB systems.
 _MAX_PARAMS_B = 12.0
@@ -254,6 +261,15 @@ def _hf_cache_dir(hf_repo_path: str) -> Path:
     return _hf_cache_root() / f"models--{hf_repo_path.replace('/', '--')}"
 
 
+def _as_text(payload: str | bytes | None) -> str:
+    """``TimeoutExpired`` carries bytes even when the run asked for text."""
+    if payload is None:
+        return ""
+    if isinstance(payload, bytes):
+        return payload.decode("utf-8", errors="replace")
+    return payload
+
+
 def _serve_log_path(alias: str) -> Path:
     """Where the sampled server's own stdout goes."""
     return Path(f"/tmp/release-check-m3-random-{alias}.log")
@@ -289,7 +305,14 @@ def _parent_pid(pid: int) -> int | None:
 
 def _listening_pids(port: int) -> list[int]:
     """PIDs with a LISTEN socket on ``port``; ``[]`` if that cannot be
-    established (``lsof`` missing, permission denied, timeout)."""
+    established (``lsof`` missing, permission denied, timeout, partial run).
+
+    A non-zero exit discards the output rather than trusting it. ``lsof`` can
+    print some rows and then fail on a socket it may not inspect, and half a
+    listener list is worse than none here: the caller reads "all of these are
+    ours" as ownership, so the one row that was not printed is exactly the
+    stranger it was asked about.
+    """
     try:
         out = subprocess.run(
             ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
@@ -298,6 +321,8 @@ def _listening_pids(port: int) -> list[int]:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
         return []
     return [int(tok) for tok in out.stdout.split() if tok.isdigit()]
 
@@ -333,6 +358,25 @@ def _owns_port(proc: subprocess.Popen, port: int, max_depth: int = 8) -> bool:
         else:
             return False
     return True
+
+
+def _still_ours(proc: subprocess.Popen, port: int) -> str:
+    """``""`` while the server we started still owns the port, else why not.
+
+    Readiness establishes ownership once, at the start of a sweep that then
+    runs for tens of minutes. Everything measured after a takeover belongs to
+    whoever took over, so this is asked around every round rather than trusted
+    from the beginning.
+    """
+    rc = proc.poll()
+    if rc is not None:
+        return f"the server exited (rc={rc})"
+    if not _owns_port(proc, port):
+        return (
+            f"port {port} is no longer served by our process (pid {proc.pid}); "
+            f"listeners={_listening_pids(port) or '<could not determine>'}"
+        )
+    return ""
 
 
 def _wait_for_server(
@@ -461,8 +505,19 @@ def _run_harness_round(
             capture_output=True,
             text=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as expired:
         dur = time.monotonic() - t0
+        # Whatever bench managed to say before the clock stopped it is the only
+        # evidence there will be about WHERE it got stuck. Returning without
+        # writing it leaves the one failure class that most needs a transcript
+        # with none at all.
+        with bench_log.open("a") as fh:
+            fh.write(f"\n=== {alias}/{harness} (TIMED OUT after {dur:.1f}s) ===\n")
+            fh.write(_as_text(expired.stdout))
+            stderr_text = _as_text(expired.stderr)
+            if stderr_text:
+                fh.write("\n--- stderr ---\n")
+                fh.write(stderr_text)
         return False, dur, f"round timed out after {ROUND_TIMEOUT_S}s"
     dur = time.monotonic() - t0
     # Append the subprocess output to the bench log so a failure has
@@ -662,14 +717,45 @@ def main() -> int:
                 continue
             print(f"     server up ({alias}); harnesses={harnesses}")
             base_url = f"http://127.0.0.1:{args.port}"
+            drifted = False
             for harness in harnesses:
+                if drifted:
+                    break
                 for r in range(1, args.rounds + 1):
+                    # Ownership is not a one-time fact. Readiness proved the
+                    # port was ours when the sweep started; a takeover after
+                    # that (#1618 again) hands every later round to a stranger,
+                    # and the numbers come back attributed to the sampled
+                    # alias. Ask before AND after — before, so we do not
+                    # measure someone else; after, so a takeover mid-round
+                    # cannot be reported as a result.
+                    drift = _still_ours(proc, args.port)
+                    if drift:
+                        msg = f"{alias}/{harness} round {r}: {drift} before the round"
+                        print(f"     FAIL  {msg}", file=sys.stderr)
+                        with report_path.open("a") as fh:
+                            fh.write(f"FAIL  {msg}\n")
+                        failures.append(msg)
+                        drifted = True
+                        break
                     ok, dur, excerpt = _run_harness_round(
                         alias=alias,
                         harness=harness,
                         base_url=base_url,
                         bench_log=bench_log,
                     )
+                    drift = _still_ours(proc, args.port)
+                    if drift:
+                        msg = (
+                            f"{alias}/{harness} round {r}: {drift} during the round"
+                            " — its result cannot be attributed to this model"
+                        )
+                        print(f"     FAIL  {msg}", file=sys.stderr)
+                        with report_path.open("a") as fh:
+                            fh.write(f"FAIL  {msg}\n")
+                        failures.append(msg)
+                        drifted = True
+                        break
                     marker = "PASS" if ok else "FAIL"
                     line = (
                         f"     {marker} {alias}/{harness} "
