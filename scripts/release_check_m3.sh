@@ -803,8 +803,10 @@ else
     --port "$PORT" \
     --models "${G12_MODELS:-2}" \
     --harnesses "${G12_HARNESSES:-2}" \
-    --rounds "${G12_ROUNDS:-3}" \
-    --report /tmp/release-check-m3-random.log
+    --rounds "${G12_ROUNDS:-3}"
+  # No --report: the script defaults it into its own 0700 run directory and
+  # prints the path. A fixed /tmp name is a symlink the next local process can
+  # aim wherever it likes.
 fi
 
 #-------------------- Done ----------------------------------------

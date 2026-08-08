@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import stat
 import subprocess
 import sys
@@ -744,16 +743,27 @@ def test_a_timed_out_round_still_leaves_a_transcript(g12, tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
+# The child binds its own port and reports it, rather than the parent asking
+# the kernel for a free one and handing over the number. Closing the probe
+# socket before the child binds leaves a window in which any other process on
+# the machine can take that port — a flake that would show up as this gate
+# failing for reasons nobody can reproduce.
+_PORT_HOLDER = """
+import socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(1)
+sys.stdout.write(str(s.getsockname()[1]) + chr(10))
+sys.stdout.flush()
+time.sleep(60)
+"""
+
+
 @pytest.mark.skipif(
     shutil.which("lsof") is None or shutil.which("ps") is None,
     reason="ownership is established with lsof + ps",
 )
 def test_ownership_against_a_real_listener(g12):
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-
     class _Pid:
         def __init__(self, pid: int) -> None:
             self.pid = pid
@@ -762,11 +772,15 @@ def test_ownership_against_a_real_listener(g12):
             return None
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
-        stdout=subprocess.DEVNULL,
+        [sys.executable, "-c", _PORT_HOLDER],
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        text=True,
     )
     try:
+        line = proc.stdout.readline().strip()
+        assert line.isdigit(), f"the listener did not report a port: {line!r}"
+        port = int(line)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not g12._listening_pids(port):
             time.sleep(0.1)
@@ -820,3 +834,122 @@ def test_logs_live_in_a_private_directory_not_a_guessable_tmp_path(g12):
     # per-alias logs of one sweep end up scattered.
     assert g12._serve_log_path("another-alias").parent == parent
     assert serve != bench, "the serve and bench logs must not share a path"
+
+
+def test_a_listener_exactly_max_depth_below_us_is_ours(g12, monkeypatch):
+    """`max_depth` counts ancestry EDGES, so the walk needs max_depth + 1 checks.
+
+    Checking only `max_depth` times tested every generation except the last
+    one it walked to, so a legitimate listener exactly `max_depth` edges below
+    the server we started was reported as a stranger — and a stranger aborts
+    the release as ownership drift.
+    """
+    chain = {900: 800, 800: 700, 700: 600, 600: 500, 500: 4242, 4242: 1}
+    monkeypatch.setattr(g12, "_listening_pids", lambda port: [900])
+    monkeypatch.setattr(g12, "_parent_pid", lambda pid: chain.get(pid))
+    # 900 -> 800 -> 700 -> 600 -> 500 -> 4242 is five edges. _AliveProc
+    # defaults to pid 900, which IS the listener — pass the server pid
+    # explicitly or the walk matches at depth 0 and proves nothing.
+    assert g12._owns_port(_AliveProc(4242), 8000, max_depth=5) is True
+    # One edge short of reaching us is correctly a stranger.
+    assert g12._owns_port(_AliveProc(4242), 8000, max_depth=4) is False
+
+
+def test_the_bench_transcript_is_wired_to_the_bench_log_not_the_server_log(
+    g12, monkeypatch, tmp_path
+):
+    """Drive `main()`: the round runner must receive the BENCH log.
+
+    Asserting that the two helper functions return different names says
+    nothing about which one `main()` actually hands down. If it passed the
+    serve log, two writers would share one file — the server tracking its own
+    byte offset — and corrupt the artifact someone needs on exactly the runs
+    that failed.
+    """
+    seen: list[Path] = []
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    aliases = tmp_path / "aliases.json"
+    aliases.write_text(json.dumps(_fake_aliases()))
+
+    monkeypatch.setattr(g12.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    monkeypatch.setattr(g12, "_free_disk_gb", lambda path: 10_000.0)
+    monkeypatch.setattr(
+        g12, "_wait_for_server", lambda proc, port, timeout, log: (True, False)
+    )
+    monkeypatch.setattr(g12, "_still_ours", lambda proc, port: "")
+    monkeypatch.setattr(g12, "_stop_server", lambda proc, port: None)
+    monkeypatch.setattr(g12, "_hf_cache_dir", lambda hf_path: tmp_path / "nonexistent")
+
+    def _round(*, alias, harness, base_url, bench_log):
+        seen.append(Path(bench_log))
+        return True, 1.0, ""
+
+    monkeypatch.setattr(g12, "_run_harness_round", _round)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_check_m3_random.py",
+            "--models",
+            "1",
+            "--harnesses",
+            "1",
+            "--rounds",
+            "1",
+            "--seed",
+            "7",
+            "--aliases-json",
+            str(aliases),
+        ],
+    )
+
+    g12.main()
+
+    assert seen, "no harness round ran, so nothing was verified"
+    for bench_log in seen:
+        assert bench_log.name.endswith(".bench.log"), (
+            f"the round runner was handed {bench_log}, which is not a bench log"
+        )
+        assert bench_log != g12._serve_log_path(bench_log.name.split(".")[0]), (
+            "the round transcript would be appended to the server's own log"
+        )
+
+
+def test_the_report_defaults_into_the_private_directory(g12, monkeypatch, tmp_path):
+    """An unspecified --report must not land on a fixed name in /tmp."""
+    aliases = tmp_path / "aliases.json"
+    aliases.write_text(json.dumps(_fake_aliases()))
+    monkeypatch.setattr(g12, "_free_disk_gb", lambda path: 10_000.0)
+    monkeypatch.setattr(
+        g12, "_wait_for_server", lambda proc, port, timeout, log: (False, False)
+    )
+    monkeypatch.setattr(g12.subprocess, "Popen", lambda cmd, **kw: _AliveProc())
+    monkeypatch.setattr(g12, "_stop_server", lambda proc, port: None)
+    monkeypatch.setattr(g12, "_hf_cache_dir", lambda hf_path: tmp_path / "nonexistent")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_check_m3_random.py",
+            "--models",
+            "1",
+            "--harnesses",
+            "1",
+            "--rounds",
+            "1",
+            "--seed",
+            "7",
+            "--aliases-json",
+            str(aliases),
+        ],
+    )
+    g12.main()
+    written = g12._log_dir() / "report.log"
+    assert written.is_file(), f"no report written into {g12._log_dir()}"
+    assert written.parent != Path("/tmp")

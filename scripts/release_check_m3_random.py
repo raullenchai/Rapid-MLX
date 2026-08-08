@@ -513,7 +513,13 @@ def _owns_port(proc: subprocess.Popen, port: int, max_depth: int = 8) -> bool:
         return False
     for pid in listeners:
         cur: int | None = pid
-        for _ in range(max_depth):
+        # `max_depth` is a number of ancestry EDGES, so the walk needs
+        # max_depth + 1 identity checks: the listener itself, then one after
+        # each hop. Checking only `max_depth` times tested every generation
+        # except the last one it walked to — so a listener exactly max_depth
+        # edges below our process was reported as a stranger and aborted the
+        # release as ownership drift.
+        for _ in range(max_depth + 1):
             if cur == proc.pid:
                 break
             if cur is None or cur <= 1:
@@ -749,8 +755,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--report",
-        default="/tmp/release-check-m3-random.log",
-        help="Path to write the human-readable summary report to.",
+        default=None,
+        help=(
+            "Path to write the human-readable summary report to. Defaults to "
+            "a file inside this run's private log directory — the previous "
+            "default was a fixed name in world-writable /tmp, which any other "
+            "local process could pre-create as a symlink for this script to "
+            "truncate."
+        ),
     )
     parser.add_argument(
         "--aliases-json",
@@ -834,13 +846,18 @@ def main() -> int:
         hs = per_model_rng.sample(list(HARNESS_PROFILES), args.harnesses)
         sampled.append((alias, hf_path, hs))
 
+    # Resolved before the banner because the banner prints it, and inside
+    # `_log_dir()` so an unspecified report shares the run's private
+    # directory rather than a fixed name in world-writable /tmp.
+    report_path = Path(args.report) if args.report else _log_dir() / "report.log"
+
     print("=" * 60)
     print("  G12 — random-coverage release gate")
     print(f"  seed:     {args.seed}")
     print(f"  models:   {args.models} (of {len(eligible)} eligible)")
     print(f"  harnesses:{args.harnesses} (of {len(HARNESS_PROFILES)})")
     print(f"  rounds:   {args.rounds}")
-    print(f"  report:   {args.report}")
+    print(f"  report:   {report_path}")
     print(f"  free GB:  {free_gb:.1f}")
     print("=" * 60)
     print("  Sampled matrix:")
@@ -849,7 +866,6 @@ def main() -> int:
     print("=" * 60)
 
     # Reset the report log.
-    report_path = Path(args.report)
     report_path.write_text(
         f"G12 random-coverage report (seed={args.seed})\n" + "=" * 60 + "\n"
     )
