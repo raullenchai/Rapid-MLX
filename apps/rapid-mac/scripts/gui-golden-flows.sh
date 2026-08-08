@@ -254,6 +254,107 @@ ax_window_present() {
     esac
 }
 
+# Everything the transcript is showing, and nothing else.
+#
+# `ui_elements` is the whole app. The sidebar row for this conversation
+# carries the first prompt's text in its accessibility description, and the
+# composer carries whatever is typed. An assertion that searches the flat list
+# can therefore be satisfied by a surface that is NOT the transcript — which
+# is how "all five turns are present, in order" would pass on a transcript
+# that lost four of them, as long as the sidebar still knew their names.
+#
+# Measured on a real five-turn dump: the sidebar row exposes `shape:prose` in
+# `description` while the transcript bubble exposes it in `value`, so today
+# the app-wide search happens to land on the right element. Nothing pins that.
+# Give the field one `title` and the ordering assertion starts reading the
+# sidebar instead, silently.
+#
+# The transcript is the AXOpaqueProviderList subtree, so scope to the
+# contiguous run of elements deeper than it.
+transcript_only() {
+    python3 - "$1" "$2" <<'PYEOF'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+els = json.load(open(src))["data"]["ui_elements"]
+start = next(
+    (i for i, e in enumerate(els) if e.get("subrole") == "AXOpaqueProviderList"),
+    None,
+)
+if start is None:
+    sys.exit("no transcript container (AXOpaqueProviderList) in this dump")
+root_depth = els[start].get("depth", 0)
+scoped = []
+for element in els[start + 1:]:
+    if element.get("depth", 0) <= root_depth:
+        break
+    scoped.append(element)
+if not scoped:
+    sys.exit("the transcript container has no children — nothing to assert on")
+json.dump({"data": {"ui_elements": scoped}}, open(dst, "w"))
+PYEOF
+}
+
+# Each of these strings is a whole element, not a fragment of a blob.
+#
+# This is the positive half of "markdown was rendered". Asserting only that
+# ``` fences and | pipe rows are ABSENT cannot tell a rendered table from a
+# renderer that stripped the pipes and printed one flat line, nor a rendered
+# list from one that dropped the bullets. Both leave the text on screen and
+# both pass an absence check.
+#
+# Measured: a rendered table puts every cell in its own AXStaticText
+# (`qwen3.5-9b`, `5.2 GB`, `74 tok/s`), and a rendered list puts every item in
+# its own node with the source marker stripped. A renderer that flattens
+# either one merges them into a single node, so requiring an EXACT value match
+# is what separates "rendered" from "printed".
+assert_rendered_as_separate_nodes() {
+    local tree="$1" label="$2"
+    shift 2
+    python3 - "$tree" "$label" "$@" <<'PYEOF'
+import json, sys
+tree, label, expected = sys.argv[1], sys.argv[2], sys.argv[3:]
+els = json.load(open(tree))["data"]["ui_elements"]
+values = [str(e.get("value", "")).strip() for e in els]
+missing = [want for want in expected if want not in values]
+if missing:
+    # Distinguish "not on screen at all" from "on screen inside a bigger
+    # node" — the second is the flattening regression this exists to catch.
+    detail = []
+    for want in missing:
+        holder = next((v for v in values if want in v), None)
+        detail.append(
+            f"{want!r} is part of {holder[:60]!r}" if holder
+            else f"{want!r} is not in the transcript at all"
+        )
+    sys.exit(f"{label}: not rendered as separate elements — " + "; ".join(detail))
+PYEOF
+}
+
+# No list item still wearing its source marker.
+#
+# Measured: the renderer strips `-`/`*`/`1.` and emits the bare item text. A
+# fallback to plain text puts them back, and every "does the text appear"
+# assertion in this file passes on that, because the text does appear.
+assert_no_literal_list_markers() {
+    local tree="$1"
+    python3 - "$tree" <<'PYEOF'
+import json, re, sys
+els = json.load(open(sys.argv[1]))["data"]["ui_elements"]
+MARKER = re.compile(r"^\s*(?:[-*+]\s+|\d+\.\s+)")
+offenders = [
+    line
+    for e in els
+    for line in str(e.get("value", "")).splitlines()
+    if MARKER.match(line)
+]
+if offenders:
+    sys.exit(
+        "a list marker reached the screen verbatim — the list was printed, "
+        f"not rendered: {offenders[:3]}"
+    )
+PYEOF
+}
+
 # Markdown reached the renderer as markdown, not as source text.
 #
 # The cheapest regression here is the loudest one for a user: the renderer
@@ -1098,7 +1199,6 @@ flow_chat_depth() {
         "shape:unicode|用中文回答并带上 emoji|中文排版测试"
     )
 
-    local -a prompts=()
     local index=0 spec marker prompt expect
     for spec in "${turns[@]}"; do
         index=$((index + 1))
@@ -1107,7 +1207,6 @@ flow_chat_depth() {
         expect="${spec##*|}"
         # The marker travels in the prompt so the fake can pick the shape, and
         # it doubles as the per-turn needle for the ordering assertion below.
-        prompts+=("$marker")
         send_prompt "$marker $prompt" "turn$index"
         wait_send_idle "$OUT/turn$index-settled.json"
         assert_tree_text "$OUT/turn$index-settled.json" "$expect"
@@ -1118,15 +1217,41 @@ flow_chat_depth() {
         log "  turn $index ($marker) rendered and both sides counted"
     done
 
-    assert_text_order "$OUT/turn5-settled.json" "${prompts[@]}"
-    log "  all 5 turns present, in the order they were sent"
+    # Prompts AND answers, interleaved, inside the transcript only.
+    #
+    # Ordering the prompts alone cannot see a transcript that brings every
+    # turn back but pairs the fifth answer with the first question: check one
+    # side and both arrangements are equally "sorted". Interleaving is what
+    # pins each answer to the prompt it belongs under.
+    local -a conversation=()
+    for spec in "${turns[@]}"; do
+        conversation+=("${spec%%|*}" "${spec##*|}")
+    done
+    transcript_only "$OUT/turn5-settled.json" "$OUT/turn5-transcript.json"
+    assert_text_order "$OUT/turn5-transcript.json" "${conversation[@]}"
+    log "  all 5 turns present, each answer under its own prompt"
 
     # The shapes are only worth sending if something asserts on what the
-    # renderer did with them.
-    assert_markdown_rendered "$OUT/turn5-settled.json"
+    # renderer did with them — positively, not just "the source syntax is
+    # absent".
+    assert_markdown_rendered "$OUT/turn5-transcript.json"
+    assert_no_literal_list_markers "$OUT/turn5-transcript.json"
     assert_code_block_is_its_own_view "$OUT/turn5-settled.json" \
         "Here is the function you asked for" "def fib(n)"
-    log "  markdown rendered: no raw fences or pipe rows, code block nested and intact"
+    assert_rendered_as_separate_nodes "$OUT/turn5-transcript.json" "table cells" \
+        "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
+    assert_rendered_as_separate_nodes "$OUT/turn5-transcript.json" "list items" \
+        "First, read the prompt." "Second, plan the answer." \
+        "a nested point" "another one" "Third, write it down."
+    # The CJK turn, past its first six characters. Asserting only the prefix
+    # would pass on an answer that corrupted or dropped everything after it —
+    # which is exactly what a text-encoding regression looks like.
+    assert_tree_text "$OUT/turn5-transcript.json" "🎯🚀"
+    assert_tree_text "$OUT/turn5-transcript.json" "مرحبا"
+    assert_tree_text "$OUT/turn5-transcript.json" "用来检查换行和字宽"
+    log "  markdown rendered: table cells and list items are their own elements,"
+    log "  no raw fences, pipe rows or list markers, code block nested and intact,"
+    log "  and the CJK answer kept its emoji and its right-to-left run"
     baseline chat-depth.five-turns "$OUT/turn5-settled.json"
 
     # Restore has to bring back the WHOLE conversation. `chat-restore` only
@@ -1143,8 +1268,13 @@ flow_chat_depth() {
     press "$OUT/depth-restored.json" "$conversation_id" "$OUT/depth-open-restored.json"
     wait_send_idle "$OUT/depth-restored-transcript.json"
     assert_transcript_turns "$OUT/depth-restored-transcript.json" 5
-    assert_text_order "$OUT/depth-restored-transcript.json" "${prompts[@]}"
-    log "  all 5 turns restored, still in order"
+    # The same interleaved, transcript-scoped check as before the relaunch.
+    # A restore that returns five prompts with the answers shuffled between
+    # them is a broken restore, and prompt-only ordering cannot see it.
+    transcript_only "$OUT/depth-restored-transcript.json" \
+        "$OUT/depth-restored-scoped.json"
+    assert_text_order "$OUT/depth-restored-scoped.json" "${conversation[@]}"
+    log "  all 5 turns restored, each answer still under its own prompt"
     baseline chat-depth.restored "$OUT/depth-restored-transcript.json"
     cleanup_persona
 }
