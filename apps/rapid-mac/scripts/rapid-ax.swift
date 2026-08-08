@@ -29,7 +29,7 @@ var match: AXUIElement?
 // can be trusted. `complete: false` is not an error; it means "ask again".
 var windowTitles = [String]()
 var windowListComplete = true
-var windowHashes = Set<CFHashCode>()
+var windowElements = [AXUIElement]()
 let wanted = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : nil
 
 func attribute(_ element: AXUIElement, _ name: CFString) -> AnyObject? {
@@ -105,17 +105,23 @@ func walk(_ element: AXUIElement, depth: Int) {
     records.append(record)
 
     if match == nil, identifier == wanted { match = element }
-    guard let children = attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] else { return }
+    // At depth 0 the children ARE the windows enumerated below, reused rather
+    // than read again: a second AXChildren read can return a different set, and
+    // then `ui_elements` and the `windows` list this dump vouches for would
+    // disagree about which windows exist.
+    //
+    // That enumeration also drops the global menu bar, which the application
+    // root owns as well. Traversing it captures unrelated macOS Recent Items in
+    // artifacts and adds thousands of irrelevant nodes; golden flows only need
+    // app windows, and sheets and popovers stay descendants of those.
+    let children: [AXUIElement]
+    if depth == 0 {
+        children = windowElements
+    } else {
+        guard let kids = attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] else { return }
+        children = kids
+    }
     for child in children {
-        // The application root also owns the global menu bar. Traversing it
-        // captures unrelated macOS Recent Items in test artifacts and adds
-        // thousands of irrelevant nodes. Golden flows only need app windows;
-        // sheets and popovers remain descendants of those windows.
-        //
-        // Filtered against the window list enumerated above rather than by
-        // re-reading AXRole here, so the tree and that list cannot disagree
-        // about which windows exist.
-        if depth == 0, !windowHashes.contains(CFHash(child)) { continue }
         walk(child, depth: depth + 1)
     }
 }
@@ -131,7 +137,9 @@ if let rootChildren = attribute(application, kAXChildrenAttribute as CFString) a
             continue
         }
         guard role == kAXWindowRole as String else { continue }
-        windowHashes.insert(CFHash(child))
+        // Recorded even when the title will not read: a window we cannot name
+        // is still a window, and dropping it here would shorten the tree too.
+        windowElements.append(child)
         guard let title = string(child, kAXTitleAttribute as CFString) else {
             windowListComplete = false
             continue

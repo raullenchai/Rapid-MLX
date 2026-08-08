@@ -224,7 +224,11 @@ ax_window_present() {
     # array cannot answer this, because every way it comes up short — a role
     # read that failed, a title that would not read, the record cap — removes a
     # window from it silently and is indistinguishable from the window closing.
-    jq -e '.success == true and .data.windows.complete == true' \
+    # `titles` must be an array as well as complete: `titles[]?` below swallows
+    # a structural failure, so without this a malformed list would read as a
+    # confident "absent" — the third outcome collapsing back into the first.
+    jq -e '.success == true and .data.windows.complete == true
+           and (.data.windows.titles | type) == "array"' \
         "$destination" >/dev/null 2>&1 || return 2
     status=0
     jq -e --arg t "$title" '[.data.windows.titles[]? | select(. == $t)] | length > 0' \
