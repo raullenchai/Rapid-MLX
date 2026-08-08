@@ -265,6 +265,17 @@ jobs:
             exit 1
           fi
           echo "apps/rapid-mac/CHANGELOG.md has a [${VERSION}] section."
+
+          # Fail HERE, before anything is published, because there is no good
+          # answer later. Skipping the app tag would leave a green run with only
+          # the engine released, and a re-run then sees the published engine
+          # Release, sets should_release=false and never reaches the app step —
+          # the version would be permanently engine-only. Failing now costs
+          # nothing: set the secret and re-run, and the whole release proceeds.
+          if [ "$HAVE_PAT" != "true" ]; then
+            echo "::error::RELEASE_PAT is not set. The app tag has to be created by a real user — a ref written with the default GITHUB_TOKEN triggers no workflow, so no DMG would ever be built for ${VERSION}. Nothing has been published yet: add the RELEASE_PAT secret and re-run this workflow."
+            exit 1
+          fi
           echo "have_pat=${HAVE_PAT}" >> "$GITHUB_OUTPUT"
 
       - name: Build release notes
@@ -344,12 +355,12 @@ jobs:
       # through the API under a real user, because a ref written with the
       # default GITHUB_TOKEN fires no ``push`` event.
       #
-      # Without the PAT this step does NOT fall back to creating the tag anyway.
-      # A GITHUB_TOKEN-authored tag is the worst of both worlds: the ref exists,
-      # so a later re-run (with the PAT restored) finds it already correct and
-      # exits green — while no build, signing, notarisation or DMG ever
-      # happened, and now never can. Refusing to create it keeps the release
-      # recoverable: fix the secret, re-run, and the tag is created for real.
+      # Its absence is already fatal in the pre-flight step above, before
+      # anything is published — a GITHUB_TOKEN-authored tag is the worst of both
+      # worlds: the ref exists, so a later re-run finds it already correct and
+      # exits green, while no build, signing, notarisation or DMG ever happened
+      # and now never can. The script re-checks anyway, so a hand-run cannot
+      # walk into it either.
       - name: Tag the desktop app at the same version
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}

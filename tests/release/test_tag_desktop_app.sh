@@ -88,7 +88,7 @@ run() {  # run <MODE> <READ_SHA> [VERSION]
   : > "$TMP/calls"
   : > "$TMP/hops"
   MODE="$1" READ_SHA="$2" TAG_OBJ="$TAG_OBJ" CALLS="$TMP/calls" \
-  TMP_HOPS="$TMP/hops" CHAIN_LEN="${CHAIN_LEN:-1}" HAVE_PAT="${HAVE_PAT:-true}" \
+  TMP_HOPS="$TMP/hops" CHAIN_LEN="${CHAIN_LEN:-1}" HAVE_PAT="${HAVE_PAT-true}" \
   GH="$TMP/gh" GITHUB_REPOSITORY="raullenchai/Rapid-MLX" \
   VERSION="${3-0.12.8}" RELEASE_SHA="$SHA_GOOD" \
     bash "$SCRIPT" 2>&1
@@ -167,16 +167,25 @@ OUT=$(CHAIN_LEN=99 run taken_chain "$SHA_GOOD") && RC=0 || RC=$?
                      || bad "refuses a chain deeper than the peel bound"
 
 # ==========================================================================
-echo "== 6c. no PAT: refuse to create the tag at all =="
+echo "== 6c. no PAT: refuse to run at all =="
 # ==========================================================================
-# A tag written with GITHUB_TOKEN fires no workflow AND blocks every retry:
-# the re-run finds it already at the right commit and exits green, so the DMG
-# can never be built for that version without hand-deleting a published tag.
-OUT=$(HAVE_PAT=false run free "") && RC=0 || RC=$?
-[ "${RC:-0}" -eq 0 ] && ok "exit 0 — the engine release stands" || bad "exit 0 — the engine release stands (got $RC)"
-lacks "$(cat "$TMP/calls")" "git/refs" "creates NO tag when the token cannot trigger the build"
-contains "$OUT" "::warning::" "warns in the job log"
-contains "$OUT" "release-local.sh --publish rapid-mac-v0.12.8" "gives the manual command to finish the release"
+# A tag written with GITHUB_TOKEN fires no workflow AND blocks every retry: the
+# re-run finds it already at the right commit and exits green, so the DMG can
+# never be built for that version without hand-deleting a published tag.
+# Skipping quietly is no better — the run would end green with only the engine
+# released, and the next re-run sees the published engine Release and decides
+# there is nothing left to release. So this fails, and the workflow asks the
+# same question before anything irreversible happens.
+#
+# The EMPTY case is the one that bites in production: a workflow expression
+# that evaluates to nothing would otherwise hit the "unset means a human is
+# running this" default and recreate the dead-tag failure.
+for BAD_PAT in false ""; do
+  OUT=$(HAVE_PAT="$BAD_PAT" run free "") && RC=0 || RC=$?
+  [ "${RC:-0}" -ne 0 ] && ok "non-zero with HAVE_PAT='$BAD_PAT'" || bad "non-zero with HAVE_PAT='$BAD_PAT'"
+  lacks "$(cat "$TMP/calls")" "git/refs" "creates NO tag with HAVE_PAT='$BAD_PAT'"
+  contains "$OUT" "RELEASE_PAT is not available" "says which secret is missing (HAVE_PAT='$BAD_PAT')"
+done
 
 # ==========================================================================
 echo "== 7. workflow wiring =="
@@ -195,8 +204,18 @@ lacks "$APP_STEP" "git push" "app tag step does not git push the tag"
 # the fallback silently creates a dead tag.
 contains "$APP_STEP" "HAVE_PAT: \${{ steps.appcheck.outputs.have_pat }}" \
   "app tag step is told whether the PAT is actually present"
-contains "$(sed -n '/Pre-check the desktop app CHANGELOG/,/Build release notes/p' "$WORKFLOW")" \
-  "have_pat=" "the pre-flight step publishes have_pat, before anything is released"
+# Assert the EXACT expression and the EXACT guard. A bare "have_pat=" check
+# passed even when the published value was empty — which the script's
+# "unset means a human" default then read as consent, recreating the very
+# dead-tag failure this wiring exists to prevent. Pin what is written, not
+# that something is.
+PREFLIGHT=$(sed -n '/Pre-check the desktop app CHANGELOG/,/Build release notes/p' "$WORKFLOW")
+contains "$PREFLIGHT" "HAVE_PAT: \${{ secrets.RELEASE_PAT != '' }}" \
+  "pre-flight derives have_pat from the secret's presence"
+contains "$PREFLIGHT" 'echo "have_pat=${HAVE_PAT}" >> "$GITHUB_OUTPUT"' \
+  "pre-flight publishes that value verbatim, not a literal"
+contains "$PREFLIGHT" 'if [ "$HAVE_PAT" != "true" ]; then' \
+  "pre-flight refuses before anything is published"
 
 # The CHANGELOG check has to precede the irreversible engine publication, or a
 # missing section ships the engine and then fails — the half-release this whole

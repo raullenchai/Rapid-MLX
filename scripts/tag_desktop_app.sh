@@ -35,15 +35,20 @@
 # moving a published tag would ship one version's notes against another's
 # build.
 #
-# WHY A MISSING PAT SKIPS RATHER THAN FALLS BACK
-# ----------------------------------------------
+# WHY A MISSING PAT IS FATAL RATHER THAN A FALLBACK
+# -------------------------------------------------
 # Creating the tag under GITHUB_TOKEN would be worse than not creating it. The
 # ref would exist and this step would go green, but the run it should have
 # triggered is suppressed — and the recovery (restore the secret, re-run) then
 # finds a tag that already points at the right commit and exits 0 without
 # emitting any event. The app could never be built for that version again
-# without hand-deleting a published tag. So: no PAT, no tag, loud warning, and
-# a release that is still recoverable by re-running.
+# without hand-deleting a published tag.
+#
+# Skipping quietly is no better: the run ends green with only the engine
+# released, and a re-run sees the published engine Release, decides there is
+# nothing to release, and never reaches this step again. So this refuses to
+# run at all. In the workflow the same condition is checked BEFORE anything is
+# published, which is what makes "set the secret and re-run" an actual fix.
 #
 # Required environment:
 #   VERSION            X.Y.Z — the version the engine just released
@@ -51,13 +56,14 @@
 #   GITHUB_REPOSITORY  owner/repo
 #   GH_TOKEN           consumed by ``gh`` (RELEASE_PAT in the workflow)
 # Optional:
-#   HAVE_PAT           "true" when GH_TOKEN is the RELEASE_PAT. Anything else
-#                      skips tag creation (see above). Unset = assume true, so
-#                      a hand-run of this script behaves like it reads.
+#   HAVE_PAT           "true" when GH_TOKEN is the RELEASE_PAT. Anything else,
+#                      INCLUDING the empty string, refuses to tag (see above).
+#                      Only a genuinely unset value defaults to true, for a
+#                      hand-run — an empty one means a workflow expression
+#                      evaluated to nothing, which must not read as consent.
 #   GH                 path to the gh binary (tests point this at a mock)
 #
-# Exit status: 0 tag created, already correct, or deliberately skipped;
-#              1 anything else.
+# Exit status: 0 tag created or already correct, 1 anything else.
 
 set -euo pipefail
 
@@ -65,7 +71,7 @@ set -euo pipefail
 : "${RELEASE_SHA:?tag_desktop_app.sh: RELEASE_SHA is required}"
 : "${GITHUB_REPOSITORY:?tag_desktop_app.sh: GITHUB_REPOSITORY is required}"
 GH_BIN="${GH:-gh}"
-HAVE_PAT="${HAVE_PAT:-true}"
+HAVE_PAT="${HAVE_PAT-true}"
 
 # The tag is built from this string, so a value the tag namespace cannot
 # carry has to fail here rather than produce ``rapid-mac-v0.12.7\n``.
@@ -83,11 +89,9 @@ fi
 APP_TAG="rapid-mac-v${VERSION}"
 
 if [ "$HAVE_PAT" != "true" ]; then
-  echo "::warning::RELEASE_PAT is not set, so ${APP_TAG} was NOT created — a tag written with the default GITHUB_TOKEN triggers no workflow, and its existence would then block every retry. The engine released; the app did not."
-  echo "To finish this release: set the RELEASE_PAT secret and re-run this workflow," >&2
-  echo "or cut the app half by hand from a clean checkout of ${RELEASE_SHA}:" >&2
-  echo "    apps/rapid-mac/scripts/release-local.sh --publish ${APP_TAG}" >&2
-  exit 0
+  echo "::error::refusing to create ${APP_TAG}: RELEASE_PAT is not available, and a tag written with the default GITHUB_TOKEN triggers no workflow — no DMG would ever be built, and the tag's existence would then block every retry." >&2
+  echo "   Set the RELEASE_PAT secret and run again." >&2
+  exit 1
 fi
 
 # Follows at most this many annotated tag objects before giving up. Ordinary
