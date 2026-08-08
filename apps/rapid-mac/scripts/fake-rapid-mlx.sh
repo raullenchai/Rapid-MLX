@@ -248,7 +248,21 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length))
             except (json.JSONDecodeError, UnicodeDecodeError):
                 body = {}
-        _event("chat_request")
+        messages = body.get("messages") if isinstance(body.get("messages"), list) else []
+        definitions = body.get("tools") if isinstance(body.get("tools"), list) else []
+        _event(
+            "chat_request",
+            roles=[m.get("role") for m in messages if isinstance(m, dict)],
+            tools=[
+                d.get("function", {}).get("name")
+                for d in definitions
+                if isinstance(d, dict) and isinstance(d.get("function"), dict)
+            ],
+            user_texts=[
+                m.get("content") for m in messages
+                if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str)
+            ],
+        )
 
         if body.get("stream") is False:
             max_tokens = int(body.get("max_tokens", 8) or 8)

@@ -389,6 +389,21 @@ final class ChatViewModel {
         guard !trimmed.isEmpty else { return }
         guard !isStreaming else { return }
 
+        // Small local models are unreliable at the first step of tool use:
+        // deciding that an explicitly live/dated question needs the web. Do
+        // that narrow piece of routing in the app, while leaving query wording
+        // and answer synthesis to the model. Follow-ups inherit the intent of
+        // the preceding user turn ("What about technology?") so restoring a
+        // conversation cannot silently turn search back into plain chat.
+        let forcedTool = Self.forcedToolForUserTurn(
+            trimmed,
+            priorMessages: messages,
+            enabledToolNames: Set(enabledDefinitions.map { $0.function.name })
+        )
+        let forcedWebSearchQuery = forcedTool == "web_search"
+            ? Self.webSearchQuery(for: trimmed, priorMessages: messages)
+            : nil
+
         let user = ChatMessage(
             role: .user,
             content: trimmed,
@@ -457,9 +472,131 @@ final class ChatViewModel {
             await self.runToolLoop(
                 alias: alias,
                 initialPlaceholder: placeholderIndex,
-                epoch: epoch
+                epoch: epoch,
+                forcedWebSearchQuery: forcedWebSearchQuery
             )
         }
+    }
+
+    /// Deterministic routing for prompts whose answer is explicitly time
+    /// sensitive. This is intentionally narrower than a general semantic
+    /// classifier: a false negative falls back to normal `tool_choice:auto`,
+    /// while a false positive performs an unnecessary network search.
+    nonisolated static func forcedToolForUserTurn(
+        _ prompt: String,
+        priorMessages: [ChatMessage],
+        enabledToolNames: Set<String>
+    ) -> String? {
+        guard enabledToolNames.contains("web_search") else { return nil }
+        if promptRequiresFreshWebEvidence(prompt) { return "web_search" }
+
+        // A short follow-up often omits the live-time words carried by the
+        // previous turn. Inherit across the immediately preceding user turn;
+        // this also covers a restored thread where the first broad search ran
+        // but the user now asks for a narrower, fresh query.
+        let tail = priorMessages.suffix(8)
+        guard let previous = tail.last(where: { $0.role == .user }),
+              promptLooksLikeFollowUp(prompt),
+              promptRequiresFreshWebEvidence(previous.content)
+        else { return nil }
+        return "web_search"
+    }
+
+    nonisolated static func promptRequiresFreshWebEvidence(_ prompt: String) -> Bool {
+        let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return false }
+        let phrases = [
+            "latest", "recent", "today", "yesterday", "this week", "last week",
+            "this month", "this year", "current", "right now", "breaking news",
+            "news story", "news about", "world cup 2026", "2026 world cup",
+            "最新", "最近", "今天", "昨天", "本周", "上周", "这个月", "本月",
+            "今年", "当前", "现在", "刚刚", "新闻", "今年世界杯"
+        ]
+        return phrases.contains(where: value.contains)
+    }
+
+    nonisolated static func promptLooksLikeFollowUp(_ prompt: String) -> Bool {
+        let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty, value.count <= 240 else { return false }
+        let markers = [
+            "what about", "how about", "and ", "also", "instead", "one concrete",
+            "tell me more", "why", "summarize it", "that story", "those results",
+            "那", "那么", "这个", "这件事", "为什么", "再", "具体", "总结"
+        ]
+        return markers.contains(where: value.contains)
+    }
+
+    nonisolated static func webSearchArguments(query: String) -> String {
+        let data = try? JSONSerialization.data(
+            withJSONObject: ["query": query],
+            options: [.sortedKeys]
+        )
+        return data.flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"query":""}"#
+    }
+
+    /// Preserve the live-time scope when a follow-up is elliptical. Searching
+    /// only "What about technology?" loses the preceding "last week" filter
+    /// and lets stale or fictional high-ranking pages dominate the results.
+    nonisolated static func webSearchQuery(
+        for prompt: String,
+        priorMessages: [ChatMessage]
+    ) -> String {
+        if promptRequiresFreshWebEvidence(prompt) { return prompt }
+        if let previous = priorMessages.suffix(8).last(where: {
+            $0.role == .user && promptRequiresFreshWebEvidence($0.content)
+        }) {
+            return "\(previous.content)\nFollow-up focus: \(prompt)"
+        }
+        return prompt
+    }
+
+    struct GroundingSource: Equatable, Sendable {
+        let title: String
+        let url: String
+    }
+
+    nonisolated static func groundingSources(from toolResult: String) -> [GroundingSource] {
+        let lines = toolResult.split(separator: "\n", omittingEmptySubsequences: false)
+        var sources: [GroundingSource] = []
+        for index in lines.indices where sources.count < 3 {
+            let titleLine = lines[index].trimmingCharacters(in: .whitespaces)
+            guard titleLine.range(of: #"^\d+\.\s+"#, options: .regularExpression) != nil,
+                  lines.indices.contains(index + 1)
+            else { continue }
+            let url = lines[index + 1].trimmingCharacters(in: .whitespaces)
+            guard url.hasPrefix("https://") || url.hasPrefix("http://") else { continue }
+            let title = titleLine.replacingOccurrences(
+                of: #"^\d+\.\s+"#,
+                with: "",
+                options: .regularExpression
+            )
+            sources.append(GroundingSource(title: title, url: url))
+        }
+        return sources
+    }
+
+    private func appendGroundingSources(
+        _ sources: [GroundingSource],
+        to index: Int,
+        epoch: Int
+    ) {
+        guard epoch == conversationEpoch,
+              !sources.isEmpty,
+              var message = currentMessage(index: index),
+              message.status == .complete,
+              !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        let missing = sources.filter { !message.content.contains($0.url) }
+        guard !missing.isEmpty else { return }
+        let rows = missing.map { source in
+            let safeTitle = source.title
+                .replacingOccurrences(of: "[", with: "\\[")
+                .replacingOccurrences(of: "]", with: "\\]")
+            return "- [\(safeTitle)](\(source.url))"
+        }
+        message.content += "\n\nSources:\n" + rows.joined(separator: "\n")
+        updateMessage(at: index, with: message)
     }
 
     /// HF repo for the alias the next Send will start, supplied by the
@@ -1034,7 +1171,8 @@ final class ChatViewModel {
     private func runToolLoop(
         alias: String,
         initialPlaceholder: Int,
-        epoch: Int
+        epoch: Int,
+        forcedWebSearchQuery: String? = nil
     ) async {
         defer {
             // A stream that outlived a conversation switch must not reset
@@ -1047,6 +1185,51 @@ final class ChatViewModel {
         }
         var currentPlaceholder = initialPlaceholder
         var roundsLeft = maxToolRounds
+        var appGroundingSources: [GroundingSource] = []
+
+        // `tool_choice:function` is advisory in several local chat templates:
+        // the shipped 1.2B starter can ignore it and answer "I can search".
+        // For an unambiguous fresh-information prompt, dispatch the harmless
+        // search directly and give the model the same assistant(tool_calls) +
+        // tool(result) transcript it would have produced itself. The model's
+        // job is then only evidence synthesis, which is much more reliable.
+        if let query = forcedWebSearchQuery,
+           roundsLeft > 1,
+           !query.isEmpty
+        {
+            let call = ToolCall(
+                id: "app_search_\(UUID().uuidString)",
+                name: "web_search",
+                arguments: Self.webSearchArguments(query: query)
+            )
+            if var staged = currentMessage(index: currentPlaceholder) {
+                staged.toolCalls = [call]
+                staged.status = .complete
+                updateMessage(at: currentPlaceholder, with: staged)
+            }
+            let result = await tools.run(call)
+            appGroundingSources = Self.groundingSources(from: result.content)
+            guard epoch == conversationEpoch, !Task.isCancelled else {
+                finaliseCancelledPlaceholder(at: currentPlaceholder, epoch: epoch)
+                return
+            }
+            let failureKind = result.failureKind ?? FailureDiagnoser.toolFailureKind(
+                toolName: "web_search",
+                content: result.content,
+                isError: result.isError
+            )
+            _ = appendMessage(ChatMessage(
+                role: .tool,
+                content: result.content,
+                status: (result.isError || failureKind != nil) ? .failed : .complete,
+                errorMessage: failureKind.map { FailureDiagnoser.diagnosis(for: $0).message },
+                failureKind: failureKind,
+                toolCallID: result.toolCallID
+            ))
+            currentPlaceholder = appendMessage(ChatMessage(role: .assistant, status: .streaming))
+            roundsLeft -= 1
+        }
+
         while roundsLeft > 0 {
             roundsLeft -= 1
             // History for this request: everything BEFORE the streaming
@@ -1145,6 +1328,11 @@ final class ChatViewModel {
             )
             switch outcome {
             case .terminal:
+                appendGroundingSources(
+                    appGroundingSources,
+                    to: currentPlaceholder,
+                    epoch: epoch
+                )
                 return
             case .toolCallsPending(let calls):
                 // The user can press Stop in the gap between the stream
@@ -1363,7 +1551,9 @@ You have access to tools that fetch real-time information. When you use one of t
 
 5. When the user's question is ambiguous about which subject the tool result covers, ask a clarifying question before answering.
 
-6. If you find yourself wanting to write a long enumerated list, STOP. The tool result likely doesn't contain that list. Issue another tool call with a more specific query instead.
+6. For web results, cite the supporting source inline as a Markdown link using its exact title and URL. Never give a current-events answer without at least one clickable source.
+
+7. If the search result only contains homepages or snippets that do not support a concrete answer, call web_search again with a more specific subject/date query. Do not merely offer to search and do not ask permission to use a tool that is already available.
 
 These rules apply to every tool, not just web search.
 """

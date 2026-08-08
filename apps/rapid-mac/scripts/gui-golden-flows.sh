@@ -25,12 +25,13 @@ MAIN_WINDOW_ID=""
 BUNDLE_ID=""
 AX_DRIVER=""
 RESULT_WRITTEN=0
+PERSONA_ENV=()
 
 usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, chat-depth,
+Flows: fresh-install, settings-persistence, chat-restore, restored-tools, chat-depth,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
@@ -98,6 +99,7 @@ cleanup_persona() {
     fi
     PERSONA=""
     BUNDLE_ID=""
+    PERSONA_ENV=()
 }
 
 finish() {
@@ -134,6 +136,7 @@ start_persona() {
     shift
     cleanup_persona
     OUT="$OUT_ROOT/$name"
+    PERSONA_ENV=("$@")
     PERSONA="$(mktemp -d "/tmp/rapid-golden-${name}.XXXXXX")"
     mkdir -p "$OUT"
     "$ROOT/scripts/dogfood-isolate.sh" "$APP_SOURCE" "$PERSONA" \
@@ -144,7 +147,7 @@ start_persona() {
     local config="$PERSONA/home/.rapid-golden-fake.json"
     jq -n --arg event_log "$OUT/fake-events.jsonl" '{FAKE_EVENT_LOG: $event_log}' > "$config"
     local assignment key value updated
-    for assignment in "$@"; do
+    for assignment in "${PERSONA_ENV[@]}"; do
         key="${assignment%%=*}"
         value="${assignment#*=}"
         updated="$config.next"
@@ -152,7 +155,7 @@ start_persona() {
         mv "$updated" "$config"
     done
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
-        FAKE_EVENT_LOG="$OUT/fake-events.jsonl" "$@" \
+        FAKE_EVENT_LOG="$OUT/fake-events.jsonl" "${PERSONA_ENV[@]}" \
         "$PERSONA/launch.sh" > "$OUT/app.log" 2>&1 &
     APP_PID=$!
     wait_for_window
@@ -162,6 +165,7 @@ relaunch_persona() {
     stop_app
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
         FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
+        "${PERSONA_ENV[@]}" \
         "$PERSONA/launch.sh" >> "$OUT/app.log" 2>&1 &
     APP_PID=$!
     wait_for_window
@@ -916,6 +920,37 @@ flow_chat_restore() {
     cleanup_persona
 }
 
+flow_restored_tools() {
+    log "restored conversation keeps deterministic web research"
+    start_persona restored-tools RAPID_GUI_WEB_SEARCH_FIXTURE=1
+    dismiss_first_run
+    start_model
+    send_prompt "What's a major news story from the last week?" restored-tools-first
+    wait_send_idle "$OUT/first-settled.json"
+    assert_tree_text "$OUT/first-settled.json" "Tool call web_search"
+    assert_tree_text "$OUT/first-settled.json" "Golden technology story"
+
+    relaunch_persona
+    dismiss_first_run
+    wait_identifier Sidebar.NewChat "$OUT/restored.json"
+    local conversation_id
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/restored.json" | head -1)"
+    [[ -n "$conversation_id" ]] || die "restored tool conversation row missing"
+    press "$OUT/restored.json" "$conversation_id" "$OUT/opened.json"
+    send_prompt "What about technology? Find one concrete story and summarize it." restored-tools-followup
+    wait_send_idle "$OUT/followup-settled.json"
+    assert_tree_text "$OUT/followup-settled.json" "Golden technology story"
+
+    jq -s -e '[.[] | select(.event == "chat_request")
+        | select((.roles | index("tool")) != null)
+        | select((.tools | index("web_search")) != null)] | length == 2' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "fresh/restored synthesis requests did not both carry web evidence and tools"
+    cleanup_persona
+}
+
 flow_slow_stream_stop() {
     log "4/6 controlled slow stream and Stop"
     start_persona slow-stream-stop FAKE_INTER_TOKEN_SLEEP_S=0.01 FAKE_CONTENT_REPEAT=20000
@@ -1475,6 +1510,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
+    restored-tools) flow_restored_tools ;;
     chat-depth) flow_chat_depth ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
@@ -1488,6 +1524,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_settings_persistence
         flow_chat_restore
+        flow_restored_tools
         flow_chat_depth
         flow_slow_stream_stop
         flow_model_crash_recovery
