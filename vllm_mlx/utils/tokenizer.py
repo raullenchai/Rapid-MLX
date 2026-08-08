@@ -600,12 +600,12 @@ def _resolve_model_path(model_name: str) -> Path | None:
 # never need dynamic registration (``deepseek_v4`` is pure Python inside
 # ``vllm_mlx.models`` — if that import fails, the wheel is broken and the
 # earlier ``from ..models import deepseek_v4`` at every serve entry point
-# has already crashed). Conditionally registered archs like ``hy_v3`` are
-# added by ``_register_vendored_archs()`` only after their vendored module
-# successfully installs in ``sys.modules``, so a failure there does not
-# leave the arch advertised as vendored while the shim path silently
-# short-circuits (which would push users into an opaque later model-load
-# error instead of surfacing the actual registration failure).
+# has already crashed). Conditionally registered archs like ``hy_v3`` and
+# ``gpt_oss_puzzle`` are added by ``_register_vendored_archs()`` only after
+# their vendored module successfully installs in ``sys.modules``, so a failure
+# there does not leave the arch advertised as vendored while the shim path
+# silently short-circuits (which would push users into an opaque later
+# model-load error instead of surfacing the actual registration failure).
 _VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
 
 
@@ -679,6 +679,34 @@ def _register_vendored_archs() -> None:
             # fallback still bypasses AutoTokenizer (transformers ≤ 5.12
             # still doesn't know the arch, native mlx-lm module or not).
             _VENDORED_MODEL_TYPES.add("hy_v3")
+
+    if "mlx_lm.models.gpt_oss_puzzle" not in sys.modules:
+        # Puzzle is a heterogeneous GPT-OSS architecture from mlx-lm #1488.
+        # Prefer a future native implementation rather than shadowing upstream
+        # fixes with this vendor module indefinitely.
+        import importlib.util as _importlib_util
+
+        _native_spec = None
+        try:
+            _native_spec = _importlib_util.find_spec("mlx_lm.models.gpt_oss_puzzle")
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import gpt_oss_puzzle as _gpt_oss_puzzle
+
+                sys.modules.setdefault("mlx_lm.models.gpt_oss_puzzle", _gpt_oss_puzzle)
+            except Exception as e:
+                logger.warning(
+                    "gpt_oss_puzzle vendored module failed to register — "
+                    "NVIDIA Puzzle checkpoints will not load until resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("gpt_oss_puzzle")
+        else:
+            _VENDORED_MODEL_TYPES.add("gpt_oss_puzzle")
 
 
 def _is_vendored_arch_model(model_name: str) -> bool:
