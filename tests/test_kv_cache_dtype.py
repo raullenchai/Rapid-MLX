@@ -179,6 +179,16 @@ def test_deepseek_v4_substring_triggers_downgrade():
     assert decision.downgraded is True
 
 
+def test_granite_swash_name_triggers_sliding_window_downgrade():
+    decision = resolve_kv_cache_dtype(
+        "int4",
+        model_name="ibm-granite/granite-swash-3b-a600m",
+    )
+    assert decision.dtype == "bf16"
+    assert decision.downgraded is True
+    assert "sliding-window" in decision.reason.lower()
+
+
 def test_kimi_k2_substring_triggers_downgrade():
     decision = resolve_kv_cache_dtype(
         "int4",
