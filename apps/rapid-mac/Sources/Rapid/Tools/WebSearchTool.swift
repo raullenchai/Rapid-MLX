@@ -101,7 +101,7 @@ enum WebSearchTool {
     static func preparedQuery(
         _ query: String,
         now: Date = Date(),
-        calendar inputCalendar: Calendar = Calendar(identifier: .gregorian)
+        calendar inputCalendar: Calendar = .autoupdatingCurrent
     ) -> String {
         let folded = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         let asksForEnglishLastWeek = folded.range(
@@ -115,12 +115,11 @@ enum WebSearchTool {
         let asksForLastWeek = asksForEnglishLastWeek || asksForChineseLastWeek
         guard asksForLastWeek else { return query }
 
-        var calendar = inputCalendar
-        calendar.timeZone = inputCalendar.timeZone
-        let end = calendar.startOfDay(for: now)
-        // Both endpoints are inclusive, so today plus the preceding six days
-        // is exactly seven calendar dates.
-        guard let start = calendar.date(byAdding: .day, value: -6, to: end) else {
+        let calendar = inputCalendar
+        let today = calendar.startOfDay(for: now)
+        guard let currentWeek = calendar.dateInterval(of: .weekOfYear, for: today),
+              let start = calendar.date(byAdding: .weekOfYear, value: -1, to: currentWeek.start),
+              let end = calendar.date(byAdding: .day, value: -1, to: currentWeek.start) else {
             return query
         }
         let formatter = DateFormatter()

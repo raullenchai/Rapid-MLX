@@ -9,7 +9,7 @@ import Testing
 struct WebToolsHardeningTests {
     // MARK: - Relative-date query grounding
 
-    @Test("Last-week news query gets an explicit seven-day date window")
+    @Test("Last-week news query gets the previous complete calendar week")
     func lastWeekQueryGetsConcreteDates() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
@@ -23,7 +23,7 @@ struct WebToolsHardeningTests {
             calendar: calendar
         )
 
-        #expect(prepared.contains("2026-08-02 through 2026-08-08"))
+        #expect(prepared.contains("2026-07-26 through 2026-08-01"))
         #expect(prepared.hasPrefix("What's a major news story from the last week?"))
     }
 
@@ -40,7 +40,7 @@ struct WebToolsHardeningTests {
             now: now,
             calendar: calendar
         )
-        #expect(prepared.contains("2026-08-02 through 2026-08-08"))
+        #expect(prepared.contains("2026-07-26 through 2026-08-01"))
     }
 
     @Test("Last weekend is not broadened into a week-long query")
