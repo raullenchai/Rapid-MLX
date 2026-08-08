@@ -131,7 +131,15 @@ cleanup() {
   fi
   # The concurrent correctness cluster stages per-gate logs/rc under a
   # mktemp dir; remove it too so an abort mid-cluster doesn't leak /tmp.
-  [ -n "${CLUSTER_WORK:-}" ] && rm -rf "$CLUSTER_WORK"
+  #
+  # `if`, not `[ … ] && rm`: this function is ALSO called inline before G12,
+  # where its return status is load-bearing under `set -e`. As an `&&` list it
+  # returns 1 whenever CLUSTER_WORK is empty — which it always is by then, the
+  # cluster having cleared it — and the gauntlet died there instead of running
+  # the gate.
+  if [ -n "${CLUSTER_WORK:-}" ]; then
+    rm -rf "$CLUSTER_WORK"
+  fi
 }
 trap cleanup EXIT INT TERM
 
