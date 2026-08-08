@@ -39,6 +39,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# The minimal PR-validation environment intentionally omits optional template
+# dependencies. These tests exercise real Jinja rendering, so absence of Jinja
+# means the environment cannot execute the contract (rather than a product
+# failure). Full unit/L1 CI installs it and executes this module normally.
+pytest.importorskip("jinja2")
+
 from vllm_mlx.utils.chat_template import (
     _normalize_assistant_tool_call_arguments,
     apply_chat_template,
@@ -730,6 +736,37 @@ def test_gemma_alternating_template_replays_openai_tool_history():
     assert "Tool result call_1: sunny, 22C in Paris" in prompt
     assert "and tomorrow?" in prompt
     assert "tool:" not in prompt
+
+
+def test_alternating_fallback_after_unsupported_template_kwarg():
+    """A keyword retry must not bypass the strict-role compatibility path."""
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    render = tokenizer.apply_chat_template.side_effect
+
+    def reject_enable_thinking(messages, **kwargs):
+        if "enable_thinking" in kwargs:
+            raise TypeError(
+                "apply_chat_template() got an unexpected keyword argument "
+                "'enable_thinking'"
+            )
+        return render(messages, **kwargs)
+
+    tokenizer.apply_chat_template.side_effect = reject_enable_thinking
+    prompt = apply_chat_template(
+        tokenizer,
+        _messages_with_assistant_tool_call('{"city":"Paris"}'),
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+    assert 'Tool call get_weather: {"city":"Paris"}' in prompt
+    assert "Tool result call_1: sunny, 22C in Paris" in prompt
 
 
 def test_unrelated_template_error_is_not_hidden():

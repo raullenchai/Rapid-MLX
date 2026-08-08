@@ -1326,8 +1326,34 @@ def apply_chat_template(
     if _looks_like_hy3(model_name) and enable_thinking is not False:
         template_kwargs.setdefault("reasoning_effort", "low")
 
+    def _apply_with_alternating_fallback(
+        candidate_messages: list[dict], candidate_kwargs: dict
+    ) -> str:
+        try:
+            return template_applicator.apply_chat_template(
+                candidate_messages, **candidate_kwargs
+            )
+        except Exception as exc:
+            if "Conversation roles must alternate user/assistant" not in str(
+                exc
+            ) or not any(
+                isinstance(message, dict) and message.get("role") == "tool"
+                for message in candidate_messages
+            ):
+                raise
+            flattened = _flatten_tool_history_for_alternating_template(
+                candidate_messages
+            )
+            alternating_kwargs = dict(candidate_kwargs)
+            fallback_tools = alternating_kwargs.pop("tools", None)
+            if fallback_tools:
+                flattened = _inject_tools_into_messages(flattened, fallback_tools)
+            return template_applicator.apply_chat_template(
+                flattened, **alternating_kwargs
+            )
+
     try:
-        return template_applicator.apply_chat_template(messages, **template_kwargs)
+        return _apply_with_alternating_fallback(messages, template_kwargs)
     except TypeError as e:
         # DeepSeek-R1's published template concatenates historical tool-call
         # arguments as text, while the majority of HF templates iterate them as
@@ -1340,8 +1366,8 @@ def apply_chat_template(
             )
             if string_argument_messages is not messages:
                 try:
-                    return template_applicator.apply_chat_template(
-                        string_argument_messages, **template_kwargs
+                    return _apply_with_alternating_fallback(
+                        string_argument_messages, template_kwargs
                     )
                 except TypeError:
                     # It was not the known argument-shape incompatibility; keep
@@ -1357,7 +1383,7 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return template_applicator.apply_chat_template(messages, **template_kwargs)
+            return _apply_with_alternating_fallback(messages, template_kwargs)
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
             # actually names it (codex R8 BLOCKING: unconditionally popping it
@@ -1408,30 +1434,10 @@ def apply_chat_template(
             )
             injected = _inject_tools_into_messages(messages, tools)
             try:
-                return template_applicator.apply_chat_template(
-                    injected, **template_kwargs
-                )
+                return _apply_with_alternating_fallback(injected, template_kwargs)
             except TypeError:
                 # enable_thinking also unsupported after all — drop it
                 template_kwargs.pop("enable_thinking", None)
-                return template_applicator.apply_chat_template(
-                    injected, **template_kwargs
-                )
+                return _apply_with_alternating_fallback(injected, template_kwargs)
 
-        return template_applicator.apply_chat_template(messages, **template_kwargs)
-    except Exception as e:
-        # Gemma 3 and a few minimal instruction templates have no native tool
-        # role and fail a standards-compliant replay with this exact Jinja
-        # diagnostic.  Retry only that declared limitation; unrelated template
-        # errors remain visible to the caller.
-        if "Conversation roles must alternate user/assistant" not in str(e) or not any(
-            isinstance(message, dict) and message.get("role") == "tool"
-            for message in messages
-        ):
-            raise
-        flattened = _flatten_tool_history_for_alternating_template(messages)
-        if tools:
-            flattened = _inject_tools_into_messages(flattened, tools)
-        alternating_kwargs = dict(template_kwargs)
-        alternating_kwargs.pop("tools", None)
-        return template_applicator.apply_chat_template(flattened, **alternating_kwargs)
+        return _apply_with_alternating_fallback(messages, template_kwargs)

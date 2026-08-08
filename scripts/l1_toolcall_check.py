@@ -63,6 +63,74 @@ def _error_detail(exc: Exception) -> str:
     return ""
 
 
+def _sse_payloads(lines: list[str]) -> list[dict]:
+    payloads = []
+    for line in lines:
+        if not line.startswith("data:"):
+            continue
+        raw = line.removeprefix("data:").strip()
+        if raw == "[DONE]":
+            continue
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("SSE payload is not a JSON object")
+        payloads.append(payload)
+    return payloads
+
+
+def _validate_forced_stream(lines: list[str]) -> None:
+    if not lines or lines[-1].strip() != "data: [DONE]":
+        raise ValueError("forced stream did not terminate with data: [DONE]")
+    names: list[str] = []
+    argument_chunks: list[str] = []
+    saw_tool_delta = False
+    visible_chunks: list[str] = []
+    for payload in _sse_payloads(lines):
+        for choice in payload.get("choices") or []:
+            delta = choice.get("delta") or {}
+            visible_chunks.extend(
+                str(delta.get(key) or "") for key in ("content", "reasoning_content")
+            )
+            for tool_call in delta.get("tool_calls") or []:
+                saw_tool_delta = True
+                function = tool_call.get("function") or {}
+                if function.get("name"):
+                    names.append(function["name"])
+                if function.get("arguments") is not None:
+                    argument_chunks.append(str(function["arguments"]))
+    if not saw_tool_delta:
+        raise ValueError("forced stream returned no structured tool_calls delta")
+    if names != ["release_probe"]:
+        raise ValueError(f"forced stream tool name is invalid: {names!r}")
+    raw_arguments = "".join(argument_chunks)
+    if json.loads(raw_arguments) != {}:
+        raise ValueError(f"forced stream arguments are not {{}}: {raw_arguments!r}")
+    leaked = _visible_wire_marker("".join(visible_chunks))
+    if leaked:
+        raise ValueError(f"native wire marker leaked into stream: {leaked!r}")
+
+
+def _validate_replay_stream(lines: list[str]) -> None:
+    if not lines or lines[-1].strip() != "data: [DONE]":
+        raise ValueError("stream replay did not terminate with data: [DONE]")
+    saw_choice_delta = False
+    visible_chunks: list[str] = []
+    for payload in _sse_payloads(lines):
+        for choice in payload.get("choices") or []:
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            saw_choice_delta = True
+            visible_chunks.extend(
+                str(delta.get(key) or "") for key in ("content", "reasoning_content")
+            )
+    if not saw_choice_delta:
+        raise ValueError("stream replay returned no choice delta")
+    leaked = _visible_wire_marker("".join(visible_chunks))
+    if leaked:
+        raise ValueError(f"native wire marker leaked into replay stream: {leaked!r}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--base-url", default="http://127.0.0.1:8123/v1")
@@ -168,14 +236,7 @@ def main() -> int:
             forced_lines = [
                 line for line in forced_stream.iter_lines() if line.startswith("data:")
             ]
-        forced_wire = "\n".join(forced_lines)
-        if '"tool_calls"' not in forced_wire:
-            raise ValueError("forced stream returned no tool_calls delta")
-        if not forced_lines or forced_lines[-1].strip() != "data: [DONE]":
-            raise ValueError("forced stream did not terminate with data: [DONE]")
-        leaked = _visible_wire_marker(forced_wire)
-        if leaked:
-            raise ValueError(f"native wire marker leaked into stream: {leaked!r}")
+        _validate_forced_stream(forced_lines)
     except Exception as exc:
         print(
             f"FAIL: streaming forced-call error: {exc}{_error_detail(exc)}",
@@ -232,8 +293,7 @@ def main() -> int:
                 for line in stream_response.iter_lines()
                 if line.startswith("data:")
             ]
-        if not stream_lines or stream_lines[-1].strip() != "data: [DONE]":
-            raise ValueError("stream replay did not terminate with data: [DONE]")
+        _validate_replay_stream(stream_lines)
     except Exception as exc:
         print(
             f"FAIL: tool-result replay error: {exc}{_error_detail(exc)}",
