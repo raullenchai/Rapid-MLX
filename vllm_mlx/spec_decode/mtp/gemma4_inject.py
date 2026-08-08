@@ -394,6 +394,95 @@ def _build_assistant_model_args(
     return args
 
 
+# MLX affine quantization's practical value set — kept identical to
+# ``qwen3_5_inject._MLX_AFFINE_BITS`` / ``_MLX_AFFINE_GROUP_SIZES``. A sidecar
+# whose tensors imply something outside this set is anomalous, and feeding an
+# odd width into ``nn.quantize`` would re-open the mismatch this closes.
+_MLX_AFFINE_BITS = frozenset({2, 3, 4, 5, 6, 8})
+_MLX_AFFINE_GROUP_SIZES = frozenset({32, 64, 128})
+
+
+def _infer_sidecar_quantization(raw: dict, fp_out: int, fp_in: int) -> dict | None:
+    """Recover ``(bits, group_size)`` from the sidecar's own packed tensors.
+
+    Mirrors :func:`vllm_mlx.spec_decode.mtp.qwen3_5_inject._infer_sidecar_fc_quantization`,
+    anchored on ``pre_projection`` instead of ``fc`` because that is the layer
+    whose full-precision shape this consumer knows independently: it is an
+    ``nn.Linear(2 * backbone_hidden, hidden)`` built from Google's config.
+
+    Once MLX affine-quantizes a Linear, the packed ``weight`` has shape
+    ``(out, in * bits // 32)`` and ``scales`` has ``(out, in // group_size)``.
+    Given the full-precision ``(out, in)``, inverting those recovers the pair
+    exactly. The tensors are the ground truth — strictly more reliable than a
+    ``config.json`` proxy the checkpoint may omit or mis-declare.
+
+    Returns ``None`` when the sidecar is full-precision (no ``scales``), so the
+    caller leaves the assistant unquantised.
+
+    Raises:
+        ValueError: the packing cannot be trusted — scales present but shapes
+            inconsistent, derived params outside MLX's affine set, or a
+            truncated sidecar that kept a packed weight but lost its scales.
+    """
+    scales = raw.get("pre_projection.scales")
+    weight = raw.get("pre_projection.weight")
+    if scales is None:
+        # Full-precision sidecar. Guard the truncated-quantized case: a
+        # present ``weight`` must carry the exact full-precision shape,
+        # otherwise a packed tensor would be loaded into an ``nn.Linear``
+        # and crash at the first draft step.
+        if weight is not None:
+            got = tuple(int(d) for d in weight.shape)
+            if got != (fp_out, fp_in):
+                raise ValueError(
+                    f"pre_projection has no scales but weight shape {got} != "
+                    f"full-precision ({fp_out}, {fp_in}) — truncated quantized "
+                    f"sidecar (packed weight, missing scales)"
+                )
+        return None
+    if weight is None:
+        raise ValueError(
+            "pre_projection.scales present but pre_projection.weight missing"
+        )
+
+    w_shape = tuple(int(d) for d in weight.shape)
+    s_shape = tuple(int(d) for d in scales.shape)
+    if len(w_shape) != 2 or len(s_shape) != 2:
+        raise ValueError(
+            f"unexpected pre_projection tensor ranks: weight{w_shape} scales{s_shape}"
+        )
+    if w_shape[0] != fp_out or s_shape[0] != fp_out:
+        raise ValueError(
+            f"pre_projection out-dim mismatch: weight{w_shape} scales{s_shape} "
+            f"vs module out={fp_out}"
+        )
+    packed_cols, scale_cols = w_shape[1], s_shape[1]
+    if packed_cols <= 0 or scale_cols <= 0:
+        raise ValueError(
+            f"non-positive pre_projection packing cols: weight{w_shape} scales{s_shape}"
+        )
+    if fp_in % scale_cols != 0:
+        raise ValueError(f"in-dim {fp_in} not divisible by scales cols {scale_cols}")
+    group_size = fp_in // scale_cols
+    if (32 * packed_cols) % fp_in != 0:
+        raise ValueError(
+            f"packed weight cols {packed_cols} inconsistent with in-dim {fp_in}"
+        )
+    bits = (32 * packed_cols) // fp_in
+    if bits not in _MLX_AFFINE_BITS or group_size not in _MLX_AFFINE_GROUP_SIZES:
+        raise ValueError(
+            f"derived bits={bits} group_size={group_size} outside MLX affine set"
+        )
+    # Cross-check: the packing must reproduce exactly from the derived params,
+    # so a coincidental divisibility match cannot pass.
+    if packed_cols != fp_in * bits // 32 or scale_cols != fp_in // group_size:
+        raise ValueError(
+            f"inconsistent packing: weight{w_shape} scales{s_shape} do not "
+            f"reproduce from bits={bits} group_size={group_size}"
+        )
+    return {"bits": bits, "group_size": group_size}
+
+
 def _build_assistant_model(args: Any, backbone_hidden_size: int):
     """Instantiate the AssistantModel matching Google's safetensors layout.
 
@@ -726,6 +815,67 @@ def inject_mtp_support(
             )
             return False
         from mlx.utils import tree_flatten
+
+        # ── Match the assistant's quantization to the sidecar ────────────
+        # The module is built full-precision. mlx-community publishes the
+        # assistants at several widths (12B has 4bit / 5bit / 6bit / 8bit /
+        # bf16 / mxfp4 / mxfp8 / nvfp4), so a quantized one loaded into an
+        # FP module fails the shape check below — e.g. the 4-bit 12B assistant
+        # ships pre_projection.weight (1024, 960) against (1024, 7680)
+        # expected, 960 being 7680 * 4 // 32. Read the packing off the
+        # sidecar's own tensors and quantize to match, exactly as
+        # ``qwen3_5_inject`` does for the Qwen MTP head.
+        try:
+            fp_out, fp_in = (int(d) for d in assistant.pre_projection.weight.shape)
+        except Exception as exc:
+            logger.warning(
+                "[mtp.inject.gemma4] could not read pre_projection dims off the "
+                "freshly-built assistant (%s); refusing to guess the sidecar's "
+                "packing.",
+                exc,
+            )
+            return False
+        try:
+            sidecar_quant = _infer_sidecar_quantization(raw, fp_out, fp_in)
+        except ValueError as exc:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s has an inconsistent or "
+                "unsupported pre_projection packing (%s). Refusing to inject "
+                "rather than mis-pack the drafter.",
+                weights_file,
+                exc,
+            )
+            return False
+        if sidecar_quant is not None:
+            import mlx.nn as nn
+
+            # ``nn.quantize`` can itself raise — e.g. a layer narrower than
+            # the group size. That must land as a clean refusal, not escape
+            # and abort a request at the first draft step.
+            try:
+                nn.quantize(
+                    assistant,
+                    group_size=sidecar_quant["group_size"],
+                    bits=sidecar_quant["bits"],
+                    class_predicate=lambda _p, m: hasattr(m, "to_quantized"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[mtp.inject.gemma4] sidecar %s implies %d-bit / "
+                    "group_size=%d, but quantizing the assistant to match "
+                    "failed (%s). Refusing to inject.",
+                    weights_file,
+                    sidecar_quant["bits"],
+                    sidecar_quant["group_size"],
+                    exc,
+                )
+                return False
+            logger.info(
+                "[mtp.inject.gemma4] quantized assistant to match sidecar: "
+                "%d-bit, group_size=%d.",
+                sidecar_quant["bits"],
+                sidecar_quant["group_size"],
+            )
 
         expected_pairs = list(tree_flatten(assistant.parameters()))
         expected_shapes = {k: tuple(v.shape) for k, v in expected_pairs}
