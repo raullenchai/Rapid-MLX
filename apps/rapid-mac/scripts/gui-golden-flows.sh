@@ -30,7 +30,8 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, slow-stream-stop,
+Flows: fresh-install, settings-persistence, chat-restore, chat-depth,
+       slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
        browse-all-destination, all
@@ -251,6 +252,323 @@ ax_window_present() {
         1) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+# Everything the transcript is showing, and nothing else.
+#
+# `ui_elements` is the whole app. The sidebar row for this conversation
+# carries the first prompt's text in its accessibility description, and the
+# composer carries whatever is typed. An assertion that searches the flat list
+# can therefore be satisfied by a surface that is NOT the transcript — which
+# is how "all five turns are present, in order" would pass on a transcript
+# that lost four of them, as long as the sidebar still knew their names.
+#
+# Measured on a real five-turn dump: the sidebar row exposes `shape:prose` in
+# `description` while the transcript bubble exposes it in `value`, so today
+# the app-wide search happens to land on the right element. Nothing pins that.
+# Give the field one `title` and the ordering assertion starts reading the
+# sidebar instead, silently.
+#
+# The transcript is the AXOpaqueProviderList subtree, so scope to the
+# contiguous run of elements deeper than it.
+transcript_only() {
+    python3 - "$1" "$2" <<'PYEOF'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+els = json.load(open(src))["data"]["ui_elements"]
+start = next(
+    (i for i, e in enumerate(els) if e.get("subrole") == "AXOpaqueProviderList"),
+    None,
+)
+if start is None:
+    sys.exit("no transcript container (AXOpaqueProviderList) in this dump")
+root_depth = els[start].get("depth", 0)
+scoped = []
+for element in els[start + 1:]:
+    if element.get("depth", 0) <= root_depth:
+        break
+    scoped.append(element)
+if not scoped:
+    sys.exit("the transcript container has no children — nothing to assert on")
+json.dump({"data": {"ui_elements": scoped}}, open(dst, "w"))
+PYEOF
+}
+
+# Turn N's prompt is in the Nth USER message and turn N's answer is in the
+# Nth ASSISTANT message.
+#
+# Reading order alone does not say that. Every needle can sit in the right
+# sequence while the answer text lives inside the user's own bubble and the
+# assistant's bubble holds something else entirely — the counts, the ordering
+# and the structural baseline all survive that, because nothing ties a string
+# to the message it belongs to.
+#
+# The app's own controls are the boundary: a user message ends at its Edit
+# button, an assistant message ends at its Retry button. Measured on a real
+# dump, in tree order:
+#
+#   StaticText(prompt)  Copy  Edit        <- user message
+#   Disclosure  StaticText(answer)  …  Copy  Retry   <- assistant message
+assert_turns_pair_up() {
+    local transcript="$1"
+    shift
+    python3 - "$transcript" "$@" <<'PYEOF'
+import json, sys
+transcript, pairs = sys.argv[1], sys.argv[2:]
+els = json.load(open(transcript))["data"]["ui_elements"]
+
+messages, buffer = [], []
+for element in els:
+    identifier = str(element.get("identifier") or "")
+    buffer.append(str(element.get("value", "")))
+    if ".Edit." in identifier:
+        messages.append(("user", " ".join(buffer)))
+        buffer = []
+    elif ".Retry." in identifier:
+        messages.append(("model", " ".join(buffer)))
+        buffer = []
+
+expected = [
+    (side, text)
+    for i, text in enumerate(pairs)
+    for side in ("user" if i % 2 == 0 else "model",)
+]
+if len(messages) != len(expected):
+    got = ", ".join(side for side, _ in messages)
+    sys.exit(
+        f"expected {len(expected)} messages alternating user/model, "
+        f"found {len(messages)}: {got}"
+    )
+for index, ((want_side, needle), (got_side, text)) in enumerate(
+    zip(expected, messages), start=1
+):
+    if want_side != got_side:
+        sys.exit(
+            f"message {index} is a {got_side} message, expected {want_side} — "
+            "the transcript is not alternating"
+        )
+    if needle not in text:
+        sys.exit(
+            f"{want_side} message {index} does not contain {needle!r}; "
+            f"it holds {text.strip()[:80]!r}"
+        )
+PYEOF
+}
+
+# Each of these strings is a whole element, not a fragment of a blob.
+#
+# This is the positive half of "markdown was rendered". Asserting only that
+# ``` fences and | pipe rows are ABSENT cannot tell a rendered table from a
+# renderer that stripped the pipes and printed one flat line, nor a rendered
+# list from one that dropped the bullets. Both leave the text on screen and
+# both pass an absence check.
+#
+# Measured: a rendered table puts every cell in its own AXStaticText
+# (`qwen3.5-9b`, `5.2 GB`, `74 tok/s`), and a rendered list puts every item in
+# its own node with the source marker stripped. A renderer that flattens
+# either one merges them into a single node, so requiring an EXACT value match
+# is what separates "rendered" from "printed".
+assert_rendered_as_separate_nodes() {
+    local tree="$1" label="$2"
+    shift 2
+    python3 - "$tree" "$label" "$@" <<'PYEOF'
+import json, sys
+tree, label, expected = sys.argv[1], sys.argv[2], sys.argv[3:]
+els = json.load(open(tree))["data"]["ui_elements"]
+values = [str(e.get("value", "")).strip() for e in els]
+missing = [want for want in expected if want not in values]
+if missing:
+    # Distinguish "not on screen at all" from "on screen inside a bigger
+    # node" — the second is the flattening regression this exists to catch.
+    detail = []
+    for want in missing:
+        holder = next((v for v in values if want in v), None)
+        detail.append(
+            f"{want!r} is part of {holder[:60]!r}" if holder
+            else f"{want!r} is not in the transcript at all"
+        )
+    sys.exit(f"{label}: not rendered as separate elements — " + "; ".join(detail))
+PYEOF
+}
+
+# No list item still wearing its source marker.
+#
+# Measured: the renderer strips `-`/`*`/`1.` and emits the bare item text. A
+# fallback to plain text puts them back, and every "does the text appear"
+# assertion in this file passes on that, because the text does appear.
+assert_no_literal_list_markers() {
+    local tree="$1"
+    python3 - "$tree" <<'PYEOF'
+import json, re, sys
+els = json.load(open(sys.argv[1]))["data"]["ui_elements"]
+# A marker glued to its item ("- a nested point") and a marker standing alone
+# in its own node ("-" next to "a nested point") are the same regression on
+# screen, and the second slips past a line-prefix check while also satisfying
+# an exact-match check on the item text.
+LEADING = re.compile(r"^\s*(?:[-*+]\s+|\d+\.\s+)")
+BARE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s*$")
+offenders = []
+for e in els:
+    value = str(e.get("value", ""))
+    if BARE.match(value):
+        offenders.append(value)
+        continue
+    offenders.extend(line for line in value.splitlines() if LEADING.match(line))
+if offenders:
+    sys.exit(
+        "a list marker reached the screen verbatim — the list was printed, "
+        f"not rendered: {offenders[:3]}"
+    )
+PYEOF
+}
+
+# Everything this suite can say about what the renderer did with the five
+# shapes, in one place so the restored transcript is held to the SAME bar as
+# the live one. Checking the shapes only before the relaunch leaves a restore
+# that flattens the table or drops the emoji indistinguishable from a good
+# one, because the counts and the structural baseline both survive it (the
+# baseline normalizes every value to `text`).
+#
+# Takes a TRANSCRIPT-scoped dump. Handing it the whole app would let another
+# subtree — a preview, a tooltip, an off-screen copy — answer for the
+# transcript.
+#
+# What this deliberately does NOT claim: that the table is a table. The app
+# exposes markdown tables as plain sibling AXStaticTexts with no AXTable role,
+# so a renderer that stripped the pipes and stacked the six cells as ordinary
+# paragraphs is indistinguishable from a real table at the AX layer. That is a
+# gap in what the app publishes, not something an assertion here can close —
+# tracked in #1689.
+assert_rendered_shapes() {
+    local transcript="$1"
+    assert_markdown_rendered "$transcript"
+    assert_no_literal_list_markers "$transcript"
+    assert_code_block_is_its_own_view "$transcript" \
+        "Here is the function you asked for" "def fib(n)"
+    assert_rendered_as_separate_nodes "$transcript" "table cells" \
+        "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
+    assert_rendered_as_separate_nodes "$transcript" "list items" \
+        "First, read the prompt." "Second, plan the answer." \
+        "a nested point" "another one" "Third, write it down."
+    # The CJK turn, past its first six characters. Asserting only the prefix
+    # would pass on an answer that corrupted or dropped everything after it —
+    # which is exactly what a text-encoding regression looks like.
+    assert_tree_text "$transcript" "🎯🚀"
+    assert_tree_text "$transcript" "مرحبا"
+    assert_tree_text "$transcript" "用来检查换行和字宽"
+    # The LAST words of the two long answers. A distinctive substring near the
+    # start passes on a stream that stopped early or a code block that kept
+    # only its first line — both of which lose most of the response while
+    # satisfying every other check here. The fake is deterministic, so the
+    # ending is knowable.
+    assert_tree_text "$transcript" "Only the first was ever read by anyone else."
+    assert_tree_text "$transcript" "    return a"
+    assert_tree_text "$transcript" "Both fit comfortably in 16 GB."
+}
+
+# Markdown reached the renderer as markdown, not as source text.
+#
+# The cheapest regression here is the loudest one for a user: the renderer
+# falls back to plain text and the answer arrives full of ``` fences and | pipe
+# rows. Every "does the text appear" assertion in this file passes on that,
+# because the text does appear — wearing its syntax.
+assert_markdown_rendered() {
+    local tree="$1"
+    jq -e '[.data.ui_elements[]? | ((.value // "") | tostring)
+            | select(contains("```"))] | length == 0' "$tree" >/dev/null \
+        || die "a code fence reached the screen verbatim — markdown was printed, not rendered"
+    jq -e '[.data.ui_elements[]? | ((.value // "") | tostring)
+            | select(test("\\| *-{2,} *\\|"))] | length == 0' "$tree" >/dev/null \
+        || die "a table separator row reached the screen verbatim — the table was not rendered"
+}
+
+# A fenced block is its own view, not a paragraph that happens to contain code.
+#
+# Measured: the surrounding prose sits at one depth and the code block one
+# level deeper, with its newlines and indentation intact. If a refactor
+# flattens that, the code still "appears" — as a wrapped, unindented,
+# uncopyable smear.
+assert_code_block_is_its_own_view() {
+    local tree="$1" prose="$2" code="$3"
+    python3 - "$tree" "$prose" "$code" <<'PYEOF'
+import json, sys
+tree, prose, code = sys.argv[1], sys.argv[2], sys.argv[3]
+elements = json.load(open(tree))["data"]["ui_elements"]
+def find(needle):
+    return next((e for e in elements if needle in str(e.get("value", ""))), None)
+prose_el, code_el = find(prose), find(code)
+if prose_el is None:
+    sys.exit(f"prose not found: {prose}")
+if code_el is None:
+    sys.exit(f"code not found: {code}")
+if code_el["depth"] <= prose_el["depth"]:
+    sys.exit(
+        f"code block is not nested below its paragraph "
+        f"(code depth {code_el['depth']} <= prose depth {prose_el['depth']})"
+    )
+if "\n" not in str(code_el.get("value", "")):
+    sys.exit("code block lost its line breaks")
+PYEOF
+}
+
+# How many messages of each side the transcript is showing.
+#
+# User turns carry an Edit button, assistant turns carry a Retry button — the
+# app's own distinction, not one this harness invents. Counting them is how a
+# multi-turn flow proves nothing was dropped, merged or duplicated; asserting
+# only that the LAST answer is on screen cannot tell a five-turn conversation
+# from a one-turn one.
+transcript_counts() {
+    local tree="$1"
+    jq -r '[.data.ui_elements[]? | (.identifier // "")]
+           | { user:  [ .[] | select(startswith("ChatView.Message.Edit."))  ] | length,
+               model: [ .[] | select(startswith("ChatView.Message.Retry.")) ] | length }
+           | "\(.user) \(.model)"' "$tree"
+}
+
+assert_transcript_turns() {
+    local tree="$1" expected="$2" counts user model
+    counts="$(transcript_counts "$tree")"
+    user="${counts% *}"
+    model="${counts#* }"
+    [[ "$user" == "$expected" && "$model" == "$expected" ]] \
+        || die "expected $expected user + $expected model message(s), tree shows ${user} + ${model}"
+}
+
+# Do these strings appear in the transcript IN THIS ORDER?
+#
+# A conversation that shows every turn but in the wrong order is still broken,
+# and every "does the text appear" assertion in this file would pass on it.
+# `ui_elements` is emitted in tree order, so position in that array is reading
+# order.
+assert_text_order() {
+    local tree="$1"
+    shift
+    local needles=("$@")
+    python3 - "$tree" "${needles[@]}" <<'PYEOF'
+import json, sys
+tree, needles = sys.argv[1], sys.argv[2:]
+elements = json.load(open(tree))["data"]["ui_elements"]
+haystack = [str(e.get("value", "")) + " " + str(e.get("title", "")) for e in elements]
+# Position is (element index, offset inside that element), not the element
+# index alone. Two needles inside ONE element used to compare equal, so a
+# transcript that flattened turns into a single node — the extreme case being
+# one node holding every needle — satisfied `sorted()` in any visual order.
+positions = []
+for needle in needles:
+    hit = next(
+        ((i, text.index(needle)) for i, text in enumerate(haystack) if needle in text),
+        None,
+    )
+    if hit is None:
+        sys.exit(f"transcript never shows: {needle}")
+    positions.append(hit)
+# Strictly increasing, not merely sorted: equal positions mean two turns share
+# one element, which is itself the flattening regression.
+if any(b <= a for a, b in zip(positions, positions[1:])):
+    order = ", ".join(f"{n}@{p[0]}+{p[1]}" for n, p in zip(needles, positions))
+    sys.exit(f"transcript is out of order: {order}")
+PYEOF
 }
 
 element_field() {
@@ -972,6 +1290,111 @@ flow_browse_all_destination() {
     cleanup_persona
 }
 
+flow_chat_depth() {
+    # One message is not a conversation.
+    #
+    # `chat-restore` sends a single prompt and checks it comes back after a
+    # relaunch — that covers persistence and almost nothing about chatting. It
+    # cannot see a second turn landing above the first, a turn being dropped
+    # when the next one starts, or a restore that brings back only the last
+    # exchange. And every answer it has ever rendered was the same paragraph of
+    # plain text, so the code block, the table, the list and the CJK line have
+    # never once been through the renderer in this suite.
+    #
+    # Each turn here asks the fake for a different SHAPE of answer. The fake has
+    # no model, so this is not about whether an answer is any good — judging
+    # that belongs to the eval suites against a real model. It is about the work
+    # the APP does differently per shape, which is exactly what a GUI gate can
+    # hold.
+    start_persona chat-depth
+    dismiss_first_run
+    start_model
+
+    # marker | what the user would be asking | a distinctive string the answer must contain
+    local -a turns=(
+        "shape:prose|write the opening of a story about a lighthouse|lighthouse keeper"
+        "shape:code|show me fibonacci in python|def fib(n)"
+        "shape:table|compare those two models for me|qwen3.5-9b"
+        "shape:list|give me three steps|nested point"
+        "shape:unicode|用中文回答并带上 emoji|中文排版测试"
+    )
+
+    local index=0 spec marker prompt expect
+    for spec in "${turns[@]}"; do
+        index=$((index + 1))
+        marker="${spec%%|*}"
+        prompt="${spec#*|}"; prompt="${prompt%%|*}"
+        expect="${spec##*|}"
+        # The marker travels in the prompt so the fake can pick the shape, and
+        # it doubles as the per-turn needle for the ordering assertion below.
+        send_prompt "$marker $prompt" "turn$index"
+        wait_send_idle "$OUT/turn$index-settled.json"
+        assert_tree_text "$OUT/turn$index-settled.json" "$expect"
+        # After turn N there must be exactly N of each, every time — not just
+        # at the end, so a turn that vanishes is attributed to the turn that
+        # dropped it.
+        assert_transcript_turns "$OUT/turn$index-settled.json" "$index"
+        log "  turn $index ($marker) rendered and both sides counted"
+    done
+
+    # Prompts AND answers, interleaved, inside the transcript only.
+    #
+    # Ordering the prompts alone cannot see a transcript that brings every
+    # turn back but pairs the fifth answer with the first question: check one
+    # side and both arrangements are equally "sorted". Interleaving is what
+    # pins each answer to the prompt it belongs under.
+    local -a conversation=()
+    for spec in "${turns[@]}"; do
+        conversation+=("${spec%%|*}" "${spec##*|}")
+    done
+    transcript_only "$OUT/turn5-settled.json" "$OUT/turn5-transcript.json"
+    assert_text_order "$OUT/turn5-transcript.json" "${conversation[@]}"
+    # …and each half is in the message that half belongs to. Reading order
+    # alone would accept an answer rendered inside the user's own bubble.
+    assert_turns_pair_up "$OUT/turn5-transcript.json" "${conversation[@]}"
+    log "  all 5 turns present, each answer inside its own assistant message"
+
+    # The shapes are only worth sending if something asserts on what the
+    # renderer did with them — positively, not just "the source syntax is
+    # absent".
+    assert_rendered_shapes "$OUT/turn5-transcript.json"
+    log "  markdown rendered: table cells and list items are their own elements,"
+    log "  no raw fences, pipe rows or list markers, code block nested and intact,"
+    log "  and the CJK answer kept its emoji and its right-to-left run"
+    baseline chat-depth.five-turns "$OUT/turn5-settled.json"
+
+    # Restore has to bring back the WHOLE conversation. `chat-restore` only
+    # ever proved that one message survived, which a store that keeps the last
+    # exchange would also pass.
+    relaunch_persona
+    dismiss_first_run
+    wait_identifier Sidebar.NewChat "$OUT/depth-restored.json"
+    local conversation_id
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/depth-restored.json" | head -1)"
+    [[ -n "$conversation_id" ]] || die "restored conversation row was not exposed to AX"
+    press "$OUT/depth-restored.json" "$conversation_id" "$OUT/depth-open-restored.json"
+    wait_send_idle "$OUT/depth-restored-transcript.json"
+    assert_transcript_turns "$OUT/depth-restored-transcript.json" 5
+    # The same interleaved, transcript-scoped check as before the relaunch.
+    # A restore that returns five prompts with the answers shuffled between
+    # them is a broken restore, and prompt-only ordering cannot see it.
+    transcript_only "$OUT/depth-restored-transcript.json" \
+        "$OUT/depth-restored-scoped.json"
+    assert_text_order "$OUT/depth-restored-scoped.json" "${conversation[@]}"
+    assert_turns_pair_up "$OUT/depth-restored-scoped.json" "${conversation[@]}"
+    # Same bar as the live transcript. Without this a restore that brought
+    # every turn back but flattened the table, dropped the emoji or printed
+    # the list markers would pass — the counts survive it, and the structural
+    # baseline normalizes every value to `text`, so neither can see it.
+    assert_rendered_shapes "$OUT/depth-restored-scoped.json"
+    log "  all 5 turns restored, each answer still under its own prompt,"
+    log "  and every shape still rendered the way it was before the relaunch"
+    baseline chat-depth.restored "$OUT/depth-restored-transcript.json"
+    cleanup_persona
+}
+
 flow_catalog_integrity() {
     # A model that cannot chat must never be offered as one.
     #
@@ -1010,6 +1433,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
+    chat-depth) flow_chat_depth ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
     low-memory-choice) flow_low_memory_choice ;;
@@ -1022,6 +1446,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_settings_persistence
         flow_chat_restore
+        flow_chat_depth
         flow_slow_stream_stop
         flow_model_crash_recovery
         flow_low_memory_choice
