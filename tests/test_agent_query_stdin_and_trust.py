@@ -52,6 +52,7 @@ from vllm_mlx.agents.testing import (
     _e2e_workspace,
     _test_e2e_chat,
     _test_e2e_file_read,
+    _test_e2e_terminal,
 )
 
 # Long enough that a slow machine never flakes, short enough that a
@@ -182,16 +183,27 @@ def test_each_e2e_test_gets_its_own_workspace(tmp_path):
     # for file-read.
     cmd = _recording_agent(log, f"4 {E2E_FIRST_LINE}")
 
+    # ALL THREE entry points, not a sample of them: `_test_e2e_terminal`
+    # could regress to a shared or inherited cwd while a test that only
+    # drives the other two stayed green.
+    marker = "rapidmlx_codex_test"
     chat = _test_e2e_chat(sys.executable, cmd, _TIMEOUT_S)
     file_read = _test_e2e_file_read(sys.executable, cmd, _TIMEOUT_S)
+    terminal = _test_e2e_terminal(
+        sys.executable,
+        _recording_agent(log, marker),
+        _TIMEOUT_S,
+        "codex",
+    )
     assert chat.status is TestStatus.PASS, chat.message
     assert file_read.status is TestStatus.PASS, file_read.message
+    assert terminal.status is TestStatus.PASS, terminal.message
 
     ran_in = log.read_text(encoding="utf-8").splitlines()
-    assert len(ran_in) == 2, f"expected two runs, recorded {ran_in}"
-    assert ran_in[0] != ran_in[1], (
-        "both e2e tests ran in the SAME directory — whatever the first agent "
-        "wrote there is the second one's starting condition"
+    assert len(ran_in) == 3, f"expected three runs, recorded {ran_in}"
+    assert len(set(ran_in)) == 3, (
+        "two or more e2e tests ran in the SAME directory — whatever the first "
+        f"agent wrote there is the next one's starting condition: {ran_in}"
     )
     for path in ran_in:
         assert not os.path.exists(path), f"workspace survived its test: {path}"
