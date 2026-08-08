@@ -5,6 +5,7 @@ random-coverage gate. The orchestrator script lives outside the
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -180,6 +181,52 @@ def test_the_measured_agentic_failure_is_out_of_the_pool(g12):
     )
 
 
+def test_multimodal_models_are_out_of_the_pool(g12):
+    """The harness profiles are text-only, and this filter has always said so —
+    but it said it by looking for ``-vl-`` in the alias, which is exactly the
+    test the engine documents as insufficient.
+
+    UI-TARS is a Qwen2.5-VL-based GUI agent whose public name carries no
+    ``VL``; Gemma 3 is multimodal with no marker at all. Four of the nine
+    eligible aliases were vision models, and the default seed sampled one. On
+    an install without the vision extra that is a crash; with it, a text-only
+    agentic harness measures nothing about a model whose whole contract is
+    screenshots.
+    """
+    real = SCRIPT_PATH.parent.parent / "vllm_mlx" / "aliases.json"
+    names = {name for name, _ in g12._eligible_aliases(real)}
+    offenders = {n for n in names if "ui-tars" in n or "gemma3" in n or "-vl-" in n}
+    assert not offenders, f"multimodal aliases in a text-only sweep: {offenders}"
+
+
+def test_the_multimodal_mirror_still_covers_the_engines_own_list():
+    """``MLLM_NAME_PATTERNS`` is a copy — the script cannot import the package
+    without pulling mlx_lm at module load. Parsed, not imported, so this runs on
+    a machine with no MLX at all: a family added upstream must not be able to
+    reappear in the sweep silently."""
+    tree = ast.parse(
+        (SCRIPT_PATH.parent.parent / "vllm_mlx" / "api" / "utils.py").read_text()
+    )
+    upstream = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") == "MLLM_PATTERNS" for t in node.targets
+        ):
+            upstream = [e.value for e in node.value.elts]
+    assert upstream, "MLLM_PATTERNS not found in vllm_mlx/api/utils.py"
+    mirrored = {p.lower() for p in g12_module_patterns()}
+    missing = {p.lower() for p in upstream} - mirrored
+    assert not missing, f"engine patterns absent from the G12 mirror: {missing}"
+
+
+def g12_module_patterns():
+    """Load just the mirror, without importing anything heavyweight."""
+    spec = importlib.util.spec_from_file_location("g12_mirror", SCRIPT_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.MLLM_NAME_PATTERNS
+
+
 def test_the_floor_applies_to_active_params_not_total(g12, tmp_path):
     """A MoE's ability to hold an agentic loop follows its ACTIVE parameters,
     so the SAME floor applies to them.
@@ -203,10 +250,14 @@ def test_the_floor_applies_to_active_params_not_total(g12, tmp_path):
 
 
 def test_real_aliases_json_yields_nonzero_pool(g12):
-    """Sanity check against the in-tree aliases.json: at least 5
-    eligible models must exist or the gauntlet has nothing to sample.
-    If this trips after a future aliases prune, raise the floor or
-    adjust the filter to admit a wider band."""
+    """Sanity check against the in-tree aliases.json: at least 5 eligible
+    models must exist or the gauntlet has nothing to sample.
+
+    The pool sits at EXACTLY 5 as of #1671 — the 6B floor took the four 4B
+    aliases and the multimodal filter took three UI-TARS plus Gemma 3. There is
+    no headroom left: the next exclusion, or an aliases prune, trips this, and
+    the answer then is a gate sized for the models being excluded (#1677), not
+    a lower bar here."""
     real = Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
     eligible = g12._eligible_aliases(real)
     assert len(eligible) >= 5, (
@@ -448,18 +499,94 @@ def test_a_dead_server_is_noticed_by_the_same_check(g12, monkeypatch):
     assert "exited (rc=137)" in g12._still_ours(_Dead(), 8000)
 
 
-def test_ownership_is_asked_around_every_round_not_once():
-    """Pin the wiring. `_wait_for_server` returns permanently after the first
-    owned 200, so without these calls a takeover during round 1 of 6 is
-    invisible and every later round is attributed to the sampled alias."""
+def _drive_rounds(g12, monkeypatch, tmp_path, *, ownership, rounds=2, harnesses=None):
+    """Run `_run_model_rounds` with ownership answers fed in order."""
+    answers = list(ownership)
+    asked: list[str] = []
+    ran: list[tuple[str, int]] = []
+
+    def _ours(proc, port):
+        reply = answers.pop(0) if answers else ""
+        asked.append(reply)
+        return reply
+
+    def _round(*, alias, harness, base_url, bench_log):
+        ran.append((harness, len(ran)))
+        return True, 1.0, ""
+
+    monkeypatch.setattr(g12, "_still_ours", _ours)
+    monkeypatch.setattr(g12, "_run_harness_round", _round)
+    report = tmp_path / "report.log"
+    report.write_text("")
+    failures, drifted = g12._run_model_rounds(
+        proc=_AliveProc(),
+        port=8000,
+        alias="qwen3-8b-4bit",
+        harnesses=list(harnesses or ["hermes", "aider"]),
+        rounds=rounds,
+        bench_log=tmp_path / "bench.log",
+        report_path=report,
+    )
+    return failures, drifted, asked, ran, report.read_text()
+
+
+def test_ownership_is_asked_twice_per_round(g12, monkeypatch, tmp_path):
+    """Once before and once after. Before alone cannot catch a takeover that
+    happens DURING a round, and after alone measures a stranger first."""
+    failures, drifted, asked, ran, _ = _drive_rounds(
+        g12, monkeypatch, tmp_path, ownership=[""] * 8
+    )
+    assert not failures and not drifted
+    assert len(ran) == 4, "2 harnesses x 2 rounds"
+    assert len(asked) == 8, "one check before and one after each round"
+
+
+def test_a_takeover_during_a_round_discards_that_round(g12, monkeypatch, tmp_path):
+    """The dangerous direction: the round finished, so there IS a result — it
+    just belongs to whoever took the port. It must not be reported as this
+    model's."""
+    failures, drifted, _, ran, report = _drive_rounds(
+        g12, monkeypatch, tmp_path, ownership=["", "taken"]
+    )
+    assert drifted
+    assert len(ran) == 1, "the round ran, and is the one being discarded"
+    assert "PASS" not in report, "a round whose port changed hands is not a PASS"
+    assert len(failures) == 1
+    assert "during the round" in failures[0]
+
+
+def test_a_takeover_before_a_round_does_not_run_it(g12, monkeypatch, tmp_path):
+    failures, drifted, _, ran, _ = _drive_rounds(
+        g12, monkeypatch, tmp_path, ownership=["taken"]
+    )
+    assert drifted and not ran
+    assert "before the round" in failures[0]
+
+
+def test_drift_skips_the_remaining_harnesses(g12, monkeypatch, tmp_path):
+    """Continuing after a takeover measures the stranger under this alias's
+    name for every remaining round."""
+    _, drifted, _, ran, _ = _drive_rounds(
+        g12,
+        monkeypatch,
+        tmp_path,
+        ownership=["", "", "", "taken"],
+        harnesses=["hermes", "aider", "codex"],
+    )
+    assert drifted
+    assert len(ran) == 2, "stopped inside the first harness, not after it"
+
+
+def test_the_sweep_aborts_rather_than_booting_the_next_model_into_a_stranger():
+    """Pin the caller's half. `_run_model_rounds` reporting drift is useless if
+    `main` shrugs and boots the next model into the environment that took the
+    port — which can also overlap its GPU allocation with whatever is tearing
+    down."""
     source = SCRIPT_PATH.read_text()
-    loop = source[source.index("for harness in harnesses:") :]
-    loop = loop[: loop.index("finally:")]
-    before, _, after = loop.partition("_run_harness_round(")
-    assert "_still_ours(" in before, "nothing checks ownership before the round"
-    assert "_still_ours(" in after, (
-        "nothing checks ownership after the round — a takeover DURING one is "
-        "then reported as that model's result"
+    sweep = source[source.index("    # ===== Sweep =====") :]
+    sweep = sweep[: sweep.index("    # ===== Verdict =====")]
+    assert "if drifted:" in sweep and "break" in sweep, (
+        "the model loop must stop on ownership drift, not continue"
     )
 
 

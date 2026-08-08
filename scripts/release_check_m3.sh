@@ -78,6 +78,43 @@ echo "  base_url: $RAPID_MLX_BASE_URL"
 echo "  log:      $LOG"
 line
 
+# `lsof` decides, here and at the G12 handoff, whether a port is free —
+# and "free" is the one answer that must never be guessed. A PATH without
+# /usr/sbin makes every check silently answer "free": the `if` below swallows
+# the 127, the whole gauntlet runs, and only the last gate notices. Refuse now.
+command -v lsof >/dev/null 2>&1 \
+  || { echo "ERROR: lsof is required (port checks would silently pass)." >&2; exit 2; }
+
+# `lsof` with a per-invocation watchdog.
+#   0 = something is listening   1 = nothing is   2 = could not find out
+# A stuck `lsof` would otherwise stretch any "wait N seconds" loop that calls
+# it into as long as it likes, because the deadline is only read between calls.
+# `-nP` also removes the name/port resolution stalls that cause most of them.
+# Callers must treat 2 as "not free": an unverifiable port is not a free one.
+port_busy() {
+  local port="$1" limit="${2:-10}" pid n=0
+  lsof -nP -i ":$port" >/dev/null 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && [ "$n" -lt "$((limit * 10))" ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    echo "  ! lsof did not return within ${limit}s for port $port" >&2
+    return 2
+  fi
+  local rc=0
+  wait "$pid" || rc=$?
+  # lsof exits 1 for "nothing matched" and anything else for "I failed".
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # Pre-flight: refuse if port is busy so we don't accidentally murder
 # someone's debug server.
 if lsof -i ":$PORT" >/dev/null 2>&1; then
@@ -651,11 +688,6 @@ else
   # ``cleanup`` is the trap-installed teardown defined at the top of
   # this script — calling it manually here releases the PID file too, so
   # read the PID before calling it.
-  # `lsof` decides below whether the port is free. Without it every check
-  # silently answers "free", which is the one answer that must never be
-  # guessed — so require it rather than degrade.
-  command -v lsof >/dev/null 2>&1 \
-    || { echo "  ✗ lsof is required to verify the port handoff to G12" >&2; exit 1; }
   OLD_SERVER_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
   # `kill -0` succeeds on a ZOMBIE — a child that has exited but whose status
   # the shell has not collected still owns a pid, and it owns no GPU. Waiting
@@ -690,7 +722,12 @@ else
       sleep 1
       continue
     fi
-    if lsof -i ":$PORT" >/dev/null 2>&1; then
+    # 0 = still listening, 2 = could not find out. Only an explicit 1 — a
+    # check that ran and said nothing is there — releases the handoff; an
+    # unverifiable port is not a free one.
+    port_state=0
+    port_busy "$PORT" 5 || port_state=$?
+    if [ "$port_state" != 1 ]; then
       sleep 1
       continue
     fi

@@ -44,7 +44,9 @@ Eligibility filter (sample pool):
                        16/32 GB systems)
   * 4-bit quant only  (8-bit is 2x download cost for the same coverage)
   * no kimi-*         (deliberately heavy class, explicit user exclude)
-  * no -vl- variants  (vision; harness tasks are text-only)
+  * no multimodal     (vision; harness tasks are text-only — matched with
+                       the engine's own MLLM_PATTERNS, not a name guess:
+                       UI-TARS and Gemma 3 carry no ``VL`` marker)
   * no gemma-4-*      (known model-side hang on tool-use prompts; see
                        issue #686 + huggingface/google/gemma-4-12B-it
                        discussion #41 — would burn 156s+ per round on
@@ -73,6 +75,57 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # here so this script doesn't need to import the package (which would
 # pull mlx_lm at module-load and fail in a clean-venv sanity run).
 HARNESS_PROFILES = ("codex", "opencode", "hermes", "aider", "langchain")
+
+# Mirror of ``vllm_mlx.api.utils.MLLM_PATTERNS``, for the same reason as
+# HARNESS_PROFILES: importing the package pulls mlx_lm at module load.
+#
+# Hand-rolling this was a bug. The filter used to exclude vision models by
+# looking for ``-vl-`` in the alias name, which is precisely the test the engine
+# documents as insufficient: UI-TARS is a Qwen2.5-VL-based GUI agent whose
+# public name carries no ``VL``, and Gemma 3 is multimodal with no marker at
+# all. Both were in the sample pool. Booting one through a text-only agentic
+# harness is not thin coverage, it is a crash on an install without the vision
+# extra — and something worse than a crash on one with it.
+#
+# ``tests/test_release_check_random.py`` parses the real list out of
+# ``vllm_mlx/api/utils.py`` and fails if this mirror stops covering it, so a
+# family added upstream cannot silently reappear here.
+MLLM_NAME_PATTERNS = (
+    "-vl-",
+    "-vl/",
+    "vl-",
+    "llava",
+    "idefics",
+    "paligemma",
+    "gemma-3",
+    "gemma3",
+    "medgemma",
+    "pixtral",
+    "molmo",
+    "phi3-vision",
+    "phi-3-vision",
+    "cogvlm",
+    "internvl",
+    "deepseek-vl",
+    "ui-tars",
+    "ui_tars",
+)
+
+
+def _is_multimodal(*names: str) -> bool:
+    """True when any of ``names`` looks like a multimodal model.
+
+    Same case-folded substring rule as ``vllm_mlx.api.utils.is_mllm_model``.
+    Both the alias and the HF path are checked: the alias is what a human
+    recognises, the repo name is where the family marker usually survives.
+    """
+    return any(
+        pattern in name.lower()
+        for name in names
+        if name
+        for pattern in MLLM_NAME_PATTERNS
+    )
+
 
 # Disk safety floor — refuse to start if the cache disk has less than
 # this. Sized for one 12B-4bit model + 5 GB headroom.
@@ -114,7 +167,9 @@ ROUND_TIMEOUT_S = 1080
 #     ROUND_TIMEOUT_S above), which is where that budget came from.
 #
 # 7B and 8B are in between and unmeasured; they stay in the pool because that
-# band is where most of the sweep's coverage lives. If one of them turns out to
+# band is where most of the sweep's coverage lives (what is left of it: the
+# multimodal filter above takes the three UI-TARS aliases as well, and the pool
+# is down to five). If one of them turns out to
 # share the 4B ceiling, this constant moves again — that is how the gemma-4 and
 # hybrid excludes got here.
 #
@@ -169,8 +224,6 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             continue
         if "kimi" in name.lower():
             continue
-        if "-vl-" in name.lower():
-            continue
         if name.lower().startswith("gemma-4-"):
             # Known-bad: model-side ``thought\n…`` loop on agent prompts.
             # See issue #686 + HF discussion google/gemma-4-12B-it#41.
@@ -186,6 +239,13 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
         # should silently skip the entry, not crash the gauntlet.
         hf_path = entry.get("hf_path") if isinstance(entry, dict) else None
         if not hf_path:
+            continue
+        # Multimodal models, checked against the engine's own rule rather than
+        # a hand-rolled name test — the harness profiles are text-only, so a
+        # VLM here is a crash on a base install and a meaningless result on a
+        # vision-enabled one. The HF path matters as much as the alias: the
+        # family marker survives there when the alias has dropped it.
+        if _is_multimodal(name, hf_path):
             continue
         repo_name = hf_path.split("/")[-1]
         match = _SIZE_TOKEN_RE.search(repo_name)
@@ -259,6 +319,75 @@ def _hf_cache_root() -> Path:
 def _hf_cache_dir(hf_repo_path: str) -> Path:
     """Path of the HuggingFace cache entry for ``hf_repo_path``."""
     return _hf_cache_root() / f"models--{hf_repo_path.replace('/', '--')}"
+
+
+def _run_model_rounds(
+    *,
+    proc: subprocess.Popen,
+    port: int,
+    alias: str,
+    harnesses: list[str],
+    rounds: int,
+    bench_log: Path,
+    report_path: Path,
+) -> tuple[list[str], bool]:
+    """Run every (harness × round) for one booted model.
+
+    Returns ``(failures, drifted)``. ``drifted`` means the port stopped being
+    ours partway through — an infrastructure failure rather than a result, and
+    the caller's cue to stop the whole sweep rather than boot the next model
+    into whatever took it.
+
+    Extracted from ``main`` so the control flow can be tested: that ownership
+    is asked before AND after each round, that a round whose ownership changed
+    is not reported as a result, and that the remaining harnesses are skipped.
+    Reading the source to check a call site is present does not establish any
+    of those.
+    """
+    failures: list[str] = []
+    base_url = f"http://127.0.0.1:{port}"
+
+    def _record(msg: str) -> None:
+        print(f"     FAIL  {msg}", file=sys.stderr)
+        with report_path.open("a") as fh:
+            fh.write(f"FAIL  {msg}\n")
+        failures.append(msg)
+
+    for harness in harnesses:
+        for r in range(1, rounds + 1):
+            # Ownership is not a one-time fact. Readiness proved the port was
+            # ours when the sweep started; a takeover after that (#1618 again)
+            # hands every later round to a stranger and the numbers come back
+            # attributed to the sampled alias. Ask before AND after — before,
+            # so we do not measure someone else; after, so a takeover mid-round
+            # cannot be reported as a result.
+            drift = _still_ours(proc, port)
+            if drift:
+                _record(f"{alias}/{harness} round {r}: {drift} before the round")
+                return failures, True
+            ok, dur, excerpt = _run_harness_round(
+                alias=alias,
+                harness=harness,
+                base_url=base_url,
+                bench_log=bench_log,
+            )
+            drift = _still_ours(proc, port)
+            if drift:
+                _record(
+                    f"{alias}/{harness} round {r}: {drift} during the round"
+                    " — its result cannot be attributed to this model"
+                )
+                return failures, True
+            marker = "PASS" if ok else "FAIL"
+            line = f"     {marker} {alias}/{harness} round {r}/{rounds} ({dur:.1f}s)"
+            if excerpt:
+                line += f"  — {excerpt}"
+            print(line)
+            with report_path.open("a") as fh:
+                fh.write(line + "\n")
+            if not ok:
+                failures.append(f"{alias}/{harness} round {r}: {excerpt}")
+    return failures, False
 
 
 def _as_text(payload: str | bytes | None) -> str:
@@ -691,6 +820,7 @@ def main() -> int:
 
     # ===== Sweep =====
     failures: list[str] = []
+    drifted = False
     for alias, hf_path, harnesses in sampled:
         print()
         print(f"  >> Booting {alias} on port {args.port}…")
@@ -723,58 +853,16 @@ def main() -> int:
                 failures.append(msg)
                 continue
             print(f"     server up ({alias}); harnesses={harnesses}")
-            base_url = f"http://127.0.0.1:{args.port}"
-            drifted = False
-            for harness in harnesses:
-                if drifted:
-                    break
-                for r in range(1, args.rounds + 1):
-                    # Ownership is not a one-time fact. Readiness proved the
-                    # port was ours when the sweep started; a takeover after
-                    # that (#1618 again) hands every later round to a stranger,
-                    # and the numbers come back attributed to the sampled
-                    # alias. Ask before AND after — before, so we do not
-                    # measure someone else; after, so a takeover mid-round
-                    # cannot be reported as a result.
-                    drift = _still_ours(proc, args.port)
-                    if drift:
-                        msg = f"{alias}/{harness} round {r}: {drift} before the round"
-                        print(f"     FAIL  {msg}", file=sys.stderr)
-                        with report_path.open("a") as fh:
-                            fh.write(f"FAIL  {msg}\n")
-                        failures.append(msg)
-                        drifted = True
-                        break
-                    ok, dur, excerpt = _run_harness_round(
-                        alias=alias,
-                        harness=harness,
-                        base_url=base_url,
-                        bench_log=bench_log,
-                    )
-                    drift = _still_ours(proc, args.port)
-                    if drift:
-                        msg = (
-                            f"{alias}/{harness} round {r}: {drift} during the round"
-                            " — its result cannot be attributed to this model"
-                        )
-                        print(f"     FAIL  {msg}", file=sys.stderr)
-                        with report_path.open("a") as fh:
-                            fh.write(f"FAIL  {msg}\n")
-                        failures.append(msg)
-                        drifted = True
-                        break
-                    marker = "PASS" if ok else "FAIL"
-                    line = (
-                        f"     {marker} {alias}/{harness} "
-                        f"round {r}/{args.rounds} ({dur:.1f}s)"
-                    )
-                    if excerpt:
-                        line += f"  — {excerpt}"
-                    print(line)
-                    with report_path.open("a") as fh:
-                        fh.write(line + "\n")
-                    if not ok:
-                        failures.append(f"{alias}/{harness} round {r}: {excerpt}")
+            round_failures, drifted = _run_model_rounds(
+                proc=proc,
+                port=args.port,
+                alias=alias,
+                harnesses=harnesses,
+                rounds=args.rounds,
+                bench_log=bench_log,
+                report_path=report_path,
+            )
+            failures.extend(round_failures)
         finally:
             print(f"  << Stopping {alias}…")
             _stop_server(proc, args.port)
@@ -783,6 +871,21 @@ def main() -> int:
                 if cache_dir.exists():
                     print(f"     rm -rf {cache_dir}")
                     shutil.rmtree(cache_dir, ignore_errors=True)
+        if drifted:
+            # Ownership drift is an infrastructure failure, not this model's
+            # result. The environment that took the port is still out there;
+            # booting the next model into it produces numbers nobody can
+            # attribute, and can overlap its GPU allocation with whatever is
+            # tearing down. Stop, with our own server already reaped by the
+            # `finally` above.
+            print(
+                "  !! aborting the sweep — the port was taken from us; "
+                "remaining models were not run",
+                file=sys.stderr,
+            )
+            with report_path.open("a") as fh:
+                fh.write("ABORT ownership drift — remaining models not run\n")
+            break
 
     # ===== Verdict =====
     print()

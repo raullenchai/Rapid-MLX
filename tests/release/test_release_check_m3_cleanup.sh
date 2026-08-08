@@ -182,5 +182,56 @@ else
   ok "an empty pid reads as gone"
 fi
 
+echo "── port_busy() (the watchdog around lsof)"
+
+sed -n '/^port_busy() {/,/^}/p' "$SCRIPT" > "$TMP/port_busy.sh"
+if [ ! -s "$TMP/port_busy.sh" ]; then
+  printf '  \033[31mFAIL\033[0m could not extract port_busy() from %s\n' "$SCRIPT"
+  exit 1
+fi
+# shellcheck source=/dev/null
+. "$TMP/port_busy.sh"
+
+st=0; port_busy 59999 5 || st=$?
+if [ "$st" = 1 ]; then
+  ok "a free port reports 1 (nothing listening)"
+else
+  bad "a free port reported $st — the handoff would never release"
+fi
+
+python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",59998)); s.listen(1); time.sleep(8)' &
+LISTENER=$!
+sleep 1
+st=0; port_busy 59998 5 || st=$?
+if [ "$st" = 0 ]; then
+  ok "an occupied port reports 0"
+else
+  bad "an occupied port reported $st — the GPU would be handed over while busy"
+fi
+kill "$LISTENER" 2>/dev/null || true
+wait "$LISTENER" 2>/dev/null || true
+
+# The whole point of the watchdog. `SECONDS` is only read BETWEEN calls, so an
+# lsof that never returns makes any "wait N seconds" loop wait forever.
+mkdir -p "$TMP/fakebin"
+printf '#!/bin/sh\nsleep 300\n' > "$TMP/fakebin/lsof"
+chmod +x "$TMP/fakebin/lsof"
+STARTED=$SECONDS
+st=0; PATH="$TMP/fakebin:$PATH" port_busy 59997 2 || st=$?
+ELAPSED=$((SECONDS - STARTED))
+if [ "$st" = 2 ] && [ "$ELAPSED" -le 6 ]; then
+  ok "a hung lsof is killed and reported as unknown (${ELAPSED}s)"
+else
+  bad "a hung lsof gave $st after ${ELAPSED}s — expected 2 within a few seconds"
+fi
+
+printf '#!/bin/sh\nexit 9\n' > "$TMP/fakebin/lsof"
+st=0; st_out=$(PATH="$TMP/fakebin:$PATH"; port_busy 59997 2 || echo $?)
+if [ "$st_out" = 2 ]; then
+  ok "an lsof that fails is unknown, not 'free'"
+else
+  bad "a broken lsof reported $st_out — an unverifiable port must never read as free"
+fi
+
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
