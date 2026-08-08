@@ -264,8 +264,14 @@ The checked-in `rapid-ax.swift` helper talks directly to macOS Accessibility.
 It finds controls by stable `AXIdentifier`, performs `AXPress`, sets native text
 values, and serializes roles/descriptions/values for assertions. Peekaboo is
 kept for permission checks, window discovery, menu interaction, and screenshots.
-The only coordinate fallback is the documented first-run SwiftUI consent-sheet
-fallback, derived from AX bounds, for older accessibility stacks.
+Coordinates are used in exactly two places, both deliberate and both derived
+from AX bounds. One is the first-run SwiftUI consent-sheet fallback, for older
+accessibility stacks. The other is `browse-all-destination`, where a coordinate
+click is the *point*: `AXPress` reaches a window trapped behind a modal sheet
+just as well as a usable one, and so does Peekaboo's default background click,
+so proving that a person could use the Settings window the wizard opened takes
+a real `--foreground` mouse event at a real position. Bounds are re-read after
+focusing, since focusing can raise or move the window.
 
 This makes normal actions independent of window position, resolution, theme,
 and most layout changes. It also avoids Peekaboo snapshot publication failures

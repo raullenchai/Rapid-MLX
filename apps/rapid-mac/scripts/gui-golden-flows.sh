@@ -32,8 +32,8 @@ Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
 Flows: fresh-install, settings-persistence, chat-restore, slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
-       update-state, no-dead-controls,
-       catalog-integrity, all
+       update-state, no-dead-controls, catalog-integrity,
+       browse-all-destination, all
 
 Options:
   --update-baselines  rewrite the committed AX structural baselines instead of
