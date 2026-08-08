@@ -32,8 +32,11 @@ needs the actual inherited descriptor, which is the whole bug.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import os
 import shlex
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -205,71 +208,74 @@ def test_file_read_demands_the_sentinel_not_a_plausible_sentence(tmp_path):
     )
 
 
-def test_workspace_removal_survives_a_locked_down_subdirectory():
-    """An agent that chmods its scratch directory must not leak the workspace."""
-    with _e2e_workspace() as workdir:
-        hostile = Path(workdir, "hostile")
-        hostile.mkdir()
-        (hostile / "note.txt").write_text("x", encoding="utf-8")
-        os.chmod(hostile, 0o000)
-        captured = workdir
-    assert not os.path.exists(captured), (
-        f"workspace leaked because a subdirectory was unreadable: {captured}"
-    )
+def _lock_and_release(workdir: str, name: str = "hostile") -> None:
+    """Make `workdir` un-removable the way a misbehaving agent would."""
+    hostile = Path(workdir, name)
+    hostile.mkdir()
+    (hostile / "note.txt").write_text("x", encoding="utf-8")
+    os.chmod(hostile, 0o000)
 
 
-def test_workspace_removal_survives_a_locked_down_root():
-    """A locked ROOT hides every descendant, so it has to be restored first.
+def test_an_unremovable_workspace_is_reported_not_swallowed(caplog):
+    """The NIT was about silence, not about winning the fight.
 
-    Recovery that walks before restoring the root finds nothing to fix and
-    fails for exactly the reason the first attempt did.
+    Cleanup does not try to repair permissions — see `_remove_workspace` for
+    why that buys nothing against a process running as the same user. What it
+    must never do is leave a directory behind on every release and say
+    nothing.
     """
-    with _e2e_workspace() as workdir:
-        nested = Path(workdir, "nested")
-        nested.mkdir()
-        (nested / "note.txt").write_text("x", encoding="utf-8")
-        os.chmod(nested, 0o000)
-        os.chmod(workdir, 0o000)
+    with (
+        caplog.at_level(logging.WARNING, logger="vllm_mlx.agents.testing"),
+        _e2e_workspace() as workdir,
+    ):
+        _lock_and_release(workdir)
         captured = workdir
-    assert not os.path.exists(captured), (
-        f"workspace leaked because its own root was unreadable: {captured}"
-    )
+    try:
+        if not os.path.exists(captured):
+            pytest.skip("this filesystem removes locked directories anyway")
+        assert any(captured in r.getMessage() for r in caplog.records), (
+            "the workspace was left behind and nobody was told — that is the "
+            "silent per-release disk leak the warning exists to prevent"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            os.chmod(Path(captured, "hostile"), 0o700)
+        shutil.rmtree(captured, ignore_errors=True)
 
 
-def test_cleanup_never_chmods_through_a_symlink(tmp_path):
-    """`os.chmod` follows links; the agent must not be able to aim it outside.
+def test_cleanup_never_writes_outside_the_workspace(tmp_path):
+    """A link planted in the workspace must not aim our cleanup at its target.
 
-    A link planted in a locked directory, pointing at a caller-owned file,
-    would have that file's permissions rewritten by our own cleanup.
+    This is the shape the earlier permission-repair pass got wrong twice:
+    `os.chmod` follows symlinks, so a link pointing at a caller-owned file had
+    that file's mode rewritten by our own cleanup (measured: 0o600 -> 0o700).
+    Cleanup no longer chmods anything, and this pins that it stays that way.
     """
     outsider = tmp_path / "private.key"
     outsider.write_text("secret", encoding="utf-8")
     os.chmod(outsider, 0o600)
     outsider_before = os.stat(outsider).st_mode
-    # A linked DIRECTORY is the more dangerous shape: chmod 0o700 on it would
-    # rewrite the permissions of a whole tree the workspace does not own.
     outside_dir = tmp_path / "outside-tree"
     outside_dir.mkdir()
+    (outside_dir / "keep.txt").write_text("keep", encoding="utf-8")
     os.chmod(outside_dir, 0o500)
     outside_dir_before = os.stat(outside_dir).st_mode
 
     with _e2e_workspace() as workdir:
-        trap = Path(workdir, "trap")
-        trap.mkdir()
-        os.symlink(outsider, trap / "link-to-outside-file")
-        os.symlink(outside_dir, trap / "link-to-outside-dir")
-        os.chmod(trap, 0o000)
+        os.symlink(outsider, Path(workdir, "link-to-outside-file"))
+        os.symlink(outside_dir, Path(workdir, "link-to-outside-dir"))
         captured = workdir
 
     assert not os.path.exists(captured), "workspace leaked"
     assert outsider.exists(), "cleanup deleted a file outside the workspace"
-    assert outside_dir.is_dir(), "cleanup deleted a tree outside the workspace"
+    assert (outside_dir / "keep.txt").exists(), (
+        "cleanup followed a link and deleted a tree outside the workspace"
+    )
     assert os.stat(outsider).st_mode == outsider_before, (
-        "cleanup chmod'd through a symlink and rewrote a file outside the workspace"
+        "cleanup rewrote the permissions of a file outside the workspace"
     )
     assert os.stat(outside_dir).st_mode == outside_dir_before, (
-        "cleanup chmod'd through a symlink and rewrote a directory outside "
-        "the workspace"
+        "cleanup rewrote the permissions of a directory outside the workspace"
     )
 
 

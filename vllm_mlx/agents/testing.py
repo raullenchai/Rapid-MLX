@@ -759,46 +759,33 @@ def _e2e_workspace():
 
 
 def _remove_workspace(workdir: str) -> None:
-    """Delete the workspace, and say so if it cannot be deleted.
+    """Delete the workspace, and say so out loud if it cannot be deleted.
 
-    An agent that chmods a directory it created leaves `rmtree` unable to
-    descend. Swallowing that with ``ignore_errors=True`` turns a gate that
-    runs on every release into a slow disk leak nobody is told about, so
-    retry with the permissions restored and, failing that, warn.
+    Deliberately no permission-repair pass. Two earlier attempts at one were
+    both wrong, and the second review round explained why the whole idea is:
 
-    Two things the recovery has to get right, both found in review:
+    * chmod'ing a path we just checked with ``islink()`` is a TOCTOU — the
+      agent can swap the directory for a link in between, and the write lands
+      outside the workspace.
+    * defeating that properly means descriptor-relative traversal, which is a
+      lot of machinery for a test harness.
 
-    * **The root comes first.** A directory with no execute bit cannot be
-      listed, so if the agent locked the workspace root, walking it before
-      restoring it finds nothing to fix and the retry fails for the same
-      reason the first attempt did.
-    * **Never chmod a symlink.** ``os.chmod`` follows links, so a link the
-      agent pointed at a file outside the workspace would have THAT file's
-      permissions changed by our cleanup. Only directories need restoring
-      anyway — unlinking a file requires permission on its parent, not on
-      the file — and ``os.walk`` does not follow links, so skipping linked
-      directories is sufficient.
+    And it buys nothing. The agent runs as the SAME user with the same
+    permissions we have; anything our cleanup could be tricked into chmod'ing,
+    the agent can chmod itself, directly. There is no privilege boundary here
+    to defend, so a repair pass only adds a symlink-following write primitive
+    to our own code.
+
+    What the original NIT actually asked for was not silence. A workspace we
+    cannot remove is reported, once, with the path — and that is where it
+    stops.
     """
     shutil.rmtree(workdir, ignore_errors=True)
-    if not os.path.exists(workdir):
-        return
-    if not os.path.islink(workdir):
-        with contextlib.suppress(OSError):
-            os.chmod(workdir, 0o700)
-    # Top-down: each directory is made traversable before os.walk descends
-    # into it.
-    for root, dirs, _files in os.walk(workdir):
-        for name in dirs:
-            path = os.path.join(root, name)
-            if os.path.islink(path):
-                continue
-            with contextlib.suppress(OSError):
-                os.chmod(path, 0o700)
-    try:
-        shutil.rmtree(workdir)
-    except OSError as exc:
+    if os.path.exists(workdir):
         logger.warning(
-            "agent e2e workspace could not be removed: %s (%s)", workdir, exc
+            "agent e2e workspace could not be removed and is being left behind: "
+            "%s — the agent most likely changed permissions inside it",
+            workdir,
         )
 
 
