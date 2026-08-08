@@ -105,11 +105,11 @@ enum WebSearchTool {
     ) -> String {
         let folded = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
         let asksForEnglishLastWeek = folded.range(
-            of: #"\blast week\b"#,
+            of: #"\blast week\b(?!\s+of\b)"#,
             options: .regularExpression
         ) != nil
         let asksForChineseLastWeek = query.range(
-            of: #"(?:上周|上一周)(?!末)"#,
+            of: #"(?<!上)(?:上周|上一周)(?!末)"#,
             options: .regularExpression
         ) != nil
         let asksForLastWeek = asksForEnglishLastWeek || asksForChineseLastWeek

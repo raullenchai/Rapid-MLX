@@ -49,9 +49,21 @@ struct WebToolsHardeningTests {
         #expect(WebSearchTool.preparedQuery(query) == query)
     }
 
+    @Test("A historical last-week-of phrase is not treated as relative")
+    func historicalLastWeekOfIsNotRewritten() {
+        let query = "What happened in the last week of July 2020?"
+        #expect(WebSearchTool.preparedQuery(query) == query)
+    }
+
     @Test("Chinese last weekend is not broadened into a week-long query")
     func chineseLastWeekendIsNotRewritten() {
         let query = "上周末有什么活动？"
+        #expect(WebSearchTool.preparedQuery(query) == query)
+    }
+
+    @Test("The Chinese week-before-last phrase is not shifted forward")
+    func chineseWeekBeforeLastIsNotRewritten() {
+        let query = "上上周有什么新闻？"
         #expect(WebSearchTool.preparedQuery(query) == query)
     }
 
