@@ -222,10 +222,6 @@ struct ConnectToolsView: View {
                 }
             }
             .groupedCard()
-            InlineNotice(
-                message: "Cursor can't connect directly to localhost: its BYOK requests are routed through Cursor's servers. Use Claude Code or Codex for a fully local connection.",
-                tone: .info
-            )
         }
     }
 
@@ -244,31 +240,25 @@ struct ConnectToolsView: View {
                 id: "claude-code",
                 name: "Claude Code",
                 symbol: "terminal",
-                blurb: "Export these before launching `claude` — it speaks the Anthropic format.",
-                snippet: """
-                export ANTHROPIC_BASE_URL=\(anthropicBaseURL)
-                export ANTHROPIC_API_KEY=\(snippetKey)
-                export ANTHROPIC_MODEL=\(snippetModel)
-                """,
-                displaySnippet: """
-                export ANTHROPIC_BASE_URL=\(anthropicBaseURL)
-                export ANTHROPIC_API_KEY=\(snippetKeyMasked)
-                export ANTHROPIC_MODEL=\(snippetModel)
-                """
+                blurb: "Launch with this connection for one session. Your shell environment stays unchanged.",
+                snippet: "env ANTHROPIC_BASE_URL=\(anthropicBaseURL) ANTHROPIC_API_KEY=\(snippetKey) ANTHROPIC_MODEL=\(snippetModel) claude",
+                displaySnippet: "env ANTHROPIC_BASE_URL=\(anthropicBaseURL) ANTHROPIC_API_KEY=\(snippetKeyMasked) ANTHROPIC_MODEL=\(snippetModel) claude"
             ),
             ConnectTool(
                 id: "codex",
                 name: "Codex",
                 symbol: "chevron.left.forwardslash.chevron.right",
-                blurb: "Export these before launching `codex` — OpenAI-compatible.",
-                snippet: """
-                export OPENAI_BASE_URL=\(openAIBaseURL)
-                export OPENAI_API_KEY=\(snippetKey)
-                """,
-                displaySnippet: """
-                export OPENAI_BASE_URL=\(openAIBaseURL)
-                export OPENAI_API_KEY=\(snippetKeyMasked)
-                """
+                blurb: "Launch with this connection for one session. Your shell environment stays unchanged.",
+                snippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKey) codex",
+                displaySnippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKeyMasked) codex"
+            ),
+            ConnectTool(
+                id: "hermes",
+                name: "Hermes",
+                symbol: "bolt.horizontal.circle",
+                blurb: "Launch with this connection and model for one session. Your shell environment stays unchanged.",
+                snippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKey) HERMES_INFERENCE_MODEL=\(snippetModel) hermes",
+                displaySnippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKeyMasked) HERMES_INFERENCE_MODEL=\(snippetModel) hermes"
             ),
         ]
     }
@@ -305,28 +295,28 @@ private extension View {
     }
 }
 
-/// One tool's copyable config.
+/// One agent's copyable, process-scoped launch command.
 private struct ConnectTool: Identifiable {
     let id: String
     let name: String
     let symbol: String
     let blurb: String
-    /// The config with the REAL key — placed on the clipboard by Copy, never
+    /// The command with the REAL key — placed on the clipboard by Copy, never
     /// rendered on screen.
     let snippet: String
-    /// The same config with the key masked — the ONLY form painted on screen,
+    /// The same command with the key masked — the ONLY form painted on screen,
     /// so a screenshot can't leak the bearer.
     let displaySnippet: String
 }
 
-/// One tool row: icon, name, description, a Copy action, and the
-/// snippet — all on a shared alignment grid.
+/// One agent row: icon, name, description, a Copy action, and its launch
+/// command — all on a shared alignment grid.
 ///
 /// The three changes that flatten this surface:
 ///
 ///   1. It is a ROW in a shared card, not its own card. No card-inside-
 ///      card, and the three tools now read as one scannable list.
-///   2. Copy config steps down from `.borderedProminent` (a filled
+///   2. Copy command steps down from `.borderedProminent` (a filled
 ///      steel-blue block, repeated three times, which read as the most
 ///      important thing on the page) to a compact outlined secondary
 ///      with a steel-blue label — the utility action it actually is.
@@ -372,7 +362,7 @@ private struct ConnectToolRow: View {
                 Spacer(minLength: RapidTheme.Space.md)
 
                 Button(action: copy) {
-                    Label(copied ? "Copied" : "Copy config",
+                    Label(copied ? "Copied" : "Copy command",
                           systemImage: copied ? "checkmark" : "doc.on.doc")
                 }
                 .buttonStyle(RapidSecondaryButtonStyle(
@@ -387,9 +377,9 @@ private struct ConnectToolRow: View {
                 // shift the row).
                 .frame(width: 132)
                 .help(isReady
-                      ? "Copy this tool's configuration"
-                      : "Start a model to generate a valid key and configuration.")
-                .accessibilityLabel(copied ? "Copied \(tool.name) config" : "Copy \(tool.name) config")
+                      ? "Copy this agent's one-session launch command"
+                      : "Start a model to generate a valid key and launch command.")
+                .accessibilityLabel(copied ? "Copied \(tool.name) command" : "Copy \(tool.name) command")
             }
 
             // Description and snippet share the title's column.
