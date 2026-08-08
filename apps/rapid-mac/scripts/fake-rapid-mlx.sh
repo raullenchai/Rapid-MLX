@@ -82,6 +82,95 @@ CONTENT_CHUNKS = [
     " I", " return", " deterministic", " content", " so", " the",
     " smoke", " test", " has", " something", " to", " assert", " on.",
 ]
+
+# Answer SHAPES, chosen by a marker in the user's message.
+#
+# The fake has no model, so it cannot vary answer QUALITY — a golden flow
+# asserting that a poem is good would be theatre. What it can vary, and what
+# the app genuinely does different work for, is the shape of what has to be
+# rendered: a fenced code block gets highlighting and its own copy button, a
+# table has to become a table rather than pipes, LaTeX has to typeset, CJK and
+# emoji have to measure correctly, and a long answer has to scroll without
+# losing the turns above it. Judging what a model actually SAYS to a literary
+# or coding prompt belongs to the eval suites, against a real model.
+#
+# Chunked deliberately mid-token in places: a renderer that only works when a
+# fence or a table row arrives whole is a renderer that breaks on a real
+# stream.
+RESPONSE_SHAPES = {
+    "shape:code": [
+        "Here is the function you asked for:\n\n",
+        "```", "python", "\n",
+        "def fib(n):\n", "    a, b = 0, 1\n",
+        "    for _ in range(n):\n", "        a, b = b, a + b\n",
+        "    return a\n",
+        "```", "\n\n",
+        "It runs in O(n) time and constant space.",
+    ],
+    "shape:table": [
+        "| model | size | speed |\n",
+        "| --- | --- | ---", " |\n",
+        "| qwen3.5-9b | 5.2 GB | 74 tok/s |\n",
+        "| llama-3.1-8b | 4.5 GB | 68 tok/s |\n",
+        "\nBoth fit comfortably in 16 GB.",
+    ],
+    "shape:math": [
+        "The Gaussian integral is\n\n",
+        "$$\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}$$",
+        "\n\nand inline it reads $e^{i\\pi} + 1 = 0$.",
+    ],
+    "shape:list": [
+        "Three things, in order:\n\n",
+        "1. First, ", "read the prompt.\n",
+        "2. Second, ", "plan the answer.\n",
+        "   - a nested point\n", "   - another one\n",
+        "3. Third, ", "write it down.\n",
+    ],
+    "shape:unicode": [
+        "中文排版测试:", "这是一段中文回答,", "用来检查换行和字宽。",
+        " Emoji: ", "🎯", "🚀", "。",
+        " Right-to-left: ", "مرحبا", ".",
+    ],
+    "shape:prose": [
+        "The lighthouse keeper ", "kept two logbooks. ",
+        "One recorded the weather, ", "the ships, ", "the hours of the lamp. ",
+        "The other recorded ", "what he thought about ", "while he watched. ",
+        "Only the first was ever read ", "by anyone else.",
+    ],
+}
+
+# Long output is the same default text repeated, so the scroll/perf case does
+# not need its own vocabulary to assert on.
+RESPONSE_SHAPES["shape:long"] = CONTENT_CHUNKS * 30
+
+
+def _shape_for(body):
+    """The chunk list this request should stream.
+
+    Reads the LAST user message, so a multi-turn conversation gets a different
+    shape per turn rather than whatever the first turn asked for.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return CONTENT_CHUNKS * CONTENT_REPEAT
+    text = ""
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "user":
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                # OpenAI content-parts form.
+                text = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict)
+                )
+            break
+    for marker, chunks in RESPONSE_SHAPES.items():
+        if marker in text:
+            return chunks
+    return CONTENT_CHUNKS * CONTENT_REPEAT
 REASONING_CHUNKS = [
     "Let", " me", " think", " about", " the", " prompt", "."
 ]
@@ -213,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(_sse(_delta(reasoning=r)))
                 self.wfile.flush()
                 time.sleep(INTER_TOKEN_SLEEP_S)
-            for c in CONTENT_CHUNKS * CONTENT_REPEAT:
+            for c in _shape_for(body):
                 self.wfile.write(_sse(_delta(content=c)))
                 self.wfile.flush()
                 content_emitted += 1

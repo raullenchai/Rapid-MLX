@@ -30,7 +30,8 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, slow-stream-stop,
+Flows: fresh-install, settings-persistence, chat-restore, chat-depth,
+       slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
        browse-all-destination, all
@@ -251,6 +252,102 @@ ax_window_present() {
         1) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+# Markdown reached the renderer as markdown, not as source text.
+#
+# The cheapest regression here is the loudest one for a user: the renderer
+# falls back to plain text and the answer arrives full of ``` fences and | pipe
+# rows. Every "does the text appear" assertion in this file passes on that,
+# because the text does appear — wearing its syntax.
+assert_markdown_rendered() {
+    local tree="$1"
+    jq -e '[.data.ui_elements[]? | ((.value // "") | tostring)
+            | select(contains("```"))] | length == 0' "$tree" >/dev/null \
+        || die "a code fence reached the screen verbatim — markdown was printed, not rendered"
+    jq -e '[.data.ui_elements[]? | ((.value // "") | tostring)
+            | select(test("\\| *-{2,} *\\|"))] | length == 0' "$tree" >/dev/null \
+        || die "a table separator row reached the screen verbatim — the table was not rendered"
+}
+
+# A fenced block is its own view, not a paragraph that happens to contain code.
+#
+# Measured: the surrounding prose sits at one depth and the code block one
+# level deeper, with its newlines and indentation intact. If a refactor
+# flattens that, the code still "appears" — as a wrapped, unindented,
+# uncopyable smear.
+assert_code_block_is_its_own_view() {
+    local tree="$1" prose="$2" code="$3"
+    python3 - "$tree" "$prose" "$code" <<'PYEOF'
+import json, sys
+tree, prose, code = sys.argv[1], sys.argv[2], sys.argv[3]
+elements = json.load(open(tree))["data"]["ui_elements"]
+def find(needle):
+    return next((e for e in elements if needle in str(e.get("value", ""))), None)
+prose_el, code_el = find(prose), find(code)
+if prose_el is None:
+    sys.exit(f"prose not found: {prose}")
+if code_el is None:
+    sys.exit(f"code not found: {code}")
+if code_el["depth"] <= prose_el["depth"]:
+    sys.exit(
+        f"code block is not nested below its paragraph "
+        f"(code depth {code_el['depth']} <= prose depth {prose_el['depth']})"
+    )
+if "\n" not in str(code_el.get("value", "")):
+    sys.exit("code block lost its line breaks")
+PYEOF
+}
+
+# How many messages of each side the transcript is showing.
+#
+# User turns carry an Edit button, assistant turns carry a Retry button — the
+# app's own distinction, not one this harness invents. Counting them is how a
+# multi-turn flow proves nothing was dropped, merged or duplicated; asserting
+# only that the LAST answer is on screen cannot tell a five-turn conversation
+# from a one-turn one.
+transcript_counts() {
+    local tree="$1"
+    jq -r '[.data.ui_elements[]? | (.identifier // "")]
+           | { user:  [ .[] | select(startswith("ChatView.Message.Edit."))  ] | length,
+               model: [ .[] | select(startswith("ChatView.Message.Retry.")) ] | length }
+           | "\(.user) \(.model)"' "$tree"
+}
+
+assert_transcript_turns() {
+    local tree="$1" expected="$2" counts user model
+    counts="$(transcript_counts "$tree")"
+    user="${counts% *}"
+    model="${counts#* }"
+    [[ "$user" == "$expected" && "$model" == "$expected" ]] \
+        || die "expected $expected user + $expected model message(s), tree shows ${user} + ${model}"
+}
+
+# Do these strings appear in the transcript IN THIS ORDER?
+#
+# A conversation that shows every turn but in the wrong order is still broken,
+# and every "does the text appear" assertion in this file would pass on it.
+# `ui_elements` is emitted in tree order, so position in that array is reading
+# order.
+assert_text_order() {
+    local tree="$1"
+    shift
+    local needles=("$@")
+    python3 - "$tree" "${needles[@]}" <<'PYEOF'
+import json, sys
+tree, needles = sys.argv[1], sys.argv[2:]
+elements = json.load(open(tree))["data"]["ui_elements"]
+haystack = [str(e.get("value", "")) + " " + str(e.get("title", "")) for e in elements]
+positions = []
+for needle in needles:
+    hit = next((i for i, text in enumerate(haystack) if needle in text), None)
+    if hit is None:
+        sys.exit(f"transcript never shows: {needle}")
+    positions.append(hit)
+if positions != sorted(positions):
+    order = ", ".join(f"{n}@{p}" for n, p in zip(needles, positions))
+    sys.exit(f"transcript is out of order: {order}")
+PYEOF
 }
 
 element_field() {
@@ -972,6 +1069,86 @@ flow_browse_all_destination() {
     cleanup_persona
 }
 
+flow_chat_depth() {
+    # One message is not a conversation.
+    #
+    # `chat-restore` sends a single prompt and checks it comes back after a
+    # relaunch — that covers persistence and almost nothing about chatting. It
+    # cannot see a second turn landing above the first, a turn being dropped
+    # when the next one starts, or a restore that brings back only the last
+    # exchange. And every answer it has ever rendered was the same paragraph of
+    # plain text, so the code block, the table, the list and the CJK line have
+    # never once been through the renderer in this suite.
+    #
+    # Each turn here asks the fake for a different SHAPE of answer. The fake has
+    # no model, so this is not about whether an answer is any good — judging
+    # that belongs to the eval suites against a real model. It is about the work
+    # the APP does differently per shape, which is exactly what a GUI gate can
+    # hold.
+    start_persona chat-depth
+    dismiss_first_run
+    start_model
+
+    # marker | what the user would be asking | a distinctive string the answer must contain
+    local -a turns=(
+        "shape:prose|write the opening of a story about a lighthouse|lighthouse keeper"
+        "shape:code|show me fibonacci in python|def fib(n)"
+        "shape:table|compare those two models for me|qwen3.5-9b"
+        "shape:list|give me three steps|nested point"
+        "shape:unicode|用中文回答并带上 emoji|中文排版测试"
+    )
+
+    local -a prompts=()
+    local index=0 spec marker prompt expect
+    for spec in "${turns[@]}"; do
+        index=$((index + 1))
+        marker="${spec%%|*}"
+        prompt="${spec#*|}"; prompt="${prompt%%|*}"
+        expect="${spec##*|}"
+        # The marker travels in the prompt so the fake can pick the shape, and
+        # it doubles as the per-turn needle for the ordering assertion below.
+        prompts+=("$marker")
+        send_prompt "$marker $prompt" "turn$index"
+        wait_send_idle "$OUT/turn$index-settled.json"
+        assert_tree_text "$OUT/turn$index-settled.json" "$expect"
+        # After turn N there must be exactly N of each, every time — not just
+        # at the end, so a turn that vanishes is attributed to the turn that
+        # dropped it.
+        assert_transcript_turns "$OUT/turn$index-settled.json" "$index"
+        log "  turn $index ($marker) rendered and both sides counted"
+    done
+
+    assert_text_order "$OUT/turn5-settled.json" "${prompts[@]}"
+    log "  all 5 turns present, in the order they were sent"
+
+    # The shapes are only worth sending if something asserts on what the
+    # renderer did with them.
+    assert_markdown_rendered "$OUT/turn5-settled.json"
+    assert_code_block_is_its_own_view "$OUT/turn5-settled.json" \
+        "Here is the function you asked for" "def fib(n)"
+    log "  markdown rendered: no raw fences or pipe rows, code block nested and intact"
+    baseline chat-depth.five-turns "$OUT/turn5-settled.json"
+
+    # Restore has to bring back the WHOLE conversation. `chat-restore` only
+    # ever proved that one message survived, which a store that keeps the last
+    # exchange would also pass.
+    relaunch_persona
+    dismiss_first_run
+    wait_identifier Sidebar.NewChat "$OUT/depth-restored.json"
+    local conversation_id
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/depth-restored.json" | head -1)"
+    [[ -n "$conversation_id" ]] || die "restored conversation row was not exposed to AX"
+    press "$OUT/depth-restored.json" "$conversation_id" "$OUT/depth-open-restored.json"
+    wait_send_idle "$OUT/depth-restored-transcript.json"
+    assert_transcript_turns "$OUT/depth-restored-transcript.json" 5
+    assert_text_order "$OUT/depth-restored-transcript.json" "${prompts[@]}"
+    log "  all 5 turns restored, still in order"
+    baseline chat-depth.restored "$OUT/depth-restored-transcript.json"
+    cleanup_persona
+}
+
 flow_catalog_integrity() {
     # A model that cannot chat must never be offered as one.
     #
@@ -1010,6 +1187,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
+    chat-depth) flow_chat_depth ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
     low-memory-choice) flow_low_memory_choice ;;
@@ -1022,6 +1200,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_settings_persistence
         flow_chat_restore
+        flow_chat_depth
         flow_slow_stream_stop
         flow_model_crash_recovery
         flow_low_memory_choice
