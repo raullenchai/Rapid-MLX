@@ -13,15 +13,18 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 import httpx
 
@@ -706,8 +709,112 @@ def _test_tag_suppression(
 # ---------------------------------------------------------------------------
 
 
+# The fixture's first line, and the only thing `_test_e2e_file_read`
+# accepts back. It has to be a sentinel: the previous assertion passed on
+# "build" or "project" appearing anywhere in the agent's output, which any
+# answer that merely mentions the project — or reads some other file —
+# satisfies without ever having read the line the test asks for.
+E2E_FIRST_LINE_TOKEN = "rapid-mlx-e2e-first-line-sentinel"
+E2E_FIRST_LINE = f"# {E2E_FIRST_LINE_TOKEN}"
+
+
+@contextlib.contextmanager
+def _e2e_workspace():
+    """A throwaway directory for the agent to work in.
+
+    The e2e tests hand a real coding agent a real working directory, and
+    two things follow from that.
+
+    First, correctness: `_test_e2e_file_read` asks the agent to read
+    ``pyproject.toml``. Run from the caller's cwd that only works when
+    the caller happened to be standing in a Python project — from
+    anywhere else the agent hunts for a file that isn't there and burns
+    the whole timeout. The fixture below makes the task the same task
+    every time.
+
+    Second, a defined starting point. Codex is launched with
+    ``--skip-git-repo-check`` (it refuses to run outside a trusted repo,
+    and the runner cannot assume one), so it will pick up whatever is in
+    the directory it starts in — including files and agent instructions
+    left lying around. Starting it in a directory we just created, holding
+    one file we wrote, makes that set knowable.
+
+    **This is not a sandbox and does not pretend to be.** The agent still
+    runs as the user, with the user's environment and `$HOME`, and can
+    read anything the user can by absolute path. Isolating that would take
+    a real filesystem sandbox with its own home; what this gives is a
+    deterministic *working directory*, which is what the e2e tests depend
+    on. Codex additionally runs its own commands under Seatbelt on macOS,
+    which is its business, not something arranged here.
+    """
+    workdir = tempfile.mkdtemp(prefix="rapid-mlx-agent-e2e-")
+    try:
+        Path(workdir, "pyproject.toml").write_text(
+            f"{E2E_FIRST_LINE}\n"
+            "[build-system]\n"
+            'requires = ["hatchling"]\n'
+            'build-backend = "hatchling.build"\n'
+            "\n"
+            "[project]\n"
+            'name = "rapid-mlx-agent-e2e-fixture"\n'
+            'version = "0.0.0"\n',
+            encoding="utf-8",
+        )
+        yield workdir
+    finally:
+        _remove_workspace(workdir)
+
+
+def _remove_workspace(workdir: str) -> None:
+    """Delete the workspace, and say so out loud if it cannot be deleted.
+
+    Deliberately no permission-repair pass. Two earlier attempts at one were
+    both wrong, and the second review round explained why the whole idea is:
+
+    * chmod'ing a path we just checked with ``islink()`` is a TOCTOU — the
+      agent can swap the directory for a link in between, and the write lands
+      outside the workspace.
+    * defeating that properly means descriptor-relative traversal, which is a
+      lot of machinery for a test harness.
+
+    And it buys nothing. The agent runs as the SAME user with the same
+    permissions we have; anything our cleanup could be tricked into chmod'ing,
+    the agent can chmod itself, directly. There is no privilege boundary here
+    to defend, so a repair pass only adds a symlink-following write primitive
+    to our own code.
+
+    What the original NIT actually asked for was not silence. A workspace we
+    cannot remove is reported, once, with the path — and that is where it
+    stops.
+    """
+    shutil.rmtree(workdir, ignore_errors=True)
+    if os.path.exists(workdir):
+        logger.warning(
+            "agent e2e workspace could not be removed and is being left behind: "
+            "%s — the agent most likely changed permissions inside it",
+            workdir,
+        )
+
+
+@contextlib.contextmanager
+def _workspace_or(cwd: str | None):
+    """The caller's directory if it named one, otherwise a fresh workspace.
+
+    Each e2e test gets its OWN workspace. Sharing one across the three
+    invocations would let whatever the chat agent wrote — a file, a
+    stray AGENTS.md, a half-applied patch — become the next test's
+    starting condition, which is precisely the contamination the
+    workspace exists to prevent.
+    """
+    if cwd is not None:
+        yield cwd
+    else:
+        with _e2e_workspace() as workdir:
+            yield workdir
+
+
 def _agent_query(
-    binary: str, query_cmd: str, query: str, timeout: int = 120
+    binary: str, query_cmd: str, query: str, timeout: int = 120, cwd: str | None = None
 ) -> tuple[str | None, str | None]:
     """Run a single agent query. Returns (output, error).
 
@@ -746,7 +853,19 @@ def _agent_query(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=os.getcwd(),
+            # An explicit workspace, not the caller's cwd — see
+            # ``_e2e_workspace``. Falling back to os.getcwd() keeps any
+            # caller that hasn't opted in behaving exactly as before.
+            cwd=cwd or os.getcwd(),
+            # Close stdin. Without this the child inherits ours, and a CLI
+            # that reads stdin when it isn't a TTY blocks until `timeout`
+            # instead of answering the query it was handed on argv. Codex
+            # does exactly that — `codex exec '<query>'` prints "Reading
+            # additional input from stdin..." and then waits forever, so
+            # the e2e gate spent its whole budget on a process that never
+            # got a chance to fail. Every agent CLI runs headless here, so
+            # none of them has any business reading stdin (#1683).
+            stdin=subprocess.DEVNULL,
         )
         output = proc.stdout + proc.stderr
         if "error" in output.lower() and "HTTP 4" in output:
@@ -817,12 +936,36 @@ def _err_to_status(err: str | None) -> TestStatus:
     return TestStatus.ERROR
 
 
-def _test_e2e_chat(binary: str, query_cmd: str, timeout: int) -> TestResult:
+def _test_e2e_chat(
+    binary: str, query_cmd: str, timeout: int, cwd: str | None = None
+) -> TestResult:
     """Agent basic chat."""
     t0 = time.time()
-    out, err = _agent_query(
-        binary, query_cmd, "What is 2+2? Reply with just the number.", timeout
-    )
+    with contextlib.ExitStack() as stack:
+        try:
+            # Only the workspace ENTRY is guarded here. Widening this
+            # to cover the query too would relabel a launch failure
+            # (EACCES on the binary, say) as a workspace problem and
+            # hide what actually went wrong.
+            workdir = stack.enter_context(_workspace_or(cwd))
+        except OSError as exc:
+            # A full or read-only temp filesystem is an environment
+            # failure, not an agent failure. Report it as this test's
+            # ERROR instead of taking the whole runner down with it.
+            return TestResult(
+                "e2e_chat",
+                TestStatus.ERROR,
+                duration_ms=(time.time() - t0) * 1000,
+                message=f"agent workspace unavailable: {exc}",
+                category="e2e",
+            )
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            "What is 2+2? Reply with just the number.",
+            timeout,
+            workdir,
+        )
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -848,12 +991,36 @@ def _test_e2e_chat(binary: str, query_cmd: str, timeout: int) -> TestResult:
     )
 
 
-def _test_e2e_file_read(binary: str, query_cmd: str, timeout: int) -> TestResult:
+def _test_e2e_file_read(
+    binary: str, query_cmd: str, timeout: int, cwd: str | None = None
+) -> TestResult:
     """Agent reads a file via tool call."""
     t0 = time.time()
-    out, err = _agent_query(
-        binary, query_cmd, "Read the first line of pyproject.toml", timeout
-    )
+    with contextlib.ExitStack() as stack:
+        try:
+            # Only the workspace ENTRY is guarded here. Widening this
+            # to cover the query too would relabel a launch failure
+            # (EACCES on the binary, say) as a workspace problem and
+            # hide what actually went wrong.
+            workdir = stack.enter_context(_workspace_or(cwd))
+        except OSError as exc:
+            # A full or read-only temp filesystem is an environment
+            # failure, not an agent failure. Report it as this test's
+            # ERROR instead of taking the whole runner down with it.
+            return TestResult(
+                "e2e_file_read",
+                TestStatus.ERROR,
+                duration_ms=(time.time() - t0) * 1000,
+                message=f"agent workspace unavailable: {exc}",
+                category="e2e",
+            )
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            "Read the first line of pyproject.toml",
+            timeout,
+            workdir,
+        )
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -863,7 +1030,9 @@ def _test_e2e_file_read(binary: str, query_cmd: str, timeout: int) -> TestResult
             message=err,
             category="e2e",
         )
-    if "build" in (out or "").lower() or "project" in (out or "").lower():
+    # The sentinel, not "build" or "project" — those appear in any answer
+    # that merely talks about the project, or reads some other file.
+    if E2E_FIRST_LINE_TOKEN in (out or ""):
         return TestResult(
             "e2e_file_read",
             TestStatus.PASS,
@@ -880,14 +1049,36 @@ def _test_e2e_file_read(binary: str, query_cmd: str, timeout: int) -> TestResult
 
 
 def _test_e2e_terminal(
-    binary: str, query_cmd: str, timeout: int, agent_name: str
+    binary: str, query_cmd: str, timeout: int, agent_name: str, cwd: str | None = None
 ) -> TestResult:
     """Agent runs a shell command."""
     t0 = time.time()
     marker = f"rapidmlx_{agent_name}_test"
-    out, err = _agent_query(
-        binary, query_cmd, f"Run 'echo {marker}' and show me the output", timeout
-    )
+    with contextlib.ExitStack() as stack:
+        try:
+            # Only the workspace ENTRY is guarded here. Widening this
+            # to cover the query too would relabel a launch failure
+            # (EACCES on the binary, say) as a workspace problem and
+            # hide what actually went wrong.
+            workdir = stack.enter_context(_workspace_or(cwd))
+        except OSError as exc:
+            # A full or read-only temp filesystem is an environment
+            # failure, not an agent failure. Report it as this test's
+            # ERROR instead of taking the whole runner down with it.
+            return TestResult(
+                "e2e_terminal",
+                TestStatus.ERROR,
+                duration_ms=(time.time() - t0) * 1000,
+                message=f"agent workspace unavailable: {exc}",
+                category="e2e",
+            )
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            f"Run 'echo {marker}' and show me the output",
+            timeout,
+            workdir,
+        )
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -1099,6 +1290,9 @@ class AgentTestRunner:
         # --- E2E tests ---
         if self._agent_binary_available() and testing.binary and testing.query_cmd:
             binary = os.path.expanduser(testing.binary)
+            # No shared workspace here on purpose: each _test_e2e_* opens
+            # its own, so one invocation's leftovers cannot become the
+            # next one's starting condition.
             report.results.append(
                 _test_e2e_chat(binary, testing.query_cmd, testing.query_timeout)
             )

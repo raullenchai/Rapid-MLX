@@ -58,7 +58,14 @@ testing:
   binary: codex
   # Codex CLI exposes a one-shot mode via `codex exec` for headless runs;
   # the older `codex '<query>'` shorthand still works on most installs.
-  query_cmd: "codex exec '{query}'"
+  #
+  # `--skip-git-repo-check` is load-bearing, not tidiness. Codex refuses to
+  # run outside a trusted git repo with "Not inside a trusted directory and
+  # --skip-git-repo-check was not specified", and the test runner inherits
+  # whatever cwd the caller had. Without the flag the e2e tests fail in
+  # ~100 ms with that refusal — reported as a rapid-mlx integration failure
+  # when nothing in rapid-mlx was ever reached (#1683).
+  query_cmd: "codex exec --skip-git-repo-check '{query}'"
   query_timeout: 120
   install_cmd: "brew install codex   # or: npm install -g @openai/codex"
 
