@@ -104,10 +104,15 @@ enum WebSearchTool {
         calendar inputCalendar: Calendar = Calendar(identifier: .gregorian)
     ) -> String {
         let folded = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-        let asksForLastWeek = folded.range(
+        let asksForEnglishLastWeek = folded.range(
             of: #"\blast week\b"#,
             options: .regularExpression
-        ) != nil || query.contains("上周") || query.contains("上一周")
+        ) != nil
+        let asksForChineseLastWeek =
+            (query.contains("上周") || query.contains("上一周"))
+            && !query.contains("上周末")
+            && !query.contains("上一周末")
+        let asksForLastWeek = asksForEnglishLastWeek || asksForChineseLastWeek
         guard asksForLastWeek else { return query }
 
         var calendar = inputCalendar

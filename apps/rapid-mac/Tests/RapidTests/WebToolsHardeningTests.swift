@@ -49,6 +49,12 @@ struct WebToolsHardeningTests {
         #expect(WebSearchTool.preparedQuery(query) == query)
     }
 
+    @Test("Chinese last weekend is not broadened into a week-long query")
+    func chineseLastWeekendIsNotRewritten() {
+        let query = "上周末有什么活动？"
+        #expect(WebSearchTool.preparedQuery(query) == query)
+    }
+
     @Test("Timeless query is not rewritten")
     func timelessQueryPassesThrough() {
         let query = "Swift concurrency actor isolation"
