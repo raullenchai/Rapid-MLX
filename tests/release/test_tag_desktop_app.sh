@@ -217,16 +217,24 @@ contains "$PREFLIGHT" 'echo "have_pat=${HAVE_PAT}" >> "$GITHUB_OUTPUT"' \
 contains "$PREFLIGHT" 'if [ "$HAVE_PAT" != "true" ]; then' \
   "pre-flight refuses before anything is published"
 
-# The CHANGELOG check has to precede the irreversible engine publication, or a
-# missing section ships the engine and then fails — the half-release this whole
-# change exists to prevent.
-CHANGELOG_LINE=$(grep -n "Pre-check the desktop app CHANGELOG" "$WORKFLOW" | head -1 | cut -d: -f1)
+# Everything that can refuse the app half has to happen BEFORE the engine
+# Release is published. Publishing is the irreversible step: once the Release
+# exists, `detect` sets should_release=false and no re-run reaches these steps
+# again, so a failure after it strands the version as engine-only forever.
 CREATE_LINE=$(grep -n "name: Create tag and release" "$WORKFLOW" | head -1 | cut -d: -f1)
-if [ -n "$CHANGELOG_LINE" ] && [ -n "$CREATE_LINE" ] && [ "$CHANGELOG_LINE" -lt "$CREATE_LINE" ]; then
-  ok "app CHANGELOG is checked before the engine release is created"
-else
-  bad "app CHANGELOG is checked before the engine release is created (changelog=$CHANGELOG_LINE create=$CREATE_LINE)"
-fi
+before_publish() {  # before_publish <step name> <label>
+  local line
+  line=$(grep -n "$1" "$WORKFLOW" | head -1 | cut -d: -f1)
+  if [ -n "$line" ] && [ -n "$CREATE_LINE" ] && [ "$line" -lt "$CREATE_LINE" ]; then
+    ok "$2"
+  else
+    bad "$2 (step=$line publish=$CREATE_LINE)"
+  fi
+}
+before_publish "Pre-check the desktop app CHANGELOG" \
+  "app CHANGELOG is checked before the engine release is published"
+before_publish "name: Tag the desktop app at the same version" \
+  "app tag is claimed before the engine release is published"
 
 echo
 echo "passed: $PASS  failed: $FAIL"

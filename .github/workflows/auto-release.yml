@@ -316,14 +316,55 @@ jobs:
           echo "--- release notes ---"
           cat "$NOTES_FILE"
 
+      # The engine and the desktop app are ONE version, enforced by
+      # scripts/check_version_sync.py — so a release is one event, not two.
+      # Cutting them separately is what produced the 0.12.5-vs-0.12.6 split that
+      # reached users: the engine shipped, the app tag was a manual step somebody
+      # had to remember, and for four releases nobody did.
+      #
+      # Creating ``refs/tags/rapid-mac-v$VERSION`` hands off to
+      # .github/workflows/rapid-mac-release.yml, which builds, signs, notarises
+      # and attaches the DMG from this same tree (its sidecar is built from repo
+      # source at the tag, so it does not wait on the engine Release or PyPI).
+      #
+      # BEFORE the engine Release, deliberately. Publishing the engine is the
+      # irreversible step: once it exists, ``detect`` sets should_release=false
+      # and no re-run can ever reach this step again. So anything that can refuse
+      # the app tag — it already exists at another commit, a ruleset rejects the
+      # namespace, a transient API failure — has to refuse while the release can
+      # still be re-run from the top. Claiming the tag first inverts the failure:
+      # the worst case is an app tag whose engine Release lands seconds later on
+      # the re-run, instead of a version that is engine-only forever.
+      #
+      # RELEASE_PAT because the tag is created through the API under a real user:
+      # a ref written with the default GITHUB_TOKEN fires no ``push`` event. Its
+      # absence is already fatal in the pre-flight step above; the script
+      # re-checks anyway, so a hand-run cannot walk into it either.
+      - name: Tag the desktop app at the same version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ steps.appcheck.outputs.have_pat }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          # Resolved once by "Build release notes". The app is built from the
+          # same tree the engine releases, so the tag must land on that commit.
+          RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          # Atomic tag claim + annotated-tag-aware recovery, extracted so both
+          # paths are testable offline against a mock ``gh``.
+          bash scripts/tag_desktop_app.sh
+
       - name: Create tag and release
         env:
           # Use a user PAT (RELEASE_PAT) so the resulting ``release: published``
           # event fires downstream workflows. Releases created with the default
           # ``GITHUB_TOKEN`` are suppressed by GitHub's anti-loop guard, leaving
           # ``publish.yml`` un-triggered and the version stranded between tag and
-          # PyPI/Homebrew. Falls back to ``GITHUB_TOKEN`` if the secret is absent
-          # so forks don't break — the release just won't auto-publish.
+          # PyPI/Homebrew. The ``|| GITHUB_TOKEN`` fallback is now unreachable in
+          # practice: the pre-flight step fails the job when RELEASE_PAT is
+          # absent, because the app tag cannot be created without it and a
+          # half-released version is not recoverable. It stays as the expression
+          # default rather than as a working fork path.
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           TAG: v${{ needs.detect.outputs.version }}
           # Resolved once by the step above. The notes describe exactly this
@@ -339,38 +380,3 @@ jobs:
           # Extracted to scripts/create_release.sh so the TOCTOU and recovery
           # paths are testable offline against a mock ``gh``.
           bash scripts/create_release.sh
-
-      # The engine and the desktop app are ONE version, enforced by
-      # scripts/check_version_sync.py — so a release is one event, not two.
-      # Cutting them separately is what produced the 0.12.5-vs-0.12.6 split
-      # that reached users: the engine shipped, the app tag was a manual step
-      # somebody had to remember, and for four releases nobody did.
-      #
-      # Creating ``refs/tags/rapid-mac-v$VERSION`` hands off to
-      # .github/workflows/rapid-mac-release.yml, which builds, signs, notarises
-      # and attaches the DMG. It runs only after the engine release succeeded,
-      # so a failed gate never ships a half-release.
-      #
-      # RELEASE_PAT for the same reason as the step above: the tag is created
-      # through the API under a real user, because a ref written with the
-      # default GITHUB_TOKEN fires no ``push`` event.
-      #
-      # Its absence is already fatal in the pre-flight step above, before
-      # anything is published — a GITHUB_TOKEN-authored tag is the worst of both
-      # worlds: the ref exists, so a later re-run finds it already correct and
-      # exits green, while no build, signing, notarisation or DMG ever happened
-      # and now never can. The script re-checks anyway, so a hand-run cannot
-      # walk into it either.
-      - name: Tag the desktop app at the same version
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
-          HAVE_PAT: ${{ steps.appcheck.outputs.have_pat }}
-          VERSION: ${{ needs.detect.outputs.version }}
-          # Resolved once by "Build release notes". The app is built from the
-          # same tree the engine released, so the tag must land on that commit.
-          RELEASE_SHA: ${{ steps.changelog.outputs.release_sha }}
-        run: |
-          set -euo pipefail
-          # Atomic tag claim + annotated-tag-aware recovery, extracted so both
-          # paths are testable offline against a mock ``gh``.
-          bash scripts/tag_desktop_app.sh
