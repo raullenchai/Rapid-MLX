@@ -709,6 +709,15 @@ def _test_tag_suppression(
 # ---------------------------------------------------------------------------
 
 
+# The fixture's first line, and the only thing `_test_e2e_file_read`
+# accepts back. It has to be a sentinel: the previous assertion passed on
+# "build" or "project" appearing anywhere in the agent's output, which any
+# answer that merely mentions the project — or reads some other file —
+# satisfies without ever having read the line the test asks for.
+E2E_FIRST_LINE_TOKEN = "rapid-mlx-e2e-first-line-sentinel"
+E2E_FIRST_LINE = f"# {E2E_FIRST_LINE_TOKEN}"
+
+
 @contextlib.contextmanager
 def _e2e_workspace():
     """A throwaway directory for the agent to work in.
@@ -733,11 +742,8 @@ def _e2e_workspace():
     """
     workdir = tempfile.mkdtemp(prefix="rapid-mlx-agent-e2e-")
     try:
-        # Minimal but real: the first line is what `_test_e2e_file_read`
-        # asks for, and both of its accepted substrings ("build",
-        # "project") appear, so the assertion does not depend on which
-        # part of the file the agent chooses to quote back.
         Path(workdir, "pyproject.toml").write_text(
+            f"{E2E_FIRST_LINE}\n"
             "[build-system]\n"
             'requires = ["hatchling"]\n'
             'build-backend = "hatchling.build"\n'
@@ -749,7 +755,49 @@ def _e2e_workspace():
         )
         yield workdir
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        _remove_workspace(workdir)
+
+
+def _remove_workspace(workdir: str) -> None:
+    """Delete the workspace, and say so if it cannot be deleted.
+
+    An agent that chmods a directory it created leaves `rmtree` unable to
+    descend. Swallowing that with ``ignore_errors=True`` turns a gate that
+    runs on every release into a slow disk leak nobody is told about, so
+    retry with the permissions restored and, failing that, warn.
+    """
+    shutil.rmtree(workdir, ignore_errors=True)
+    if not os.path.exists(workdir):
+        return
+    for root, dirs, files in os.walk(workdir):
+        for name in dirs + files:
+            with contextlib.suppress(OSError):
+                os.chmod(os.path.join(root, name), 0o700)
+    with contextlib.suppress(OSError):
+        os.chmod(workdir, 0o700)
+    try:
+        shutil.rmtree(workdir)
+    except OSError as exc:
+        logger.warning(
+            "agent e2e workspace could not be removed: %s (%s)", workdir, exc
+        )
+
+
+@contextlib.contextmanager
+def _workspace_or(cwd: str | None):
+    """The caller's directory if it named one, otherwise a fresh workspace.
+
+    Each e2e test gets its OWN workspace. Sharing one across the three
+    invocations would let whatever the chat agent wrote — a file, a
+    stray AGENTS.md, a half-applied patch — become the next test's
+    starting condition, which is precisely the contamination the
+    workspace exists to prevent.
+    """
+    if cwd is not None:
+        yield cwd
+    else:
+        with _e2e_workspace() as workdir:
+            yield workdir
 
 
 def _agent_query(
@@ -880,9 +928,14 @@ def _test_e2e_chat(
 ) -> TestResult:
     """Agent basic chat."""
     t0 = time.time()
-    out, err = _agent_query(
-        binary, query_cmd, "What is 2+2? Reply with just the number.", timeout, cwd
-    )
+    with _workspace_or(cwd) as workdir:
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            "What is 2+2? Reply with just the number.",
+            timeout,
+            workdir,
+        )
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -913,9 +966,10 @@ def _test_e2e_file_read(
 ) -> TestResult:
     """Agent reads a file via tool call."""
     t0 = time.time()
-    out, err = _agent_query(
-        binary, query_cmd, "Read the first line of pyproject.toml", timeout, cwd
-    )
+    with _workspace_or(cwd) as workdir:
+        out, err = _agent_query(
+            binary, query_cmd, "Read the first line of pyproject.toml", timeout, workdir
+        )
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -925,7 +979,9 @@ def _test_e2e_file_read(
             message=err,
             category="e2e",
         )
-    if "build" in (out or "").lower() or "project" in (out or "").lower():
+    # The sentinel, not "build" or "project" — those appear in any answer
+    # that merely talks about the project, or reads some other file.
+    if E2E_FIRST_LINE_TOKEN in (out or ""):
         return TestResult(
             "e2e_file_read",
             TestStatus.PASS,
@@ -947,9 +1003,14 @@ def _test_e2e_terminal(
     """Agent runs a shell command."""
     t0 = time.time()
     marker = f"rapidmlx_{agent_name}_test"
-    out, err = _agent_query(
-        binary, query_cmd, f"Run 'echo {marker}' and show me the output", timeout, cwd
-    )
+    with _workspace_or(cwd) as workdir:
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            f"Run 'echo {marker}' and show me the output",
+            timeout,
+            workdir,
+        )
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -1161,29 +1222,26 @@ class AgentTestRunner:
         # --- E2E tests ---
         if self._agent_binary_available() and testing.binary and testing.query_cmd:
             binary = os.path.expanduser(testing.binary)
-            # One workspace for all three: the agent gets a directory we
-            # built, not whatever the caller happened to be standing in.
-            with _e2e_workspace() as workdir:
+            # No shared workspace here on purpose: each _test_e2e_* opens
+            # its own, so one invocation's leftovers cannot become the
+            # next one's starting condition.
+            report.results.append(
+                _test_e2e_chat(binary, testing.query_cmd, testing.query_timeout)
+            )
+            if self.profile.needs_function_calling:
                 report.results.append(
-                    _test_e2e_chat(
-                        binary, testing.query_cmd, testing.query_timeout, workdir
+                    _test_e2e_file_read(
+                        binary, testing.query_cmd, testing.query_timeout
                     )
                 )
-                if self.profile.needs_function_calling:
-                    report.results.append(
-                        _test_e2e_file_read(
-                            binary, testing.query_cmd, testing.query_timeout, workdir
-                        )
+                report.results.append(
+                    _test_e2e_terminal(
+                        binary,
+                        testing.query_cmd,
+                        testing.query_timeout,
+                        self.profile.name,
                     )
-                    report.results.append(
-                        _test_e2e_terminal(
-                            binary,
-                            testing.query_cmd,
-                            testing.query_timeout,
-                            self.profile.name,
-                            workdir,
-                        )
-                    )
+                )
         elif testing.binary:
             # Two distinct skip reasons land here:
             #   (a) binary on PATH but profile has `query_cmd: null`

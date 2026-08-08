@@ -41,7 +41,14 @@ from pathlib import Path
 import pytest
 
 from vllm_mlx.agents import get_profile
-from vllm_mlx.agents.testing import _agent_query, _e2e_workspace
+from vllm_mlx.agents.testing import (
+    E2E_FIRST_LINE,
+    TestStatus,
+    _agent_query,
+    _e2e_workspace,
+    _test_e2e_chat,
+    _test_e2e_file_read,
+)
 
 # Long enough that a slow machine never flakes, short enough that a
 # regression (the child blocking on stdin) fails the suite in seconds
@@ -133,12 +140,12 @@ def test_workspace_carries_the_file_the_file_read_test_asks_for():
         assert target.is_file(), "the workspace has no pyproject.toml to read"
         text = target.read_text(encoding="utf-8")
         # The test asks for the FIRST line specifically.
-        assert text.splitlines()[0] == "[build-system]"
-        # `_test_e2e_file_read` passes on either substring; both must be
-        # present so the assertion does not depend on which part of the
-        # file the agent chooses to quote back.
-        assert "build" in text.lower()
-        assert "project" in text.lower()
+        assert text.splitlines()[0] == E2E_FIRST_LINE
+        # It has to be a sentinel, not a plausible word: the assertion
+        # previously accepted "build" or "project" anywhere in the agent's
+        # answer, which any sentence about a Python project satisfies
+        # without the file having been opened.
+        assert text.count(E2E_FIRST_LINE) == 1
 
 
 def test_workspace_is_removed_afterwards():
@@ -148,14 +155,67 @@ def test_workspace_is_removed_afterwards():
     assert not os.path.exists(workdir), f"workspace survived the context: {workdir}"
 
 
-def test_workspace_is_fresh_each_time():
-    """Two runs must not share state — one agent's mess is not the next's input."""
-    with _e2e_workspace() as first:
-        Path(first, "scratch.txt").write_text("left behind", encoding="utf-8")
-        first_path = first
-    with _e2e_workspace() as second:
-        assert second != first_path
-        assert not Path(second, "scratch.txt").exists()
+def _recording_agent(log: Path, reply: str) -> str:
+    """A stand-in agent CLI that records where it ran and prints `reply`."""
+    script = (
+        "import os, sys; "
+        f"open({str(log)!r}, 'a').write(os.getcwd() + chr(10)); "
+        f"sys.stdout.write({reply!r})"
+    )
+    return f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} '{{query}}'"
+
+
+def test_each_e2e_test_gets_its_own_workspace(tmp_path):
+    """Two e2e tests must not share a directory.
+
+    Asserting that two `_e2e_workspace()` calls differ proves nothing about
+    the runner — the runner is what decides how many workspaces exist. This
+    drives the real `_test_e2e_*` entry points with a real subprocess and
+    reads back the directories they actually ran in.
+    """
+    log = tmp_path / "cwds.txt"
+    # One reply that satisfies both assertions: "4" for chat, the sentinel
+    # for file-read.
+    cmd = _recording_agent(log, f"4 {E2E_FIRST_LINE}")
+
+    chat = _test_e2e_chat(sys.executable, cmd, _TIMEOUT_S)
+    file_read = _test_e2e_file_read(sys.executable, cmd, _TIMEOUT_S)
+    assert chat.status is TestStatus.PASS, chat.message
+    assert file_read.status is TestStatus.PASS, file_read.message
+
+    ran_in = log.read_text(encoding="utf-8").split()
+    assert len(ran_in) == 2, f"expected two runs, recorded {ran_in}"
+    assert ran_in[0] != ran_in[1], (
+        "both e2e tests ran in the SAME directory — whatever the first agent "
+        "wrote there is the second one's starting condition"
+    )
+    for path in ran_in:
+        assert not os.path.exists(path), f"workspace survived its test: {path}"
+
+
+def test_file_read_demands_the_sentinel_not_a_plausible_sentence(tmp_path):
+    """Talking about the project is not reading the first line of the file."""
+    log = tmp_path / "cwds.txt"
+    # Contains "build" and "project" — which the previous assertion accepted —
+    # but is not the first line of anything.
+    chatty = _recording_agent(log, "This looks like a Python project; I can build it.")
+    result = _test_e2e_file_read(sys.executable, chatty, _TIMEOUT_S)
+    assert result.status is TestStatus.FAIL, (
+        "an answer that never read the file passed the file-read test"
+    )
+
+
+def test_workspace_removal_survives_a_locked_down_subdirectory(tmp_path, caplog):
+    """An agent that chmods its scratch directory must not leak the workspace."""
+    with _e2e_workspace() as workdir:
+        hostile = Path(workdir, "hostile")
+        hostile.mkdir()
+        (hostile / "note.txt").write_text("x", encoding="utf-8")
+        os.chmod(hostile, 0o000)
+        captured = workdir
+    assert not os.path.exists(captured), (
+        f"workspace leaked because a subdirectory was unreadable: {captured}"
+    )
 
 
 def test_codex_query_cmd_skips_the_git_repo_check():
