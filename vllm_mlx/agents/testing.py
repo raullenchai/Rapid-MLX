@@ -747,6 +747,15 @@ def _agent_query(
             text=True,
             timeout=timeout,
             cwd=os.getcwd(),
+            # Close stdin. Without this the child inherits ours, and a CLI
+            # that reads stdin when it isn't a TTY blocks until `timeout`
+            # instead of answering the query it was handed on argv. Codex
+            # does exactly that — `codex exec '<query>'` prints "Reading
+            # additional input from stdin..." and then waits forever, so
+            # the e2e gate spent its whole budget on a process that never
+            # got a chance to fail. Every agent CLI runs headless here, so
+            # none of them has any business reading stdin (#1683).
+            stdin=subprocess.DEVNULL,
         )
         output = proc.stdout + proc.stderr
         if "error" in output.lower() and "HTTP 4" in output:
