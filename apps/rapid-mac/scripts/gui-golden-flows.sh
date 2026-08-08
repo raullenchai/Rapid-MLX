@@ -803,14 +803,24 @@ flow_browse_all_destination() {
     #    click it the way a person would, and require the panel to change.
     pb window focus --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-focus.json" \
         || die "could not focus the Settings window the button opened"
+    # Coordinates re-read AFTER the focus, because focusing can raise or move
+    # the window and a stale point would click whatever now sits there.
+    see_settings "$OUT/ba-focused.json"
     local cx cy
     read -r cx cy < <(jq -r '.data.ui_elements[]
                              | select(.identifier == "Settings.Category.privacy")
                              | [(.bounds.x + .bounds.width / 2), (.bounds.y + .bounds.height / 2)]
-                             | @tsv' "$OUT/ba-settings.json")
+                             | @tsv' "$OUT/ba-focused.json")
     [[ -n "$cx" && -n "$cy" ]] || die "Settings.Category.privacy has no bounds to click"
-    pb click --coords "$cx,$cy" --global-coords --app "PID:$APP_PID" --json > "$OUT/ba-click.json" \
-        || die "the Settings window did not accept a click — it is behind the wizard sheet"
+    # ``--foreground`` is the whole point. Peekaboo's default is background
+    # delivery — a coordinate hit-test followed by an accessibility action,
+    # which reaches UI a person cannot, and is therefore exactly as blind to
+    # "trapped behind a modal sheet" as the AXPress this replaced.
+    # ``--window-id`` also pins the click to the Settings window rather than
+    # whatever else the app has on screen at that point.
+    pb click --coords "$cx,$cy" --global-coords --foreground \
+        --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-click.json" \
+        || die "the Settings window did not accept a real click — it is behind the wizard sheet"
     # A real click that changed nothing is the same failure as no click at all,
     # so require the panel's own control to appear, not merely that the press
     # returned success.
