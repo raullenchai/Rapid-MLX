@@ -680,6 +680,30 @@ def _register_vendored_archs() -> None:
             # still doesn't know the arch, native mlx-lm module or not).
             _VENDORED_MODEL_TYPES.add("hy_v3")
 
+    if "mlx_lm.models.apertus1p5_text" not in sys.modules:
+        # Apertus 1.5 is a text decoder nested in a multimodal wrapper. Once
+        # mlx-lm ships #1615 (or equivalent), defer to native support.
+        import importlib.util as _importlib_util
+
+        try:
+            _native_spec = _importlib_util.find_spec("mlx_lm.models.apertus1p5_text")
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import apertus1p5_text as _apertus1p5_text
+
+                sys.modules.setdefault(
+                    "mlx_lm.models.apertus1p5_text", _apertus1p5_text
+                )
+            except Exception as e:
+                logger.warning("Apertus 1.5 vendor failed to register: %s", e)
+            else:
+                _VENDORED_MODEL_TYPES.add("apertus1p5_text")
+        else:
+            _VENDORED_MODEL_TYPES.add("apertus1p5_text")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
