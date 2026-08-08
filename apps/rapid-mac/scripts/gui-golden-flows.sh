@@ -294,6 +294,67 @@ json.dump({"data": {"ui_elements": scoped}}, open(dst, "w"))
 PYEOF
 }
 
+# Turn N's prompt is in the Nth USER message and turn N's answer is in the
+# Nth ASSISTANT message.
+#
+# Reading order alone does not say that. Every needle can sit in the right
+# sequence while the answer text lives inside the user's own bubble and the
+# assistant's bubble holds something else entirely — the counts, the ordering
+# and the structural baseline all survive that, because nothing ties a string
+# to the message it belongs to.
+#
+# The app's own controls are the boundary: a user message ends at its Edit
+# button, an assistant message ends at its Retry button. Measured on a real
+# dump, in tree order:
+#
+#   StaticText(prompt)  Copy  Edit        <- user message
+#   Disclosure  StaticText(answer)  …  Copy  Retry   <- assistant message
+assert_turns_pair_up() {
+    local transcript="$1"
+    shift
+    python3 - "$transcript" "$@" <<'PYEOF'
+import json, sys
+transcript, pairs = sys.argv[1], sys.argv[2:]
+els = json.load(open(transcript))["data"]["ui_elements"]
+
+messages, buffer = [], []
+for element in els:
+    identifier = str(element.get("identifier") or "")
+    buffer.append(str(element.get("value", "")))
+    if ".Edit." in identifier:
+        messages.append(("user", " ".join(buffer)))
+        buffer = []
+    elif ".Retry." in identifier:
+        messages.append(("model", " ".join(buffer)))
+        buffer = []
+
+expected = [
+    (side, text)
+    for i, text in enumerate(pairs)
+    for side in ("user" if i % 2 == 0 else "model",)
+]
+if len(messages) != len(expected):
+    got = ", ".join(side for side, _ in messages)
+    sys.exit(
+        f"expected {len(expected)} messages alternating user/model, "
+        f"found {len(messages)}: {got}"
+    )
+for index, ((want_side, needle), (got_side, text)) in enumerate(
+    zip(expected, messages), start=1
+):
+    if want_side != got_side:
+        sys.exit(
+            f"message {index} is a {got_side} message, expected {want_side} — "
+            "the transcript is not alternating"
+        )
+    if needle not in text:
+        sys.exit(
+            f"{want_side} message {index} does not contain {needle!r}; "
+            f"it holds {text.strip()[:80]!r}"
+        )
+PYEOF
+}
+
 # Each of these strings is a whole element, not a fragment of a blob.
 #
 # This is the positive half of "markdown was rendered". Asserting only that
@@ -395,6 +456,14 @@ assert_rendered_shapes() {
     assert_tree_text "$transcript" "🎯🚀"
     assert_tree_text "$transcript" "مرحبا"
     assert_tree_text "$transcript" "用来检查换行和字宽"
+    # The LAST words of the two long answers. A distinctive substring near the
+    # start passes on a stream that stopped early or a code block that kept
+    # only its first line — both of which lose most of the response while
+    # satisfying every other check here. The fake is deterministic, so the
+    # ending is knowable.
+    assert_tree_text "$transcript" "Only the first was ever read by anyone else."
+    assert_tree_text "$transcript" "    return a"
+    assert_tree_text "$transcript" "Both fit comfortably in 16 GB."
 }
 
 # Markdown reached the renderer as markdown, not as source text.
@@ -1280,7 +1349,10 @@ flow_chat_depth() {
     done
     transcript_only "$OUT/turn5-settled.json" "$OUT/turn5-transcript.json"
     assert_text_order "$OUT/turn5-transcript.json" "${conversation[@]}"
-    log "  all 5 turns present, each answer under its own prompt"
+    # …and each half is in the message that half belongs to. Reading order
+    # alone would accept an answer rendered inside the user's own bubble.
+    assert_turns_pair_up "$OUT/turn5-transcript.json" "${conversation[@]}"
+    log "  all 5 turns present, each answer inside its own assistant message"
 
     # The shapes are only worth sending if something asserts on what the
     # renderer did with them — positively, not just "the source syntax is
@@ -1311,6 +1383,7 @@ flow_chat_depth() {
     transcript_only "$OUT/depth-restored-transcript.json" \
         "$OUT/depth-restored-scoped.json"
     assert_text_order "$OUT/depth-restored-scoped.json" "${conversation[@]}"
+    assert_turns_pair_up "$OUT/depth-restored-scoped.json" "${conversation[@]}"
     # Same bar as the live transcript. Without this a restore that brought
     # every turn back but flattened the table, dropped the emoji or printed
     # the list markers would pass — the counts survive it, and the structural
