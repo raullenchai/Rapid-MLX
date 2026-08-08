@@ -11,7 +11,7 @@ AXApplication title="Rapid-MLX"
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXButton desc="Connect your agents" help="Point an editor or agent at your local server" enabled=true
-          AXButton desc="Speed on this Mac" help="Start a model to run a speed test." enabled=false
+          AXButton id="ChatView.SpeedOnThisMac" desc="Speed on this Mac" help="Start a model to run a speed test." enabled=false
           AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
