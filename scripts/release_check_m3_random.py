@@ -37,9 +37,11 @@ allocate ~14 GB, but cleanup runs after each model so peak working set
 is one model at a time + 5 GB headroom).
 
 Eligibility filter (sample pool):
-  * 4 ≤ size_B ≤ 12  (smaller models can't actually solve harness tasks
-                       → false-fail spam; larger models bust the disk
-                       budget on M3 16/32 GB systems)
+  * 6 ≤ size_B ≤ 12  (smaller models can't actually solve harness tasks
+                       → they burn the whole per-profile clock retrying
+                       and the gauntlet goes red on a working engine, see
+                       #1672; larger models bust the disk budget on M3
+                       16/32 GB systems)
   * 4-bit quant only  (8-bit is 2x download cost for the same coverage)
   * no kimi-*         (deliberately heavy class, explicit user exclude)
   * no -vl- variants  (vision; harness tasks are text-only)
@@ -90,6 +92,38 @@ SERVE_READY_TIMEOUT_S = 600  # 10 minutes
 # (HARNESS_PROFILE_TIMEOUT_S, 1200s in the gauntlet) so in the gauntlet
 # the outer subprocess timeout — not the inner cap — bounds a hung round.
 ROUND_TIMEOUT_S = 1080
+
+# Sample-pool size window, in billions of parameters.
+#
+# Every profile in HARNESS_PROFILES drives a multi-step tool-calling loop, and
+# a model that cannot hold one does not fail fast: it emits malformed calls and
+# retries until the per-profile clock runs out. G12 can only report that as a
+# red gauntlet, so the pool has to exclude models that cannot do the work —
+# the same rule the hybrid, gemma-4 and low-active-param excludes below apply.
+#
+# The floor sits at 6 because that is the conservative cut between the two
+# sizes actually measured on this hardware:
+#
+#   * 4B fails — ``qwen3-4b-instruct-2507-4bit`` × ``hermes`` burned the whole
+#     1020 s cap while the engine answered without a single 5xx, and v0.12.7
+#     does exactly the same, so it is the model's ceiling, not a regression
+#     (#1672). The other three 4B aliases are excluded with it rather than
+#     waiting to be drawn and measured one by one: a coverage sweep that cries
+#     wolf on a random calendar day stops being read at all.
+#   * 9B passes — a dense 9B completes hermes in ~740-800 s (see
+#     ROUND_TIMEOUT_S above), which is where that budget came from.
+#
+# 7B and 8B are in between and unmeasured; they stay in the pool because that
+# band is where most of the sweep's coverage lives. If one of them turns out to
+# share the 4B ceiling, this constant moves again — that is how the gemma-4 and
+# hybrid excludes got here.
+#
+# Excluding the 4B tier does not leave it unobserved: ``qwen3.5-4b-4bit`` is a
+# release-fleet coherence model, so G0a boots it every gauntlet. What it loses
+# is agentic coverage, which is the coverage it cannot provide.
+_MIN_PARAMS_B = 6.0
+# Ceiling: larger models bust the disk budget on M3 16/32 GB systems.
+_MAX_PARAMS_B = 12.0
 
 
 # Match a parameter-count token bounded by name separators (``-``,
@@ -154,14 +188,14 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             # oversized model into the sweep.
             continue
         size_b = float(match.group(1))
-        if not (4.0 <= size_b <= 12.0):
+        if not (_MIN_PARAMS_B <= size_b <= _MAX_PARAMS_B):
             continue
         # Effective-capacity floor for MoEs: e.g. ``LFM2.5-8B-A1B`` is 8B
-        # total but ~1B ACTIVE/token — too weak to solve agentic harness
-        # tasks (emits malformed tool calls → false-fail spam), the same
-        # rationale as the 4B total-size floor but applied to active params.
+        # total but ~1B ACTIVE/token. The same floor, applied to the params
+        # that actually do the work — a model's ability to hold an agentic
+        # loop follows its active parameters, not its total.
         active_m = _ACTIVE_TOKEN_RE.search(repo_name)
-        if active_m and float(active_m.group(1)) < 4.0:
+        if active_m and float(active_m.group(1)) < _MIN_PARAMS_B:
             continue
         out.append((size_b, name, hf_path))
     out.sort()
