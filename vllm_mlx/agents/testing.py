@@ -765,16 +765,35 @@ def _remove_workspace(workdir: str) -> None:
     descend. Swallowing that with ``ignore_errors=True`` turns a gate that
     runs on every release into a slow disk leak nobody is told about, so
     retry with the permissions restored and, failing that, warn.
+
+    Two things the recovery has to get right, both found in review:
+
+    * **The root comes first.** A directory with no execute bit cannot be
+      listed, so if the agent locked the workspace root, walking it before
+      restoring it finds nothing to fix and the retry fails for the same
+      reason the first attempt did.
+    * **Never chmod a symlink.** ``os.chmod`` follows links, so a link the
+      agent pointed at a file outside the workspace would have THAT file's
+      permissions changed by our cleanup. Only directories need restoring
+      anyway — unlinking a file requires permission on its parent, not on
+      the file — and ``os.walk`` does not follow links, so skipping linked
+      directories is sufficient.
     """
     shutil.rmtree(workdir, ignore_errors=True)
     if not os.path.exists(workdir):
         return
-    for root, dirs, files in os.walk(workdir):
-        for name in dirs + files:
+    if not os.path.islink(workdir):
+        with contextlib.suppress(OSError):
+            os.chmod(workdir, 0o700)
+    # Top-down: each directory is made traversable before os.walk descends
+    # into it.
+    for root, dirs, _files in os.walk(workdir):
+        for name in dirs:
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                continue
             with contextlib.suppress(OSError):
-                os.chmod(os.path.join(root, name), 0o700)
-    with contextlib.suppress(OSError):
-        os.chmod(workdir, 0o700)
+                os.chmod(path, 0o700)
     try:
         shutil.rmtree(workdir)
     except OSError as exc:

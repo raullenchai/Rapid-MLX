@@ -205,7 +205,7 @@ def test_file_read_demands_the_sentinel_not_a_plausible_sentence(tmp_path):
     )
 
 
-def test_workspace_removal_survives_a_locked_down_subdirectory(tmp_path, caplog):
+def test_workspace_removal_survives_a_locked_down_subdirectory():
     """An agent that chmods its scratch directory must not leak the workspace."""
     with _e2e_workspace() as workdir:
         hostile = Path(workdir, "hostile")
@@ -215,6 +215,61 @@ def test_workspace_removal_survives_a_locked_down_subdirectory(tmp_path, caplog)
         captured = workdir
     assert not os.path.exists(captured), (
         f"workspace leaked because a subdirectory was unreadable: {captured}"
+    )
+
+
+def test_workspace_removal_survives_a_locked_down_root():
+    """A locked ROOT hides every descendant, so it has to be restored first.
+
+    Recovery that walks before restoring the root finds nothing to fix and
+    fails for exactly the reason the first attempt did.
+    """
+    with _e2e_workspace() as workdir:
+        nested = Path(workdir, "nested")
+        nested.mkdir()
+        (nested / "note.txt").write_text("x", encoding="utf-8")
+        os.chmod(nested, 0o000)
+        os.chmod(workdir, 0o000)
+        captured = workdir
+    assert not os.path.exists(captured), (
+        f"workspace leaked because its own root was unreadable: {captured}"
+    )
+
+
+def test_cleanup_never_chmods_through_a_symlink(tmp_path):
+    """`os.chmod` follows links; the agent must not be able to aim it outside.
+
+    A link planted in a locked directory, pointing at a caller-owned file,
+    would have that file's permissions rewritten by our own cleanup.
+    """
+    outsider = tmp_path / "private.key"
+    outsider.write_text("secret", encoding="utf-8")
+    os.chmod(outsider, 0o600)
+    outsider_before = os.stat(outsider).st_mode
+    # A linked DIRECTORY is the more dangerous shape: chmod 0o700 on it would
+    # rewrite the permissions of a whole tree the workspace does not own.
+    outside_dir = tmp_path / "outside-tree"
+    outside_dir.mkdir()
+    os.chmod(outside_dir, 0o500)
+    outside_dir_before = os.stat(outside_dir).st_mode
+
+    with _e2e_workspace() as workdir:
+        trap = Path(workdir, "trap")
+        trap.mkdir()
+        os.symlink(outsider, trap / "link-to-outside-file")
+        os.symlink(outside_dir, trap / "link-to-outside-dir")
+        os.chmod(trap, 0o000)
+        captured = workdir
+
+    assert not os.path.exists(captured), "workspace leaked"
+    assert outsider.exists(), "cleanup deleted a file outside the workspace"
+    assert outside_dir.is_dir(), "cleanup deleted a tree outside the workspace"
+    assert os.stat(outsider).st_mode == outsider_before, (
+        "cleanup chmod'd through a symlink and rewrote a file outside the workspace"
+    )
+    assert os.stat(outside_dir).st_mode == outside_dir_before, (
+        "cleanup chmod'd through a symlink and rewrote a directory outside "
+        "the workspace"
     )
 
 
