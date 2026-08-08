@@ -23,7 +23,7 @@ struct WebToolsHardeningTests {
             calendar: calendar
         )
 
-        #expect(prepared.contains("2026-08-01 through 2026-08-08"))
+        #expect(prepared.contains("2026-08-02 through 2026-08-08"))
         #expect(prepared.hasPrefix("What's a major news story from the last week?"))
     }
 
@@ -40,7 +40,13 @@ struct WebToolsHardeningTests {
             now: now,
             calendar: calendar
         )
-        #expect(prepared.contains("2026-08-01 through 2026-08-08"))
+        #expect(prepared.contains("2026-08-02 through 2026-08-08"))
+    }
+
+    @Test("Last weekend is not broadened into a week-long query")
+    func lastWeekendIsNotRewritten() {
+        let query = "What happened last weekend?"
+        #expect(WebSearchTool.preparedQuery(query) == query)
     }
 
     @Test("Timeless query is not rewritten")

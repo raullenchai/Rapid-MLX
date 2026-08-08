@@ -104,13 +104,18 @@ enum WebSearchTool {
         calendar inputCalendar: Calendar = Calendar(identifier: .gregorian)
     ) -> String {
         let folded = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-        let asksForLastWeek = folded.contains("last week") || query.contains("上周") || query.contains("上一周")
+        let asksForLastWeek = folded.range(
+            of: #"\blast week\b"#,
+            options: .regularExpression
+        ) != nil || query.contains("上周") || query.contains("上一周")
         guard asksForLastWeek else { return query }
 
         var calendar = inputCalendar
         calendar.timeZone = inputCalendar.timeZone
         let end = calendar.startOfDay(for: now)
-        guard let start = calendar.date(byAdding: .day, value: -7, to: end) else {
+        // Both endpoints are inclusive, so today plus the preceding six days
+        // is exactly seven calendar dates.
+        guard let start = calendar.date(byAdding: .day, value: -6, to: end) else {
             return query
         }
         let formatter = DateFormatter()
