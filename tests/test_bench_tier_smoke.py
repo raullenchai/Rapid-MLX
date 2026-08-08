@@ -21,6 +21,7 @@ from vllm_mlx.bench.tier_runner import (
     _find_free_port_in_range,
     _normalize_openai_base,
     _resolve_base_url,
+    _run_smoke,
     run_tier,
 )
 
@@ -125,6 +126,33 @@ def test_smoke_happy_path_returns_zero(patch_smoke_environment, capsys):
     captured = capsys.readouterr()
     assert "[PASS] tier=smoke" in captured.out
     assert "OK: 1/1 tiers passed" in captured.out
+
+
+def test_attached_smoke_uses_api_key_from_environment(monkeypatch):
+    """An attached secured server receives the env-only bearer secret."""
+    stream_lines = [
+        'data: {"choices":[{"delta":{"content":"4"}}]}',
+        "data: [DONE]",
+    ]
+    models_payload = {"data": [{"id": "secured-model"}]}
+    observed: dict[str, str] = {}
+
+    def _client_factory(*args, **kwargs):
+        observed.update(kwargs.get("headers", {}))
+        return _FakeClient(
+            models_payload=models_payload,
+            stream_lines=stream_lines,
+        )
+
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "bench-secret")
+    with patch("httpx.Client", _client_factory):
+        result = _run_smoke(
+            "secured-model",
+            "http://127.0.0.1:8000/v1",
+        )
+
+    assert result.passed is True
+    assert observed == {"Authorization": "Bearer bench-secret"}
 
 
 def test_smoke_fail_when_no_four_in_response(capsys):

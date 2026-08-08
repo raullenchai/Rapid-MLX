@@ -29,6 +29,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+from ..http_auth import rapid_mlx_auth_headers
+
 # The 5 first-class harnesses in the documented order. Used by both
 # ``--tier harness`` and the release_check_m3.sh G7b gate. Keep this
 # list in lock-step with the G7b shell loop in scripts/release_check_m3.sh
@@ -295,7 +297,7 @@ def _run_smoke(
     try:
         # Resolve model_id from the server so we don't have to guess
         # the canonical name post-alias-resolution.
-        with httpx.Client(timeout=30) as client:
+        with httpx.Client(timeout=30, headers=rapid_mlx_auth_headers()) as client:
             models_resp = client.get(f"{base_url}/models")
             models_resp.raise_for_status()
             model_id = models_resp.json()["data"][0]["id"]
@@ -462,7 +464,7 @@ def _run_speed(model: str, base_url: str, sampled: bool = False) -> TierResult:
         # booted server, which is explicitly PR #3 scope. For PR #2 we
         # surface the metric we can measure cleanly through HTTP: a
         # 5-prompt decode/prefill probe to flag gross perf regressions.
-        with httpx.Client(timeout=180) as client:
+        with httpx.Client(timeout=180, headers=rapid_mlx_auth_headers()) as client:
             models_resp = client.get(f"{base_url}/models")
             models_resp.raise_for_status()
             model_id = models_resp.json()["data"][0]["id"]

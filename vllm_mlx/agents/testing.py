@@ -25,6 +25,7 @@ from enum import Enum
 
 import httpx
 
+from ..http_auth import rapid_mlx_auth_headers
 from .base import AgentProfile
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,7 @@ def _api_call(
     resp = httpx.post(
         f"{base_url}/chat/completions",
         json=payload,
+        headers=rapid_mlx_auth_headers(),
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -480,7 +482,11 @@ def _test_streaming_tool_call(base_url: str, model_id: str) -> TestResult:
             "stream": True,
         }
         with httpx.stream(
-            "POST", f"{base_url}/chat/completions", json=payload, timeout=60
+            "POST",
+            f"{base_url}/chat/completions",
+            json=payload,
+            headers=rapid_mlx_auth_headers(),
+            timeout=60,
         ) as resp:
             tool_chunks = []
             finish_reason = None
@@ -606,7 +612,11 @@ def _test_streaming_basic(base_url: str, model_id: str) -> TestResult:
         chunks = 0
         content = ""
         with httpx.stream(
-            "POST", f"{base_url}/chat/completions", json=payload, timeout=30
+            "POST",
+            f"{base_url}/chat/completions",
+            json=payload,
+            headers=rapid_mlx_auth_headers(),
+            timeout=30,
         ) as resp:
             for line in resp.iter_lines():
                 if not line.startswith("data: "):
@@ -927,7 +937,11 @@ class AgentTestRunner:
             self.model_id = model_id
         else:
             try:
-                resp = httpx.get(f"{base_url}/models", timeout=5)
+                resp = httpx.get(
+                    f"{base_url}/models",
+                    headers=rapid_mlx_auth_headers(),
+                    timeout=5,
+                )
                 self.model_id = resp.json()["data"][0]["id"]
             except Exception:
                 self.model_id = "default"
