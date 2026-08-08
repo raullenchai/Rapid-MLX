@@ -12,9 +12,12 @@ struct LoadedModelBenchmarkTests {
     /// "looked right" in isolation, and only chat was ever exercised against a
     /// real server. Pinning the equality — rather than either literal — is
     /// what makes the next divergence a test failure.
-    /// ``.serialized`` because the recorder below keeps its captured URL in
-    /// process-wide ``URLProtocol`` state, exactly like the bearer-auth suite.
-    @Test("The speed test and chat resolve to the same endpoint", .serialized)
+    ///
+    /// The recorder below holds its captured URL in static state, which is safe
+    /// only because this is its one and only writer. Give it a second test and
+    /// it needs its own instance state, not a `.serialized` trait — that trait
+    /// orders the cases of a parameterized test and does nothing here.
+    @Test("The speed test and chat resolve to the same endpoint")
     @MainActor
     func benchmarkAndChatAgreeOnTheEndpoint() async throws {
         let base = ChatStreamClient.loopbackURL(port: 8123)
