@@ -82,6 +82,11 @@ dependencies = [
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",
     "tqdm>=4.66.0",
+    # gguf — pure-Python GGUF reader/writer (~150 KB), used only by
+    # `rapid-mlx convert` (GGUF → MLX pipeline, vllm_mlx/gguf_convert.py).
+    # Imported lazily there, so it costs nothing on the serve hot path;
+    # pinned in core so `convert` works out of the box on a fresh install.
+    "gguf>=0.19.0",
     # pillow is opt-in via [vision] extras — only the MLLM paths (mllm.py,
     # benchmark.py image mode) touch PIL, and mlx-vlm requires it anyway.
     "pyyaml>=6.0",
