@@ -344,6 +344,13 @@ def _owns_port(proc: subprocess.Popen, port: int, max_depth: int = 8) -> bool:
     Fails CLOSED: an empty listener list while the port demonstrably answers
     means ``lsof`` could not tell us, and an unverifiable port is refused.
     """
+    # Every process is a descendant of init, so "the listener descends from
+    # pid 1" is true of every listener and proves nothing. Measured, not
+    # theorised: with a real listener on a real port, this returned True for
+    # pid 1 until the guard existed — and the unit tests could not see it,
+    # because they stub the parent walk.
+    if proc.pid <= 1:
+        return False
     listeners = _listening_pids(port)
     if not listeners:
         return False

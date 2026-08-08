@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -491,3 +497,62 @@ def test_a_timed_out_round_still_leaves_a_transcript(g12, tmp_path, monkeypatch)
     assert not ok
     assert "timed out" in excerpt
     assert "got as far as tier=harness" in bench_log.read_text()
+
+
+# ---------------------------------------------------------------------------
+# The same question asked of the real machine.
+#
+# Every ownership test above stubs `_listening_pids` and `_parent_pid`, so none
+# of them exercises the `lsof`/`ps` invocations or the actual process tree — and
+# that blind spot hid a live bug: `_owns_port` returned True for pid 1, because
+# every process descends from init and nothing rejected that. Measured here, not
+# reasoned about.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    shutil.which("lsof") is None or shutil.which("ps") is None,
+    reason="ownership is established with lsof + ps",
+)
+def test_ownership_against_a_real_listener(g12):
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    class _Pid:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not g12._listening_pids(port):
+            time.sleep(0.1)
+        assert g12._listening_pids(port), "the child never bound the port"
+
+        assert g12._owns_port(proc, port), "our own child must count as ours"
+        # We are the listener's parent, so we own it too — the walk has to
+        # cross at least one edge for a `serve` that binds from a subprocess.
+        assert g12._owns_port(_Pid(os.getpid()), port)
+        # init is an ancestor of everything, which is exactly why it must not
+        # satisfy ownership.
+        assert not g12._owns_port(_Pid(1), port)
+        assert "no longer served by our process" in g12._still_ours(_Pid(1), port)
+        assert g12._still_ours(proc, port) == ""
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and g12._listening_pids(port):
+        time.sleep(0.1)
+    assert not g12._listening_pids(port)
+    assert not g12._owns_port(proc, port), "a freed port belongs to nobody"
