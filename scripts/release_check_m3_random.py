@@ -428,6 +428,11 @@ def _parent_pid(pid: int) -> int | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+    # Same rule as `_listening_pids`: a non-zero exit discards the output. A
+    # `ps` that failed after printing something stale would otherwise hand back
+    # a parent that makes a stranger look like our descendant.
+    if out.returncode != 0:
+        return None
     text = out.stdout.strip()
     return int(text) if text.isdigit() else None
 
@@ -517,7 +522,7 @@ def _still_ours(proc: subprocess.Popen, port: int) -> str:
 
 def _wait_for_server(
     proc: subprocess.Popen, port: int, deadline_s: float, log_path: Path
-) -> bool:
+) -> tuple[bool, bool]:
     """Poll ``/v1/models`` until our own server responds 200, the child
     exits, or the deadline expires. Returns True on success, False
     otherwise.
@@ -532,10 +537,17 @@ def _wait_for_server(
     loading weights it is very much alive, so a stranger already on the
     port answers first and the sweep would report that stranger's numbers
     under the sampled alias's name. Hence ``_owns_port``.
+
+    Returns ``(ready, saw_stranger)``. The second value is the difference
+    between "this model would not boot" — one model's problem, move on — and
+    "somebody else has the port", which is the environment's problem and makes
+    every later model's numbers meaningless too. Collapsing both into ``False``
+    is how the sweep used to carry on into a contaminated machine.
     """
     url = f"http://127.0.0.1:{port}/v1/models"
     start = time.monotonic()
     warned_stranger = False
+    saw_stranger = False
     while time.monotonic() - start < deadline_s:
         rc = proc.poll()
         if rc is not None:
@@ -548,7 +560,8 @@ def _wait_for_server(
             with urllib.request.urlopen(url, timeout=3) as resp:
                 if resp.status == 200:
                     if _owns_port(proc, port):
-                        return True
+                        return True, saw_stranger
+                    saw_stranger = True
                     if not warned_stranger:
                         warned_stranger = True
                         print(
@@ -567,7 +580,7 @@ def _wait_for_server(
         print("  server log (last 30 lines):", file=sys.stderr)
         for line in log_path.read_text(errors="replace").splitlines()[-30:]:
             print(f"    {line}", file=sys.stderr)
-    return False
+    return False, saw_stranger
 
 
 def _port_free(port: int) -> bool:
@@ -845,8 +858,23 @@ def main() -> int:
                 cwd=REPO_ROOT,
             )
         try:
-            if not _wait_for_server(proc, args.port, SERVE_READY_TIMEOUT_S, log_path):
-                msg = f"{alias}: server did not respond within {SERVE_READY_TIMEOUT_S}s"
+            ready, saw_stranger = _wait_for_server(
+                proc, args.port, SERVE_READY_TIMEOUT_S, log_path
+            )
+            if not ready:
+                if saw_stranger:
+                    # Not this model's failure. Something else holds the port,
+                    # and it will still hold it for the next model.
+                    msg = (
+                        f"{alias}: port {args.port} was answered by another "
+                        f"process while this model was booting"
+                    )
+                    drifted = True
+                else:
+                    msg = (
+                        f"{alias}: server did not respond within "
+                        f"{SERVE_READY_TIMEOUT_S}s"
+                    )
                 print(f"  FAIL  {msg}", file=sys.stderr)
                 with report_path.open("a") as fh:
                     fh.write(f"FAIL  {msg}\n")

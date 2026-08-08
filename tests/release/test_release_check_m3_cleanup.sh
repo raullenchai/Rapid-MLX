@@ -159,10 +159,14 @@ else
   ok "a zombie reads as gone (kill -0 succeeds on one; ps says Z)"
 fi
 
+# The direction that matters. `kill -0` already succeeded, so SOMETHING is
+# there; `ps` failing to describe it is not evidence that it left. Reading
+# "I could not tell" as "gone" hands the GPU over while the old server may
+# still be flushing weights — the overlap this handoff exists to prevent.
 if alive_with "" 0; then
-  bad "an unreadable process state read as alive"
+  ok "a process ps cannot describe reads as ALIVE, not gone"
 else
-  ok "a process ps cannot describe reads as gone"
+  bad "an unreadable process state read as gone — the GPU would be handed over on a guess"
 fi
 
 if alive_with "S+" 1; then

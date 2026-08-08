@@ -464,18 +464,63 @@ def test_readiness_refuses_a_port_answering_from_someone_elses_process(
     g12, monkeypatch, tmp_path
 ):
     """A 200 is not ownership. Our child is alive the whole time it loads
-    weights, so a stranger already on the port answers first (#1618)."""
+    weights, so a stranger already on the port answers first (#1618).
+
+    The second return value is the part that matters downstream: this is not
+    "the model would not boot", it is "somebody else has the port", and that
+    stays true for every model after this one.
+    """
     monkeypatch.setattr(g12.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
     monkeypatch.setattr(g12, "_owns_port", lambda proc, port: False)
     monkeypatch.setattr(g12.time, "sleep", lambda *_: None)
-    assert not g12._wait_for_server(_AliveProc(), 8000, 0.3, tmp_path / "serve.log")
+    ready, saw_stranger = g12._wait_for_server(
+        _AliveProc(), 8000, 0.3, tmp_path / "serve.log"
+    )
+    assert not ready
+    assert saw_stranger
 
 
 def test_readiness_accepts_the_port_once_it_is_ours(g12, monkeypatch, tmp_path):
     monkeypatch.setattr(g12.urllib.request, "urlopen", lambda *a, **k: _FakeResponse())
     monkeypatch.setattr(g12, "_owns_port", lambda proc, port: True)
     monkeypatch.setattr(g12.time, "sleep", lambda *_: None)
-    assert g12._wait_for_server(_AliveProc(), 8000, 5, tmp_path / "serve.log")
+    ready, saw_stranger = g12._wait_for_server(
+        _AliveProc(), 8000, 5, tmp_path / "serve.log"
+    )
+    assert ready
+    assert not saw_stranger
+
+
+def test_a_model_that_simply_will_not_boot_is_not_reported_as_a_takeover(
+    g12, monkeypatch, tmp_path
+):
+    """The other direction. One model failing to load is that model's problem;
+    treating it as environment contamination would abort a sweep that could
+    still have covered the rest."""
+
+    def _refused(*a, **k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(g12.urllib.request, "urlopen", _refused)
+    monkeypatch.setattr(g12.time, "sleep", lambda *_: None)
+    ready, saw_stranger = g12._wait_for_server(
+        _AliveProc(), 8000, 0.3, tmp_path / "serve.log"
+    )
+    assert not ready
+    assert not saw_stranger
+
+
+def test_a_stolen_port_during_boot_aborts_the_sweep():
+    """Pin the caller's half: `main` must set `drifted` on that second value,
+    or the next model boots into the same contaminated machine — the failure
+    the round-loop abort already prevents, arriving one step earlier."""
+    source = SCRIPT_PATH.read_text()
+    sweep = source[source.index("    # ===== Sweep =====") :]
+    sweep = sweep[: sweep.index("    # ===== Verdict =====")]
+    boot = sweep[
+        sweep.index("ready, saw_stranger") : sweep.index('print(f"     server up')
+    ]
+    assert "if saw_stranger:" in boot and "drifted = True" in boot, boot
 
 
 def test_a_takeover_is_noticed_and_named(g12, monkeypatch):

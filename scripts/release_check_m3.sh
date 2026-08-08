@@ -100,6 +100,10 @@ port_busy() {
     n=$((n + 1))
   done
   if kill -0 "$pid" 2>/dev/null; then
+    # Kills the pid we spawned. If `lsof` were a wrapper script that forked a
+    # helper, the helper would outlive this — real `/usr/sbin/lsof` is a single
+    # process, so that only matters if someone shadows it, and a shadowed lsof
+    # is already the scenario the `command -v` pre-flight cannot defend.
     kill -9 "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     echo "  ! lsof did not return within ${limit}s for port $port" >&2
@@ -117,8 +121,23 @@ port_busy() {
 
 # Pre-flight: refuse if port is busy so we don't accidentally murder
 # someone's debug server.
-if lsof -i ":$PORT" >/dev/null 2>&1; then
-  echo "ERROR: port $PORT already in use — kill the existing server first." >&2
+#
+# Through `port_busy`, not a bare `lsof`: an executable `lsof` that hangs or
+# exits non-zero satisfies the `command -v` check above and then reads as
+# "port free" to a bare `if`. The gauntlet would boot its own server, fail to
+# bind, and run every gate against whatever was already there — which is the
+# contamination this check exists to prevent, arriving through the check
+# itself. Only an explicit 1 (ran, found nothing) is free.
+port_state=0
+port_busy "$PORT" 10 || port_state=$?
+if [ "$port_state" != 1 ]; then
+  if [ "$port_state" = 0 ]; then
+    echo "ERROR: port $PORT already in use — kill the existing server first." >&2
+    lsof -nP -i ":$PORT" >&2 || true
+  else
+    echo "ERROR: could not determine whether port $PORT is free — refusing to" >&2
+    echo "  start rather than run every gate against someone else's server." >&2
+  fi
   exit 2
 fi
 
@@ -698,9 +717,17 @@ else
   old_server_alive() {
     [ -n "$OLD_SERVER_PID" ] || return 1
     kill -0 "$OLD_SERVER_PID" 2>/dev/null || return 1
-    case "$(ps -o stat= -p "$OLD_SERVER_PID" 2>/dev/null)" in
-      Z*|"") return 1 ;;
-      *)    return 0 ;;
+    # `kill -0` succeeded, so SOMETHING is there. Only a zombie is safely gone:
+    # it has exited and released the GPU, it just has not been reaped. Every
+    # other answer — a live state, or a `ps` that failed or printed nothing —
+    # has to count as ALIVE. Reading "I could not tell" as "gone" hands the GPU
+    # to G12 while the old server may still be flushing weights, which is the
+    # exact overlap this two-condition handoff exists to prevent.
+    local state
+    state="$(ps -o stat= -p "$OLD_SERVER_PID" 2>/dev/null)"
+    case "$state" in
+      Z*) return 1 ;;
+      *)  return 0 ;;
     esac
   }
   cleanup
@@ -714,7 +741,10 @@ else
   # bug. Both conditions, then, and neither on its own.
   #
   # Wall-clock bounded, not iteration-bounded: a slow or stuck `lsof` would
-  # otherwise stretch "60s" into as long as it likes.
+  # otherwise stretch this into as long as it likes. The bound is not exact —
+  # the deadline is read BETWEEN operations, so a check starting just under it
+  # can still run its own 5s watchdog out, and the 2s settle above is on top.
+  # Roughly a minute, never unbounded, which is the property that matters.
   server_gone=0
   handoff_deadline=$((SECONDS + 60))
   while [ "$SECONDS" -lt "$handoff_deadline" ]; do
@@ -741,7 +771,7 @@ else
   # this would be caught — but failing here says WHY, instead of timing out
   # while looking healthy.
   if [ "$server_gone" != 1 ]; then
-    echo "  ✗ the gauntlet's server did not exit and free port $PORT within 60s" >&2
+    echo "  ✗ the gauntlet's server did not exit and free port $PORT in ~60s" >&2
     echo "    refusing to hand the port and the GPU to G12" >&2
     [ -n "$OLD_SERVER_PID" ] && ps -p "$OLD_SERVER_PID" >&2 || true
     lsof -i ":$PORT" >&2 || true
@@ -749,7 +779,12 @@ else
     # can no longer reach it: exiting here would leave the process alive with
     # the GPU allocated, poisoning the retry this failure is telling us to
     # run. Kill it for real before giving up.
-    if old_server_alive; then
+    # Only if it is still OUR child. The pid came from `$!`, but a cleanly
+    # exited and reaped server frees that number, and SIGKILLing whatever
+    # inherited it would be a destructive answer to a problem we no longer
+    # have. `ps -o ppid=` is the cheap identity check available here.
+    old_ppid="$(ps -o ppid= -p "$OLD_SERVER_PID" 2>/dev/null | tr -d ' ' || true)"
+    if old_server_alive && [ "$old_ppid" = "$$" ]; then
       echo "    SIGKILLing $OLD_SERVER_PID so the retry starts on a free GPU" >&2
       kill -9 "$OLD_SERVER_PID" 2>/dev/null || true
       # It IS a child of this shell (started with `&` above), so this reaps it
