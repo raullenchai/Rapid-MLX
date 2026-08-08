@@ -24,8 +24,11 @@ on:
     paths:
       - "apps/rapid-mac/**"
       - ".github/workflows/rapid-mac-ci.yml"
-      # The gate script itself, so a change to the detector re-runs it.
+      # The gate script itself, so a change to the detector re-runs it...
       - "scripts/check_rapid_mac_ax_identifiers.py"
+      # ...and its regression suite, which is the only thing that runs when a
+      # PR touches the detector but no Swift at all.
+      - "tests/test_rapid_mac_ax_identifiers.py"
 
 permissions:
   contents: read
@@ -70,6 +73,36 @@ jobs:
         run: |
           python scripts/check_rapid_mac_ax_identifiers.py \
             --base-ref "origin/${{ github.base_ref || 'main' }}"
+
+
+  # The detector job above is a NO-OP on a PR that changes no Swift — which is
+  # exactly the shape of a PR that edits the detector. Without this suite, the
+  # wrapper-identifier fix, the qualifier fix or the carry-over accounting could
+  # all be reverted in a script-only PR with every job green, while the test
+  # pinning them failed locally.
+  #
+  # Its OWN job, not a step in the one above, because it needs pytest from PyPI
+  # and that job is deliberately stdlib-only: a registry incident must be able
+  # to redden the tests without also taking down the gate that needs no
+  # network at all.
+  accessibility-identifier-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # ``-q`` but not ``-x``: a change to the detector usually breaks several
+      # pinned cases at once, and seeing all of them is the point.
+      - name: Gate regression suite
+        run: pytest tests/test_rapid_mac_ax_identifiers.py -q
 
   build:
     # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's

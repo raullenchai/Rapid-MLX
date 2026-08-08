@@ -16,16 +16,24 @@ elements that no automated flow can reach. ``docs/userflows.md`` has also carrie
 
 Design decisions, and why each one is the way it is:
 
-* **Added lines only.** The existing backlog is real and is tracked separately.
-  A gate that fails on it would be un-landable, get disabled inside a week, and
-  leave us worse off than having no gate. So the unit of enforcement is "this
-  diff introduced a new unlabelled control".
+* **This diff's doing, not the backlog's.** The existing backlog is real and is
+  tracked separately. A gate that fails on it would be un-landable, get disabled
+  inside a week, and leave us worse off than having no gate. Two things count as
+  this diff's doing: declaring an unlabelled control on a line it added, and
+  taking the identifier off one that had it — which lowers the harness's ceiling
+  just as much, and is the easier accident, since the declaration line does not
+  change and an added-lines filter never looks at it.
 
-* **Carry-over suppression.** A violation whose control declaration is textually
-  identical to one already present in the base version of the same file is not
-  reported, so reformatting / moving / re-indenting known-bad code does not
-  suddenly light up. Matching is a multiset over ``(kind, normalised head
-  line)``: copy an unlabelled control a second time and the copy IS reported.
+* **Carry-over suppression is per hunk.** A violation identical to one the SAME
+  hunk removed is absorbed, so re-indenting / re-wrapping / re-ordering
+  known-bad code does not suddenly light up. Deliberately not a file-wide
+  budget: that let labelling a control in one place pay for a genuinely new
+  unlabelled one somewhere else, and the PR came out green having both fixed and
+  broken one. The cost is that moving an unlabelled control across a file reads
+  as new — the same answer this gate already gave for extracting it into a new
+  file, and the fix it asks for is the one we want anyway. Identity is the
+  declaration line with trailing comments removed, so re-wording a comment does
+  not rename a control.
 
 * **Precision over recall.** A gate that cries wolf gets ignored, and an ignored
   gate is worse than none because it manufactures confidence. Where the two
@@ -35,30 +43,75 @@ Design decisions, and why each one is the way it is:
   and it deliberately skips ``Commands`` scenes (the AX driver never walks the
   menu bar). What it does not detect is listed under "Known blind spots" below.
 
-* **An escape hatch that costs something.** SwiftUI ``confirmationDialog`` /
-  ``alert`` buttons genuinely cannot be reached this way. Those get an explicit,
-  greppable marker with a written reason on the same line::
+* **An escape hatch that costs something.** A control that genuinely cannot
+  carry an identifier gets an explicit, greppable marker with a written reason
+  on the same line::
 
-      Button("Allow once") { … }  // ax-exempt: confirmationDialog buttons live
-                                  // outside the app's AX tree
+      Button("Allow once") { … }  // ax-exempt: <what you measured that shows
+                                  // the identifier cannot be reached>
 
-  ``rg ax-exempt apps/rapid-mac`` enumerates every one of them. A marker with no
-  reason (or a one-word reason) is itself a failure, so the cost cannot be
-  dodged by typing ``// ax-exempt:`` and moving on.
+  No such control is known on the current surface. ``confirmationDialog`` /
+  ``alert`` buttons were the standing suspicion, and it was measured rather than
+  inherited: the presented dialog is an ``AXSheet`` whose ``AXButton`` children
+  DO carry the identifiers declared at the call site (see ``docs/userflows.md``).
+  So ``rg ax-exempt apps/rapid-mac`` finding nothing is the expected state, and
+  an exemption has to bring new evidence. A marker with no reason (or a one-word
+  reason) is itself a failure, so the cost cannot be dodged by typing
+  ``// ax-exempt:`` and moving on.
 
 Known blind spots (deliberate — each would cost more false positives than it
 buys):
 
 * interactivity bolted onto a non-control view (``.onTapGesture``, ``.gesture``,
   ``.contextMenu``, ``.swipeActions``, ``.draggable``);
+* a control built through Swift's *contextual* member lookup, where the type
+  and the constructor are in different places::
+
+      let saveButton: Button<Text> = .init(action: save) { Text("Save") }
+
+  ``Button<Text>`` there is a type annotation and ``.init`` names no control,
+  so neither half looks like a construction. Detecting it means resolving types,
+  which this lint does not do, and guessing at a bare ``.init(`` would fire on
+  every non-control initializer in the app;
+* an EXPLICITLY generic control built with a trailing closure and no parens
+  (``Button<Text> { save() } label: { … }``). After a generic argument list only
+  ``(`` counts, because ``var b: Button<Text> {`` is a return type followed by a
+  property body and reading that brace as a constructor blocked PRs whose real
+  control was labelled. Spelling the generic out is unnecessary and
+  non-idiomatic here — SwiftUI infers it — so the miss costs less than the
+  false alarm did;
 * bespoke ``View`` structs that are interactive without literally naming a
   SwiftUI control type at the point of use (the wrapper's own ``Button`` is
   still checked where the wrapper is *defined*);
 * AppKit surfaces bridged through ``NSViewRepresentable`` (the chat composer's
   ``AutosizingTextView`` is the app's real example);
 * ``Commands`` / menu-bar items, skipped on purpose;
+* an identifier attached to a *parenthesised* control
+  (``(Button(…)).accessibilityIdentifier(…)``) — the balanced walk stops at the
+  enclosing ``)``, so the control is reported. Making those parens transparent
+  requires deciding whether a ``(`` is grouping or an argument list, which the
+  preceding character cannot answer (a closure call ends in ``}``; ``return``
+  ends in a letter), and both attempts produced something worse than the miss —
+  including crediting ``Card(Button(…))``'s identifier to the Button, the exact
+  defect this gate exists to catch. Attach the identifier to the control;
+* moving a file AND adding a new one at its old path in the same PR. ``-M``
+  cannot pair that (the source path still exists), and ``-C`` would — but
+  ``-C`` cannot tell it apart from *adding a copy of an existing file*, which is
+  genuinely new unlabelled surface. The moved file's backlog is reported. Label
+  it, or split the move and the replacement into two PRs;
+* laundering a new gap through a fix in the SAME hunk. Carry-over is a count
+  within one hunk, so replacing an unlabelled control with a labelled one AND
+  an unlabelled one, all inside the same run of changed lines, nets to zero and
+  passes. Distinguishing "the same control moved" from "one fixed, one added"
+  needs per-line identity that a text diff does not carry. The window is
+  narrow — with zero context a hunk is exactly the changed lines, so the two
+  edits have to be adjacent — and the file-wide version of this hole (fix
+  anywhere funds a regression anywhere) is closed;
 * a control whose identifier is applied to an enclosing container rather than
-  the control itself — reported, because ``AXPress`` needs the control.
+  the control itself — reported, because ``AXPress`` needs the control. The
+  mirror image is reported too: an identifier on a control NESTED inside an
+  unlabelled one does not label the parent, because the parent's own postfix
+  chain is what is searched.
 
 Pure-logic core (``mask_source`` / ``find_violations``) is unit-tested in
 tests/test_rapid_mac_ax_identifiers.py — no network, no Swift toolchain, no GPU.
@@ -71,7 +124,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -93,17 +146,64 @@ CONTROL_KINDS = (
     "SecureField",
     "TextEditor",
     "Menu",
+    "DisclosureGroup",
     "Stepper",
     "Slider",
     "NavigationLink",
     "Link",
+    # First-party controls that render a real, pressable element. Omitting them
+    # made the docstring's claim — that everything undetected is listed under
+    # "Known blind spots" — untrue: ``ShareLink(item:)`` is an ordinary button
+    # to a user and was invisible to the gate.
+    "ShareLink",
+    "SettingsLink",
+    "HelpLink",
+    "PasteButton",
+    "EditButton",
+    "RenameButton",
+    "MultiDatePicker",
 )
 
-# ``(?<![A-Za-z0-9_.])`` keeps ``SendButton``, ``pickerStyle`` and
-# ``Foo.Button`` out; the trailing ``[({]`` keeps type references
-# (``Button<Label>``, ``struct Button: View``) out. What is left is a control
-# being *constructed*.
-_CONTROL_RE = re.compile(r"(?<![A-Za-z0-9_.])(" + "|".join(CONTROL_KINDS) + r")\s*[({]")
+# ``(?<![A-Za-z0-9_])`` keeps ``SendButton`` and ``pickerStyle`` out; the
+# trailing ``[({]`` keeps type references (``Button<Label>``, ``struct Button:
+# View``) out. What is left is a control being *constructed*.
+#
+# The dot is deliberately NOT in the lookbehind. ``SwiftUI.Button(…)`` IS the
+# control, and a dot-rejecting lookbehind let a fully qualified construction
+# walk straight past the gate — but spelling the qualifier into the pattern
+# instead (``(?:SwiftUI\s*\.\s*)?``) is worse than useless: the optional group
+# simply does not participate, the match starts at ``Button`` either way, and
+# ``Chrome . Button`` matches too (whitespace may surround Swift member access),
+# falsely blocking somebody else's type that happens to share a name. So the
+# pattern is permissive and ``_qualifier_before`` decides in code.
+# ``Button<Text>(action:)`` and ``Button.init("Save", action:)`` are ordinary
+# constructions that a name-then-delimiter pattern walks straight past. One
+# level of nested generics is enough for real SwiftUI (``Button<Label<Text>>``);
+# beyond that the pattern gives up rather than guess.
+#
+# After a generic argument list ONLY ``(`` counts. ``{`` there is a property
+# body, not a constructor::
+#
+#     private var saveButton: Button<Text> {   // <- return type, then a body
+#         Button("Save") { save() }
+#             .accessibilityIdentifier("Toolbar.Save")
+#     }
+#
+# Reading that as a construction reported a phantom unlabelled Button and
+# blocked a PR whose real control was correctly labelled. Nobody writes
+# ``Button<Text> { … }`` as a construction — the generic is inferred — so
+# requiring the paren costs nothing and removes the whole false-positive class.
+_CONTROL_RE = re.compile(
+    r"(?<![A-Za-z0-9_])("
+    + "|".join(CONTROL_KINDS)
+    + r")\s*(?:"
+    + r"<(?:[^<>]|<[^<>]*>)*>\s*(?:\.\s*init\s*)?\("  # generic: paren only
+    + r"|(?:\.\s*init\s*)?[({]"  # bare: paren or trailing closure
+    + r")"
+)
+
+# The only namespace whose ``X.Button(…)`` is the SwiftUI control.
+QUALIFIER_ALLOWED = "SwiftUI"
 
 # Scenes whose contents the AX driver never walks. ``rapid-ax.swift`` skips
 # every non-window child of the application element precisely so the global menu
@@ -124,7 +224,10 @@ _STYLE_BODY_RE = re.compile(
     r"(?<![A-Za-z0-9_.])func\s+makeBody\s*(\()\s*configuration\s*:"
 )
 
-_IDENTIFIER_RE = re.compile(r"\.accessibilityIdentifier\s*\(")
+# The one modifier that makes a control reachable. Named ONCE: every message,
+# every docstring and the matcher itself derive from this, so there is no
+# second literal to fall out of step with the check.
+IDENTIFIER_MODIFIER = "accessibilityIdentifier"
 
 EXEMPT_MARKER = "ax-exempt:"
 # No ``$`` anchor: ``.`` already stops at a newline, and a block comment's
@@ -174,6 +277,12 @@ class Violation:
 
 
 def mask_source(src: str) -> tuple[str, dict[int, str]]:
+    """``(masked, comments_by_line)`` — see ``_mask`` for the full contract."""
+    masked, comments, _ = _mask(src)
+    return masked, comments
+
+
+def _mask(src: str) -> tuple[str, dict[int, str], dict[int, set[int]]]:
     """Blank out comments and string literals, preserving offsets and newlines.
 
     Returns ``(masked, comments_by_line)``. ``masked`` has the exact same length
@@ -189,6 +298,34 @@ def mask_source(src: str) -> tuple[str, dict[int, str]]:
     """
     out = list(src)
     comments: dict[int, list[str]] = {}
+    # Every column (0-based) a comment occupies, per line. The carry-over
+    # identity below is the declaration line's *code*, so the comment has to
+    # come out of it — and as a set of columns rather than a truncation point,
+    # because a comment can also LEAD the line::
+    #
+    #     /* old explanation */ Button("Save") { save() }
+    #
+    # Truncating at its start would leave the empty string, which every other
+    # control then matches; keeping the line whole (the earlier compromise)
+    # meant re-wording that comment renamed the control and reported a
+    # long-standing gap as new. Deleting exactly the comment's columns is right
+    # in both positions, and for more than one comment on a line.
+    comment_cols: dict[int, set[int]] = {}
+
+    def note_comment_span(start_at: int, stop_at: int) -> None:
+        # Walks characters so a span crossing a newline lands on the right
+        # line: a block comment is one span in the source and several in the
+        # per-line view this returns.
+        ln = line
+        col = start_at - (src.rfind("\n", 0, start_at) + 1)
+        for k in range(start_at, min(stop_at, n)):
+            if src[k] == "\n":
+                ln += 1
+                col = 0
+                continue
+            comment_cols.setdefault(ln, set()).add(col)
+            col += 1
+
     n = len(src)
     i = 0
     line = 1
@@ -211,15 +348,18 @@ def mask_source(src: str) -> tuple[str, dict[int, str]]:
         if block_depth > 0:
             if src.startswith("/*", i):
                 block_depth += 1
+                note_comment_span(i, i + 2)
                 blank(i, i + 2)
                 i += 2
                 continue
             if src.startswith("*/", i):
                 block_depth -= 1
+                note_comment_span(i, i + 2)
                 blank(i, i + 2)
                 i += 2
                 continue
             comments.setdefault(line, []).append(src[i])
+            note_comment_span(i, i + 1)
             blank(i, i + 1)
             i += 1
             continue
@@ -253,11 +393,13 @@ def mask_source(src: str) -> tuple[str, dict[int, str]]:
         if src.startswith("//", i):
             end = src.find("\n", i)
             end = n if end == -1 else end
+            note_comment_span(i, end)
             comments.setdefault(line, []).append(src[i:end])
             blank(i, end)
             i = end
             continue
         if src.startswith("/*", i):
+            note_comment_span(i, i + 2)
             block_depth = 1
             blank(i, i + 2)
             i += 2
@@ -292,7 +434,11 @@ def mask_source(src: str) -> tuple[str, dict[int, str]]:
     # arrive whole, so the parts are joined with nothing between them — a
     # separator here would shred "ax-exempt:" inside a /* … */ into letters and
     # make the marker silently unrecognisable in block-comment form.
-    return "".join(out), {ln: "".join(parts) for ln, parts in comments.items()}
+    return (
+        "".join(out),
+        {ln: "".join(parts) for ln, parts in comments.items()},
+        comment_cols,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -365,6 +511,85 @@ def _expression_end(masked: str, delim: int) -> int:
         return i
 
 
+def _skip_space_back(masked: str, i: int) -> int:
+    while i >= 0 and masked[i].isspace():
+        i -= 1
+    return i
+
+
+def _has_own_identifier(masked: str, delim: int, end: int) -> bool:
+    """Does the control's OWN postfix chain carry ``.accessibilityIdentifier``?
+
+    Searching the whole ``[start, end)`` span instead lets a *child* label its
+    unlabelled parent, because the span includes trailing-closure bodies::
+
+        Menu("Actions") {                       // <- unlabelled, must fail
+            Button("Rename") { … }
+                .accessibilityIdentifier("Sidebar.Rename")
+        }
+
+    The identifier there belongs to the Button. ``AXPress`` on the Menu has
+    nothing to aim at, so a flow still cannot open it — exactly the blind spot
+    this gate exists to close, silently satisfied by the child.
+
+    So walk the same postfix chain ``_expression_end`` walks, and look only at
+    the ``.name`` tokens it visits at depth 0, stepping OVER every nested
+    delimiter group rather than into it.
+    """
+    i = _consume_balanced(masked, delim)
+    n = len(masked)
+    while i < end:
+        j = _skip_space(masked, i)
+        if j >= end:
+            return False
+        ch = masked[j]
+        if ch in _OPENERS:
+            i = _consume_balanced(masked, j)
+            continue
+        if ch in "?!":
+            i = j + 1
+            continue
+        if ch == ".":
+            k = j + 1
+            if k < n and _IDENT_START.match(masked[k]):
+                name_start = k
+                while k < n and (masked[k].isalnum() or masked[k] == "_"):
+                    k += 1
+                if masked[name_start:k] == IDENTIFIER_MODIFIER:
+                    return True
+                i = k
+                continue
+            return False
+        label = _TRAILING_LABEL_RE.match(masked, j)
+        if label:
+            i = _consume_balanced(masked, label.end() - 1)
+            continue
+        return False
+    return False
+
+
+def _qualifier_before(masked: str, start: int) -> str | None:
+    """The member-access qualifier immediately left of ``start``, if any.
+
+    ``None`` means the control is named bare. Whitespace may surround Swift's
+    member-access dot, so this walks backwards rather than pattern-matching.
+    """
+    dot = _skip_space_back(masked, start - 1)
+    if dot < 0 or masked[dot] != ".":
+        return None
+    end = _skip_space_back(masked, dot - 1)
+    i = end
+    while i >= 0 and (masked[i].isalnum() or masked[i] == "_"):
+        i -= 1
+    name = masked[i + 1 : end + 1] if i < end else ""
+    # The WHOLE qualifier, not its last component: ``Chrome.SwiftUI.Button`` is
+    # somebody's nested namespace, and returning just ``SwiftUI`` would treat it
+    # as the real control and block it.
+    if _skip_space_back(masked, i) >= 0 and masked[_skip_space_back(masked, i)] == ".":
+        return f"<nested>.{name}"
+    return name
+
+
 def _skipped_scopes(masked: str) -> list[tuple[int, int]]:
     """Char ranges whose controls are deliberately not required to be labelled."""
     spans: list[tuple[int, int]] = []
@@ -401,20 +626,38 @@ def _exemption(comments: dict[int, str], head_line: int) -> tuple[bool, str | No
     return False, None
 
 
+def _strip_comments(raw: str, columns: set[int] | None) -> str:
+    """``raw`` with every comment character on the line removed.
+
+    The carry-over identity below is the declaration line's text, so a comment
+    on that line is part of it — meaning *editing the comment* renames the
+    control as far as this gate is concerned, and a long-standing unlabelled
+    control lights up as brand new because somebody reworded a note. Comments
+    have no bearing on whether ``AXPress`` can reach a control, so they are cut
+    out of the identity, wherever on the line they sit.
+    """
+    if not columns:
+        return raw
+    return "".join(ch for col, ch in enumerate(raw) if col not in columns)
+
+
 def find_violations(path: str, src: str) -> list[Violation]:
     """Every interactive control in ``src`` with no reachable identifier."""
-    masked, comments = mask_source(src)
+    masked, comments, comment_cols = _mask(src)
     lines = src.splitlines()
     skipped = _skipped_scopes(masked)
     violations: list[Violation] = []
 
     for m in _CONTROL_RE.finditer(masked):
         start = m.start()
+        qualifier = _qualifier_before(masked, start)
+        if qualifier is not None and qualifier != QUALIFIER_ALLOWED:
+            continue
         if any(lo <= start < hi for lo, hi in skipped):
             continue
         delim = m.end() - 1
         end = _expression_end(masked, delim)
-        if _IDENTIFIER_RE.search(masked, start, end):
+        if _has_own_identifier(masked, delim, end):
             continue
 
         head_line = masked.count("\n", 0, start) + 1
@@ -422,7 +665,8 @@ def find_violations(path: str, src: str) -> list[Violation]:
         if marked and reason:
             continue
 
-        source = lines[head_line - 1].strip() if head_line <= len(lines) else ""
+        raw = lines[head_line - 1] if head_line <= len(lines) else ""
+        source = _strip_comments(raw, comment_cols.get(head_line)).strip()
         if marked:
             why = (
                 f"'{EXEMPT_MARKER}' marker with no usable reason — write at least "
@@ -430,7 +674,7 @@ def find_violations(path: str, src: str) -> list[Violation]:
                 "cannot carry an identifier"
             )
         else:
-            why = "no .accessibilityIdentifier(…) on this control"
+            why = f"no .{IDENTIFIER_MODIFIER}(…) on this control"
         violations.append(
             Violation(
                 path=path,
@@ -469,44 +713,173 @@ def changed_swift_files(base: str, head: str) -> dict[str, str]:
     pre-rename blob, so moving a panel full of known-unlabelled controls is not
     read as adding a panel full of new ones. Deletions are dropped — there is
     nothing left to label.
+
+    ``-M`` only, deliberately — NOT ``-C``. Copy detection would also pair the
+    case ``-M`` cannot see (move ``Panel.swift`` to ``Moved/Panel.swift`` AND
+    add a new ``Panel.swift``, where the source path still exists so git records
+    a modify plus an add), and it does. But it cannot tell that apart from
+    *adding a copy of an existing file*, which is genuinely new unlabelled
+    surface — same ``C src dst`` record, same "source still exists in head",
+    opposite correct answer. Between a false positive on an unusual refactor
+    and silently admitting a whole new panel of unreachable controls, this gate
+    takes the false positive: it is the one failure a contributor can see and
+    fix in seconds, and admitting new unlabelled surface is the exact thing the
+    gate exists to prevent. Listed under "Known blind spots".
     """
     out = _git(
         "diff",
         "--name-status",
         "-M",
+        "-z",
         "--diff-filter=ACMR",
         base,
         head,
         "--",
         SCOPE_PREFIX,
     )
+    # ``-z``: NUL-delimited, so paths arrive verbatim. Line-oriented output
+    # QUOTES anything non-ASCII — ``Résumé.swift`` comes back as
+    # ``"R\303\251sum\303\251.swift"``, whose trailing character is a quote,
+    # so the ``.swift`` test failed and the file was never examined at all.
+    # With ``-z`` a rename is three fields (status, old, new) and everything
+    # else is two, in one flat stream.
+    fields = [f for f in out.split("\0") if f]
     paths: dict[str, str] = {}
-    for raw in out.splitlines():
-        fields = raw.split("\t")
-        status = fields[0]
-        if status.startswith("R") and len(fields) >= 3:
-            old, new = fields[1], fields[2]
+    i = 0
+    while i < len(fields):
+        status = fields[i]
+        if status.startswith("R") and i + 2 < len(fields):
+            old, new = fields[i + 1], fields[i + 2]
+            i += 3
+        elif i + 1 < len(fields):
+            old = new = fields[i + 1]
+            i += 2
         else:
-            old = new = fields[-1]
+            break
         if new.endswith(".swift"):
             paths[new] = old
     return paths
 
 
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def added_lines(base: str, head: str, path: str) -> set[int]:
-    """1-based line numbers added to ``path`` between ``base`` and ``head``."""
-    diff = _git("diff", "--unified=0", "-M", base, head, "--", path)
-    added: set[int] = set()
+def _unquote_path(raw: str) -> str:
+    """Decode git's C-style quoting of a patch-header path.
+
+    ``changed_swift_files`` reads paths from ``-z`` output, which is verbatim,
+    but a patch HEADER has no NUL form: git writes
+    ``+++ "b/…/R\303\251sum\303\251.swift"`` for anything non-ASCII. Comparing
+    that literal against the decoded path attributed no hunks to the file, so a
+    line inserted above a pre-existing gap in ``Résumé.swift`` shifted it, the
+    carry-over match missed, and the gate announced an identifier removal that
+    never happened.
+    """
+    if not (raw.startswith('"') and raw.endswith('"') and len(raw) >= 2):
+        return raw
+    # Octal escapes are UTF-8 BYTES: decode the escapes to latin-1 code points,
+    # take those back to bytes, then decode as UTF-8.
+    try:
+        return (
+            raw[1:-1]
+            .encode("latin-1", "backslashreplace")
+            .decode("unicode_escape")
+            .encode("latin-1")
+            .decode("utf-8")
+        )
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return raw
+
+
+@dataclass(frozen=True)
+class Hunk:
+    """One ``--unified=0`` hunk: the base lines it removed paired with the head
+    lines it put in their place. Either side may be empty."""
+
+    base_start: int
+    base_count: int
+    head_start: int
+    head_count: int
+
+    def has_base(self, line: int) -> bool:
+        return self.base_start <= line < self.base_start + self.base_count
+
+    def has_head(self, line: int) -> bool:
+        return self.head_start <= line < self.head_start + self.head_count
+
+
+def diff_hunks(
+    base: str, head: str, path: str, base_path: str | None = None
+) -> list[Hunk]:
+    """The ``--unified=0`` hunks for one file, in order.
+
+    Zero context is what makes a hunk a usable unit of blame: each one is
+    exactly the lines this diff removed paired with exactly the lines it added
+    in their place, with no shared context blurring the boundary.
+
+    BOTH paths go in the pathspec when the file moved, exactly as
+    ``changed_swift_files`` resolved them. ``-M`` can only pair a rename it can
+    see, and a pathspec naming just the destination hides the source: git emits
+    ``new file mode`` with one ``@@ -0,0 +1,N @@``, so moving a panel full of
+    known gaps is reported as adding every one of them.
+
+    Naming two paths means the output can carry two file sections — a move plus
+    a same-named replacement produces both — so hunks are attributed by their
+    ``+++ b/…`` header rather than swept up together. Merging them mixes one
+    file's added lines into another file's budget, which is how a move beside a
+    replacement reported the moved file's entire backlog as new.
+    """
+    paths = [path] if base_path in (None, path) else [base_path, path]
+    diff = _git("diff", "--unified=0", "-M", base, head, "--", *paths)
+    hunks: list[Hunk] = []
+    current: str | None = None
     for raw in diff.splitlines():
+        if raw.startswith("+++ "):
+            target = _unquote_path(raw[4:])
+            current = target[2:] if target.startswith("b/") else target
+            continue
         m = _HUNK_RE.match(raw)
-        if m:
-            start = int(m.group(1))
-            count = 1 if m.group(2) is None else int(m.group(2))
-            added.update(range(start, start + count))
+        if not m or current != path:
+            continue
+        hunks.append(
+            Hunk(
+                base_start=int(m.group(1)),
+                base_count=1 if m.group(2) is None else int(m.group(2)),
+                head_start=int(m.group(3)),
+                head_count=1 if m.group(4) is None else int(m.group(4)),
+            )
+        )
+    return hunks
+
+
+def added_lines(
+    base: str, head: str, path: str, base_path: str | None = None
+) -> set[int]:
+    """1-based line numbers added to ``path`` between ``base`` and ``head``."""
+    added: set[int] = set()
+    for h in diff_hunks(base, head, path, base_path):
+        added.update(range(h.head_start, h.head_start + h.head_count))
     return added
+
+
+def head_line_to_base(hunks: list[Hunk], line: int) -> int:
+    """Where an UNCHANGED head line sat in the base revision.
+
+    Only meaningful for a line no hunk added; every hunk that ends before it
+    shifts it by however many lines that hunk grew or shrank the file.
+
+    ``max(head_count, 1)`` is load-bearing. A pure deletion is ``@@ -7,2 +6,0 @@``
+    — head 6 is the line the deletion follows, NOT a line the hunk covers — so
+    ``head_start + head_count`` is 6 and a naive ``<=`` shifts line 6 itself.
+    That mapped a surviving carried-over violation to the wrong base line, found
+    nothing there, and reported it as an identifier this diff had removed:
+    deleting any labelled control lit up an unrelated control above it.
+    """
+    delta = 0
+    for h in hunks:
+        if line >= h.head_start + max(h.head_count, 1):
+            delta += h.head_count - h.base_count
+    return line - delta
 
 
 def _blob(rev: str, path: str) -> str | None:
@@ -522,57 +895,135 @@ def _blob(rev: str, path: str) -> str | None:
 def suppress_carried(
     head_violations: list[Violation],
     base_violations: list[Violation],
-    touched: set[int],
+    hunks: list[Hunk],
 ) -> list[Violation]:
     """Report the head violations this diff is actually responsible for.
 
-    Multiset arithmetic over the WHOLE file, not just the added lines: the base
-    revision funds a fixed number of violations per ``(kind, normalised line)``,
-    and only the excess is new. Move or re-indent an existing unlabelled control
-    and it is absorbed; duplicate one and the copy is reported, because the base
-    only funds one of the two.
+    Carry-over is decided PER HUNK, not per file. A hunk is the lines this diff
+    removed paired with the lines it put in their place, so an unlabelled
+    control that was re-indented, re-wrapped, re-ordered or had its trailing
+    comment edited is funded by the identical violation the same hunk removed,
+    and is absorbed. Two things a file-wide budget got wrong, each of which let
+    a real regression through:
 
-    Untouched occurrences claim the base budget first. They are carried over by
-    definition, so letting an *added* line spend the budget instead — which is
-    what happens with a naive in-order walk when the copy lands above the
-    original — would launder a genuine duplication into a pass.
+    * **Fixing an old gap must not fund a new one.** Labelling a control in one
+      part of the file removes a violation from the file-wide tally, and the
+      freed budget then absorbed a genuinely new unlabelled control somewhere
+      else — the PR came out green having both fixed and broken one. Budget is
+      local to the hunk that freed it, so a fix in hunk A cannot pay for a
+      regression in hunk B.
+
+    * **Editing a comment must not rename a control.** Identity is the
+      declaration line's text, so re-wording a trailing comment used to make a
+      years-old unlabelled control read as brand new. ``Violation.source`` now
+      excludes trailing comments, so the base and head copies match.
+
+    Untouched head lines are the caller's problem, not this function's: they map
+    back to a base line, and whether *that* line was already a violation is the
+    whole question (see ``_identifier_removals``). They neither claim nor need
+    budget here.
+
+    The deliberate cost: moving an unlabelled control from one part of a file to
+    another lands in two different hunks and IS reported. That is the same
+    answer this gate already gave for extracting it into a new file, and the fix
+    — label the control you just moved, or write an ``ax-exempt:`` reason — is
+    the outcome the gate wants anyway.
     """
-    budget = Counter(v.key for v in base_violations)
-    for v in head_violations:
-        if v.line not in touched and budget[v.key] > 0:
-            budget[v.key] -= 1
+    budget: Counter[tuple[int, tuple[str, str]]] = Counter()
+    for v in base_violations:
+        for i, h in enumerate(hunks):
+            if h.has_base(v.line):
+                budget[(i, v.key)] += 1
+                break
 
     kept: list[Violation] = []
     for v in head_violations:
-        if v.line not in touched:
+        slot = next((i for i, h in enumerate(hunks) if h.has_head(v.line)), None)
+        if slot is None:
             continue
-        if budget[v.key] > 0:
-            budget[v.key] -= 1
+        if budget[(slot, v.key)] > 0:
+            budget[(slot, v.key)] -= 1
             continue
         kept.append(v)
     return kept
 
 
+def _identifier_removals(
+    head_violations: list[Violation],
+    base_violations: list[Violation],
+    hunks: list[Hunk],
+    touched: set[int],
+) -> list[Violation]:
+    """Controls this diff UNLABELLED without touching their declaration line.
+
+    Deleting a ``.accessibilityIdentifier(…)`` takes a control out of the golden
+    flows' reach just as surely as never adding one, and it is the likelier
+    accident: when the modifier sits on its own line — the dominant style in
+    this app — the declaration line does not change at all, so an added-lines
+    filter never even looks at it.
+
+    The test is exact rather than statistical: an unchanged head line sits at a
+    known base line and holds the same text. If the control there is unlabelled
+    now but was not a violation then, this diff is what unlabelled it.
+
+    Matched on ``(base line, key)`` and consumed, not on the line number alone.
+    One line can hold two controls — ``Menu("x") { Button("y") { … } }`` — and a
+    line-only test let the pre-existing gap vouch for its neighbour: delete the
+    identifier off the Menu and the Button already on that line marked the line
+    "known bad", so the newly unreachable Menu was suppressed.
+    """
+    carried: Counter[tuple[int, tuple[str, str]]] = Counter(
+        (v.line, v.key) for v in base_violations
+    )
+    removals: list[Violation] = []
+    for v in head_violations:
+        if v.line in touched:
+            continue
+        slot = (head_line_to_base(hunks, v.line), v.key)
+        if carried[slot] > 0:
+            carried[slot] -= 1
+            continue
+        removals.append(
+            replace(
+                v,
+                reason=(
+                    f"this diff removed the .{IDENTIFIER_MODIFIER}(…) that made "
+                    "this control reachable"
+                ),
+            )
+        )
+    return removals
+
+
 def new_violations(base: str, head: str, path: str, base_path: str) -> list[Violation]:
     """Violations this diff is responsible for, in one file.
 
-    Two filters, in order: the control must be declared on a line this diff
-    added, and it must not be a carry-over of an identical violation that
-    already existed in the base revision of the same file.
+    Two ways to be responsible: declare a new unlabelled control on a line this
+    diff added, or take the identifier off one that already had it.
     """
     head_src = _blob(head, path)
     if head_src is None:
         return []
-    touched = added_lines(base, head, path)
     head_violations = find_violations(path, head_src)
-    candidates = [v for v in head_violations if v.line in touched]
-    if not candidates:
+    if not head_violations:
         return []
 
+    touched = added_lines(base, head, path, base_path)
     base_src = _blob(base, base_path)
-    if base_src is None:  # new file — everything in it is this PR's doing
-        return candidates
-    return suppress_carried(head_violations, find_violations(path, base_src), touched)
+    if base_src is None:
+        # New file — everything in it is this PR's doing. If the diff produced
+        # no hunks at all (``.gitattributes`` marking ``*.swift`` binary is the
+        # way that happens), ``touched`` is empty and filtering by it would
+        # report nothing: a whole new panel of unreachable controls, admitted
+        # in silence. A file that exists only in head has every line added by
+        # definition, so fall back to that rather than to zero.
+        return [v for v in head_violations if not touched or v.line in touched]
+
+    hunks = diff_hunks(base, head, path, base_path)
+    base_violations = find_violations(path, base_src)
+    found = suppress_carried(head_violations, base_violations, hunks)
+    found.extend(_identifier_removals(head_violations, base_violations, hunks, touched))
+    return sorted(found, key=lambda v: v.line)
 
 
 # --------------------------------------------------------------------------
@@ -598,13 +1049,14 @@ Fix — attach a stable identifier to the control itself, matching the existing
 '<Surface>.<Thing>' convention inventoried in apps/rapid-mac/docs/userflows.md:
 
     Toggle("Browse", isOn: $on)
-        .accessibilityIdentifier("Settings.Tools.BrowseToggle")
+        .{IDENTIFIER_MODIFIER}("Settings.Tools.BrowseToggle")
 
-If the control genuinely cannot carry one — SwiftUI confirmationDialog / alert
-buttons are the known case — opt out explicitly, with a reason, on the control's
-line or the line directly above it:
+No control on this surface is currently known to be unable to carry one — the
+confirmationDialog / alert doubt was measured and closed (docs/userflows.md). If
+you have found a real one, opt out explicitly, with the evidence, on the
+control's line or the line directly above it:
 
-    // {EXEMPT_MARKER} confirmationDialog buttons render outside the app's AX tree
+    // {EXEMPT_MARKER} <what you measured that shows it cannot be reached>
     Button("Allow once") {{ approve() }}
 
 Every opt-out is greppable: rg '{EXEMPT_MARKER}' apps/rapid-mac
@@ -615,7 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Fail when a PR adds an interactive rapid-mac control with no "
-            ".accessibilityIdentifier(…)."
+            f".{IDENTIFIER_MODIFIER}(…)."
         )
     )
     parser.add_argument(
