@@ -38,6 +38,7 @@ import os
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -186,7 +187,7 @@ def test_each_e2e_test_gets_its_own_workspace(tmp_path):
     assert chat.status is TestStatus.PASS, chat.message
     assert file_read.status is TestStatus.PASS, file_read.message
 
-    ran_in = log.read_text(encoding="utf-8").split()
+    ran_in = log.read_text(encoding="utf-8").splitlines()
     assert len(ran_in) == 2, f"expected two runs, recorded {ran_in}"
     assert ran_in[0] != ran_in[1], (
         "both e2e tests ran in the SAME directory — whatever the first agent "
@@ -262,21 +263,40 @@ def test_cleanup_never_writes_outside_the_workspace(tmp_path):
     outside_dir_before = os.stat(outside_dir).st_mode
 
     with _e2e_workspace() as workdir:
-        os.symlink(outsider, Path(workdir, "link-to-outside-file"))
-        os.symlink(outside_dir, Path(workdir, "link-to-outside-dir"))
+        # The links go INSIDE the directory that gets locked, not beside it.
+        # On the happy path rmtree unlinks them before it fails, so links in
+        # the workspace root are gone by the time any repair pass would run —
+        # which is how the first version of this test stayed green against
+        # the very code it was written to forbid. Locked in here, they
+        # survive the failed rmtree and are exactly what a repair pass would
+        # walk into and chmod.
+        trap = Path(workdir, "hostile")
+        trap.mkdir()
+        os.symlink(outsider, trap / "link-to-outside-file")
+        os.symlink(outside_dir, trap / "link-to-outside-dir")
+        (trap / "note.txt").write_text("x", encoding="utf-8")
+        os.chmod(trap, 0o000)
         captured = workdir
 
-    assert not os.path.exists(captured), "workspace leaked"
-    assert outsider.exists(), "cleanup deleted a file outside the workspace"
-    assert (outside_dir / "keep.txt").exists(), (
-        "cleanup followed a link and deleted a tree outside the workspace"
-    )
-    assert os.stat(outsider).st_mode == outsider_before, (
-        "cleanup rewrote the permissions of a file outside the workspace"
-    )
-    assert os.stat(outside_dir).st_mode == outside_dir_before, (
-        "cleanup rewrote the permissions of a directory outside the workspace"
-    )
+    try:
+        assert os.path.exists(captured), (
+            "the workspace was removed, so the repair path this test guards "
+            "never ran — the assertions below would prove nothing"
+        )
+        assert outsider.exists(), "cleanup deleted a file outside the workspace"
+        assert (outside_dir / "keep.txt").exists(), (
+            "cleanup followed a link and deleted a tree outside the workspace"
+        )
+        assert os.stat(outsider).st_mode == outsider_before, (
+            "cleanup rewrote the permissions of a file outside the workspace"
+        )
+        assert os.stat(outside_dir).st_mode == outside_dir_before, (
+            "cleanup rewrote the permissions of a directory outside the workspace"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            os.chmod(Path(captured, "hostile"), 0o700)
+        shutil.rmtree(captured, ignore_errors=True)
 
 
 def test_codex_query_cmd_skips_the_git_repo_check():
@@ -300,3 +320,25 @@ def test_codex_query_cmd_is_shell_parseable_and_keeps_the_placeholder():
     assert "--skip-git-repo-check" in parts
     # The query must survive as ONE argv entry, not five bare words.
     assert "what is 2+2" in parts
+
+
+def test_workspace_creation_failure_is_an_error_not_a_crash(tmp_path, monkeypatch):
+    """A full or read-only temp filesystem must not take the runner down.
+
+    Staged against a REAL read-only directory rather than a patched
+    `mkdtemp`, so the failure arrives from the operating system the way it
+    would in production. `tempfile.tempdir` rather than `$TMPDIR`: tempfile
+    resolves the environment variable once and caches it, so setting the
+    variable here would change nothing.
+    """
+    readonly = tmp_path / "readonly-tmp"
+    readonly.mkdir()
+    os.chmod(readonly, 0o500)
+    monkeypatch.setattr(tempfile, "tempdir", str(readonly))
+
+    result = _test_e2e_chat(sys.executable, "irrelevant {query}", _TIMEOUT_S)
+    assert result.status is TestStatus.ERROR, (
+        f"expected an ERROR result, got {result.status} — a workspace that "
+        "cannot be created must not propagate out of the test runner"
+    )
+    assert "workspace unavailable" in result.message, result.message

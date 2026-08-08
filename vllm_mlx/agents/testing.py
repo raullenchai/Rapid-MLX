@@ -934,13 +934,25 @@ def _test_e2e_chat(
 ) -> TestResult:
     """Agent basic chat."""
     t0 = time.time()
-    with _workspace_or(cwd) as workdir:
-        out, err = _agent_query(
-            binary,
-            query_cmd,
-            "What is 2+2? Reply with just the number.",
-            timeout,
-            workdir,
+    try:
+        with _workspace_or(cwd) as workdir:
+            out, err = _agent_query(
+                binary,
+                query_cmd,
+                "What is 2+2? Reply with just the number.",
+                timeout,
+                workdir,
+            )
+    except OSError as exc:
+        # A full or read-only temp filesystem is an environment
+        # failure, not an agent failure. Report it as this test's
+        # ERROR instead of taking the whole runner down with it.
+        return TestResult(
+            "e2e_chat",
+            TestStatus.ERROR,
+            duration_ms=(time.time() - t0) * 1000,
+            message=f"agent workspace unavailable: {exc}",
+            category="e2e",
         )
     if err:
         status = _err_to_status(err)
@@ -972,9 +984,25 @@ def _test_e2e_file_read(
 ) -> TestResult:
     """Agent reads a file via tool call."""
     t0 = time.time()
-    with _workspace_or(cwd) as workdir:
-        out, err = _agent_query(
-            binary, query_cmd, "Read the first line of pyproject.toml", timeout, workdir
+    try:
+        with _workspace_or(cwd) as workdir:
+            out, err = _agent_query(
+                binary,
+                query_cmd,
+                "Read the first line of pyproject.toml",
+                timeout,
+                workdir,
+            )
+    except OSError as exc:
+        # A full or read-only temp filesystem is an environment
+        # failure, not an agent failure. Report it as this test's
+        # ERROR instead of taking the whole runner down with it.
+        return TestResult(
+            "e2e_file_read",
+            TestStatus.ERROR,
+            duration_ms=(time.time() - t0) * 1000,
+            message=f"agent workspace unavailable: {exc}",
+            category="e2e",
         )
     if err:
         status = _err_to_status(err)
@@ -1009,13 +1037,25 @@ def _test_e2e_terminal(
     """Agent runs a shell command."""
     t0 = time.time()
     marker = f"rapidmlx_{agent_name}_test"
-    with _workspace_or(cwd) as workdir:
-        out, err = _agent_query(
-            binary,
-            query_cmd,
-            f"Run 'echo {marker}' and show me the output",
-            timeout,
-            workdir,
+    try:
+        with _workspace_or(cwd) as workdir:
+            out, err = _agent_query(
+                binary,
+                query_cmd,
+                f"Run 'echo {marker}' and show me the output",
+                timeout,
+                workdir,
+            )
+    except OSError as exc:
+        # A full or read-only temp filesystem is an environment
+        # failure, not an agent failure. Report it as this test's
+        # ERROR instead of taking the whole runner down with it.
+        return TestResult(
+            "e2e_terminal",
+            TestStatus.ERROR,
+            duration_ms=(time.time() - t0) * 1000,
+            message=f"agent workspace unavailable: {exc}",
+            category="e2e",
         )
     if err:
         status = _err_to_status(err)
