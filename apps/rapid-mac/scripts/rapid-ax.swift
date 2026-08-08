@@ -72,6 +72,14 @@ func walk(_ element: AXUIElement, depth: Int) {
     if let enabled = attribute(element, kAXEnabledAttribute as CFString) as? NSNumber {
         record["enabled"] = enabled.boolValue
     }
+    // Which of several equal-looking things is the CHOSEN one. Without it a
+    // flow can see that the model cards exist and are enabled but not which
+    // one the user picked, so "the wizard silently discarded your selection"
+    // is invisible to every assertion the harness can make (#1653). Same rule
+    // as AXEnabled: absent on most elements, recorded only when published.
+    if let selected = attribute(element, kAXSelectedAttribute as CFString) as? NSNumber {
+        record["selected"] = selected.boolValue
+    }
     if let title = string(element, kAXTitleAttribute as CFString), !title.isEmpty { record["title"] = title }
     if let description = string(element, kAXDescriptionAttribute as CFString), !description.isEmpty { record["description"] = description }
     if let help = string(element, kAXHelpAttribute as CFString), !help.isEmpty { record["help"] = help }

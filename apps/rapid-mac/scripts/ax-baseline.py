@@ -38,6 +38,11 @@ What it drops or rewrites, and why
     conversation row identifier legitimately carries a fresh UUID.
   * caller-supplied tokens (``--scrub``) — the golden flows pass the fake
     model alias so a rename of the fixture is not a baseline change.
+  * ``AXSelected`` — dumped by ``rapid-ax.swift`` (a flow has to be able to ask
+    which model card the user chose, see #1653) but deliberately NOT rendered
+    here. Which of several equal-looking cards is highlighted is state, not
+    structure, and it legitimately differs between a fresh persona and a
+    relaunched one. Flows assert it against the raw dump instead.
 """
 
 from __future__ import annotations

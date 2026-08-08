@@ -731,15 +731,16 @@ flow_no_dead_controls() {
 }
 
 flow_browse_all_destination() {
-    # An advertised destination must actually be one.
+    # An advertised destination must actually be one, and must not cost the
+    # user what they already chose.
     #
     # "Browse all models →" on Quickstart step 2 was implemented as one line
     # that set a dismiss flag (#1653). It was present, enabled, correctly
     # labelled and carried an AXIdentifier, so every structural check passed —
     # the wizard simply vanished, the user's pick was discarded, and they
     # landed on whatever the alphabetical fallback chose (a 7.6 GB download
-    # nobody asked for). Nothing here can be asserted from a tree dump alone:
-    # this flow PRESSES the control and asserts where the user ends up.
+    # nobody asked for). None of that is visible in a tree dump. This flow
+    # presses the control and drives the whole round trip.
     start_persona browse-all-destination
 
     # Only the consent sheet — the wizard has to stay up, it is the subject.
@@ -756,7 +757,25 @@ flow_browse_all_destination() {
         || die "Quickstart.GetStarted is not pressable"
     wait_identifier Quickstart.BrowseAll "$OUT/ba-chooser.json"
 
-    press "$OUT/ba-chooser.json" Quickstart.BrowseAll "$OUT/ba-press.json" \
+    # Choose a card that is NOT the default. The bug discarded the user's
+    # selection; asserting the survival of a pick nobody made proves nothing,
+    # so make one, and make it a different one.
+    local chosen
+    chosen="$(jq -r '[.data.ui_elements[]?
+                      | select((.identifier // "") | startswith("Quickstart.Choice."))
+                      | select(.selected != true)][0].identifier // empty' \
+              "$OUT/ba-chooser.json")"
+    [[ -n "$chosen" ]] || die "the chooser offers no unselected model card to pick"
+    press "$OUT/ba-chooser.json" "$chosen" "$OUT/ba-choose.json" \
+        || die "$chosen is not pressable"
+    sleep 0.5
+    see_main "$OUT/ba-chosen.json"
+    jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
+        "$OUT/ba-chosen.json" >/dev/null \
+        || die "pressing $chosen did not select it — the chooser cannot record a choice"
+    log "  chose $chosen"
+
+    press "$OUT/ba-chosen.json" Quickstart.BrowseAll "$OUT/ba-press.json" \
         || die "Quickstart.BrowseAll is not pressable"
 
     # 1. It opened the catalogue. `open_settings` drives the menu, so assert
@@ -777,13 +796,30 @@ flow_browse_all_destination() {
     wait_settings_stable "$OUT/ba-settings.json" Settings.Models.ShowAllModelsToggle
     log "  landed on Model Management"
 
-    # 3. The wizard is still standing. "Show me the options" is not "I give
-    #    up": closing Settings has to put the user back on their pick.
-    see_main "$OUT/ba-after.json"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.BrowseAll")' \
+    # 3. Settings is actually USABLE, not merely present. A window opened
+    #    behind a modal sheet still publishes its whole subtree to AX, so
+    #    every assertion above would pass on a window the user cannot touch.
+    #    Only driving one of its controls tells them apart.
+    press "$OUT/ba-settings.json" Settings.Category.appearance "$OUT/ba-settings-drive.json" \
+        || die "the Settings window opened but does not accept input — it is behind the wizard sheet"
+    log "  Settings accepts input"
+
+    # 4. Close it, the way the user would, and land back on the wizard with
+    #    the same pick. This is the half the bug actually broke.
+    pb menu click --app "PID:$APP_PID" --item 'Close' --json > "$OUT/ba-close.json" \
+        || die "could not close the Settings window"
+    for ((i=0; i<40; i++)); do
+        pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows-after.json"
+        jq -e '[.data.windows[]? | select(.title == "Settings")] | length == 0' \
+            "$OUT/ba-windows-after.json" >/dev/null && break
+        sleep 0.25
+    done
+
+    wait_identifier Quickstart.BrowseAll "$OUT/ba-after.json"
+    jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
         "$OUT/ba-after.json" >/dev/null \
-        || die "the wizard was dismissed — browsing must not discard the user's selection (#1653)"
-    log "  wizard still up behind Settings"
+        || die "the wizard came back without the user's selection — browsing must not discard it (#1653)"
+    log "  back on the wizard, $chosen still selected"
     cleanup_persona
 }
 
