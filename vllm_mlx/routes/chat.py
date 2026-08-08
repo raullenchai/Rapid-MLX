@@ -2680,6 +2680,39 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
     return re.sub(r"\s+", " ", result).strip()
 
 
+_FORCED_TOOL_SECTION_RE = re.compile(
+    r"(?:"
+    r"<｜tool▁calls▁begin｜>\s*<｜tool▁call▁begin｜>"
+    r"|<toolcallsbegin>\s*<toolcallbegin>"
+    r")",
+    re.DOTALL,
+)
+
+
+def _strip_forced_tool_section(text: str | None) -> str:
+    """Remove a structurally unmistakable native tool section.
+
+    DeepSeek-R1 distills can emit one valid call followed by a malformed,
+    truncated duplicate.  The parser correctly recovers the valid structured
+    call but intentionally returns the raw text for diagnostics, which leaks
+    the native section into ``content`` and — after reasoning extraction — into
+    ``reasoning_content``.  A paired section+call opener is stronger evidence
+    than a literal marker mention in prose, so truncate only at that sequence
+    and preserve any narration before it.  The compact spelling is produced by
+    Qwen-tokenizer decoding of the same fullwidth DeepSeek markers.
+    """
+    if not text:
+        return text or ""
+    match = _FORCED_TOOL_SECTION_RE.search(text)
+    result = text if match is None else text[: match.start()].rstrip()
+    # A truncated DeepSeek forced call can leave only the reasoning opener in
+    # content after the native section was recovered.  It carries no user
+    # information and belongs in neither OpenAI visible channel.
+    if result.strip() in {"<think>", "</think>"}:
+        return ""
+    return result
+
+
 def _scrub_tool_wire_literals(text: str | None) -> str:
     """Strip every known parser-wire opener/closer marker from
     ``text`` in three phases. Returns a whitespace-collapsed result
@@ -5675,6 +5708,13 @@ async def _create_chat_completion_impl(
         cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
     if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
         reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
+    if _is_forced_choice and tool_calls:
+        # #1676/#1677: a recovered valid DeepSeek call may be followed by a
+        # malformed duplicate.  Never expose that native section through the
+        # OpenAI content channels; the structured ``tool_calls`` field is the
+        # authoritative representation.
+        cleaned_text = _strip_forced_tool_section(cleaned_text)
+        reasoning_text = _strip_forced_tool_section(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:

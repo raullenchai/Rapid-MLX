@@ -59,6 +59,7 @@ from vllm_mlx.routes.chat import (
     _recover_partial_tool_args,
     _scrub_tool_wire_literals,
     _scrub_visible_tool_wire_leaks,
+    _strip_forced_tool_section,
     _synthesize_forced_tool_call,
 )
 from vllm_mlx.routes.chat import router as chat_router
@@ -1414,6 +1415,25 @@ def test_codex_r13_visible_scrub_skips_broken_deepseek_begin_then_scrubs_payload
     assert "get_weather" not in out
     assert '"arguments"' not in out
     assert "suffix" in out
+
+
+def test_1676_forced_deepseek_section_is_removed_from_visible_channels():
+    fullwidth = (
+        "narration\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>"
+        "function<｜tool▁sep｜>release_probe\n```json\n{}\n```"
+    )
+    compact = (
+        "<toolcallsbegin>\n<toolcallbegin>function<toolsep>release_probe"
+        "</function>\n<argument>now</argument>"
+    )
+    assert _strip_forced_tool_section(fullwidth) == "narration"
+    assert _strip_forced_tool_section(compact) == ""
+    assert _strip_forced_tool_section("<think>") == ""
+
+
+def test_1676_literal_deepseek_marker_mention_is_preserved():
+    prose = "Explain the literal <｜tool▁calls▁begin｜> marker to me."
+    assert _strip_forced_tool_section(prose) == prose
 
 
 def test_codex_r11_broad_scrub_does_not_cross_family_strip_marker_prose():

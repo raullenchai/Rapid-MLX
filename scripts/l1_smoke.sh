@@ -10,7 +10,7 @@
 # expensive Studio gate:
 #   * garbage-from-first-token (#1234 doubled-norm class) via the #1247 GOLDEN
 #     coherence gate, and
-#   * tool-call parser regressions via a forced-``tool_choice`` format assertion.
+#   * tool-loop parser/template regressions via a forced call and result replay.
 # Neither can run on the pure-CPU Linux CI (no Metal, no weights).
 #
 # Boots ``rapid-mlx serve <model>``, runs both checks, then tears down ONLY the
@@ -28,6 +28,8 @@
 #   PYTHON           python for the gate scripts (default: ``python3``)
 #   RAPID_MLX_PORT   serve port (default: 8123 — deliberately not :8000)
 #   L1_MODEL         model alias (overridden by the positional arg)
+#   L1_CONTRACT_ONLY  1 skips the model-quality coherence eval and runs only
+#                     the engine-owned tool-loop contract (default: 0)
 #
 # Exit code: 0 iff BOTH checks pass; non-zero blocks the PR.
 set -uo pipefail
@@ -36,6 +38,7 @@ RMLX="${RAPID_MLX:-rapid-mlx}"
 PY="${PYTHON:-python3}"
 ALIAS="${1:-${L1_MODEL:-qwen3.5-4b-4bit}}"
 PORT="${RAPID_MLX_PORT:-8123}"
+CONTRACT_ONLY="${L1_CONTRACT_ONLY:-0}"
 B="http://127.0.0.1:$PORT"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG="$(mktemp -t l1-serve.XXXXXX)"
@@ -63,8 +66,10 @@ if curl -s -m 3 "$B/v1/models" >/dev/null 2>&1; then
 fi
 
 # ---- boot serve ----------------------------------------------------------
-# --no-thinking: the coherence gate measures answer coherence, not think-mode
-# behavior (its no-think-leak case still asserts no raw <think> tag leaks).
+# Keep the reasoning parser enabled at the server. The coherence requests set
+# ``enable_thinking=false`` themselves, while reasoning-distill models can
+# still emit ``<think>`` despite that preference; their parser must remain
+# available so raw wrappers/CoT never leak into the OpenAI content channel.
 #
 # --no-mllm: force the text-only mlx-lm lane. This gate only exercises the
 # TEXT coherence + tool-call parser paths, never vision, so the LM backbone is
@@ -75,7 +80,7 @@ fi
 # Ministral-3 alias hung there; Gemma e2b now passes on M2/M3 but its historical
 # M1 runner failure remains tracked in #1367. ``resolve_serving_lane`` maps
 # ``--no-mllm`` -> ``force_text`` -> the text lane, matching engine semantics.
-nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-thinking --no-mllm > "$LOG" 2>&1 &
+nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-mllm > "$LOG" 2>&1 &
 SERVE_PID=$!
 for i in $(seq 1 60); do
   curl -s -m 3 "$B/v1/models" 2>/dev/null | grep -q '"id"' && { echo "serve READY (~$((i * 3))s)"; break; }
@@ -84,15 +89,26 @@ for i in $(seq 1 60); do
   [ "$i" = 60 ] && { tail -30 "$LOG"; fail "serve not ready in 180s"; }
 done
 
-# ---- check 1/2: output coherence (#1247 GOLDEN, blocking) ----------------
-echo "== [1/2] coherence gate (#1247) =="
-RAPID_MLX_BASE_URL="$B/v1" "$PY" "$REPO_ROOT/evals/coherence_gate.py" \
-  --base-url "$B/v1" --timeout 90 \
-  || fail "coherence gate failed — served model gave a wrong/incoherent golden answer"
+if [ "$CONTRACT_ONLY" = "1" ]; then
+  echo "== [1/2] coherence gate [SKIPPED: engine-contract-only alias] =="
+else
+  # Model-quality coherence remains useful on the two validated GOLDEN aliases,
+  # but it is deliberately separate from #1677's engine contract: a Hermes3
+  # answering one arithmetic prompt incorrectly must not masquerade as an
+  # engine release regression.
+  echo "== [1/2] coherence gate (#1247) =="
+  RAPID_MLX_BASE_URL="$B/v1" "$PY" "$REPO_ROOT/evals/coherence_gate.py" \
+    --base-url "$B/v1" --timeout 90 \
+    || fail "coherence gate failed — served model gave a wrong/incoherent golden answer"
+fi
 
-# ---- check 2/2: tool-call format under forced tool_choice (blocking) -----
-echo "== [2/2] tool-call format =="
+# ---- check 2/2: forced tool-call + result replay contract (blocking) -----
+echo "== [2/2] small-model tool-loop contract =="
 "$PY" "$REPO_ROOT/scripts/l1_toolcall_check.py" --base-url "$B/v1" --timeout 90 \
-  || fail "tool-call format check failed — forced tool_choice did not yield a well-formed call"
+  || fail "tool-loop contract failed — forced call or tool-result replay broke"
 
-echo "L1-SMOKE PASS ($ALIAS): coherence + tool-call format OK"
+if [ "$CONTRACT_ONLY" = "1" ]; then
+  echo "L1-SMOKE PASS ($ALIAS): tool-loop engine contract OK"
+else
+  echo "L1-SMOKE PASS ($ALIAS): coherence + tool-loop contract OK"
+fi

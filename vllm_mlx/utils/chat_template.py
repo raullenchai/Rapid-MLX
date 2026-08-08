@@ -620,6 +620,146 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
     return normalized
 
 
+def _serialize_assistant_tool_call_arguments(messages: list) -> list:
+    """Return a copy with mapping-form tool arguments encoded as JSON.
+
+    Most Hugging Face templates iterate over ``arguments`` and therefore need
+    the internal mapping form produced by
+    :func:`_normalize_assistant_tool_call_arguments`.  DeepSeek-R1's shipped
+    template is a notable inverse: it concatenates ``arguments`` directly into
+    a JSON code block and raises ``TypeError: can only concatenate str (not
+    \"dict\") to str`` for a standards-compliant replayed tool call.
+
+    This helper is intentionally used only as a compatibility retry after that
+    exact render failure.  It is copy-on-write so neither the OpenAI request nor
+    the normalised representation used by other templates is mutated.
+    """
+    if not isinstance(messages, list):
+        return messages
+
+    result = messages
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+
+        new_calls = tool_calls
+        message_changed = False
+        for call_index, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                continue
+            new_call = tool_call
+            call_changed = False
+
+            function = tool_call.get("function")
+            if isinstance(function, dict) and isinstance(
+                function.get("arguments"), dict
+            ):
+                new_function = dict(function)
+                new_function["arguments"] = json.dumps(
+                    function["arguments"], ensure_ascii=False, separators=(",", ":")
+                )
+                new_call = dict(new_call)
+                new_call["function"] = new_function
+                call_changed = True
+
+            if isinstance(tool_call.get("arguments"), dict):
+                if not call_changed:
+                    new_call = dict(new_call)
+                new_call["arguments"] = json.dumps(
+                    tool_call["arguments"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                call_changed = True
+
+            if call_changed:
+                if not message_changed:
+                    new_calls = list(tool_calls)
+                new_calls[call_index] = new_call
+                message_changed = True
+
+        if message_changed:
+            if result is messages:
+                result = list(messages)
+            new_message = dict(message)
+            new_message["tool_calls"] = new_calls
+            result[index] = new_message
+
+    return result
+
+
+def _flatten_tool_history_for_alternating_template(messages: list) -> list:
+    """Encode OpenAI tool history for templates limited to user/assistant.
+
+    Gemma 3's official template rejects every ``role="tool"`` message and
+    requires strict user/assistant alternation.  Preserve the conversation by
+    rendering structured assistant calls as text, converting tool results to a
+    user turn, and merging the immediately following user follow-up into that
+    turn.  Called only after the template explicitly reports its alternation
+    constraint, so native tool-aware templates retain their native shape.
+    """
+    flattened: list = []
+    for message in messages:
+        if not isinstance(message, dict):
+            flattened.append(message)
+            continue
+        role = message.get("role")
+        if role == "assistant" and isinstance(message.get("tool_calls"), list):
+            parts: list[str] = []
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+            for tool_call in message["tool_calls"]:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                name = function.get("name") or "unknown"
+                arguments = function.get("arguments", {})
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(
+                        arguments, ensure_ascii=False, separators=(",", ":")
+                    )
+                parts.append(f"Tool call {name}: {arguments}")
+            new_message = dict(message)
+            new_message.pop("tool_calls", None)
+            new_message["content"] = "\n".join(parts)
+            flattened.append(new_message)
+            continue
+        if role == "tool":
+            name = message.get("name") or message.get("tool_call_id") or "unknown"
+            content = message.get("content")
+            result_text = content if isinstance(content, str) else json.dumps(content)
+            text = f"Tool result {name}: {result_text}"
+            if (
+                flattened
+                and isinstance(flattened[-1], dict)
+                and flattened[-1].get("role") == "user"
+            ):
+                prior = flattened[-1].get("content") or ""
+                flattened[-1] = {**flattened[-1], "content": f"{prior}\n{text}"}
+            else:
+                flattened.append({"role": "user", "content": text})
+            continue
+        if role == "user" and flattened and isinstance(flattened[-1], dict):
+            previous = flattened[-1]
+            if previous.get("role") == "user" and str(
+                previous.get("content", "")
+            ).startswith("Tool result "):
+                content = message.get("content") or ""
+                flattened[-1] = {
+                    **previous,
+                    "content": f"{previous.get('content', '')}\n\n{content}",
+                }
+                continue
+        flattened.append(message)
+    return flattened
+
+
 def _baseline_sanitize_messages(messages):
     """Fail-closed fallback for ``_sanitize_messages_for_template``.
 
@@ -1186,9 +1326,55 @@ def apply_chat_template(
     if _looks_like_hy3(model_name) and enable_thinking is not False:
         template_kwargs.setdefault("reasoning_effort", "low")
 
+    def _apply_with_alternating_fallback(
+        candidate_messages: list[dict], candidate_kwargs: dict
+    ) -> str:
+        try:
+            return template_applicator.apply_chat_template(
+                candidate_messages, **candidate_kwargs
+            )
+        except Exception as exc:
+            if "Conversation roles must alternate user/assistant" not in str(
+                exc
+            ) or not any(
+                isinstance(message, dict) and message.get("role") == "tool"
+                for message in candidate_messages
+            ):
+                raise
+            flattened = _flatten_tool_history_for_alternating_template(
+                candidate_messages
+            )
+            alternating_kwargs = dict(candidate_kwargs)
+            fallback_tools = alternating_kwargs.pop("tools", None)
+            if fallback_tools:
+                flattened = _inject_tools_into_messages(flattened, fallback_tools)
+            return template_applicator.apply_chat_template(
+                flattened, **alternating_kwargs
+            )
+
     try:
-        return template_applicator.apply_chat_template(messages, **template_kwargs)
+        return _apply_with_alternating_fallback(messages, template_kwargs)
     except TypeError as e:
+        retry_messages = messages
+        # DeepSeek-R1's published template concatenates historical tool-call
+        # arguments as text, while the majority of HF templates iterate them as
+        # mappings.  The shared boundary normalises to the majority mapping
+        # form above; retry the exact inverse incompatibility with JSON strings
+        # before treating the TypeError as an unsupported template kwarg.
+        if 'can only concatenate str (not "dict") to str' in str(e):
+            string_argument_messages = _serialize_assistant_tool_call_arguments(
+                messages
+            )
+            if string_argument_messages is not messages:
+                retry_messages = string_argument_messages
+                try:
+                    return _apply_with_alternating_fallback(
+                        string_argument_messages, template_kwargs
+                    )
+                except TypeError:
+                    # It was not the known argument-shape incompatibility; keep
+                    # the existing generic kwarg/tools fallback behaviour.
+                    pass
         # Step 1: retry without enable_thinking (many templates don't support it).
         # Codex round-1 NIT fix (PR #1070 finding #4): keep
         # ``reasoning_effort`` on this first retry so a Hy3 checkpoint
@@ -1199,7 +1385,7 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return template_applicator.apply_chat_template(messages, **template_kwargs)
+            return _apply_with_alternating_fallback(retry_messages, template_kwargs)
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
             # actually names it (codex R8 BLOCKING: unconditionally popping it
@@ -1248,16 +1434,12 @@ def apply_chat_template(
                 "injecting %d tool definitions into system prompt",
                 len(tools),
             )
-            injected = _inject_tools_into_messages(messages, tools)
+            injected = _inject_tools_into_messages(retry_messages, tools)
             try:
-                return template_applicator.apply_chat_template(
-                    injected, **template_kwargs
-                )
+                return _apply_with_alternating_fallback(injected, template_kwargs)
             except TypeError:
                 # enable_thinking also unsupported after all — drop it
                 template_kwargs.pop("enable_thinking", None)
-                return template_applicator.apply_chat_template(
-                    injected, **template_kwargs
-                )
+                return _apply_with_alternating_fallback(injected, template_kwargs)
 
-        return template_applicator.apply_chat_template(messages, **template_kwargs)
+        return _apply_with_alternating_fallback(retry_messages, template_kwargs)
