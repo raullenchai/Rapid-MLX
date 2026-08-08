@@ -732,13 +732,20 @@ def _e2e_workspace():
     the whole timeout. The fixture below makes the task the same task
     every time.
 
-    Second, blast radius: Codex is launched with ``--skip-git-repo-check``
-    (it refuses to run outside a trusted repo, and the runner cannot
-    assume one). Bypassing that check in an inherited, caller-controlled
-    directory would expose whatever the caller happened to be standing in
-    — including files and agent instructions from an untrusted checkout.
-    Bypassing it in a directory we just created, containing one file we
-    wrote, does not.
+    Second, a defined starting point. Codex is launched with
+    ``--skip-git-repo-check`` (it refuses to run outside a trusted repo,
+    and the runner cannot assume one), so it will pick up whatever is in
+    the directory it starts in — including files and agent instructions
+    left lying around. Starting it in a directory we just created, holding
+    one file we wrote, makes that set knowable.
+
+    **This is not a sandbox and does not pretend to be.** The agent still
+    runs as the user, with the user's environment and `$HOME`, and can
+    read anything the user can by absolute path. Isolating that would take
+    a real filesystem sandbox with its own home; what this gives is a
+    deterministic *working directory*, which is what the e2e tests depend
+    on. Codex additionally runs its own commands under Seatbelt on macOS,
+    which is its business, not something arranged here.
     """
     workdir = tempfile.mkdtemp(prefix="rapid-mlx-agent-e2e-")
     try:
@@ -934,25 +941,30 @@ def _test_e2e_chat(
 ) -> TestResult:
     """Agent basic chat."""
     t0 = time.time()
-    try:
-        with _workspace_or(cwd) as workdir:
-            out, err = _agent_query(
-                binary,
-                query_cmd,
-                "What is 2+2? Reply with just the number.",
-                timeout,
-                workdir,
+    with contextlib.ExitStack() as stack:
+        try:
+            # Only the workspace ENTRY is guarded here. Widening this
+            # to cover the query too would relabel a launch failure
+            # (EACCES on the binary, say) as a workspace problem and
+            # hide what actually went wrong.
+            workdir = stack.enter_context(_workspace_or(cwd))
+        except OSError as exc:
+            # A full or read-only temp filesystem is an environment
+            # failure, not an agent failure. Report it as this test's
+            # ERROR instead of taking the whole runner down with it.
+            return TestResult(
+                "e2e_chat",
+                TestStatus.ERROR,
+                duration_ms=(time.time() - t0) * 1000,
+                message=f"agent workspace unavailable: {exc}",
+                category="e2e",
             )
-    except OSError as exc:
-        # A full or read-only temp filesystem is an environment
-        # failure, not an agent failure. Report it as this test's
-        # ERROR instead of taking the whole runner down with it.
-        return TestResult(
-            "e2e_chat",
-            TestStatus.ERROR,
-            duration_ms=(time.time() - t0) * 1000,
-            message=f"agent workspace unavailable: {exc}",
-            category="e2e",
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            "What is 2+2? Reply with just the number.",
+            timeout,
+            workdir,
         )
     if err:
         status = _err_to_status(err)
@@ -984,25 +996,30 @@ def _test_e2e_file_read(
 ) -> TestResult:
     """Agent reads a file via tool call."""
     t0 = time.time()
-    try:
-        with _workspace_or(cwd) as workdir:
-            out, err = _agent_query(
-                binary,
-                query_cmd,
-                "Read the first line of pyproject.toml",
-                timeout,
-                workdir,
+    with contextlib.ExitStack() as stack:
+        try:
+            # Only the workspace ENTRY is guarded here. Widening this
+            # to cover the query too would relabel a launch failure
+            # (EACCES on the binary, say) as a workspace problem and
+            # hide what actually went wrong.
+            workdir = stack.enter_context(_workspace_or(cwd))
+        except OSError as exc:
+            # A full or read-only temp filesystem is an environment
+            # failure, not an agent failure. Report it as this test's
+            # ERROR instead of taking the whole runner down with it.
+            return TestResult(
+                "e2e_file_read",
+                TestStatus.ERROR,
+                duration_ms=(time.time() - t0) * 1000,
+                message=f"agent workspace unavailable: {exc}",
+                category="e2e",
             )
-    except OSError as exc:
-        # A full or read-only temp filesystem is an environment
-        # failure, not an agent failure. Report it as this test's
-        # ERROR instead of taking the whole runner down with it.
-        return TestResult(
-            "e2e_file_read",
-            TestStatus.ERROR,
-            duration_ms=(time.time() - t0) * 1000,
-            message=f"agent workspace unavailable: {exc}",
-            category="e2e",
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            "Read the first line of pyproject.toml",
+            timeout,
+            workdir,
         )
     if err:
         status = _err_to_status(err)
@@ -1037,25 +1054,30 @@ def _test_e2e_terminal(
     """Agent runs a shell command."""
     t0 = time.time()
     marker = f"rapidmlx_{agent_name}_test"
-    try:
-        with _workspace_or(cwd) as workdir:
-            out, err = _agent_query(
-                binary,
-                query_cmd,
-                f"Run 'echo {marker}' and show me the output",
-                timeout,
-                workdir,
+    with contextlib.ExitStack() as stack:
+        try:
+            # Only the workspace ENTRY is guarded here. Widening this
+            # to cover the query too would relabel a launch failure
+            # (EACCES on the binary, say) as a workspace problem and
+            # hide what actually went wrong.
+            workdir = stack.enter_context(_workspace_or(cwd))
+        except OSError as exc:
+            # A full or read-only temp filesystem is an environment
+            # failure, not an agent failure. Report it as this test's
+            # ERROR instead of taking the whole runner down with it.
+            return TestResult(
+                "e2e_terminal",
+                TestStatus.ERROR,
+                duration_ms=(time.time() - t0) * 1000,
+                message=f"agent workspace unavailable: {exc}",
+                category="e2e",
             )
-    except OSError as exc:
-        # A full or read-only temp filesystem is an environment
-        # failure, not an agent failure. Report it as this test's
-        # ERROR instead of taking the whole runner down with it.
-        return TestResult(
-            "e2e_terminal",
-            TestStatus.ERROR,
-            duration_ms=(time.time() - t0) * 1000,
-            message=f"agent workspace unavailable: {exc}",
-            category="e2e",
+        out, err = _agent_query(
+            binary,
+            query_cmd,
+            f"Run 'echo {marker}' and show me the output",
+            timeout,
+            workdir,
         )
     if err:
         status = _err_to_status(err)

@@ -279,10 +279,12 @@ def test_cleanup_never_writes_outside_the_workspace(tmp_path):
         captured = workdir
 
     try:
-        assert os.path.exists(captured), (
-            "the workspace was removed, so the repair path this test guards "
-            "never ran — the assertions below would prove nothing"
-        )
+        if not os.path.exists(captured):
+            # Root, or a filesystem that ignores mode bits, deletes the tree
+            # regardless. The repair path this test guards never ran, so the
+            # assertions below would prove nothing — say so rather than
+            # failing a change that is fine.
+            pytest.skip("this environment removes a 0o000 directory anyway")
         assert outsider.exists(), "cleanup deleted a file outside the workspace"
         assert (outside_dir / "keep.txt").exists(), (
             "cleanup followed a link and deleted a tree outside the workspace"
@@ -335,6 +337,16 @@ def test_workspace_creation_failure_is_an_error_not_a_crash(tmp_path, monkeypatc
     readonly.mkdir()
     os.chmod(readonly, 0o500)
     monkeypatch.setattr(tempfile, "tempdir", str(readonly))
+
+    try:
+        probe = tempfile.mkdtemp()
+    except OSError:
+        pass
+    else:
+        # Root ignores the missing write bit. Nothing to assert about a
+        # failure this environment will not produce.
+        shutil.rmtree(probe, ignore_errors=True)
+        pytest.skip("this environment can create a workspace under a 0o500 dir")
 
     result = _test_e2e_chat(sys.executable, "irrelevant {query}", _TIMEOUT_S)
     assert result.status is TestStatus.ERROR, (
