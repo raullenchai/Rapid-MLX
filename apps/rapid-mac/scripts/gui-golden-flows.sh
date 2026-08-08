@@ -797,23 +797,46 @@ flow_browse_all_destination() {
     log "  landed on Model Management"
 
     # 3. Settings is actually USABLE, not merely present. A window opened
-    #    behind a modal sheet still publishes its whole subtree to AX, so
-    #    every assertion above would pass on a window the user cannot touch.
-    #    Only driving one of its controls tells them apart.
-    press "$OUT/ba-settings.json" Settings.Category.appearance "$OUT/ba-settings-drive.json" \
-        || die "the Settings window opened but does not accept input — it is behind the wizard sheet"
-    log "  Settings accepts input"
+    #    behind a modal sheet still publishes its whole subtree to AX, and
+    #    AXUIElementPerformAction reaches it there too — so neither the tree
+    #    nor an AXPress can tell a usable window from a trapped one. Focus it,
+    #    click it the way a person would, and require the panel to change.
+    pb window focus --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-focus.json" \
+        || die "could not focus the Settings window the button opened"
+    local cx cy
+    read -r cx cy < <(jq -r '.data.ui_elements[]
+                             | select(.identifier == "Settings.Category.privacy")
+                             | [(.bounds.x + .bounds.width / 2), (.bounds.y + .bounds.height / 2)]
+                             | @tsv' "$OUT/ba-settings.json")
+    [[ -n "$cx" && -n "$cy" ]] || die "Settings.Category.privacy has no bounds to click"
+    pb click --coords "$cx,$cy" --global-coords --app "PID:$APP_PID" --json > "$OUT/ba-click.json" \
+        || die "the Settings window did not accept a click — it is behind the wizard sheet"
+    # A real click that changed nothing is the same failure as no click at all,
+    # so require the panel's own control to appear, not merely that the press
+    # returned success.
+    wait_settings_stable "$OUT/ba-privacy.json" Settings.Privacy.TelemetryToggle
+    log "  Settings is focused and responds to a real click"
 
     # 4. Close it, the way the user would, and land back on the wizard with
     #    the same pick. This is the half the bug actually broke.
-    pb menu click --app "PID:$APP_PID" --item 'Close' --json > "$OUT/ba-close.json" \
+    #
+    #    Scoped to the window, not the app: ``menu click --app`` routes Close
+    #    to whichever window is key, which on a bad day is the main one — and
+    #    then every assertion below runs against a wizard that was never
+    #    actually returned to.
+    pb menu click --window-id "$SETTINGS_WINDOW_ID" --item 'Close' --json > "$OUT/ba-close.json" \
         || die "could not close the Settings window"
+    local closed=0
     for ((i=0; i<40; i++)); do
         pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows-after.json"
-        jq -e '[.data.windows[]? | select(.title == "Settings")] | length == 0' \
-            "$OUT/ba-windows-after.json" >/dev/null && break
+        if jq -e '[.data.windows[]? | select(.title == "Settings")] | length == 0' \
+            "$OUT/ba-windows-after.json" >/dev/null; then closed=1; break; fi
         sleep 0.25
     done
+    # Not a cosmetic check: with Settings still open, the app-wide AX dump
+    # below carries the wizard AND the Settings tree, so the round-trip
+    # assertion would pass without any round trip having happened.
+    [[ "$closed" == 1 ]] || die "the Settings window did not close — the round trip below would be vacuous"
 
     wait_identifier Quickstart.BrowseAll "$OUT/ba-after.json"
     jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
