@@ -495,9 +495,7 @@ class EngineCore:
             # 503 until restart). Bounded sweep per tick so a single
             # tick cannot trash the whole prefix cache on a transient
             # spike.
-            paged = getattr(self.scheduler, "paged_cache_manager", None)
-            if paged is not None:
-                paged.release_pressure_blocks(max_blocks=32)
+            self.scheduler.release_paged_cache_blocks_under_pressure(max_blocks=32)
         except Exception as evict_exc:
             if not getattr(self, "_pressure_evict_error_logged", False):
                 self._pressure_evict_error_logged = True

@@ -5417,7 +5417,33 @@ class Scheduler:
                 # unreachable while freeing nothing, and returning False on
                 # it would halt the caller's eviction loop prematurely.
                 for oldest_hash in list(index.keys()):
-                    _, block_ids = index[oldest_hash]
+                    cached_tokens, block_ids = index[oldest_hash]
+                    # An index entry can outlive its physical blocks. If one
+                    # of those slots was subsequently reallocated, ref_count
+                    # alone cannot distinguish the new owner's live KV from
+                    # the old prefix. Prune the stale index entry without
+                    # touching any block unless every slot still owns the
+                    # token slice recorded by this prefix.
+                    stale = False
+                    bs = self.block_aware_cache.block_size
+                    for j, bid in enumerate(block_ids):
+                        blk = paged.allocated_blocks.get(bid)
+                        block_tokens = cached_tokens[j * bs : (j + 1) * bs]
+                        expected_hash = paged.compute_block_hash(block_tokens)
+                        # Missing blocks are handled by the eligibility
+                        # check below. A ``None`` hash is retained for
+                        # compatibility with legacy/unhashed fixtures; all
+                        # newly stored production blocks record ownership.
+                        if (
+                            blk is not None
+                            and blk.hash_value is not None
+                            and blk.hash_value != expected_hash
+                        ):
+                            stale = True
+                            break
+                    if stale:
+                        index.pop(oldest_hash)
+                        return True
                     # Skip an entry only when NONE of its blocks are
                     # clearable — absent, pinned, or still shared with a
                     # live request (ref_count > 1). Popping such an entry
@@ -5473,6 +5499,43 @@ class Scheduler:
                 return False
             return False
         return False
+
+    def release_paged_cache_blocks_under_pressure(self, max_blocks: int = 32) -> int:
+        """Drop reusable free-block KV only while Metal pressure is active.
+
+        The engine calls this on its periodic pressure tick. Keeping the
+        threshold decision here prevents normal, below-threshold operation
+        from continually destroying reusable paged-cache blocks.
+        """
+        paged = self.paged_cache_manager
+        if paged is None:
+            return 0
+        cap = self._resolve_metal_cap_bytes()
+        if cap <= 0:
+            # The explicit admission cap is optional (default util=0), but
+            # paged-cache slabs still need an emergency pressure ceiling.
+            # Fall back to Metal's recommended working set so default
+            # deployments reclaim near device exhaustion instead of either
+            # reclaiming constantly or retaining free KV until OOM.
+            try:
+                if not mx.metal.is_available():
+                    return 0
+                info = mx.device_info()
+                cap = int(
+                    info.get(
+                        "max_recommended_working_set_size",
+                        info.get("memory_size", 0),
+                    )
+                    or 0
+                )
+            except Exception:
+                return 0
+            if cap <= 0:
+                return 0
+        threshold = int(cap * self._resolve_pressure_evict_fraction())
+        if self._current_metal_active_bytes() < threshold:
+            return 0
+        return paged.release_pressure_blocks(max_blocks=max_blocks)
 
     def add_request(self, request: Request) -> None:
         """

@@ -338,6 +338,7 @@ class TestEngineCoreInvokesPressureEvict:
         Behavioural pin — stubs the scheduler and counts calls."""
         scheduler = MagicMock()
         scheduler.evict_prefix_cache_under_pressure = MagicMock(return_value=0)
+        scheduler.release_paged_cache_blocks_under_pressure = MagicMock(return_value=0)
         ec = self._build_minimal_engine_core(scheduler)
 
         ec._run_pressure_evict_tick()
@@ -349,6 +350,7 @@ class TestEngineCoreInvokesPressureEvict:
             "per invocation, with no internal gating — see codex "
             "round 1 BLOCKING on PR #797."
         )
+        assert scheduler.release_paged_cache_blocks_under_pressure.call_count == 3
 
     def test_pressure_tick_logs_warning_once_on_eviction_failure(self, caplog):
         """Codex round 2 BLOCKING #2 regression: when the scheduler
@@ -363,6 +365,7 @@ class TestEngineCoreInvokesPressureEvict:
         scheduler = MagicMock()
         boom = RuntimeError("simulated cache eviction failure")
         scheduler.evict_prefix_cache_under_pressure = MagicMock(side_effect=boom)
+        scheduler.release_paged_cache_blocks_under_pressure = MagicMock(return_value=0)
         ec = self._build_minimal_engine_core(scheduler)
 
         with caplog.at_level(logging.WARNING, logger="vllm_mlx.engine_core"):
@@ -395,6 +398,7 @@ class TestEngineCoreInvokesPressureEvict:
 
         scheduler = MagicMock()
         scheduler.evict_prefix_cache_under_pressure = MagicMock(return_value=0)
+        scheduler.release_paged_cache_blocks_under_pressure = MagicMock(return_value=0)
         ec = self._build_minimal_engine_core(scheduler)
 
         with caplog.at_level(logging.WARNING, logger="vllm_mlx.engine_core"):
@@ -951,3 +955,71 @@ class TestBlockAwareCacheEviction:
         # matches — the ownership check must turn this into a miss.
         blk.hash_value = paged.compute_block_hash([99, 98, 97, 96])
         assert bac._find_best_prefix_match(tokens) is None
+
+    def test_pressure_eviction_does_not_free_reallocated_block(self):
+        """A stale index must never evict a slot now owned by another request."""
+        sched = self._make_paged_scheduler()
+        bac = sched.block_aware_cache
+        paged = bac.paged_cache
+        tokens = [1, 2, 3, 4]
+        blk = paged.allocate_block()
+        blk.cache_data = [MagicMock()]
+        bac._prefix_index[paged.compute_block_hash(tokens)] = (tokens, [blk.block_id])
+
+        # Simulate the same physical slot being reused for unrelated live KV.
+        other_tokens = [9, 8, 7, 6]
+        blk.hash_value = paged.compute_block_hash(other_tokens)
+        original_data = blk.cache_data
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+        ):
+            assert sched.evict_prefix_cache_under_pressure(max_evict=1) == 1
+
+        assert blk.cache_data is original_data
+        assert blk.block_id in paged.allocated_blocks
+        assert blk.ref_count == 1
+        assert not bac._prefix_index
+
+    def test_free_block_sweep_is_gated_by_metal_pressure(self):
+        sched = self._make_paged_scheduler()
+        paged = sched.paged_cache_manager
+        free = paged.free_block_queue.fake_head.next_free_block
+        free.cache_data = [MagicMock()]
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=80 * 10**9),
+        ):
+            assert sched.release_paged_cache_blocks_under_pressure() == 0
+        assert free.cache_data is not None
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=95 * 10**9),
+            patch("mlx.core.clear_cache"),
+        ):
+            assert sched.release_paged_cache_blocks_under_pressure() == 1
+        assert free.cache_data is None
+
+    def test_free_block_sweep_uses_device_limit_without_explicit_cap(self):
+        sched = self._make_paged_scheduler(gpu_memory_utilization=0.0)
+        paged = sched.paged_cache_manager
+        free = paged.free_block_queue.fake_head.next_free_block
+        free.cache_data = [MagicMock()]
+
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=0),
+            patch.object(sched, "_current_metal_active_bytes", return_value=95),
+            patch("vllm_mlx.scheduler.mx.metal.is_available", return_value=True),
+            patch(
+                "vllm_mlx.scheduler.mx.device_info",
+                return_value={"max_recommended_working_set_size": 100},
+            ),
+            patch("mlx.core.clear_cache"),
+        ):
+            assert sched.release_paged_cache_blocks_under_pressure() == 1
+        assert free.cache_data is None
