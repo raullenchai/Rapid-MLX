@@ -759,6 +759,8 @@ Open the picker any time to switch models.
 /// ``QuickstartCoordinator`` reports the surface should show.
 struct QuickstartView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
+    @Environment(\.dismiss) private var dismiss
+
     /// The ONLY mechanism that opens this app's Settings. It declares a real
     /// ``Window("Settings", id: "settings")`` and no SwiftUI ``Settings``
     /// scene, so ``@Environment(\.openSettings)`` — which this view used to
@@ -785,6 +787,9 @@ struct QuickstartView: View {
     /// on the alphabetical fallback (#1653). Browsing is handled in this view
     /// now, by ``browseAllModels()``.
     var onSkip: () -> Void
+
+    /// Temporarily lower the wizard while its Settings catalogue is open.
+    var onBrowseAll: () -> Void
 
     /// Callback the parent supplies for seeding the welcome message
     /// into the active session. Closing over ``SessionStore`` /
@@ -1383,21 +1388,28 @@ struct QuickstartView: View {
         .buttonStyle(.borderless)
     }
 
-    /// Open Settings on the model catalogue, leaving Quickstart standing.
+    /// Open Settings on the model catalogue and restore Quickstart on return.
     ///
-    /// The wizard deliberately stays up behind the Settings window. "Browse all
-    /// models" is a request to see the other options, not to abandon setup, so
-    /// closing Settings has to put the user back where they were with the pick
-    /// they had already made. Dismissing instead is what made the link a dead
-    /// end (#1653): the wizard vanished, the selection was discarded, and the
-    /// user landed on whatever the alphabetical fallback chose — a 7.6 GB
-    /// download they never asked for.
+    /// The sheet's modal session must end before the separate Settings window
+    /// opens. The router restores the wizard when Settings closes, preserving
+    /// the user's existing pick. Without that handoff, browsing became a dead
+    /// end and fell back to an unrelated model (#1653).
     ///
     /// Routed through ``SettingsRouter`` for its ordering rule (stage the tab,
     /// THEN open), and through ``openWindow(id: "settings")`` rather than
     /// ``openSettings()`` — see the ``openWindow`` property above.
     private func browseAllModels() {
-        settingsRouter.route(to: .modelManagement) { openWindow(id: "settings") }
+        settingsRouter.beginQuickstartCatalogRoundTrip()
+        onBrowseAll()
+        dismiss()
+        // End the sheet's AppKit modal session before opening another window.
+        // Opening synchronously leaves Settings visible to AX but unable to
+        // accept real foreground input until the stale modal session unwinds.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            settingsRouter.route(to: .modelManagement) {
+                openWindow(id: "settings")
+            }
+        }
     }
 
     private func handleQuickstartFailureAction(_ action: FailureDiagnosis.Action) {

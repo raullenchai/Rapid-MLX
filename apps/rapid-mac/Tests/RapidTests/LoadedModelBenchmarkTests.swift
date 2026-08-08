@@ -75,6 +75,19 @@ struct LoadedModelBenchmarkTests {
         #expect(body["stream"] as? Bool == false)
     }
 
+    @Test("Speed test adds the OpenAI version path to the desktop server root")
+    func desktopServerRootRequest() throws {
+        let request = try BenchmarkRunner.loadedBenchmarkRequest(
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            bearer: "",
+            alias: "fake-alias",
+            maxTokens: 8,
+            prompt: "warm up"
+        )
+
+        #expect(request.url?.absoluteString == "http://127.0.0.1:8123/v1/chat/completions")
+    }
+
     @Test("Displayed speed uses completion tokens over measured wall time")
     func completionSpeed() {
         let measurement = BenchmarkRunner.LoadedMeasurement(

@@ -76,21 +76,31 @@ struct QuickstartBrowseAllDestinationTests {
         )
     }
 
-    @Test("browseAllModels() stages the models tab, then opens Settings")
+    @Test("browseAllModels() ends the sheet, then stages the models tab and opens Settings")
     func browseAllModelsRoutesToModelManagement() throws {
         let source = try Self.quickstartSource
-        #expect(
-            source.contains(
-                "settingsRouter.route(to: .modelManagement) { openWindow(id: \"settings\") }"
-            ),
-            """
-            browseAllModels() must route through SettingsRouter to the \
-            modelManagement tab. Opening Settings on the user's last-used tab \
-            is a different bug wearing the same green check, and \
-            openSettings() targets a scene this app does not declare — see \
-            OpenSettingsActionAbsenceTests.
-            """
-        )
+        let requiredInOrder = [
+            "settingsRouter.beginQuickstartCatalogRoundTrip()",
+            "onBrowseAll()",
+            "dismiss()",
+            "settingsRouter.route(to: .modelManagement)",
+            "openWindow(id: \"settings\")",
+        ]
+        var cursor = source.startIndex
+        for needle in requiredInOrder {
+            guard let range = source.range(of: needle, range: cursor..<source.endIndex) else {
+                Issue.record(
+                    """
+                    browseAllModels() is missing `\(needle)`. The flow must lower \
+                    Quickstart's modal sheet, preserve the selection through the \
+                    one-shot router handoff, and open Model Management rather than \
+                    the user's last-used Settings tab.
+                    """
+                )
+                return
+            }
+            cursor = range.upperBound
+        }
     }
 
     @Test("Dismissing the wizard is reachable from exactly one control")

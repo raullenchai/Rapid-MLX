@@ -43,6 +43,7 @@ struct ContentView: View {
     @SceneStorage("Rapid.showLogs") private var showLogs: Bool = false
     /// Per-session "browse all models" dismissal of the Quickstart card.
     @State private var quickstartDismissedThisSession: Bool = false
+    @Environment(SettingsRouter.self) private var settingsRouter
     /// #223: launch-time auto-start "needs download" state — the empty
     /// state names the pending pull when non-nil.
     @State private var autoStartPendingDownload: (alias: String, sizeText: String?)?
@@ -255,6 +256,9 @@ struct ContentView: View {
         // setup first".
         .sheet(isPresented: quickstartSheetPresented) {
             quickstartSheet
+        }
+        .onChange(of: settingsRouter.quickstartReturnGeneration) { _, _ in
+            quickstartDismissedThisSession = false
         }
         // Per-fetch approval for the ``browse`` tool. Skipped entirely when
         // the user has turned on auto-approve in Settings (resolved before a
@@ -481,6 +485,7 @@ struct ContentView: View {
             downloads: downloads,
             server: server,
             onSkip: { quickstartDismissedThisSession = true },
+            onBrowseAll: { quickstartDismissedThisSession = true },
             onSeedWelcome: { true }
         )
         // QuickstartView was written for the detail column and its comments

@@ -61,6 +61,17 @@ done
 log() { printf '[gui-golden] %s\n' "$*"; }
 die() { printf '[gui-golden] FAIL: %s\n' "$*" >&2; exit 1; }
 pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
+pb_click_coords() {
+    local coords="$1"
+    shift
+    # Peekaboo 3.0 uses screen coordinates by default and auto-focuses the
+    # target window. Newer releases make those semantics explicit.
+    if peekaboo click --help 2>&1 | grep -q -- --global-coords; then
+        pb click --coords "$coords" --global-coords --foreground "$@"
+    else
+        pb click --coords "$coords" "$@"
+    fi
+}
 
 cleanup_persona() {
     if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
@@ -263,7 +274,7 @@ dismiss_first_run() {
     if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$tree" >/dev/null; then
         if ! press "$tree" TelemetryConsent.DontShare "$OUT/consent.json" 2>/dev/null; then
             read -r x y < <(jq -r '.data.ui_elements[] | select(.identifier == "TelemetryConsent.DontShare") | [(.bounds.x + .bounds.width / 2), (.bounds.y + .bounds.height / 2)] | @tsv' "$tree")
-            pb click --coords "$x,$y" --global-coords --app "PID:$APP_PID" --json > "$OUT/consent-coordinate-fallback.json"
+            pb_click_coords "$x,$y" --app "PID:$APP_PID" --json > "$OUT/consent-coordinate-fallback.json"
         fi
         sleep 0.5
         see_main "$tree"
@@ -648,7 +659,11 @@ flow_low_memory_choice() {
     sheet_region="$(jq -r '.data.ui_elements[] | select(.role == "AXSheet") | [.bounds.x, .bounds.y, .bounds.width, .bounds.height] | map(round) | @csv' "$OUT/low-memory-selected.json" | head -1)"
     [[ -n "$sheet_region" ]] || die "Quickstart sheet bounds are absent from AX"
     pb app switch --to "PID:$APP_PID" --verify --json > "$OUT/focus-before-image.json"
-    pb image --mode area --region "$sheet_region" --path "$OUT/low-memory-selected.png" --json \
+    # Capture the containing window instead of relying on Peekaboo's newer
+    # area/region flags. The AX assertion above still proves that the sheet is
+    # present, while a window capture works with both v3.0 beta and current
+    # Peekaboo releases used across our dogfood Macs.
+    pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/low-memory-selected.png" --json \
         > "$OUT/low-memory-selected-image.json"
 
     jq -n '{success: true, assertion: "onboarding exposes and selects an honestly labelled sub-1B low-memory fallback"}' \
@@ -887,7 +902,7 @@ flow_browse_all_destination() {
     #    AXUIElementPerformAction reaches it there too — so neither the tree
     #    nor an AXPress can tell a usable window from a trapped one. Focus it,
     #    click it the way a person would, and require the panel to change.
-    pb window focus --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-focus.json" \
+    pb window focus --app "PID:$APP_PID" --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-focus.json" \
         || die "could not focus the Settings window the button opened"
     # Coordinates re-read AFTER the focus, because focusing can raise or move
     # the window and a stale point would click whatever now sits there.
@@ -904,8 +919,9 @@ flow_browse_all_destination() {
     # "trapped behind a modal sheet" as the AXPress this replaced.
     # ``--window-id`` also pins the click to the Settings window rather than
     # whatever else the app has on screen at that point.
-    pb click --coords "$cx,$cy" --global-coords --foreground \
-        --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-click.json" \
+    pb_click_coords "$cx,$cy" \
+        --app "PID:$APP_PID" --window-id "$SETTINGS_WINDOW_ID" \
+        --json > "$OUT/ba-click.json" \
         || die "the Settings window did not accept a real click — it is behind the wizard sheet"
     # A real click that changed nothing is the same failure as no click at all,
     # so require the panel's own control to appear, not merely that the press
@@ -916,12 +932,12 @@ flow_browse_all_destination() {
     # 4. Close it, the way the user would, and land back on the wizard with
     #    the same pick. This is the half the bug actually broke.
     #
-    #    Scoped to the window, not the app: ``menu click --app`` routes Close
-    #    to whichever window is key, which on a bad day is the main one — and
-    #    then every assertion below runs against a wizard that was never
-    #    actually returned to.
-    pb menu click --window-id "$SETTINGS_WINDOW_ID" --item 'Close' --json > "$OUT/ba-close.json" \
-        || die "could not close the Settings window"
+    press "$OUT/ba-privacy.json" Settings.BackToQuickstart "$OUT/ba-close.json" \
+        || die "could not activate Back to setup"
+
+    # The SwiftUI scene may retain an internal window object after dismissal,
+    # so ask AX whether a user-visible Settings window remains. Do not accept a
+    # failed dump as evidence that closing succeeded.
     local closed=0
     probe=2
     for ((i=0; i<40; i++)); do
@@ -944,6 +960,11 @@ flow_browse_all_destination() {
     fi
 
     wait_identifier Quickstart.BrowseAll "$OUT/ba-after.json"
+    jq -e '[.data.ui_elements[]? | select(.identifier == "Settings.BackToQuickstart")] | length == 0' \
+        "$OUT/ba-after.json" >/dev/null \
+        || die "Settings remained interactive after returning to setup"
+    pb image --mode screen --screen-index 0 --path "$OUT/ba-after.png" --json \
+        > "$OUT/ba-after-image.json"
     jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
         "$OUT/ba-after.json" >/dev/null \
         || die "the wizard came back without the user's selection — browsing must not discard it (#1653)"

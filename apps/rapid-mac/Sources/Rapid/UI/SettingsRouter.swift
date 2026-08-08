@@ -48,6 +48,22 @@ final class SettingsRouter {
     /// land on the user's last selected tab."
     var requestedCategory: SettingsView.Category?
 
+    /// One-shot handoff used by Quickstart's Browse all round trip. The
+    /// onboarding sheet must be lowered before opening a separate Settings
+    /// window, otherwise AppKit's modal session traps that window.
+    private(set) var quickstartReturnGeneration = 0
+    private(set) var quickstartCatalogReturnPending = false
+
+    func beginQuickstartCatalogRoundTrip() {
+        quickstartCatalogReturnPending = true
+    }
+
+    func completeQuickstartCatalogRoundTrip() {
+        guard quickstartCatalogReturnPending else { return }
+        quickstartCatalogReturnPending = false
+        quickstartReturnGeneration &+= 1
+    }
+
     /// Which Settings tab a failure-recovery action deep-links to, or `nil`
     /// when the action is carried out in place (retry, restart, switch
     /// download source) and must NOT open Settings at all.

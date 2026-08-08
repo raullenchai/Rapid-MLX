@@ -1,3 +1,4 @@
+import AppKit
 import Carbon.HIToolbox
 import SwiftUI
 import UniformTypeIdentifiers
@@ -38,6 +39,7 @@ struct SettingsView: View {
     /// "Failed: …" inline when the dedicated update window is
     /// closed.
     @Environment(Installer.self) private var appInstaller
+    @Environment(\.dismissWindow) private var dismissWindow
     /// #260: persisted "hide Dock icon on close" choice. Settings →
     /// App surfaces a toggle so the user can change their mind
     /// without re-triggering the one-time prompt, plus a "Reset
@@ -278,20 +280,45 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 480)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if router.quickstartCatalogReturnPending {
+                VStack(spacing: 0) {
+                    HStack {
+                        QuickstartBackButton { window in
+                            dismissWindow(id: "settings")
+                            window.close()
+                            DispatchQueue.main.async {
+                                router.completeQuickstartCatalogRoundTrip()
+                            }
+                        }
+                        .frame(width: 130, height: 28)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    Divider()
+                }
+            }
+        }
         .onAppear {
-            // v0.4.37: consume any pending deep-link request. Fires
-            // when the Settings scene is created (typical for the
-            // FIRST open this app session) — covers the case where
-            // a deep-link click set ``requestedCategory`` before
-            // ever opening Settings, so the window opens already on
-            // the target tab instead of the default Tools tab. The
-            // ``.onChange`` below handles the SECOND case (Settings
-            // already open and being re-focused by another deep-link
-            // click).
+            // v0.4.37: consume any pending deep-link request. Fires when the
+            // Settings scene is created (typical for the first open this app
+            // session). The onChange below handles an already-open window.
             consumeRouterRequest()
         }
         .onChange(of: router.requestedCategory) { _, _ in
             consumeRouterRequest()
+        }
+        .onDisappear {
+            // onDisappear fires while AppKit is still closing the window.
+            // Restoring the onboarding sheet synchronously would start a new
+            // modal session and trap the Settings window mid-close.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if router.quickstartCatalogReturnPending {
+                    router.completeQuickstartCatalogRoundTrip()
+                }
+            }
         }
     }
 
@@ -950,5 +977,43 @@ struct SettingsView: View {
         case "current_datetime": return "clock"
         default: return "wrench.and.screwdriver"
         }
+    }
+}
+
+/// AppKit-backed because AXPress on a SwiftUI button in a secondary Window can
+/// report success without invoking its closure while another app window remains
+/// main. NSButton's target/action contract is deterministic for both people and
+/// Accessibility-first automation.
+private struct QuickstartBackButton: NSViewRepresentable {
+    let action: (NSWindow) -> Void
+
+    final class Coordinator: NSObject {
+        var action: (NSWindow) -> Void
+
+        init(action: @escaping (NSWindow) -> Void) {
+            self.action = action
+        }
+
+        @MainActor @objc func invoke(_ sender: NSButton) {
+            guard let window = sender.window else { return }
+            action(window)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(title: "Back to setup", target: context.coordinator, action: #selector(Coordinator.invoke(_:)))
+        button.bezelStyle = .rounded
+        button.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        button.setAccessibilityIdentifier("Settings.BackToQuickstart")
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
     }
 }

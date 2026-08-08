@@ -54,4 +54,23 @@ struct SettingsRouterTests {
         r.requestedCategory = .app
         #expect(r.requestedCategory == .app)
     }
+
+    @Test("Quickstart catalogue return is one-shot")
+    func quickstartCatalogueReturn() {
+        let r = SettingsRouter()
+        #expect(r.quickstartReturnGeneration == 0)
+        #expect(!r.quickstartCatalogReturnPending)
+
+        r.completeQuickstartCatalogRoundTrip()
+        #expect(r.quickstartReturnGeneration == 0)
+
+        r.beginQuickstartCatalogRoundTrip()
+        #expect(r.quickstartCatalogReturnPending)
+        r.completeQuickstartCatalogRoundTrip()
+        #expect(!r.quickstartCatalogReturnPending)
+        #expect(r.quickstartReturnGeneration == 1)
+
+        r.completeQuickstartCatalogRoundTrip()
+        #expect(r.quickstartReturnGeneration == 1)
+    }
 }

@@ -17,13 +17,17 @@ Rapid-MLX Desktop app without loading a real model.
    server: one server start, then one warm-up plus one measured request, with
    no second model process and no duplicate weight load.
 
+8. “Browse all models” lowers the onboarding sheet, opens Model Management in
+   Settings, accepts a foreground interaction, and returns to the wizard with
+   the user's original model selection intact. A final full-screen capture
+   records the state a person actually sees.
 **Invariants** — properties that must hold, not paths a user walks. These were
 added after a release where every escaped defect landed on a surface no journey
 covered, and each one names the defect it would have caught:
 
-8. `update-state` — Settings → App must name the version the app actually is.
-9. `no-dead-controls` — every Settings panel must expose controls of its own.
-10. `catalog-integrity` — a model that cannot chat must never be offered as one.
+9. `update-state` — Settings → App must name the version the app actually is.
+10. `no-dead-controls` — every Settings panel must expose controls of its own.
+11. `catalog-integrity` — a model that cannot chat must never be offered as one.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below
@@ -186,11 +190,18 @@ Run one journey or retain its isolated persona for diagnosis:
 ./scripts/gui-golden-flows.sh --flow low-memory-choice
 ./scripts/gui-golden-flows.sh --flow loaded-model-benchmark
 ./scripts/gui-golden-flows.sh --flow chat-restore --keep
+./scripts/gui-golden-flows.sh --flow browse-all-destination
 ./scripts/gui-golden-flows.sh --flow no-dead-controls
 ```
 
-The suite needs a **local login session** — not SSH or tmux. It also needs the
-screen to stay awake: when the session goes idle, `CGSSessionScreenIsLocked`
+The suite needs an active **GUI login session**. A command launched directly by
+`sshd` or tmux does not inherit Terminal's Screen Recording and Accessibility
+grants. Remote runs are supported by asking the logged-in Terminal app to run
+the command (for example with `osascript ... do script ...`); the test process
+then has the same TCC identity as that Terminal session.
+
+The screen must also stay awake: when the session goes idle,
+`CGSSessionScreenIsLocked`
 flips to `Yes`, every app reports zero windows through AX, and `screencapture`
 returns wallpaper. That looks exactly like a broken app. Hold the session with
 `caffeinate -dimsu -t <seconds>` for the length of the run — `-u` is the
