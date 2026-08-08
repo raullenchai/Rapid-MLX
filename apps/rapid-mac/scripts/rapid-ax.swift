@@ -19,6 +19,13 @@ let application = AXUIElementCreateApplication(pid)
 var visited = Set<CFHashCode>()
 var records = [[String: Any]]()
 var match: AXUIElement?
+// The application root's children ARE the window list, so a failed read there
+// is not "the app has no windows", it is "we never got to look" — and emitting
+// the two as the same successful, window-less dump is how a caller waiting for
+// a window to DISAPPEAR takes a transient AX failure as proof that it closed.
+// Nothing deeper needs this: the depth and record guards can clip a subtree
+// without hiding a window, because windows only ever sit at depth 1.
+var rootChildrenRead = false
 let wanted = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : nil
 
 func attribute(_ element: AXUIElement, _ name: CFString) -> AnyObject? {
@@ -95,6 +102,7 @@ func walk(_ element: AXUIElement, depth: Int) {
 
     if match == nil, identifier == wanted { match = element }
     guard let children = attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] else { return }
+    if depth == 0 { rootChildrenRead = true }
     for child in children {
         // The application root also owns the global menu bar. Traversing it
         // captures unrelated macOS Recent Items in test artifacts and adds
@@ -110,6 +118,10 @@ func walk(_ element: AXUIElement, depth: Int) {
 walk(application, depth: 0)
 
 if command == "dump" {
+    // Fail loudly rather than hand back a plausible, empty tree.
+    guard rootChildrenRead else {
+        fail("could not read the application's window list (AXChildren on the root)")
+    }
     let payload: [String: Any] = [
         "success": true,
         "data": ["pid": pid, "ui_elements": records]

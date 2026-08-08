@@ -211,12 +211,28 @@ wait_identifier() {
 # one that polls for a title to APPEAR can be satisfied by a window a previous
 # persona in the same run opened. The app's own AX tree is authoritative for
 # both directions.
+#
+# Three outcomes, not two: 0 = present, 1 = absent, 2 = could not observe.
+# Folding the third into "absent" recreates the very bug above in a new place —
+# one failed dump, one unparseable file, and a caller waiting for a window to
+# close concludes that it closed. Callers must branch on all three.
 ax_window_present() {
-    local title="$1" destination="$2"
-    "$AX_DRIVER" dump "$APP_PID" > "$destination" 2>/dev/null || return 1
+    local title="$1" destination="$2" status
+    "$AX_DRIVER" dump "$APP_PID" > "$destination" 2>/dev/null || return 2
+    # A dump the driver refused to vouch for says nothing either way.
+    jq -e '.success == true and (.data.ui_elements | type) == "array"' \
+        "$destination" >/dev/null 2>&1 || return 2
+    status=0
     jq -e --arg t "$title" \
         '[.data.ui_elements[]? | select(.role == "AXWindow" and .title == $t)] | length > 0' \
-        "$destination" >/dev/null
+        "$destination" >/dev/null 2>&1 || status=$?
+    # jq exits 1 only for a well-formed query whose answer was false; anything
+    # else (2 usage, 3 compile, 4 no output) is a broken observation.
+    case "$status" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 element_field() {
@@ -778,12 +794,36 @@ flow_browse_all_destination() {
     # Choose a card that is NOT the default. The bug discarded the user's
     # selection; asserting the survival of a pick nobody made proves nothing,
     # so make one, and make it a different one.
-    local chosen
-    chosen="$(jq -r '[.data.ui_elements[]?
-                      | select((.identifier // "") | startswith("Quickstart.Choice."))
-                      | select(.selected != true)][0].identifier // empty' \
-              "$OUT/ba-chooser.json")"
-    [[ -n "$chosen" ]] || die "the chooser offers no unselected model card to pick"
+    #
+    # Find the default POSITIVELY and exclude it by identifier — never pick by
+    # `.selected != true`. Measured: SwiftUI publishes AXSelected only on the
+    # card that IS selected; the other three omit the attribute entirely, and
+    # rapid-ax also omits an attribute whose read failed. Absence therefore
+    # means "not selected OR we failed to look", and the two are
+    # indistinguishable by construction, not merely on a bad day. A `!= true`
+    # pick can thus hand back the default itself, after which the round trip at
+    # the end asserts only that the default is still the default — which stays
+    # true when the wizard throws the user's choice away, i.e. the bug walks
+    # straight through the flow written to catch it (#1653).
+    #
+    # Requiring exactly one card to claim selection is what keeps this honest:
+    # if that read is the one that failed, the count is 0 and we retry rather
+    # than quietly promoting some other card to "the default".
+    local i chosen=""
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ba-chooser.json"
+        chosen="$(jq -r '[.data.ui_elements[]?
+                          | select((.identifier // "") | startswith("Quickstart.Choice."))]
+                         | (map(select(.selected == true))) as $default
+                         | if ($default | length) != 1 then empty
+                           else (map(select(.identifier != $default[0].identifier))[0].identifier // empty)
+                           end' \
+                  "$OUT/ba-chooser.json")"
+        if [[ -n "$chosen" ]]; then break; fi
+        sleep 0.25
+    done
+    [[ -n "$chosen" ]] \
+        || die "the chooser never showed exactly one selected card with another to pick — AXSelected did not read cleanly"
     press "$OUT/ba-chooser.json" "$chosen" "$OUT/ba-choose.json" \
         || die "$chosen is not pressable"
     sleep 0.5
@@ -798,16 +838,32 @@ flow_browse_all_destination() {
 
     # 1. It opened the catalogue. `open_settings` drives the menu, so assert
     #    the window the BUTTON opened rather than opening one ourselves.
-    local i opened=0
+    local opened=0 probe=2
     for ((i=0; i<40; i++)); do
-        if ax_window_present Settings "$OUT/ba-settings-window.json"; then opened=1; break; fi
+        probe=0; ax_window_present Settings "$OUT/ba-settings-window.json" || probe=$?
+        if [[ "$probe" == 0 ]]; then opened=1; break; fi
+        # probe == 2 is "we never got to look" — keep looking, and if the
+        # budget runs out still un-observed, blame the driver, not the button.
         sleep 0.25
     done
-    [[ "$opened" == 1 ]] \
-        || die "Browse all models did not open anything — it is a dismiss button again (#1653)"
+    if [[ "$opened" != 1 ]]; then
+        if [[ "$probe" == 2 ]]; then
+            die "could not read the app's window list for 10s — the AX driver failed, so the button is untested"
+        fi
+        die "Browse all models did not open anything — it is a dismiss button again (#1653)"
+    fi
     # Only NOW ask peekaboo for the id, purely to target focus/click/menu at it.
-    pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json"
-    SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' "$OUT/ba-windows.json" | head -1)"
+    # A poll rather than one read: AX publishes a new window before CGWindow
+    # hands out a targetable id, and a one-shot here fails the flow for a race
+    # that has nothing to do with the button under test.
+    SETTINGS_WINDOW_ID=""
+    for ((i=0; i<40; i++)); do
+        pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json" 2>/dev/null || true
+        SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' \
+            "$OUT/ba-windows.json" 2>/dev/null | head -1)"
+        if [[ -n "$SETTINGS_WINDOW_ID" ]]; then break; fi
+        sleep 0.25
+    done
     [[ -n "$SETTINGS_WINDOW_ID" ]] || die "Settings is in the AX tree but peekaboo will not name its window"
 
     # 2. On the models tab, not merely "Settings somewhere". The wizard's own
@@ -857,14 +913,25 @@ flow_browse_all_destination() {
     pb menu click --window-id "$SETTINGS_WINDOW_ID" --item 'Close' --json > "$OUT/ba-close.json" \
         || die "could not close the Settings window"
     local closed=0
+    probe=2
     for ((i=0; i<40; i++)); do
-        if ! ax_window_present Settings "$OUT/ba-windows-after.json"; then closed=1; break; fi
+        probe=0; ax_window_present Settings "$OUT/ba-windows-after.json" || probe=$?
+        # ONLY an explicit 1 — a dump we actually read that does not contain
+        # the window. Accepting 2 here would let one failed dump stand in for
+        # the close, which is exactly the mistake this helper exists to make
+        # impossible to write.
+        if [[ "$probe" == 1 ]]; then closed=1; break; fi
         sleep 0.25
     done
     # Not a cosmetic check: with Settings still open, the app-wide AX dump
     # below carries the wizard AND the Settings tree, so the round-trip
     # assertion would pass without any round trip having happened.
-    [[ "$closed" == 1 ]] || die "the Settings window did not close — the round trip below would be vacuous"
+    if [[ "$closed" != 1 ]]; then
+        if [[ "$probe" == 2 ]]; then
+            die "could not read the app's window list for 10s — whether Settings closed is unknown, so the round trip below is untrustworthy"
+        fi
+        die "the Settings window did not close — the round trip below would be vacuous"
+    fi
 
     wait_identifier Quickstart.BrowseAll "$OUT/ba-after.json"
     jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
