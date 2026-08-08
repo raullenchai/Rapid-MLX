@@ -8,16 +8,19 @@ Rapid-MLX Desktop app without loading a real model.
 1. fresh install, consent, onboarding, and steady-state shell;
 2. Settings mutation and persistence across an app relaunch;
 3. basic chat, persisted conversation row, and restored transcript;
-4. a deliberately slow stream and semantic **Stop generating** action;
-5. model start, a one-shot sidecar crash, automatic respawn, and ready state.
-6. a memory-constrained user can see and select an honestly labelled sub-1B
+4. restored-thread tool availability: after relaunching and reopening a saved
+   conversation, the next real request must retain the prior user turn and
+   advertise both `web_search` and `browse`;
+5. a deliberately slow stream and semantic **Stop generating** action;
+6. model start, a one-shot sidecar crash, automatic respawn, and ready state;
+7. a memory-constrained user can see and select an honestly labelled sub-1B
    fallback instead of being sent back to a chooser whose smallest visible
-   model is the one that just failed the live-memory guard.
-7. “Speed on this Mac” benchmarks the model already resident in the desktop
+   model is the one that just failed the live-memory guard;
+8. “Speed on this Mac” benchmarks the model already resident in the desktop
    server: one server start, then one warm-up plus one measured request, with
-   no second model process and no duplicate weight load.
+   no second model process and no duplicate weight load;
 
-8. “Browse all models” lowers the onboarding sheet, opens Model Management in
+9. “Browse all models” lowers the onboarding sheet, opens Model Management in
    Settings, accepts a foreground interaction, and returns to the wizard with
    the user's original model selection intact. A final full-screen capture
    records the state a person actually sees.
@@ -25,9 +28,9 @@ Rapid-MLX Desktop app without loading a real model.
 added after a release where every escaped defect landed on a surface no journey
 covered, and each one names the defect it would have caught:
 
-9. `update-state` — Settings → App must name the version the app actually is.
-10. `no-dead-controls` — every Settings panel must expose controls of its own.
-11. `catalog-integrity` — a model that cannot chat must never be offered as one.
+10. `update-state` — Settings → App must name the version the app actually is.
+11. `no-dead-controls` — every Settings panel must expose controls of its own.
+12. `catalog-integrity` — a model that cannot chat must never be offered as one.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below
@@ -132,6 +135,23 @@ Every journey gets a unique bundle identifier and throwaway `HOME` through
 lifecycle evidence, so the suite does not download a model or put meaningful
 pressure on unified memory.
 
+### How GUI integration is tested
+
+`restored-tools` deliberately uses two independent witnesses. Accessibility
+drives the same controls a person uses: send a first turn, terminate and
+relaunch the app, reopen the saved conversation, and send a second turn. The
+fake OpenAI-compatible sidecar then records the request that actually crossed
+the process boundary. The flow fails unless that post-restore request contains
+the first user turn plus the `web_search` and `browse` schemas.
+
+This division avoids two common false greens: an AX-only test can be satisfied
+by canned text that never left the composer, while a request-only unit test
+does not prove that selecting a restored conversation wired the right state
+into Send. The flow covers both without a real model or public web dependency.
+Its contract is semantic rather than visual, so it retains raw AX/request
+artifacts but does not add another structural snapshot: `chat-depth.restored`
+already fingerprints the restored transcript hierarchy.
+
 ### Low-memory recovery
 
 The normal model picker intentionally hides sub-1B models: they fall below the
@@ -190,6 +210,7 @@ Run one journey or retain its isolated persona for diagnosis:
 ./scripts/gui-golden-flows.sh --flow low-memory-choice
 ./scripts/gui-golden-flows.sh --flow loaded-model-benchmark
 ./scripts/gui-golden-flows.sh --flow chat-restore --keep
+./scripts/gui-golden-flows.sh --flow restored-tools
 ./scripts/gui-golden-flows.sh --flow browse-all-destination
 ./scripts/gui-golden-flows.sh --flow no-dead-controls
 ```

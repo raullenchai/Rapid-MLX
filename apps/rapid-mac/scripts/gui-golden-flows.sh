@@ -30,7 +30,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, chat-depth,
+Flows: fresh-install, settings-persistence, chat-restore, restored-tools, chat-depth,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
@@ -916,6 +916,47 @@ flow_chat_restore() {
     cleanup_persona
 }
 
+flow_restored_tools() {
+    # A restored transcript is only useful if the next request is built with
+    # BOTH its old context and the current tool definitions. This is the GUI
+    # integration boundary for the reported "web search only works in a new
+    # chat" failure: the fake sidecar records the actual OpenAI request, so an
+    # on-screen canned answer cannot make the flow pass by itself.
+    start_persona restored-tools
+    dismiss_first_run
+    start_model
+    send_prompt "golden pre-restore context marker" tools-before
+    wait_send_idle "$OUT/tools-before-settled.json"
+
+    relaunch_persona
+    dismiss_first_run
+    wait_identifier Sidebar.NewChat "$OUT/tools-restored.json"
+    local conversation_id
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/tools-restored.json" | head -1)"
+    [[ -n "$conversation_id" ]] || die "restored tools conversation row was not exposed to AX"
+    press "$OUT/tools-restored.json" "$conversation_id" "$OUT/tools-open-restored.json"
+    wait_send_idle "$OUT/tools-restored-transcript.json"
+
+    send_prompt "golden existing-thread tools marker" tools-after
+    wait_send_idle "$OUT/tools-after-settled.json"
+    assert_transcript_turns "$OUT/tools-after-settled.json" 2
+    assert_tree_text "$OUT/tools-after-settled.json" "golden pre-restore context marker"
+    assert_tree_text "$OUT/tools-after-settled.json" "golden existing-thread tools marker"
+
+    jq -e '
+        select(.event == "chat_request")
+        | select(.user_texts[-1] == "golden existing-thread tools marker")
+        | select(.user_texts | index("golden pre-restore context marker"))
+        | select(.tools | index("web_search"))
+        | select(.tools | index("browse"))
+    ' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "restored-thread request lost prior context or web tool definitions"
+    log "  restored conversation sent prior context plus web_search and browse definitions"
+    cleanup_persona
+}
+
 flow_slow_stream_stop() {
     log "4/6 controlled slow stream and Stop"
     start_persona slow-stream-stop FAKE_INTER_TOKEN_SLEEP_S=0.01 FAKE_CONTENT_REPEAT=20000
@@ -1475,6 +1516,7 @@ case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
+    restored-tools) flow_restored_tools ;;
     chat-depth) flow_chat_depth ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
@@ -1488,6 +1530,7 @@ case "$FLOW" in
         flow_fresh_install
         flow_settings_persistence
         flow_chat_restore
+        flow_restored_tools
         flow_chat_depth
         flow_slow_stream_stop
         flow_model_crash_recovery
