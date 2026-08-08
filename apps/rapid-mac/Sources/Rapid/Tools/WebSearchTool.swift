@@ -108,10 +108,10 @@ enum WebSearchTool {
             of: #"\blast week\b"#,
             options: .regularExpression
         ) != nil
-        let asksForChineseLastWeek =
-            (query.contains("上周") || query.contains("上一周"))
-            && !query.contains("上周末")
-            && !query.contains("上一周末")
+        let asksForChineseLastWeek = query.range(
+            of: #"(?:上周|上一周)(?!末)"#,
+            options: .regularExpression
+        ) != nil
         let asksForLastWeek = asksForEnglishLastWeek || asksForChineseLastWeek
         guard asksForLastWeek else { return query }
 
@@ -123,7 +123,9 @@ enum WebSearchTool {
             return query
         }
         let formatter = DateFormatter()
-        formatter.calendar = calendar
+        var formattingCalendar = Calendar(identifier: .gregorian)
+        formattingCalendar.timeZone = calendar.timeZone
+        formatter.calendar = formattingCalendar
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "yyyy-MM-dd"

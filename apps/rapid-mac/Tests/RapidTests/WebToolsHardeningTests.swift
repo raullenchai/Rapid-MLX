@@ -55,6 +55,35 @@ struct WebToolsHardeningTests {
         #expect(WebSearchTool.preparedQuery(query) == query)
     }
 
+    @Test("A standalone Chinese last-week phrase still matches beside last-weekend")
+    func standaloneChineseLastWeekStillMatches() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 8
+        )))
+        let prepared = WebSearchTool.preparedQuery(
+            "总结上周新闻，不包括上周末",
+            now: now,
+            calendar: calendar
+        )
+        #expect(prepared.contains("2026-07-26 through 2026-08-01"))
+    }
+
+    @Test("Date constraint stays Gregorian for a non-Gregorian user calendar")
+    func dateConstraintUsesGregorianYear() throws {
+        var calendar = Calendar(identifier: .buddhist)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-08-08T12:00:00Z"))
+        let prepared = WebSearchTool.preparedQuery(
+            "major news last week",
+            now: now,
+            calendar: calendar
+        )
+        #expect(prepared.contains("2026-"))
+        #expect(!prepared.contains("2569-"))
+    }
+
     @Test("Timeless query is not rewritten")
     func timelessQueryPassesThrough() {
         let query = "Swift concurrency actor isolation"
