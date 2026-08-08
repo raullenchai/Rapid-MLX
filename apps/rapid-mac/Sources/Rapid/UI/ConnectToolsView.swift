@@ -241,26 +241,63 @@ struct ConnectToolsView: View {
                 name: "Claude Code",
                 symbol: "terminal",
                 blurb: "Launch with this connection for one session. Your shell environment stays unchanged.",
-                snippet: "env ANTHROPIC_BASE_URL=\(anthropicBaseURL) ANTHROPIC_API_KEY=\(snippetKey) ANTHROPIC_MODEL=\(snippetModel) claude",
-                displaySnippet: "env ANTHROPIC_BASE_URL=\(anthropicBaseURL) ANTHROPIC_API_KEY=\(snippetKeyMasked) ANTHROPIC_MODEL=\(snippetModel) claude"
+                snippet: AgentLaunchCommand.claude(
+                    baseURL: anthropicBaseURL, key: snippetKey, model: snippetModel
+                ),
+                displaySnippet: AgentLaunchCommand.claude(
+                    baseURL: anthropicBaseURL, key: snippetKeyMasked, model: snippetModel
+                )
             ),
             ConnectTool(
                 id: "codex",
                 name: "Codex",
                 symbol: "chevron.left.forwardslash.chevron.right",
                 blurb: "Launch with an isolated Rapid provider for one session. Your existing Codex provider and shell environment stay unchanged.",
-                snippet: "env OPENAI_API_KEY=\(snippetKey) codex --ignore-user-config -m \(snippetModel) -c 'model_provider=\"rapid-mlx\"' -c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(openAIBaseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'",
-                displaySnippet: "env OPENAI_API_KEY=\(snippetKeyMasked) codex --ignore-user-config -m \(snippetModel) -c 'model_provider=\"rapid-mlx\"' -c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(openAIBaseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'"
+                snippet: AgentLaunchCommand.codex(
+                    baseURL: openAIBaseURL, key: snippetKey, model: snippetModel
+                ),
+                displaySnippet: AgentLaunchCommand.codex(
+                    baseURL: openAIBaseURL, key: snippetKeyMasked, model: snippetModel
+                )
             ),
             ConnectTool(
                 id: "hermes",
                 name: "Hermes",
                 symbol: "bolt.horizontal.circle",
                 blurb: "Launch with this connection and model for one session. Your shell environment stays unchanged.",
-                snippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKey) HERMES_INFERENCE_MODEL=\(snippetModel) hermes --provider openai-api --ignore-user-config",
-                displaySnippet: "env OPENAI_BASE_URL=\(openAIBaseURL) OPENAI_API_KEY=\(snippetKeyMasked) HERMES_INFERENCE_MODEL=\(snippetModel) hermes --provider openai-api --ignore-user-config"
+                snippet: AgentLaunchCommand.hermes(
+                    baseURL: openAIBaseURL, key: snippetKey, model: snippetModel
+                ),
+                displaySnippet: AgentLaunchCommand.hermes(
+                    baseURL: openAIBaseURL, key: snippetKeyMasked, model: snippetModel
+                )
             ),
         ]
+    }
+}
+
+/// Process-scoped launch commands shown by the Connect agents surface.
+///
+/// These deliberately use inline `env` assignments rather than `export`, so
+/// copying a command cannot alter the user's shell after the agent exits.
+/// Codex additionally receives a throwaway home because its interactive CLI
+/// has no top-level `--ignore-user-config` flag (that flag belongs only to the
+/// non-interactive `exec` subcommand in Codex 0.146). The temporary home keeps
+/// the Rapid provider isolated without rewriting `~/.codex/config.toml`.
+enum AgentLaunchCommand {
+    static func claude(baseURL: String, key: String, model: String) -> String {
+        "env ANTHROPIC_BASE_URL=\(baseURL) ANTHROPIC_API_KEY=\(key) ANTHROPIC_MODEL=\(model) claude"
+    }
+
+    static func codex(baseURL: String, key: String, model: String) -> String {
+        "env CODEX_HOME=\"$(mktemp -d)\" OPENAI_API_KEY=\(key) codex -m \(model) "
+            + "-c 'model_provider=\"rapid-mlx\"' "
+            + "-c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(baseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'"
+    }
+
+    static func hermes(baseURL: String, key: String, model: String) -> String {
+        "env OPENAI_BASE_URL=\(baseURL) OPENAI_API_KEY=\(key) HERMES_INFERENCE_MODEL=\(model) "
+            + "hermes --provider openai-api --ignore-user-config"
     }
 }
 
