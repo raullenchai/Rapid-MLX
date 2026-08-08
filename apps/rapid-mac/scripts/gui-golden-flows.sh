@@ -340,19 +340,61 @@ assert_no_literal_list_markers() {
     python3 - "$tree" <<'PYEOF'
 import json, re, sys
 els = json.load(open(sys.argv[1]))["data"]["ui_elements"]
-MARKER = re.compile(r"^\s*(?:[-*+]\s+|\d+\.\s+)")
-offenders = [
-    line
-    for e in els
-    for line in str(e.get("value", "")).splitlines()
-    if MARKER.match(line)
-]
+# A marker glued to its item ("- a nested point") and a marker standing alone
+# in its own node ("-" next to "a nested point") are the same regression on
+# screen, and the second slips past a line-prefix check while also satisfying
+# an exact-match check on the item text.
+LEADING = re.compile(r"^\s*(?:[-*+]\s+|\d+\.\s+)")
+BARE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s*$")
+offenders = []
+for e in els:
+    value = str(e.get("value", ""))
+    if BARE.match(value):
+        offenders.append(value)
+        continue
+    offenders.extend(line for line in value.splitlines() if LEADING.match(line))
 if offenders:
     sys.exit(
         "a list marker reached the screen verbatim — the list was printed, "
         f"not rendered: {offenders[:3]}"
     )
 PYEOF
+}
+
+# Everything this suite can say about what the renderer did with the five
+# shapes, in one place so the restored transcript is held to the SAME bar as
+# the live one. Checking the shapes only before the relaunch leaves a restore
+# that flattens the table or drops the emoji indistinguishable from a good
+# one, because the counts and the structural baseline both survive it (the
+# baseline normalizes every value to `text`).
+#
+# Takes a TRANSCRIPT-scoped dump. Handing it the whole app would let another
+# subtree — a preview, a tooltip, an off-screen copy — answer for the
+# transcript.
+#
+# What this deliberately does NOT claim: that the table is a table. The app
+# exposes markdown tables as plain sibling AXStaticTexts with no AXTable role,
+# so a renderer that stripped the pipes and stacked the six cells as ordinary
+# paragraphs is indistinguishable from a real table at the AX layer. That is a
+# gap in what the app publishes, not something an assertion here can close —
+# tracked in #1689.
+assert_rendered_shapes() {
+    local transcript="$1"
+    assert_markdown_rendered "$transcript"
+    assert_no_literal_list_markers "$transcript"
+    assert_code_block_is_its_own_view "$transcript" \
+        "Here is the function you asked for" "def fib(n)"
+    assert_rendered_as_separate_nodes "$transcript" "table cells" \
+        "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
+    assert_rendered_as_separate_nodes "$transcript" "list items" \
+        "First, read the prompt." "Second, plan the answer." \
+        "a nested point" "another one" "Third, write it down."
+    # The CJK turn, past its first six characters. Asserting only the prefix
+    # would pass on an answer that corrupted or dropped everything after it —
+    # which is exactly what a text-encoding regression looks like.
+    assert_tree_text "$transcript" "🎯🚀"
+    assert_tree_text "$transcript" "مرحبا"
+    assert_tree_text "$transcript" "用来检查换行和字宽"
 }
 
 # Markdown reached the renderer as markdown, not as source text.
@@ -439,14 +481,23 @@ import json, sys
 tree, needles = sys.argv[1], sys.argv[2:]
 elements = json.load(open(tree))["data"]["ui_elements"]
 haystack = [str(e.get("value", "")) + " " + str(e.get("title", "")) for e in elements]
+# Position is (element index, offset inside that element), not the element
+# index alone. Two needles inside ONE element used to compare equal, so a
+# transcript that flattened turns into a single node — the extreme case being
+# one node holding every needle — satisfied `sorted()` in any visual order.
 positions = []
 for needle in needles:
-    hit = next((i for i, text in enumerate(haystack) if needle in text), None)
+    hit = next(
+        ((i, text.index(needle)) for i, text in enumerate(haystack) if needle in text),
+        None,
+    )
     if hit is None:
         sys.exit(f"transcript never shows: {needle}")
     positions.append(hit)
-if positions != sorted(positions):
-    order = ", ".join(f"{n}@{p}" for n, p in zip(needles, positions))
+# Strictly increasing, not merely sorted: equal positions mean two turns share
+# one element, which is itself the flattening regression.
+if any(b <= a for a, b in zip(positions, positions[1:])):
+    order = ", ".join(f"{n}@{p[0]}+{p[1]}" for n, p in zip(needles, positions))
     sys.exit(f"transcript is out of order: {order}")
 PYEOF
 }
@@ -1234,21 +1285,7 @@ flow_chat_depth() {
     # The shapes are only worth sending if something asserts on what the
     # renderer did with them — positively, not just "the source syntax is
     # absent".
-    assert_markdown_rendered "$OUT/turn5-transcript.json"
-    assert_no_literal_list_markers "$OUT/turn5-transcript.json"
-    assert_code_block_is_its_own_view "$OUT/turn5-settled.json" \
-        "Here is the function you asked for" "def fib(n)"
-    assert_rendered_as_separate_nodes "$OUT/turn5-transcript.json" "table cells" \
-        "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
-    assert_rendered_as_separate_nodes "$OUT/turn5-transcript.json" "list items" \
-        "First, read the prompt." "Second, plan the answer." \
-        "a nested point" "another one" "Third, write it down."
-    # The CJK turn, past its first six characters. Asserting only the prefix
-    # would pass on an answer that corrupted or dropped everything after it —
-    # which is exactly what a text-encoding regression looks like.
-    assert_tree_text "$OUT/turn5-transcript.json" "🎯🚀"
-    assert_tree_text "$OUT/turn5-transcript.json" "مرحبا"
-    assert_tree_text "$OUT/turn5-transcript.json" "用来检查换行和字宽"
+    assert_rendered_shapes "$OUT/turn5-transcript.json"
     log "  markdown rendered: table cells and list items are their own elements,"
     log "  no raw fences, pipe rows or list markers, code block nested and intact,"
     log "  and the CJK answer kept its emoji and its right-to-left run"
@@ -1274,7 +1311,13 @@ flow_chat_depth() {
     transcript_only "$OUT/depth-restored-transcript.json" \
         "$OUT/depth-restored-scoped.json"
     assert_text_order "$OUT/depth-restored-scoped.json" "${conversation[@]}"
-    log "  all 5 turns restored, each answer still under its own prompt"
+    # Same bar as the live transcript. Without this a restore that brought
+    # every turn back but flattened the table, dropped the emoji or printed
+    # the list markers would pass — the counts survive it, and the structural
+    # baseline normalizes every value to `text`, so neither can see it.
+    assert_rendered_shapes "$OUT/depth-restored-scoped.json"
+    log "  all 5 turns restored, each answer still under its own prompt,"
+    log "  and every shape still rendered the way it was before the relaunch"
     baseline chat-depth.restored "$OUT/depth-restored-transcript.json"
     cleanup_persona
 }
