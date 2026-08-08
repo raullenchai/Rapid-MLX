@@ -364,10 +364,11 @@ struct CacheAwareDefaultTests {
 
     // MARK: - Headline case (issue #436 repro)
 
-    @Test("256 GB Mac with Quickstart cached — picker defaults to cached bonsai-1.7b-2bit, not the bucketed pick")
-    func two56GBWithQuickstartCachedPrefersCached() {
+    @Test("256 GB Mac with retired Bonsai cached — picker chooses coherent cached LFM")
+    func retiredBonsaiNeverWinsCachedFallback() {
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
+            entry("lfm2.5-1b-4bit", cached: true),
             entry("qwen3.5-122b-mxfp4", cached: false),
         ]
         let pick = CacheAwareDefault.pick(
@@ -375,7 +376,7 @@ struct CacheAwareDefaultTests {
             hardware: host(gb: 256),
             bucketedDefault: "qwen3.5-122b-mxfp4"
         )
-        #expect(pick == "bonsai-1.7b-2bit")
+        #expect(pick == "lfm2.5-1b-4bit")
     }
 
     // MARK: - Step 1: bucketed is cached + fits → use it
@@ -417,13 +418,14 @@ struct CacheAwareDefaultTests {
     func bucketedMissingCachedWins() {
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
+            entry("lfm2.5-1b-4bit", cached: true),
         ]
         let pick = CacheAwareDefault.pick(
             catalog: catalog,
             hardware: host(gb: 256),
             bucketedDefault: "future-alias-not-yet-shipped"
         )
-        #expect(pick == "bonsai-1.7b-2bit")
+        #expect(pick == "lfm2.5-1b-4bit")
     }
 
     @Test("Step 2: cached candidate must FIT — .tooBig cached alias gets skipped, falls to bucketed")
@@ -506,10 +508,11 @@ struct CacheAwareDefaultTests {
 
     // MARK: - Slim-DMG real-world case
 
-    @Test("Slim DMG fresh install (Quickstart only) — picker defaults to cached bonsai-1.7b-2bit")
+    @Test("Slim DMG with retired cache — picker defaults to current coherent starter")
     func slimDMGFreshInstallPrefersQuickstart() {
         let catalog = [
             entry("bonsai-1.7b-2bit", cached: true),
+            entry("lfm2.5-1b-4bit", cached: true),
             entry("qwen3.5-4b-4bit", cached: false),
             entry("qwen3.5-9b-4bit", cached: false),
             entry("qwen3.6-35b-4bit", cached: false),
@@ -519,6 +522,6 @@ struct CacheAwareDefaultTests {
             hardware: host(gb: 256),
             bucketedDefault: "qwen3.5-122b-mxfp4"
         )
-        #expect(pick == "bonsai-1.7b-2bit")
+        #expect(pick == "lfm2.5-1b-4bit")
     }
 }

@@ -197,6 +197,41 @@ struct ModelPickerBar: View {
            catalog.contains(where: { $0.alias == quickstartTargetAlias }) {
             return quickstartTargetAlias
         }
+        // A user who dismisses the Quickstart sheet has declined the guided
+        // download flow, not the starter itself.  Keep the picker aimed at the
+        // current coherent starter while that user remains Quickstart-eligible
+        // (brand-new install, or the retired Bonsai cohort we are rescuing).
+        //
+        // Without this gate the cache-aware fallback below can immediately
+        // resurrect ``bonsai-1.7b-2bit`` merely because its old weights are on
+        // disk.  That makes the sheet recommend LFM2.5 while the chat composer
+        // behind it says Bonsai — and Skip drops the user directly onto the
+        // model retired for degenerating in ordinary plain chat.
+        if let quickstart,
+           let starter = ModelPickerBar.quickstartEligibleDefault(
+               catalog: catalog,
+               eligible: QuickstartCoordinator.isEligible(
+               done: quickstart.done,
+               legacyDone: quickstart.legacyDone,
+               lastServedAlias: ServerManager.lastServedAlias(),
+               serverState: server.state
+               ),
+               targetAlias: quickstartTargetAlias
+           ) {
+            return starter
+        }
+        // Returning users expect the picker to remember the model they last
+        // ran even when they deliberately disable launch-time auto-start.
+        // ``ContentView.alias`` is view state, not AppStorage; without this
+        // branch a relaunch silently jumps to the first alphabetical cached
+        // model. Never restore a retired automatic alias — the stranded
+        // Quickstart branch above migrates that cohort to the current starter.
+        if let previous = ModelPickerBar.lastServedDefault(
+            catalog: catalog,
+            lastServedAlias: ServerManager.lastServedAlias()
+        ) {
+            return previous
+        }
         // v0.7.1 #229: on a fresh install the bundled lfm2.5-1b-4bit
         // is on disk and the user has never picked anything else.
         // Prefer it so the picker matches what the ContentView ``.task``
@@ -740,6 +775,37 @@ struct ModelPickerBar: View {
     /// promise depends on link speed — calling out "smallest /
     /// fastest" is honest regardless of the user's bandwidth.
     static let quickstartSubtitle: String = "Smallest model — fastest first install"
+
+    /// Resolve the safe picker default while the current user is still
+    /// eligible for Quickstart. Kept pure so the retired-starter regression
+    /// can be pinned without mounting the SwiftUI menu or touching defaults.
+    ///
+    /// A cached retired model must not outrank the coherent starter merely
+    /// because the user chose "Skip for now" in the onboarding sheet.
+    static func quickstartEligibleDefault(
+        catalog: [ModelEntry],
+        eligible: Bool,
+        targetAlias: String = QuickstartCoordinator.defaultChoice.alias
+    ) -> String? {
+        guard eligible, catalog.contains(where: { $0.alias == targetAlias }) else {
+            return nil
+        }
+        return targetAlias
+    }
+
+    /// Restore a returning user's last runnable choice without allowing a
+    /// retired starter to re-enter any automatic default path.
+    static func lastServedDefault(
+        catalog: [ModelEntry],
+        lastServedAlias: String?,
+        excludedAliases: Set<String> = CacheAwareDefault.retiredAutomaticAliases
+    ) -> String? {
+        guard let alias = lastServedAlias,
+              !excludedAliases.contains(alias),
+              catalog.contains(where: { $0.alias == alias && $0.cached })
+        else { return nil }
+        return alias
+    }
 
     /// Pure helper so the row title (which has to ride inside the
     /// single Text NSMenuItem honors) is unit-testable without a

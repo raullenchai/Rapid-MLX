@@ -287,6 +287,7 @@ def test_cached_view_renders_alias_for_known_repo(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(
         cli, "_scan_hf_cache_models", lambda: [(hf_path, 1024 * 1024 * 100, 0.0)]
     )
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: True)
     cli._print_cached_models()
     out = capsys.readouterr().out
     assert alias in out, f"expected alias {alias!r} in cached view"
@@ -304,6 +305,34 @@ def test_cached_view_renders_unmapped_for_unknown_repo(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "(unmapped)" in out
     assert "totally-unmapped-repo" in out
+
+
+def test_cached_view_marks_known_partial_repo_incomplete(tmp_path, monkeypatch, capsys):
+    """Metadata-only cache directories must not advertise an alias as ready."""
+    from vllm_mlx.model_aliases import list_profiles
+
+    alias, profile = next(iter(list_profiles().items()))
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / f"models--{profile.hf_path.replace('/', '--')}"
+    snapshot = repo_root / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "tokenizer.json").write_text("{}")
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("deadbeef")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [(profile.hf_path, 61 * 1024 * 1024, 0.0)],
+    )
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+    assert "(incomplete)" in out
+    assert alias not in out
 
 
 def test_format_bytes_unit_selection():

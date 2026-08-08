@@ -4872,6 +4872,26 @@ def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
     return out
 
 
+def _cache_entry_is_runnable(repo: str) -> bool:
+    """Whether a cache directory contains a complete runnable snapshot.
+
+    A Hugging Face repo directory appears as soon as metadata starts
+    downloading.  Treating directory presence as "cached" made interrupted
+    downloads (config/tokenizer only, no weights) look ready in ``ls`` and in
+    the desktop model picker. Reuse the serve download gate's authoritative
+    completeness checks for both text and component-split video layouts.
+    """
+    try:
+        from vllm_mlx._download_gate import (
+            _snapshot_is_complete_split_model,
+            is_repo_cached,
+        )
+
+        return is_repo_cached(repo) or _snapshot_is_complete_split_model(repo)
+    except Exception:
+        return False
+
+
 def _print_cached_models() -> None:
     """Render the ``--cached`` view: locally-downloaded HF cache entries
     cross-referenced against the alias registry.
@@ -4923,6 +4943,12 @@ def _print_cached_models() -> None:
     for repo, size, mtime in sorted(rows, key=lambda r: -r[1]):
         total_bytes += size
         alias = hf_to_alias.get(repo, "(unmapped)")
+        # Keep partial directories visible for disk cleanup, but never label
+        # a known alias as downloaded/runnable. The desktop parser deliberately
+        # rejects parenthesized status rows, so this also prevents a 61 MiB
+        # metadata stub for a 26B model from receiving a green checkmark.
+        if alias != "(unmapped)" and not _cache_entry_is_runnable(repo):
+            alias = "(incomplete)"
         # Render modified as a human delta: "2 days ago" beats raw epoch.
         if mtime <= 0:
             mod = "?"

@@ -427,9 +427,16 @@ enum ModelCatalog {
             // the word) keeps a genuine alias that merely starts with
             // those letters safe.
             if isBannerLine(line) { continue }
-            // First whitespace-delimited token is the alias.
-            let token = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace }).first
-            guard let alias = token.map(String.init), !alias.isEmpty else { continue }
+            // Catalog rows are column-aligned with runs of 2+ spaces.
+            // Requiring a second column keeps prose footers out of the
+            // catalog. In particular, current engines end with
+            // "Size is an approximate download footprint ..."; taking the
+            // first whitespace token alone promoted a phantom model named
+            // "Size" into Settings and the picker.
+            let columns = splitOnMultiSpace(line)
+            guard columns.count >= 2 else { continue }
+            let alias = columns[0]
+            guard !alias.isEmpty else { continue }
             guard isSafeAlias(alias) else { continue }
             entries.append((alias, nil))
         }

@@ -71,6 +71,88 @@ struct ModelPickerBarSectionOrderTests {
         ]
     }
 
+    @Test("Quickstart-eligible user keeps coherent LFM starter even when retired Bonsai is cached")
+    func eligibleDefaultNeverResurrectsRetiredBonsai() {
+        let catalog = [
+            entry("bonsai-1.7b-2bit", hfRepo: "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit", cached: true),
+            entry(QuickstartCoordinator.defaultChoice.alias,
+                  hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+                  cached: false),
+            entry("bonsai-27b-2bit", hfRepo: "prism-ml/Ternary-Bonsai-27B-mlx-2bit", cached: false),
+        ]
+
+        let pick = ModelPickerBar.quickstartEligibleDefault(
+            catalog: catalog,
+            eligible: true
+        )
+
+        #expect(pick == "lfm2.5-1b-4bit")
+        #expect(pick != "bonsai-1.7b-2bit")
+    }
+
+    @Test("Completed or ineligible user is left to normal cache/RAM default policy")
+    func ineligibleDefaultDoesNotOverrideNormalPolicy() {
+        let catalog = [
+            entry("bonsai-1.7b-2bit", hfRepo: "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit", cached: true),
+            entry(QuickstartCoordinator.defaultChoice.alias,
+                  hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+                  cached: false),
+        ]
+
+        #expect(ModelPickerBar.quickstartEligibleDefault(
+            catalog: catalog,
+            eligible: false
+        ) == nil)
+    }
+
+    @Test("Auto-start off relaunch restores the last served non-retired model")
+    func lastServedModelIsRestored() {
+        let catalog = [
+            entry("bonsai-1.7b-2bit", hfRepo: "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit", cached: true),
+            entry("qwen3-1.7b", hfRepo: "mlx-community/Qwen3-1.7B-4bit", cached: true),
+        ]
+
+        #expect(ModelPickerBar.lastServedDefault(
+            catalog: catalog,
+            lastServedAlias: "qwen3-1.7b"
+        ) == "qwen3-1.7b")
+    }
+
+    @Test("Last served retired Bonsai is never restored automatically")
+    func retiredLastServedModelIsRejected() {
+        let catalog = [
+            entry("bonsai-1.7b-2bit", hfRepo: "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit", cached: true),
+            entry(QuickstartCoordinator.defaultChoice.alias,
+                  hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+                  cached: true),
+        ]
+
+        #expect(ModelPickerBar.lastServedDefault(
+            catalog: catalog,
+            lastServedAlias: "bonsai-1.7b-2bit"
+        ) == nil)
+    }
+
+    @Test("Quickstart and automatic defaults agree on retired aliases")
+    func retiredAliasPoliciesStayInSync() {
+        #expect(QuickstartCoordinator.retiredStarters == CacheAwareDefault.retiredAutomaticAliases)
+    }
+
+    @Test("Deleted last-served model is not restored as a runnable default")
+    func uncachedLastServedModelIsRejected() {
+        let catalog = [
+            entry("qwen3-1.7b", hfRepo: "mlx-community/Qwen3-1.7B-4bit", cached: false),
+            entry(QuickstartCoordinator.defaultChoice.alias,
+                  hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+                  cached: true),
+        ]
+
+        #expect(ModelPickerBar.lastServedDefault(
+            catalog: catalog,
+            lastServedAlias: "qwen3-1.7b"
+        ) == nil)
+    }
+
     @Test("Section order: Quickstart → Recommended → All (pinned by view-builder call order)")
     func sectionOrderPinned() throws {
         // The view-builder call order in ``ModelPickerBar.modelPicker``

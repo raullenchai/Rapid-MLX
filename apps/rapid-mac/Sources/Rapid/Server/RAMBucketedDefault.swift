@@ -433,12 +433,20 @@ enum SafeDefaultFallback {
 /// once and threads the snapshot in. Tested directly in
 /// ``CacheAwareDefaultTests``.
 enum CacheAwareDefault {
+    /// Models that remain manually selectable but must never be chosen by an
+    /// automatic default policy. Bonsai 1.7B was retired after repeatedly
+    /// degenerating in ordinary plain chat; cached weights are not a reason to
+    /// resurrect it on relaunch when auto-start is disabled.
+    static let retiredAutomaticAliases: Set<String> = ["bonsai-1.7b-2bit"]
+
     static func pick(
         catalog: [ModelEntry],
         hardware: MacHardware,
-        bucketedDefault: String
+        bucketedDefault: String,
+        excludedAliases: Set<String> = retiredAutomaticAliases
     ) -> String? {
-        let bucketedEntry = catalog.first(where: { $0.alias == bucketedDefault })
+        let eligibleCatalog = catalog.filter { !excludedAliases.contains($0.alias) }
+        let bucketedEntry = eligibleCatalog.first(where: { $0.alias == bucketedDefault })
         // The RAM-tier primary is trusted to fit even when ModelSizing's
         // heuristic over-states it (it scores the real-7.6 GB
         // bonsai-27b-2bit as ~14.8 GB → .tooBig on 16 GB). Without this
@@ -472,7 +480,7 @@ enum CacheAwareDefault {
         // out unparseable-params aliases so a cached coder/flash
         // quant doesn't phantom-classify as small and land us in an
         // OOM (codex r3 on #165).
-        let cachedCandidates = catalog
+        let cachedCandidates = eligibleCatalog
             .filter { $0.cached }
             .filter { ModelSizing.estimate(alias: $0.alias).paramsBillions != nil }
             .filter { isSafe($0, on: hardware) }
@@ -489,7 +497,7 @@ enum CacheAwareDefault {
         // Step 4: bucketed is .tooBig OR missing — hand off to the
         // existing hardware-floor escape so we never silently
         // promote a .tooBig cached alias above a safe one.
-        return SafeDefaultFallback.pick(catalog: catalog, hardware: hardware)
+        return SafeDefaultFallback.pick(catalog: eligibleCatalog, hardware: hardware)
     }
 
     private static func isSafe(_ entry: ModelEntry, on hardware: MacHardware) -> Bool {

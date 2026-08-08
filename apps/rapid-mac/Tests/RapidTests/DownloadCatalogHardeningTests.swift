@@ -193,6 +193,23 @@ struct DownloadCatalogHardeningTests {
         #expect(!ModelCatalog.hasNonChatKindTag("odd [image:gen] org/repo"))
     }
 
+    @Test("parseAvailable drops the human-readable size footer")
+    func catalogParserDropsSizeFooter() {
+        let available = ModelCatalog.parseAvailable(
+            """
+              Available models (1 aliases)
+              ────────────────────────────────────────
+              Alias                 Size       Tools
+              lfm2.5-1b-4bit        563 MiB    —
+              ────────────────────────────────────────
+              Size is an approximate download footprint (weight+tokenizer); “—” = unknown. The exact size is confirmed at pull time.
+            """
+        )
+
+        #expect(available.map { $0.0 } == ["lfm2.5-1b-4bit"])
+        #expect(!available.contains(where: { $0.0 == "Size" }))
+    }
+
     @Test("ModelInfoCatalog sanitizes repo ids before UI link construction")
     func modelInfoSanitizesHuggingFaceRepo() {
         let safe = ModelInfoCatalog.info(for: "qwen3-8b", hfRepo: "mlx-community/Qwen3-8B-4bit")
