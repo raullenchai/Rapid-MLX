@@ -19,6 +19,7 @@ from ..tool_call_scan import (
     declared_tool_names as _declared_tool_names,
 )
 from ..tool_call_scan import (
+    payload_spans,
     split_marked_calls,
     split_marked_parameters,
 )
@@ -233,6 +234,7 @@ class NemotronToolParser(ToolParser):
             r"<function=([^>]+)>",
             "</function>",
             valid_names=_declared_tool_names(request),
+            not_inside=payload_spans(model_output, "<parameter=", "</parameter>"),
         )
         for func_name, content, _span_start, _span_end in matches:
             func_name = func_name.strip()
