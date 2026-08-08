@@ -37,12 +37,16 @@ allocate ~14 GB, but cleanup runs after each model so peak working set
 is one model at a time + 5 GB headroom).
 
 Eligibility filter (sample pool):
-  * 4 ≤ size_B ≤ 12  (smaller models can't actually solve harness tasks
-                       → false-fail spam; larger models bust the disk
-                       budget on M3 16/32 GB systems)
+  * 6 ≤ size_B ≤ 12  (smaller models can't actually solve harness tasks
+                       → they burn the whole per-profile clock retrying
+                       and the gauntlet goes red on a working engine, see
+                       #1672; larger models bust the disk budget on M3
+                       16/32 GB systems)
   * 4-bit quant only  (8-bit is 2x download cost for the same coverage)
   * no kimi-*         (deliberately heavy class, explicit user exclude)
-  * no -vl- variants  (vision; harness tasks are text-only)
+  * no multimodal     (vision; harness tasks are text-only — matched with
+                       the engine's own MLLM_PATTERNS, not a name guess:
+                       UI-TARS and Gemma 3 carry no ``VL`` marker)
   * no gemma-4-*      (known model-side hang on tool-use prompts; see
                        issue #686 + huggingface/google/gemma-4-12B-it
                        discussion #41 — would burn 156s+ per round on
@@ -72,6 +76,57 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # pull mlx_lm at module-load and fail in a clean-venv sanity run).
 HARNESS_PROFILES = ("codex", "opencode", "hermes", "aider", "langchain")
 
+# Mirror of ``vllm_mlx.api.utils.MLLM_PATTERNS``, for the same reason as
+# HARNESS_PROFILES: importing the package pulls mlx_lm at module load.
+#
+# Hand-rolling this was a bug. The filter used to exclude vision models by
+# looking for ``-vl-`` in the alias name, which is precisely the test the engine
+# documents as insufficient: UI-TARS is a Qwen2.5-VL-based GUI agent whose
+# public name carries no ``VL``, and Gemma 3 is multimodal with no marker at
+# all. Both were in the sample pool. Booting one through a text-only agentic
+# harness is not thin coverage, it is a crash on an install without the vision
+# extra — and something worse than a crash on one with it.
+#
+# ``tests/test_release_check_random.py`` parses the real list out of
+# ``vllm_mlx/api/utils.py`` and fails if this mirror stops covering it, so a
+# family added upstream cannot silently reappear here.
+MLLM_NAME_PATTERNS = (
+    "-vl-",
+    "-vl/",
+    "vl-",
+    "llava",
+    "idefics",
+    "paligemma",
+    "gemma-3",
+    "gemma3",
+    "medgemma",
+    "pixtral",
+    "molmo",
+    "phi3-vision",
+    "phi-3-vision",
+    "cogvlm",
+    "internvl",
+    "deepseek-vl",
+    "ui-tars",
+    "ui_tars",
+)
+
+
+def _is_multimodal(*names: str) -> bool:
+    """True when any of ``names`` looks like a multimodal model.
+
+    Same case-folded substring rule as ``vllm_mlx.api.utils.is_mllm_model``.
+    Both the alias and the HF path are checked: the alias is what a human
+    recognises, the repo name is where the family marker usually survives.
+    """
+    return any(
+        pattern in name.lower()
+        for name in names
+        if name
+        for pattern in MLLM_NAME_PATTERNS
+    )
+
+
 # Disk safety floor — refuse to start if the cache disk has less than
 # this. Sized for one 12B-4bit model + 5 GB headroom.
 MIN_FREE_DISK_GB = 30
@@ -90,6 +145,47 @@ SERVE_READY_TIMEOUT_S = 600  # 10 minutes
 # (HARNESS_PROFILE_TIMEOUT_S, 1200s in the gauntlet) so in the gauntlet
 # the outer subprocess timeout — not the inner cap — bounds a hung round.
 ROUND_TIMEOUT_S = 1080
+
+# Sample-pool size window, in billions of parameters.
+#
+# Every profile in HARNESS_PROFILES drives a multi-step tool-calling loop, and
+# a model that cannot hold one does not fail fast: it emits malformed calls and
+# retries until the per-profile clock runs out. G12 can only report that as a
+# red gauntlet, so the pool has to exclude models that cannot do the work —
+# the same rule the hybrid, gemma-4 and low-active-param excludes below apply.
+#
+# The floor sits at 6 because that is the conservative cut between the two
+# sizes actually measured on this hardware:
+#
+#   * 4B fails — ``qwen3-4b-instruct-2507-4bit`` × ``hermes`` burned the whole
+#     1020 s cap while the engine answered without a single 5xx, and v0.12.7
+#     does exactly the same, so it is the model's ceiling, not a regression
+#     (#1672). The other three 4B aliases are excluded with it rather than
+#     waiting to be drawn and measured one by one: a coverage sweep that cries
+#     wolf on a random calendar day stops being read at all.
+#   * 9B passes — a dense 9B completes hermes in ~740-800 s (see
+#     ROUND_TIMEOUT_S above), which is where that budget came from.
+#
+# 7B and 8B are in between and unmeasured; they stay in the pool because that
+# band is where most of the sweep's coverage lives (what is left of it: the
+# multimodal filter above takes the three UI-TARS aliases as well, and the pool
+# is down to five). If one of them turns out to
+# share the 4B ceiling, this constant moves again — that is how the gemma-4 and
+# hybrid excludes got here.
+#
+# What this costs, stated plainly rather than waved away: the 4B tier keeps
+# only the coverage it already had, and that is thin. ``qwen3.5-4b-4bit`` is a
+# release-fleet coherence model, so G0a boots it every gauntlet — but
+# ``evals/coherence_gate.py`` sends short, single-turn, tool-free prompts at
+# temperature 0. CI's ``l1-smoke`` adds one forced tool-call format check on the
+# same alias, and is not a required check. Neither covers multi-turn contexts,
+# streaming tool calls, parser stress under repeated agent traffic, or the other
+# three 4B aliases at all. Buying that back needs a small-model tier that is
+# sized for what small models can finish, not a sweep that hands them the same
+# agentic profiles as a 12B — tracked separately.
+_MIN_PARAMS_B = 6.0
+# Ceiling: larger models bust the disk budget on M3 16/32 GB systems.
+_MAX_PARAMS_B = 12.0
 
 
 # Match a parameter-count token bounded by name separators (``-``,
@@ -128,8 +224,6 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             continue
         if "kimi" in name.lower():
             continue
-        if "-vl-" in name.lower():
-            continue
         if name.lower().startswith("gemma-4-"):
             # Known-bad: model-side ``thought\n…`` loop on agent prompts.
             # See issue #686 + HF discussion google/gemma-4-12B-it#41.
@@ -146,6 +240,13 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
         hf_path = entry.get("hf_path") if isinstance(entry, dict) else None
         if not hf_path:
             continue
+        # Multimodal models, checked against the engine's own rule rather than
+        # a hand-rolled name test — the harness profiles are text-only, so a
+        # VLM here is a crash on a base install and a meaningless result on a
+        # vision-enabled one. The HF path matters as much as the alias: the
+        # family marker survives there when the alias has dropped it.
+        if _is_multimodal(name, hf_path):
+            continue
         repo_name = hf_path.split("/")[-1]
         match = _SIZE_TOKEN_RE.search(repo_name)
         if not match:
@@ -154,14 +255,14 @@ def _eligible_aliases(aliases_path: Path) -> list[tuple[str, str]]:
             # oversized model into the sweep.
             continue
         size_b = float(match.group(1))
-        if not (4.0 <= size_b <= 12.0):
+        if not (_MIN_PARAMS_B <= size_b <= _MAX_PARAMS_B):
             continue
         # Effective-capacity floor for MoEs: e.g. ``LFM2.5-8B-A1B`` is 8B
-        # total but ~1B ACTIVE/token — too weak to solve agentic harness
-        # tasks (emits malformed tool calls → false-fail spam), the same
-        # rationale as the 4B total-size floor but applied to active params.
+        # total but ~1B ACTIVE/token. The same floor, applied to the params
+        # that actually do the work — a model's ability to hold an agentic
+        # loop follows its active parameters, not its total.
         active_m = _ACTIVE_TOKEN_RE.search(repo_name)
-        if active_m and float(active_m.group(1)) < 4.0:
+        if active_m and float(active_m.group(1)) < _MIN_PARAMS_B:
             continue
         out.append((size_b, name, hf_path))
     out.sort()
@@ -220,10 +321,209 @@ def _hf_cache_dir(hf_repo_path: str) -> Path:
     return _hf_cache_root() / f"models--{hf_repo_path.replace('/', '--')}"
 
 
+def _run_model_rounds(
+    *,
+    proc: subprocess.Popen,
+    port: int,
+    alias: str,
+    harnesses: list[str],
+    rounds: int,
+    bench_log: Path,
+    report_path: Path,
+) -> tuple[list[str], bool]:
+    """Run every (harness × round) for one booted model.
+
+    Returns ``(failures, drifted)``. ``drifted`` means the port stopped being
+    ours partway through — an infrastructure failure rather than a result, and
+    the caller's cue to stop the whole sweep rather than boot the next model
+    into whatever took it.
+
+    Extracted from ``main`` so the control flow can be tested: that ownership
+    is asked before AND after each round, that a round whose ownership changed
+    is not reported as a result, and that the remaining harnesses are skipped.
+    Reading the source to check a call site is present does not establish any
+    of those.
+    """
+    failures: list[str] = []
+    base_url = f"http://127.0.0.1:{port}"
+
+    def _record(msg: str) -> None:
+        print(f"     FAIL  {msg}", file=sys.stderr)
+        with report_path.open("a") as fh:
+            fh.write(f"FAIL  {msg}\n")
+        failures.append(msg)
+
+    for harness in harnesses:
+        for r in range(1, rounds + 1):
+            # Ownership is not a one-time fact. Readiness proved the port was
+            # ours when the sweep started; a takeover after that (#1618 again)
+            # hands every later round to a stranger and the numbers come back
+            # attributed to the sampled alias. Ask before AND after — before,
+            # so we do not measure someone else; after, so a takeover mid-round
+            # cannot be reported as a result.
+            drift = _still_ours(proc, port)
+            if drift:
+                _record(f"{alias}/{harness} round {r}: {drift} before the round")
+                return failures, True
+            ok, dur, excerpt = _run_harness_round(
+                alias=alias,
+                harness=harness,
+                base_url=base_url,
+                bench_log=bench_log,
+            )
+            drift = _still_ours(proc, port)
+            if drift:
+                _record(
+                    f"{alias}/{harness} round {r}: {drift} during the round"
+                    " — its result cannot be attributed to this model"
+                )
+                return failures, True
+            marker = "PASS" if ok else "FAIL"
+            line = f"     {marker} {alias}/{harness} round {r}/{rounds} ({dur:.1f}s)"
+            if excerpt:
+                line += f"  — {excerpt}"
+            print(line)
+            with report_path.open("a") as fh:
+                fh.write(line + "\n")
+            if not ok:
+                failures.append(f"{alias}/{harness} round {r}: {excerpt}")
+    return failures, False
+
+
+def _as_text(payload: str | bytes | None) -> str:
+    """``TimeoutExpired`` carries bytes even when the run asked for text."""
+    if payload is None:
+        return ""
+    if isinstance(payload, bytes):
+        return payload.decode("utf-8", errors="replace")
+    return payload
+
+
+def _serve_log_path(alias: str) -> Path:
+    """Where the sampled server's own stdout goes."""
+    return Path(f"/tmp/release-check-m3-random-{alias}.log")
+
+
+def _bench_log_path(alias: str) -> Path:
+    """Where each round's bench transcript goes.
+
+    Deliberately NOT the serve log. The server writes through a descriptor it
+    opened ``"w"``, tracking its own byte offset; appending to the same path
+    from here moves the end of the file without moving that offset, and the
+    server's next line lands on top of the transcript. Two writers, one of
+    them offset-based, corrupts the artifact on exactly the runs someone
+    needs to read.
+    """
+    return Path(f"/tmp/release-check-m3-random-{alias}.bench.log")
+
+
+def _parent_pid(pid: int) -> int | None:
+    """PPID of ``pid``, or None when it cannot be read."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # Same rule as `_listening_pids`: a non-zero exit discards the output. A
+    # `ps` that failed after printing something stale would otherwise hand back
+    # a parent that makes a stranger look like our descendant.
+    if out.returncode != 0:
+        return None
+    text = out.stdout.strip()
+    return int(text) if text.isdigit() else None
+
+
+def _listening_pids(port: int) -> list[int]:
+    """PIDs with a LISTEN socket on ``port``; ``[]`` if that cannot be
+    established (``lsof`` missing, permission denied, timeout, partial run).
+
+    A non-zero exit discards the output rather than trusting it. ``lsof`` can
+    print some rows and then fail on a socket it may not inspect, and half a
+    listener list is worse than none here: the caller reads "all of these are
+    ours" as ownership, so the one row that was not printed is exactly the
+    stranger it was asked about.
+    """
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    return [int(tok) for tok in out.stdout.split() if tok.isdigit()]
+
+
+def _owns_port(proc: subprocess.Popen, port: int, max_depth: int = 8) -> bool:
+    """True when every listener on ``port`` is ``proc`` or a descendant.
+
+    A 200 on the port proves something is there, not that it is ours, and
+    identity is not ownership either: asking ``/v1/models`` what it serves
+    accepts a leftover sidecar or an older engine that happens to hold the
+    same weights. This walks the process tree instead, so the only thing
+    that satisfies it is the child we started.
+
+    Not hypothetical. While a gauntlet was running, a desktop app on this
+    machine swept port 8000, SIGTERM'd the gauntlet's server and bound its
+    own sidecar (#1618); every later request went there. It went unnoticed
+    because the replacement answered perfectly well.
+
+    Fails CLOSED: an empty listener list while the port demonstrably answers
+    means ``lsof`` could not tell us, and an unverifiable port is refused.
+    """
+    # Every process is a descendant of init, so "the listener descends from
+    # pid 1" is true of every listener and proves nothing. Measured, not
+    # theorised: with a real listener on a real port, this returned True for
+    # pid 1 until the guard existed — and the unit tests could not see it,
+    # because they stub the parent walk.
+    if proc.pid <= 1:
+        return False
+    listeners = _listening_pids(port)
+    if not listeners:
+        return False
+    for pid in listeners:
+        cur: int | None = pid
+        for _ in range(max_depth):
+            if cur == proc.pid:
+                break
+            if cur is None or cur <= 1:
+                return False
+            cur = _parent_pid(cur)
+        else:
+            return False
+    return True
+
+
+def _still_ours(proc: subprocess.Popen, port: int) -> str:
+    """``""`` while the server we started still owns the port, else why not.
+
+    Readiness establishes ownership once, at the start of a sweep that then
+    runs for tens of minutes. Everything measured after a takeover belongs to
+    whoever took over, so this is asked around every round rather than trusted
+    from the beginning.
+    """
+    rc = proc.poll()
+    if rc is not None:
+        return f"the server exited (rc={rc})"
+    if not _owns_port(proc, port):
+        return (
+            f"port {port} is no longer served by our process (pid {proc.pid}); "
+            f"listeners={_listening_pids(port) or '<could not determine>'}"
+        )
+    return ""
+
+
 def _wait_for_server(
     proc: subprocess.Popen, port: int, deadline_s: float, log_path: Path
-) -> bool:
-    """Poll ``/v1/models`` until the server responds 200, the child
+) -> tuple[bool, bool]:
+    """Poll ``/v1/models`` until our own server responds 200, the child
     exits, or the deadline expires. Returns True on success, False
     otherwise.
 
@@ -232,9 +532,22 @@ def _wait_for_server(
     pre-flight, mlx-lm import error on a clean venv), there is no port
     that will ever come up. Without this check we'd burn the full 600 s
     deadline polling a dead child.
+
+    It is not sufficient on its own, though: while our child is still
+    loading weights it is very much alive, so a stranger already on the
+    port answers first and the sweep would report that stranger's numbers
+    under the sampled alias's name. Hence ``_owns_port``.
+
+    Returns ``(ready, saw_stranger)``. The second value is the difference
+    between "this model would not boot" — one model's problem, move on — and
+    "somebody else has the port", which is the environment's problem and makes
+    every later model's numbers meaningless too. Collapsing both into ``False``
+    is how the sweep used to carry on into a contaminated machine.
     """
     url = f"http://127.0.0.1:{port}/v1/models"
     start = time.monotonic()
+    warned_stranger = False
+    saw_stranger = False
     while time.monotonic() - start < deadline_s:
         rc = proc.poll()
         if rc is not None:
@@ -246,7 +559,18 @@ def _wait_for_server(
         try:
             with urllib.request.urlopen(url, timeout=3) as resp:
                 if resp.status == 200:
-                    return True
+                    if _owns_port(proc, port):
+                        return True, saw_stranger
+                    saw_stranger = True
+                    if not warned_stranger:
+                        warned_stranger = True
+                        print(
+                            f"  port {port} answers, but the listener is not our "
+                            f"server (pid {proc.pid}); listeners="
+                            f"{_listening_pids(port) or '<could not determine>'} "
+                            f"— still waiting",
+                            file=sys.stderr,
+                        )
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             pass
         time.sleep(2)
@@ -256,7 +580,7 @@ def _wait_for_server(
         print("  server log (last 30 lines):", file=sys.stderr)
         for line in log_path.read_text(errors="replace").splitlines()[-30:]:
             print(f"    {line}", file=sys.stderr)
-    return False
+    return False, saw_stranger
 
 
 def _port_free(port: int) -> bool:
@@ -289,10 +613,19 @@ def _run_harness_round(
     alias: str,
     harness: str,
     base_url: str,
-    log_path: Path,
+    bench_log: Path,
 ) -> tuple[bool, float, str]:
     """Run one ``bench --tier harness`` invocation scoped to one
-    harness. Returns ``(ok, wall_clock_s, error_excerpt)``."""
+    harness. Returns ``(ok, wall_clock_s, error_excerpt)``.
+
+    ``bench_log`` is a DIFFERENT file from the server log on purpose. The
+    server holds its own descriptor on that file, opened ``"w"`` — no
+    ``O_APPEND``, so it writes at a position it tracks itself. Appending
+    bench output to the same path moves the end of the file without moving
+    that position, and the server's next line lands on top of what we just
+    wrote. Two writers, one of them offset-based, is a corrupted artifact on
+    exactly the runs anyone needs to read.
+    """
     env = {**os.environ, "RAPID_MLX_HARNESS_PROFILES_FILTER": harness}
     # Right-size the inner per-profile cap for standalone runs. Via
     # release_check_m3.sh the gauntlet exports HARNESS_PROFILE_TIMEOUT_S
@@ -321,14 +654,25 @@ def _run_harness_round(
             capture_output=True,
             text=True,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as expired:
         dur = time.monotonic() - t0
+        # Whatever bench managed to say before the clock stopped it is the only
+        # evidence there will be about WHERE it got stuck. Returning without
+        # writing it leaves the one failure class that most needs a transcript
+        # with none at all.
+        with bench_log.open("a") as fh:
+            fh.write(f"\n=== {alias}/{harness} (TIMED OUT after {dur:.1f}s) ===\n")
+            fh.write(_as_text(expired.stdout))
+            stderr_text = _as_text(expired.stderr)
+            if stderr_text:
+                fh.write("\n--- stderr ---\n")
+                fh.write(stderr_text)
         return False, dur, f"round timed out after {ROUND_TIMEOUT_S}s"
     dur = time.monotonic() - t0
-    # Append the subprocess output to our log so a failure has
+    # Append the subprocess output to the bench log so a failure has
     # a debuggable trail. ``"a"`` mode is single-write-atomic enough for
     # our single-threaded sweep loop.
-    with log_path.open("a") as fh:
+    with bench_log.open("a") as fh:
         fh.write(
             f"\n=== {alias}/{harness} (exit={result.returncode}, {dur:.1f}s) ===\n"
         )
@@ -344,7 +688,7 @@ def _run_harness_round(
                 excerpt = line.strip()[:200]
                 break
         if not excerpt:
-            excerpt = f"exit {result.returncode}; see {log_path}"
+            excerpt = f"exit {result.returncode}; see {bench_log}"
         return False, dur, excerpt
     return True, dur, ""
 
@@ -489,11 +833,14 @@ def main() -> int:
 
     # ===== Sweep =====
     failures: list[str] = []
+    drifted = False
     for alias, hf_path, harnesses in sampled:
         print()
         print(f"  >> Booting {alias} on port {args.port}…")
-        log_path = Path(f"/tmp/release-check-m3-random-{alias}.log")
+        log_path = _serve_log_path(alias)
+        bench_log = _bench_log_path(alias)
         log_path.write_text("")
+        bench_log.write_text("")
         with log_path.open("w") as logfh:
             proc = subprocess.Popen(
                 [
@@ -511,35 +858,39 @@ def main() -> int:
                 cwd=REPO_ROOT,
             )
         try:
-            if not _wait_for_server(proc, args.port, SERVE_READY_TIMEOUT_S, log_path):
-                msg = f"{alias}: server did not respond within {SERVE_READY_TIMEOUT_S}s"
+            ready, saw_stranger = _wait_for_server(
+                proc, args.port, SERVE_READY_TIMEOUT_S, log_path
+            )
+            if not ready:
+                if saw_stranger:
+                    # Not this model's failure. Something else holds the port,
+                    # and it will still hold it for the next model.
+                    msg = (
+                        f"{alias}: port {args.port} was answered by another "
+                        f"process while this model was booting"
+                    )
+                    drifted = True
+                else:
+                    msg = (
+                        f"{alias}: server did not respond within "
+                        f"{SERVE_READY_TIMEOUT_S}s"
+                    )
                 print(f"  FAIL  {msg}", file=sys.stderr)
                 with report_path.open("a") as fh:
                     fh.write(f"FAIL  {msg}\n")
                 failures.append(msg)
                 continue
             print(f"     server up ({alias}); harnesses={harnesses}")
-            base_url = f"http://127.0.0.1:{args.port}"
-            for harness in harnesses:
-                for r in range(1, args.rounds + 1):
-                    ok, dur, excerpt = _run_harness_round(
-                        alias=alias,
-                        harness=harness,
-                        base_url=base_url,
-                        log_path=log_path,
-                    )
-                    marker = "PASS" if ok else "FAIL"
-                    line = (
-                        f"     {marker} {alias}/{harness} "
-                        f"round {r}/{args.rounds} ({dur:.1f}s)"
-                    )
-                    if excerpt:
-                        line += f"  — {excerpt}"
-                    print(line)
-                    with report_path.open("a") as fh:
-                        fh.write(line + "\n")
-                    if not ok:
-                        failures.append(f"{alias}/{harness} round {r}: {excerpt}")
+            round_failures, drifted = _run_model_rounds(
+                proc=proc,
+                port=args.port,
+                alias=alias,
+                harnesses=harnesses,
+                rounds=args.rounds,
+                bench_log=bench_log,
+                report_path=report_path,
+            )
+            failures.extend(round_failures)
         finally:
             print(f"  << Stopping {alias}…")
             _stop_server(proc, args.port)
@@ -548,6 +899,21 @@ def main() -> int:
                 if cache_dir.exists():
                     print(f"     rm -rf {cache_dir}")
                     shutil.rmtree(cache_dir, ignore_errors=True)
+        if drifted:
+            # Ownership drift is an infrastructure failure, not this model's
+            # result. The environment that took the port is still out there;
+            # booting the next model into it produces numbers nobody can
+            # attribute, and can overlap its GPU allocation with whatever is
+            # tearing down. Stop, with our own server already reaped by the
+            # `finally` above.
+            print(
+                "  !! aborting the sweep — the port was taken from us; "
+                "remaining models were not run",
+                file=sys.stderr,
+            )
+            with report_path.open("a") as fh:
+                fh.write("ABORT ownership drift — remaining models not run\n")
+            break
 
     # ===== Verdict =====
     print()

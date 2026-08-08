@@ -78,10 +78,66 @@ echo "  base_url: $RAPID_MLX_BASE_URL"
 echo "  log:      $LOG"
 line
 
+# `lsof` decides, here and at the G12 handoff, whether a port is free —
+# and "free" is the one answer that must never be guessed. A PATH without
+# /usr/sbin makes every check silently answer "free": the `if` below swallows
+# the 127, the whole gauntlet runs, and only the last gate notices. Refuse now.
+command -v lsof >/dev/null 2>&1 \
+  || { echo "ERROR: lsof is required (port checks would silently pass)." >&2; exit 2; }
+
+# `lsof` with a per-invocation watchdog.
+#   0 = something is listening   1 = nothing is   2 = could not find out
+# A stuck `lsof` would otherwise stretch any "wait N seconds" loop that calls
+# it into as long as it likes, because the deadline is only read between calls.
+# `-nP` also removes the name/port resolution stalls that cause most of them.
+# Callers must treat 2 as "not free": an unverifiable port is not a free one.
+port_busy() {
+  local port="$1" limit="${2:-10}" pid n=0
+  lsof -nP -i ":$port" >/dev/null 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null && [ "$n" -lt "$((limit * 10))" ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    # Kills the pid we spawned. If `lsof` were a wrapper script that forked a
+    # helper, the helper would outlive this — real `/usr/sbin/lsof` is a single
+    # process, so that only matters if someone shadows it, and a shadowed lsof
+    # is already the scenario the `command -v` pre-flight cannot defend.
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    echo "  ! lsof did not return within ${limit}s for port $port" >&2
+    return 2
+  fi
+  local rc=0
+  wait "$pid" || rc=$?
+  # lsof exits 1 for "nothing matched" and anything else for "I failed".
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # Pre-flight: refuse if port is busy so we don't accidentally murder
 # someone's debug server.
-if lsof -i ":$PORT" >/dev/null 2>&1; then
-  echo "ERROR: port $PORT already in use — kill the existing server first." >&2
+#
+# Through `port_busy`, not a bare `lsof`: an executable `lsof` that hangs or
+# exits non-zero satisfies the `command -v` check above and then reads as
+# "port free" to a bare `if`. The gauntlet would boot its own server, fail to
+# bind, and run every gate against whatever was already there — which is the
+# contamination this check exists to prevent, arriving through the check
+# itself. Only an explicit 1 (ran, found nothing) is free.
+port_state=0
+port_busy "$PORT" 10 || port_state=$?
+if [ "$port_state" != 1 ]; then
+  if [ "$port_state" = 0 ]; then
+    echo "ERROR: port $PORT already in use — kill the existing server first." >&2
+    lsof -nP -i ":$PORT" >&2 || true
+  else
+    echo "ERROR: could not determine whether port $PORT is free — refusing to" >&2
+    echo "  start rather than run every gate against someone else's server." >&2
+  fi
   exit 2
 fi
 
@@ -131,7 +187,15 @@ cleanup() {
   fi
   # The concurrent correctness cluster stages per-gate logs/rc under a
   # mktemp dir; remove it too so an abort mid-cluster doesn't leak /tmp.
-  [ -n "${CLUSTER_WORK:-}" ] && rm -rf "$CLUSTER_WORK"
+  #
+  # `if`, not `[ … ] && rm`: this function is ALSO called inline before G12,
+  # where its return status is load-bearing under `set -e`. As an `&&` list it
+  # returns 1 whenever CLUSTER_WORK is empty — which it always is by then, the
+  # cluster having cleared it — and the gauntlet died there instead of running
+  # the gate.
+  if [ -n "${CLUSTER_WORK:-}" ]; then
+    rm -rf "$CLUSTER_WORK"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -641,17 +705,94 @@ else
   line
   # Free the gauntlet's main server so G12 owns the port + GPU.
   # ``cleanup`` is the trap-installed teardown defined at the top of
-  # this script — calling it manually here releases the PID file too.
+  # this script — calling it manually here releases the PID file too, so
+  # read the PID before calling it.
+  OLD_SERVER_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  # `kill -0` succeeds on a ZOMBIE — a child that has exited but whose status
+  # the shell has not collected still owns a pid, and it owns no GPU. Waiting
+  # for one to "go away" burns the whole deadline and then SIGKILLs a corpse,
+  # turning a clean shutdown into a gate failure. Read the state instead.
+  # Non-blocking on purpose: a plain `wait` would hang forever on the shutdown
+  # this deadline exists to catch.
+  old_server_alive() {
+    [ -n "$OLD_SERVER_PID" ] || return 1
+    kill -0 "$OLD_SERVER_PID" 2>/dev/null || return 1
+    # `kill -0` succeeded, so SOMETHING is there. Only a zombie is safely gone:
+    # it has exited and released the GPU, it just has not been reaped. Every
+    # other answer — a live state, or a `ps` that failed or printed nothing —
+    # has to count as ALIVE. Reading "I could not tell" as "gone" hands the GPU
+    # to G12 while the old server may still be flushing weights, which is the
+    # exact overlap this two-condition handoff exists to prevent.
+    local state
+    state="$(ps -o stat= -p "$OLD_SERVER_PID" 2>/dev/null)"
+    case "$state" in
+      Z*) return 1 ;;
+      *)  return 0 ;;
+    esac
+  }
   cleanup
   sleep 2
-  # Wait for the port to actually free (cleanup sends TERM; the server
-  # then runs PR #667's deadline-aware prefix-cache flush on shutdown).
-  for _ in $(seq 1 10); do
-    if ! lsof -i ":$PORT" >/dev/null 2>&1; then
-      break
+  # Wait for the old server to be GONE, not merely for the port to look
+  # free. uvicorn closes its listening socket before lifespan shutdown
+  # completes — and shutdown is where PR #667's deadline-aware prefix-cache
+  # flush runs — so a free port is not yet an idle GPU. G12 loads its own
+  # model next; overlapping that with a process still holding weights is how
+  # a gauntlet earns a metal::malloc "Resource limit" that reads like a code
+  # bug. Both conditions, then, and neither on its own.
+  #
+  # Wall-clock bounded, not iteration-bounded: a slow or stuck `lsof` would
+  # otherwise stretch this into as long as it likes. The bound is not exact —
+  # the deadline is read BETWEEN operations, so a check starting just under it
+  # can still run its own 5s watchdog out, and the 2s settle above is on top.
+  # Roughly a minute, never unbounded, which is the property that matters.
+  server_gone=0
+  handoff_deadline=$((SECONDS + 60))
+  while [ "$SECONDS" -lt "$handoff_deadline" ]; do
+    if old_server_alive; then
+      sleep 1
+      continue
     fi
-    sleep 1
+    # 0 = still listening, 2 = could not find out. Only an explicit 1 — a
+    # check that ran and said nothing is there — releases the handoff; an
+    # unverifiable port is not a free one.
+    port_state=0
+    port_busy "$PORT" 5 || port_state=$?
+    if [ "$port_state" != 1 ]; then
+      sleep 1
+      continue
+    fi
+    server_gone=1
+    break
   done
+  # Handing over an occupied port is worse than stopping here. G12 boots its
+  # own server and waits for :$PORT to answer; whatever is still sitting
+  # there answers first, and the sweep would benchmark a stranger under the
+  # sampled alias's name. G12 checks that the listener is its own child, so
+  # this would be caught — but failing here says WHY, instead of timing out
+  # while looking healthy.
+  if [ "$server_gone" != 1 ]; then
+    echo "  ✗ the gauntlet's server did not exit and free port $PORT in ~60s" >&2
+    echo "    refusing to hand the port and the GPU to G12" >&2
+    [ -n "$OLD_SERVER_PID" ] && ps -p "$OLD_SERVER_PID" >&2 || true
+    lsof -i ":$PORT" >&2 || true
+    # `cleanup` already TERM'd it and deleted the pidfile, so the EXIT trap
+    # can no longer reach it: exiting here would leave the process alive with
+    # the GPU allocated, poisoning the retry this failure is telling us to
+    # run. Kill it for real before giving up.
+    # Only if it is still OUR child. The pid came from `$!`, but a cleanly
+    # exited and reaped server frees that number, and SIGKILLing whatever
+    # inherited it would be a destructive answer to a problem we no longer
+    # have. `ps -o ppid=` is the cheap identity check available here.
+    old_ppid="$(ps -o ppid= -p "$OLD_SERVER_PID" 2>/dev/null | tr -d ' ' || true)"
+    if old_server_alive && [ "$old_ppid" = "$$" ]; then
+      echo "    SIGKILLing $OLD_SERVER_PID so the retry starts on a free GPU" >&2
+      kill -9 "$OLD_SERVER_PID" 2>/dev/null || true
+      # It IS a child of this shell (started with `&` above), so this reaps it
+      # rather than returning 127; SIGKILL cannot be caught, so it cannot hang.
+      wait "$OLD_SERVER_PID" 2>/dev/null || true
+    fi
+    exit 1
+  fi
   "$PY" scripts/release_check_m3_random.py \
     --port "$PORT" \
     --models "${G12_MODELS:-2}" \
