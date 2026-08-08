@@ -12,12 +12,34 @@ struct LoadedModelBenchmarkTests {
     /// "looked right" in isolation, and only chat was ever exercised against a
     /// real server. Pinning the equality — rather than either literal — is
     /// what makes the next divergence a test failure.
-    @Test("The speed test and chat resolve to the same endpoint")
-    func benchmarkAndChatAgreeOnTheEndpoint() throws {
+    /// ``.serialized`` because the recorder below keeps its captured URL in
+    /// process-wide ``URLProtocol`` state, exactly like the bearer-auth suite.
+    @Test("The speed test and chat resolve to the same endpoint", .serialized)
+    @MainActor
+    func benchmarkAndChatAgreeOnTheEndpoint() async throws {
         let base = ChatStreamClient.loopbackURL(port: 8123)
+
         let benchmark = try BenchmarkRunner.loadedBenchmarkRequest(
             baseURL: base, bearer: "", alias: "a", maxTokens: 8, prompt: "p")
-        #expect(benchmark.url == ChatStreamClient.chatCompletionsURL(base: base))
+
+        // Chat's URL is captured from a real ``send`` through the URLProtocol
+        // seam, NOT recomputed from the same helper the benchmark calls.
+        // Comparing two callers of one helper only proves the helper is
+        // deterministic; it would stay green if ``send`` went back to building
+        // its own path, which is precisely how the two drifted in the first
+        // place.
+        BenchmarkURLRecorderProtocol.reset()
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.protocolClasses = [BenchmarkURLRecorderProtocol.self] + (cfg.protocolClasses ?? [])
+        let client = ChatStreamClient(baseURL: base, session: URLSession(configuration: cfg))
+        _ = try? await client.send(
+            ChatStreamClient.Request(
+                alias: "a", messages: [ChatMessage(role: .user, content: "hi")])
+        ) { _ in }
+        let chatURL = BenchmarkURLRecorderProtocol.lastURL
+
+        #expect(chatURL != nil, "the recorder saw no chat request at all")
+        #expect(benchmark.url == chatURL, "the speed test and chat must hit one endpoint")
         #expect(
             benchmark.url?.absoluteString == "http://127.0.0.1:8123/v1/chat/completions",
             "the engine serves /v1/chat/completions; anything else 404s")
@@ -70,4 +92,29 @@ struct LoadedModelBenchmarkTests {
             _ = try BenchmarkRunner.loadedCompletionTokens(from: data)
         }
     }
+}
+
+
+/// Captures the URL a real ``ChatStreamClient.send`` puts on the wire, and
+/// answers with a terminating SSE frame so the client returns instead of
+/// hanging on a bodyless 200.
+final class BenchmarkURLRecorderProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var lastURL: URL?
+
+    static func reset() { lastURL = nil }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lastURL = request.url
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("data: [DONE]\n\n".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
