@@ -34,6 +34,7 @@ mlx-lm model weights, so this suite runs in unit CI.
 
 from __future__ import annotations
 
+import copy
 from unittest.mock import MagicMock
 
 import pytest
@@ -293,6 +294,9 @@ def _fake_tokenizer_with_template(chat_template_str: str) -> MagicMock:
         keep_trailing_newline=True,
         trim_blocks=True,
         lstrip_blocks=True,
+    )
+    env.globals["raise_exception"] = lambda message: (_ for _ in ()).throw(
+        jinja2.TemplateError(message)
     )
     template = env.from_string(chat_template_str)
 
@@ -656,3 +660,81 @@ def test_pydantic_ai_style_retry_message_list_does_not_crash():
     prompt = apply_chat_template(tokenizer, messages)
     assert "name=Alice" in prompt
     assert "age=30" in prompt
+
+
+DEEPSEEK_R1_LIKE_TEMPLATE = r"""
+{%- for message in messages %}
+  {%- if message.role == 'assistant' and message.tool_calls is defined %}
+    {%- for tool in message.tool_calls %}
+      {{ tool.function.name + '\n```json\n' + tool.function.arguments + '\n```' }}
+    {%- endfor %}
+  {%- elif message.content is defined %}{{ message.content }}
+  {%- endif %}
+{%- endfor %}
+"""
+
+
+def test_deepseek_r1_string_concat_template_replays_tool_result():
+    """#1676: DeepSeek-R1's official template requires JSON strings.
+
+    The shared normaliser first converts OpenAI-wire strings to mappings for
+    Qwen/Hermes-style templates.  The exact string-concatenation TypeError must
+    trigger the compatibility retry rather than escape as an HTTP 500 on the
+    tool-result turn.
+    """
+    tokenizer = _fake_tokenizer_with_template(DEEPSEEK_R1_LIKE_TEMPLATE)
+    messages = _messages_with_assistant_tool_call('{"city": "Paris"}')
+    original = copy.deepcopy(messages)
+
+    prompt = apply_chat_template(tokenizer, messages)
+
+    assert 'get_weather\n```json\n{"city":"Paris"}\n```' in prompt
+    assert messages == original
+
+
+def test_deepseek_r1_retry_accepts_internal_dict_arguments():
+    tokenizer = _fake_tokenizer_with_template(DEEPSEEK_R1_LIKE_TEMPLATE)
+    prompt = apply_chat_template(
+        tokenizer, _messages_with_assistant_tool_call({"city": "東京"})
+    )
+    assert '{"city":"東京"}' in prompt
+
+
+ALTERNATING_ONLY_TEMPLATE = r"""
+{%- set loop_messages = messages[1:] if messages and messages[0].role == 'system' else messages -%}
+{%- for message in loop_messages %}
+  {%- if (message.role == 'user') != (loop.index0 % 2 == 0) -%}
+    {{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}
+  {%- endif -%}
+  {{ message.role + ': ' + message.get('content', '') + '\n' }}
+{%- endfor %}
+"""
+
+
+def test_gemma_alternating_template_replays_openai_tool_history():
+    tokenizer = _fake_tokenizer_with_template(ALTERNATING_ONLY_TEMPLATE)
+    prompt = apply_chat_template(
+        tokenizer,
+        _messages_with_assistant_tool_call('{"city":"Paris"}'),
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+    assert 'Tool call get_weather: {"city":"Paris"}' in prompt
+    assert "Tool result call_1: sunny, 22C in Paris" in prompt
+    assert "and tomorrow?" in prompt
+    assert "tool:" not in prompt
+
+
+def test_unrelated_template_error_is_not_hidden():
+    tokenizer = _fake_tokenizer_with_template(
+        "{{ raise_exception('different template failure') }}"
+    )
+    with pytest.raises(Exception, match="different template failure"):
+        apply_chat_template(tokenizer, _messages_with_assistant_tool_call("{}"))

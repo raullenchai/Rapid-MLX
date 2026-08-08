@@ -271,25 +271,20 @@ jobs:
     # the expensive Studio gate: garbage-from-first-token (#1234 doubled-norm
     # class, via the #1247 GOLDEN gate) and tool-call parser regressions.
     #
-    # Matrix over two SMALL models from DIFFERENT families so the tool-call
-    # FORMAT check exercises two distinct parser paths — Qwen -> hermes and
-    # Llama -> the `<function=name>` LlamaToolParser — catching family-specific
-    # chat-template / parser breakage that a single-family smoke would miss.
+    # Two GOLDEN models run coherence + the engine contract. The remaining 4B
+    # aliases run contract-only: forcing a zero-argument call factors model
+    # competence out while still covering multi-turn replay, streaming channel
+    # routing, and native-marker leaks (#1677).
     # Each model runs on its own runner (parallel), so ~7GB RAM holds one ~2GB
     # model comfortably. A 3-4B model is fine for a coherence/parser gate — it
     # is not a chat-quality eval, which stays on the 35B L2 tier.
     #
-    # Why only these two families (not Gemma / Mistral too): their small
-    # checkpoints are multimodal. The broken Ministral-3 alias was retired after
-    # its default VLM route repeatedly hung (#1367). Gemma e2b now passes the
-    # coherence gate on M2/M3, but its historical macos-14/M1 0/6 result still
-    # needs a same-runner rerun before it becomes an always-on CI leg. The smoke
-    # script forces ``--no-mllm``, so adding a validated multimodal model later
-    # needs no install change.
+    # Gemma3 is multimodal but this contract is text/tool-only, so the smoke
+    # script forces ``--no-mllm`` and exercises its LM backbone without pulling
+    # the vision extra. Ministral remains out after its text lane hung (#1367).
     #
-    # Kept a standalone check (NOT folded into the required ``tests`` aggregate)
-    # so it can prove itself green on real PRs before a maintainer marks it a
-    # required check in branch protection — prove before enforce.
+    # The aggregate ``tests`` job requires this matrix, so a contract failure is
+    # release-blocking rather than an informational red check.
     runs-on: macos-14
     timeout-minutes: 20
     strategy:
@@ -297,9 +292,17 @@ jobs:
       # which families regressed, not just the first failure.
       fail-fast: false
       matrix:
-        model:
-          - qwen3.5-4b-4bit  # hermes tool-call parser
-          - llama3-3b-4bit  # llama `<function=name>` tool-call parser
+        include:
+          - model: qwen3.5-4b-4bit  # hermes parser + GOLDEN coherence
+            contract_only: "0"
+          - model: llama3-3b-4bit  # llama parser + GOLDEN coherence
+            contract_only: "0"
+          - model: gemma3-4b-qat-4bit  # #1677 excluded G12 4B tier
+            contract_only: "1"
+          - model: qwen3-4b-instruct-2507-4bit
+            contract_only: "1"
+          - model: qwen3-4b-thinking-2507-4bit
+            contract_only: "1"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -332,13 +335,14 @@ jobs:
         # disk before the serve boot; no actions/cache needed.
         run: rapid-mlx pull "${{ matrix.model }}"
 
-      - name: L1 smoke (coherence + tool-call format)
+      - name: L1 smoke (coherence + tool-loop contract)
         env:
           RAPID_MLX_PORT: "8123"
+          L1_CONTRACT_ONLY: ${{ matrix.contract_only }}
         run: bash scripts/l1_smoke.sh "${{ matrix.model }}"
 
   tests:
-    needs: [test-matrix, test-apple-silicon]
+    needs: [test-matrix, test-apple-silicon, l1-smoke]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -350,5 +354,9 @@ jobs:
           fi
           if [ "${{ needs.test-apple-silicon.result }}" != "success" ]; then
             echo "Apple Silicon tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.l1-smoke.result }}" != "success" ]; then
+            echo "Small-model tool-loop contract failed"
             exit 1
           fi
