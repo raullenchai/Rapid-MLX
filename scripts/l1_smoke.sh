@@ -66,8 +66,10 @@ if curl -s -m 3 "$B/v1/models" >/dev/null 2>&1; then
 fi
 
 # ---- boot serve ----------------------------------------------------------
-# --no-thinking: the coherence gate measures answer coherence, not think-mode
-# behavior (its no-think-leak case still asserts no raw <think> tag leaks).
+# Keep the reasoning parser enabled at the server. The coherence requests set
+# ``enable_thinking=false`` themselves, while reasoning-distill models can
+# still emit ``<think>`` despite that preference; their parser must remain
+# available so raw wrappers/CoT never leak into the OpenAI content channel.
 #
 # --no-mllm: force the text-only mlx-lm lane. This gate only exercises the
 # TEXT coherence + tool-call parser paths, never vision, so the LM backbone is
@@ -78,7 +80,7 @@ fi
 # Ministral-3 alias hung there; Gemma e2b now passes on M2/M3 but its historical
 # M1 runner failure remains tracked in #1367. ``resolve_serving_lane`` maps
 # ``--no-mllm`` -> ``force_text`` -> the text lane, matching engine semantics.
-nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-thinking --no-mllm > "$LOG" 2>&1 &
+nohup "$RMLX" serve "$ALIAS" --port "$PORT" --no-mllm > "$LOG" 2>&1 &
 SERVE_PID=$!
 for i in $(seq 1 60); do
   curl -s -m 3 "$B/v1/models" 2>/dev/null | grep -q '"id"' && { echo "serve READY (~$((i * 3))s)"; break; }
