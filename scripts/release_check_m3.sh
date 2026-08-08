@@ -649,17 +649,44 @@ else
   line
   # Free the gauntlet's main server so G12 owns the port + GPU.
   # ``cleanup`` is the trap-installed teardown defined at the top of
-  # this script — calling it manually here releases the PID file too.
+  # this script — calling it manually here releases the PID file too, so
+  # read the PID before calling it.
+  OLD_SERVER_PID="$(cat "$PIDFILE" 2>/dev/null || true)"
   cleanup
   sleep 2
-  # Wait for the port to actually free (cleanup sends TERM; the server
-  # then runs PR #667's deadline-aware prefix-cache flush on shutdown).
-  for _ in $(seq 1 10); do
-    if ! lsof -i ":$PORT" >/dev/null 2>&1; then
-      break
+  # Wait for the old server to be GONE, not merely for the port to look
+  # free. uvicorn closes its listening socket before lifespan shutdown
+  # completes — and shutdown is where PR #667's deadline-aware prefix-cache
+  # flush runs — so a free port is not yet an idle GPU. G12 loads its own
+  # model next; overlapping that with a process still holding weights is how
+  # a gauntlet earns a metal::malloc "Resource limit" that reads like a code
+  # bug. Both conditions, then, and neither on its own.
+  server_gone=0
+  for _ in $(seq 1 60); do
+    if [ -n "$OLD_SERVER_PID" ] && kill -0 "$OLD_SERVER_PID" 2>/dev/null; then
+      sleep 1
+      continue
     fi
-    sleep 1
+    if lsof -i ":$PORT" >/dev/null 2>&1; then
+      sleep 1
+      continue
+    fi
+    server_gone=1
+    break
   done
+  # Handing over an occupied port is worse than stopping here. G12 boots its
+  # own server and waits for :$PORT to answer; whatever is still sitting
+  # there answers first, and the sweep would benchmark a stranger under the
+  # sampled alias's name. G12 checks that the listener is its own child, so
+  # this would be caught — but failing here says WHY, instead of timing out
+  # while looking healthy.
+  if [ "$server_gone" != 1 ]; then
+    echo "  ✗ the gauntlet's server did not exit and free port $PORT within 60s" >&2
+    echo "    refusing to hand the port and the GPU to G12" >&2
+    [ -n "$OLD_SERVER_PID" ] && ps -p "$OLD_SERVER_PID" >&2 || true
+    lsof -i ":$PORT" >&2 || true
+    exit 1
+  fi
   "$PY" scripts/release_check_m3_random.py \
     --port "$PORT" \
     --models "${G12_MODELS:-2}" \

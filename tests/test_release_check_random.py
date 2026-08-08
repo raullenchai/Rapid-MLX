@@ -267,3 +267,100 @@ def test_hf_cache_root_honors_env_vars(g12, tmp_path, monkeypatch):
 
     # Default
     assert g12._hf_cache_root() == Path.home() / ".cache" / "huggingface" / "hub"
+
+
+# ---------------------------------------------------------------------------
+# The port G12 benchmarks must belong to the server G12 started.
+#
+# Not hypothetical: while a gauntlet was running, a desktop app on this machine
+# swept port 8000, SIGTERM'd the gauntlet's server and bound its own sidecar
+# (#1618). Every later request went there, and nothing noticed, because the
+# replacement answered perfectly well.
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+
+def _stub_tree(g12, monkeypatch, *, listeners, parents):
+    monkeypatch.setattr(g12, "_listening_pids", lambda port: list(listeners))
+    monkeypatch.setattr(g12, "_parent_pid", lambda pid: parents.get(pid))
+
+
+def test_our_own_process_owns_the_port(g12, monkeypatch):
+    _stub_tree(g12, monkeypatch, listeners=[900], parents={})
+    assert g12._owns_port(_FakeProc(900), 8000)
+
+
+def test_a_descendant_of_ours_owns_the_port(g12, monkeypatch):
+    """`rapid-mlx serve` may bind from a child of the process we spawned."""
+    _stub_tree(g12, monkeypatch, listeners=[903], parents={903: 902, 902: 900})
+    assert g12._owns_port(_FakeProc(900), 8000)
+
+
+def test_a_stranger_does_not_own_the_port(g12, monkeypatch):
+    """The #1618 shape: something else is listening and answering 200."""
+    _stub_tree(g12, monkeypatch, listeners=[555], parents={555: 1})
+    assert not g12._owns_port(_FakeProc(900), 8000)
+
+
+def test_a_port_shared_with_a_stranger_is_refused(g12, monkeypatch):
+    """One of ours plus one of theirs is not ownership — requests can land on
+    either, so the numbers cannot be attributed to the sampled alias."""
+    _stub_tree(g12, monkeypatch, listeners=[900, 555], parents={555: 1})
+    assert not g12._owns_port(_FakeProc(900), 8000)
+
+
+def test_an_unverifiable_port_is_refused(g12, monkeypatch):
+    """Fails CLOSED. The caller only asks after a 200, so an empty listener
+    list means `lsof` could not tell us — not that nothing is there. Reading
+    "cannot tell" as "it's ours" reinstates exactly the bug."""
+    _stub_tree(g12, monkeypatch, listeners=[], parents={})
+    assert not g12._owns_port(_FakeProc(900), 8000)
+
+
+def test_an_unreadable_parent_is_refused(g12, monkeypatch):
+    """`ps` failing mid-walk proves nothing about the rest of the chain."""
+    _stub_tree(g12, monkeypatch, listeners=[903], parents={903: None})
+    assert not g12._owns_port(_FakeProc(900), 8000)
+
+
+def test_the_ancestor_walk_is_bounded(g12, monkeypatch):
+    """A pid whose parent chain loops must not spin forever."""
+    _stub_tree(g12, monkeypatch, listeners=[10], parents={10: 11, 11: 10})
+    assert not g12._owns_port(_FakeProc(900), 8000)
+
+
+# ---------------------------------------------------------------------------
+# Two writers, one of them offset-based, corrupts the artifact.
+# ---------------------------------------------------------------------------
+
+
+def test_the_bench_transcript_is_not_written_to_the_servers_log(g12):
+    """The server holds its log open ``"w"`` — no O_APPEND — so it writes at
+    an offset it tracks itself. Appending a bench transcript to that same path
+    moves the end of the file without moving that offset, and the server's
+    next line overwrites what we wrote."""
+    assert g12._serve_log_path("qwen3-8b-4bit") != g12._bench_log_path("qwen3-8b-4bit")
+
+
+def test_a_round_appends_its_transcript_to_the_bench_log(g12, tmp_path, monkeypatch):
+    bench_log = tmp_path / "bench.log"
+    bench_log.write_text("")
+
+    class _Result:
+        returncode = 0
+        stdout = "harness ok\n"
+        stderr = ""
+
+    monkeypatch.setattr(g12.subprocess, "run", lambda *a, **k: _Result())
+    ok, _, _ = g12._run_harness_round(
+        alias="qwen3-8b-4bit",
+        harness="hermes",
+        base_url="http://127.0.0.1:8000",
+        bench_log=bench_log,
+    )
+    assert ok
+    assert "harness ok" in bench_log.read_text()

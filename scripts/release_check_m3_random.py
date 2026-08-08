@@ -254,10 +254,91 @@ def _hf_cache_dir(hf_repo_path: str) -> Path:
     return _hf_cache_root() / f"models--{hf_repo_path.replace('/', '--')}"
 
 
+def _serve_log_path(alias: str) -> Path:
+    """Where the sampled server's own stdout goes."""
+    return Path(f"/tmp/release-check-m3-random-{alias}.log")
+
+
+def _bench_log_path(alias: str) -> Path:
+    """Where each round's bench transcript goes.
+
+    Deliberately NOT the serve log. The server writes through a descriptor it
+    opened ``"w"``, tracking its own byte offset; appending to the same path
+    from here moves the end of the file without moving that offset, and the
+    server's next line lands on top of the transcript. Two writers, one of
+    them offset-based, corrupts the artifact on exactly the runs someone
+    needs to read.
+    """
+    return Path(f"/tmp/release-check-m3-random-{alias}.bench.log")
+
+
+def _parent_pid(pid: int) -> int | None:
+    """PPID of ``pid``, or None when it cannot be read."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = out.stdout.strip()
+    return int(text) if text.isdigit() else None
+
+
+def _listening_pids(port: int) -> list[int]:
+    """PIDs with a LISTEN socket on ``port``; ``[]`` if that cannot be
+    established (``lsof`` missing, permission denied, timeout)."""
+    try:
+        out = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(tok) for tok in out.stdout.split() if tok.isdigit()]
+
+
+def _owns_port(proc: subprocess.Popen, port: int, max_depth: int = 8) -> bool:
+    """True when every listener on ``port`` is ``proc`` or a descendant.
+
+    A 200 on the port proves something is there, not that it is ours, and
+    identity is not ownership either: asking ``/v1/models`` what it serves
+    accepts a leftover sidecar or an older engine that happens to hold the
+    same weights. This walks the process tree instead, so the only thing
+    that satisfies it is the child we started.
+
+    Not hypothetical. While a gauntlet was running, a desktop app on this
+    machine swept port 8000, SIGTERM'd the gauntlet's server and bound its
+    own sidecar (#1618); every later request went there. It went unnoticed
+    because the replacement answered perfectly well.
+
+    Fails CLOSED: an empty listener list while the port demonstrably answers
+    means ``lsof`` could not tell us, and an unverifiable port is refused.
+    """
+    listeners = _listening_pids(port)
+    if not listeners:
+        return False
+    for pid in listeners:
+        cur: int | None = pid
+        for _ in range(max_depth):
+            if cur == proc.pid:
+                break
+            if cur is None or cur <= 1:
+                return False
+            cur = _parent_pid(cur)
+        else:
+            return False
+    return True
+
+
 def _wait_for_server(
     proc: subprocess.Popen, port: int, deadline_s: float, log_path: Path
 ) -> bool:
-    """Poll ``/v1/models`` until the server responds 200, the child
+    """Poll ``/v1/models`` until our own server responds 200, the child
     exits, or the deadline expires. Returns True on success, False
     otherwise.
 
@@ -266,9 +347,15 @@ def _wait_for_server(
     pre-flight, mlx-lm import error on a clean venv), there is no port
     that will ever come up. Without this check we'd burn the full 600 s
     deadline polling a dead child.
+
+    It is not sufficient on its own, though: while our child is still
+    loading weights it is very much alive, so a stranger already on the
+    port answers first and the sweep would report that stranger's numbers
+    under the sampled alias's name. Hence ``_owns_port``.
     """
     url = f"http://127.0.0.1:{port}/v1/models"
     start = time.monotonic()
+    warned_stranger = False
     while time.monotonic() - start < deadline_s:
         rc = proc.poll()
         if rc is not None:
@@ -280,7 +367,17 @@ def _wait_for_server(
         try:
             with urllib.request.urlopen(url, timeout=3) as resp:
                 if resp.status == 200:
-                    return True
+                    if _owns_port(proc, port):
+                        return True
+                    if not warned_stranger:
+                        warned_stranger = True
+                        print(
+                            f"  port {port} answers, but the listener is not our "
+                            f"server (pid {proc.pid}); listeners="
+                            f"{_listening_pids(port) or '<could not determine>'} "
+                            f"— still waiting",
+                            file=sys.stderr,
+                        )
         except (urllib.error.URLError, urllib.error.HTTPError, OSError):
             pass
         time.sleep(2)
@@ -323,10 +420,19 @@ def _run_harness_round(
     alias: str,
     harness: str,
     base_url: str,
-    log_path: Path,
+    bench_log: Path,
 ) -> tuple[bool, float, str]:
     """Run one ``bench --tier harness`` invocation scoped to one
-    harness. Returns ``(ok, wall_clock_s, error_excerpt)``."""
+    harness. Returns ``(ok, wall_clock_s, error_excerpt)``.
+
+    ``bench_log`` is a DIFFERENT file from the server log on purpose. The
+    server holds its own descriptor on that file, opened ``"w"`` — no
+    ``O_APPEND``, so it writes at a position it tracks itself. Appending
+    bench output to the same path moves the end of the file without moving
+    that position, and the server's next line lands on top of what we just
+    wrote. Two writers, one of them offset-based, is a corrupted artifact on
+    exactly the runs anyone needs to read.
+    """
     env = {**os.environ, "RAPID_MLX_HARNESS_PROFILES_FILTER": harness}
     # Right-size the inner per-profile cap for standalone runs. Via
     # release_check_m3.sh the gauntlet exports HARNESS_PROFILE_TIMEOUT_S
@@ -359,10 +465,10 @@ def _run_harness_round(
         dur = time.monotonic() - t0
         return False, dur, f"round timed out after {ROUND_TIMEOUT_S}s"
     dur = time.monotonic() - t0
-    # Append the subprocess output to our log so a failure has
+    # Append the subprocess output to the bench log so a failure has
     # a debuggable trail. ``"a"`` mode is single-write-atomic enough for
     # our single-threaded sweep loop.
-    with log_path.open("a") as fh:
+    with bench_log.open("a") as fh:
         fh.write(
             f"\n=== {alias}/{harness} (exit={result.returncode}, {dur:.1f}s) ===\n"
         )
@@ -378,7 +484,7 @@ def _run_harness_round(
                 excerpt = line.strip()[:200]
                 break
         if not excerpt:
-            excerpt = f"exit {result.returncode}; see {log_path}"
+            excerpt = f"exit {result.returncode}; see {bench_log}"
         return False, dur, excerpt
     return True, dur, ""
 
@@ -526,8 +632,10 @@ def main() -> int:
     for alias, hf_path, harnesses in sampled:
         print()
         print(f"  >> Booting {alias} on port {args.port}…")
-        log_path = Path(f"/tmp/release-check-m3-random-{alias}.log")
+        log_path = _serve_log_path(alias)
+        bench_log = _bench_log_path(alias)
         log_path.write_text("")
+        bench_log.write_text("")
         with log_path.open("w") as logfh:
             proc = subprocess.Popen(
                 [
@@ -560,7 +668,7 @@ def main() -> int:
                         alias=alias,
                         harness=harness,
                         base_url=base_url,
-                        log_path=log_path,
+                        bench_log=bench_log,
                     )
                     marker = "PASS" if ok else "FAIL"
                     line = (
