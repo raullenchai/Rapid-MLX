@@ -394,31 +394,12 @@ def test_subprocess_sigterm_emits_warning_and_stack_dump():
     assert "Thread" in stderr or "Current thread" in stderr, stderr
 
 
-def test_subprocess_sighup_default_disposition_dumps_and_stays_alive():
-    """R7-C1 (dogfood-088 Talia r1/r2): SIGHUP is now a *diagnostic
-    probe* — the observability hook dumps the stack to stderr and
-    KEEPS THE PROCESS ALIVE. The 0.8.5/0.8.7 lineage (PR #820) had
-    the SIG_DFL chain terminate on SIGHUP via ``raise_signal``; the
-    0.8.7 dogfood (Hiro r6) confirmed dump-and-stay-alive as the
-    intended shape, and the 0.8.8 regression Talia caught was that
-    the SIG_DFL re-raise still terminated the process. Per the C-04
-    PR commentary, operators reach for SIGHUP precisely to inspect a
-    LIVE process without taking it down — SIGTERM/SIGINT are the
-    right signals for graceful shutdown.
+def test_subprocess_sighup_default_disposition_dumps_and_terminates():
+    """SIGHUP keeps its default termination after the diagnostic dump.
 
-    The test:
-      1. Asserts SIGHUP starts from SIG_DFL (the production baseline:
-         uvicorn captures SIGINT/SIGTERM only).
-      2. Sends SIGHUP after the install.
-      3. Verifies stderr contains the WARNING marker + stack frames.
-      4. Verifies the process REACHES the post-sleep ``os._exit(0)``
-         (stays alive end-to-end).
-
-    A previous round of this test installed a callable
-    ``_exit_handler`` BEFORE calling ``install_signal_observability``,
-    which bypassed the SIG_DFL chain entirely. This version
-    deliberately does NOT install a prior so we exercise the real
-    default-disposition path that production sees.
+    This is the production baseline under uvicorn, which does not install a
+    SIGHUP handler. Swallowing it strands servers when tmux or another
+    supervisor closes the controlling session.
     """
     program = textwrap.dedent(
         """
@@ -431,9 +412,7 @@ def test_subprocess_sighup_default_disposition_dumps_and_stays_alive():
         from vllm_mlx._signal_observability import install_signal_observability
         assert install_signal_observability() is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()
-        # If the chain DOES terminate (the regression), we never
-        # reach the os._exit(0) below and the test detects the
-        # subprocess died via a non-zero returncode.
+        # Reaching this exit means the observability hook swallowed SIGHUP.
         for _ in range(20):
             time.sleep(0.1)
         sys.stdout.write("ALIVE\\n"); sys.stdout.flush()
@@ -457,24 +436,15 @@ def test_subprocess_sighup_default_disposition_dumps_and_stays_alive():
             proc.kill()
             proc.communicate()
 
-    # WARNING marker must land before the process continues running.
+    # WARNING marker and stacks land before default termination.
     assert "received signal SIGHUP" in stderr, stderr
     # faulthandler.dump_traceback shape — verifies stack-dump fired.
     assert "Thread" in stderr or "Current thread" in stderr, stderr
-    # R7-C1 invariant: the process MUST reach the post-sleep
-    # ``os._exit(0)`` (returncode=0, "ALIVE" line printed). If
-    # returncode is negative (signal-terminated) or 99 (a different
-    # bailout), the regression is back.
-    assert proc.returncode == 0, (
-        f"SIGHUP terminated the process — R7-C1 regression: the"
-        f" SIG_DFL chain re-raised instead of staying alive."
-        f" returncode={proc.returncode} stdout={stdout!r}"
-        f" stderr={stderr!r}"
+    assert proc.returncode == -signal.SIGHUP, (
+        f"SIGHUP was swallowed: returncode={proc.returncode} "
+        f"stdout={stdout!r} stderr={stderr!r}"
     )
-    assert "ALIVE" in stdout, (
-        f"SIGHUP did not allow the subprocess to continue past the"
-        f" 2-second sleep window; stdout={stdout!r} stderr={stderr!r}"
-    )
+    assert "ALIVE" not in stdout
 
 
 def test_subprocess_sigterm_default_disposition_still_terminates():
