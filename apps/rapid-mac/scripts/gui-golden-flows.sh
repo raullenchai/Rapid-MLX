@@ -1106,6 +1106,29 @@ flow_slow_stream_stop() {
     done
     [[ "$(element_field "$OUT/slow-streaming.json" ChatView.SendOrStopButton description)" == "Stop generating" ]] \
         || die "send button never transitioned to Stop generating"
+    # Stop a stream that is actually streaming CONTENT.
+    #
+    # The button flips to "Stop generating" on the first delta, and that delta
+    # is a REASONING token — the answer itself has not started. Pressing there
+    # leaves a bubble with no content node; pressing a moment later leaves one
+    # with. Both are legitimate app states, and the structural baseline can
+    # only pin one of them.
+    #
+    # Measured, same commit: this dev machine always had the content by then
+    # and the hosted runner never did, so whichever machine wrote the baseline
+    # made it un-enforceable on the other — three local runs were stable, which
+    # is exactly what makes this kind of race so easy to commit by accident.
+    #
+    # Waiting for the first content token removes the race and sharpens what
+    # the flow claims to test: cancelling a response that is being produced,
+    # not one that has yet to start.
+    for _ in {1..80}; do
+        see_main "$OUT/slow-streaming.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("Hello")' \
+            "$OUT/slow-streaming.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    assert_tree_text "$OUT/slow-streaming.json" "Hello"
     press "$OUT/slow-streaming.json" ChatView.SendOrStopButton "$OUT/slow-stop.json"
     for _ in {1..40}; do
         see_main "$OUT/slow-stopped.json"

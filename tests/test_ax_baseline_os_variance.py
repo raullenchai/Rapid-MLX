@@ -18,6 +18,14 @@ accessibility tree reported an ``AXTitle`` that the dev machine did not:
 The fixtures beside this file are the REAL dumps from those two runs, not
 hand-written approximations, so this suite fails if the normalizer ever stops
 absorbing that difference.
+
+They are a FROZEN corpus for the normalizer, deliberately not tied to the app's
+current UI. Do not add a test asserting that a fixture normalizes to a
+committed baseline: the two drift apart the first time anyone changes the
+chat view, and the churn teaches people to refresh fixtures reflexively — the
+exact habit that let three separate UI changes ship with stale baselines. That
+the committed baselines match a LIVE app is the macOS golden-flow job's
+assertion, made on both operating systems, every PR.
 """
 
 from __future__ import annotations
@@ -110,17 +118,6 @@ def test_real_cross_os_dumps_normalize_identically():
         "the normalizer lets a macOS difference through — a baseline generated "
         "on one macOS cannot be enforced on the other"
     )
-
-
-def test_committed_baseline_accepts_the_other_os_dump():
-    """End to end, against the baseline the golden flows actually enforce.
-
-    Equality between the two fixtures is necessary but not sufficient: both
-    could normalize to something the committed file does not match.
-    """
-    observed = _normalize(FIXTURES / "chat-settled.macos15.json")
-    committed = (SNAPSHOTS / "chat-restore.answered.txt").read_text().splitlines()
-    assert observed == committed
 
 
 def _render(record: dict) -> str:
