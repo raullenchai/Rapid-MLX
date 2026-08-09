@@ -34,6 +34,7 @@ set -euo pipefail
 exec /usr/bin/env python3 - "$@" <<'PYEOF'
 import argparse
 import base64
+import hashlib
 import json
 import os
 import struct
@@ -384,7 +385,17 @@ class Handler(BaseHTTPRequestHandler):
         RENDERS.end()
         png = _one_pixel_png(((index * 70) % 256, (index * 130) % 256, (index * 190) % 256))
         encoded = base64.b64encode(png).decode("ascii")
-        _event("image_response", index=index, cancelled=cancelled, bytes=len(png))
+        # The digest is of the BYTES that go on the wire, so a fixture (or an
+        # engine) that returns one image twice is visible even while the
+        # index keeps incrementing. An index is a counter; only a hash is a
+        # statement about content.
+        _event(
+            "image_response",
+            index=index,
+            cancelled=cancelled,
+            bytes=len(png),
+            sha256=hashlib.sha256(png).hexdigest(),
+        )
         self._json(
             200,
             {"data": [{"b64_json": encoded} for _ in range(count)], "cancelled": cancelled},

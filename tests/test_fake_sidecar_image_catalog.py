@@ -13,7 +13,6 @@ other side: it runs the fixture and checks the shape the parser depends on.
 Stdlib + bash only, so it runs on the Linux CI lane that never sees a Mac.
 """
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -196,7 +195,9 @@ def _chat_excluded_aliases(output: str) -> set[str]:
         if not _has_non_chat_kind_tag(line):
             continue
         first = line.split()[:1]
-        if first and re.fullmatch(r"[A-Za-z0-9._-]+", first[0]):
+        # Swift gates this on ``isSafeAlias`` too, so the permissive regex
+        # would have this mirror excluding aliases the app never excludes.
+        if first and _is_safe_alias(first[0]):
             excluded.add(first[0])
     return excluded
 

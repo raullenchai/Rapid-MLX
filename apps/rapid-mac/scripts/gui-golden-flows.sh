@@ -42,8 +42,8 @@ Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-l
        browse-all-destination, image-generation, all
 
 chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
-restored-tools and tool-loop-budget drive the app through the accessibility
-API alone. They need no peekaboo and no Screen Recording, which is what lets
+restored-tools, tool-loop-budget and image-generation drive the app through
+the accessibility API alone. They need no peekaboo and no Screen Recording, which is what lets
 them run unattended in CI (see the gui-golden-flows job in
 .github/workflows/rapid-mac-ci.yml). Every other flow needs peekaboo.
 
@@ -1828,7 +1828,9 @@ flow_image_generation() {
     [[ "$ready" == 1 ]] || die "Images.Generate never became ready after the model loaded"
 
     # 4. Generate.
-    type_prompt "a cheetah on a red couch" ig-draft
+    local prompt1="a cheetah on a red couch"
+    local prompt2="the same cheetah, at night"
+    type_prompt "$prompt1" ig-draft
     press "$OUT/ig-draft.json" Images.Generate "$OUT/ig-generate.json" \
         || die "Images.Generate is not pressable with a prompt and a ready model"
 
@@ -1875,7 +1877,7 @@ flow_image_generation() {
     log "  first render landed"
 
     # 5. Refine by re-prompting — a SECOND render, not a redraw of the first.
-    type_prompt "the same cheetah, at night" ig-draft-2
+    type_prompt "$prompt2" ig-draft-2
     press "$OUT/ig-draft-2.json" Images.Generate "$OUT/ig-generate-2.json" \
         || die "Images.Generate is not pressable for a second render"
 
@@ -1908,17 +1910,32 @@ flow_image_generation() {
     jq -s -c '[.[] | select(.event == "image_request") | .prompt]' \
         "$OUT/fake-events.jsonl" > "$OUT/ig-prompts.json"
     local expected_prompts
-    expected_prompts="$(jq -n -c --arg a "a cheetah on a red couch" --arg b "the same cheetah, at night" '[$a,$b]')"
+    expected_prompts="$(jq -n -c --arg a "$prompt1" --arg b "$prompt2" '[$a,$b]')"
     [[ "$(cat "$OUT/ig-prompts.json")" == "$expected_prompts" ]] \
         || die "the prompts on the wire were $(cat "$OUT/ig-prompts.json"), expected $expected_prompts"
     # And the rest of the payload. Without this the picker can show and load
     # the image alias while the request names something else entirely — the
     # tab would look right and render with the wrong model.
+    # `1024x1024` is what the default (square) aspect maps to. A shape-only
+    # check like `^[0-9]+x[0-9]+$` passes `768x1024` — the PORTRAIT size — so
+    # an aspect control wired to the wrong case would render the wrong shape
+    # and the flow would call it correct.
     jq -s -e --arg alias "$FAKE_IMAGE_ALIAS" \
         'all(.[] | select(.event == "image_request");
-             .model == $alias and .n == 1 and ((.size // "") | test("^[0-9]+x[0-9]+$")))' \
+             .model == $alias and .n == 1 and .size == "1024x1024")' \
         "$OUT/fake-events.jsonl" >/dev/null \
-        || die "an image request named the wrong model, asked for n != 1, or carried no WxH size: $(jq -s -c '[.[] | select(.event == "image_request") | {model, size, n}]' "$OUT/fake-events.jsonl")"
+        || die "an image request named the wrong model, asked for n != 1, or did not carry the square size 1024x1024: $(jq -s -c '[.[] | select(.event == "image_request") | {model, size, n}]' "$OUT/fake-events.jsonl")"
+    # ...and the UI agreed that square was selected, so the two cannot drift
+    # into agreeing on a wrong value together.
+    # On `selected`, not on existence. All three ratio buttons carry the
+    # identifier `Images.Aspect` and all three are always present, so
+    # "there is a 1:1 button" is true no matter which one is active — an
+    # assertion that cannot fail. Only the selected flag distinguishes them.
+    jq -e '[.data.ui_elements[]? | select(.identifier == "Images.Aspect")
+            | select(.selected == true)
+            | (.description // .title // "")] == ["1:1"]' \
+        "$OUT/ig-result-2.json" >/dev/null \
+        || die "the selected aspect is not the square one the requests were sent with: $(jq -c '[.data.ui_elements[]? | select(.identifier == "Images.Aspect") | {d: (.description // .title), selected}]' "$OUT/ig-result-2.json")"
 
     # Two thumbnails is not two renders — and the two ways that can go wrong
     # need two different witnesses.
@@ -1935,22 +1952,33 @@ flow_image_generation() {
                      | (.description // .title // "")' "$OUT/ig-result-2.json" | head -1)"
     thumb2="$(jq -r '.data.ui_elements[]? | select(.identifier == "Images.Gallery.Thumb.2")
                      | (.description // .title // "")' "$OUT/ig-result-2.json" | head -1)"
-    [[ "$thumb1" == *"at night"* ]] \
+    [[ "$thumb1" == *"$prompt2"* ]] \
         || die "the newest thumbnail does not name the second render's prompt (got: $thumb1)"
-    [[ "$thumb2" == *"red couch"* ]] \
+    [[ "$thumb2" == *"$prompt1"* ]] \
         || die "the older thumbnail does not name the first render's prompt (got: $thumb2)"
     [[ "$thumb1" != "$thumb2" ]] \
         || die "both thumbnails describe the same render — the refine step redrew the first instead of adding a second"
-    # ...and two DISTINCT renders were produced, not one artifact shown twice.
-    # The fake stamps each response with an incrementing index, and the PNG
-    # bytes derive from it, so two equal indices would mean the "second"
-    # thumbnail is a re-show of the first render. The displayed pixels are past
-    # what an AX structural dump can read; the render index is the wire-level
-    # witness that the two thumbnails stand for two different bitmaps.
-    jq -s '[.[] | select(.event == "image_response") | .index] | unique | length' \
+    # ...and two DISTINCT bitmaps came back, not one artifact returned twice.
+    # Compared by SHA-256 of the bytes actually sent, NOT by the response
+    # index: an index is a counter, and a fixture or engine that returned one
+    # image twice while still incrementing would satisfy it. The hash is the
+    # only field here that is a statement about content.
+    #
+    # What this flow does NOT prove, stated plainly so nobody reads it as
+    # more: nothing above compares the pixels the app DRAWS. AX exposes no
+    # image data, so a dump cannot distinguish two thumbnails showing one
+    # bitmap from two showing two. The pair of checks brackets it — the wire
+    # carried two different images, and the gallery bound two different
+    # records — and `filmstripThumb` takes its picture and its label from the
+    # same value, so they cannot disagree without an edit that deliberately
+    # reaches past its own parameter. Closing the last gap needs pixel
+    # capture, which this flow is deliberately without (#1708 removed screen
+    # capture from the semantic flows); that belongs with the XCUITest work
+    # in #1719.
+    jq -s '[.[] | select(.event == "image_response") | .sha256] | unique | length' \
         "$OUT/fake-events.jsonl" > "$OUT/ig-render-count.txt"
     [[ "$(cat "$OUT/ig-render-count.txt")" == "2" ]] \
-        || die "the two thumbnails came from the same render index — a re-shown artifact, not a second render"
+        || die "the two renders returned identical PNG bytes — a re-shown artifact, not a second render: $(jq -s -c '[.[] | select(.event == "image_response") | {index, sha256}]' "$OUT/fake-events.jsonl")"
 
     # A thumbnail is a way back to its prompt, not just a picture.
     press "$OUT/ig-result-2.json" Images.Gallery.Thumb.2 "$OUT/ig-revisit.json" \
