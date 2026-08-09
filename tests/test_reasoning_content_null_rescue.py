@@ -1142,7 +1142,10 @@ class TestRescueSilentDropFromReasoning:
             finish_reason="stop",
             raw_text="Okay, so I need to figure out unified memory.",
             reasoning_is_case4=True,
-            prompt_thinking_active=True,
+            # R1-Distill's shipped template ignores enable_thinking=False
+            # and still primes <think>; the parser capability is therefore
+            # sufficient even when the generic template probe says False.
+            prompt_thinking_active=False,
             implicit_reasoning_until_close=True,
         )
         assert content is None
