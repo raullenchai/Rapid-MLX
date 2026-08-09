@@ -1142,13 +1142,25 @@ class TestRescueSilentDropFromReasoning:
             finish_reason="stop",
             raw_text="Okay, so I need to figure out unified memory.",
             reasoning_is_case4=True,
-            # R1-Distill's shipped template ignores enable_thinking=False
-            # and still primes <think>; the parser capability is therefore
-            # sufficient even when the generic template probe says False.
-            prompt_thinking_active=False,
+            # The shared template probe recognizes that R1-Distill's shipped
+            # template ignores enable_thinking=False and still primes <think>.
+            prompt_thinking_active=True,
             implicit_reasoning_until_close=True,
         )
         assert content is None
+
+    def test_1570_custom_non_priming_template_rescues_short_answer(self):
+        content = _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="Unified memory is shared by the CPU and GPU.",
+            tool_calls=None,
+            finish_reason="stop",
+            raw_text="Unified memory is shared by the CPU and GPU.",
+            reasoning_is_case4=True,
+            prompt_thinking_active=False,
+            implicit_reasoning_until_close=True,
+        )
+        assert content == "Unified memory is shared by the CPU and GPU."
 
     def test_case4_length_without_prompt_thinking_rescues_content(self):
         """A non-thinking answer truncated by max_tokens must not be

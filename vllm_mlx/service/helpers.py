@@ -942,7 +942,7 @@ def _rescue_silent_drop_from_reasoning(
             and prompt_thinking_active
         )
     )
-    if implicit_reasoning_until_close and reasoning_is_case4:
+    if implicit_reasoning_until_close and reasoning_is_case4 and prompt_thinking_active:
         return final_content
     if truncated_mid_think:
         return final_content
