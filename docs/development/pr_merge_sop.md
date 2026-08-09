@@ -246,14 +246,16 @@ Before merge, the PR description must accurately reflect actual current state:
 
 Every landed issue/PR must end with a compact, evidence-backed closure record.
 Use the same eight rows, in this order, so a maintainer can audit the whole
-journey without reconstructing it from terminal logs:
+journey without reconstructing it from terminal logs. For docs, dependency,
+release, and maintenance PRs, an inapplicable row may say `n/a`, but must give
+the concrete reason it does not apply.
 
 | Item | Required evidence |
 |---|---|
-| Reproduction | The failing user-visible behavior, including the exact model/input/path and measured failure where applicable. |
+| Reproduction | The failing user-visible behavior, including the exact model/input/path and measured failure where applicable; maintenance PRs state the concrete toil or broken workflow instead. |
 | Root cause | The specific faulty branch or invariant and why adjacent paths are unaffected. |
 | Fix | The behavioral change, including preserved compatibility and fallback behavior. |
-| Wiring | The production entry point that supplies/consumes the new behavior; write `n/a` only when the fix is already on the live path. |
+| Wiring | The production entry point that supplies/consumes the new behavior; if it was already on the live path, name that path. Reserve `n/a` for changes with no runtime wiring and explain why. |
 | Tests | New regression cases, affected-suite totals, builds/lint, and any live-model result. |
 | `pr_validate` | Final verdict, full-unit count, Codex review rounds and blocking-finding count. Do not report this row green before an actual PR-number run. |
 | Land | PR number, merge method, resulting `main` SHA, and linked-issue terminal state. |
