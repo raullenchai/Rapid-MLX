@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -55,6 +56,9 @@ from pathlib import Path
 # already had — the only change is the recipient is now our own endpoint.
 # Never sent: client id, os/arch, flag values, prompt or generated content.
 CLI_UPDATE_ENDPOINT = "https://rapidmlx.com/api/cli-update"
+GITHUB_RELEASES_ENDPOINT = (
+    "https://api.github.com/repos/raullenchai/Rapid-MLX/releases?per_page=100"
+)
 # Fixed, non-identifying User-Agent so the poll carries no data beyond the
 # ``v`` param + unavoidable IP. Overrides urllib's ``Python-urllib/x.y.z``.
 USER_AGENT = "rapid-mlx-cli"
@@ -64,6 +68,8 @@ NETWORK_TIMEOUT_SECONDS = 2  # tight — staleness check is best-effort
 # enough that a one-version lag is normal noise; 2+ means a feature
 # release was missed.
 MIN_LAG_PATCH = 2
+_REMOTE_ENGINE_TAG_RE = re.compile(r"^v(\d{1,6})\.(\d{1,6})\.(\d{1,6})$")
+_CACHED_VERSION_RE = re.compile(r"^\d{1,6}\.\d{1,6}\.\d{1,6}$")
 
 
 def _cache_path() -> Path:
@@ -113,7 +119,11 @@ def _read_cache() -> dict | None:
             return None
         with p.open("r") as f:
             data = json.load(f)
-        if isinstance(data, dict) and "latest" in data:
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("latest"), str)
+            and _CACHED_VERSION_RE.fullmatch(data["latest"])
+        ):
             return data
         return None
     except (OSError, json.JSONDecodeError):
@@ -163,10 +173,46 @@ def _fetch_latest() -> str | None:
         )
         with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read())
-        tag = data.get("tag_name")
-        if not isinstance(tag, str):
-            return None
-        return tag.lstrip("v")
+        tag = data.get("tag_name") if isinstance(data, dict) else None
+        if isinstance(tag, str) and _REMOTE_ENGINE_TAG_RE.fullmatch(tag):
+            return tag.lstrip("v")
+
+        # GitHub's "latest release" can be a desktop release tagged
+        # ``rapid-mac-vX.Y.Z``. That is a different product/version stream,
+        # so fall back to the repository tag inventory and select only exact
+        # engine tags. This path is exceptional; normal polls remain countable
+        # through the landing worker above.
+        page = 1
+        versions: list[tuple[int, int, int]] = []
+        while True:
+            separator = "&" if "?" in GITHUB_RELEASES_ENDPOINT else "?"
+            fallback = urllib.request.Request(
+                f"{GITHUB_RELEASES_ENDPOINT}{separator}page={page}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": USER_AGENT,
+                },
+            )
+            with urllib.request.urlopen(
+                fallback, timeout=NETWORK_TIMEOUT_SECONDS
+            ) as fallback_resp:
+                releases = json.loads(fallback_resp.read())
+            if not isinstance(releases, list):
+                return None
+            # GitHub returns releases newest-first. The first exact engine tag
+            # is therefore authoritative; desktop releases are simply skipped.
+            for item in releases:
+                candidate = item.get("tag_name") if isinstance(item, dict) else None
+                match = (
+                    _REMOTE_ENGINE_TAG_RE.fullmatch(candidate)
+                    if isinstance(candidate, str)
+                    else None
+                )
+                if match:
+                    versions.append(tuple(map(int, match.groups())))
+            if len(releases) < 100:
+                return ".".join(map(str, max(versions))) if versions else None
+            page += 1
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
         return None
 

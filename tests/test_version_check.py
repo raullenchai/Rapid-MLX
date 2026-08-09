@@ -105,7 +105,7 @@ def test_fetch_latest_pins_nonidentifying_user_agent(monkeypatch):
     def fake_urlopen(req, timeout=None):
         # urllib normalizes header keys to ``User-agent``.
         captured["ua"] = req.get_header("User-agent")
-        return _FakeResp(json.dumps({"tag_name": "0.6.70"}).encode())
+        return _FakeResp(json.dumps({"tag_name": "v0.6.70"}).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
@@ -126,7 +126,7 @@ def test_fetch_latest_url_encodes_version(monkeypatch):
 
     def fake_urlopen(req, timeout=None):
         captured["url"] = req.full_url
-        return _FakeResp(json.dumps({"tag_name": "0.6.70"}).encode())
+        return _FakeResp(json.dumps({"tag_name": "v0.6.70"}).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
@@ -143,7 +143,7 @@ def test_fetch_latest_sends_empty_version_when_uninstalled(monkeypatch):
 
     def fake_urlopen(req, timeout=None):
         captured["url"] = req.full_url
-        return _FakeResp(json.dumps({"tag_name": "0.6.70"}).encode())
+        return _FakeResp(json.dumps({"tag_name": "v0.6.70"}).encode())
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
@@ -180,11 +180,90 @@ def test_fetch_latest_returns_none_when_tag_missing(monkeypatch):
     """Passthrough JSON without ``tag_name`` → None (unchanged parse)."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
 
+    responses = iter(
+        [
+            _FakeResp(json.dumps({"other": "field"}).encode()),
+            _FakeResp(json.dumps([]).encode()),
+        ]
+    )
+
     def fake_urlopen(req, timeout=None):
-        return _FakeResp(json.dumps({"other": "field"}).encode())
+        return next(responses)
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     assert vc._fetch_latest() is None
+
+
+@pytest.mark.parametrize("worker_body", [[], "valid-json", 42])
+def test_fetch_latest_fails_open_on_non_object_worker_json(monkeypatch, worker_body):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.12.7")
+    responses = iter(
+        [
+            _FakeResp(json.dumps(worker_body).encode()),
+            _FakeResp(json.dumps([]).encode()),
+        ]
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: next(responses))
+    assert vc._fetch_latest() is None
+
+
+def test_fetch_latest_ignores_desktop_release_and_selects_engine_tag(monkeypatch):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.12.7")
+    urls = []
+    responses = iter(
+        [
+            _FakeResp(json.dumps({"tag_name": "rapid-mac-v0.12.5"}).encode()),
+            _FakeResp(
+                json.dumps(
+                    [
+                        {"tag_name": "rapid-mac-v0.12.5"},
+                        {"tag_name": "v0.12.7"},
+                        {"tag_name": "v0.12.6"},
+                        {"tag_name": "99.0.0"},
+                        {"tag_name": 999},
+                        {"tag_name": f"v{'9' * 5000}.0.0"},
+                    ]
+                ).encode()
+            ),
+        ]
+    )
+
+    def fake_urlopen(req, timeout=None):
+        urls.append(req.full_url)
+        return next(responses)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert vc._fetch_latest() == "0.12.7"
+    assert urls == [
+        "https://rapidmlx.com/api/cli-update?v=0.12.7",
+        f"{vc.GITHUB_RELEASES_ENDPOINT}&page=1",
+    ]
+
+
+def test_desktop_fallback_paginates_until_engine_release(monkeypatch):
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.12.7")
+    desktop_page = [{"tag_name": f"rapid-mac-v0.11.{index}"} for index in range(100)]
+    responses = iter(
+        [
+            _FakeResp(json.dumps({"tag_name": "rapid-mac-v0.12.5"}).encode()),
+            _FakeResp(json.dumps(desktop_page).encode()),
+            _FakeResp(json.dumps([{"tag_name": "v0.12.7"}]).encode()),
+        ]
+    )
+    urls = []
+
+    def fake_urlopen(req, timeout=None):
+        urls.append(req.full_url)
+        return next(responses)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert vc._fetch_latest() == "0.12.7"
+    assert urls[-2:] == [
+        f"{vc.GITHUB_RELEASES_ENDPOINT}&page=1",
+        f"{vc.GITHUB_RELEASES_ENDPOINT}&page=2",
+    ]
 
 
 def test_disabled_short_circuits_before_any_fetch(monkeypatch):
