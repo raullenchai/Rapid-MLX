@@ -65,5 +65,7 @@ struct ReleaseManifestWorkflowTests {
         #expect(!afterManifest.contains("r2 object put"))
         #expect(workflow.contains(#"--cache-control "no-cache, must-revalidate""#))
         #expect(workflow.contains("rapid-mlx-desktop-${DMG_SHA256}.dmg"))
+        #expect(!workflow.contains("wrangler@4 r2 object put"))
+        #expect(workflow.contains("wrangler@4.120.0 r2 object put"))
     }
 }
