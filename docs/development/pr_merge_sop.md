@@ -242,6 +242,44 @@ Before merge, the PR description must accurately reflect actual current state:
 - If the squash subject contains `(#NN)` GitHub auto-suffix on a `chore: bump version to X.Y.Z` commit, override with `--subject` — the regex in `auto-release.yml` is strict.
 - After merge, verify `git log raullenchai/main --oneline -1` shows your squash commit.
 
+## Required closure record
+
+Every landed issue/PR must end with a compact, evidence-backed closure record.
+Use the same eight rows, in this order, so a maintainer can audit the whole
+journey without reconstructing it from terminal logs:
+
+| Item | Required evidence |
+|---|---|
+| Reproduction | The failing user-visible behavior, including the exact model/input/path and measured failure where applicable. |
+| Root cause | The specific faulty branch or invariant and why adjacent paths are unaffected. |
+| Fix | The behavioral change, including preserved compatibility and fallback behavior. |
+| Wiring | The production entry point that supplies/consumes the new behavior; write `n/a` only when the fix is already on the live path. |
+| Tests | New regression cases, affected-suite totals, builds/lint, and any live-model result. |
+| `pr_validate` | Final verdict, full-unit count, Codex review rounds and blocking-finding count. Do not report this row green before an actual PR-number run. |
+| Land | PR number, merge method, resulting `main` SHA, and linked-issue terminal state. |
+| Elapsed | Wall-clock time from reproduction start through verified land (for example, `Worked for 14m 15s`). |
+
+The narrative should also classify the path. A focused change with one root
+cause, a small diff, and a first-round zero-blocking Codex review is a
+“straight-through” path. If review or validation required iteration, name the
+finding and the corrective round instead of presenting it as straight-through.
+
+Example closure shape from issue #1706 / PR #1729:
+
+| Item | Result |
+|---|---|
+| Reproduction | Unit-level reproduction showed `AutoStartDecision.decide` returning `.promptDownload` for both a non-catalog alias and an over-memory alias. |
+| Root cause | The stored-alias return bypassed both catalog membership and the OOM guard already used by cached-scan resolution. |
+| Fix | `storedAliasIsServable` requires catalog membership and the OOM guard when a catalog snapshot is supplied, while preserving the legacy `nil` contract and valid not-yet-downloaded aliases. |
+| Wiring | `ContentView.runLaunchAutoStart` passes the aliases from `ModelCatalogCache.entries`; unmapped aliases now fall through to the picker. |
+| Tests | Six new regressions; the 31-test suite, adjacent 18-test launch suite, and `swift build` passed. |
+| `pr_validate` | `MERGE-SAFE`; supply chain and full unit (16,633 passed) green; Codex round 1 had zero blocking findings. |
+| Land | PR #1729 squash-merged to `main` at `bb497477`; issue #1706 auto-closed as completed. |
+| Elapsed | `Worked for 14m 15s`. |
+
+This record is the final handoff, not a substitute for the detailed PR body or
+the `pr_validate` scorecard.
+
 ## CI coverage of these steps
 
 The full `pr_validate` pipeline runs on every PR via `.github/workflows/pr-validate.yml` — the scorecard is posted as a PR comment so you can see verdicts without leaving the PR page. The table below maps each SOP step to its CI status:
