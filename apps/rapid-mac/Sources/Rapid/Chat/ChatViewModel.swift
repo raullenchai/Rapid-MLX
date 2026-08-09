@@ -1932,7 +1932,8 @@ These rules apply to every tool, not just web search.
                 promptTokens: capturedPromptTokens,
                 completionTokens: capturedCompletionTokens,
                 timeToFirstTokenSeconds: firstTokenAt
-                    .map { $0.timeIntervalSince(streamStart) }
+                    .map { $0.timeIntervalSince(streamStart) },
+                reasoningEmitted: !current.reasoning.isEmpty
             )
             writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
         }

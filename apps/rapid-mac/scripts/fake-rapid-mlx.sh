@@ -279,25 +279,6 @@ class Handler(BaseHTTPRequestHandler):
             ],
         )
 
-        if body.get("stream") is False:
-            max_tokens = int(body.get("max_tokens", 8) or 8)
-            completion_tokens = min(max_tokens, 128)
-            _event("benchmark_request", max_tokens=max_tokens)
-            self._json(200, {
-                "id": "fake-benchmark",
-                "object": "chat.completion",
-                "choices": [{
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "measured output"},
-                    "finish_reason": "stop",
-                }],
-                "usage": {
-                    "prompt_tokens": 12,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": 12 + completion_tokens,
-                },
-            })
-            return
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

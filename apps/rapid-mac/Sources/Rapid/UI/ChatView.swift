@@ -1130,7 +1130,11 @@ private struct MessageRow: View {
         } else if let estimated = stats.estimatedTokensPerSecond {
             parts.append("~\(AssistantStatsFormatter.formatTPS(estimated)) tok/s")
         }
-        if let ttft = stats.timeToFirstTokenSeconds {
+        // ``validTimeToFirstToken``, not the raw field — the same value the
+        // rate arithmetic accepted. A TTFT at or past the end of the turn
+        // is rejected there, and rendering it here anyway would print
+        // "1.2 s to first token · 1.0 s".
+        if let ttft = stats.validTimeToFirstToken {
             parts.append("\(AssistantStatsFormatter.formatElapsed(ttft)) to first token")
         }
         parts.append(AssistantStatsFormatter.formatElapsed(stats.elapsedSeconds))
@@ -2128,7 +2132,7 @@ enum AssistantStatsFormatter {
         } else if let est = stats.estimatedTokensPerSecond {
             parts.append("approximately \(formatTPS(est)) tokens per second")
         }
-        if let ttft = stats.timeToFirstTokenSeconds {
+        if let ttft = stats.validTimeToFirstToken {
             parts.append("\(formatElapsed(ttft)) to the first token")
         }
         if stats.elapsedSeconds > 0 {

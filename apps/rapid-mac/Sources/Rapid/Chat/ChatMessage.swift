@@ -1118,6 +1118,19 @@ struct MessageStats: Codable, Equatable, Hashable {
     /// turns that produced no content, in which case every rate below
     /// degrades to the pre-existing whole-turn arithmetic.
     var timeToFirstTokenSeconds: Double?
+    /// Did this turn emit a reasoning trace?
+    ///
+    /// Only the char-count estimate needs it, to know that its numerator
+    /// (visible prose) and its denominator (a window that opened on the
+    /// first reasoning token) are not describing the same generation.
+    /// Optional for the same reason as ``timeToFirstTokenSeconds``: older
+    /// transcripts have no such field and decode as ``nil``.
+    var reasoningEmitted: Bool?
+
+    /// ``reasoningEmitted`` with the legacy default. A transcript written
+    /// before the field existed is treated as prose-only, which is what
+    /// those rows were captioned as at the time.
+    var emittedReasoning: Bool { reasoningEmitted ?? false }
 
     /// Seconds spent generating — everything after the first token landed.
     ///
@@ -1128,15 +1141,51 @@ struct MessageStats: Codable, Equatable, Hashable {
     /// second, captioned a short reply at 13 tok/s — prefill of a
     /// ~950-token tool-carrying prompt was 93 % of that turn. Same
     /// machine, same model, two numbers 5x apart, both labelled "tok/s".
+    /// The recorded TTFT, but only when it describes an interval that can
+    /// exist: inside the turn it belongs to, and not negative.
+    ///
+    /// A persisted transcript can carry nonsense here — a clock step
+    /// between the two `Date()` reads, or a hand-edited session file — and
+    /// a value at or past ``elapsedSeconds`` is not a prefill measurement.
+    /// One accessor so arithmetic and presentation can never disagree
+    /// about which values are real: rejecting it for the rate while still
+    /// rendering "1.2 s to first token · 1.0 s" would just move the lie
+    /// into the caption.
+    var validTimeToFirstToken: Double? {
+        guard let timeToFirstTokenSeconds,
+              timeToFirstTokenSeconds >= 0,
+              timeToFirstTokenSeconds < elapsedSeconds else { return nil }
+        return timeToFirstTokenSeconds
+    }
+
     var decodeSeconds: Double? {
-        guard let timeToFirstTokenSeconds else { return elapsedSeconds }
-        let decode = elapsedSeconds - timeToFirstTokenSeconds
+        guard let ttft = validTimeToFirstToken else { return elapsedSeconds }
+        let decode = elapsedSeconds - ttft
         return decode > 0 ? decode : nil
     }
 
-    /// Heuristic tokens/sec from char count when the server didn't
-    /// report usage. UI prefixes with "~" to signal estimate.
+    /// Heuristic tokens/sec from char count, for a server that reports no
+    /// usage at all. UI prefixes with "~" to signal estimate.
+    ///
+    /// Gated on ``completionTokens == nil`` so it is a fallback for
+    /// *missing* data and never a second opinion that overrides a
+    /// deliberate ``nil`` from ``reportedTokensPerSecond``. Without that
+    /// gate a one-token reply — which the reported path declines to rate
+    /// because there is no interval to divide by — fell straight through
+    /// to this estimate and printed "~1 tok/s" anyway.
+    ///
+    /// Suppressed on a turn that emitted reasoning, because the two halves
+    /// of the fraction would then measure different things: the decode
+    /// window opens at the first token on ANY channel (a reasoning model's
+    /// trace comes first), while ``charCount`` counts only the visible
+    /// prose. A long think followed by one short sentence would divide a
+    /// handful of characters by the whole reasoning window and understate
+    /// the rate by however long the model thought — reintroducing, in the
+    /// fallback path, the exact distortion this change removed from the
+    /// main one. No number beats a wrong one; the caption still carries
+    /// time-to-first-token and the total.
     var estimatedTokensPerSecond: Double? {
+        guard completionTokens == nil, !emittedReasoning else { return nil }
         guard let decodeSeconds, decodeSeconds > 0.05 else { return nil }  // < 50 ms is noise
         let estTokens = Double(charCount) / 4.0
         return estTokens / decodeSeconds
@@ -1144,15 +1193,27 @@ struct MessageStats: Codable, Equatable, Hashable {
 
     /// Authoritative tokens/sec when the server reported usage.
     ///
-    /// ``completionTokens - 1`` intervals span the decode window: the
-    /// first token is what ENDS prefill, so it is not generated during
-    /// ``decodeSeconds``. This is the standard inverse-TPOT definition
-    /// and it needs at least two tokens to mean anything — a one-token
-    /// reply returns ``nil`` and the caption simply omits a rate rather
+    /// With a TTFT, ``completionTokens - 1`` intervals span the decode
+    /// window: the first token is what ENDS prefill, so it is not produced
+    /// during ``decodeSeconds``. That is the standard inverse-TPOT
+    /// definition, and it needs at least two tokens to mean anything — a
+    /// one-token reply returns ``nil`` and the caption omits a rate rather
     /// than dividing by a window the token never occupied.
+    ///
+    /// **Without** a TTFT the subtraction has nothing to stand on: the
+    /// denominator is the whole turn, which begins before the first token,
+    /// so all N tokens fall inside it. Transcripts written before this
+    /// field existed therefore keep the exact arithmetic they were
+    /// captioned with — `N / elapsed` — rather than silently shifting to
+    /// `(N - 1) / elapsed` and re-rendering history slightly differently
+    /// than it was first shown.
     var reportedTokensPerSecond: Double? {
-        guard let completionTokens, completionTokens > 1,
+        guard let completionTokens, completionTokens > 0,
               let decodeSeconds, decodeSeconds > 0.05 else { return nil }
+        guard validTimeToFirstToken != nil else {
+            return Double(completionTokens) / decodeSeconds
+        }
+        guard completionTokens > 1 else { return nil }
         return Double(completionTokens - 1) / decodeSeconds
     }
 }

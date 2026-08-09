@@ -33,7 +33,7 @@ Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
 Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth,
        slow-stream-stop,
-       model-crash-recovery, low-memory-choice, loaded-model-benchmark,
+       model-crash-recovery, low-memory-choice,
        update-state, no-dead-controls, catalog-integrity,
        browse-all-destination, all
 
@@ -1243,32 +1243,6 @@ flow_low_memory_choice() {
     cleanup_persona
 }
 
-flow_loaded_model_benchmark() {
-    log "7/7 benchmark the model that is already loaded"
-    start_persona loaded-model-benchmark
-    pb app switch --to "PID:$APP_PID" --verify --json > "$OUT/focus.json"
-    dismiss_first_run
-    start_model
-
-    wait_identifier ChatView.SpeedOnThisMac "$OUT/chat-ready.json"
-    press "$OUT/chat-ready.json" ChatView.SpeedOnThisMac "$OUT/open-benchmark.json"
-    wait_identifier Benchmark.RunLoadedModel "$OUT/benchmark-idle.json"
-    press "$OUT/benchmark-idle.json" Benchmark.RunLoadedModel "$OUT/run-benchmark.json"
-    wait_identifier Benchmark.LoadedModelResult "$OUT/benchmark-result.json"
-
-    local starts requests
-    starts="$(grep -c '"event": "server_started"' "$OUT/fake-events.jsonl" 2>/dev/null || true)"
-    requests="$(grep -c '"event": "benchmark_request"' "$OUT/fake-events.jsonl" 2>/dev/null || true)"
-    [[ "$starts" == 1 ]] \
-        || die "speed test started a second server/model process ($starts starts)"
-    [[ "$requests" == 2 ]] \
-        || die "speed test did not send warm-up + measured requests to the loaded server ($requests requests)"
-    jq -n --argjson starts "$starts" --argjson requests "$requests" \
-        '{success: true, assertion: "speed test reused the loaded model", server_starts: $starts, benchmark_requests: $requests}' \
-        > "$OUT/loaded-model-benchmark-assertion.json"
-    cleanup_persona
-}
-
 flow_update_state() {
     # Settings > App must name the version the app actually IS.
     #
@@ -1703,7 +1677,6 @@ case "$FLOW" in
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
     low-memory-choice) flow_low_memory_choice ;;
-    loaded-model-benchmark) flow_loaded_model_benchmark ;;
     update-state) flow_update_state ;;
     no-dead-controls) flow_no_dead_controls ;;
     catalog-integrity) flow_catalog_integrity ;;
@@ -1718,7 +1691,6 @@ case "$FLOW" in
         flow_slow_stream_stop
         flow_model_crash_recovery
         flow_low_memory_choice
-        flow_loaded_model_benchmark
         flow_update_state
         flow_no_dead_controls
         flow_catalog_integrity

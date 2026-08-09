@@ -13,11 +13,7 @@ Rapid-MLX Desktop app without loading a real model.
 6. a memory-constrained user can see and select an honestly labelled sub-1B
    fallback instead of being sent back to a chooser whose smallest visible
    model is the one that just failed the live-memory guard.
-7. “Speed on this Mac” benchmarks the model already resident in the desktop
-   server: one server start, then one warm-up plus one measured request, with
-   no second model process and no duplicate weight load.
-
-8. “Browse all models” lowers the onboarding sheet, opens Model Management in
+7. “Browse all models” lowers the onboarding sheet, opens Model Management in
    Settings, accepts a foreground interaction, and returns to the wizard with
    the user's original model selection intact. A final full-screen capture
    records the state a person actually sees.
@@ -25,20 +21,20 @@ Rapid-MLX Desktop app without loading a real model.
 added after a release where every escaped defect landed on a surface no journey
 covered, and each one names the defect it would have caught:
 
-9. `update-state` — Settings → App must name the version the app actually is.
-10. `no-dead-controls` — every Settings panel must expose controls of its own.
-11. `catalog-integrity` — a model that cannot chat must never be offered as one.
+8. `update-state` — Settings → App must name the version the app actually is.
+9. `no-dead-controls` — every Settings panel must expose controls of its own.
+10. `catalog-integrity` — a model that cannot chat must never be offered as one.
     Now covers **image-gen** aliases too: `rapid-mlx models` tags them
     `[image:gen]` in their own section (mirroring `[video:gen]`), and the
     chat catalog's `hasNonChatKindTag` drops `image` alongside `audio`/`video`,
     so a 24 GB FLUX/Qwen-Image checkpoint can never surface in the chat picker.
 
-12. `image-generation` — the Images tab turns a text prompt into a picture and
+11. `image-generation` — the Images tab turns a text prompt into a picture and
     lets the user iterate by re-prompting (see **Image generation** below). The
     instruction-**edit** path exists in code but is parked as a slow, batch-only
     lane on current hardware (~20 min/edit at q4); the interactive golden flow is
     text→image generation.
-13. `chat-image-attachment` — a vision-language model accepts a PNG through
+12. `chat-image-attachment` — a vision-language model accepts a PNG through
     the Chat composer, renders it in the user turn, and sends typed
     `text` + `image_url` content; the same composer keeps its attachment
     control visible but disabled for a text-only alias and rejects paste/drop.
@@ -170,22 +166,6 @@ the original live-memory snapshot against the fallback footprint and exposes
 85% danger line. Under heavier pressure the button is absent, avoiding a false
 promise or a warning loop; **Cancel** still returns to the chooser where the
 low-memory category remains visible.
-
-### Loaded-model speed test
-
-`loaded-model-benchmark` pins the resource contract behind **Speed on this
-Mac**. The action is only available after the selected model is ready. It then
-reuses that server's live loopback port and bearer, sends a short warm-up and an
-up-to-128-token measured request, and calculates completion tokens per wall
-second. It must not invoke `rapid-mlx bench`, start another server, or load a
-second copy of the weights.
-
-The deterministic fake sidecar records the evidence the UI alone cannot show:
-exactly one `server_started` event and exactly two `benchmark_request` events.
-The flow also waits for `Benchmark.LoadedModelResult`, proving the number made
-it back through the real sheet. This would have caught the old implementation,
-which rejected an 8B speed test for lack of memory precisely because it tried
-to load an unnecessary second 8B copy.
 
 ### Chat image attachment
 
@@ -321,7 +301,6 @@ Run one journey or retain its isolated persona for diagnosis:
 ```bash
 ./scripts/gui-golden-flows.sh --flow slow-stream-stop
 ./scripts/gui-golden-flows.sh --flow low-memory-choice
-./scripts/gui-golden-flows.sh --flow loaded-model-benchmark
 ./scripts/gui-golden-flows.sh --flow chat-restore --keep
 ./scripts/gui-golden-flows.sh --flow browse-all-destination
 ./scripts/gui-golden-flows.sh --flow no-dead-controls

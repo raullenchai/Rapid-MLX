@@ -30,8 +30,6 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
   starts on your first message — no start/stop buttons. Download models from
   the picker (cached vs. all, per-alias size + memory hints) and switch
   freely.
-- **Speed on this Mac.** A one-tap benchmark of the model on your hardware
-  that you can optionally submit to the community leaderboard.
 - **Connect your agents.** The bundled server speaks the OpenAI and Anthropic
   wire formats on `127.0.0.1`, so any editor or agent that accepts a custom
   base URL can use your local model for free. The Launch section gives you

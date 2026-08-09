@@ -469,7 +469,7 @@ struct ModelPickerBar: View {
                 Text("Fetching models…")
                 Divider()
                 Button("Type a model name…") { showCustom = true }
-            } else if catalog.isEmpty {
+            } else if !hasSelectableRows {
                 // v0.4.29: previously this state was a dead end — a
                 // failed first-load (bootstrapper still installing
                 // the sidecar, transient network blip, manual
@@ -477,6 +477,14 @@ struct ModelPickerBar: View {
                 // "Type alias…" and no way back to a populated picker
                 // short of restarting the app. Retry is a one-click
                 // rescue.
+                //
+                // Keyed on "nothing renders", NOT on ``catalog.isEmpty``.
+                // A catalog can be non-empty and still produce zero rows —
+                // every alias sub-1B with the size filter on, or every one
+                // denylisted, and no Quickstart or recommended alias among
+                // them. Testing emptiness of the SOURCE rather than of the
+                // OUTPUT put that state in the else-branch below, which
+                // renders three empty sections and no way out.
                 // Honest terminal state: the fetch finished and there is
                 // nothing to offer. Non-selectable, and never an
                 // indefinite placeholder posing as a model.
@@ -504,7 +512,7 @@ struct ModelPickerBar: View {
                 // job — pick one — and two maintenance actions sitting
                 // above the Quickstart and Recommended sections made the
                 // list read as a settings pane. Both remain in the
-                // ``catalog.isEmpty`` branch above, where they are not
+                // no-selectable-rows branch above, where they are not
                 // clutter but the only way out of a failed fetch.
                 quickstartSection
                 recommendedSection
@@ -713,6 +721,31 @@ struct ModelPickerBar: View {
     /// suite catches accidental drift (the section's whole purpose
     /// is to be the bottom-anchored "I just want to try the app"
     /// affordance — the subtitle has to keep that promise).
+    /// Would the populated branch of the menu render anything the user can
+    /// click?
+    ///
+    /// Deliberately asks the SAME three helpers the sections themselves
+    /// ask — ``quickstartEntry()``, ``recommendedPickRows()`` and the
+    /// filter/dedupe/partition chain in ``allAliasesSection`` — rather than
+    /// re-deriving "is there anything here" from the raw catalog. A second,
+    /// independent notion of emptiness is exactly how the picker ended up
+    /// with a branch that believed it had rows while rendering none.
+    private var hasSelectableRows: Bool {
+        if quickstartEntry() != nil { return true }
+        if !recommendedPickRows().isEmpty { return true }
+        let filtered = ModelPickerVisibility.filter(
+            catalog,
+            selectedAlias: alias,
+            includeAll: showAllModels
+        )
+        let deduped = ModelPickerBar.dedupedAllEntries(
+            filtered: filtered,
+            quickstartRowRendered: quickstartEntry() != nil
+        )
+        let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
+        return !partition.fits.isEmpty || !partition.notFit.isEmpty
+    }
+
     @ViewBuilder
     private var quickstartSection: some View {
         if let entry = quickstartEntry() {

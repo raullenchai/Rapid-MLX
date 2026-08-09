@@ -36,10 +36,15 @@ struct MessageStatsTests {
             completionTokens: 180
         )
         // No TTFT recorded (pre-existing transcript) → the whole turn is
-        // the denominator, and 179 intervals span 180 tokens.
-        #expect(s.reportedTokensPerSecond ?? 0 == 89.5)
-        // Estimate is still computable — the UI just prefers reported.
-        #expect(s.estimatedTokensPerSecond != nil)
+        // the denominator, and because that window opens BEFORE the first
+        // token, all 180 fall inside it. Unchanged from what this row was
+        // originally captioned with.
+        #expect(s.reportedTokensPerSecond ?? 0 == 90.0)
+        // The estimate is now SUPPRESSED whenever usage exists. It is a
+        // fallback for missing data, not a second opinion — letting it
+        // answer alongside the reported path is how a one-token reply got
+        // captioned "~1 tok/s" after the reported path declined to rate it.
+        #expect(s.estimatedTokensPerSecond == nil)
     }
 
     // MARK: - Prefill must not be charged to the decode rate
@@ -104,8 +109,13 @@ struct MessageStatsTests {
         )
         #expect(try #require(s.decodeSeconds) == 1.00)
         #expect(try #require(s.reportedTokensPerSecond) == 100.0)
-        // The char-count fallback uses the same window.
-        #expect(try #require(s.estimatedTokensPerSecond) == 100.0)
+        // The char-count fallback is suppressed here (usage present), so
+        // assert the window it WOULD have used, on the same fixture minus
+        // the server-reported counts.
+        var noUsage = s
+        noUsage.completionTokens = nil
+        noUsage.promptTokens = nil
+        #expect(try #require(noUsage.estimatedTokensPerSecond) == 100.0)
     }
 
     @Test("No TTFT recorded → the whole turn stays the denominator (old transcripts)")
@@ -136,10 +146,75 @@ struct MessageStatsTests {
         // the `completionTokens > 1` guard could be deleted unnoticed.
         #expect(try #require(s.decodeSeconds) > 0.5)
         #expect(s.reportedTokensPerSecond == nil)
+        // …and nothing else may quietly supply one in its place. The
+        // estimate used to fire here and print "~1 tok/s" for a reply the
+        // reported path had deliberately declined to rate, so asserting
+        // only the reported property left the user-visible bug uncovered.
+        #expect(s.estimatedTokensPerSecond == nil)
+        let caption = AssistantStatsFormatter.accessibilityCaption(for: s)
+        #expect(!caption.contains("tokens per second"), "caption still shows a rate: \(caption)")
+        #expect(caption.contains("to the first token"))
     }
 
-    @Test("TTFT at or past the end of the turn yields no rate, never a negative one")
-    func nonPositiveDecodeWindowHasNoRate() {
+    @Test("A legacy transcript keeps N/elapsed, not (N-1)/elapsed")
+    func legacyTranscriptKeepsWholeTurnArithmetic() throws {
+        let s = MessageStats(
+            elapsedSeconds: 2.0,
+            charCount: 800,
+            promptTokens: 50,
+            completionTokens: 100,
+            timeToFirstTokenSeconds: nil
+        )
+        // Without a TTFT the denominator is the whole turn, which begins
+        // BEFORE the first token — so all N tokens fall inside it and the
+        // -1 has no interval to stand on. Re-rendering an old row as
+        // 49.5 instead of the 50 it was captioned with is a silent
+        // rewrite of history, not a fix.
+        #expect(try #require(s.reportedTokensPerSecond) == 50.0)
+    }
+
+    @Test("A TTFT outside the turn is rejected for BOTH the rate and the caption")
+    func impossibleTTFTIsRejectedEverywhere() throws {
+        let s = MessageStats(
+            elapsedSeconds: 1.0,
+            charCount: 40,
+            promptTokens: 900,
+            completionTokens: 20,
+            timeToFirstTokenSeconds: 1.2   // clock step, or a hand-edited session file
+        )
+        #expect(s.validTimeToFirstToken == nil)
+        // Falls back to the whole turn rather than producing a negative
+        // window…
+        #expect(try #require(s.reportedTokensPerSecond) == 20.0)
+        // …and the caption must not print "1.2 s to first token · 1.0 s".
+        let caption = AssistantStatsFormatter.accessibilityCaption(for: s)
+        #expect(!caption.contains("to the first token"), "caption rendered an impossible TTFT: \(caption)")
+    }
+
+    @Test("A reasoning turn with no server usage reports no estimate")
+    func reasoningWithoutUsageSuppressesTheEstimate() {
+        let s = MessageStats(
+            elapsedSeconds: 12.0,
+            charCount: 40,          // one short sentence of visible prose…
+            promptTokens: nil,
+            completionTokens: nil,  // …server reported no usage
+            timeToFirstTokenSeconds: 0.5,
+            reasoningEmitted: true  // …after 11.5 s of thinking
+        )
+        // The decode window opened at the first REASONING token, so it
+        // covers the whole think; charCount covers only the prose. Dividing
+        // one by the other understates the rate by however long the model
+        // thought — the same distortion this change removed from the
+        // reported path, sneaking back in through the fallback.
+        #expect(s.estimatedTokensPerSecond == nil)
+        // The same turn without reasoning is still estimated.
+        var proseOnly = s
+        proseOnly.reasoningEmitted = false
+        #expect(proseOnly.estimatedTokensPerSecond != nil)
+    }
+
+    @Test("A TTFT equal to the turn length is not a measurement either")
+    func ttftEqualToElapsedIsRejected() throws {
         let s = MessageStats(
             elapsedSeconds: 1.00,
             charCount: 40,
@@ -147,9 +222,12 @@ struct MessageStatsTests {
             completionTokens: 20,
             timeToFirstTokenSeconds: 1.00
         )
-        #expect(s.decodeSeconds == nil)
-        #expect(s.reportedTokensPerSecond == nil)
-        #expect(s.estimatedTokensPerSecond == nil)
+        // A first token that arrived exactly when the turn ended leaves no
+        // decode window, so it is not prefill data. Rejected like any other
+        // impossible value, and the row falls back to the whole-turn number
+        // rather than losing its caption entirely.
+        #expect(s.validTimeToFirstToken == nil)
+        #expect(try #require(s.reportedTokensPerSecond) == 20.0)
     }
 
     @Test("Sub-50ms elapsed returns nil — divide-by-near-zero would print a garbage TPS")
