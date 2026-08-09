@@ -25,7 +25,10 @@ streaming:
 
 testing:
   binary: claude
-  query_cmd: "claude -p '{query}'"
+  # The E2E suite asks Claude to read a fixture and run one echo command in
+  # isolated throwaway workspaces. Print mode requires those tools to be
+  # explicitly allowed or it refuses the calls non-interactively.
+  query_cmd: "claude --allowedTools Read Bash -p '{query}'"
   query_timeout: 180
   install_cmd: "npm install -g @anthropic-ai/claude-code"
 

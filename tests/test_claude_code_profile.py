@@ -42,7 +42,9 @@ def test_claude_code_profile_has_runnable_test_command():
     profile = get_profile("claude-code")
     assert profile is not None
     assert profile.testing.binary == "claude"
-    assert profile.testing.query_cmd == "claude -p '{query}'"
+    assert profile.testing.query_cmd == (
+        "claude --allowedTools Read Bash -p '{query}'"
+    )
 
 
 def test_claude_code_e2e_receives_rendered_environment():
