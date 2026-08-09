@@ -25,8 +25,9 @@
 #
 #   Required for tagged releases (the "mirror-dist" job at the bottom):
 #   CLOUDFLARE_API_TOKEN         token scoped to Workers R2 Storage:Edit on
-#                                the distribution bucket
+#                                the distribution bucket and Zone Cache Purge
 #   CLOUDFLARE_ACCOUNT_ID        account id wrangler operates against
+#   CLOUDFLARE_ZONE_ID           zone id for purging dl.rapidmlx.com/latest.json
 #
 #   Required for tagged releases — as Actions
 #   VARIABLES (not secrets), since they are config, not credentials:
@@ -463,6 +464,7 @@ jobs:
       - name: Queue behind earlier updater publications
         uses: softprops/turnstyle@afaccda0f3c0136fb7cb4a734b9b96be03599948  # v3.3.2
         with:
+          token: ${{ github.token }}
           same-branch-only: false
           queue-name: rapid-mac-dist-publish
           poll-interval-seconds: 10
@@ -473,19 +475,31 @@ jobs:
           name: rapid-mac-update-manifest
           path: dist
 
+      - name: Download DMG for stable compatibility alias
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: rapid-mlx-desktop-dmg
+          path: dist-dmg
+
       - name: Publish updater fallback monotonically
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           R2_BUCKET: ${{ vars.RAPID_MAC_DIST_R2_BUCKET }}
+          CDN_BASE: ${{ vars.RAPID_MAC_DIST_CDN_BASE }}
         run: |
           set -euo pipefail
-          [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || {
-            echo "::error::Cloudflare credentials are required to publish latest.json"
+          [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" && -n "${CLOUDFLARE_ZONE_ID:-}" ]] || {
+            echo "::error::Cloudflare API token, account id, and zone id are required to publish latest.json"
             exit 1
           }
           [[ "$R2_BUCKET" == "rapid-desktop-dist" ]] || {
             echo "::error::RAPID_MAC_DIST_R2_BUCKET must be rapid-desktop-dist"
+            exit 1
+          }
+          [[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]] || {
+            echo "::error::RAPID_MAC_DIST_CDN_BASE must be https://dl.rapidmlx.com"
             exit 1
           }
           TARGET_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/latest.json)"
@@ -507,8 +521,25 @@ jobs:
             exit 1
           fi
 
-          # Commit point: no distribution writes may follow this command.
+          # Preserve the previously documented stable DMG URL inside the same
+          # serialized + monotonic transaction as the manifest pointer.
+          npx --yes wrangler@4.120.0 r2 object put \
+            "${R2_BUCKET}/rapid-mac/rapid-mlx-desktop.dmg" \
+            --file dist-dmg/rapid-mlx-desktop.dmg \
+            --content-type application/x-apple-diskimage --remote
+
+          # Commit point: no R2 writes may follow this command.
           npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/latest.json" \
             --file dist/latest.json --content-type application/json \
             --cache-control "no-cache, must-revalidate" --remote
+
+          # Cache-Control governs new responses; purge any object cached under
+          # the pre-fix policy so this release becomes visible immediately.
+          PURGE_PAYLOAD="$(jq -nc --arg url "${CDN_BASE}/latest.json" '{files: [$url]}')"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --url "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/purge_cache" \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "$PURGE_PAYLOAD" | jq -e '.success == true' >/dev/null
           echo "::notice::Published updater fallback version ${TARGET_VERSION}"

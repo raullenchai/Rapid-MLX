@@ -75,17 +75,22 @@ struct ReleaseManifestWorkflowTests {
         // Only pointer publication is serialized, and every run is queued —
         // native concurrency would replace an intermediate pending tag.
         #expect(publishJob.contains("softprops/turnstyle@afaccda0f3c0136fb7cb4a734b9b96be03599948"))
+        #expect(publishJob.contains("token: ${{ github.token }}"))
         #expect(publishJob.contains("same-branch-only: false"))
         #expect(publishJob.contains("queue-name: rapid-mac-dist-publish"))
         #expect(!publishJob.contains("concurrency:"))
         let manifestUpload = try #require(
             publishJob.range(of: "r2 object put \"${R2_BUCKET}/latest.json\"")
         )
+        let aliasUpload = try #require(
+            publishJob.range(of: "${R2_BUCKET}/rapid-mac/rapid-mlx-desktop.dmg")
+        )
+        #expect(aliasUpload.lowerBound < manifestUpload.lowerBound)
         let afterManifest = publishJob[manifestUpload.upperBound..<publishJob.endIndex]
         #expect(!afterManifest.contains("r2 object put"))
         #expect(workflow.contains(#"--cache-control "no-cache, must-revalidate""#))
         #expect(workflow.contains("rapid-mlx-desktop-${DMG_SHA256}.dmg"))
-        #expect(!workflow.contains("ALIAS_KEY"))
+        #expect(publishJob.contains("${R2_BUCKET}/rapid-mac/rapid-mlx-desktop.dmg"))
         #expect(!workflow.contains("wrangler@4 r2 object put"))
         #expect(workflow.contains("wrangler@4.120.0 r2 object put"))
         let rollbackGuard = try #require(publishJob.range(of: "dpkg --compare-versions"))
@@ -93,5 +98,8 @@ struct ReleaseManifestWorkflowTests {
         #expect(publishJob.contains("Skipping stale updater manifest"))
         #expect(publishJob.contains("The specified key does not exist."))
         #expect(publishJob.contains("No current latest.json; publishing the initial pointer"))
+        #expect(publishJob.contains("CLOUDFLARE_ZONE_ID"))
+        #expect(publishJob.contains("/purge_cache"))
+        #expect(publishJob.contains(".success == true"))
     }
 }

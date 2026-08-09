@@ -99,8 +99,9 @@ only.
 
 | Name | Kind | Value |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | secret | token scoped to *Workers R2 Storage: Edit* on the dist bucket |
+| `CLOUDFLARE_API_TOKEN` | secret | token scoped to *Workers R2 Storage: Edit* and *Zone Cache Purge* |
 | `CLOUDFLARE_ACCOUNT_ID` | secret | the Cloudflare account id wrangler operates against |
+| `CLOUDFLARE_ZONE_ID` | secret | zone id owning `dl.rapidmlx.com`, used for single-file cache purge |
 | `RAPID_MAC_DIST_R2_BUCKET` | **variable** | `rapid-desktop-dist` |
 | `RAPID_MAC_DIST_CDN_BASE` | **variable** | `https://dl.rapidmlx.com` |
 
@@ -219,6 +220,6 @@ already in homebrew-core); the desktop app never claims it.
 
 - **Release repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`).
 - **Updater fallback credentials** (`CLOUDFLARE_API_TOKEN` /
-  `CLOUDFLARE_ACCOUNT_ID`) must remain configured and scoped to the
+  `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_ZONE_ID`) must remain configured and scoped to the
   `rapid-desktop-dist` bucket. Tagged releases fail closed if publishing the
   mirrored DMG and `latest.json` is unavailable.
