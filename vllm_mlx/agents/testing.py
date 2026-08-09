@@ -33,6 +33,16 @@ from .base import AgentProfile
 
 logger = logging.getLogger(__name__)
 
+_ANTHROPIC_REMOTE_ENV = (
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+
 
 # ---------------------------------------------------------------------------
 # Test result types
@@ -854,6 +864,15 @@ def _agent_query(
     # Replace first part with full binary path
     cmd_parts[0] = binary_path
 
+    child_env = os.environ.copy()
+    # A local Anthropic endpoint must win over every provider-selection path.
+    # Otherwise a developer's normal Bedrock/Vertex/Foundry setup can route an
+    # E2E prompt (and its tools) to a real remote account despite our overrides.
+    if env_overrides and "ANTHROPIC_BASE_URL" in env_overrides:
+        for key in _ANTHROPIC_REMOTE_ENV:
+            child_env.pop(key, None)
+    child_env.update(env_overrides or {})
+
     try:
         proc = subprocess.run(
             cmd_parts,
@@ -876,7 +895,7 @@ def _agent_query(
             # Env-profile setup returns shell exports; it cannot mutate the
             # parent process. Pass those values explicitly so an E2E agent
             # never falls back to its normal remote provider or real key.
-            env={**os.environ, **(env_overrides or {})},
+            env=child_env,
         )
         output = proc.stdout + proc.stderr
         if "error" in output.lower() and "HTTP 4" in output:
