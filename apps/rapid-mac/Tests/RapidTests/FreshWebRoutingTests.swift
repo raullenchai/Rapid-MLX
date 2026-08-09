@@ -40,6 +40,11 @@ struct FreshWebRoutingTests {
             for: "What about technology? Find one concrete story and summarize it.",
             priorMessages: history
         ).contains("last week"))
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "Why is the sky blue?",
+            priorMessages: history,
+            enabledToolNames: enabled
+        ) == nil)
     }
 
     @Test("Evergreen and casual prompts remain automatic")

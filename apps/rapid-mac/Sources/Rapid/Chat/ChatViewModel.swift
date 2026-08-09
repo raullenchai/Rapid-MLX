@@ -519,12 +519,19 @@ final class ChatViewModel {
     nonisolated static func promptLooksLikeFollowUp(_ prompt: String) -> Bool {
         let value = prompt.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty, value.count <= 240 else { return false }
-        let markers = [
-            "what about", "how about", "and ", "also", "instead", "one concrete",
-            "tell me more", "why", "summarize it", "that story", "those results",
-            "那", "那么", "这个", "这件事", "为什么", "再", "具体", "总结"
+        let referentialPhrases = [
+            "what about", "how about", "tell me more", "summarize it",
+            "that story", "those results", "the same topic", "one concrete story",
+            "那这个呢", "那件事", "这件事", "这些结果", "继续说", "总结一下这个"
         ]
-        return markers.contains(where: value.contains)
+        if referentialPhrases.contains(where: value.contains) { return true }
+        // Bare elliptical replies are referential precisely because they have
+        // no independent subject. Do not broaden this to arbitrary questions
+        // containing "why" (e.g. "Why is the sky blue?").
+        let bareFollowUps: Set<String> = [
+            "why?", "why", "more", "and?", "还有呢？", "为什么？", "然后呢？"
+        ]
+        return bareFollowUps.contains(value)
     }
 
     nonisolated static func webSearchArguments(query: String) -> String {
