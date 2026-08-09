@@ -26,9 +26,14 @@ reasoning-plus-tools turns was set to exactly the default token budget, so the
 (#1722). Short budgets do not fail loudly — they deliver a truncated answer, so
 this showed up as models that "could not do it" rather than as an error.
 
-**A second turn now reuses the first turn's prefix cache** (#1732), and the
-scheduler reclaims paged full-KV and free-block memory instead of wedging on a
-`D-METAL-CAP` 503 under sustained load (#1646).
+**The scheduler reclaims paged full-KV and free-block memory** instead of
+wedging on a `D-METAL-CAP` 503 under sustained load (#1646). A prefix-cache
+boundary fix also landed (#1732) — but note that on hybrid models (Qwen3.5 and
+Qwen3.6, which includes the recommended chat picks) a follow-up turn still
+re-prefills the whole conversation rather than reusing the previous turn's
+cache. Measured after #1732: an extension turn on `qwen3.6-27b-4bit` prefills
+all 9940 tokens where a dense model prefills 24. That is tracked in #1737 and
+is NOT fixed in this release.
 
 **Claude Code has an agent profile** (#1720), and browsing approvals can be set
 to always-allow rather than prompting every time (#1695).
