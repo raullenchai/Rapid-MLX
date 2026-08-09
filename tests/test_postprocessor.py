@@ -2876,3 +2876,184 @@ class TestRequestForwardedToToolParser:
             f"#171: tool_call emitted but function name 'read' missing; "
             f"names_seen={names_seen}"
         )
+
+    @pytest.mark.parametrize("closer", ["</parameter>", "</function>", "</tool_call>"])
+    def test_qwen3_coder_finalize_preserves_closer_in_legacy_raw_value(self, closer):
+        """#1515: ambiguous raw XML is resolved from the complete EOS buffer."""
+        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+            Qwen3CoderToolParser,
+        )
+
+        parser = Qwen3CoderToolParser(tokenizer=None)
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=parser,
+        )
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"content": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        }
+        value = f"before {closer} after"
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=request)
+        pp.reset()
+
+        pieces = [
+            "<tool_call>\n<function=write>\n<parameter=content>\n",
+            *value,
+            "\n</parameter>\n</function>\n</tool_call>",
+        ]
+        streamed = [
+            event for piece in pieces for event in pp.process_chunk(_make_output(piece))
+        ]
+        final_events = pp.finalize()
+        tool_events = [event for event in final_events if event.type == "tool_call"]
+        assert len(tool_events) == 1
+        all_tool_events = [
+            event for event in [*streamed, *final_events] if event.type == "tool_call"
+        ]
+        arguments = "".join(
+            event.tool_calls[0]["function"].get("arguments", "")
+            for event in all_tool_events
+        )
+        assert json.loads(arguments) == {"content": value}
+
+    def test_qwen3_coder_finalize_recovers_truncated_legacy_raw_call(self):
+        """EOS recovery retains the pre-#1515 malformed-call contract."""
+        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+            Qwen3CoderToolParser,
+        )
+
+        parser = Qwen3CoderToolParser(tokenizer=None)
+        cfg = _make_cfg(enable_auto_tool_choice=True, tool_parser_instance=parser)
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        }
+        value = "A" * 80 + "B" * 80
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=request)
+        pp.reset()
+        wire = f"<tool_call>\n<function=echo>\n<parameter=value>\n{value}\n</tool_call>"
+
+        streamed = pp.process_chunk(_make_output(wire))
+        final_events = pp.finalize()
+        tool_events = [event for event in final_events if event.type == "tool_call"]
+        assert len(tool_events) == 1
+        arguments = "".join(
+            event.tool_calls[0]["function"].get("arguments", "")
+            for event in [*streamed, *final_events]
+            if event.type == "tool_call"
+        )
+        assert json.loads(arguments) == {"value": value}
+
+    def test_qwen3_coder_later_legacy_raw_parameter_defers_whole_call(self):
+        """A canonical first parameter must not hide a later raw parameter."""
+        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+            Qwen3CoderToolParser,
+        )
+
+        parser = Qwen3CoderToolParser(tokenizer=None)
+        cfg = _make_cfg(enable_auto_tool_choice=True, tool_parser_instance=parser)
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "write",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+        value = "before </parameter> after"
+        pieces = [
+            '<tool_call>\n<function=write>\n<parameter=path>\n"a.md"',
+            "\n</parameter>\n<parameter=content>\n",
+            *value,
+            "\n</parameter>\n</function>\n</tool_call>",
+        ]
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=request)
+        pp.reset()
+
+        streamed = [
+            event for piece in pieces for event in pp.process_chunk(_make_output(piece))
+        ]
+        final_events = pp.finalize()
+        tool_events = [event for event in final_events if event.type == "tool_call"]
+        assert len(tool_events) == 1
+        arguments = "".join(
+            event.tool_calls[0]["function"].get("arguments", "")
+            for event in [*streamed, *final_events]
+            if event.type == "tool_call"
+        )
+        assert json.loads(arguments) == {"path": "a.md", "content": value}
+
+    def test_qwen3_coder_finalize_targets_later_deferred_call(self):
+        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import (
+            Qwen3CoderToolParser,
+        )
+
+        parser = Qwen3CoderToolParser(tokenizer=None)
+        cfg = _make_cfg(enable_auto_tool_choice=True, tool_parser_instance=parser)
+        request = {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                        },
+                    },
+                }
+            ]
+        }
+        first = (
+            '<tool_call><function=echo><parameter=value>"first"</parameter>'
+            "</function></tool_call>"
+        )
+        second_value = "second </parameter> value"
+        second = (
+            "<tool_call><function=echo><parameter=value>"
+            f"{second_value}</parameter></function></tool_call>"
+        )
+        pp = StreamingPostProcessor(cfg, tools_requested=True, request=request)
+        pp.reset()
+        streamed = []
+        for piece in [first, "\n", second[:45], second[45:]]:
+            streamed.extend(pp.process_chunk(_make_output(piece)))
+        final_events = pp.finalize()
+
+        by_index = {}
+        for event in [*streamed, *final_events]:
+            for call in event.tool_calls or []:
+                by_index.setdefault(call["index"], "")
+                by_index[call["index"]] += call["function"].get("arguments", "")
+        assert json.loads(by_index[0]) == {"value": "first"}
+        assert json.loads(by_index[1]) == {"value": second_value}

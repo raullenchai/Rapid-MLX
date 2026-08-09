@@ -18,6 +18,7 @@ trips a CI failure rather than waiting for another dogfood report.
 """
 
 import asyncio
+import importlib.util
 import json
 import sys
 import types
@@ -28,6 +29,11 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+_REQUIRES_MLX = pytest.mark.skipif(
+    importlib.util.find_spec("mlx") is None,
+    reason="full Responses route imports require Apple MLX",
+)
 
 
 @pytest.mark.asyncio
@@ -333,6 +339,124 @@ class _ReasoningOnlyStopEngine:
                 finished=i == len(chunks) - 1,
                 channel="reasoning",
             )
+
+
+class _ReasoningMarkerThenContentEngine:
+    """Reasoning-channel parser residue followed by a normal final answer."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="plan </tool_",
+            new_text="plan </tool_",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason=None,
+            finished=False,
+            channel="reasoning",
+        )
+        yield _GenerationOutput(
+            text="plan </tool_call> next ",
+            new_text="call> next ",
+            completion_tokens=4,
+            finish_reason=None,
+            finished=False,
+            channel="reasoning",
+        )
+        yield _GenerationOutput(
+            text="answer",
+            new_text="answer",
+            completion_tokens=5,
+            finish_reason="stop",
+            finished=True,
+            channel="content",
+        )
+
+
+class _ReasoningMarkerAcrossCapEngine:
+    """The reasoning cap divides a closer between kept and overflow bytes."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="abc</tool_call>answer",
+            new_text="abc</tool_call>answer",
+            prompt_tokens=7,
+            completion_tokens=5,
+            finish_reason="stop",
+            finished=True,
+            channel="reasoning",
+        )
+
+
+class _ReasoningMarkerAcrossChannelEngine:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="plan </tool_",
+            new_text="plan </tool_",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason=None,
+            finished=False,
+            channel="reasoning",
+        )
+        yield _GenerationOutput(
+            text="call>answer",
+            new_text="call>answer",
+            completion_tokens=4,
+            finish_reason="stop",
+            finished=True,
+            channel="content",
+        )
+
+
+class _ReasoningFalsePrefixAcrossCapEngine:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="abc<answer",
+            new_text="abc<answer",
+            prompt_tokens=7,
+            completion_tokens=3,
+            finish_reason="stop",
+            finished=True,
+            channel="reasoning",
+        )
+
+
+class _ReasoningOverflowPartialPrefixEngine:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="abcdanswer<",
+            new_text="abcdanswer<",
+            prompt_tokens=7,
+            completion_tokens=3,
+            finish_reason="stop",
+            finished=True,
+            channel="reasoning",
+        )
 
 
 class _ReasoningThenWhitespaceStopEngine:
@@ -748,6 +872,41 @@ def immediate_stop_client(monkeypatch):
 @pytest.fixture
 def reasoning_only_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _ReasoningOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def reasoning_marker_then_content_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ReasoningMarkerThenContentEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def reasoning_marker_across_cap_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ReasoningMarkerAcrossCapEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def reasoning_marker_across_channel_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ReasoningMarkerAcrossChannelEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def reasoning_false_prefix_across_cap_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ReasoningFalsePrefixAcrossCapEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def reasoning_overflow_partial_prefix_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ReasoningOverflowPartialPrefixEngine)
     yield holder
     holder.cleanup()
 
@@ -1243,6 +1402,130 @@ class TestResponsesStreamFailureEnvelope:
             and d.get("item", {}).get("type") == "reasoning"
         ]
         assert reasoning_done, "reasoning item should still be closed for diagnostics"
+
+    @_REQUIRES_MLX
+    def test_streaming_reasoning_sanitizes_tool_call_closer(
+        self, reasoning_marker_then_content_client
+    ):
+        """Raw decode residue must not reach any public reasoning SSE field."""
+        with reasoning_marker_then_content_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        assert resp.status_code == 200, body
+        events = _parse_sse(body)
+
+        public_reasoning = []
+        for name, data in events:
+            if name == "response.reasoning_summary_text.delta":
+                public_reasoning.append(data["delta"])
+            elif name == "response.reasoning_summary_text.done":
+                public_reasoning.append(data["text"])
+            elif name == "response.reasoning_summary_part.done":
+                public_reasoning.append(data["part"]["text"])
+            elif (
+                name == "response.output_item.done"
+                and data.get("item", {}).get("type") == "reasoning"
+            ):
+                public_reasoning.extend(
+                    part["text"] for part in data["item"].get("summary", [])
+                )
+
+        assert public_reasoning
+        assert all("</tool_call>" not in text for text in public_reasoning)
+        assert "plan  next " in public_reasoning
+
+    @_REQUIRES_MLX
+    def test_streaming_reasoning_sanitizes_closer_across_budget_boundary(
+        self, reasoning_marker_across_cap_client
+    ):
+        """The kept/overflow split must not defeat marker recognition."""
+        with reasoning_marker_across_cap_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True, "reasoning_max_tokens": 1},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        assert resp.status_code == 200, body
+        assert "</tool_call>" not in body
+        events = _parse_sse(body)
+        reasoning = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.reasoning_summary_text.delta"
+        )
+        content = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert reasoning == "abc"
+        assert content == "answer"
+
+    @_REQUIRES_MLX
+    def test_streaming_reasoning_sanitizes_closer_across_channel_boundary(
+        self, reasoning_marker_across_channel_client
+    ):
+        with reasoning_marker_across_channel_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        assert resp.status_code == 200, body
+        assert "</tool_call>" not in body
+        events = _parse_sse(body)
+        reasoning = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.reasoning_summary_text.delta"
+        )
+        content = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert reasoning == "plan "
+        assert content == "answer"
+
+    @_REQUIRES_MLX
+    @pytest.mark.parametrize(
+        ("client_fixture", "expected_reasoning", "expected_content"),
+        [
+            ("reasoning_false_prefix_across_cap_client", "abc<", "answer"),
+            ("reasoning_overflow_partial_prefix_client", "abcd", "answer<"),
+        ],
+    )
+    def test_streaming_reasoning_preserves_false_prefix_destination(
+        self, request, client_fixture, expected_reasoning, expected_content
+    ):
+        holder = request.getfixturevalue(client_fixture)
+        with holder.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True, "reasoning_max_tokens": 1},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        assert resp.status_code == 200, body
+        events = _parse_sse(body)
+        reasoning = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.reasoning_summary_text.delta"
+        )
+        content = "".join(
+            data["delta"]
+            for name, data in events
+            if name == "response.output_text.delta"
+        )
+        assert reasoning == expected_reasoning
+        assert content == expected_content
 
     def test_reasoning_only_failure_closes_summary_events_before_failed(
         self, reasoning_only_stop_client

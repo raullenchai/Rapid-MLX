@@ -1239,7 +1239,7 @@ class TestQwen3CoderUpstreamStreaming:
             "<tool_call>",
             "\n<function=get_current_weather>",
             "\n",
-            "<parameter=city>Dallas</parameter>",
+            '<parameter=city>"Dallas"</parameter>',
             "\n</function>",
             "\n</tool_call>",
         ]
@@ -1334,7 +1334,7 @@ class TestQwen3CoderUpstreamStreaming:
         """Single coarse delta with complete tool call → full args emitted."""
         deltas = [
             "<tool_call>\n<function=get_current_weather>"
-            "\n<parameter=city>Dallas</parameter>\n</function>"
+            '\n<parameter=city>"Dallas"</parameter>\n</function>'
             "\n</tool_call>",
         ]
         text = ""

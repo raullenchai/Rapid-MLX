@@ -1196,6 +1196,12 @@ final class ServerManager {
                 environmentAdditions: Self.serveEnvironmentAdditions(
                     bearer: bearer,
                     ambient: ProcessInfo.processInfo.environment,
+                    // Issue #1412: the engine's server-oriented default may
+                    // retain up to 20% of RAM in prefix-cache entries. The
+                    // desktop shares unified memory with foreground apps, so
+                    // give its sidecar a smaller, hardware-scaled ceiling.
+                    physicalRAMBytes: MacHardware.detect().physicalRAMBytes,
+                    availableRAMBytes: MemoryProbe.snapshot()?.freeBytes ?? 0,
                     // Issue #449: stamp the launcher's PID so the
                     // bundled rapid-mlx (>=PR #942) self-terminates
                     // when this process dies under SIGKILL. The
@@ -2392,6 +2398,8 @@ final class ServerManager {
     nonisolated internal static func serveEnvironmentAdditions(
         bearer: String,
         ambient: [String: String],
+        physicalRAMBytes: UInt64 = 0,
+        availableRAMBytes: UInt64 = 0,
         supervisorPID: Int32 = -1,
         modelsFolderOverride: String? = nil
     ) -> [String: String] {
@@ -2412,6 +2420,20 @@ final class ServerManager {
         // Layer 2: desktop-injected, always.
         if !bearer.isEmpty {
             env["RAPID_MLX_API_KEY"] = bearer
+        }
+        // Issue #1412: rapid-mlx defaults the prefix cache to 20% of
+        // available RAM, which is appropriate for a dedicated server but
+        // can push a 16/32 GB desktop Mac into swap while the user is also
+        // running a browser or IDE. Reserve at most 8% of physical RAM for the
+        // desktop sidecar, never exceed 20% of currently available RAM, and
+        // cap large machines at 4 GiB. This is a direct Layer-2 write: an
+        // ambient shell export must not defeat the app's memory-pressure
+        // policy for the child it owns.
+        if let prefixCacheMaxBytes = desktopPrefixCacheMaxBytes(
+            physicalRAMBytes: physicalRAMBytes,
+            availableRAMBytes: availableRAMBytes
+        ) {
+            env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"] = String(prefixCacheMaxBytes)
         }
         // Issue #449: stamp the launcher's PID into
         // ``RAPID_MLX_WATCHDOG_PPID`` so the sidecar's parent-PID
@@ -2493,6 +2515,23 @@ final class ServerManager {
         env["HF_HUB_DOWNLOAD_TIMEOUT"] = ambient["HF_HUB_DOWNLOAD_TIMEOUT"] ?? "300"
 
         return env
+    }
+
+    /// Desktop-specific prefix-cache budget: the smallest of 8% physical RAM,
+    /// 20% currently available RAM, and 4 GiB. The available-RAM clamp keeps
+    /// this override from raising the engine's ordinary 20%-of-available
+    /// budget on a machine that is already under pressure. If either probe
+    /// fails, omit the override and retain the engine's live available-memory
+    /// fallback instead of manufacturing an unsafe fixed ceiling. Kept pure so
+    /// the spawn contract is deterministic in tests.
+    nonisolated internal static func desktopPrefixCacheMaxBytes(
+        physicalRAMBytes: UInt64,
+        availableRAMBytes: UInt64 = 0
+    ) -> UInt64? {
+        guard physicalRAMBytes > 0, availableRAMBytes > 0 else { return nil }
+        let fourGiB = UInt64(4) << 30
+        let eightPercent = (physicalRAMBytes / 100) * 8
+        return min(min(eightPercent, availableRAMBytes / 5), fourGiB)
     }
 }
 

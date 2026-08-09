@@ -2895,6 +2895,7 @@ class StreamingPostProcessor:
                 )
             ]
         events = []
+
         if content:
             events.append(StreamEvent(type="content", content=content))
         if reasoning:
@@ -3461,6 +3462,26 @@ class StreamingPostProcessor:
         Call after the engine stream ends.
         """
         events = []
+
+        finalize_raw = getattr(self.tool_parser, "finalize_legacy_raw_stream", None)
+        if callable(finalize_raw):
+            raw_delta = finalize_raw(
+                self.tool_accumulated_text or self.accumulated_text,
+                request=self.request,
+            )
+            if raw_delta and raw_delta.get("tool_calls"):
+                allowed = self._apply_parallel_cap(raw_delta["tool_calls"])
+                if allowed:
+                    self.tool_calls_detected = True
+                    self._tool_calls_emitted_to_wire += len(allowed)
+                    events.append(
+                        StreamEvent(
+                            type="tool_call",
+                            tool_calls=allowed,
+                            finish_reason="tool_calls",
+                            tool_calls_detected=True,
+                        )
+                    )
 
         # Codex round-3 BLOCKING #1: when the per-request reasoning cap
         # latches on the LAST reasoning chunk of the stream (model stops

@@ -101,7 +101,8 @@ def test_long_string_param_emits_multiple_deltas():
     ]
     # Split the long summary into 32-char body chunks so the in-flight
     # branch fires several times before the close tag arrives.
-    value_chunks = [_LONG_SUMMARY[i : i + 32] for i in range(0, len(_LONG_SUMMARY), 32)]
+    encoded = json.dumps(_LONG_SUMMARY)
+    value_chunks = [encoded[i : i + 32] for i in range(0, len(encoded), 32)]
     pre_close_chunks = head + value_chunks
 
     parser.reset()
@@ -148,15 +149,16 @@ def test_close_tag_never_leaks_into_emitted_fragment():
 
     # Long enough that incremental emission will fire before the close.
     value = "A" * 200
+    encoded = json.dumps(value)
     # Split mid-close-tag (``</par`` | ``ameter>``) to exercise the
     # tail-buffer guard at a chunk boundary.
     chunks = [
         "<tool_call>\n",
         "<function=echo>\n",
         "<parameter=value>\n",
-        value[:80],
-        value[80:160],
-        value[160:] + "\n</par",
+        encoded[:80],
+        encoded[80:160],
+        encoded[160:] + "\n</par",
         "ameter>\n",
         "</function>\n",
         "</tool_call>",
@@ -199,6 +201,96 @@ def test_json_encoded_string_preserves_embedded_xml_closers():
 
     fragments = _argument_fragments(_feed(parser, chunks, request))
     assert json.loads("".join(fragments)) == {"content": value}
+
+
+def test_json_surrogate_pair_split_between_chunks_streams_exactly():
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("write", {"content": {"type": "string"}})
+    chunks = [
+        "<tool_call>\n<function=write>\n<parameter=content>\n",
+        '"before \\uD83D',
+        '\\uDE00 after"',
+        "\n</parameter>\n</function>\n</tool_call>",
+    ]
+
+    fragments = _argument_fragments(_feed(parser, chunks, request))
+    assert json.loads("".join(fragments)) == {"content": "before 😀 after"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "A tool call block ends with </tool_call> on its own.",
+        "A parameter block ends with </parameter> here.",
+        "A function block ends with </function> here.",
+    ],
+)
+def test_legacy_raw_closers_are_deferred_to_full_text_parser(value: str):
+    """#1515: raw XML is ambiguous online, so EOS parsing owns it."""
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("write_file", {"content": {"type": "string"}})
+    full_text = (
+        "<tool_call>\n<function=write_file>\n<parameter=content>\n"
+        f"{value}\n</parameter>\n</function>\n</tool_call>"
+    )
+    chunks = [
+        "<tool_call>\n<function=write_file>\n<parameter=content>\n",
+        *value,
+        "\n</parameter>\n</function>\n</tool_call>",
+    ]
+
+    deltas = _feed(parser, chunks, request)
+    fragments = _argument_fragments(deltas)
+    assert fragments == ["{"]
+    assert "".join(delta.get("content", "") for delta in deltas) == ""
+
+    final = parser.finalize_legacy_raw_stream(full_text, request=request)
+    fragments.extend(_argument_fragments([final]))
+    assert json.loads("".join(fragments)) == {"content": value}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "before </parameter> after",
+        "before </function> after",
+        "before </tool_call> after",
+    ],
+)
+def test_complete_legacy_raw_call_in_one_chunk_preserves_closer(value):
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("write", {"content": {"type": "string"}})
+    wire = (
+        "<tool_call>\n<function=write>\n<parameter=content>\n"
+        f"{value}\n</parameter>\n</function>\n</tool_call>"
+    )
+
+    delta = parser.extract_tool_calls_streaming("", wire, wire, request=request)
+    assert json.loads(delta["tool_calls"][0]["function"]["arguments"]) == {
+        "content": value
+    }
+
+
+@pytest.mark.parametrize(
+    ("schema", "wire", "expected"),
+    [
+        ({"type": "integer"}, "42", 42),
+        ({"type": "boolean"}, "true", True),
+        ({"type": "array"}, "[1, 2]", [1, 2]),
+        ({"type": "object"}, '{"nested": 1}', {"nested": 1}),
+    ],
+)
+def test_non_string_first_parameter_is_not_deferred(schema, wire, expected):
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("record", {"value": schema})
+    chunks = [
+        "<tool_call>\n<function=record>\n<parameter=value>\n",
+        wire,
+        "\n</parameter>\n</function>\n</tool_call>",
+    ]
+
+    deltas = _feed(parser, chunks, request)
+    assert json.loads("".join(_argument_fragments(deltas))) == {"value": expected}
 
 
 @pytest.mark.parametrize(
@@ -259,9 +351,9 @@ def test_streaming_json_matches_non_streaming():
     full_text = (
         "<tool_call>\n"
         "<function=report>\n"
-        f"<parameter=summary>\n{_LONG_SUMMARY}\n</parameter>\n"
+        f"<parameter=summary>\n{json.dumps(_LONG_SUMMARY)}\n</parameter>\n"
         "<parameter=score>\n42\n</parameter>\n"
-        "<parameter=owner>\nken\n</parameter>\n"
+        '<parameter=owner>\n"ken"\n</parameter>\n'
         "</function>\n"
         "</tool_call>"
     )
@@ -279,13 +371,13 @@ def test_streaming_json_matches_non_streaming():
         "<function=report>\n",
         "<parameter=summary>\n",
     ]
-    summary_body = _LONG_SUMMARY + "\n"
+    summary_body = json.dumps(_LONG_SUMMARY) + "\n"
     chunks.extend(summary_body[i : i + 24] for i in range(0, len(summary_body), 24))
     chunks.extend(
         [
             "</parameter>\n",
             "<parameter=score>\n42\n</parameter>\n",
-            "<parameter=owner>\nken\n</parameter>\n",
+            '<parameter=owner>\n"ken"\n</parameter>\n',
             "</function>\n",
             "</tool_call>",
         ]
@@ -325,8 +417,9 @@ def test_same_chunk_close_and_trailing_param_not_dropped():
     # ``<rest_of_summary></parameter><parameter=score>42</parameter></function></tool_call>``
     # so the in-flight close and the trailing complete param land in
     # the same parser call.
-    head_value = _LONG_SUMMARY[:120]
-    tail_value = _LONG_SUMMARY[120:]
+    encoded_summary = json.dumps(_LONG_SUMMARY)
+    head_value = encoded_summary[:120]
+    tail_value = encoded_summary[120:]
     chunks = [
         "<tool_call>\n",
         "<function=report>\n",
@@ -350,44 +443,6 @@ def test_same_chunk_close_and_trailing_param_not_dropped():
     )
 
 
-def test_truncated_tool_call_closes_in_flight_string_at_tool_call_end():
-    """If the model truncates without ``</parameter>`` but reaches
-    ``</tool_call>``, the in-flight string must still finalize — not hang
-    with ``in_param=True``.
-
-    Mirrors the existing complete-param fallback that already treats
-    ``</tool_call>`` as a defensive close boundary.
-    """
-    parser = Qwen3CoderToolParser(tokenizer=None)
-    request = _request_with_tool("echo", {"value": {"type": "string"}})
-
-    # Multi-chunk feed: first chunks open the in-flight string; the final
-    # chunk arrives with ``</tool_call>`` directly, NO </parameter> and NO
-    # </function> at all (a malformed / truncated stream).
-    value_head = "A" * 80
-    value_tail = "B" * 80
-    chunks = [
-        "<tool_call>\n",
-        "<function=echo>\n",
-        "<parameter=value>\n",
-        value_head,
-        value_tail + "\n</tool_call>",
-    ]
-
-    deltas = _feed(parser, chunks, request)
-    fragments = _argument_fragments(deltas)
-    assert fragments, "no fragments emitted — parser hung in incremental mode"
-    # We don't require the truncated stream to produce strictly-valid JSON
-    # (the original buffered path also doesn't close ``}`` here); but the
-    # parser MUST have closed the string and emitted the buffered value.
-    assert any('"value"' in f for f in fragments), (
-        f"in-flight string never closed; fragments={fragments!r}"
-    )
-    assert not parser.in_param, (
-        "parser left in_param=True after </tool_call> truncation"
-    )
-
-
 @pytest.mark.parametrize(
     "param_type",
     ["string", "str", "text", "enum"],
@@ -404,7 +459,8 @@ def test_string_aliases_all_stream_incrementally(param_type):
         "<function=echo>\n",
         "<parameter=value>\n",
     ]
-    value_chunks = [_LONG_SUMMARY[i : i + 32] for i in range(0, len(_LONG_SUMMARY), 32)]
+    encoded = json.dumps(_LONG_SUMMARY)
+    value_chunks = [encoded[i : i + 32] for i in range(0, len(encoded), 32)]
     pre_close_chunks = head + value_chunks
 
     parser.reset()

@@ -93,6 +93,7 @@ def test_peekaboo_requirement_is_default_deny():
         "chat-depth",
         "slow-stream-stop",
         "model-crash-recovery",
+        "image-generation",
     }
     named = {
         flow

@@ -263,8 +263,15 @@ struct ImagesView: View {
     private var filmstrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(viewModel.results) { image in
-                    filmstripThumb(image)
+                // Enumerated so each thumb can carry a stable, addressable
+                // identifier. Position, not the image's UUID: a UUID differs
+                // on every run, which would make the AX structural baseline
+                // unrepeatable and turn `image-generation` into a flow that
+                // can only ever pass on the run that wrote its baseline.
+                // ``results`` is newest-first (``insert(at: 0)``), so thumb 1
+                // is always the most recent render.
+                ForEach(Array(viewModel.results.enumerated()), id: \.element.id) { index, image in
+                    filmstripThumb(image, ordinal: index + 1)
                 }
             }
             .padding(.vertical, 2)
@@ -273,7 +280,7 @@ struct ImagesView: View {
         .accessibilityIdentifier("Images.Gallery")
     }
 
-    private func filmstripThumb(_ image: GeneratedImage) -> some View {
+    private func filmstripThumb(_ image: GeneratedImage, ordinal: Int) -> some View {
         let selected = viewModel.activeImage?.id == image.id
         return Button {
             viewModel.select(image)
@@ -294,13 +301,45 @@ struct ImagesView: View {
             )
         }
         .buttonStyle(.plain)
-        // Per-item id, mirroring `Sidebar.Conversation.<uuid>`. The
-        // enclosing `Images.Gallery` identifies the strip, not the
-        // thumbnails inside it — without this the only selectable item in
-        // the filmstrip is unreachable by identifier, so a harness can
-        // neither pick a specific image nor assert which one is active.
-        .accessibilityIdentifier("Images.Thumb.\(image.id)")
-        .accessibilityLabel(selected ? "Generated image, selected" : "Generated image")
+        // The thumb's whole label is an image, so without an identifier and a
+        // label it reaches VoiceOver — and the golden flow — as an unnamed
+        // button. "A second render produced a second thumbnail" is then
+        // unassertable except by counting anonymous buttons, which any
+        // unrelated control added to the strip would break.
+        //
+        // The identifier is the position, not the image's UUID (#1725's first
+        // pass): a UUID differs on every run, which would make the AX
+        // structural baseline unrepeatable and turn `image-generation` into a
+        // flow that can only pass on the run that wrote its baseline. The
+        // label still announces selection for VoiceOver, as #1725 intended —
+        // the enclosing `Images.Gallery` identifies the strip, not the thumbs
+        // inside it, so this is the only place a screen-reader user hears
+        // which render is active.
+        .accessibilityIdentifier("Images.Gallery.Thumb.\(ordinal)")
+        // The label names the render, not just its slot. "Image 2" tells a
+        // VoiceOver user only where in the strip they are — every thumb in a
+        // gallery of near-identical variations then sounds the same, and the
+        // one thing that distinguishes them, the prompt that produced each
+        // one, is the caption sighted users can already read.
+        //
+        // It is also the only thing in the accessibility tree that is derived
+        // from the RESULT rather than from its position. Positional labels
+        // are satisfied by a gallery that lists two entries and shows the
+        // same render for both, which is a real failure mode and one the
+        // golden flow could not otherwise see: AX carries no pixel data, so a
+        // dump of a duplicated image is byte-identical to a dump of two
+        // distinct ones. Binding the label to each entry's own prompt makes
+        // the flow's "a second render, not a redraw of the first" assertion
+        // actually testable. (It pins the RECORD, not the pixels: two
+        // separate entries that somehow carried identical image data would
+        // still read as distinct. Proving that would mean publishing a
+        // content digest through the UI, which is scaffolding a shipping
+        // surface should not carry.)
+        .accessibilityLabel(
+            selected
+                ? "Image \(ordinal), \(image.prompt), selected"
+                : "Image \(ordinal), \(image.prompt)"
+        )
     }
 
     // MARK: - Composer (mirrors ChatView's compose box)
@@ -334,7 +373,15 @@ struct ImagesView: View {
                         ? "Describe the image you want…"
                         : readiness.composerPlaceholder,
                     onSubmit: runSubmit,
-                    onCancel: { viewModel.cancel() }
+                    onCancel: { viewModel.cancel() },
+                    // Without these the editor inside this tab announces
+                    // itself as the CHAT compose field, because that is
+                    // ``ComposeField``'s default. ``Images.Prompt`` below sits
+                    // on the SwiftUI wrapper and resolves to the placeholder
+                    // text, not to the NSTextView, so it cannot stand in.
+                    axIdentifier: AutosizingTextView.imagePromptAccessibilityIdentifier,
+                    axLabel: AutosizingTextView.imagePromptAccessibilityLabel,
+                    axRoleDescription: AutosizingTextView.imagePromptAccessibilityRoleDescription
                 )
                 .accessibilityIdentifier("Images.Prompt")
                 composerControls

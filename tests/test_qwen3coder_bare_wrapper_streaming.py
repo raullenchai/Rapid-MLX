@@ -111,7 +111,7 @@ def test_bare_function_block_streams_as_tool_call():
     chunks = [
         "<function=read_file>\n",
         "<parameter=path>\n",
-        "/src/main.py",
+        '"/src/main.py"',
         "\n</parameter>\n",
         "</function>",
     ]
@@ -181,12 +181,12 @@ def test_bare_multi_function_blocks_stream_both_calls():
 
     chunks = [
         "<function=read_file>",
-        "<parameter=path>/a.py</parameter>",
+        '<parameter=path>"/a.py"</parameter>',
         "</function>",
         "\n",
         "<function=write_file>",
-        "<parameter=path>/b.py</parameter>",
-        "<parameter=content>hello</parameter>",
+        '<parameter=path>"/b.py"</parameter>',
+        '<parameter=content>"hello"</parameter>',
         "</function>",
     ]
 
@@ -217,7 +217,7 @@ def test_wrapped_streaming_still_works():
         "<tool_call>\n",
         "<function=read_file>\n",
         "<parameter=path>\n",
-        "/src/main.py",
+        '"/src/main.py"',
         "\n</parameter>\n",
         "</function>\n",
         "</tool_call>",
@@ -306,7 +306,7 @@ def test_streaming_state_not_corrupted_by_function_prefix_in_value():
         "<parameter=note>",
         # Full inner XML — the naive scanner would see 2 openers and 2
         # closers here and try to advance mid-argument.
-        "see also <function=inner></function> below",
+        '"see also <function=inner></function> below"',
         "</parameter>",
         "</function>",
         # Trailing content after the real tool closes — the naive
@@ -347,7 +347,7 @@ def test_content_before_bare_function_is_emitted_as_content():
         "Let me read that file. ",
         "<function=read_file>",
         "<parameter=path>",
-        "/src/main.py",
+        '"/src/main.py"',
         "</parameter>",
         "</function>",
     ]

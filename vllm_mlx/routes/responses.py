@@ -65,6 +65,7 @@ from ..api.tool_calling import (
     validate_output_against_schema,
 )
 from ..api.utils import (
+    StreamingReasoningSanitizer,
     StreamingThinkRouter,
     StreamingToolCallFilter,
     clean_output_text,
@@ -2874,6 +2875,42 @@ async def _stream_responses(
         # accumulator + the post-loop emitter below close the cross-path
         # parity gap.
         accumulated_reasoning_text = ""
+        reasoning_sanitizer = StreamingReasoningSanitizer()
+        reasoning_stream_seen = False
+
+        def _route_sanitized_reasoning(
+            parts: list[tuple[str, str]],
+        ) -> str:
+            nonlocal accumulated_reasoning_text
+            content_parts: list[str] = []
+            for destination, text in parts:
+                if destination == "reasoning":
+                    accumulated_reasoning_text += text
+                else:
+                    content_parts.append(text)
+            return "".join(content_parts)
+
+        def _append_reasoning(text: str | None) -> str:
+            nonlocal reasoning_stream_seen
+            if text:
+                reasoning_stream_seen = True
+            return _route_sanitized_reasoning(
+                reasoning_sanitizer.process(text, "reasoning")
+            )
+
+        def _sanitize_reasoning_overflow(text: str | None) -> str:
+            return _route_sanitized_reasoning(
+                reasoning_sanitizer.process(text, "reasoning_overflow")
+            )
+
+        def _transition_reasoning_to_content(text: str | None) -> str:
+            return _route_sanitized_reasoning(
+                reasoning_sanitizer.transition_to_content(text)
+            )
+
+        def _flush_reasoning_sanitizer() -> str:
+            return _route_sanitized_reasoning(reasoning_sanitizer.flush())
+
         terminal_reasoning_sidecar_seen = False
 
         # R11-B codex r7 BLOCKING: track an explicit "reasoning closed"
@@ -3246,6 +3283,18 @@ async def _stream_responses(
                 },
             )
 
+        async def _emit_reasoning_fragment(text: str | None) -> AsyncIterator[str]:
+            released_content = _append_reasoning(text)
+            if not released_content:
+                return
+            content = strip_special_tokens(released_content)
+            if not content:
+                return
+            filtered = tool_filter.process(content)
+            if filtered:
+                async for ev in _emit_text_delta(filtered):
+                    yield ev
+
         async def _flush_deferred_text_if_no_synthesis(
             will_synthesise: bool,
         ) -> AsyncIterator[str]:
@@ -3360,7 +3409,9 @@ async def _stream_responses(
                     # reasoning overflow reclassified via
                     # _account_for_reasoning below).
                     reasoning_block_closed = True
-                    content = strip_special_tokens(delta_text)
+                    content = strip_special_tokens(
+                        _transition_reasoning_to_content(delta_text)
+                    )
                     if content:
                         filtered = tool_filter.process(content)
                         if filtered:
@@ -3397,7 +3448,8 @@ async def _stream_responses(
                     # as ``content`` per the original contract).
                     kept_reasoning, overflow, _ = _account_for_reasoning(delta_text)
                     if kept_reasoning:
-                        accumulated_reasoning_text += kept_reasoning
+                        async for ev in _emit_reasoning_fragment(kept_reasoning):
+                            yield ev
                     # Reasoning-cap reclassification: once the per-request
                     # cap fires, route the overflow portion of this and
                     # every subsequent reasoning chunk to ``content`` so
@@ -3405,7 +3457,9 @@ async def _stream_responses(
                     # unending silent reasoning stream. Without the cap
                     # the chunk drops as before (v1 Responses contract).
                     if overflow:
-                        content = strip_special_tokens(overflow)
+                        content = strip_special_tokens(
+                            _sanitize_reasoning_overflow(overflow)
+                        )
                         if content:
                             filtered = tool_filter.process(content)
                             if filtered:
@@ -3470,6 +3524,7 @@ async def _stream_responses(
                     _reasoning_close_injected = True
                 if delta_msg is None:
                     continue
+                raw_overflow_content = ""
                 # R11-B codex r7 BLOCKING: latch the close signal from
                 # the PARSER'S OWN content output (i.e. ``delta_msg.content``
                 # populated by ``extract_reasoning_streaming`` BEFORE any
@@ -3506,7 +3561,8 @@ async def _stream_responses(
                     # has something to ship when the engine cuts off
                     # mid-think under ``max_output_tokens``.
                     if kept_reasoning:
-                        accumulated_reasoning_text += kept_reasoning
+                        async for ev in _emit_reasoning_fragment(kept_reasoning):
+                            yield ev
                     flip_succeeded = _reasoning_close_injected
                     if overflow and not _reasoning_close_injected:
                         # Codex round-10 BLOCKING #2: flip the latch
@@ -3571,9 +3627,21 @@ async def _stream_responses(
                         # (``_reasoning_close_injected`` was already
                         # True on entry, captured in ``flip_succeeded``
                         # via the initial assignment above).
-                        delta_msg.content = (delta_msg.content or "") + overflow
+                        raw_overflow_content = overflow
                 if delta_msg.content:
-                    content = strip_special_tokens(delta_msg.content)
+                    content = strip_special_tokens(
+                        _transition_reasoning_to_content(delta_msg.content)
+                    )
+                    if content:
+                        filtered = tool_filter.process(content)
+                        if filtered:
+                            async for ev in _emit_text_delta(filtered):
+                                yield ev
+                if raw_overflow_content:
+                    sanitized_overflow_content = _sanitize_reasoning_overflow(
+                        raw_overflow_content
+                    )
+                    content = strip_special_tokens(sanitized_overflow_content)
                     if content:
                         filtered = tool_filter.process(content)
                         if filtered:
@@ -3602,6 +3670,7 @@ async def _stream_responses(
                     # post-``</think>`` bytes to the "text" block —
                     # that's the close signal for this path.
                     reasoning_block_closed = True
+                    piece = _transition_reasoning_to_content(piece)
                     async for ev in _emit_text_delta(piece):
                         yield ev
                 elif block_type == "thinking" and piece:
@@ -3609,12 +3678,14 @@ async def _stream_responses(
                     # reasoning-item emitter has bytes to ship under
                     # ``max_output_tokens`` cutoffs. Same rationale as
                     # the reasoning_parser path above.
-                    accumulated_reasoning_text += piece
+                    async for ev in _emit_reasoning_fragment(piece):
+                        yield ev
 
         # Flush filters
         remaining = tool_filter.flush()
         if remaining:
             if reasoning_parser:
+                remaining = _transition_reasoning_to_content(remaining)
                 async for ev in _emit_text_delta(remaining):
                     yield ev
             else:
@@ -3622,25 +3693,29 @@ async def _stream_responses(
                     if block_type == "text" and piece:
                         # R11-B codex r7 BLOCKING: see in-loop branch.
                         reasoning_block_closed = True
+                        piece = _transition_reasoning_to_content(piece)
                         async for ev in _emit_text_delta(piece):
                             yield ev
                     elif block_type == "thinking" and piece:
                         # R11-B: same rationale as the in-loop think_router
                         # branch above — preserve mid-think bytes for the
                         # terminal reasoning output item.
-                        accumulated_reasoning_text += piece
+                        async for ev in _emit_reasoning_fragment(piece):
+                            yield ev
 
         if not reasoning_parser:
             for block_type, piece in think_router.flush():
                 if block_type == "text" and piece:
                     # R11-B codex r7 BLOCKING: see in-loop branch.
                     reasoning_block_closed = True
+                    piece = _transition_reasoning_to_content(piece)
                     async for ev in _emit_text_delta(piece):
                         yield ev
                 elif block_type == "thinking" and piece:
                     # R11-B: same rationale as the in-loop think_router
                     # branch above.
-                    accumulated_reasoning_text += piece
+                    async for ev in _emit_reasoning_fragment(piece):
+                        yield ev
 
         # Codex round-3 BLOCKING #3: if the reasoning cap latched on the
         # last engine chunk of the stream (terminal exact-boundary case
@@ -3699,7 +3774,9 @@ async def _stream_responses(
                 )
                 final_inject = None
             if final_inject is not None and getattr(final_inject, "content", None):
-                content = strip_special_tokens(final_inject.content)
+                content = strip_special_tokens(
+                    _transition_reasoning_to_content(final_inject.content)
+                )
                 if content:
                     filtered = tool_filter.process(content)
                     if filtered:
@@ -3750,7 +3827,9 @@ async def _stream_responses(
                 else None
             )
             if final_msg and final_msg.content:
-                content = strip_special_tokens(final_msg.content)
+                content = strip_special_tokens(
+                    _transition_reasoning_to_content(final_msg.content)
+                )
                 if content:
                     async for ev in _emit_text_delta(content):
                         yield ev
@@ -3769,7 +3848,23 @@ async def _stream_responses(
                 and getattr(final_msg, "reasoning", None)
                 and not accumulated_reasoning_text
             ):
-                accumulated_reasoning_text += final_msg.reasoning
+                if reasoning_stream_seen:
+                    reasoning_sanitizer = StreamingReasoningSanitizer()
+                async for ev in _emit_reasoning_fragment(final_msg.reasoning):
+                    yield ev
+
+        sanitized_overflow_tail = _flush_reasoning_sanitizer()
+        if sanitized_overflow_tail:
+            content = strip_special_tokens(sanitized_overflow_tail)
+            if content:
+                filtered = tool_filter.process(content)
+                if filtered:
+                    async for ev in _emit_text_delta(filtered):
+                        yield ev
+        remaining = tool_filter.flush()
+        if remaining:
+            async for ev in _emit_text_delta(remaining):
+                yield ev
 
         # Parse tool_calls FIRST so the forced-choice deferred-text
         # resolution (Yuki F6 codex r1 BLOCKING #2) can decide whether

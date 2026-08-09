@@ -266,6 +266,34 @@ def test_prefix_boundary_prefers_latest_stable_message_boundary(monkeypatch):
     assert engine._compute_prefix_boundary(messages) == len(stable) - 8
 
 
+def test_first_turn_saves_stable_boundary_before_generation_suffix(monkeypatch):
+    """Turn one must seed the cache boundary that turn two actually shares.
+
+    Returning zero merely because the first user is at index zero falls back
+    to the scheduler's generic N-1 snapshot. For templates whose generation
+    suffix is several tokens long, that entry extends past the next turn's
+    shared prefix and a non-trimmable cache cannot reuse it (#1611).
+    """
+    engine, _ = _build_engine(monkeypatch)
+    engine._compute_prefix_boundary = BatchedEngine._compute_prefix_boundary.__get__(
+        engine, BatchedEngine
+    )
+    engine._tokenizer = _CharacterTokenizer()
+
+    def render(messages, tools=None, *, add_generation_prompt=True, **kwargs):
+        body = "|".join(str(message.get("content", "")) for message in messages)
+        return body + ("|ASSISTANT_GENERATION" if add_generation_prompt else "")
+
+    monkeypatch.setattr(engine, "_apply_chat_template", render)
+    messages = [{"role": "user", "content": "first turn"}]
+    stable = render(messages, add_generation_prompt=False)
+
+    boundary = engine._compute_prefix_boundary(messages)
+
+    assert boundary == len(stable) - 8
+    assert 0 < boundary < len(render(messages, add_generation_prompt=True)) - 1
+
+
 def test_prefix_boundary_stops_before_transient_server_priming(monkeypatch):
     """A server-only reminder is absent from the client's next request."""
     engine, _ = _build_engine(monkeypatch)

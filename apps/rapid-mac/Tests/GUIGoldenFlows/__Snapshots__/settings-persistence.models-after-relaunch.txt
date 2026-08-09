@@ -62,6 +62,9 @@ AXApplication title="Rapid-MLX"
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
         AXCheckBox subrole=AXSwitch id="Settings.Models.AutoStartOnLaunchToggle" desc="Auto-start model on launch" help="When off, opening Rapid-MLX will not load a model until you start one manually from the picker." value=bool:true enabled=true
+        AXRadioGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
+          AXRadioButton subrole=AXSegment desc="Chat models" value=bool:true enabled=true
+          AXRadioButton subrole=AXSegment desc="Image models" value=bool:false enabled=true
         AXTextField id="Settings.ModelManagement.Search" value=empty enabled=true
         AXPopUpButton id="Settings.ModelManagement.SortMenu" title="Sort" enabled=true
         AXRadioGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true

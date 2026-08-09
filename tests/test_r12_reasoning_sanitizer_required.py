@@ -61,6 +61,7 @@ from vllm_mlx.api.models import (
     ChatCompletionChunkDelta,
 )
 from vllm_mlx.api.utils import (
+    StreamingReasoningSanitizer,
     sanitize_output,
     sanitize_reasoning_content,
     sanitize_reasoning_for_stream,
@@ -93,6 +94,79 @@ class TestSanitizeReasoningHelpers:
     single source of truth — pin their contract here so the field
     validators can rely on it without re-asserting per-call-site.
     """
+
+    def test_streaming_sanitizer_removes_cascading_cross_destination_marker(self):
+        sanitizer = StreamingReasoningSanitizer()
+        parts = sanitizer.process("<</tool_call>", "reasoning")
+        parts += sanitizer.process("/tool_call>", "content")
+        parts += sanitizer.flush()
+        assert parts == []
+
+    @pytest.mark.parametrize("marker", _LEAK_MARKERS)
+    def test_streaming_sanitizer_carries_every_canonical_marker(self, marker):
+        for split_at in range(1, len(marker)):
+            sanitizer = StreamingReasoningSanitizer()
+            parts = sanitizer.process(marker[:split_at], "reasoning")
+            parts += sanitizer.transition_to_content(marker[split_at:])
+            parts += sanitizer.flush()
+            assert parts == [], (marker, split_at, parts)
+
+    def test_streaming_sanitizer_does_not_buffer_ordinary_brackets(self):
+        sanitizer = StreamingReasoningSanitizer()
+        assert sanitizer.process("items [1, 2]", "reasoning") == [
+            ("reasoning", "items [1, 2]")
+        ]
+        assert sanitizer.flush() == []
+
+    def test_streaming_sanitizer_carries_across_multiple_content_chunks(self):
+        sanitizer = StreamingReasoningSanitizer()
+        parts = sanitizer.process("</tool_", "reasoning")
+        parts += sanitizer.transition_to_content("ca")
+        parts += sanitizer.transition_to_content("ll>answer")
+        parts += sanitizer.flush()
+        assert parts == [("content", "answer")]
+
+    def test_streaming_sanitizer_carries_calling_tool_payload(self):
+        sanitizer = StreamingReasoningSanitizer()
+        parts = sanitizer.process("plan [Calling tool foo", "reasoning")
+        parts += sanitizer.process("] next", "reasoning")
+        parts += sanitizer.flush()
+        assert parts == [("reasoning", "plan "), ("reasoning", " next")]
+
+    def test_streaming_sanitizer_bounds_unterminated_calling_tool_payload(self):
+        sanitizer = StreamingReasoningSanitizer()
+        parts = sanitizer.process("[Calling tool " + "x" * 200, "reasoning")
+        parts += sanitizer.flush()
+        assert parts == []
+
+    def test_streaming_sanitizer_does_not_consume_content_after_calling_prefix(self):
+        sanitizer = StreamingReasoningSanitizer()
+        parts = sanitizer.process("[Calling tool ", "reasoning")
+        parts += sanitizer.transition_to_content("legitimate answer")
+        parts += sanitizer.flush()
+        assert parts == [("content", "legitimate answer")]
+
+    def test_streaming_sanitizer_tracks_overflow_reasoning_origin(self):
+        sanitizer = StreamingReasoningSanitizer()
+        parts = sanitizer.process("</tool_", "reasoning_overflow")
+        parts += sanitizer.transition_to_content("call>answer")
+        parts += sanitizer.flush()
+        assert parts == [("content", "answer")]
+
+    def test_streaming_sanitizer_preserves_terminal_marker_prefix(self):
+        sanitizer = StreamingReasoningSanitizer()
+        assert sanitizer.process("answer</tool_", "reasoning") == [
+            ("reasoning", "answer")
+        ]
+        assert sanitizer.flush() == [("reasoning", "</tool_")]
+
+    @pytest.mark.parametrize("suffix", ["<", "["])
+    def test_streaming_sanitizer_preserves_terminal_literal_punctuation(self, suffix):
+        sanitizer = StreamingReasoningSanitizer()
+        assert sanitizer.process("compare " + suffix, "reasoning") == [
+            ("reasoning", "compare ")
+        ]
+        assert sanitizer.flush() == [("reasoning", suffix)]
 
     @pytest.mark.parametrize("marker", _LEAK_MARKERS)
     def test_sanitize_reasoning_content_strips_marker(self, marker):

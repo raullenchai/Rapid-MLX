@@ -153,6 +153,76 @@ struct SpawnEnvAllowlistTests {
         #expect(env["PATH"] == "/usr/bin")
     }
 
+    // MARK: - desktop prefix-cache ceiling (issue #1412)
+
+    @Test("Desktop sidecar caps prefix cache at 8 percent of physical RAM")
+    func desktopPrefixCacheUsesPhysicalRAMFraction() {
+        let sixteenGiB = UInt64(16) << 30
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "999999999999"],
+            physicalRAMBytes: sixteenGiB,
+            availableRAMBytes: sixteenGiB
+        )
+
+        let expected = (sixteenGiB / 100) * 8
+        #expect(env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"] == String(expected))
+    }
+
+    @Test("Desktop prefix-cache ceiling tops out at 4 GiB")
+    func desktopPrefixCacheHasAbsoluteCeiling() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: [:],
+            physicalRAMBytes: UInt64(256) << 30,
+            availableRAMBytes: UInt64(256) << 30
+        )
+
+        #expect(
+            env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"]
+                == String(UInt64(4) << 30)
+        )
+    }
+
+    @Test("Memory pressure cannot raise engine's available-RAM default")
+    func desktopPrefixCacheClampsToAvailableRAM() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: [:],
+            physicalRAMBytes: UInt64(32) << 30,
+            availableRAMBytes: UInt64(8) << 30
+        )
+
+        #expect(
+            env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"]
+                == String((UInt64(8) << 30) / 5)
+        )
+    }
+
+    @Test("Unavailable physical RAM probe preserves engine fallback")
+    func unavailablePhysicalRAMProbeKeepsEngineFallback() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "999999999999"],
+            physicalRAMBytes: 0,
+            availableRAMBytes: UInt64(8) << 30
+        )
+
+        #expect(env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"] == nil)
+    }
+
+    @Test("Unavailable free RAM probe preserves engine fallback")
+    func unavailableFreeRAMProbeKeepsEngineFallback() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "999999999999"],
+            physicalRAMBytes: UInt64(32) << 30,
+            availableRAMBytes: 0
+        )
+
+        #expect(env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"] == nil)
+    }
+
     // MARK: - empty ambient
 
     @Test("Empty ambient yields only the desktop-injected layer")
