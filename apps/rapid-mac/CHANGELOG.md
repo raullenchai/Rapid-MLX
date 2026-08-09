@@ -50,8 +50,9 @@ can actually understand.
   "Type a model name…" — those are now offered only when there is nothing to
   choose yet. What you get is the quickstart picks, the recommendations, and
   the model list, with the ones you have downloaded first in each group.
-  Models under 1B stay hidden unless you turn them on in Settings → Models,
-  except for the one you are currently using, which always shows.
+  Models under 1B stay hidden unless you turn them on in
+  Settings → Model Management, except for the one you are currently using,
+  which always shows.
 
 ### Fixed
 
@@ -68,8 +69,8 @@ can actually understand.
 - **"Browse all models" in the setup wizard opens the model catalogue.** It used
   to close the wizard instead — your chosen model was discarded and you landed
   on the chat surface pinned to a model you never picked. It now opens
-  Settings → Models with the wizard still behind it, so closing Settings puts
-  you back on your selection.
+  Settings → Model Management with the wizard still behind it, so closing
+  Settings puts you back on your selection.
 
 ## [0.12.7] — 2026-08-07
 
