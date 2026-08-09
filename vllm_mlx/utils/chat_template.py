@@ -1352,8 +1352,61 @@ def apply_chat_template(
                 flattened, **alternating_kwargs
             )
 
+    def _apply_with_mid_system_fallback(
+        candidate_messages: list[dict], candidate_kwargs: dict
+    ) -> str:
+        """Retry templates that explicitly reject a non-leading system role.
+
+        Render the client's message order first so templates that accept
+        mid-conversation system messages keep their native semantics.  Only
+        the well-known Qwen/Llama/Gemma guard opts into the compatibility
+        retry; unrelated template failures must remain unchanged.
+        """
+        try:
+            return _apply_with_alternating_fallback(
+                candidate_messages, candidate_kwargs
+            )
+        except Exception as original:
+            if "System message must be at the beginning." not in str(original):
+                raise
+
+            first_body = next(
+                (
+                    index
+                    for index, message in enumerate(candidate_messages)
+                    if message.get("role") != "system"
+                ),
+                len(candidate_messages),
+            )
+            has_mid_system = any(
+                message.get("role") == "system"
+                for message in candidate_messages[first_body:]
+            )
+            if not has_mid_system:
+                raise
+
+            system_text = "\n\n".join(
+                message.get("content", "")
+                for message in candidate_messages
+                if message.get("role") == "system" and message.get("content")
+            )
+            collapsed = [
+                message
+                for message in candidate_messages
+                if message.get("role") != "system"
+            ]
+            if system_text:
+                collapsed.insert(0, {"role": "system", "content": system_text})
+
+            try:
+                return _apply_with_alternating_fallback(collapsed, candidate_kwargs)
+            except Exception:
+                # Preserve the first diagnostic: it describes the client input
+                # that triggered compatibility handling, not our retry shape.
+                raise original
+
     try:
-        return _apply_with_alternating_fallback(messages, template_kwargs)
+        return _apply_with_mid_system_fallback(messages, template_kwargs)
     except TypeError as e:
         retry_messages = messages
         # DeepSeek-R1's published template concatenates historical tool-call
@@ -1368,7 +1421,7 @@ def apply_chat_template(
             if string_argument_messages is not messages:
                 retry_messages = string_argument_messages
                 try:
-                    return _apply_with_alternating_fallback(
+                    return _apply_with_mid_system_fallback(
                         string_argument_messages, template_kwargs
                     )
                 except TypeError:
@@ -1385,7 +1438,7 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return _apply_with_alternating_fallback(retry_messages, template_kwargs)
+            return _apply_with_mid_system_fallback(retry_messages, template_kwargs)
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
             # actually names it (codex R8 BLOCKING: unconditionally popping it
@@ -1436,10 +1489,10 @@ def apply_chat_template(
             )
             injected = _inject_tools_into_messages(retry_messages, tools)
             try:
-                return _apply_with_alternating_fallback(injected, template_kwargs)
+                return _apply_with_mid_system_fallback(injected, template_kwargs)
             except TypeError:
                 # enable_thinking also unsupported after all — drop it
                 template_kwargs.pop("enable_thinking", None)
-                return _apply_with_alternating_fallback(injected, template_kwargs)
+                return _apply_with_mid_system_fallback(injected, template_kwargs)
 
-        return _apply_with_alternating_fallback(retry_messages, template_kwargs)
+        return _apply_with_mid_system_fallback(retry_messages, template_kwargs)

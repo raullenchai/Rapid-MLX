@@ -65,6 +65,10 @@ to always-allow rather than prompting every time (#1695).
 - Multi-turn tool history now stays in each model family's trained wire format
   for Qwen, Gemma 4, MiniMax, Nemotron and xLAM instead of being rewritten into
   the generic `[Calling tool: ...]` transcript (#1593).
+- `/v1/chat/completions` now retries templates that reject a mid-conversation
+  system message by combining system instructions at the front, matching the
+  compatibility already provided by the Responses and Anthropic surfaces
+  (#1543). Templates that accept the original ordering remain untouched.
 
 ## Release engineering
 
