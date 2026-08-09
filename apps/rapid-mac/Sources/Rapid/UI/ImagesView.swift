@@ -294,6 +294,13 @@ struct ImagesView: View {
             )
         }
         .buttonStyle(.plain)
+        // Per-item id, mirroring `Sidebar.Conversation.<uuid>`. The
+        // enclosing `Images.Gallery` identifies the strip, not the
+        // thumbnails inside it — without this the only selectable item in
+        // the filmstrip is unreachable by identifier, so a harness can
+        // neither pick a specific image nor assert which one is active.
+        .accessibilityIdentifier("Images.Thumb.\(image.id)")
+        .accessibilityLabel(selected ? "Generated image, selected" : "Generated image")
     }
 
     // MARK: - Composer (mirrors ChatView's compose box)
@@ -401,6 +408,12 @@ struct ImagesView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
+                // ``Aspect.rawValue`` (square / portrait / landscape), NOT
+                // ``label`` — the label is display copy ("1:1", "3:4") and a
+                // future copy change would silently rename the hook.
+                .accessibilityIdentifier("Images.Aspect.\(ar.rawValue)")
+                .accessibilityLabel(ar.label)
+                .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
         .accessibilityIdentifier("Images.Aspect")
@@ -423,6 +436,10 @@ struct ImagesView: View {
                             systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
                         )
                     }
+                    // Keyed on the alias, which is what selecting the row
+                    // actually writes — so the hook and the effect cannot
+                    // drift apart the way a positional index would.
+                    .accessibilityIdentifier("Images.Model.\(entry.alias)")
                 }
             }
         } label: {
