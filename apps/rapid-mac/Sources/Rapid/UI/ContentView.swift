@@ -20,6 +20,7 @@ struct ContentView: View {
     @Environment(UpdateChecker.self) private var updater
     @Environment(QuickstartCoordinator.self) private var quickstart
     @Environment(BrowseApprovalStore.self) private var browseApproval
+    @Environment(\.openWindow) private var openWindow
 
     @State private var alias: String = ""
     /// Monotonic signal from picker row taps. Catalog initialization also
@@ -412,12 +413,27 @@ struct ContentView: View {
             // the user would read "Couldn't start X" while X is starting.
             chat.clearStaleErrorBanner()
             startModel(target)
+        case .restart(let target):
+            chat.clearStaleErrorBanner()
+            restartModel(target)
+        case .openModelManagement:
+            settingsRouter.route(.openModelManagement) {
+                openWindow(id: "settings")
+            }
         }
     }
 
     private func startModel(_ target: String) {
         let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
         Task { await server.start(alias: target, hfPath: hfPath) }
+    }
+
+    private func restartModel(_ target: String) {
+        let hfPath = catalogEntries.first(where: { $0.alias == target })?.hfRepo
+        Task {
+            await server.stop()
+            _ = await server.ensureServing(alias: target, hfPath: hfPath)
+        }
     }
 
     // MARK: - Detail routing

@@ -255,7 +255,7 @@ final class ModelReadinessTests: XCTestCase {
             message,
             FailureDiagnoser.diagnosis(for: .engineNotRunning, modelAlias: alias).message
         )
-        XCTAssertEqual(action, .retry(alias: alias))
+        XCTAssertEqual(action, .restart(alias: alias))
     }
 
     /// With no structured kind, the raw message is the fallback rather
@@ -345,7 +345,54 @@ final class ModelReadinessTests: XCTestCase {
             return XCTFail("expected .failed, got \(state)")
         }
         XCTAssertEqual(name, alias)
-        XCTAssertEqual(action, .retry(alias: alias))
+        XCTAssertEqual(action, .openModelManagement)
+    }
+
+    /// Regression for #1514: model-load failures are not retryable in place.
+    /// The shared diagnosis contract sends the user to Model Management, but
+    /// readiness used to overwrite that decision with an unconditional Retry.
+    func testModelLoadFailureOffersModelManagementInsteadOfRetry() {
+        let state = resolve(
+            .idle,
+            alias: alias,
+            cached: true,
+            failure: .init(message: "load failed", kind: .modelLoadFailed, alias: alias)
+        )
+
+        XCTAssertEqual(state.action, .openModelManagement)
+    }
+
+    func testOutOfMemoryFailureOffersModelManagementInsteadOfRetry() {
+        let state = resolve(
+            .idle,
+            alias: alias,
+            cached: true,
+            failure: .init(message: "out of memory", kind: .modelOutOfMemory, alias: alias)
+        )
+
+        XCTAssertEqual(state.action, .openModelManagement)
+    }
+
+    func testEngineNotRunningFailureOffersRestartInsteadOfRetry() {
+        let state = resolve(
+            .idle,
+            alias: alias,
+            cached: true,
+            failure: .init(message: "engine stopped", kind: .engineNotRunning, alias: alias)
+        )
+
+        XCTAssertEqual(state.action, .restart(alias: alias))
+    }
+
+    func testOtherDiagnosedFailureKeepsLegacyRetry() {
+        let state = resolve(
+            .idle,
+            alias: alias,
+            cached: true,
+            failure: .init(message: "request failed", kind: .requestFailed, alias: alias)
+        )
+
+        XCTAssertEqual(state.action, .retry(alias: alias))
     }
 
     /// An unattributable failure must not be pinned on the user's fresh

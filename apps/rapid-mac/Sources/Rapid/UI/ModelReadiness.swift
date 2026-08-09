@@ -93,6 +93,8 @@ enum ModelReadiness: Equatable {
         case downloadAndStart(alias: String)
         case start(alias: String)
         case retry(alias: String)
+        case restart(alias: String)
+        case openModelManagement
 
         var title: String {
             switch self {
@@ -100,6 +102,8 @@ enum ModelReadiness: Equatable {
             case .downloadAndStart: return "Download & start"
             case .start:            return "Start"
             case .retry:            return "Retry"
+            case .restart:          return "Restart"
+            case .openModelManagement: return "Open Model Management"
             }
         }
 
@@ -109,6 +113,8 @@ enum ModelReadiness: Equatable {
             case .downloadAndStart: return "icloud.and.arrow.down"
             case .start:            return "play.fill"
             case .retry:            return "arrow.clockwise"
+            case .restart:          return "arrow.clockwise"
+            case .openModelManagement: return "square.stack.3d.up"
             }
         }
 
@@ -122,9 +128,9 @@ enum ModelReadiness: Equatable {
         /// The alias this action operates on, when it has one.
         var alias: String? {
             switch self {
-            case .chooseModel:
+            case .chooseModel, .openModelManagement:
                 return nil
-            case .downloadAndStart(let a), .start(let a), .retry(let a):
+            case .downloadAndStart(let a), .start(let a), .retry(let a), .restart(let a):
                 return a
             }
         }
@@ -308,7 +314,7 @@ enum ModelReadiness: Equatable {
                 return .failed(
                     alias: name,
                     message: failureMessage(failure),
-                    action: name.map { ModelReadiness.Action.retry(alias: $0) }
+                    action: failureAction(kind: failure.kind, alias: name)
                 )
             }
         }
@@ -322,6 +328,27 @@ enum ModelReadiness: Equatable {
             return .unknownModel(alias: name)
         case .onDisk, .catalogPending:
             return .needsStart(alias: name)
+        }
+    }
+
+    /// Preserve the recovery policy already defined by `FailureDiagnoser`
+    /// instead of flattening every readiness failure into Retry.
+    private static func failureAction(
+        kind: FailureDiagnosis.Kind?,
+        alias: String?
+    ) -> Action? {
+        guard let kind else { return alias.map(Action.retry) }
+        switch FailureDiagnoser.diagnosis(for: kind, modelAlias: alias).action {
+        case .openModelManagement:
+            return .openModelManagement
+        case .restart:
+            return alias.map(Action.restart)
+        case .retry:
+            return alias.map(Action.retry)
+        case .switchDownloadSource, .openWebSearchSettings, .none:
+            // These actions belong to their originating surfaces, not the
+            // readiness banner. Preserve its legacy Retry contract.
+            return alias.map(Action.retry)
         }
     }
 

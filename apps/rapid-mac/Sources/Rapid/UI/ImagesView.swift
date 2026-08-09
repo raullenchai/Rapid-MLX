@@ -8,6 +8,8 @@ import SwiftUI
 struct ImagesView: View {
     @Bindable var viewModel: ImageGenViewModel
     @Bindable var server: ServerManager
+    @Environment(\.openWindow) private var openWindow
+    @Environment(SettingsRouter.self) private var settingsRouter
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
 
@@ -156,6 +158,16 @@ struct ImagesView: View {
             // serving — so it would silently do nothing here; ``ensureServing``
             // stops the current model and brings the target up.
             Task { _ = await server.ensureServing(alias: target, hfPath: hf) }
+        case .restart(let target):
+            let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
+            Task {
+                await server.stop()
+                _ = await server.ensureServing(alias: target, hfPath: hf)
+            }
+        case .openModelManagement:
+            settingsRouter.route(.openModelManagement) {
+                openWindow(id: "settings")
+            }
         }
     }
 
