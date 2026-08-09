@@ -306,3 +306,13 @@ def test_coherence_sweep_pins_text_only_lane():
     script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
     assert 'scripts/release_fleet.py forces-text-lane "$MODEL"' in script
     assert "SERVE_ARGS+=(--no-mllm)" in script
+
+
+def test_coherence_sweep_boot_wait_is_progress_aware_and_hard_bounded():
+    script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
+    assert 'BOOT_STALL_S="${COHERENCE_BOOT_STALL_S:-180}"' in script
+    assert 'BOOT_HARD_S="${COHERENCE_BOOT_HARD_S:-1800}"' in script
+    assert 'log_size=$(wc -c < "$LOG"' in script
+    assert "SECONDS - last_progress" in script
+    assert "SECONDS - boot_started" in script
+    assert "for _ in $(seq 1 180)" not in script

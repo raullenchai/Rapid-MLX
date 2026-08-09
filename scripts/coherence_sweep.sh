@@ -39,6 +39,18 @@ set -euo pipefail
 PY="${PY:-python3.12}"
 PORT="${PORT:-8402}"
 FLEET_SCOPE="${FLEET_SCOPE:-auto}"
+# Server readiness has two bounds. Cold-cache mirror/download work may take
+# longer than the old fixed 180s while still making deterministic progress
+# (#1686), so only 180s with no new log output counts as stalled. The hard cap
+# remains absolute even when a noisy process keeps writing forever.
+BOOT_STALL_S="${COHERENCE_BOOT_STALL_S:-180}"
+BOOT_HARD_S="${COHERENCE_BOOT_HARD_S:-1800}"
+case "$BOOT_STALL_S:$BOOT_HARD_S" in
+  *[!0-9:]*|0:*|*:0)
+    echo "ERROR: COHERENCE_BOOT_STALL_S and COHERENCE_BOOT_HARD_S must be positive integers." >&2
+    exit 2
+    ;;
+esac
 if [ "$#" -gt 0 ]; then
   MODELS="$*"
 elif [ -n "${MODELS:-}" ]; then
@@ -134,14 +146,32 @@ for MODEL in $MODELS; do
   echo "$CURRENT_PID" > "$PIDFILE"
 
   up=0
-  for _ in $(seq 1 180); do
+  boot_failure="hard timeout (${BOOT_HARD_S}s)"
+  boot_started=$SECONDS
+  last_progress=$SECONDS
+  last_log_size=0
+  while [ "$((SECONDS - boot_started))" -lt "$BOOT_HARD_S" ]; do
     if curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then up=1; break; fi
     # Bail early if the server process died during load.
-    if ! kill -0 "$CURRENT_PID" 2>/dev/null; then break; fi
+    if ! kill -0 "$CURRENT_PID" 2>/dev/null; then
+      boot_failure="server process exited"
+      break
+    fi
+
+    # `wc -c` is portable to macOS bash 3.2 and observes both ordinary logs
+    # and carriage-return progress updates redirected into the log file.
+    log_size=$(wc -c < "$LOG" | tr -d ' ')
+    if [ "$log_size" -gt "$last_log_size" ]; then
+      last_log_size=$log_size
+      last_progress=$SECONDS
+    elif [ "$((SECONDS - last_progress))" -ge "$BOOT_STALL_S" ]; then
+      boot_failure="no startup progress for ${BOOT_STALL_S}s"
+      break
+    fi
     sleep 1
   done
   if [ "$up" != 1 ]; then
-    echo "ERROR: $MODEL server did not come up. Last log lines:" >&2
+    echo "ERROR: $MODEL server did not come up: $boot_failure. Last log lines:" >&2
     tail -20 "$LOG" >&2
     infra_failed="$infra_failed $MODEL(boot)"
   else
