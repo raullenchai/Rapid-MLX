@@ -210,7 +210,7 @@ def get_profile_or_generic(name: str) -> AgentProfile:
     known.
     """
     _ensure_loaded()
-    profile = _PROFILES.get(name)
+    profile = get_profile(name)
     if profile:
         return profile
     # Hardcoded fallback — mirrors what the removed generic.yaml offered.
