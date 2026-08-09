@@ -81,6 +81,7 @@ def list_parsers() -> list[str]:
 def _register_builtin_parsers():
     """Register built-in parsers."""
     from .deepseek_r1_parser import (
+        DeepSeekR1DistillReasoningParser,
         DeepSeekR1ReasoningParser,
         VibeThinkerReasoningParser,
     )
@@ -101,6 +102,7 @@ def _register_builtin_parsers():
     register_parser("hy_v3", Hy3ReasoningParser)
     register_parser("hy3", Hy3ReasoningParser)
     register_parser("deepseek_r1", DeepSeekR1ReasoningParser)
+    register_parser("deepseek_r1_distill", DeepSeekR1DistillReasoningParser)
     register_parser("deepseek_v4", DeepSeekV4ReasoningParser)
     # ``vibethinker`` — DeepSeek-R1 variant with a 1024-char no-tag
     # threshold (vs. 64) to accommodate VibeThinker's preamble-before-

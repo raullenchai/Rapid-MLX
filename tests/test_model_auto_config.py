@@ -504,7 +504,7 @@ class TestDetectModelConfig:
             "Qwen2/Llama2-arch SFT and cannot emit the V3 fenced-JSON "
             "envelope. See Sven r12 dogfood HIGH-1 verdict (R12-S1)."
         )
-        assert config.reasoning_parser == "deepseek_r1"
+        assert config.reasoning_parser == "deepseek_r1_distill"
 
     # DeepSeek V2.5 (and older non-R1) → legacy ``deepseek`` parser.
     # R12-5: V3 vanilla checkpoints now route to ``deepseek_v3`` (the

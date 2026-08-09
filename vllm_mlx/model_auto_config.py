@@ -123,6 +123,13 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     ),
     # DeepSeek R1 (non-0528) — has reasoning
     (
+        re.compile(r"deepseek.*r1.*distill", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="deepseek",
+            reasoning_parser="deepseek_r1_distill",
+        ),
+    ),
+    (
         re.compile(r"deepseek.*r1", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="deepseek",

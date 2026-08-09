@@ -4,7 +4,10 @@
 import pytest
 
 from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
-from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
+from vllm_mlx.reasoning.deepseek_r1_parser import (
+    DeepSeekR1DistillReasoningParser,
+    DeepSeekR1ReasoningParser,
+)
 from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
 from vllm_mlx.reasoning.gpt_oss_parser import (
     _CHANNEL_RE,
@@ -404,6 +407,25 @@ class TestDeepSeekR1:
         self.parser.reset_state()
         result = self.parser.finalize_streaming("")
         assert result is None
+
+
+class TestDeepSeekR1Distill:
+    def setup_method(self):
+        self.parser = DeepSeekR1DistillReasoningParser()
+
+    def test_1570_no_tag_complete_output_is_reasoning(self):
+        trace = "Okay, so I need to figure out unified memory."
+        reasoning, content = self.parser.extract_reasoning(trace, enable_thinking=False)
+        assert reasoning == trace
+        assert content is None
+
+    def test_1570_prompt_primed_stream_keeps_untagged_trace_in_reasoning(self):
+        self.parser.configure_request(enable_thinking=False)
+        trace = "Okay, so I need to figure out unified memory. " * 3
+        result = self.parser.extract_reasoning_streaming("", trace, trace)
+        assert result is not None
+        assert result.reasoning == trace
+        assert result.content is None
 
 
 class TestThinkParserSSEBoundary:

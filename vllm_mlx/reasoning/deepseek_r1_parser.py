@@ -129,6 +129,12 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         # threshold-crossing content delta so no buffered bytes
         # are stranded and a split opener reassembles correctly.
         if not has_tags and not self._saw_any_tag:
+            if getattr(self, "_prompt_primed_thinking", False):
+                return self._apply_tool_call_promotion(
+                    super()._extract_reasoning_streaming_inner(
+                        previous_text, current_text, delta_text
+                    )
+                )
             if len(current_text) >= self.NO_TAG_CONTENT_THRESHOLD:
                 prefix_parts: list[str] = []
                 if self._reasoning_carry:
@@ -230,6 +236,8 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             DeltaMessage correction, or None if no correction needed.
         """
         if not self._saw_any_tag and accumulated_text:
+            if getattr(self, "_prompt_primed_thinking", False):
+                return None
             if finish_reason == "length" and prompt_thinking_active:
                 # Prompt-injected mid-think + max_tokens cut — route to
                 # reasoning to suppress D-STOP-THINK duplication. This
@@ -282,3 +290,28 @@ class VibeThinkerReasoningParser(DeepSeekR1ReasoningParser):
     """
 
     NO_TAG_CONTENT_THRESHOLD = 1024
+
+
+class DeepSeekR1DistillReasoningParser(DeepSeekR1ReasoningParser):
+    """Parser for R1-Distill templates that unconditionally prime thinking.
+
+    The released Qwen/Llama distill templates append ``<think>`` to the
+    assistant prompt but do not consult ``enable_thinking``.  Generated text
+    therefore starts *inside* reasoning, and only ``</think>`` can transition
+    it to public content.
+    """
+
+    implicit_reasoning_until_close = True
+
+    def configure_request(self, *, enable_thinking: bool | None = None) -> None:
+        del enable_thinking
+        self._prompt_primed_thinking = True
+
+    def extract_reasoning(
+        self,
+        model_output: str,
+        enable_thinking: bool | None = None,
+    ) -> tuple[str | None, str | None]:
+        if self.start_token not in model_output and self.end_token not in model_output:
+            return model_output.strip() or None, None
+        return super().extract_reasoning(model_output, enable_thinking=enable_thinking)

@@ -782,6 +782,7 @@ def _rescue_silent_drop_from_reasoning(
     reasoning_is_case4: bool = False,
     matched_stop: str | None = None,
     prompt_thinking_active: bool = False,
+    implicit_reasoning_until_close: bool = False,
 ) -> str | None:
     """Issue #569: never silently drop an assistant turn.
 
@@ -940,6 +941,8 @@ def _rescue_silent_drop_from_reasoning(
             and prompt_thinking_active
         )
     )
+    if implicit_reasoning_until_close and reasoning_is_case4 and prompt_thinking_active:
+        return final_content
     if truncated_mid_think:
         return final_content
     # r5-D (F-DGF-V080-B-7, 2026-06-21): gemma4 channel-token analog

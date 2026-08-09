@@ -1033,6 +1033,13 @@ async def create_anthropic_message(
             reasoning_is_case4=reasoning_is_case4,
             matched_stop=getattr(output, "matched_stop", None),
             prompt_thinking_active=prompt_thinking_active_ns,
+            implicit_reasoning_until_close=bool(
+                getattr(
+                    cfg.reasoning_parser,
+                    "implicit_reasoning_until_close",
+                    False,
+                )
+            ),
         )
         # Issue #858: Anthropic-side mirror of the chat-route cutoff
         # sentinel. Default-on (PR #802 / H-01 semantics restored) — the
