@@ -803,6 +803,17 @@ def main() -> int:
         return 2
 
     # ===== Pre-flight =====
+    # Ownership is established from the listener process tree. Without lsof,
+    # an answering server is indistinguishable from a stranger and the ready
+    # loop would burn its full ten-minute deadline before saying so. The shell
+    # wrapper checks this too, but this script is also a supported standalone
+    # entry point.
+    if shutil.which("lsof") is None:
+        print(
+            "  Error: lsof is required to verify G12 server ownership.",
+            file=sys.stderr,
+        )
+        return 2
     if not _port_free(args.port):
         print(
             f"  Error: port {args.port} already in use — kill the existing "
@@ -967,11 +978,11 @@ def main() -> int:
         print(f"  G12: {len(failures)} failure(s)")
         for f in failures:
             print(f"    - {f}")
-        print(f"  Full log: {args.report}")
+        print(f"  Full log: {report_path}")
         print("=" * 60)
         return 1
     print("  G12: ALL rounds passed")
-    print(f"  Full log: {args.report}")
+    print(f"  Full log: {report_path}")
     print("=" * 60)
     return 0
 

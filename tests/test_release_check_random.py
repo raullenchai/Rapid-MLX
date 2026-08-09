@@ -921,7 +921,9 @@ def test_the_bench_transcript_is_wired_to_the_bench_log_not_the_server_log(
         )
 
 
-def test_the_report_defaults_into_the_private_directory(g12, monkeypatch, tmp_path):
+def test_the_report_defaults_into_the_private_directory(
+    g12, monkeypatch, tmp_path, capsys
+):
     """An unspecified --report must not land on a fixed name in /tmp."""
     aliases = tmp_path / "aliases.json"
     aliases.write_text(json.dumps(_fake_aliases()))
@@ -953,3 +955,18 @@ def test_the_report_defaults_into_the_private_directory(g12, monkeypatch, tmp_pa
     written = g12._log_dir() / "report.log"
     assert written.is_file(), f"no report written into {g12._log_dir()}"
     assert written.parent != Path("/tmp")
+    assert f"Full log: {written}" in capsys.readouterr().out
+
+
+def test_main_fails_fast_when_lsof_is_unavailable(g12, monkeypatch, capsys):
+    """Standalone G12 must not spend ten minutes misdiagnosing missing lsof."""
+    monkeypatch.setattr(g12.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        g12,
+        "_port_free",
+        lambda port: pytest.fail("port probing must happen after the lsof preflight"),
+    )
+    monkeypatch.setattr(sys, "argv", ["release_check_m3_random.py"])
+
+    assert g12.main() == 2
+    assert "lsof is required" in capsys.readouterr().err
