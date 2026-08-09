@@ -17,29 +17,38 @@ struct ReleaseManifestWorkflowTests {
         )
     }()
 
+    private static let mirrorJob: Substring = {
+        let start = workflow.range(of: "  mirror-dist:")!.lowerBound
+        return workflow[start...]
+    }()
+
     @Test("missing distribution config fails instead of silently skipping")
     func missingConfigFailsClosed() throws {
-        #expect(Self.workflow.contains("tagged releases require updater fallback publishing"))
-        #expect(!Self.workflow.contains("skipping the optional CDN mirror"))
+        let job = Self.mirrorJob
+        #expect(job.contains("if: startsWith(github.ref, 'refs/tags/')"))
+        #expect(job.contains("tagged releases require updater fallback publishing"))
+        #expect(!job.contains("skipping the optional CDN mirror"))
         for requiredSetting in [
             "CLOUDFLARE_API_TOKEN",
             "CLOUDFLARE_ACCOUNT_ID",
             "RAPID_MAC_DIST_R2_BUCKET",
             "RAPID_MAC_DIST_CDN_BASE",
         ] {
-            #expect(Self.workflow.contains("missing+=(\(requiredSetting))"))
+            #expect(job.contains("missing+=(\(requiredSetting))"))
         }
         let branchStart = try #require(
-            Self.workflow.range(of: "if (( ${#missing[@]} )); then")
+            job.range(of: "if (( ${#missing[@]} )); then")
         )
         let branchEnd = try #require(
-            Self.workflow.range(
+            job.range(
                 of: "          fi",
-                range: branchStart.upperBound..<Self.workflow.endIndex
+                range: branchStart.upperBound..<job.endIndex
             )
         )
-        let branch = Self.workflow[branchStart.lowerBound..<branchEnd.upperBound]
+        let branch = job[branchStart.lowerBound..<branchEnd.upperBound]
         #expect(branch.contains("exit 1"))
+        let firstUpload = try #require(job.range(of: "r2 object put"))
+        #expect(branchEnd.upperBound < firstUpload.lowerBound)
     }
 
     @Test("manifest describes the bundled DMG and is committed last")
@@ -55,5 +64,6 @@ struct ReleaseManifestWorkflowTests {
         let afterManifest = workflow[manifestUpload.upperBound..<workflow.endIndex]
         #expect(!afterManifest.contains("r2 object put"))
         #expect(workflow.contains(#"--cache-control "no-cache, must-revalidate""#))
+        #expect(workflow.contains("rapid-mlx-desktop-${DMG_SHA256}.dmg"))
     }
 }

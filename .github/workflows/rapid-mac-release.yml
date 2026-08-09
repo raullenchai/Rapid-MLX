@@ -403,9 +403,12 @@ jobs:
           VERSION="${TAG#rapid-mac-v}"
           DMG="dist/rapid-mlx-desktop.dmg"
           [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
+          DMG_SHA256="$(sha256sum "$DMG" | awk '{print $1}')"
+          DMG_SIZE="$(stat -c %s "$DMG")"
 
-          # Upload the immutable payload before making it discoverable.
-          VERSIONED_KEY="rapid-mac/${VERSION}/rapid-mlx-desktop.dmg"
+          # Content-address the canonical payload. A rerun of the same tag can
+          # never overwrite bytes referenced by an older manifest checksum.
+          VERSIONED_KEY="rapid-mac/${VERSION}/rapid-mlx-desktop-${DMG_SHA256}.dmg"
           ALIAS_KEY="rapid-mac/rapid-mlx-desktop.dmg"
           DMG_URL="${CDN_BASE%/}/${VERSIONED_KEY}"
 
@@ -415,8 +418,6 @@ jobs:
             --file "$DMG" --content-type application/x-apple-diskimage --remote
 
           RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
-          DMG_SHA256="$(sha256sum "$DMG" | awk '{print $1}')"
-          DMG_SIZE="$(stat -c %s "$DMG")"
           jq -n \
             --arg version "$VERSION" \
             --arg tag_name "$TAG" \
