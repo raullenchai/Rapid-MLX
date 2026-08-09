@@ -102,6 +102,16 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
             _should_start_in_thinking(conditional, False, unconditional=True) is False
         )
 
+    def test_1570_whitespace_control_condition_respects_disabled_flag(self):
+        conditional = (
+            "{%- if enable_thinking %}"
+            "{%- if add_generation_prompt %}<think>{%- endif %}"
+            "{%- endif %}"
+        )
+        assert (
+            _should_start_in_thinking(conditional, False, unconditional=True) is False
+        )
+
     def test_1570_unrelated_enable_variable_does_not_hide_unconditional_marker(self):
         template = (
             "{% set enable_thinking = false %}"

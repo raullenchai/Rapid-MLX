@@ -788,7 +788,7 @@ def _should_start_in_thinking(
         prefix = chat_template[:marker_index] if marker_index >= 0 else ""
         condition_stack: list[str] = []
         for match in re.finditer(
-            r"{%\s*(if\b.*?|elif\b.*?|else|endif)\s*%}", prefix, re.DOTALL
+            r"{%-?\s*(if\b.*?|elif\b.*?|else|endif)\s*-?%}", prefix, re.DOTALL
         ):
             clause = match.group(1).strip()
             if clause.startswith("if "):
