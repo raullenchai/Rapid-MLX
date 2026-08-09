@@ -6071,19 +6071,30 @@ async def stream_chat_completion(
             escaped = json.dumps(_sanitize(text))
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
+        # Wire truth for content already delivered before the terminal chunk:
+        # the exact SANITIZED bytes the client received, collected at the
+        # single content-serialization seam and joined once at the terminal
+        # replay check below. Appending to a list and joining once is O(n)
+        # regardless of interpreter (str ``+=`` in a loop is not).
+        # ``processor.accumulated_text`` is unsuitable (it also holds raw
+        # reasoning/parser input).
+        _streamed_content_parts: list[str] = []
+
         def _content_sse_chunk(
             text: str, chunk_logprobs: ChoiceLogProbs | None = None
         ) -> str:
             """Serialize one content delta, preserving requested logprobs."""
+            wire_text = sanitize_content_for_stream(text)
+            _streamed_content_parts.append(wire_text)
             if not want_logprobs:
-                return _fast_sse_chunk(text, "content")
+                return _fast_sse_chunk(wire_text, "content")
             chunk = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,
                 model=_resolve_model_name(request.model),
                 choices=[
                     ChatCompletionChunkChoice(
-                        delta=ChatCompletionChunkDelta(content=text),
+                        delta=ChatCompletionChunkDelta(content=wire_text),
                         logprobs=chunk_logprobs,
                     )
                 ],
@@ -6669,10 +6680,56 @@ async def stream_chat_completion(
             # finish_event.content path is normally None for non-tool
             # plain-text streams (deltas already drained content during
             # the loop), so this typically just adds the held suffix.
+            finish_content = finish_event.content or ""
+            streamed_content = "".join(_streamed_content_parts)
+            # Issue #1709: the terminal chunk can replay the WHOLE answer that
+            # was already emitted as content deltas during the loop. Two
+            # channels do it: some parsers attach a cumulative snapshot to
+            # ``finish_event.content``; and — the manifestation seen with
+            # ``--enable-auto-tool-choice --tool-call-parser auto`` on a
+            # reasoning model — the end-of-stream ``flush_held_content`` in
+            # ``StreamingPostProcessor.finalize`` returns the ENTIRE content
+            # buffer, because the auto parser's emitted-length counter
+            # (``_content_emitted_len``) is only advanced on its streaming
+            # path, which a reasoning parser bypasses. Both duplicate the
+            # wire.
+            #
+            # Detect the replay by AFFIRMATIVE PROVENANCE, not content equality
+            # alone (codex): require the parser's clean content buffer
+            # (``tool_accumulated_text``) to exist AND, sanitized, equal the
+            # wire content already streamed. That proves it was fully emitted
+            # with no un-streamed tail, so a terminal payload re-streaming it is
+            # a cumulative snapshot. Both operands are sanitized, matching the
+            # per-delta sanitization the wire content already carries. A genuine
+            # parser-held suffix — streamed ``"ha"`` with buffer ``"haha"``,
+            # releasing a held ``"ha"`` → ``"haha"`` — has a sanitized buffer
+            # LONGER than the wire, fails this check, and is left untouched. An
+            # empty/absent buffer is NOT taken as evidence of a replay: with no
+            # tool parser there is no hold-back mechanism to have withheld a
+            # tail, but there is also no affirmative proof, so we leave the
+            # terminal content alone rather than risk suppressing a real tail.
+            content_buffer = getattr(processor, "tool_accumulated_text", "") or ""
+            _content_fully_streamed = (
+                bool(streamed_content)
+                and bool(content_buffer)
+                and sanitize_content_for_stream(content_buffer) == streamed_content
+            )
+            if (
+                _content_fully_streamed
+                and sanitize_content_for_stream(finish_content + finalize_content)
+                == streamed_content
+            ):
+                # The buffer was fully streamed (no un-emitted tail) AND the
+                # COMBINED terminal payload re-streams exactly that wire
+                # content — a cumulative snapshot, whether it arrived on
+                # ``finish_event.content``, the finalize flush, or split across
+                # both fields. Drop the whole replay.
+                finish_content = ""
+                finalize_content = ""
             terminal_content = (
                 ""
                 if _forced_terminal_content_consumed
-                else (finish_event.content or "") + finalize_content
+                else finish_content + finalize_content
             )
 
             # Issue #569 streaming rescue: if NOTHING was streamed as

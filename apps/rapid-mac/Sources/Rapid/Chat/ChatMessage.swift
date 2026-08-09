@@ -1,4 +1,56 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+struct ChatImageAttachment: Codable, Equatable, Hashable, Identifiable, Sendable {
+    static let maxBytes = 20 * 1024 * 1024
+
+    let id: UUID
+    let filename: String
+    let mimeType: String
+    let data: Data
+
+    init(id: UUID = UUID(), filename: String, mimeType: String, data: Data) throws {
+        guard data.count <= Self.maxBytes else { throw ValidationError.tooLarge }
+        guard ["image/png", "image/jpeg", "image/gif"].contains(mimeType) else {
+            throw ValidationError.unsupportedType
+        }
+        if mimeType == "image/gif",
+           let source = CGImageSourceCreateWithData(data as CFData, nil),
+           CGImageSourceGetCount(source) > 1 {
+            throw ValidationError.animatedGIF
+        }
+        self.id = id
+        self.filename = filename
+        self.mimeType = mimeType
+        self.data = data
+    }
+
+    init(contentsOf url: URL) throws {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
+        guard (values.fileSize ?? 0) <= Self.maxBytes else { throw ValidationError.tooLarge }
+        let type = values.contentType
+        let mime: String
+        if type?.conforms(to: .png) == true { mime = "image/png" }
+        else if type?.conforms(to: .jpeg) == true { mime = "image/jpeg" }
+        else if type?.conforms(to: .gif) == true { mime = "image/gif" }
+        else { throw ValidationError.unsupportedType }
+        try self.init(filename: url.lastPathComponent, mimeType: mime, data: Data(contentsOf: url))
+    }
+
+    var dataURL: String { "data:\(mimeType);base64,\(data.base64EncodedString())" }
+
+    enum ValidationError: LocalizedError {
+        case tooLarge, unsupportedType, animatedGIF
+        var errorDescription: String? {
+            switch self {
+            case .tooLarge: return "Images must be 20 MB or smaller."
+            case .unsupportedType: return "Choose a PNG, JPEG, or non-animated GIF."
+            case .animatedGIF: return "Animated GIFs aren't supported."
+            }
+        }
+    }
+}
 
 /// One chat message. Mirrors the OpenAI chat-completions schema closely
 /// enough that the stream client can serialise an array of these directly
@@ -73,6 +125,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// the model produced — that goes into ``reasoning`` so the UI can
     /// render it in a collapsed disclosure block.
     var content: String
+    var imageAttachments: [ChatImageAttachment]
     /// Hybrid-thinking trace (mlx-lm ``reasoning_content`` field). Only
     /// populated for assistant messages from hybrid models; empty string
     /// is treated as "no trace" by the UI.
@@ -195,6 +248,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         id: UUID = UUID(),
         role: Role,
         content: String = "",
+        imageAttachments: [ChatImageAttachment] = [],
         reasoning: String = "",
         status: Status = .complete,
         errorMessage: String? = nil,
@@ -211,6 +265,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.id = id
         self.role = role
         self.content = content
+        self.imageAttachments = imageAttachments
         self.reasoning = reasoning
         self.status = status
         self.errorMessage = errorMessage
@@ -232,7 +287,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// for that one key and defers all other fields to the standard
     /// container shape.
     enum CodingKeys: String, CodingKey {
-        case id, role, content, reasoning, status
+        case id, role, content, imageAttachments, reasoning, status
         case errorMessage, failureKind, toolCalls, toolCallID
         case stats, reasoningTruncated, contentTruncated
         case toolNotCalledFlagged
@@ -265,6 +320,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         try c.encode(id, forKey: .id)
         try c.encode(role, forKey: .role)
         try c.encode(content, forKey: .content)
+        try c.encode(imageAttachments, forKey: .imageAttachments)
         try c.encode(reasoning, forKey: .reasoning)
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
@@ -285,6 +341,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.id = try c.decode(UUID.self, forKey: .id)
         self.role = try c.decode(Role.self, forKey: .role)
         self.content = try c.decode(String.self, forKey: .content)
+        self.imageAttachments = try c.decodeIfPresent([ChatImageAttachment].self, forKey: .imageAttachments) ?? []
         self.reasoning = try c.decode(String.self, forKey: .reasoning)
         self.status = try c.decode(Status.self, forKey: .status)
         self.errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)

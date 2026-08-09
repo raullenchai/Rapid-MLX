@@ -159,7 +159,10 @@ struct ChatStreamClient {
             forcedTool: String? = nil
         ) {
             self.alias = alias
-            self.messages = messages.map { Wire.Message(from: $0) }
+            let includeImages = ModelBrandStyle.supportsImageInput(forAlias: alias)
+            self.messages = messages.map {
+                Wire.Message(from: $0, includeImages: includeImages)
+            }
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
@@ -834,12 +837,20 @@ enum Wire {
         let tool_calls: [ToolCall]?
         let tool_call_id: String?
 
-        init(from message: ChatMessage) {
+        init(from message: ChatMessage, includeImages: Bool = true) {
             self.role = message.role.rawValue
-            // The minimal menu-bar app is text-only: no image / file
-            // attachments, so the wire content is always the plain
-            // prose body.
-            self.content = .text(message.content)
+            if message.imageAttachments.isEmpty || !includeImages {
+                self.content = .text(message.content)
+            } else {
+                var parts: [ContentPart] = []
+                if !message.content.isEmpty {
+                    parts.append(.init(type: "text", text: message.content, image_url: nil))
+                }
+                parts.append(contentsOf: message.imageAttachments.map {
+                    .init(type: "image_url", text: nil, image_url: .init(url: $0.dataURL))
+                })
+                self.content = .parts(parts)
+            }
             self.tool_calls = (message.toolCalls?.isEmpty == false) ? message.toolCalls : nil
             self.tool_call_id = message.toolCallID
         }
