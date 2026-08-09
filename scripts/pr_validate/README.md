@@ -238,17 +238,18 @@ embedded as the `PROMPT_TEMPLATE` string constant in
 tiering on every finding (see "Code Review Philosophy" above). Only
 `[BLOCKING]` findings fail the gate; `[NIT]`s surface in the
 scorecard. Skips if `PR_VALIDATE_NO_CODEX=1` or the `codex` binary is
-missing. For non-zero codex exits, stderr is matched against a
-transient-backend marker list (network, auth, rate-limit, 5xx) — a
-match skips (flaky LLM mustn't block PRs), anything else fails (a
-malicious diff shouldn't be able to bypass review by inducing a
-crash). See "Failure-mode classification" below for the full table.
+missing. Once Codex is invoked, a timeout, auth/backend error, unusable
+binary, or any other unsuccessful exit fails closed: an unavailable
+review cannot produce a MERGE-SAFE verdict.
 
 Authentication: codex uses its own ChatGPT login at
 `~/.codex/auth.json`. No auth/API-key env var is read here; the repo is
 public and we explicitly do not want a fallback key in source. (The
 `PR_VALIDATE_CODEX_MODEL` env var documented below only selects the
-model — it carries no credentials.)
+model — it carries no credentials.) The invocation uses
+`--ignore-user-config` so a normal-use local `model_provider` override
+does not redirect review traffic, while preserving the ChatGPT-login
+auth path instead of preferring an ambient API key.
 
 Model is pinned to `gpt-5.6-sol` via the `--model` flag so a change to
 the caller's `~/.codex/config.toml` default cannot silently swap the
@@ -261,11 +262,10 @@ a newer generation ships or for local experimentation.
 deprecation notice) so CI/local workflows that pre-date the codex
 swap don't unexpectedly re-enable the paid LLM review.
 
-**Failure-mode classification.** A non-zero `codex exec` exit is
-discriminated: stderr matching transient-backend patterns (network,
-auth, rate-limit, 5xx) → `skip`; anything else → `fail`. This stops
-a malicious PR from bypassing the review gate by inducing a content-
-side codex crash.
+**Failure-mode classification.** Missing binary or explicit opt-out →
+`skip`; every attempted but incomplete review → `fail`. This stops both
+a malicious content-side crash and a persistent auth/backend outage
+from silently bypassing the only adversarial review gate.
 
 **Sandbox-read residual risk.** Codex's `--sandbox read-only` is the
 strictest mode the CLI exposes; absolute-path reads (e.g.

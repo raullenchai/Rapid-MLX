@@ -428,6 +428,8 @@ class TestModelPinning:
         assert cmd[idx + 1] == CODEX_MODEL, (
             f"expected --model {CODEX_MODEL}, got {cmd[idx + 1]}"
         )
+        assert "--ignore-user-config" in cmd
+        assert 'model_provider="openai"' not in cmd
 
 
 class TestBackwardsCompatOptOut:
@@ -711,15 +713,15 @@ class TestNonZeroExitDiscrimination:
     def test_discriminator(self, stderr, expected):
         assert _is_transient_codex_failure(stderr) is expected
 
-    def test_codex_skip_on_transient_backend(self, monkeypatch, tmp_path):
-        """Network-down stderr → skip (don't block PRs on flaky API)."""
+    def test_codex_fails_closed_on_transient_backend(self, monkeypatch, tmp_path):
+        """Network-down stderr must not let an unreviewed PR report safe."""
 
         class _FakeProc:
             returncode = 1
             stderr = "error: could not resolve host: api.openai.com"
             stdout = ""
 
-        self._drive_and_assert(monkeypatch, tmp_path, _FakeProc(), expected="skip")
+        self._drive_and_assert(monkeypatch, tmp_path, _FakeProc(), expected="fail")
 
     def test_codex_fail_on_content_induced_crash(self, monkeypatch, tmp_path):
         """Non-transient stderr → fail (a malicious diff might be the cause)."""
@@ -1839,25 +1841,25 @@ class TestRound15BrokenCodexBinaryDoesNotCrashPipeline:
 
         return CodexReviewStep().run(ctx)
 
-    def test_permission_error_yields_skip_not_crash(self, monkeypatch, tmp_path):
+    def test_permission_error_yields_fail_not_crash(self, monkeypatch, tmp_path):
         result = self._drive(
             monkeypatch, tmp_path, PermissionError(13, "Permission denied")
         )
-        assert result.status == "skip"
+        assert result.status == "fail"
         assert "PermissionError" in result.summary
 
-    def test_oserror_yields_skip_not_crash(self, monkeypatch, tmp_path):
+    def test_oserror_yields_fail_not_crash(self, monkeypatch, tmp_path):
         """Generic OSError — e.g. ENOEXEC (bad binary format), ETXTBSY
         (executable being written), or any other kernel-level exec
-        rejection — must also degrade to skip."""
+        rejection — must also fail closed."""
         result = self._drive(monkeypatch, tmp_path, OSError(8, "Exec format error"))
-        assert result.status == "skip"
+        assert result.status == "fail"
         assert "OSError" in result.summary
 
-    def test_filenotfounderror_still_yields_skip(self, monkeypatch, tmp_path):
-        """The original case (binary disappeared mid-run) still skips
+    def test_filenotfounderror_yields_fail(self, monkeypatch, tmp_path):
+        """A binary disappearing after resolution is an incomplete review
         — same handler, but the exception name in the summary is now
         explicit rather than hardcoded."""
         result = self._drive(monkeypatch, tmp_path, FileNotFoundError(2, "No such"))
-        assert result.status == "skip"
+        assert result.status == "fail"
         assert "FileNotFoundError" in result.summary

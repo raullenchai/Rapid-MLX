@@ -12,8 +12,8 @@ each, which is the failure mode that note warns about.
 Codex authentication is the user's own ChatGPT login (``~/.codex/
 auth.json``) — no API key is read from the environment. The repo is
 public; we do not want a fallback key in source. If ``codex`` is
-missing or not logged in, the step skips (a temporarily-broken codex
-must not block every PR).
+missing, the step skips. Once the CLI is invoked, every unsuccessful
+run fails closed so an unavailable review cannot produce MERGE-SAFE.
 
 Failure policy mirrors the previous step:
 * Reply containing "No blocking issues found." → ``pass``.
@@ -404,19 +404,14 @@ class CodexReviewStep(Step):
                         # README + step description promise gpt-5.6-sol.
                         "--model",
                         CODEX_MODEL,
-                        # Force the OpenAI cloud provider for the review
-                        # call. The user's config.toml may set
-                        # ``model_provider = "rapid-mlx"`` for normal
-                        # codex use (so codex routes to local server),
-                        # but pr_validate wants the gpt-5.6-sol cloud model
-                        # talking through OpenAI, not the local mlx
-                        # server. Without this override, codex tries to
-                        # refresh /models against the rapid-mlx server
-                        # and exits 1 because rapid-mlx's OpenAI-shaped
-                        # ``{"data": [...]}`` response lacks the
-                        # ``models`` field codex 0.136+ expects.
-                        "-c",
-                        'model_provider="openai"',
+                        # Ignore the caller's provider override while keeping
+                        # Codex's ChatGPT-login auth path. Pinning
+                        # ``model_provider=openai`` instead makes Codex prefer
+                        # an ambient API key; a key without Responses scopes
+                        # then 401s every review. This flag gives the review a
+                        # clean cloud configuration without inheriting a
+                        # normal-use ``rapid-mlx`` local provider.
+                        "--ignore-user-config",
                         # Skip the "is this a git repo?" check — we
                         # deliberately run codex outside the repo (in
                         # an empty tempdir, see ``cwd=`` below).
@@ -463,38 +458,23 @@ class CodexReviewStep(Step):
             # instead of skipping the gate cleanly.
             return StepResult(
                 name=self.name,
-                status="skip",
+                status="fail",
                 summary=(
                     f"codex exec failed ({type(exc).__name__}: {exc}) — "
-                    "binary present but unusable; treating as skip"
+                    "review was not completed"
                 ),
             )
 
         if proc.returncode != 0:
-            # Discriminate "backend transiently broken" (skip — don't
-            # block PRs on a flaky LLM) from "codex crashed in a way
-            # the PR diff plausibly caused" (fail — a malicious diff
-            # mustn't be able to bypass the review gate by inducing a
-            # crash). Codex round-4 BLOCKER on PR #505.
             stderr_blob = (proc.stderr or "").strip()
-            stdout_had_agent_msg = bool(_parse_codex_jsonl(proc.stdout)[0].strip())
             short_err = stderr_blob.splitlines()
             tail = "\n".join(short_err[-5:]) if short_err else "(no stderr)"
-            if _is_transient_codex_failure(stderr_blob) and not stdout_had_agent_msg:
-                return StepResult(
-                    name=self.name,
-                    status="skip",
-                    summary=f"codex exec exited {proc.returncode} (transient backend)",
-                    details=f"```\n{tail}\n```",
-                )
-            # Non-transient: treat as a hard fail so a content-induced
-            # crash cannot let an unreviewed PR slip past the gate.
             return StepResult(
                 name=self.name,
                 status="fail",
                 summary=(
-                    f"codex exec exited {proc.returncode} — non-transient failure; "
-                    "may indicate the diff triggered a model-side crash"
+                    f"codex exec exited {proc.returncode} — review was not completed; "
+                    "re-run pr_validate after resolving auth/backend failures"
                 ),
                 details=f"```\n{tail}\n```",
             )
