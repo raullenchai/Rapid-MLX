@@ -113,12 +113,15 @@ enum WebSearchTool {
         // and outcome terms when the user asks in Chinese about this year's
         // World Cup; this is query expansion, not an assumed answer.
         if query.contains("今年世界杯") {
-            var expansion = "\(currentYear) FIFA World Cup completed final result"
+            var expansion = "\(currentYear) FIFA World Cup"
             if query.localizedCaseInsensitiveContains("spain") || query.contains("西班牙") {
                 expansion += " Spain"
             }
-            if query.contains("夺冠") || query.contains("冠军") {
-                expansion += " winner champion"
+            let assertsCompletedOutcome = query.contains("夺冠了")
+                || query.contains("获得了冠军")
+                || query.localizedCaseInsensitiveContains(" won ")
+            if assertsCompletedOutcome {
+                expansion += " completed final result winner champion"
             }
             if query.contains("为什么") || query.contains("为何") {
                 expansion += " why tactical analysis"
@@ -129,8 +132,19 @@ enum WebSearchTool {
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
         )
+        // An explicit year makes "last week" historical, not relative to
+        // today. Likewise, "last week in/of July" supplies its own calendar
+        // anchor even when the year is omitted.
+        if folded.range(of: #"\b(?:19|20)\d{2}\b"#, options: .regularExpression) != nil
+            || folded.range(
+                of: #"\blast week\s+(?:in|of)\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"#,
+                options: .regularExpression
+            ) != nil
+        {
+            return query
+        }
         let english = folded.range(
-            of: #"\blast week\b(?!\s+of\b)"#,
+            of: #"\blast week\b(?!\s+(?:of|in)\b)"#,
             options: .regularExpression
         ) != nil
         let chinese = query.range(

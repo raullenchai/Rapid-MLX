@@ -121,13 +121,22 @@ struct FreshWebRoutingTests {
             now: now,
             calendar: calendar
         )
-        #expect(query.contains("2026 FIFA World Cup completed final result"))
-        #expect(query.contains("Spain winner champion why tactical analysis"))
+        #expect(query.contains("2026 FIFA World Cup Spain completed final result"))
+        #expect(query.contains("winner champion why tactical analysis"))
+        let prediction = WebSearchTool.preparedQuery(
+            "今年世界杯谁会夺冠？",
+            now: now,
+            calendar: calendar
+        )
+        #expect(prediction.contains("2026 FIFA World Cup"))
+        #expect(!prediction.contains("completed final result"))
     }
 
     @Test("Historical and weekend phrases are not rewritten")
     func relativeDateFalsePositives() {
         #expect(WebSearchTool.preparedQuery("the last week of July 2020") == "the last week of July 2020")
+        #expect(WebSearchTool.preparedQuery("the last week in July") == "the last week in July")
+        #expect(WebSearchTool.preparedQuery("what happened last week in 2020?") == "what happened last week in 2020?")
         #expect(WebSearchTool.preparedQuery("what happened last weekend?") == "what happened last weekend?")
         #expect(WebSearchTool.preparedQuery("上周末有什么活动？") == "上周末有什么活动？")
     }
