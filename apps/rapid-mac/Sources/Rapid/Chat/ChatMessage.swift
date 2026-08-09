@@ -320,6 +320,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         try c.encode(id, forKey: .id)
         try c.encode(role, forKey: .role)
         try c.encode(content, forKey: .content)
+        try c.encode(imageAttachments, forKey: .imageAttachments)
         try c.encode(reasoning, forKey: .reasoning)
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
