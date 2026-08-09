@@ -5,6 +5,7 @@ AXApplication title="Rapid-MLX"
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
+          AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
           AXScrollArea
             AXHeading desc="<relative-day>" enabled=true

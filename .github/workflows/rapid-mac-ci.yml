@@ -16,6 +16,12 @@
 # silently losing coverage. It fails a PR that ADDS an interactive control with
 # no `.accessibilityIdentifier(...)` — see the script's module docstring for the
 # rationale, the escape hatch, and the shapes it deliberately does not detect.
+#
+# Third gate: `gui-golden-flows` actually RUNS that harness. The identifier gate
+# only ensures new controls are reachable; nothing was checking that the
+# journeys still pass or that the committed AX baselines still describe the app.
+# They did not — #1705 shipped a new sidebar button and left all 12 baselines
+# stale. See the job's own comment for why a hosted runner can drive it.
 name: rapid-mac CI
 
 on:
@@ -157,3 +163,115 @@ jobs:
       # an actionable, retryable failure instead of a multi-minute hang.
       - name: verify chat timeout contract
         run: swift scripts/verify-chat-timeout.swift
+
+  # Drives the REAL .app through real user journeys and diffs the resulting
+  # accessibility tree against committed structural baselines.
+  #
+  # Why this job exists: apps/rapid-mac/scripts/gui-golden-flows.sh and the 12
+  # baselines under Tests/GUIGoldenFlows/__Snapshots__ ran in NO workflow at
+  # all. A regression net that only fires when a human remembers to run it is
+  # not a net, and it had already failed: #1705 added the Images sidebar button
+  # and left every one of the 12 baselines stale, with every check green.
+  #
+  # A NOTE ON WHY THIS IS POSSIBLE AT ALL. Reading another process's AX tree
+  # needs the caller to hold TCC Accessibility, which is normally interactive
+  # and lives in the SIP-protected system TCC database. GitHub bakes the grant
+  # into the runner image instead: images/macos/scripts/build/configure-tccdb-
+  # macos.sh in actions/runner-images inserts kTCCServiceAccessibility with
+  # auth_value 2 (allowed) for /bin/bash and for the agent that parents the
+  # runner, and configure-autologin.sh gives the VM a real logged-in Aqua
+  # session so an .app can actually open a window. Both are image properties,
+  # not promises — which is what the preflight step below is for.
+  gui-golden-flows:
+    # macos-15 for the same reason as the build job: Package.swift is
+    # swift-tools-version 6.0, and macos-14 still defaults to Swift 5.x.
+    runs-on: macos-15
+    # Build is ~the same cost as the build job; the four flows are seconds
+    # each (6-11 s on an M3 Ultra). 30 leaves room for a cold package resolve
+    # without letting a wedged app sit on the 6-hour default.
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/rapid-mac
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      # BEFORE the build, because it is the cheap question and the one most
+      # likely to be answered "no" by a future runner-image change. If the
+      # image ever drops the Accessibility grant, every AX read returns
+      # nothing, `dump` yields a tree containing only the application root,
+      # and the flows would die on "main window did not appear" — blaming the
+      # app for a permission problem. This step makes that failure say what it
+      # actually is, in 30 s, instead of after a five-minute build.
+      #
+      # It is deliberately fail-closed: no Dock means no GUI session, which
+      # means the app could not have opened a window either.
+      - name: Accessibility + GUI session preflight
+        run: |
+          set -euo pipefail
+          swiftc scripts/rapid-ax.swift -o "$RUNNER_TEMP/rapid-ax"
+          dock_pid="$(pgrep -x Dock | head -1 || true)"
+          if [[ -z "$dock_pid" ]]; then
+            echo "::error::No Dock process: this runner has no logged-in GUI (Aqua) session, so the app cannot open a window."
+            exit 1
+          fi
+          echo "Dock pid: $dock_pid"
+          "$RUNNER_TEMP/rapid-ax" trust "$dock_pid"
+
+      # SKIP_SIDECAR=1 drops the 5-10 min pip install of the bundled Python
+      # engine. The golden flows never touch it: every flow points RAPID_BIN
+      # at scripts/fake-rapid-mlx.sh, so there is no model download, no GPU
+      # work and no network in the run at all.
+      #
+      # Debug rather than release for the same reason — the accessibility tree
+      # is identical and the compile is much cheaper. This gate is about
+      # structure, not optimised codegen.
+      - name: Build Rapid-MLX Desktop.app
+        env:
+          SKIP_SIDECAR: "1"
+          RAPID_BUILD_CONFIG: debug
+        run: ./scripts/build.sh
+
+      # One step per flow so a red check names the journey that broke rather
+      # than "golden flows failed". Each needs its own output directory: the
+      # harness refuses to start on a non-empty one.
+      #
+      # These four are exactly the flows that drive the app through `rapid-ax`
+      # alone (see `flow_requires_peekaboo` in the harness). The rest shell out
+      # to peekaboo — a third-party install whose bridge socket comes from the
+      # Peekaboo app rather than its CLI, with its own permission surface.
+      # Between them these four own 6 of the 12 committed baselines; the way to
+      # extend the set is to make the remaining flows peekaboo-free (the menu
+      # click in `open_settings` is the main holdout), not to add peekaboo to
+      # this job.
+      - name: 'Golden flow: chat-restore'
+        run: ./scripts/gui-golden-flows.sh --flow chat-restore
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-restore
+
+      - name: 'Golden flow: chat-depth'
+        run: ./scripts/gui-golden-flows.sh --flow chat-depth
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-depth
+
+      - name: 'Golden flow: slow-stream-stop'
+        run: ./scripts/gui-golden-flows.sh --flow slow-stream-stop
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/slow-stream-stop
+
+      - name: 'Golden flow: model-crash-recovery'
+        run: ./scripts/gui-golden-flows.sh --flow model-crash-recovery
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/model-crash-recovery
+
+      # A structural mismatch is only actionable with the observed tree beside
+      # the committed one. The harness writes `<name>.observed.txt` next to the
+      # raw AX dump it came from, which is what someone re-generating a
+      # baseline needs to review the diff.
+      - name: Upload AX evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: gui-golden-flow-evidence
+          path: ${{ runner.temp }}/golden
+          retention-days: 7
