@@ -662,13 +662,25 @@ transcript_counts() {
            | "\(.user) \(.model)"' "$tree"
 }
 
+# Counts every turn in the tree — which is only a valid completeness check
+# while the WHOLE transcript is realized.
+#
+# The transcript is a virtualized scroll view: a message scrolled far enough out
+# of view is removed from the accessibility tree, and the dump says so honestly
+# with `walk.complete == true`. Measured on a 1024x681 window, `chat-depth` at
+# turn 4 reported 3 user + 4 model with a complete walk, the first user bubble
+# sitting at y=-429. Nothing was broken; it had simply scrolled away.
+#
+# So a shortfall here means one of two things, and they are not distinguishable
+# from the counts alone: a dropped turn, or a window too short to hold them.
+# Check the window height before reading it as a product bug.
 assert_transcript_turns() {
     local tree="$1" expected="$2" counts user model
     counts="$(transcript_counts "$tree")"
     user="${counts% *}"
     model="${counts#* }"
     [[ "$user" == "$expected" && "$model" == "$expected" ]] \
-        || die "expected $expected user + $expected model message(s), tree shows ${user} + ${model}"
+        || die "expected $expected user + $expected model message(s), tree shows ${user} + ${model} (a virtualized transcript drops off-screen turns — check the window is tall enough before reading this as a dropped message)"
 }
 
 # Do these strings appear in the transcript IN THIS ORDER?

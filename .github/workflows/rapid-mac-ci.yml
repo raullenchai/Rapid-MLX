@@ -277,23 +277,25 @@ jobs:
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
       #
-      # These four are exactly the flows that drive the app through `rapid-ax`
-      # alone (see `flow_requires_peekaboo` in the harness). The rest shell out
-      # to peekaboo — a third-party install whose bridge socket comes from the
-      # Peekaboo app rather than its CLI, with its own permission surface.
-      # Between them these four own 6 of the 12 committed baselines; the way to
-      # extend the set is to make the remaining flows peekaboo-free (the menu
-      # click in `open_settings` is the main holdout), not to add peekaboo to
-      # this job.
+      # These three drive the app through `rapid-ax` alone (see
+      # `flow_requires_peekaboo` in the harness). Most other flows shell out to
+      # peekaboo — a third-party install whose bridge socket comes from the
+      # Peekaboo app rather than its CLI, with its own permission surface. The
+      # way to extend the set is to make those flows peekaboo-free (the menu
+      # click in `open_settings` is the main holdout), not to add peekaboo here.
+      #
+      # `chat-depth` is peekaboo-free but deliberately NOT run here. It asserts
+      # that all five turns are present in the accessibility tree at once, and
+      # the transcript is a virtualized scroll view: on this runner's 1024x681
+      # window the first user bubble is scrolled out and unrealized by turn 4,
+      # so the tree honestly reports 3 user + 4 model with a COMPLETE walk. That
+      # is the app working as designed, not a regression, and it cannot be fixed
+      # by a bigger window on a 1024x768 screen. Its assertions are only valid
+      # where the whole transcript fits, so it stays a local flow.
       - name: 'Golden flow: chat-restore'
         run: ./scripts/gui-golden-flows.sh --flow chat-restore
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-restore
-
-      - name: 'Golden flow: chat-depth'
-        run: ./scripts/gui-golden-flows.sh --flow chat-depth
-        env:
-          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-depth
 
       - name: 'Golden flow: slow-stream-stop'
         run: ./scripts/gui-golden-flows.sh --flow slow-stream-stop
@@ -327,7 +329,7 @@ jobs:
           set -uo pipefail
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
-          for flow in chat-restore chat-depth slow-stream-stop model-crash-recovery; do
+          for flow in chat-restore slow-stream-stop model-crash-recovery; do
             RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
             RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
               ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true
