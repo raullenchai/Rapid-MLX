@@ -466,7 +466,6 @@ jobs:
         with:
           token: ${{ github.token }}
           same-branch-only: false
-          queue-name: rapid-mac-dist-publish
           poll-interval-seconds: 10
 
       - name: Download staged updater manifest
@@ -521,17 +520,20 @@ jobs:
             exit 1
           fi
 
-          # Preserve the previously documented stable DMG URL inside the same
-          # serialized + monotonic transaction as the manifest pointer.
+          # Publish the updater's canonical pointer first. It references the
+          # already-present content-addressed DMG, never the mutable alias.
+          npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/latest.json" \
+            --file dist/latest.json --content-type application/json \
+            --cache-control "no-cache, must-revalidate" --remote
+
+          # Preserve the previously documented stable DMG URL only after the
+          # canonical updater transaction succeeds. A failure here can leave
+          # the compatibility URL old, but can never make latest.json point at
+          # bytes that are not present or fail its checksum.
           npx --yes wrangler@4.120.0 r2 object put \
             "${R2_BUCKET}/rapid-mac/rapid-mlx-desktop.dmg" \
             --file dist-dmg/rapid-mlx-desktop.dmg \
             --content-type application/x-apple-diskimage --remote
-
-          # Commit point: no R2 writes may follow this command.
-          npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/latest.json" \
-            --file dist/latest.json --content-type application/json \
-            --cache-control "no-cache, must-revalidate" --remote
 
           # Cache-Control governs new responses; purge any object cached under
           # the pre-fix policy so this release becomes visible immediately.
