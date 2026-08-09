@@ -302,6 +302,7 @@ class DeepSeekR1DistillReasoningParser(DeepSeekR1ReasoningParser):
     """
 
     implicit_reasoning_until_close = True
+    sanitize_when_thinking_disabled = True
 
     def configure_request(self, *, enable_thinking: bool | None = None) -> None:
         del enable_thinking

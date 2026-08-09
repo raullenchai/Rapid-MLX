@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1DistillReasoningParser
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
 
@@ -235,6 +236,20 @@ class TestStreamingPostProcessorReasoning:
         assert len(content_events) == 1
         assert content_events[0].content == "The capital of France is Paris."
         assert not reasoning_events
+
+    def test_1570_distill_parser_stays_active_when_thinking_flag_is_false(self):
+        """The distill template ignores the off flag and still primes think."""
+        parser = DeepSeekR1DistillReasoningParser()
+        cfg = _make_cfg(reasoning_parser=parser)
+        pp = StreamingPostProcessor(cfg, enable_thinking=False)
+        pp.reset()
+
+        trace = "Okay, so I need to figure out unified memory. " * 3
+        events = pp.process_chunk(_make_output(trace))
+
+        assert not [event for event in events if event.type == "content"]
+        reasoning = [event.reasoning for event in events if event.type == "reasoning"]
+        assert reasoning == [trace]
 
     def test_enable_thinking_none_uses_reasoning_parser(self):
         """Default (None) preserves the existing reasoning-parser path."""
