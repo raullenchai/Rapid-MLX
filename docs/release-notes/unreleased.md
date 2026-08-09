@@ -70,8 +70,8 @@ are now cut in one event instead of two that could drift (#1649); a release
 gate that had not run for eleven releases was found dead and repaired (#1671);
 a Codex review that is actually invoked now fails closed on backend, auth,
 timeout or execution failure rather than passing silently (#1700) — a missing
-Codex binary is still reported as a skip; and four AX-only GUI golden flows run on every
-desktop PR — `chat-restore`, `slow-stream-stop` and `model-crash-recovery`
+Codex binary is still reported as a skip; and four AX-only GUI golden flows run
+on every desktop PR — `chat-restore`, `slow-stream-stop` and `model-crash-recovery`
 (#1721), plus `image-generation` (#1731) — driving the app through the
 accessibility API with no screen recording (#1708) so they work unattended in
 CI. Three more flows (`restored-tools`, `tool-loop-budget`, `chat-depth`) are

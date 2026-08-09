@@ -46,13 +46,12 @@ can actually understand.
   is gone for the reason above.
 
 - **The model menu focuses on models.** The "N small models hidden" footer is
-  gone, and "Refresh catalog" / "Type a model name…" now appear only when
-  there is nothing to pick — while the catalogue is still loading, or when it
-  came back empty — instead of sitting at the bottom of a working menu. A
-  normal menu is the quickstart picks, the recommendations, and the model
-  list, with models you have downloaded first. Models under 1B and
-  known-broken aliases stay hidden; the small ones can be shown from
-  Settings → Models.
+  gone, and a menu with models in it no longer ends with "Refresh catalog" and
+  "Type a model name…" — those are now offered only when there is nothing to
+  choose yet. What you get is the quickstart picks, the recommendations, and
+  the model list, with the ones you have downloaded first in each group.
+  Models under 1B stay hidden unless you turn them on in Settings → Models,
+  except for the one you are currently using, which always shows.
 
 ### Fixed
 
