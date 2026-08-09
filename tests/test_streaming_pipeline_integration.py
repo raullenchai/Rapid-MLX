@@ -92,11 +92,11 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
             _should_start_in_thinking(conditional, False, unconditional=True) is False
         )
 
-    def test_1570_conditional_distill_template_is_inactive_when_unspecified(self):
+    def test_1570_conditional_distill_template_uses_enabled_default(self):
         conditional = (
             "{% if add_generation_prompt and enable_thinking %}<think>{% endif %}"
         )
-        assert _should_start_in_thinking(conditional, None, unconditional=True) is False
+        assert _should_start_in_thinking(conditional, None, unconditional=True) is True
 
     def test_1570_nested_conditional_distill_template_respects_disabled_flag(self):
         conditional = (

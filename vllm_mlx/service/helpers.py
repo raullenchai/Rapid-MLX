@@ -808,11 +808,17 @@ def _should_start_in_thinking(
                     "parameters": {"type": "object", "properties": {}},
                 },
             }
+            # The generation path resolves an omitted flag to enabled for
+            # non-coder models. ``deepseek_r1_distill`` is such a family, so
+            # its unconditional probe must use that same effective value.
+            effective_enable_thinking = (
+                True if enable_thinking is None else enable_thinking
+            )
             rendered = _compile_jinja_template(chat_template).render(
                 messages=[{"role": "user", "content": "probe"}],
                 tools=[tool_probe] if tools_requested else None,
                 add_generation_prompt=True,
-                enable_thinking=enable_thinking,
+                enable_thinking=effective_enable_thinking,
                 bos_token="",
                 eos_token="",
                 pad_token="",
