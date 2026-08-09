@@ -227,9 +227,17 @@ struct ThroughputCaptionIntegrationTests {
         // in early. `Task.sleep` would be the wrong tool and would make the
         // test vacuous: it SUSPENDS, which frees the actor to run exactly the
         // hop this is trying to keep waiting.
-        holdMainActor(until: PrefillHeavyProtocol.loadingStarted, thenFor: 0.9)
+        let transportBegan = holdMainActor(
+            until: PrefillHeavyProtocol.loadingStarted, thenFor: 0.9
+        )
         let released = ContinuousClock.now
+        // Awaited first so a transport that failed surfaces its real error
+        // rather than the generic timeout below.
         try await sending.value
+        try #require(
+            transportBegan,
+            "the transport never started, so nothing was timed — the stream failed before `startLoading`"
+        )
 
         let at = try #require(box.value, "no first-token event arrived")
         #expect(
@@ -260,10 +268,19 @@ private final class InstantBox {
 /// the supported way to express this and an honest marker that the blocking is
 /// deliberate. Keeping the wait and the sleep together also guarantees the
 /// window starts at the stream's beginning with nothing awaitable in between.
+///
+/// Returns false if the transport never signalled. The wait is BOUNDED for
+/// that case: an unbounded one would, if the send failed before
+/// `startLoading`, hold the main actor forever and hang the whole run rather
+/// than failing a single test — the worst failure mode available to a test
+/// whose entire job is to occupy the actor.
 @MainActor
-private func holdMainActor(until started: DispatchSemaphore, thenFor seconds: TimeInterval) {
-    started.wait()
+private func holdMainActor(
+    until started: DispatchSemaphore, thenFor seconds: TimeInterval
+) -> Bool {
+    guard started.wait(timeout: .now() + 5) == .success else { return false }
     Thread.sleep(forTimeInterval: seconds)
+    return true
 }
 
 /// Opens with a tool-call fragment carrying no content and no reasoning,
