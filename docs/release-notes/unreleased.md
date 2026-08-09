@@ -34,7 +34,7 @@ loudly: it returns a cut-off answer, which reads as a model that "could not do
 it".
 
 **The first follow-up message no longer re-reads the opening context.** The
-opening turn never saved a reuseable cache boundary, so the second message paid
+opening turn never saved a reusable cache boundary, so the second message paid
 to re-read everything; from the third message on, reuse already worked. #1732
 closes that one gap. Measured on `qwen3.6-27b-4bit` with a ~9.9K-token
 document: the opening turn prefills 9922 tokens (32.4 s to first token), and
@@ -49,7 +49,7 @@ to always-allow rather than prompting every time (#1695).
 
 ## Fixes worth calling out
 
-- The model picker's "Browse all models" opened the catalogue instead of
+- The model picker's "Browse all models" now opens the catalogue instead of
   closing the wizard (#1662).
 - A stored last-served alias is validated before the app tries to restore it,
   so a stale or removed model no longer produces a failed start on launch
