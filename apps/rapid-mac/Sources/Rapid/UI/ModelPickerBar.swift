@@ -499,21 +499,13 @@ struct ModelPickerBar: View {
                 // remembered the alias's spelling would scroll right
                 // past the cached copy in the wrong section, then
                 // grumble that the alias was "missing".
-                // Actions FIRST, then the catalog.
-                //
-                // The alias list runs to ~150 rows, so at the bottom
-                // these two were past several screens of scrolling — and
-                // "Type a model name…" is precisely what a user reaches
-                // for when they cannot find their model in that list, so
-                // burying it under the list made the escape hatch cost
-                // the most effort at the exact moment it was needed. The
-                // loading and empty branches above already lead with
-                // their actions; this makes all three agree.
-                Button("Refresh catalog") {
-                    Task { await refreshCatalog(force: true) }
-                }
-                Button("Type a model name…") { showCustom = true }
-                Divider()
+                // No "Refresh catalog" / "Type a model name…" here.
+                // Once the catalog HAS models, this menu has exactly one
+                // job — pick one — and two maintenance actions sitting
+                // above the Quickstart and Recommended sections made the
+                // list read as a settings pane. Both remain in the
+                // ``catalog.isEmpty`` branch above, where they are not
+                // clutter but the only way out of a failed fetch.
                 quickstartSection
                 recommendedSection
                 allAliasesSection
@@ -875,14 +867,17 @@ struct ModelPickerBar: View {
     /// similar entries.
     ///
     /// cycle-7: sub-1B aliases are filtered out unless the user opts
-    /// in via ``Settings → Models → Show small (<1B) models``. The
+    /// in via ``Settings → Models → Show small models``. The
     /// currently-selected alias is exempt from the filter (so a user
-    /// who has somehow picked a tiny model can still see it). When
-    /// any alias is hidden, an italic footer surfaces the count and
-    /// points at Settings — both pieces are honest:
-    /// ``hiddenFooterCopy`` returns ``nil`` when nothing is hidden
-    /// so the picker stays clean for users on `Show all` (or with no
-    /// sub-1B aliases in their catalog).
+    /// who has somehow picked a tiny model can still see it).
+    ///
+    /// The filter no longer announces itself here. A trailing "N small
+    /// models hidden" row sat in the same visual weight as the alias
+    /// rows directly above it and began with a digit, so it read as a
+    /// broken model entry rather than as a note about the list — and
+    /// AppKit sized the menu to the aliases and ellipsised it, cutting
+    /// exactly the tail that named Settings. The toggle stays
+    /// discoverable where it lives, in Settings → Models.
     @ViewBuilder
     private var allAliasesSection: some View {
         let filtered = ModelPickerVisibility.filter(
@@ -907,44 +902,10 @@ struct ModelPickerBar: View {
         let partition = ModelPickerBar.partitionByFit(deduped, hardware: hardware)
         let sorted = ModelPickerBar.orderedAllModels(partition.fits)
         let notFit = ModelPickerBar.orderedAllModels(partition.notFit)
-        let hiddenCount = ModelPickerVisibility.hiddenCount(
-            catalog,
-            selectedAlias: alias,
-            includeAll: showAllModels
-        )
-        let footerCopy = ModelPickerVisibility.hiddenFooterCopy(hiddenCount: hiddenCount)
-        // Codex r1 MINOR: render the "All models" section as soon as
-        // there's ANY visible row OR a footer to surface. The previous
-        // shape gated on `!sorted.isEmpty`, which made the footer
-        // disappear in the rare-but-possible all-hidden state (catalog
-        // contains only sub-1B aliases and none is selected — fresh
-        // first-launch on a Mac that pulled only the bundled
-        // qwen3-0.6b-4bit + a manual `rapid-mlx pull qwen3-0.6b-8bit`).
-        // The user would then see no "All models" section and no
-        // explanation — silently broken. Always show the section if
-        // EITHER condition holds.
-        if !sorted.isEmpty || footerCopy != nil {
+        if !sorted.isEmpty {
             Section("All models") {
                 ForEach(sorted) { entry in
                     aliasButton(entry)
-                }
-                if let footer = footerCopy {
-                    // NSMenuItem renders disabled buttons as the
-                    // greyed-out footer we want (a Text inside a
-                    // SwiftUI Menu would be silently dropped by
-                    // NSMenuItem's first-Text-only rule). A
-                    // disabled Button keeps the row non-clickable
-                    // while still rendering the copy. Codex r1 NIT:
-                    // Divider before it makes the visual separation
-                    // explicit in the native NSMenu so the footer
-                    // doesn't read as another alias row.
-                    if !sorted.isEmpty {
-                        Divider()
-                    }
-                    Button(footer) { }
-                        .disabled(true)
-                        .help(ModelPickerVisibility.hiddenFooterHelp(
-                            hiddenCount: hiddenCount) ?? "")
                 }
             }
         }

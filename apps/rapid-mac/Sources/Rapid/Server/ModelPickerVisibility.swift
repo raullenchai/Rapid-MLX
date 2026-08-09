@@ -197,68 +197,6 @@ enum ModelPickerVisibility {
     }
 
     /// Count how many entries WOULD be hidden by the filter, given
-    /// the current state. Used by the picker footer to surface "N
-    /// small models hidden — toggle in Settings" so the filter is
-    /// discoverable.
-    static func hiddenCount(
-        _ entries: [ModelEntry],
-        selectedAlias: String,
-        includeAll: Bool
-    ) -> Int {
-        return entries.reduce(0) { acc, entry in
-            // Count ONLY size-hidden aliases: they are what the footer
-            // ("N small (<1B) models hidden · toggle in Settings")
-            // describes and what the toggle actually recovers.
-            // Denylisted aliases are hidden for a different reason, are
-            // NOT toggle-recoverable, and would make the copy lie — so
-            // they are excluded from the count and vanish silently.
-            // (When ``includeAll`` is on, nothing is size-hidden, but a
-            // denylisted alias is still hidden — so it is still excluded
-            // here rather than short-circuiting the whole count to 0.)
-            if isKnownBroken(entry.alias) { return acc }
-            return shouldShow(
-                alias: entry.alias,
-                selectedAlias: selectedAlias,
-                includeAll: includeAll
-            ) ? acc : acc + 1
-        }
-    }
-
-    /// Footer copy for the picker dropdown explaining that some
-    /// aliases are hidden. Returns ``nil`` when nothing is filtered
-    /// (the dropdown stays clean). Pulled to a helper so tests can
-    /// pin the singular / plural copy without standing up a SwiftUI
-    /// host.
-    /// Short enough to survive the menu.
-    ///
-    /// The previous copy — "N small (<1B) models hidden · toggle in
-    /// Settings → Models" — was 56 characters against a widest alias row of
-    /// about 33 ("mistral-small-4-119b-8bit · small"), so AppKit ellipsised
-    /// it. What it cut was the tail, which is the only part that told the
-    /// user where the toggle lives: the row degraded into a fragment that
-    /// began with a digit and sat directly under the real alias rows, so it
-    /// read as a broken model entry rather than as a note about the list.
-    /// The full sentence moves to ``hiddenFooterHelp`` on hover, where it
-    /// has room.
-    static func hiddenFooterCopy(hiddenCount count: Int) -> String? {
-        guard count > 0 else { return nil }
-        let noun = count == 1 ? "model" : "models"
-        return "\(count) small \(noun) hidden · Settings"
-    }
-
-    /// Hover copy for the footer row — carries the detail the visible
-    /// label can no longer afford: what "small" means, why they are hidden,
-    /// and the exact path to the toggle.
-    static func hiddenFooterHelp(hiddenCount count: Int) -> String? {
-        guard count > 0 else { return nil }
-        let subject = count == 1
-            ? "One model under 1B parameters is"
-            : "\(count) models under 1B parameters are"
-        return "\(subject) hidden — they tend to contradict themselves within "
-            + "a couple of turns and exist for unit tests, not chat. "
-            + "Show them from Settings → Models."
-    }
-
     // MARK: - cycle-10: quality buckets / picker sticker (F9-004)
 
     /// Quality bucket for an alias, derived from its parameter count.
