@@ -788,8 +788,14 @@ def _should_start_in_thinking(
             chat_template = ""
     if not isinstance(chat_template, str):
         return False
-    if enable_thinking is False:
-        if not unconditional:
+    if enable_thinking is False and not unconditional:
+        return False
+    if unconditional and enable_thinking is not True:
+        # Distill parsers need the rendered branch for both an explicit false
+        # flag and the ordinary unspecified (None) request. Jinja treats None
+        # as falsey, so a marker living only in ``{% if enable_thinking %}``
+        # is not part of the actual prompt.
+        if "<think>" not in chat_template:
             return False
         # Follow the active Jinja branch instead of treating every enclosing
         # reference to ``enable_thinking`` as an opt-out.  In particular,
@@ -801,7 +807,7 @@ def _should_start_in_thinking(
 
         environment = Environment(autoescape=False)
         context = {
-            "enable_thinking": False,
+            "enable_thinking": enable_thinking,
             "add_generation_prompt": True,
             "tools": [{}] if tools_requested else None,
         }
