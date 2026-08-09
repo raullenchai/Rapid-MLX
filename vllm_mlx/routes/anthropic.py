@@ -973,6 +973,10 @@ async def create_anthropic_message(
             enable_thinking=_effective_enable_thinking(
                 resolved_thinking, cfg.model_path or cfg.model_name
             ),
+            prompt_thinking_active=_should_start_in_thinking(
+                getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+                resolved_thinking,
+            ),
             # Per-request reasoning cap (upstream vLLM PR #20859 / #42396
             # backport). The adapter translated ``output_config.effort``
             # or legacy ``thinking.budget_tokens`` into this field on

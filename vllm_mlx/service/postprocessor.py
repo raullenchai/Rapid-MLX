@@ -9,6 +9,7 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import logging
 import os
@@ -329,7 +330,16 @@ class StreamingPostProcessor:
                 # Request-aware parser configuration is a safety boundary:
                 # continuing after failure can route implicit scratch text to
                 # content using the parser's constructor defaults.
-                _configure(enable_thinking=enable_thinking)
+                configure_kwargs = {"enable_thinking": enable_thinking}
+                if "prompt_thinking_active" in inspect.signature(_configure).parameters:
+                    from .helpers import _should_start_in_thinking
+
+                    tokenizer = getattr(cfg.engine, "tokenizer", None)
+                    template = getattr(tokenizer, "chat_template", "") or ""
+                    configure_kwargs["prompt_thinking_active"] = (
+                        _should_start_in_thinking(template, enable_thinking)
+                    )
+                _configure(**configure_kwargs)
             _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
             if callable(_set):
                 try:
@@ -2395,7 +2405,16 @@ class StreamingPostProcessor:
         if self.reasoning_parser:
             _configure = getattr(self.reasoning_parser, "configure_request", None)
             if callable(_configure):
-                _configure(enable_thinking=self.enable_thinking)
+                configure_kwargs = {"enable_thinking": self.enable_thinking}
+                if "prompt_thinking_active" in inspect.signature(_configure).parameters:
+                    from .helpers import _should_start_in_thinking
+
+                    tokenizer = getattr(self.cfg.engine, "tokenizer", None)
+                    template = getattr(tokenizer, "chat_template", "") or ""
+                    configure_kwargs["prompt_thinking_active"] = (
+                        _should_start_in_thinking(template, self.enable_thinking)
+                    )
+                _configure(**configure_kwargs)
             else:
                 self.reasoning_parser.reset_state()
             # R10-M1: ``reset_state`` clears the parser's per-request

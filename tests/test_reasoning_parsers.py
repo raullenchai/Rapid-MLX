@@ -415,7 +415,9 @@ class TestDeepSeekR1Distill:
 
     def test_1570_no_tag_complete_output_is_reasoning(self):
         trace = "Okay, so I need to figure out unified memory."
-        reasoning, content = self.parser.extract_reasoning(trace, enable_thinking=False)
+        reasoning, content = self.parser.extract_reasoning(
+            trace, enable_thinking=False, prompt_thinking_active=True
+        )
         assert reasoning == trace
         assert content is None
 
@@ -426,7 +428,7 @@ class TestDeepSeekR1Distill:
             "</tool_call>"
         )
         reasoning, content = self.parser.extract_reasoning(
-            output, enable_thinking=False
+            output, enable_thinking=False, prompt_thinking_active=True
         )
         assert reasoning == "I should inspect the file."
         assert content == (
@@ -434,7 +436,9 @@ class TestDeepSeekR1Distill:
         )
 
     def test_1570_prompt_primed_stream_keeps_untagged_trace_in_reasoning(self):
-        self.parser.configure_request(enable_thinking=False)
+        self.parser.configure_request(
+            enable_thinking=False, prompt_thinking_active=True
+        )
         trace = "Okay, so I need to figure out unified memory. " * 3
         result = self.parser.extract_reasoning_streaming("", trace, trace)
         assert result is not None
@@ -448,7 +452,9 @@ class TestDeepSeekR1Distill:
         self.parser._in_tool_call = True
         self.parser._tool_call_buffer = "<tool_call>{"
 
-        self.parser.configure_request(enable_thinking=False)
+        self.parser.configure_request(
+            enable_thinking=False, prompt_thinking_active=True
+        )
 
         assert self.parser._saw_any_tag is False
         assert self.parser._streaming_phase is None
@@ -460,6 +466,16 @@ class TestDeepSeekR1Distill:
         assert result is not None
         assert result.reasoning == trace
         assert result.content is None
+
+    def test_1570_custom_non_priming_template_preserves_content(self):
+        answer = "Unified memory is shared by the CPU and GPU."
+        reasoning, content = self.parser.extract_reasoning(
+            answer,
+            enable_thinking=False,
+            prompt_thinking_active=False,
+        )
+        assert reasoning is None
+        assert content == answer
 
 
 class TestThinkParserSSEBoundary:

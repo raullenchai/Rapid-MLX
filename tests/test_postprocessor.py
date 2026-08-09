@@ -240,7 +240,11 @@ class TestStreamingPostProcessorReasoning:
     def test_1570_distill_parser_stays_active_when_thinking_flag_is_false(self):
         """The distill template ignores the off flag and still primes think."""
         parser = DeepSeekR1DistillReasoningParser()
-        cfg = _make_cfg(reasoning_parser=parser)
+        engine = MagicMock()
+        engine.tokenizer.chat_template = (
+            "{% if add_generation_prompt %}<think>{% endif %}"
+        )
+        cfg = _make_cfg(reasoning_parser=parser, engine=engine)
         pp = StreamingPostProcessor(cfg, enable_thinking=False)
         pp.reset()
 

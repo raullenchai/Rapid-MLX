@@ -304,16 +304,24 @@ class DeepSeekR1DistillReasoningParser(DeepSeekR1ReasoningParser):
     implicit_reasoning_until_close = True
     sanitize_when_thinking_disabled = True
 
-    def configure_request(self, *, enable_thinking: bool | None = None) -> None:
+    def configure_request(
+        self,
+        *,
+        enable_thinking: bool | None = None,
+        prompt_thinking_active: bool | None = None,
+    ) -> None:
         del enable_thinking
         self.reset_state()
-        self._prompt_primed_thinking = True
+        self._prompt_primed_thinking = prompt_thinking_active is True
 
     def extract_reasoning(
         self,
         model_output: str,
         enable_thinking: bool | None = None,
+        prompt_thinking_active: bool | None = None,
     ) -> tuple[str | None, str | None]:
         if self.start_token not in model_output and self.end_token not in model_output:
-            return self._promote_tool_calls(model_output.strip() or None, None)
+            if prompt_thinking_active is True:
+                return self._promote_tool_calls(model_output.strip() or None, None)
+            return None, model_output
         return super().extract_reasoning(model_output, enable_thinking=enable_thinking)

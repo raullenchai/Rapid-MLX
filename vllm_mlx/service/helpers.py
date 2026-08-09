@@ -184,6 +184,7 @@ def _finalize_content_and_reasoning(
     reasoning_parser,
     engine_reasoning_text: str = "",
     enable_thinking: bool | None = None,
+    prompt_thinking_active: bool | None = None,
     reasoning_max_tokens: int | None = None,
     finish_reason: str | None = None,
 ) -> tuple[str, str | None]:
@@ -360,12 +361,12 @@ def _finalize_content_and_reasoning(
     # R1 NIT: an ``extract("")`` probe could hide a real ``TypeError``
     # raised inside the parser body OR trigger third-party parser
     # side effects on the empty-string input).
-    if _parser_accepts_enable_thinking(reasoning_parser):
-        extract = lambda text: reasoning_parser.extract_reasoning(
-            text, enable_thinking=enable_thinking
-        )
-    else:
-        extract = lambda text: reasoning_parser.extract_reasoning(text)
+    extract_kwargs = {}
+    if _parser_accepts_parameter(reasoning_parser, "enable_thinking"):
+        extract_kwargs["enable_thinking"] = enable_thinking
+    if _parser_accepts_parameter(reasoning_parser, "prompt_thinking_active"):
+        extract_kwargs["prompt_thinking_active"] = prompt_thinking_active
+    extract = lambda text: reasoning_parser.extract_reasoning(text, **extract_kwargs)
     if tool_calls:
         reasoning_text, _ = extract(raw_text)
     else:
@@ -767,7 +768,7 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     route uses the same predicate and the contract has a single
     source of truth.
     """
-    if enable_thinking is False:
+    if enable_thinking is False and "enable_thinking" in chat_template:
         return False
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
@@ -1450,7 +1451,7 @@ def _is_structured_output_requested(response_format) -> bool:
     return rf_type in ("json_object", "json_schema")
 
 
-def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
+def _parser_accepts_parameter(reasoning_parser, name: str) -> bool:
     """Return True iff ``reasoning_parser.extract_reasoning`` declares
     an ``enable_thinking`` parameter (or ``**kwargs`` catch-all).
 
@@ -1472,9 +1473,13 @@ def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
         # fall back to the 1-arg call so we don't blow up here.
         return False
     params = sig.parameters
-    if "enable_thinking" in params:
+    if name in params:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
+    return _parser_accepts_parameter(reasoning_parser, "enable_thinking")
 
 
 def _cascade(cli_value, alias_key: str, gen_key: str | None = None):

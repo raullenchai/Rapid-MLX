@@ -5693,6 +5693,10 @@ async def _create_chat_completion_impl(
         enable_thinking=_effective_enable_thinking(
             resolved_thinking, cfg.model_path or cfg.model_name
         ),
+        prompt_thinking_active=_should_start_in_thinking(
+            getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
+            resolved_thinking,
+        ),
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # None → back-compat no-op. Suppressed when the generation-time
         # thinking-budget processor owns this request (#558 single mechanism).
