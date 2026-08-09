@@ -222,14 +222,12 @@ struct ThroughputCaptionIntegrationTests {
         // code would then fail. The stream's own start is the reference
         // point, not this line. Waiting here is safe because the transport
         // runs on URLSession's threads, not on the actor being held.
-        PrefillHeavyProtocol.loadingStarted.wait()
-
-        // Now hold the actor past the end of the whole stream, so there is no
-        // arrangement of scheduling in which a hop-side stamp could sneak in
-        // early. `Task.sleep` would be the wrong tool and would make the test
-        // vacuous: it SUSPENDS, which frees the actor to run exactly the hop
-        // this is trying to keep waiting.
-        blockMainActor(seconds: 0.9)
+        // Then hold the actor past the end of the whole stream, so there is
+        // no arrangement of scheduling in which a hop-side stamp could sneak
+        // in early. `Task.sleep` would be the wrong tool and would make the
+        // test vacuous: it SUSPENDS, which frees the actor to run exactly the
+        // hop this is trying to keep waiting.
+        holdMainActor(until: PrefillHeavyProtocol.loadingStarted, thenFor: 0.9)
         let released = ContinuousClock.now
         try await sending.value
 
@@ -250,16 +248,21 @@ private final class InstantBox {
     var value: ContinuousClock.Instant?
 }
 
-/// Occupies the main actor for real, rather than yielding it.
+/// Occupies the main actor for real, rather than yielding it: waits for the
+/// transport to signal that the stream has begun, then holds the actor for a
+/// fixed window.
 ///
-/// Deliberately NOT `async`: `Thread.sleep` is marked `noasync`, and rightly
-/// so — blocking a cooperative thread is normally a bug. Here it is the
-/// subject of the test, because the property under test is what happens to a
-/// timestamp while the actor is unavailable. The annotation only propagates
-/// through direct calls, so a synchronous hop is both the supported way to
-/// express this and an honest marker that the blocking is deliberate.
+/// Both halves are `noasync` — `DispatchSemaphore.wait` for the same reason as
+/// `Thread.sleep`, because blocking a cooperative thread is normally a bug.
+/// Here it is the subject of the test: the property being measured is what
+/// happens to a timestamp while the actor is unavailable. The annotation
+/// propagates only through direct calls, so one synchronous function is both
+/// the supported way to express this and an honest marker that the blocking is
+/// deliberate. Keeping the wait and the sleep together also guarantees the
+/// window starts at the stream's beginning with nothing awaitable in between.
 @MainActor
-private func blockMainActor(seconds: TimeInterval) {
+private func holdMainActor(until started: DispatchSemaphore, thenFor seconds: TimeInterval) {
+    started.wait()
     Thread.sleep(forTimeInterval: seconds)
 }
 
