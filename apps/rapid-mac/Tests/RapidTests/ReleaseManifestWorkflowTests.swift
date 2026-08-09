@@ -21,7 +21,14 @@ struct ReleaseManifestWorkflowTests {
     func missingConfigFailsClosed() throws {
         #expect(Self.workflow.contains("tagged releases require updater fallback publishing"))
         #expect(!Self.workflow.contains("skipping the optional CDN mirror"))
-        #expect(Self.workflow.contains("missing+=(RAPID_MAC_DIST_CDN_BASE)"))
+        for requiredSetting in [
+            "CLOUDFLARE_API_TOKEN",
+            "CLOUDFLARE_ACCOUNT_ID",
+            "RAPID_MAC_DIST_R2_BUCKET",
+            "RAPID_MAC_DIST_CDN_BASE",
+        ] {
+            #expect(Self.workflow.contains("missing+=(\(requiredSetting))"))
+        }
         let branchStart = try #require(
             Self.workflow.range(of: "if (( ${#missing[@]} )); then")
         )
@@ -45,6 +52,8 @@ struct ReleaseManifestWorkflowTests {
         let dmgUpload = try #require(workflow.range(of: "${R2_BUCKET}/${VERSIONED_KEY}"))
         let manifestUpload = try #require(workflow.range(of: "${R2_BUCKET}/latest.json"))
         #expect(dmgUpload.lowerBound < manifestUpload.lowerBound)
+        let afterManifest = workflow[manifestUpload.upperBound..<workflow.endIndex]
+        #expect(!afterManifest.contains("r2 object put"))
         #expect(workflow.contains(#"--cache-control "no-cache, must-revalidate""#))
     }
 }
