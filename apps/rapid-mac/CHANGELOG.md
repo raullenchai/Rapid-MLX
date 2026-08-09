@@ -45,9 +45,14 @@ can actually understand.
   things a new user saw. Tools still live in Settings → Tools; the speed test
   is gone for the reason above.
 
-- **The model menu lists models.** "Refresh catalog", "Type a model name" and
-  the "N small models hidden" footer are gone; what remains is the quickstart
-  picks, the recommendations, and the full alphabetical list.
+- **The model menu focuses on models.** The "N small models hidden" footer is
+  gone, and "Refresh catalog" / "Type a model name…" now appear only when
+  there is nothing to pick — while the catalogue is still loading, or when it
+  came back empty — instead of sitting at the bottom of a working menu. A
+  normal menu is the quickstart picks, the recommendations, and the model
+  list, with models you have downloaded first. Models under 1B and
+  known-broken aliases stay hidden; the small ones can be shown from
+  Settings → Models.
 
 ### Fixed
 
