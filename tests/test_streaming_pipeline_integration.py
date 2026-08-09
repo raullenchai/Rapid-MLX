@@ -144,6 +144,38 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
             _should_start_in_thinking(conditional, False, unconditional=True) is False
         )
 
+    def test_1570_jinja_assignment_can_activate_marker(self):
+        template = (
+            "{% set prime = true %}"
+            "{% if prime and add_generation_prompt %}<think>{% endif %}"
+        )
+        assert _should_start_in_thinking(template, False, unconditional=True) is True
+
+    def test_1570_marker_in_empty_loop_is_inactive(self):
+        template = (
+            "{% for item in [] %}<think>{% endfor %}"
+            "{% if add_generation_prompt %}plain{% endif %}"
+        )
+        assert _should_start_in_thinking(template, False, unconditional=True) is False
+
+    def test_1570_marker_in_unused_macro_is_inactive(self):
+        template = (
+            "{% macro prime() %}<think>{% endmacro %}"
+            "{% if add_generation_prompt %}plain{% endif %}"
+        )
+        assert _should_start_in_thinking(template, False, unconditional=True) is False
+
+    def test_1570_marker_in_jinja_comment_is_inactive(self):
+        template = "{# <think> #}{% if add_generation_prompt %}plain{% endif %}"
+        assert _should_start_in_thinking(template, False, unconditional=True) is False
+
+    def test_1570_unrenderable_template_does_not_suppress_content(self):
+        template = (
+            "{% if missing_global() %}<think>{% endif %}"
+            "{% if add_generation_prompt %}plain{% endif %}"
+        )
+        assert _should_start_in_thinking(template, False, unconditional=True) is False
+
     def test_1570_unrelated_enable_variable_does_not_hide_unconditional_marker(self):
         template = (
             "{% set enable_thinking = false %}"

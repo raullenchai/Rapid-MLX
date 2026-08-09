@@ -14,7 +14,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import threading
 import uuid
 from collections.abc import AsyncIterator
@@ -791,77 +790,40 @@ def _should_start_in_thinking(
     if enable_thinking is False and not unconditional:
         return False
     if unconditional:
-        # Distill parsers need the rendered branch for every flag value. A
-        # marker can live exclusively in either the truthy or falsey branch;
-        # searching the template source would classify the inactive branch.
         if "<think>" not in chat_template:
             return False
-        # Follow the active Jinja branch instead of treating every enclosing
-        # reference to ``enable_thinking`` as an opt-out.  In particular,
-        # ``{% if enable_thinking %}...{% else %}<think>{% endif %}`` primes
-        # reasoning when the flag is false.  Evaluating only control
-        # expressions avoids rendering the full model template (which needs
-        # messages, tokenizer-specific globals, and filters).
-        from jinja2 import Environment
+        # Use the same sandboxed Jinja compiler as Hugging Face tokenizers.
+        # Rendering, unlike source scanning, honors assignments, macros,
+        # loops, comments, and the active if/elif/else branch.
+        try:
+            from transformers.utils.chat_template_utils import (
+                _compile_jinja_template,
+            )
 
-        environment = Environment(autoescape=False)
-        context = {
-            "enable_thinking": enable_thinking,
-            "add_generation_prompt": True,
-            "tools": [{}] if tools_requested else None,
-        }
-
-        def _condition_is_true(expression: str) -> bool:
-            try:
-                return bool(environment.compile_expression(expression)(**context))
-            except Exception:
-                # For an unfamiliar tokenizer-specific condition, preserve the
-                # no-leak invariant.  A false negative would expose scratch
-                # reasoning; a false positive only keeps it on the private lane.
-                return True
-
-        # parent-active, any-prior-branch-taken, current-branch-active
-        branch_stack: list[tuple[bool, bool, bool]] = []
-        active = True
-        token_re = re.compile(
-            r"<think>|{%-?\s*(if\b.*?|elif\b.*?|else|endif)\s*-?%}", re.DOTALL
-        )
-        active_marker = False
-        for match in token_re.finditer(chat_template):
-            token = match.group(0)
-            if token == "<think>":
-                if active:
-                    active_marker = True
-                    break
-                continue
-            clause = (match.group(1) or "").strip()
-            if clause.startswith("if "):
-                parent_active = active
-                selected = parent_active and _condition_is_true(clause[3:].strip())
-                branch_stack.append((parent_active, selected, selected))
-                active = selected
-            elif clause.startswith("elif ") and branch_stack:
-                parent_active, branch_taken, _ = branch_stack[-1]
-                selected = (
-                    parent_active
-                    and not branch_taken
-                    and _condition_is_true(clause[5:].strip())
-                )
-                branch_stack[-1] = (
-                    parent_active,
-                    branch_taken or selected,
-                    selected,
-                )
-                active = selected
-            elif clause == "else" and branch_stack:
-                parent_active, branch_taken, _ = branch_stack[-1]
-                selected = parent_active and not branch_taken
-                branch_stack[-1] = (parent_active, True, selected)
-                active = selected
-            elif clause == "endif" and branch_stack:
-                parent_active, _, _ = branch_stack.pop()
-                active = parent_active
-        if not active_marker:
+            tool_probe = {
+                "type": "function",
+                "function": {
+                    "name": "probe",
+                    "description": "probe",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            rendered = _compile_jinja_template(chat_template).render(
+                messages=[{"role": "user", "content": "probe"}],
+                tools=[tool_probe] if tools_requested else None,
+                add_generation_prompt=True,
+                enable_thinking=enable_thinking,
+                bos_token="",
+                eos_token="",
+                pad_token="",
+                unk_token="",
+            )
+        except Exception:
+            # An unrenderable custom template is indeterminate. Do not claim it
+            # primed thinking: a false positive would silently discard a valid
+            # public answer. The shipped distill templates render above.
+            return False
+        if "<think>" not in rendered:
             return False
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
