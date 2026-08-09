@@ -298,6 +298,171 @@ def sanitize_reasoning_for_stream(text: str | None) -> str:
     return _sanitize_for_stream(text, _REASONING_FINAL_SANITIZER)
 
 
+class StreamingReasoningSanitizer:
+    """Preserve canonical wire-marker carry across reasoning fragments.
+
+    ``sanitize_reasoning_for_stream`` is intentionally stateless.  Routes
+    that enforce the reasoning sanitizer must additionally retain suffixes
+    that can begin canonical wire markers; otherwise a token split can bypass
+    the per-fragment regex.  The finite set below is the literal-token portion
+    of :data:`_REASONING_FINAL_SANITIZER`; payload-shaped regex matches remain
+    handled by the stateless sanitizer once their complete fragment arrives.
+    """
+
+    _MARKERS = (
+        "</tool_call>",
+        "</think>",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<|endoftext|>",
+        "<|channel|>",
+        "<|message|>",
+        "<|channel>",
+        "<|constrain|>",
+        "<|tool_call>",
+        "<tool_call|>",
+    )
+
+    def __init__(self) -> None:
+        self._pending: list[tuple[str, str]] = []
+
+    def process(self, text: str | None, destination: str) -> list[tuple[str, str]]:
+        items = self._pending + [(destination, ch) for ch in (text or "")]
+        self._pending = []
+        if not items:
+            return []
+
+        deferred_payload: list[tuple[str, str]] = []
+        raw_combined = "".join(ch for _, ch in items)
+        calling_at = raw_combined.rfind("[Calling")
+        calling_candidate = raw_combined[calling_at:] if calling_at >= 0 else ""
+        if (
+            calling_at >= 0
+            and len(calling_candidate) <= 128
+            and re.fullmatch(r"\[Calling\s+tool[^\]]*", calling_candidate)
+        ):
+            deferred_payload = items[calling_at:]
+            items = items[:calling_at]
+        items = self._remove_regex_matches(items)
+        kept: list[tuple[str, str]] = []
+        for item in items:
+            kept.append(item)
+            for marker in self._MARKERS:
+                marker_size = len(marker)
+                if len(kept) >= marker_size and all(
+                    kept[-marker_size + offset][1] == marker_char
+                    for offset, marker_char in enumerate(marker)
+                ):
+                    del kept[-marker_size:]
+                    break
+
+        kept_text = "".join(ch for _, ch in kept)
+        pending_at = self._pending_suffix_start(kept_text)
+        if pending_at >= 0:
+            self._pending = kept[pending_at:]
+            kept = kept[:pending_at]
+        if deferred_payload:
+            self._pending.extend(deferred_payload)
+        return self._group_and_sanitize(kept)
+
+    @classmethod
+    def _pending_suffix_start(cls, text: str) -> int:
+        max_carry = min(len(text), 128)
+        calling_prefix = "[Calling tool"
+        for size in range(max_carry, 0, -1):
+            suffix = text[-size:]
+            if any(marker.startswith(suffix) for marker in cls._MARKERS):
+                return len(text) - size
+            if calling_prefix.startswith(suffix):
+                return len(text) - size
+            if re.fullmatch(r"\[Calling\s+tool[^\]]*", suffix):
+                return len(text) - size
+        return -1
+
+    def flush(self) -> list[tuple[str, str]]:
+        pending = self._pending
+        self._pending = []
+        return self._group_and_sanitize(pending)
+
+    def transition_to_content(self, text: str | None) -> list[tuple[str, str]]:
+        """Resolve a reasoning-side prefix without sanitizing content prose."""
+        content = text or ""
+        if not self._pending:
+            return [("content", content)] if content else []
+        pending_text = "".join(ch for _, ch in self._pending)
+        if pending_text.startswith("[Calling"):
+            pending = self._pending
+            self._pending = []
+            parts = self._group_and_sanitize(pending)
+            if content:
+                parts.append(("content", content))
+            return parts
+        items = self._pending + [("content", ch) for ch in content]
+        self._pending = []
+        items = self._remove_regex_matches(
+            items,
+            require_reasoning_origin=True,
+        )
+        combined = "".join(ch for _, ch in items)
+        pending_at = self._pending_suffix_start(combined)
+        if pending_at >= 0 and any(
+            destination != "content" for destination, _ in items[pending_at:]
+        ):
+            self._pending = items[pending_at:]
+            items = items[:pending_at]
+        return self._group_and_sanitize(items, sanitize_content=False)
+
+    @staticmethod
+    def _remove_regex_matches(
+        items: list[tuple[str, str]],
+        *,
+        require_reasoning_origin: bool = False,
+    ) -> list[tuple[str, str]]:
+        while items:
+            combined = "".join(ch for _, ch in items)
+            spans = []
+            for match in _REASONING_FINAL_SANITIZER.finditer(combined):
+                if require_reasoning_origin and not any(
+                    destination != "content"
+                    for destination, _ in items[match.start() : match.end()]
+                ):
+                    continue
+                spans.append((match.start(), match.end()))
+            if not spans:
+                return items
+            removed = [False] * len(items)
+            for start, end in spans:
+                removed[start:end] = [True] * (end - start)
+            items = [item for index, item in enumerate(items) if not removed[index]]
+        return items
+
+    @staticmethod
+    def _group_and_sanitize(
+        items: list[tuple[str, str]], *, sanitize_content: bool = True
+    ) -> list[tuple[str, str]]:
+        grouped: list[tuple[str, str]] = []
+        current_destination: str | None = None
+        current_chars: list[str] = []
+        for destination, char in items:
+            if current_destination is not None and destination != current_destination:
+                grouped.append((current_destination, "".join(current_chars)))
+                current_chars = []
+            current_destination = destination
+            current_chars.append(char)
+        if current_destination is not None:
+            grouped.append((current_destination, "".join(current_chars)))
+        result = []
+        for destination, text in grouped:
+            cleaned = (
+                sanitize_reasoning_for_stream(text)
+                if sanitize_content or destination != "content"
+                else text
+            )
+            if cleaned:
+                result.append((destination, cleaned))
+        return result
+
+
 def sanitize_content_for_stream(text: str | None) -> str:
     """Streaming variant of :func:`sanitize_output` for ``content``.
 
