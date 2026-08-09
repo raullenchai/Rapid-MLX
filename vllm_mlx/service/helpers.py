@@ -785,10 +785,19 @@ def _should_start_in_thinking(
     if enable_thinking is False:
         marker_index = chat_template.find("<think>")
         prefix = chat_template[:marker_index] if marker_index >= 0 else ""
-        active_if = prefix.rfind("{% if")
-        active_endif = prefix.rfind("{% endif")
-        marker_depends_on_enable = (
-            active_if > active_endif and "enable_thinking" in prefix[active_if:]
+        condition_stack: list[str] = []
+        for match in re.finditer(
+            r"{%\s*(if\b.*?|elif\b.*?|else|endif)\s*%}", prefix, re.DOTALL
+        ):
+            clause = match.group(1).strip()
+            if clause.startswith("if "):
+                condition_stack.append(clause)
+            elif clause.startswith("elif ") and condition_stack:
+                condition_stack[-1] += " " + clause
+            elif clause == "endif" and condition_stack:
+                condition_stack.pop()
+        marker_depends_on_enable = any(
+            "enable_thinking" in clause for clause in condition_stack
         )
         if not unconditional or marker_depends_on_enable:
             return False
