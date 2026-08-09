@@ -69,6 +69,9 @@ to always-allow rather than prompting every time (#1695).
   system message by combining system instructions at the front, matching the
   compatibility already provided by the Responses and Anthropic surfaces
   (#1543). Templates that accept the original ordering remain untouched.
+- Returning to Chat after loading an Images model no longer leaves the
+  readiness banner's load button inert; the action now switches the resident
+  server back to the selected chat model (#1739).
 
 ## Release engineering
 
