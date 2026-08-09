@@ -142,6 +142,7 @@ struct FreshWebRoutingTests {
         #expect(WebSearchTool.preparedQuery("the last week of July 2020") == "the last week of July 2020")
         #expect(WebSearchTool.preparedQuery("the last week in July") == "the last week in July")
         #expect(WebSearchTool.preparedQuery("what happened last week in 2020?") == "what happened last week in 2020?")
+        #expect(WebSearchTool.preparedQuery("what happened last week compared with 2025?").contains("date range:"))
         #expect(WebSearchTool.preparedQuery("what happened last weekend?") == "what happened last weekend?")
         #expect(WebSearchTool.preparedQuery("上周末有什么活动？") == "上周末有什么活动？")
     }

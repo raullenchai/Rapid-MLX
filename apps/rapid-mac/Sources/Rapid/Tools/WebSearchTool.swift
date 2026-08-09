@@ -135,9 +135,8 @@ enum WebSearchTool {
         // An explicit year makes "last week" historical, not relative to
         // today. Likewise, "last week in/of July" supplies its own calendar
         // anchor even when the year is omitted.
-        if folded.range(of: #"\b(?:19|20)\d{2}\b"#, options: .regularExpression) != nil
-            || folded.range(
-                of: #"\blast week\s+(?:in|of)\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"#,
+        if folded.range(
+                of: #"\blast week\s+(?:in|of)\s+(?:(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(?:19|20)\d{2})?|(?:19|20)\d{2})\b"#,
                 options: .regularExpression
             ) != nil
         {
