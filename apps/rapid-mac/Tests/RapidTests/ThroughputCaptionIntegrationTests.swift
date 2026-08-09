@@ -217,8 +217,10 @@ struct ThroughputCaptionIntegrationTests {
 
         // Hold the actor past the end of the whole stream, so there is no
         // arrangement of scheduling in which a hop-side stamp could sneak in
-        // early.
-        Thread.sleep(forTimeInterval: 0.9)
+        // early. `Task.sleep` would be the wrong tool and would make the test
+        // vacuous: it SUSPENDS, which frees the actor to run exactly the hop
+        // this is trying to keep waiting.
+        blockMainActor(seconds: 0.9)
         let released = ContinuousClock.now
         try await sending.value
 
@@ -237,6 +239,19 @@ struct ThroughputCaptionIntegrationTests {
 @MainActor
 private final class InstantBox {
     var value: ContinuousClock.Instant?
+}
+
+/// Occupies the main actor for real, rather than yielding it.
+///
+/// Deliberately NOT `async`: `Thread.sleep` is marked `noasync`, and rightly
+/// so — blocking a cooperative thread is normally a bug. Here it is the
+/// subject of the test, because the property under test is what happens to a
+/// timestamp while the actor is unavailable. The annotation only propagates
+/// through direct calls, so a synchronous hop is both the supported way to
+/// express this and an honest marker that the blocking is deliberate.
+@MainActor
+private func blockMainActor(seconds: TimeInterval) {
+    Thread.sleep(forTimeInterval: seconds)
 }
 
 /// Opens with a tool-call fragment carrying no content and no reasoning,
