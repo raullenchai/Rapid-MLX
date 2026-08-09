@@ -184,13 +184,22 @@ struct DownloadCatalogHardeningTests {
     func nonChatKindTagIsColumnScoped() {
         #expect(ModelCatalog.hasNonChatKindTag("kokoro [audio:tts] kokoro mlx/Kokoro"))
         #expect(ModelCatalog.hasNonChatKindTag("cog 13.3 GiB [video:gen] org/repo"))
+        // Image generation joined audio and video as a non-chat kind in
+        // #1705, which is what keeps `flux2-klein-4b` and `z-image-turbo`
+        // out of the chat picker while the Images tab serves them. This
+        // assertion asserted the opposite until that landed.
+        #expect(ModelCatalog.hasNonChatKindTag("flux 4.3 GiB [image:gen] Runpod/FLUX.2-klein-4B-mflux-4bit"))
+        #expect(ModelCatalog.hasNonChatKindTag("odd [image:gen] org/repo"))
         // A model whose repo or description merely contains the
         // characters must not vanish from the catalog.
         #expect(!ModelCatalog.hasNonChatKindTag("weird-model hermes org/repo[audio:tts]x"))
         #expect(!ModelCatalog.hasNonChatKindTag("weird-model hermes org/audio:tts"))
         #expect(!ModelCatalog.hasNonChatKindTag("qwen3.6-27b hermes qwen3 ✓ avoid — —"))
         #expect(!ModelCatalog.hasNonChatKindTag("odd [audio:] org/repo"))
-        #expect(!ModelCatalog.hasNonChatKindTag("odd [image:gen] org/repo"))
+        #expect(!ModelCatalog.hasNonChatKindTag("odd [image:] org/repo"))
+        // The column-scoping property the test is named for still holds
+        // for the new kind: a bare substring must not disqualify a row.
+        #expect(!ModelCatalog.hasNonChatKindTag("weird-model hermes org/repo[image:gen]x"))
     }
 
     @Test("parseAvailable drops the human-readable size footer")
