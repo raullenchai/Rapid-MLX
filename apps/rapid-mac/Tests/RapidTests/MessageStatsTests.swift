@@ -35,9 +35,121 @@ struct MessageStatsTests {
             promptTokens: 50,
             completionTokens: 180
         )
-        #expect(s.reportedTokensPerSecond ?? 0 == 90.0)
+        // No TTFT recorded (pre-existing transcript) → the whole turn is
+        // the denominator, and 179 intervals span 180 tokens.
+        #expect(s.reportedTokensPerSecond ?? 0 == 89.5)
         // Estimate is still computable — the UI just prefers reported.
         #expect(s.estimatedTokensPerSecond != nil)
+    }
+
+    // MARK: - Prefill must not be charged to the decode rate
+
+    /// The user-reported defect, with numbers measured on an M3 Ultra
+    /// against `qwen3.5-4b-4bit` through the app's own bundled sidecar.
+    ///
+    /// One chat turn carrying the three built-in tool schemas: 970 prompt
+    /// tokens prefilled in 0.69 s, then 171 tokens generated over the
+    /// remaining 1.30 s. Charging the prefill to throughput captions it at
+    /// 86 tok/s; the model's actual decode rate is ~131. The picker
+    /// advertises ~61 for the same alias and the old benchmark card
+    /// measured 143 — three numbers for one model, all labelled "tok/s".
+    @Test("A prefill-dominated turn reports the decode rate, not the whole-turn rate")
+    func prefillIsNotChargedToThroughput() throws {
+        let s = MessageStats(
+            elapsedSeconds: 1.99,
+            charCount: 852,
+            promptTokens: 970,
+            completionTokens: 171,
+            timeToFirstTokenSeconds: 0.69
+        )
+        // (171 - 1) tokens over the 1.30 s decode window.
+        let rate = try #require(s.reportedTokensPerSecond)
+        #expect(abs(rate - 130.77) < 0.01)
+        // The whole-turn arithmetic this replaced (171 / 1.99 = 85.9).
+        // Pinned as an explicit NOT so reintroducing
+        // `completionTokens / elapsedSeconds` fails here rather than
+        // silently shipping the understated number again.
+        #expect(abs(rate - 85.9) > 1.0)
+    }
+
+    /// The same conversation's opening turn: 0.75 s of prefill and an
+    /// 8-token answer leaves a 50 ms decode window. Seven tokens across
+    /// 50 ms is the noise floor, not a measurement — reporting "140 tok/s"
+    /// off it would trade one misleading number for another. Say nothing
+    /// about the rate and let time-to-first-token carry the turn.
+    @Test("A decode window at the noise floor reports no rate at all")
+    func decodeWindowBelowNoiseFloorHasNoRate() {
+        let s = MessageStats(
+            elapsedSeconds: 0.78,
+            charCount: 31,
+            promptTokens: 957,
+            completionTokens: 8,
+            timeToFirstTokenSeconds: 0.75
+        )
+        #expect(s.reportedTokensPerSecond == nil)
+        #expect(s.estimatedTokensPerSecond == nil)
+        // The turn is still describable — TTFT is what actually cost the
+        // user the wait, and it survives.
+        #expect(s.timeToFirstTokenSeconds == 0.75)
+    }
+
+    @Test("Decode window excludes TTFT")
+    func decodeWindowExcludesTTFT() throws {
+        let s = MessageStats(
+            elapsedSeconds: 2.00,
+            charCount: 400,
+            promptTokens: 900,
+            completionTokens: 101,
+            timeToFirstTokenSeconds: 1.00
+        )
+        #expect(try #require(s.decodeSeconds) == 1.00)
+        #expect(try #require(s.reportedTokensPerSecond) == 100.0)
+        // The char-count fallback uses the same window.
+        #expect(try #require(s.estimatedTokensPerSecond) == 100.0)
+    }
+
+    @Test("No TTFT recorded → the whole turn stays the denominator (old transcripts)")
+    func missingTTFTFallsBackToWholeTurn() throws {
+        let s = MessageStats(
+            elapsedSeconds: 2.0,
+            charCount: 800,
+            promptTokens: nil,
+            completionTokens: nil,
+            timeToFirstTokenSeconds: nil
+        )
+        #expect(try #require(s.decodeSeconds) == 2.0)
+        #expect(try #require(s.estimatedTokensPerSecond) == 100.0)
+    }
+
+    @Test("A one-token reply reports no rate rather than dividing by a window it never occupied")
+    func singleTokenReplyHasNoRate() throws {
+        let s = MessageStats(
+            elapsedSeconds: 1.50,
+            charCount: 3,
+            promptTokens: 900,
+            completionTokens: 1,
+            timeToFirstTokenSeconds: 0.75
+        )
+        // The 0.75 s decode window is far above the noise floor, so the
+        // token count is the ONLY thing that can make this nil. Without
+        // that isolation the noise guard would satisfy the assertion and
+        // the `completionTokens > 1` guard could be deleted unnoticed.
+        #expect(try #require(s.decodeSeconds) > 0.5)
+        #expect(s.reportedTokensPerSecond == nil)
+    }
+
+    @Test("TTFT at or past the end of the turn yields no rate, never a negative one")
+    func nonPositiveDecodeWindowHasNoRate() {
+        let s = MessageStats(
+            elapsedSeconds: 1.00,
+            charCount: 40,
+            promptTokens: 900,
+            completionTokens: 20,
+            timeToFirstTokenSeconds: 1.00
+        )
+        #expect(s.decodeSeconds == nil)
+        #expect(s.reportedTokensPerSecond == nil)
+        #expect(s.estimatedTokensPerSecond == nil)
     }
 
     @Test("Sub-50ms elapsed returns nil — divide-by-near-zero would print a garbage TPS")
@@ -115,6 +227,25 @@ struct MessageStatsTests {
         // number IS authoritative when usage is wired (v0.4.13).
         #expect(!captionReported.contains("approximately"))
         #expect(captionReported.contains("tokens per second"))
+        // No TTFT recorded on either fixture, so neither caption may
+        // claim one.
+        #expect(!caption.contains("to the first token"))
+        #expect(!captionReported.contains("to the first token"))
+    }
+
+    @Test("Caption names time-to-first-token separately instead of blending it into the rate")
+    func a11yCaptionNamesTTFT() {
+        let s = MessageStats(
+            elapsedSeconds: 2.00,
+            charCount: 852,
+            promptTokens: 970,
+            completionTokens: 171,
+            timeToFirstTokenSeconds: 0.75
+        )
+        let caption = AssistantStatsFormatter.accessibilityCaption(for: s)
+        #expect(caption.contains("750 ms to the first token"))
+        #expect(caption.contains("tokens per second"))
+        #expect(caption.contains("took 2.0 s"))
     }
 
     // MARK: - Schema compat (old sessions without stats)
@@ -139,6 +270,31 @@ struct MessageStatsTests {
         #expect(msg.content == "Hello from v0.4.11")
     }
 
+    @Test("Decodes a stats block written before timeToFirstTokenSeconds existed")
+    func decodesStatsWithoutTTFT() throws {
+        let priorSchema = """
+        {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "role": "assistant",
+            "content": "Hello from before the TTFT split",
+            "reasoning": "",
+            "status": "complete",
+            "createdAt": 770000000.0,
+            "stats": {
+                "elapsedSeconds": 2.0,
+                "charCount": 800,
+                "promptTokens": 50,
+                "completionTokens": 180
+            }
+        }
+        """.data(using: .utf8)!
+        let msg = try JSONDecoder().decode(ChatMessage.self, from: priorSchema)
+        let stats = try #require(msg.stats)
+        #expect(stats.timeToFirstTokenSeconds == nil)
+        // Still renders a rate — an old transcript must not go blank.
+        #expect(stats.reportedTokensPerSecond != nil)
+    }
+
     @Test("Round-trips a populated stats field through JSON encode → decode")
     func roundTripsStats() throws {
         var msg = ChatMessage(role: .assistant, content: "Hi", status: .complete)
@@ -146,7 +302,8 @@ struct MessageStatsTests {
             elapsedSeconds: 2.4,
             charCount: 100,
             promptTokens: 50,
-            completionTokens: 25
+            completionTokens: 25,
+            timeToFirstTokenSeconds: 0.4
         )
         let data = try JSONEncoder().encode(msg)
         let back = try JSONDecoder().decode(ChatMessage.self, from: data)
@@ -154,5 +311,6 @@ struct MessageStatsTests {
         #expect(back.stats?.charCount == 100)
         #expect(back.stats?.promptTokens == 50)
         #expect(back.stats?.completionTokens == 25)
+        #expect(back.stats?.timeToFirstTokenSeconds == 0.4)
     }
 }

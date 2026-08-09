@@ -205,8 +205,6 @@ struct ChatView: View {
     @State private var attachmentNotice: String?
     @State private var isImageDropTarget = false
     @State private var composeFocusToken: Int = 0
-    @State private var showConnectTools = false
-    @State private var showBenchmark = false
     /// Incremented every time the user tries to send while gated. Drives
     /// the banner's brief emphasis so a blocked Return is never silent.
     @State private var blockedSendAttempts: Int = 0
@@ -234,25 +232,6 @@ struct ChatView: View {
         // Drop a stale error banner once the server is provably ready.
         .onChange(of: server.state) { _, newState in
             if case .ready = newState { viewModel.clearStaleErrorBanner() }
-        }
-        .sheet(isPresented: $showConnectTools) {
-            ConnectToolsView(
-                host: "127.0.0.1",
-                port: server.activePort,
-                bearer: server.activeBearer ?? "",
-                alias: server.servingAlias ?? alias,
-                onClose: { showConnectTools = false }
-            )
-        }
-        .sheet(isPresented: $showBenchmark) {
-            BenchmarkView(
-                binary: server.binaryPath,
-                baseURL: ChatStreamClient.loopbackURL(port: server.activePort),
-                bearer: server.activeBearer ?? "",
-                alias: server.servingAlias ?? alias,
-                hardware: MacHardware.detect(),
-                onClose: { showBenchmark = false }
-            )
         }
     }
 
@@ -382,48 +361,6 @@ struct ChatView: View {
                 // ``scaledToFit`` inside a square frame preserves the
                 // asset's own aspect ratio.
                 CheetahLogo(size: 68)
-            },
-            actions: {
-                // #CTA-bug: both actions used to be wrapped in
-                // `if serverReady`, so on a cold first launch — exactly
-                // when a new user most needs the second call-to-action —
-                // the row was absent entirely, and it then popped into
-                // existence mid-session and shifted the layout.
-                //
-                // Now both always render whenever the transcript is
-                // empty, in every lifecycle state, and neither appears
-                // or disappears because chat history changed.
-                // Availability is expressed by ENABLEMENT, not by
-                // presence:
-                //
-                //   * Connect your agents is always actionable. The sheet
-                //     itself explains when the endpoint isn't ready yet
-                //     and refuses to hand out incomplete values.
-                //   * Speed needs a live model to measure, so it
-                //     disables with a tooltip that says why.
-                Button {
-                    showConnectTools = true
-                } label: {
-                    Label("Connect your agents", systemImage: "link")
-                }
-                .help("Point an editor or agent at your local server")
-
-                Button {
-                    showBenchmark = true
-                } label: {
-                    Label("Speed on this Mac", systemImage: "gauge.with.dots.needle.67percent")
-                }
-                .accessibilityIdentifier("ChatView.SpeedOnThisMac")
-                // Enablement is derived from live server state, so the
-                // button flips to enabled on its own the moment the
-                // model reaches .ready — no user action, no re-render
-                // trigger needed beyond the @Observable read.
-                .disabled(!benchmarkAvailable)
-                .help(
-                    benchmarkAvailable
-                        ? "Measure this model's tokens per second on your Mac"
-                        : "Start a model to run a speed test."
-                )
             }
         )
     }
@@ -440,16 +377,6 @@ struct ChatView: View {
     private var emptyStateSubtitle: String { readiness.emptyStateSubtitle }
 
     private var downloadHint: String? { readiness.emptyStateHint }
-
-    /// Speed can only measure a model that is actually up.
-    ///
-    /// Presence is unconditional (the button always renders while the
-    /// transcript is empty); only enablement moves. Keyed on the shared
-    /// readiness value so the button re-enables the moment the model
-    /// reaches ready — no user action, no extra render trigger.
-    private var benchmarkAvailable: Bool {
-        server.binaryPath != nil && readiness.isReady
-    }
 
     // MARK: - Compose bar
 
@@ -1190,16 +1117,24 @@ private struct MessageRow: View {
         return msg
     }
 
+    /// "131 tok/s · 0.7 s to first token · 2.4 s".
+    ///
+    /// The rate covers generation only; time-to-first-token is named
+    /// separately rather than being silently blended into it, so a slow
+    /// prefill reads as a slow prefill instead of a slow model.
     private var statsCaption: String? {
         guard message.status == .complete, let stats = message.stats else { return nil }
-        let elapsed = AssistantStatsFormatter.formatElapsed(stats.elapsedSeconds)
+        var parts: [String] = []
         if let reported = stats.reportedTokensPerSecond {
-            return "\(AssistantStatsFormatter.formatTPS(reported)) tok/s · \(elapsed)"
+            parts.append("\(AssistantStatsFormatter.formatTPS(reported)) tok/s")
+        } else if let estimated = stats.estimatedTokensPerSecond {
+            parts.append("~\(AssistantStatsFormatter.formatTPS(estimated)) tok/s")
         }
-        if let estimated = stats.estimatedTokensPerSecond {
-            return "~\(AssistantStatsFormatter.formatTPS(estimated)) tok/s · \(elapsed)"
+        if let ttft = stats.timeToFirstTokenSeconds {
+            parts.append("\(AssistantStatsFormatter.formatElapsed(ttft)) to first token")
         }
-        return elapsed
+        parts.append(AssistantStatsFormatter.formatElapsed(stats.elapsedSeconds))
+        return parts.joined(separator: " · ")
     }
 
     // MARK: System
@@ -2192,6 +2127,9 @@ enum AssistantStatsFormatter {
             parts.append("\(formatTPS(tps)) tokens per second")
         } else if let est = stats.estimatedTokensPerSecond {
             parts.append("approximately \(formatTPS(est)) tokens per second")
+        }
+        if let ttft = stats.timeToFirstTokenSeconds {
+            parts.append("\(formatElapsed(ttft)) to the first token")
         }
         if stats.elapsedSeconds > 0 {
             parts.append("took \(formatElapsed(stats.elapsedSeconds))")

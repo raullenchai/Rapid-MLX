@@ -64,11 +64,18 @@ struct EmptyState<Mark: View, Actions: View>: View {
                 }
             }
 
-            HStack(spacing: RapidTheme.Space.sm) {
-                actions
+            // The actions row is skipped entirely — not merely emptied —
+            // when a caller uses the no-actions initialiser. An
+            // ``HStack`` holding ``EmptyView`` still carries the top
+            // padding below, which reads as a stray gap under the
+            // subtitle on a surface that has no side-door actions at all.
+            if Actions.self != EmptyView.self {
+                HStack(spacing: RapidTheme.Space.sm) {
+                    actions
+                }
+                .buttonStyle(.rapidSecondaryCompact)
+                .padding(.top, RapidTheme.Space.xs)
             }
-            .buttonStyle(.rapidSecondaryCompact)
-            .padding(.top, RapidTheme.Space.xs)
         }
         .frame(maxWidth: 380)
         .padding(.horizontal, RapidTheme.Space.xl)

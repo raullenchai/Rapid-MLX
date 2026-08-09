@@ -1111,18 +1111,48 @@ struct MessageStats: Codable, Equatable, Hashable {
     /// Server-reported completion token count. ``nil`` until
     /// v0.4.13.
     var completionTokens: Int?
+    /// Seconds from dispatching the request to the FIRST content token
+    /// arriving — the prompt-processing (prefill) half of the turn.
+    ///
+    /// ``nil`` on transcripts persisted before this field existed and on
+    /// turns that produced no content, in which case every rate below
+    /// degrades to the pre-existing whole-turn arithmetic.
+    var timeToFirstTokenSeconds: Double?
+
+    /// Seconds spent generating — everything after the first token landed.
+    ///
+    /// This, not ``elapsedSeconds``, is the denominator for a throughput
+    /// number. Dividing by the whole turn folds prefill into "tok/s" and
+    /// makes the answer's LENGTH the dominant term: the desktop advertised
+    /// ~61 tok/s for `qwen3.5-4b-4bit` while the same model, in the same
+    /// second, captioned a short reply at 13 tok/s — prefill of a
+    /// ~950-token tool-carrying prompt was 93 % of that turn. Same
+    /// machine, same model, two numbers 5x apart, both labelled "tok/s".
+    var decodeSeconds: Double? {
+        guard let timeToFirstTokenSeconds else { return elapsedSeconds }
+        let decode = elapsedSeconds - timeToFirstTokenSeconds
+        return decode > 0 ? decode : nil
+    }
 
     /// Heuristic tokens/sec from char count when the server didn't
     /// report usage. UI prefixes with "~" to signal estimate.
     var estimatedTokensPerSecond: Double? {
-        guard elapsedSeconds > 0.05 else { return nil }  // < 50 ms is noise
+        guard let decodeSeconds, decodeSeconds > 0.05 else { return nil }  // < 50 ms is noise
         let estTokens = Double(charCount) / 4.0
-        return estTokens / elapsedSeconds
+        return estTokens / decodeSeconds
     }
 
     /// Authoritative tokens/sec when the server reported usage.
+    ///
+    /// ``completionTokens - 1`` intervals span the decode window: the
+    /// first token is what ENDS prefill, so it is not generated during
+    /// ``decodeSeconds``. This is the standard inverse-TPOT definition
+    /// and it needs at least two tokens to mean anything — a one-token
+    /// reply returns ``nil`` and the caption simply omits a rate rather
+    /// than dividing by a window the token never occupied.
     var reportedTokensPerSecond: Double? {
-        guard let completionTokens, elapsedSeconds > 0.05 else { return nil }
-        return Double(completionTokens) / elapsedSeconds
+        guard let completionTokens, completionTokens > 1,
+              let decodeSeconds, decodeSeconds > 0.05 else { return nil }
+        return Double(completionTokens - 1) / decodeSeconds
     }
 }

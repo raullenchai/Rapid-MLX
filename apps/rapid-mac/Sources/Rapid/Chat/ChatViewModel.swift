@@ -1667,6 +1667,17 @@ These rules apply to every tool, not just web search.
         // stats caption falls back to the char-count estimate.
         var capturedPromptTokens: Int?
         var capturedCompletionTokens: Int?
+        // The instant the first GENERATED token lands, on whichever channel
+        // carries it. Everything before it is prefill (prompt processing),
+        // which must not be charged to the decode rate the caption reports —
+        // see ``MessageStats/decodeSeconds``.
+        //
+        // Reasoning counts. A thinking model emits its whole reasoning block
+        // before the first prose token, and the server's `completion_tokens`
+        // includes those tokens; starting the clock at the first `.content`
+        // delta would divide every reasoning token by the prose-only window
+        // and report a rate several times the real one.
+        var firstTokenAt: Date?
         do {
             // #17 desktop-half: thread the per-launch bearer through
             // every chat request. ``server.activeBearer`` rotates
@@ -1676,6 +1687,7 @@ These rules apply to every tool, not just web search.
                 guard let self else { return }
                 switch event {
                 case .content(let delta):
+                    if firstTokenAt == nil { firstTokenAt = Date() }
                     current.content += delta
                     // #478: announce the response start once, then the
                     // trailing un-announced sentence(s) on a throttled
@@ -1694,6 +1706,7 @@ These rules apply to every tool, not just web search.
                         }
                     }
                 case .reasoning(let delta):
+                    if firstTokenAt == nil { firstTokenAt = Date() }
                     current.reasoning += delta
                 case .toolCalls(let calls):
                     capturedCalls = calls
@@ -1917,7 +1930,9 @@ These rules apply to every tool, not just web search.
                 elapsedSeconds: elapsed,
                 charCount: current.content.count,
                 promptTokens: capturedPromptTokens,
-                completionTokens: capturedCompletionTokens
+                completionTokens: capturedCompletionTokens,
+                timeToFirstTokenSeconds: firstTokenAt
+                    .map { $0.timeIntervalSince(streamStart) }
             )
             writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
         }
