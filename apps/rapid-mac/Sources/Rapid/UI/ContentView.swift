@@ -860,9 +860,9 @@ struct ContentView: View {
 
 /// Approval dialog for the ``browse`` tool: present while a request is
 /// pending, deny on external dismiss (Esc / click-outside) so a suspended
-/// tool can never hang waiting on a sheet the user has closed. There is no
-/// per-URL "always allow" — URLs vary each call; unattended users flip
-/// **Auto-approve browsing** in Settings → Tools.
+/// tool can never hang waiting on a sheet the user has closed. "Always allow"
+/// enables the persisted public-web auto-approval mode that can be turned off
+/// again in Settings → Tools.
 private struct BrowseApprovalDialog: ViewModifier {
     let store: BrowseApprovalStore
 
@@ -918,11 +918,17 @@ private struct BrowseApprovalSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Text("Always allow applies to all future public web pages. You can turn it off in Settings → Tools.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             HStack {
                 Spacer()
                 Button("Don't allow") { store.answer(.deny) }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("ToolApproval.Browse.Deny")
+                Button("Always allow") { store.alwaysAllow() }
+                    .accessibilityIdentifier("ToolApproval.Browse.AlwaysAllow")
                 Button("Allow once") { store.answer(.allowOnce) }
                     .keyboardShortcut(.defaultAction)
                     .accessibilityIdentifier("ToolApproval.Browse.Allow")
@@ -934,7 +940,7 @@ private struct BrowseApprovalSheet: View {
         // An accessibility modifier on a container that is not its own
         // accessibility element is applied to the elements it contains, so a
         // wrapper identifier can be stamped onto the descendants and make the
-        // name ambiguous — including over the two buttons a flow actually
+        // name ambiguous — including over the three buttons a flow actually
         // needs to press. "The approval is up" is better asserted by waiting
         // for `ToolApproval.Browse.Allow`, which is the control the user acts
         // on rather than a wrapper around it.

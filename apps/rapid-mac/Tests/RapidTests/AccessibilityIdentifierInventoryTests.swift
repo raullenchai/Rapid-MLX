@@ -275,7 +275,7 @@ struct AccessibilityIdentifierInventoryTests {
     /// is a real SwiftUI `.sheet`, so — unlike a `confirmationDialog` — its
     /// buttons are ordinary SwiftUI buttons and carry identifiers directly.
     ///
-    /// The two *answers* are named; the enclosing stack deliberately is not.
+    /// The three *answers* are named; the enclosing stack deliberately is not.
     /// An accessibility modifier on a container that is not its own
     /// accessibility element applies to the elements it contains, so naming
     /// the wrapper risks stamping that name across its descendants — including
@@ -286,6 +286,7 @@ struct AccessibilityIdentifierInventoryTests {
         try assertDeclared(
             [
                 #""ToolApproval.Browse.Allow""#,
+                #""ToolApproval.Browse.AlwaysAllow""#,
                 #""ToolApproval.Browse.Deny""#,
             ],
             in: "Sources/Rapid/UI/ContentView.swift",

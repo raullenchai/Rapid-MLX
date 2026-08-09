@@ -13,6 +13,13 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+
+- **Web-page approvals now include “Always allow.”** Choose it once to let the
+  model read future public web pages without interrupting you for every URL.
+  Private and local addresses remain blocked, and the permission can be turned
+  off again in Settings → Tools.
+
 ### Fixed
 
 - **"Speed on this Mac" actually measures something.** It was posting to the

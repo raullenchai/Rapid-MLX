@@ -135,6 +135,32 @@ final class DeclinedToolDiagnosisTests {
         #expect(decision == .allowOnce)
     }
 
+    @Test("Always allow approves the pending fetch and persists auto-approval")
+    func alwaysAllowPersistsAndSkipsFuturePrompts() async throws {
+        let defaults = freshDefaults()
+        let approval = BrowseApprovalStore(defaults: defaults)
+
+        async let pending = approval.requestApproval(
+            url: "https://example.com/article",
+            host: "example.com"
+        )
+        try await waitForPendingApproval(approval)
+        approval.alwaysAllow()
+
+        #expect(await pending == .allowOnce)
+        #expect(approval.pendingRequest == nil)
+        #expect(approval.mode == .autoApproveAll)
+
+        let restored = BrowseApprovalStore(defaults: defaults)
+        #expect(restored.mode == .autoApproveAll)
+        let next = await restored.requestApproval(
+            url: "https://other.example/page",
+            host: "other.example"
+        )
+        #expect(next == .allowOnce)
+        #expect(restored.pendingRequest == nil)
+    }
+
     // MARK: - Declining a cross-origin redirect
 
     @Test("Declining a redirect to another host is a user decline too")
