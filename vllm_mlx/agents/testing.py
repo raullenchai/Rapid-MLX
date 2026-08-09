@@ -1436,6 +1436,9 @@ class AgentTestRunner:
             sys.exit = lambda *a: None
             try:
                 spec.loader.exec_module(mod)
+                run_suite = getattr(mod, "run_suite", None)
+                if callable(run_suite):
+                    run_suite()
             except SystemExit:
                 pass  # expected — test modules call exit()
             except Exception as e:

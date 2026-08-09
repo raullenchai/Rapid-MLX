@@ -30,12 +30,15 @@ from vllm_mlx.http_auth import rapid_mlx_auth_headers
 
 BASE_URL = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
 AUTH_HEADERS = rapid_mlx_auth_headers()
-# Auto-detect model from server
+MODEL_ID = "default"
+
 try:
-    resp = httpx.get(f"{BASE_URL}/models", headers=AUTH_HEADERS, timeout=5)
-    MODEL_ID = resp.json()["data"][0]["id"]
-except Exception:
-    MODEL_ID = "default"
+    import pytest
+
+    pytestmark = pytest.mark.integration
+except ModuleNotFoundError:
+    # The file ships as a runtime doctor harness; pytest is optional there.
+    pass
 
 HERMES_BIN = os.environ.get(
     "HERMES_BIN",
@@ -679,65 +682,75 @@ def test_hermes_patch_file():
 
 
 # =============================================================================
-# Main — runs at module load so the doctor harness (which loads this file
-# via importlib.util.spec_from_file_location → exec_module) can read the
-# populated `results` dict. Was previously gated on `__name__ == "__main__"`,
-# which the harness's exec_module path never satisfies (module name becomes
-# `specific_test_test_hermes`), so all tests silently skipped and the harness
-# reported "No test results found". See vllm_mlx/agents/testing.py L1117.
+# Main — explicit so pytest can collect and deselect this integration module
+# without contacting localhost or executing agent commands. AgentTestRunner
+# invokes run_suite() after loading modules that expose it.
 # =============================================================================
 
-print("Rapid-MLX Hermes Integration Tests")
-print(f"Server: {BASE_URL}")
-print(f"Model:  {MODEL_ID}")
-print(f"Hermes: {HERMES_BIN}")
-print(f"{'=' * 60}")
 
-t0 = time.time()
+def run_suite() -> int:
+    global MODEL_ID
 
-# API-level tests (always run — no hermes binary required)
-run_test("api_plain_chat", test_api_plain_chat)
-run_test("api_single_tool_call", test_api_single_tool_call)
-run_test("api_tool_choice", test_api_tool_choice)
-run_test("api_multi_turn_tool", test_api_multi_turn_tool)
-run_test("api_no_tool_leak", test_api_no_tool_leak)
-run_test("api_many_tools", test_api_many_tools)
-run_test("api_streaming_tool_call", test_api_streaming_tool_call)
-run_test("api_no_tool_needed", test_api_no_tool_needed)
-run_test("api_parallel_tool_calls", test_api_parallel_tool_calls)
-run_test("api_stress_no_leak", test_api_stress_no_leak)
+    try:
+        resp = httpx.get(f"{BASE_URL}/models", headers=AUTH_HEADERS, timeout=5)
+        MODEL_ID = resp.json()["data"][0]["id"]
+    except Exception:
+        MODEL_ID = "default"
 
-# Hermes E2E tests (require hermes binary)
-if os.path.exists(HERMES_BIN):
-    ensure_hermes_config()
-    run_test("hermes_chat", test_hermes_chat)
-    run_test("hermes_read_file", test_hermes_read_file)
-    run_test("hermes_terminal", test_hermes_terminal)
-    run_test("hermes_search", test_hermes_search)
-    run_test("hermes_multi_step", test_hermes_multi_step)
+    results.clear()
+    print("Rapid-MLX Hermes Integration Tests")
+    print(f"Server: {BASE_URL}")
+    print(f"Model:  {MODEL_ID}")
+    print(f"Hermes: {HERMES_BIN}")
+    print(f"{'=' * 60}")
+    t0 = time.time()
 
-    # Deep agentic tests
-    run_test("hermes_write_and_run", test_hermes_write_and_run)
-    run_test("hermes_code_with_tests", test_hermes_code_with_tests)
-    run_test("hermes_code_review", test_hermes_code_review)
-    run_test("hermes_git_analysis", test_hermes_git_analysis)
-    run_test("hermes_patch_file", test_hermes_patch_file)
-else:
-    print(f"\n⚠️ Skipping Hermes E2E tests: {HERMES_BIN} not found")
+    api_tests = [
+        ("api_plain_chat", test_api_plain_chat),
+        ("api_single_tool_call", test_api_single_tool_call),
+        ("api_tool_choice", test_api_tool_choice),
+        ("api_multi_turn_tool", test_api_multi_turn_tool),
+        ("api_no_tool_leak", test_api_no_tool_leak),
+        ("api_many_tools", test_api_many_tools),
+        ("api_streaming_tool_call", test_api_streaming_tool_call),
+        ("api_no_tool_needed", test_api_no_tool_needed),
+        ("api_parallel_tool_calls", test_api_parallel_tool_calls),
+        ("api_stress_no_leak", test_api_stress_no_leak),
+    ]
+    for name, test in api_tests:
+        run_test(name, test)
 
-elapsed = time.time() - t0
-passed = sum(1 for v in results.values() if v == "PASS")
-failed = sum(1 for v in results.values() if v != "PASS")
+    if os.path.exists(HERMES_BIN):
+        ensure_hermes_config()
+        hermes_tests = [
+            ("hermes_chat", test_hermes_chat),
+            ("hermes_read_file", test_hermes_read_file),
+            ("hermes_terminal", test_hermes_terminal),
+            ("hermes_search", test_hermes_search),
+            ("hermes_multi_step", test_hermes_multi_step),
+            ("hermes_write_and_run", test_hermes_write_and_run),
+            ("hermes_code_with_tests", test_hermes_code_with_tests),
+            ("hermes_code_review", test_hermes_code_review),
+            ("hermes_git_analysis", test_hermes_git_analysis),
+            ("hermes_patch_file", test_hermes_patch_file),
+        ]
+        for name, test in hermes_tests:
+            run_test(name, test)
+    else:
+        print(f"\n⚠️ Skipping Hermes E2E tests: {HERMES_BIN} not found")
 
-print(f"\n{'=' * 60}")
-print(f"Results: {passed}/{len(results)} passed ({elapsed:.1f}s)")
-print(f"Model:   {MODEL_ID}")
-print(f"{'=' * 60}")
-for name, status in results.items():
-    icon = "✅" if status == "PASS" else "❌"
-    print(f"  {icon} {name}: {status}")
+    elapsed = time.time() - t0
+    passed = sum(1 for value in results.values() if value == "PASS")
+    failed = len(results) - passed
+    print(f"\n{'=' * 60}")
+    print(f"Results: {passed}/{len(results)} passed ({elapsed:.1f}s)")
+    print(f"Model:   {MODEL_ID}")
+    print(f"{'=' * 60}")
+    for name, status in results.items():
+        icon = "✅" if status == "PASS" else "❌"
+        print(f"  {icon} {name}: {status}")
+    return failed
 
-# When run as a standalone script, exit non-zero on any failure. Under the
-# harness, sys.exit is patched out so this only matters for manual runs.
-if __name__ == "__main__" and failed:
+
+if __name__ == "__main__" and run_suite():
     sys.exit(1)

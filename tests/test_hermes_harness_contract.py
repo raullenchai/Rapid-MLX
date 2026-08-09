@@ -3,8 +3,8 @@
 
 The doctor harness loads agent-specific integration tests via
 ``importlib.util.spec_from_file_location`` + ``spec.loader.exec_module``
-(see ``vllm_mlx/agents/testing.py:_run_specific_tests``). It then reads
-``mod.results`` to extract per-test PASS/FAIL entries.
+(see ``vllm_mlx/agents/testing.py:_run_specific_tests``), invokes an optional
+``run_suite`` entry point, then reads ``mod.results`` for PASS/FAIL entries.
 
 For five weeks (PR #99 → PR #354) ``tests/integrations/test_hermes.py``
 gated every ``run_test(...)`` invocation behind
@@ -14,8 +14,8 @@ never opened — no tests ran, ``results`` stayed empty, and the harness
 silently reported "No test results found (missing 'results' dict or
 all tests skipped)" on every full-tier run.
 
-This test pins the contract: when loaded the way the harness loads it,
-``mod.results`` must be populated. Mocks ``httpx`` so each API call
+This test pins the contract: loading alone is side-effect free, and invoking
+``run_suite`` populates ``mod.results``. Mocks ``httpx`` so each API call
 fails fast — every test ends up FAIL'd, but the dict is non-empty,
 which is the actual invariant the harness depends on.
 """
@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_HERMES = REPO_ROOT / "tests" / "integrations" / "test_hermes.py"
 
 
-def test_test_hermes_populates_results_under_exec_module(monkeypatch):
+def test_test_hermes_populates_results_when_harness_invokes_suite(monkeypatch):
     """Load test_hermes.py the way the doctor harness does and verify the
     module-level ``results`` dict gets populated. Regression guard for
     the PR #99 + PR #125 mismatch — see module docstring.
@@ -81,6 +81,8 @@ def test_test_hermes_populates_results_under_exec_module(monkeypatch):
     sys.exit = lambda *a: None
     try:
         spec.loader.exec_module(mod)
+        assert mod.results == {}, "loading the module must not run live tests"
+        mod.run_suite()
     except SystemExit:
         pass
     finally:
