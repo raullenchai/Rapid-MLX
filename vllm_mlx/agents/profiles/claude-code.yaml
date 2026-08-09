@@ -27,8 +27,9 @@ testing:
   binary: claude
   # The E2E suite asks Claude to read a fixture and run one echo command in
   # isolated throwaway workspaces. Print mode requires those tools to be
-  # explicitly allowed or it refuses the calls non-interactively.
-  query_cmd: "claude --allowedTools Read Bash -p '{query}'"
+  # explicitly allowed or it refuses the calls non-interactively. Scope each
+  # permission to the exact fixture/command; changing cwd is not a sandbox.
+  query_cmd: "claude --allowedTools 'Read(pyproject.toml)' 'Bash(echo rapidmlx_claude-code_test)' -p '{query}'"
   query_timeout: 180
   install_cmd: "npm install -g @anthropic-ai/claude-code"
 

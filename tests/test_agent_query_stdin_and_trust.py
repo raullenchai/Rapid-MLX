@@ -118,6 +118,18 @@ def test_query_placeholder_still_substitutes():
     assert out == "ARG:what is 2+2"
 
 
+def test_query_quotes_cannot_change_the_child_argv():
+    """Prompts are data even when they contain the template's quote style."""
+    script = "import json, sys; sys.stdout.write(json.dumps(sys.argv[1:]))"
+    cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} '{{query}}'"
+    query = "Run 'echo safe' and report the result"
+
+    out, err = _agent_query(sys.executable, cmd, query, timeout=_TIMEOUT_S)
+
+    assert err is None, f"unexpected error: {err}"
+    assert out == "[\"Run 'echo safe' and report the result\"]"
+
+
 def test_agent_runs_in_the_given_workspace_not_the_callers_cwd():
     """`--skip-git-repo-check` is only safe in a directory we built ourselves.
 

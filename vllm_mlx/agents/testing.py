@@ -842,13 +842,15 @@ def _agent_query(
         if not os.path.exists(binary_path):
             return None, f"Binary not found: {binary}"
 
-    # Substitute {query} placeholder and parse with shlex to respect quotes
-    cmd_str = query_cmd.replace("{query}", query)
+    # Parse the command template first, then substitute the query inside the
+    # already-separated argv entries. Substituting before ``shlex.split`` lets
+    # quotes or shell-like text in a prompt change the child argument vector.
     try:
-        cmd_parts = shlex.split(cmd_str)
+        cmd_parts = shlex.split(query_cmd)
     except ValueError:
         # Fallback: simple split if shlex can't parse
-        cmd_parts = cmd_str.split()
+        cmd_parts = query_cmd.split()
+    cmd_parts = [part.replace("{query}", query) for part in cmd_parts]
     # Replace first part with full binary path
     cmd_parts[0] = binary_path
 
