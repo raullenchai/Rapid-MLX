@@ -680,8 +680,8 @@ struct ModelPickerVisibilityTests {
         }
     }
 
-    @Test("filter drops denylisted aliases, and hiddenCount does NOT count them (footer copy is about size, not brokenness)")
-    func denylistFilteredAndNotCounted() {
+    @Test("filter drops denylisted aliases as well as size-hidden ones")
+    func denylistAndSizeHiddenBothDrop() {
         let entries = [
             ModelEntry(alias: "ministral-3b-4bit", hfRepo: nil, sizeOnDisk: nil, cached: true),
             ModelEntry(alias: "qwen3-0.6b-4bit", hfRepo: nil, sizeOnDisk: nil, cached: true),
@@ -695,16 +695,17 @@ struct ModelPickerVisibilityTests {
         // Broken (ministral) AND size-hidden (0.6b) both drop; only the
         // 4B survives.
         #expect(filtered.map(\.alias) == ["qwen3.5-4b-4bit"])
-        // But the footer count reflects ONLY the 1 size-hidden alias —
-        // the denylisted one is excluded so "N small models hidden ·
-        // toggle in Settings" stays truthful (the toggle won't reveal
-        // ministral).
-        #expect(
-            ModelPickerVisibility.hiddenCount(
-                entries,
-                selectedAlias: "qwen3.5-4b-4bit",
-                includeAll: false
-            ) == 1
+        // The two are hidden for DIFFERENT reasons, and only one is
+        // recoverable: flipping "Show small models" brings back the 0.6b,
+        // while ministral stays out however the toggle is set. Pinned here
+        // because the filter is now the only thing that distinguishes
+        // them — the picker no longer prints a count that could say so.
+        let unfiltered = ModelPickerVisibility.filter(
+            entries,
+            selectedAlias: "qwen3.5-4b-4bit",
+            includeAll: true
         )
+        #expect(unfiltered.map(\.alias).contains("qwen3-0.6b-4bit"))
+        #expect(!unfiltered.map(\.alias).contains("ministral-3b-4bit"))
     }
 }
