@@ -8,7 +8,7 @@
 # aliases it affects — one representative per family, plus any alias the change
 # touches.
 #
-# Each alias is booted on a dedicated port with --no-thinking, run through
+# Each alias is booted on a dedicated port in its manifest-selected lane, run through
 # evals/coherence_gate.py (blocking golden answers), then torn down before the
 # next. Any alias that fails its blocking golden gate fails the whole sweep.
 #
@@ -109,6 +109,18 @@ for MODEL in $MODELS; do
     fi
   fi
   SERVE_ARGS=(--port "$PORT")
+  if "$PY" scripts/release_fleet.py forces-text-lane "$MODEL"; then
+    # Gemma 4's checkpoint also carries a vision tower, but this gate scores
+    # its text path. Auto-routing would require the optional mlx-vlm extra and
+    # fail a valid base-wheel release before the first golden prompt (#1685).
+    SERVE_ARGS+=(--no-mllm)
+  else
+    classifier_status=$?
+    if [ "$classifier_status" -ne 1 ]; then
+      echo "ERROR: could not classify serving lane for $MODEL" >&2
+      exit 2
+    fi
+  fi
   if [ "$DISTILL" = "1" ]; then
     # The serve CLI exposes the reasoning profile as ``--reasoning``;
     # ``--thinking`` has never been a valid serve flag. The stale flag made

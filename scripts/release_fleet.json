@@ -25,6 +25,7 @@
       "coherence_model": "gemma-4-12b-4bit",
       "coverage_class": "multimodal",
       "scopes": ["release", "toolchain"],
+      "coherence_force_text_lane": true,
       "artifact_matrix": {
         "model": "gemma-4-12b-4bit",
         "server_args": ["--no-thinking"],

@@ -144,6 +144,28 @@ def test_reasoning_distill_classifier_resolves_alias_and_hf_path(fleet):
     assert not fleet.is_reasoning_distill_model("qwen3.5-4b-4bit")
 
 
+def test_force_text_lane_classifier_is_explicit_and_resolves_hf_path(fleet):
+    gemma = next(f for f in fleet.load_fleet() if f.name == "gemma4")
+    assert gemma.coherence_force_text_lane is True
+    assert fleet.coherence_forces_text_lane("gemma-4-12b-4bit")
+    assert fleet.coherence_forces_text_lane("mlx-community/gemma-4-12B-it-4bit")
+    assert not fleet.coherence_forces_text_lane("qwen3.5-4b-4bit")
+
+
+def test_force_text_lane_flag_defaults_false_and_rejects_non_bool(fleet, tmp_path):
+    data = json.loads(fleet.DEFAULT_MANIFEST.read_text())
+    del data["families"]["gemma4"]["coherence_force_text_lane"]
+    defaulted = tmp_path / "defaulted.json"
+    defaulted.write_text(json.dumps(data))
+    assert all(not f.coherence_force_text_lane for f in fleet.load_fleet(defaulted))
+
+    data["families"]["gemma4"]["coherence_force_text_lane"] = "yes"
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="coherence_force_text_lane must be a boolean"):
+        fleet.load_fleet(invalid)
+
+
 def test_reasoning_distill_classifier_reports_infrastructure_failure(
     fleet, monkeypatch, capsys
 ):
@@ -277,3 +299,10 @@ def test_reasoning_distill_sweep_uses_supported_serve_flag():
     script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
     assert "SERVE_ARGS+=(--reasoning)" in script
     assert "SERVE_ARGS+=(--thinking)" not in script
+
+
+def test_coherence_sweep_pins_text_only_lane():
+    """G0a scores text and must not require the optional vision dependency."""
+    script = (REPO_ROOT / "scripts" / "coherence_sweep.sh").read_text()
+    assert 'scripts/release_fleet.py forces-text-lane "$MODEL"' in script
+    assert "SERVE_ARGS+=(--no-mllm)" in script

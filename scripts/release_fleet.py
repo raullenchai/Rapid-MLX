@@ -51,6 +51,7 @@ class FleetFamily:
     artifact_matrix: dict[str, Any] | None
     coherence_enabled: bool = True
     reasoning_distill: bool = False
+    coherence_force_text_lane: bool = False
 
 
 def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
@@ -74,6 +75,7 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
         artifact = raw.get("artifact_matrix")
         coherence_enabled = raw.get("coherence", True)
         reasoning_distill = raw.get("reasoning_distill", False)
+        coherence_force_text_lane = raw.get("coherence_force_text_lane", False)
         if (
             not isinstance(model, str)
             or not model
@@ -104,6 +106,8 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
             raise ValueError(f"{name}: coherence must be a boolean")
         if not isinstance(reasoning_distill, bool):
             raise ValueError(f"{name}: reasoning_distill must be a boolean")
+        if not isinstance(coherence_force_text_lane, bool):
+            raise ValueError(f"{name}: coherence_force_text_lane must be a boolean")
         families.append(
             FleetFamily(
                 name=name,
@@ -113,6 +117,7 @@ def load_fleet(path: Path = DEFAULT_MANIFEST) -> tuple[FleetFamily, ...]:
                 artifact_matrix=artifact,
                 coherence_enabled=coherence_enabled,
                 reasoning_distill=reasoning_distill,
+                coherence_force_text_lane=coherence_force_text_lane,
             )
         )
     release_classes = {
@@ -154,6 +159,26 @@ def is_reasoning_distill_model(model: str, *, path: Path = DEFAULT_MANIFEST) -> 
         return True
 
     # Import lazily so ordinary fleet parsing stays dependency-light.
+    from vllm_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile(model)
+    if profile is None:
+        return False
+    return any(
+        (candidate := resolve_profile(family.coherence_model)) is not None
+        and candidate.hf_path == profile.hf_path
+        for family in families
+    )
+
+
+def coherence_forces_text_lane(model: str, *, path: Path = DEFAULT_MANIFEST) -> bool:
+    """Return whether G0a must use the base-wheel-compatible text lane."""
+    families = tuple(
+        family for family in load_fleet(path) if family.coherence_force_text_lane
+    )
+    if any(model == family.coherence_model for family in families):
+        return True
+
     from vllm_mlx.model_aliases import resolve_profile
 
     profile = resolve_profile(model)
@@ -279,6 +304,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="exit 0 iff the given coherence model is a reasoning-distill family",
     )
     distill.add_argument("model", help="coherence_model alias to test")
+    text_lane = subparsers.add_parser(
+        "forces-text-lane",
+        help="exit 0 iff G0a should force this coherence model onto the text lane",
+    )
+    text_lane.add_argument("model", help="coherence_model alias to test")
     return parser
 
 
@@ -287,6 +317,12 @@ def main() -> int:
     if args.command == "is-reasoning-distill":
         try:
             return 0 if is_reasoning_distill_model(args.model) else 1
+        except (OSError, ValueError) as exc:
+            print(f"release fleet classification failed: {exc}", file=sys.stderr)
+            return 2
+    if args.command == "forces-text-lane":
+        try:
+            return 0 if coherence_forces_text_lane(args.model) else 1
         except (OSError, ValueError) as exc:
             print(f"release fleet classification failed: {exc}", file=sys.stderr)
             return 2
