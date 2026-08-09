@@ -437,5 +437,6 @@ jobs:
           # Publish the mutable pointer last: this is the update transaction's
           # commit point. The current bundled DMG needs no sidecar fields.
           npx --yes wrangler@4 r2 object put "${R2_BUCKET}/latest.json" \
-            --file dist/latest.json --content-type application/json --remote
+            --file dist/latest.json --content-type application/json \
+            --cache-control "no-cache, must-revalidate" --remote
           echo "::notice::Published ${DMG_URL} and ${CDN_BASE%/}/latest.json"
