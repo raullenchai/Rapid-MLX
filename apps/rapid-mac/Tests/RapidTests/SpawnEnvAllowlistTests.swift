@@ -203,7 +203,7 @@ struct SpawnEnvAllowlistTests {
     func unavailablePhysicalRAMProbeKeepsEngineFallback() {
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",
-            ambient: [:],
+            ambient: ["RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "999999999999"],
             physicalRAMBytes: 0,
             availableRAMBytes: UInt64(8) << 30
         )
@@ -215,7 +215,7 @@ struct SpawnEnvAllowlistTests {
     func unavailableFreeRAMProbeKeepsEngineFallback() {
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",
-            ambient: [:],
+            ambient: ["RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "999999999999"],
             physicalRAMBytes: UInt64(32) << 30,
             availableRAMBytes: 0
         )
