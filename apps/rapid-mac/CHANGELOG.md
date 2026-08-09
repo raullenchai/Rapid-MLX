@@ -23,10 +23,11 @@ can actually understand.
 ### Changed
 
 - **The speed test is gone.** It was a card on the empty chat screen that
-  measured your Mac against the model you had open. Two releases in a row
-  shipped it broken, and the number it produced disagreed with the one the
-  chat itself reported, so it created more doubt than confidence. The chat
-  caption below is now the single number for "how fast is this".
+  measured your Mac against the model you had open. It needed two fixes in
+  the week it existed, and the number it produced still disagreed with the
+  one the chat itself reported for the same model in the same minute — so it
+  created more doubt than confidence. The chat caption below, which is now
+  correct, is the better answer to "how fast is this".
 
 - **The chat tab opens on the conversation, not on two ads for itself.**
   "Connect tools" and "Speed on Mac" sat on the empty screen as the first
@@ -35,17 +36,19 @@ can actually understand.
 
 - **The model menu lists models.** "Refresh catalog", "Type a model name" and
   the "N small models hidden" footer are gone; what remains is the quickstart
-  picks, the recommendations, and what you have installed.
+  picks, the recommendations, and the full alphabetical list.
 
 ### Fixed
 
-- **One tok/s number, and it is the right one.** The chat caption timed the
+- **The chat's tok/s is now the model's actual writing speed.** It timed the
   whole turn, including the time the model spent reading your prompt before
-  writing anything. On a long or tool-carrying prompt that is most of the turn,
-  so the same model was captioned at 13 tok/s while generating at ~131 — and
-  the model picker advertised a third number again. The caption now measures
-  only the writing, and reports time-to-first-token separately, which is what
-  the wait actually was.
+  writing anything. On a long or tool-carrying prompt that is most of the
+  turn, so the same model was captioned at 13 tok/s while generating at ~131.
+  The caption now measures only the writing, and reports time-to-first-token
+  separately — which is what the wait actually was. (The model picker still
+  shows its own estimate for a model you have not run yet; that is a
+  different measurement, on different hardware assumptions, and is unchanged
+  here.)
 
 - **"Browse all models" in the setup wizard opens the model catalogue.** It used
   to close the wizard instead — your chosen model was discarded and you landed

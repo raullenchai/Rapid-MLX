@@ -215,7 +215,16 @@ struct ThroughputCaptionIntegrationTests {
             }
         }
 
-        // Hold the actor past the end of the whole stream, so there is no
+        // Wait until the transport has actually begun before starting the
+        // timed block. `Task.detached` only ENQUEUES the send; on a loaded
+        // runner it can sit unscheduled long enough that the 0.30 s prefill
+        // ends after a block started at enqueue time, and correct production
+        // code would then fail. The stream's own start is the reference
+        // point, not this line. Waiting here is safe because the transport
+        // runs on URLSession's threads, not on the actor being held.
+        PrefillHeavyProtocol.loadingStarted.wait()
+
+        // Now hold the actor past the end of the whole stream, so there is no
         // arrangement of scheduling in which a hop-side stamp could sneak in
         // early. `Task.sleep` would be the wrong tool and would make the test
         // vacuous: it SUSPENDS, which frees the actor to run exactly the hop
@@ -343,6 +352,10 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var decodeWindow: TimeInterval = 0.25
     nonisolated(unsafe) static var contentDeltas = 12
     nonisolated(unsafe) static var completionTokens: Int? = 12
+    /// Signalled the moment the transport begins, so a caller can start a
+    /// timed window knowing the stream is genuinely underway rather than
+    /// merely enqueued.
+    nonisolated(unsafe) static var loadingStarted = DispatchSemaphore(value: 0)
 
     static func reset(
         prefillDelay: TimeInterval,
@@ -354,6 +367,7 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
         Self.decodeWindow = decodeWindow
         Self.contentDeltas = contentDeltas
         Self.completionTokens = completionTokens
+        Self.loadingStarted = DispatchSemaphore(value: 0)
     }
 
     static func session() -> URLSession {
@@ -373,6 +387,7 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        Self.loadingStarted.signal()
 
         // The prefill. Nothing reaches the view model during this window, so
         // a correctly-wired TTFT lands at or after it.
