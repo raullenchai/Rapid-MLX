@@ -1634,7 +1634,16 @@ def warn_misbound_deepseek_v3_parser(
     #      ``hermes`` for the typical Qwen/Llama-arch case.
     #   4. ``auto_parser`` is a non-V3 family parser: auto-detect knows the
     #      right answer, so dropping the flag is the right call.
-    is_r1_distill = bool(re.search(r"deepseek.*r1.*distill", model_path, re.I))
+    distill_name = _extract_model_name_segment(model_path).lower()
+    is_r1_distill = bool(re.search(r"deepseek.*r1.*distill", distill_name))
+    if not is_r1_distill:
+        try:
+            profile = resolve_profile(model_path)
+        except Exception:  # noqa: BLE001
+            profile = None
+        if profile is not None:
+            canonical_name = _extract_model_name_segment(profile.hf_path).lower()
+            is_r1_distill = bool(re.search(r"deepseek.*r1.*distill", canonical_name))
     if is_r1_distill:
         remediation = (
             "Remove the explicit --tool-call-parser flag; R1-Distill "

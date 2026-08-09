@@ -45,7 +45,7 @@ truthfully from the authoritative test suite in
 |---|---|---|---|
 | Qwen 3.6 | `qwen3.6-*` (matrix reps via `qwen3.5-4b-4bit`, shares parsers) | `qwen3_coder_xml` (3.6) / `hermes` (3.5 rep) | `qwen3` |
 | Gemma 4 | `gemma-4-12b-4bit` | `gemma4` | `gemma4` |
-| DeepSeek | `deepseek-r1-32b-4bit` | `deepseek` | `deepseek_r1` |
+| DeepSeek | `deepseek-r1-32b-4bit` | none — checkpoint cannot emit calls (#1569) | `deepseek_r1_distill` |
 | gpt-oss | `gpt-oss-20b` | `harmony` | `harmony` |
 | Hy3 | `hy3-preview-4bit` (Ultra-only) | `hy_v3` | `hy_v3` |
 

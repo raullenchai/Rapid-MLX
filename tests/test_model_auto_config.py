@@ -1629,6 +1629,14 @@ class TestWarnMisboundDeepseekV3Parser:
         assert "do not reliably emit tool calls" in msg
         assert "Remove the explicit" in msg
 
+    def test_distill_parent_directory_does_not_disable_checkpoint_tools(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "/models/DeepSeek-R1-Distill/qwen-model", "deepseek_v3"
+        )
+        assert msg is not None
+        assert "do not reliably emit tool calls" not in msg
+        assert "hermes" in msg.lower()
+
     # Codex r5 follow-up nit: even when auto-detect's pick is a
     # DIFFERENT V3-family parser than the one bound (so the suggestion
     # would have fired under the r5 same-parser-only gate), suppress
