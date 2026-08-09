@@ -92,6 +92,17 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
             _should_start_in_thinking(conditional, False, unconditional=True) is False
         )
 
+    def test_1570_unrelated_enable_variable_does_not_hide_unconditional_marker(self):
+        template = (
+            "{% set enable_thinking = false %}"
+            "{% if add_generation_prompt %}<think>{% endif %}"
+        )
+        assert _should_start_in_thinking(template, False, unconditional=True) is True
+
+    def test_1570_named_default_template_is_resolved(self):
+        templates = {"default": self.THINKING_TEMPLATE, "tool_use": "plain"}
+        assert _should_start_in_thinking(templates, None) is True
+
     def test_plain_template_never_starts_in_thinking(self):
         """Templates without an implicit think marker should start as text."""
         assert _should_start_in_thinking("{{ add_generation_prompt }}", None) is False

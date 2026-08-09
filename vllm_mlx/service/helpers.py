@@ -742,7 +742,7 @@ def _apply_reasoning_cap(
 
 
 def _should_start_in_thinking(
-    chat_template: str,
+    chat_template,
     enable_thinking: bool | None,
     *,
     unconditional: bool = False,
@@ -773,8 +773,24 @@ def _should_start_in_thinking(
     route uses the same predicate and the contract has a single
     source of truth.
     """
+    if isinstance(chat_template, dict):
+        if "default" in chat_template:
+            chat_template = chat_template["default"]
+        elif len(chat_template) == 1:
+            chat_template = next(iter(chat_template.values()))
+        else:
+            chat_template = ""
+    if not isinstance(chat_template, str):
+        return False
     if enable_thinking is False:
-        if not unconditional or "enable_thinking" in chat_template:
+        marker_index = chat_template.find("<think>")
+        prefix = chat_template[:marker_index] if marker_index >= 0 else ""
+        active_if = prefix.rfind("{% if")
+        active_endif = prefix.rfind("{% endif")
+        marker_depends_on_enable = (
+            active_if > active_endif and "enable_thinking" in prefix[active_if:]
+        )
+        if not unconditional or marker_depends_on_enable:
             return False
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
