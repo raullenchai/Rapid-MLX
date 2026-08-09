@@ -15,6 +15,7 @@ from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
     FunctionaryToolParser,
+    Gemma4ToolParser,
     Glm47ToolParser,
     GraniteToolParser,
     HarmonyToolParser,
@@ -22,6 +23,7 @@ from vllm_mlx.tool_parsers import (
     KimiToolParser,
     LfmToolParser,
     LlamaToolParser,
+    MiniMaxToolParser,
     MistralToolParser,
     NemotronToolParser,
     QwenToolParser,
@@ -45,6 +47,11 @@ class TestNativeToolFormatCapability:
             HermesToolParser,
             HarmonyToolParser,
             Glm47ToolParser,
+            QwenToolParser,
+            Gemma4ToolParser,
+            MiniMaxToolParser,
+            NemotronToolParser,
+            xLAMToolParser,
         ]
         for parser_cls in native_parsers:
             assert parser_cls.SUPPORTS_NATIVE_TOOL_FORMAT is True, (
@@ -57,9 +64,6 @@ class TestNativeToolFormatCapability:
     def test_parsers_without_native_support(self):
         """Parsers that don't support native tool format should return False."""
         non_native_parsers = [
-            QwenToolParser,
-            NemotronToolParser,
-            xLAMToolParser,
             AutoToolParser,
             LfmToolParser,
         ]
@@ -85,6 +89,11 @@ class TestNativeToolFormatCapability:
             "harmony",
             "glm47",
             "glm4",
+            "qwen",
+            "gemma4",
+            "minimax",
+            "nemotron",
+            "xlam",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert parser_cls.supports_native_format() is True, (
@@ -92,11 +101,26 @@ class TestNativeToolFormatCapability:
             )
 
         # No native support
-        for name in ["qwen", "nemotron", "xlam", "auto", "lfm", "liquid"]:
+        for name in ["auto", "lfm", "liquid"]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert parser_cls.supports_native_format() is False, (
                 f"Parser '{name}' should not support native format"
             )
+
+    def test_every_registered_parser_makes_native_support_explicit(self):
+        """Concrete parsers must not silently inherit the base default."""
+        parser_classes = set(ToolParserManager.tool_parsers.values())
+
+        missing = sorted(
+            parser_cls.__name__
+            for parser_cls in parser_classes
+            if "SUPPORTS_NATIVE_TOOL_FORMAT" not in parser_cls.__dict__
+        )
+
+        assert not missing, (
+            "Every registered parser must explicitly declare "
+            f"SUPPORTS_NATIVE_TOOL_FORMAT; missing: {missing}"
+        )
 
 
 class TestExtractMultimodalContentNativeFormat:

@@ -41,6 +41,10 @@ class xLAMToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("raw_json",)
 
+    # xLAM's chat template consumes OpenAI-shaped ``tool_calls`` and
+    # ``role="tool"`` messages when rebuilding multi-turn agent history.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Patterns for extracting JSON
     CODE_BLOCK_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)```")
     THINKING_PATTERN = re.compile(r"</think>\s*([\s\S]*)")

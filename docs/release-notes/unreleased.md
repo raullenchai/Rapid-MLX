@@ -62,6 +62,9 @@ to always-allow rather than prompting every time (#1695).
   a deterministic forced call, streaming channel hygiene, and stream/non-stream
   tool-result replay without treating small-model knowledge errors as engine
   release failures (#1676, #1677).
+- Multi-turn tool history now stays in each model family's trained wire format
+  for Qwen, Gemma 4, MiniMax, Nemotron and xLAM instead of being rewritten into
+  the generic `[Calling tool: ...]` transcript (#1593).
 
 ## Release engineering
 

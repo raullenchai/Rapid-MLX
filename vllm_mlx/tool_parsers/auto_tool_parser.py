@@ -89,6 +89,10 @@ class AutoToolParser(ToolParser):
     This is the default parser when no specific parser is selected.
     """
 
+    # Deliberately conservative: output-shape auto-detection cannot prove the
+    # unknown model's input chat template accepts structured tool history.
+    SUPPORTS_NATIVE_TOOL_FORMAT = False
+
     # Patterns for different formats
     MISTRAL_TOKEN = "[TOOL_CALLS]"
 

@@ -47,6 +47,10 @@ class QwenToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("tool_call_json", "calling_tool_text")
 
+    # Qwen chat templates render assistant ``tool_calls`` and ``role="tool"``
+    # history into the family's native <tool_call>/<tool_response> transcript.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Pattern for XML-style: <tool_call>{"json"}</tool_call>
     XML_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 

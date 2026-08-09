@@ -688,6 +688,10 @@ class Gemma4ToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("gemma4_native", "calling_tool_text")
 
+    # Gemma 4's template owns both tool-call and tool-response channel tokens;
+    # preserving structured history lets it reconstruct its trained transcript.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Grammar-CAPABLE (#558 E4): overrides ``structure_info`` below to emit the
     # gemma4 native arg body (``arg_style="gemma4"``). The three wire markers are
     # single special tokens on the target tokenizer (verified on

@@ -53,6 +53,10 @@ class NemotronToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("tool_call_xml_body",)
 
+    # Nemotron's tool template accepts structured assistant calls and tool
+    # results, rendering its native function/parameter XML transcript.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # How much of ``current_text`` this turn has already been accounted for on
     # the wire — forwarded as prose, consumed into an emitted call, or released
     # after a refusal. The refusal release below sends only what lies past it.

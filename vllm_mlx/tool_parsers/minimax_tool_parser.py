@@ -44,6 +44,10 @@ class MiniMaxToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("minimax_native",)
 
+    # MiniMax-M2 templates consume assistant ``tool_calls`` plus ``tool``
+    # messages and render the matching minimax tool-call/result envelopes.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     TOOL_CALL_BLOCK = re.compile(
         r"<minimax:tool_call>(.*?)</minimax:tool_call>", re.DOTALL
     )
