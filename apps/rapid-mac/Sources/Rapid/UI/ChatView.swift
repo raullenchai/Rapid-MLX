@@ -201,6 +201,9 @@ struct ChatView: View {
     @Environment(QuickstartCoordinator.self) private var quickstart
 
     @State private var draft: String = ""
+    @State private var imageAttachments: [ChatImageAttachment] = []
+    @State private var attachmentNotice: String?
+    @State private var isImageDropTarget = false
     @State private var composeFocusToken: Int = 0
     @State private var showConnectTools = false
     @State private var showBenchmark = false
@@ -480,6 +483,10 @@ struct ChatView: View {
                 InlineNotice(message: error, tone: .error)
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
+            } else if let attachmentNotice {
+                InlineNotice(message: attachmentNotice, tone: .error)
+                    .frame(maxWidth: contentMaxWidth)
+                    .frame(maxWidth: .infinity)
             }
             // One input, not a pill containing a second pill.
             //
@@ -491,6 +498,9 @@ struct ChatView: View {
             // tall and read as a card that happened to contain a text
             // area; this reads as a text field with controls in it.
             VStack(spacing: RapidTheme.Space.sm - 2) {
+                if !imageAttachments.isEmpty {
+                    attachmentStrip
+                }
                 // The field stays live in every state — a user may draft
                 // while the model downloads, and that draft survives the
                 // transition to ready untouched. Only the send ACTION is
@@ -503,6 +513,7 @@ struct ChatView: View {
                     placeholder: readiness.composerPlaceholder,
                     onSubmit: send,
                     onCancel: { viewModel.stop() },
+                    onPasteImages: pasteImagesFromClipboard,
                     onRecallLastUser: {
                         messages.last(where: { $0.role == .user })?.content
                     }
@@ -517,8 +528,21 @@ struct ChatView: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
-                    .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
+                    .strokeBorder(
+                        isImageDropTarget ? RapidTheme.brandPrimary : RapidTheme.hairlineStrong,
+                        lineWidth: isImageDropTarget ? 2 : 1
+                    )
             )
+            .dropDestination(for: URL.self) { urls, _ in
+                guard supportsImageInput else {
+                    rejectImageInputForCurrentModel()
+                    return false
+                }
+                addImageURLs(urls)
+                return true
+            } isTargeted: { targeted in
+                isImageDropTarget = targeted && supportsImageInput
+            }
             .frame(maxWidth: contentMaxWidth)
             .frame(maxWidth: .infinity)
         }
@@ -531,6 +555,19 @@ struct ChatView: View {
     /// right, then the send/stop button — Ollama's `model ▾  ⬆` cluster.
     private var composerControls: some View {
         HStack(spacing: RapidTheme.Space.sm) {
+            Button(action: chooseImages) {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(supportsImageInput ? Color.primary : Color.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color.primary.opacity(supportsImageInput ? 0.06 : 0.02)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!supportsImageInput || viewModel.isStreaming)
+            .help(supportsImageInput ? "Add photos" : "This model doesn't support images")
+            .accessibilityLabel("Add photos")
+            .accessibilityHint(supportsImageInput ? "" : "This model doesn't support images")
+            .accessibilityIdentifier("ChatView.AddPhotos")
             Spacer(minLength: 0)
             ModelPickerBar(
                 server: server,
@@ -600,19 +637,25 @@ struct ChatView: View {
     /// replaces the old behaviour where pressing Send on a cold model
     /// silently kicked off a multi-gigabyte download behind a spinner.
     private var sendEnabled: Bool {
-        hasDraft && readiness.sendAllowed
+        hasDraft && readiness.sendAllowed && (imageAttachments.isEmpty || supportsImageInput)
     }
 
     private var hasDraft: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !imageAttachments.isEmpty
     }
 
     // MARK: - Actions
 
     private func send() {
         let text = draft
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !imageAttachments.isEmpty else { return }
         guard !viewModel.isStreaming else { return }
+        guard imageAttachments.isEmpty || supportsImageInput else {
+            rejectImageInputForCurrentModel()
+            return
+        }
         // Return reaches here even when the Send button is disabled —
         // AppKit routes the key through ``ComposeTextEditor`` regardless
         // of SwiftUI's button state. Previously that landed on a silent
@@ -625,8 +668,106 @@ struct ChatView: View {
         // tooltip carries.
         guard acknowledgeIfNotReady() else { return }
         draft = ""
+        let images = imageAttachments
+        imageAttachments = []
+        attachmentNotice = nil
         composeFocusToken &+= 1
-        viewModel.send(text, alias: alias)
+        viewModel.send(text, alias: alias, imageAttachments: images)
+    }
+
+    private var supportsImageInput: Bool {
+        ModelBrandStyle.supportsImageInput(forAlias: alias)
+    }
+
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: RapidTheme.Space.sm) {
+                ForEach(imageAttachments) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        if let image = NSImage(data: attachment.data) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        Button {
+                            imageAttachments.removeAll { $0.id == attachment.id }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, .black.opacity(0.7))
+                        }
+                        .buttonStyle(.plain)
+                        .offset(x: 5, y: -5)
+                        .accessibilityLabel("Remove \(attachment.filename)")
+                        .accessibilityIdentifier(
+                            "ChatView.Attachment.Remove.\(attachment.filename)"
+                        )
+                    }
+                }
+            }
+            .padding(.top, 5)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func chooseImages() {
+        guard supportsImageInput else {
+            rejectImageInputForCurrentModel()
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .gif]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK else { return }
+        addImageURLs(panel.urls)
+    }
+
+    private func addImageURLs(_ urls: [URL]) {
+        var accepted: [ChatImageAttachment] = []
+        var rejection: String?
+        for url in urls {
+            do { accepted.append(try ChatImageAttachment(contentsOf: url)) }
+            catch { rejection = error.localizedDescription }
+        }
+        imageAttachments.append(contentsOf: accepted)
+        attachmentNotice = rejection
+    }
+
+    private func pasteImagesFromClipboard() -> Bool {
+        let pasteboard = NSPasteboard.general
+        let urls = (pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []).filter { UTType(filenameExtension: $0.pathExtension)?.conforms(to: .image) == true }
+        let pastedImage = NSImage(pasteboard: pasteboard)
+        guard !urls.isEmpty || pastedImage != nil else { return false }
+        guard supportsImageInput else {
+            rejectImageInputForCurrentModel()
+            return true
+        }
+        if !urls.isEmpty {
+            addImageURLs(urls)
+        } else if let image = pastedImage,
+                  let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) {
+            do {
+                imageAttachments.append(try ChatImageAttachment(
+                    filename: "Pasted image.png", mimeType: "image/png", data: png
+                ))
+                attachmentNotice = nil
+            } catch { attachmentNotice = error.localizedDescription }
+        }
+        return true
+    }
+
+    private func rejectImageInputForCurrentModel() {
+        attachmentNotice = "\(alias) doesn't support image input. Choose a vision model to add photos."
+        VoiceOverAnnouncer.announce(attachmentNotice ?? "This model doesn't support images.")
     }
 
     /// The shared lifecycle gate for every path that would start a turn:
@@ -698,9 +839,30 @@ private struct MessageRow: View {
                 if isEditing {
                     userEditor
                 } else {
-                    Text(message.content)
-                        .textSelection(.enabled)
-                        .foregroundStyle(RapidTheme.userBubbleText)
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+                        if !message.imageAttachments.isEmpty {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 120, maximum: 220))],
+                                spacing: RapidTheme.Space.sm
+                            ) {
+                                ForEach(message.imageAttachments) { attachment in
+                                    if let image = NSImage(data: attachment.data) {
+                                        Image(nsImage: image)
+                                            .resizable()
+                                            .scaledToFit()
+                                            .frame(maxHeight: 240)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                            .accessibilityLabel(attachment.filename)
+                                    }
+                                }
+                            }
+                        }
+                        if !message.content.isEmpty {
+                            Text(message.content)
+                                .textSelection(.enabled)
+                                .foregroundStyle(RapidTheme.userBubbleText)
+                        }
+                    }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(
@@ -1266,6 +1428,7 @@ struct ComposeField: View {
     /// No-op (returns control to AppKit's default Esc handling)
     /// when nothing is streaming.
     var onCancel: () -> Void
+    var onPasteImages: () -> Bool = { false }
     /// Resolves the text of the last user message in the active
     /// session, or ``nil`` when there's nothing to recall. Bound to
     /// the Up-arrow-in-empty-compose recall affordance (Claude /
@@ -1303,6 +1466,7 @@ struct ComposeField: View {
                 isStreaming: isStreaming,
                 onSubmit: onSubmit,
                 onCancel: onCancel,
+                onPasteImages: onPasteImages,
                 onRecallLastUser: onRecallLastUser,
                 onMeasuredHeight: { measured in
                     let clamped = min(max(measured, minHeight), maxHeight)
@@ -1410,6 +1574,7 @@ struct ComposeTextEditor: NSViewRepresentable {
     var isStreaming: Bool
     var onSubmit: () -> Void
     var onCancel: () -> Void
+    var onPasteImages: () -> Bool
     var onRecallLastUser: () -> String?
     /// Reports the editor's laid-out content height so ``ComposeField``
     /// can size the field to the draft.
@@ -1478,6 +1643,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         view.onMeasuredHeight = onMeasuredHeight
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onCancel = onCancel
+        context.coordinator.onPasteImages = onPasteImages
         context.coordinator.isStreaming = isStreaming
         context.coordinator.onRecallLastUser = onRecallLastUser
         // Cmd+L (or any other external focus request) bumps the
@@ -1498,6 +1664,7 @@ struct ComposeTextEditor: NSViewRepresentable {
             text: $text,
             onSubmit: onSubmit,
             onCancel: onCancel,
+            onPasteImages: onPasteImages,
             isStreaming: isStreaming,
             onRecallLastUser: onRecallLastUser
         )
@@ -1508,6 +1675,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         var text: Binding<String>
         var onSubmit: () -> Void
         var onCancel: () -> Void
+        var onPasteImages: () -> Bool
         var isStreaming: Bool
         /// Resolves text of the last user message for Up-arrow recall;
         /// nil = nothing to recall, fall through to AppKit default.
@@ -1520,12 +1688,14 @@ struct ComposeTextEditor: NSViewRepresentable {
             text: Binding<String>,
             onSubmit: @escaping () -> Void,
             onCancel: @escaping () -> Void,
+            onPasteImages: @escaping () -> Bool,
             isStreaming: Bool,
             onRecallLastUser: @escaping () -> String?
         ) {
             self.text = text
             self.onSubmit = onSubmit
             self.onCancel = onCancel
+            self.onPasteImages = onPasteImages
             self.isStreaming = isStreaming
             self.onRecallLastUser = onRecallLastUser
         }
@@ -1536,6 +1706,9 @@ struct ComposeTextEditor: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSText.paste(_:)), onPasteImages() {
+                return true
+            }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 // Shift held → real newline. Otherwise → submit. Probing
                 // ``NSApp.currentEvent`` is the documented way to read

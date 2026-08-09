@@ -389,10 +389,11 @@ final class ChatViewModel {
     /// the caller's side.
     func send(
         _ text: String,
-        alias: String
+        alias: String,
+        imageAttachments: [ChatImageAttachment] = []
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !imageAttachments.isEmpty else { return }
         guard !isStreaming else { return }
 
         // Small local models are unreliable at the first step of tool use:
@@ -413,6 +414,7 @@ final class ChatViewModel {
         let user = ChatMessage(
             role: .user,
             content: trimmed,
+            imageAttachments: imageAttachments,
             status: .complete
         )
         _ = appendMessage(user)
@@ -1099,11 +1101,12 @@ final class ChatViewModel {
         alias: String
     ) -> Bool {
         guard !isStreaming else { return false }
-        let trimmed = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
         guard let idx = messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return false }
+        let attachments = messages[idx].imageAttachments
+        let trimmed = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return false }
         messages = Array(messages.prefix(idx))
-        send(trimmed, alias: alias)
+        send(trimmed, alias: alias, imageAttachments: attachments)
         return true
     }
 
@@ -1113,9 +1116,13 @@ final class ChatViewModel {
     func regenerateLast(alias: String) {
         guard !isStreaming else { return }
         guard let lastUserIndex = messages.lastIndex(where: { $0.role == .user }) else { return }
-        let userText = messages[lastUserIndex].content
+        let userMessage = messages[lastUserIndex]
         messages = Array(messages.prefix(lastUserIndex))
-        send(userText, alias: alias)
+        send(
+            userMessage.content,
+            alias: alias,
+            imageAttachments: userMessage.imageAttachments
+        )
     }
 
     /// Retry the turn that produced a specific assistant message. This is
@@ -1132,14 +1139,19 @@ final class ChatViewModel {
             $0.role == .user
         }) else { return false }
 
-        let userText = messages[userIndex].content
-        guard !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let userMessage = messages[userIndex]
+        guard !userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !userMessage.imageAttachments.isEmpty else {
             return false
         }
         // In place, on the SAME conversation id — see ``editUserMessage``
         // for why the old fork-into-a-branch behaviour was removed.
         messages = Array(messages.prefix(userIndex))
-        send(userText, alias: alias)
+        send(
+            userMessage.content,
+            alias: alias,
+            imageAttachments: userMessage.imageAttachments
+        )
         return true
     }
 

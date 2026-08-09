@@ -68,10 +68,15 @@ struct ModelSurfaceRedesignTests {
 
     // MARK: - ModelBrandStyle.modelType
 
-    @Test("modelType: -vl aliases are vision, the rest are chat")
+    @Test("modelType: visual alias families are vision; explicit text-only variants stay chat")
     func modelTypeVision() {
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3-vl-30b-4bit") == .vision)
         #expect(ModelBrandStyle.modelType(forAlias: "some-model-vl") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "gemma3-12b-4bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "gemma-4-26b-4bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-9b-4bit") == .vision)
+        #expect(ModelBrandStyle.modelType(forAlias: "qwen3.5-4b-4bit") == .chat)
+        #expect(ModelBrandStyle.modelType(forAlias: "gemma3-1b-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "qwen3.6-35b-4bit") == .chat)
         #expect(ModelBrandStyle.modelType(forAlias: "gpt-oss-20b-4bit") == .chat)
     }

@@ -102,9 +102,16 @@ enum ModelBrandStyle {
     /// name (`qwen3-vl-*`), so this is a reliable name-only signal.
     static func modelType(forAlias alias: String) -> ModelType {
         let a = alias.lowercased()
+        if a == "qwen3.5-4b-4bit" || a.contains("gemma3-1b") { return .chat }
         if a.contains("-vl-") || a.hasSuffix("-vl") || a.contains("vl-")
-            || a.contains("-vision") { return .vision }
+            || a.contains("-vision") || a.contains("qwen3.5-")
+            || a.contains("gemma3-") || a.contains("gemma-3n-")
+            || a.contains("gemma-4-") { return .vision }
         return .chat
+    }
+
+    static func supportsImageInput(forAlias alias: String) -> Bool {
+        modelType(forAlias: alias) == .vision
     }
 
     /// A human-readable family name for the row's meta line. Prefers

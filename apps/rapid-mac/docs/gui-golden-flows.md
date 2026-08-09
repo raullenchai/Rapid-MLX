@@ -38,6 +38,10 @@ covered, and each one names the defect it would have caught:
     instruction-**edit** path exists in code but is parked as a slow, batch-only
     lane on current hardware (~20 min/edit at q4); the interactive golden flow is
     text→image generation.
+13. `chat-image-attachment` — a vision-language model accepts a PNG through
+    the Chat composer, renders it in the user turn, and sends typed
+    `text` + `image_url` content; the same composer keeps its attachment
+    control visible but disabled for a text-only alias and rejects paste/drop.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below
@@ -182,6 +186,44 @@ The flow also waits for `Benchmark.LoadedModelResult`, proving the number made
 it back through the real sheet. This would have caught the old implementation,
 which rejected an 8B speed test for lack of memory precisely because it tried
 to load an unnecessary second 8B copy.
+
+### Chat image attachment
+
+`chat-image-attachment` covers image input inside the normal Chat tab. This is
+separate from `image-generation`: the former asks a VLM to understand an image;
+the latter asks a diffusion model to create one.
+
+The deterministic lane should use a fake VLM alias and a small fixture PNG, and
+walk both halves of the capability boundary:
+
+1. select the fake VLM alias and assert `ChatView.AddPhotos` is present and
+   enabled;
+2. add the fixture through the standard open panel, then assert the thumbnail's
+   `ChatView.Attachment.Remove.<filename>` control is present;
+3. enter a caption question, send, and assert the user bubble contains the
+   attachment while the fake sidecar records an `image_url` data URI alongside
+   the typed text part;
+4. retry or regenerate the turn and assert the replay request still contains
+   the attachment;
+5. switch to a text-only alias and assert `ChatView.AddPhotos` remains visible
+   but disabled with the “This model doesn't support images” help text;
+6. attempt image paste and drop, assert no thumbnail appears and no image bytes
+   reach the fake sidecar. Historical image turns must also be reduced to text
+   before a text-only request is encoded.
+
+The standard file picker itself remains outside the structural AX baseline, as
+with the Images-tab save panel. The flow drives it only to supply the fixture;
+the product assertions begin at the composer thumbnail and end at the recorded
+wire request.
+
+Real-weight dogfood on 2026-08-09 used the locally built
+`rapid_mlx-0.12.7` wheel with its `[vision]` extra and
+`gemma-4-e2b-4bit`. The GUI accepted `cheetah-logo-96.png`, displayed it in
+the user bubble, and the model described the spotted feline in the fixture at
+5.8 tok/s. The paired `qwen3.5-4b-4bit` text-only run kept the add button
+visible and disabled and accepted no pasted attachment. A base-wheel-only run
+is not valid evidence for this flow: without `[vision]` / `mlx-vlm`, the engine
+intentionally rejects or text-degrades VLM serving.
 
 ## Image generation
 
