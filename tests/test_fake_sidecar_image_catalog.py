@@ -100,9 +100,9 @@ def _split_on_multi_space(line: str) -> list[str]:
     return [field.strip() for field in result]
 
 
-def run_fake(subcommand: str) -> str:
+def run_fake(subcommand: str, *args: str) -> str:
     return subprocess.run(
-        [str(FAKE), subcommand],
+        [str(FAKE), subcommand, *args],
         check=True,
         capture_output=True,
         text=True,
@@ -228,4 +228,21 @@ def test_flow_and_fixture_agree_on_the_alias(models_output):
     assert f'FAKE_IMAGE_ALIAS="{alias}"' in declared, (
         f"gui-golden-flows.sh does not declare FAKE_IMAGE_ALIAS={alias!r}; "
         "the flow would assert against a model the fixture never prints"
+    )
+
+
+def test_info_reports_each_aliass_own_repo(models_output):
+    """``info <alias>`` must name the SAME repo the catalog rows do.
+
+    ``ModelCatalog.parseInfoRepo`` reads ``Alias: <alias> -> <repo>`` to resolve
+    a model; if ``info`` answered every alias with the chat repo, readiness and
+    resolution for the image model would target the chat repository while
+    ``models``/``ls`` pointed at the image one. Pin the image alias against the
+    repo its own ``[image:gen]`` row declares.
+    """
+    (fields,) = image_rows(models_output)
+    alias, row_repo = fields[0], fields[fields.index(IMAGE_TAG) + 1]
+    info = run_fake("info", alias).strip()
+    assert info == f"Alias: {alias} -> {row_repo}", (
+        f"info {alias} said {info!r}, but its catalog row maps it to {row_repo!r}"
     )

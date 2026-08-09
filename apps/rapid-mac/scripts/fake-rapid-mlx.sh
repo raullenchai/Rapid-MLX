@@ -286,6 +286,14 @@ class _ImageRenders:
 
     def begin(self, total):
         with self._lock:
+            # One render at a time, decided atomically under the lock. The real
+            # server is a single model in a single process; a second concurrent
+            # generation would not race its counters, it would be refused. The
+            # shared-singleton state below is only safe because of this gate —
+            # without it a second `begin` would reset `step`/`total`/`cancelled`
+            # out from under a render still sleeping through its loop.
+            if self.running:
+                return None
             self.running = True
             self.step = 0
             self.total = total
@@ -371,6 +379,18 @@ class Handler(BaseHTTPRequestHandler):
         total = max(1, int(_setting("FAKE_IMAGE_STEPS", 8)))
         step_ms = max(0, int(_setting("FAKE_IMAGE_STEP_MS", 300)))
         index = RENDERS.begin(total)
+        if index is None:
+            # A render is already in flight. The real server runs one model in
+            # one process and refuses an overlapping generation rather than
+            # interleaving it; mirror that with a 409 instead of clobbering the
+            # in-flight render's shared counters.
+            _event("image_request_rejected", prompt=prompt)
+            self._json(409, {"error": {
+                "message": "a render is already in progress; this server "
+                           "generates one image at a time",
+                "code": "image_render_in_progress",
+            }})
+            return
         _event(
             "image_request",
             prompt=prompt,
@@ -623,7 +643,16 @@ def _emit_catalog(subcommand, alias):
         print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")
         return True
     if subcommand == "info":
-        print(f"Alias: {alias} -> {FAKE_REPO}")
+        # Per-alias, not a constant: `ls`/`models` map fake-image-alias to its
+        # own repo, and `info` returning the chat repo instead would make
+        # ModelCatalog.parseInfoRepo disagree with the row it just parsed —
+        # readiness/resolution for the image model would target the chat
+        # repository. Default to the chat repo for the chat alias and unknowns.
+        repo = {
+            FAKE_IMAGE_ALIAS: FAKE_IMAGE_REPO,
+            "fake-video-alias": "fake/video-mlx",
+        }.get(alias, FAKE_REPO)
+        print(f"Alias: {alias} -> {repo}")
         return True
     return False
 
