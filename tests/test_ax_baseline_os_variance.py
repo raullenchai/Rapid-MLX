@@ -52,33 +52,54 @@ def _normalize(path: Path) -> list[str]:
     return ax_baseline.normalize_dump(path, SCRUB)
 
 
-def test_fixtures_actually_differ_before_normalization():
+def test_fixtures_carry_all_three_known_os_differences():
     """Guard against a vacuous cross-OS test.
 
-    If someone regenerates both fixtures on one machine they become identical,
-    and the equality test below would pass while checking nothing at all. Pin
-    the difference these fixtures exist to carry.
-    """
-    macos15 = json.loads((FIXTURES / "chat-settled.macos15.json").read_text())
-    macos26 = json.loads((FIXTURES / "chat-settled.macos26.json").read_text())
+    Regenerate both fixtures on one machine and they become identical, and the
+    equality test below passes while checking nothing at all. So pin what these
+    two dumps exist to carry. The same UI, from the same commit, differs in
+    THREE independent ways between the two releases:
 
-    def titled_menus(payload: dict) -> list[str]:
-        return [
-            element.get("title", "")
-            for element in payload["data"]["ui_elements"]
+      1. the conversation menu's role spelling — AXMenuButton on macOS 26,
+         AXPopUpButton on macOS 15 (absorbed by ``_ROLE_EQUIVALENTS``);
+      2. an extra lazily-realized AXButton child under the "Hide Sidebar"
+         control on macOS 15 (absorbed by ``is_window_control``);
+      3. an AppKit-synthesised AXTitle="More" on the conversation menu on
+         macOS 15 (absorbed by the title rule in ``render_node``).
+
+    Any of the three regressing makes ``--update-baselines`` machine-specific
+    again, so the corpus has to keep covering all three.
+    """
+    macos15 = json.loads((FIXTURES / "chat-settled.macos15.json").read_text())["data"][
+        "ui_elements"
+    ]
+    macos26 = json.loads((FIXTURES / "chat-settled.macos26.json").read_text())["data"][
+        "ui_elements"
+    ]
+
+    def menu(elements: list[dict]) -> dict:
+        return next(
+            element
+            for element in elements
             if str(element.get("identifier", "")).startswith(
                 "Sidebar.Conversation.Menu."
             )
-        ]
+        )
 
-    assert titled_menus(macos15) == ["More"], (
-        "the macOS 15 fixture no longer carries the AppKit-synthesised title; "
-        "it is no longer evidence of cross-OS variance"
-    )
-    assert titled_menus(macos26) == [""], (
-        "the macOS 26 fixture unexpectedly carries a title; regenerate it on "
-        "macOS 26 or this suite proves nothing"
-    )
+    # 1. role spelling
+    assert menu(macos15)["role"] == "AXPopUpButton"
+    assert menu(macos26)["role"] == "AXMenuButton"
+
+    # 2. the extra OS-owned sidebar child
+    def hide_sidebar_nodes(elements: list[dict]) -> int:
+        return sum(1 for e in elements if e.get("description") == "Hide Sidebar")
+
+    assert hide_sidebar_nodes(macos15) == 2
+    assert hide_sidebar_nodes(macos26) == 1
+
+    # 3. the synthesised title
+    assert menu(macos15).get("title") == "More"
+    assert "title" not in menu(macos26)
 
 
 def test_real_cross_os_dumps_normalize_identically():
