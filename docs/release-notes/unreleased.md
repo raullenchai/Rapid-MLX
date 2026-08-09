@@ -13,9 +13,9 @@ prompt that produced it (#1705). Chat gained the other direction at the same
 time — you can attach images to a message and ask about them (#1723).
 
 **The Qwen tool-call parser handles awkward arguments correctly.** A series
-of fixes to `qwen3_coder_xml` (#1730), most of them around legacy raw
-string arguments whose own content contains XML-like closing tags — the case
-where the parser cannot tell an argument's text from the wrapper around it.
+of fixes to `qwen3_coder_xml` (#1730) addresses legacy raw string arguments
+whose own content contains XML-like closing tags — the case where the parser
+cannot tell an argument's text from the wrapper around it.
 Different fixes in the series address different symptoms: some produced wrong
 arguments, others leaked wrapper framing into the answer or dropped the text
 that followed a call. `AutoToolParser`'s balanced-JSON scan was fixed alongside
@@ -33,12 +33,13 @@ impossible. Worth knowing because a short budget does not fail
 loudly: it returns a cut-off answer, which reads as a model that "could not do
 it".
 
-**A follow-up message no longer re-reads the whole conversation.** #1732 fixes
-the cache boundary for the first turn, which is what the second turn needs in
-order to reuse it. Measured on `qwen3.6-27b-4bit` with a ~9.9K-token document:
-the opening turn prefills 9922 tokens (32.4 s to first token), and the next
-turn prefills **34** instead of 9941 — 1.45 s, about 22x faster. It grows with
-the conversation, so the longer the chat the more it saves.
+**The first follow-up message no longer re-reads the opening context.** The
+opening turn never saved a reuseable cache boundary, so the second message paid
+to re-read everything; from the third message on, reuse already worked. #1732
+closes that one gap. Measured on `qwen3.6-27b-4bit` with a ~9.9K-token
+document: the opening turn prefills 9922 tokens (32.4 s to first token), and
+the follow-up prefills **34** instead of 9941 — 1.45 s, about 22x faster. The
+longer the opening context, the more that first follow-up saves.
 
 **The scheduler reclaims paged full-KV and free-block memory** instead of
 wedging on a `D-METAL-CAP` 503 under sustained load (#1646).
