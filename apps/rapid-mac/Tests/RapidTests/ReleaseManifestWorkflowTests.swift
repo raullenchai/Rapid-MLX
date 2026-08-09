@@ -19,6 +19,12 @@ struct ReleaseManifestWorkflowTests {
 
     private static let mirrorJob: Substring = {
         let start = workflow.range(of: "  mirror-dist:")!.lowerBound
+        let end = workflow.range(of: "  publish-updater-fallback:")!.lowerBound
+        return workflow[start..<end]
+    }()
+
+    private static let publishJob: Substring = {
+        let start = workflow.range(of: "  publish-updater-fallback:")!.lowerBound
         return workflow[start...]
     }()
 
@@ -26,8 +32,6 @@ struct ReleaseManifestWorkflowTests {
     func missingConfigFailsClosed() throws {
         let job = Self.mirrorJob
         #expect(job.contains("if: startsWith(github.ref, 'refs/tags/')"))
-        #expect(job.contains("group: rapid-mac-dist-publish"))
-        #expect(job.contains("cancel-in-progress: false"))
         #expect(job.contains("tagged releases require updater fallback publishing"))
         #expect(!job.contains("skipping the optional CDN mirror"))
         for requiredSetting in [
@@ -59,21 +63,34 @@ struct ReleaseManifestWorkflowTests {
     @Test("manifest describes the bundled DMG and is committed last")
     func manifestIsPublishedLast() throws {
         let workflow = Self.workflow
+        let mirrorJob = Self.mirrorJob
+        let publishJob = Self.publishJob
         #expect(workflow.contains("{schema_version: 1, version: $version"))
         #expect(workflow.contains("dmg_sha256: $dmg_sha256, dmg_size: $dmg_size"))
         #expect(!workflow.contains("sidecar_url:"))
 
-        let dmgUpload = try #require(workflow.range(of: "${R2_BUCKET}/${VERSIONED_KEY}"))
-        let manifestUpload = try #require(workflow.range(of: "${R2_BUCKET}/latest.json"))
-        #expect(dmgUpload.lowerBound < manifestUpload.lowerBound)
-        let afterManifest = workflow[manifestUpload.upperBound..<workflow.endIndex]
+        let dmgUpload = try #require(mirrorJob.range(of: "r2 object put \"${R2_BUCKET}/${VERSIONED_KEY}\""))
+        #expect(mirrorJob[dmgUpload.upperBound...].contains("name: rapid-mac-update-manifest"))
+
+        // Only pointer publication is serialized, and every run is queued —
+        // native concurrency would replace an intermediate pending tag.
+        #expect(publishJob.contains("softprops/turnstyle@afaccda0f3c0136fb7cb4a734b9b96be03599948"))
+        #expect(publishJob.contains("same-branch-only: false"))
+        #expect(publishJob.contains("queue-name: rapid-mac-dist-publish"))
+        #expect(!publishJob.contains("concurrency:"))
+        let manifestUpload = try #require(
+            publishJob.range(of: "r2 object put \"${R2_BUCKET}/latest.json\"")
+        )
+        let afterManifest = publishJob[manifestUpload.upperBound..<publishJob.endIndex]
         #expect(!afterManifest.contains("r2 object put"))
         #expect(workflow.contains(#"--cache-control "no-cache, must-revalidate""#))
         #expect(workflow.contains("rapid-mlx-desktop-${DMG_SHA256}.dmg"))
         #expect(!workflow.contains("wrangler@4 r2 object put"))
         #expect(workflow.contains("wrangler@4.120.0 r2 object put"))
-        let rollbackGuard = try #require(workflow.range(of: "dpkg --compare-versions"))
-        #expect(rollbackGuard.lowerBound < dmgUpload.lowerBound)
-        #expect(workflow.contains("refusing updater rollback"))
+        let rollbackGuard = try #require(publishJob.range(of: "dpkg --compare-versions"))
+        #expect(rollbackGuard.lowerBound < manifestUpload.lowerBound)
+        #expect(publishJob.contains("Skipping stale updater manifest"))
+        #expect(publishJob.contains("The specified key does not exist."))
+        #expect(publishJob.contains("No current latest.json; publishing the initial pointer"))
     }
 }

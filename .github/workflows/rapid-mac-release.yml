@@ -52,6 +52,7 @@ on:
 
 permissions:
   contents: write   # attach the .dmg to the GitHub Release
+  actions: read     # turnstyle queues updater publication across tag runs
 
 jobs:
   build:
@@ -374,9 +375,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    concurrency:
-      group: rapid-mac-dist-publish
-      cancel-in-progress: false
     steps:
       - name: Download the notarised DMG artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
@@ -384,7 +382,7 @@ jobs:
           name: rapid-mlx-desktop-dmg
           path: dist
 
-      - name: Mirror DMG and publish updater fallback
+      - name: Mirror DMG and compose updater fallback
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -421,16 +419,6 @@ jobs:
           DMG_SHA256="$(sha256sum "$DMG" | awk '{print $1}')"
           DMG_SIZE="$(stat -c %s "$DMG")"
 
-          # The concurrency group closes the check/publish race between tag
-          # jobs. Refuse an out-of-order older tag before touching any object.
-          npx --yes wrangler@4.120.0 r2 object get "${R2_BUCKET}/latest.json" \
-            --file dist/current-latest.json --remote
-          CURRENT_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/current-latest.json)"
-          if dpkg --compare-versions "$CURRENT_VERSION" gt "$VERSION"; then
-            echo "::error::refusing updater rollback from ${CURRENT_VERSION} to ${VERSION}"
-            exit 1
-          fi
-
           # Content-address the canonical payload. A rerun of the same tag can
           # never overwrite bytes referenced by an older manifest checksum.
           VERSIONED_KEY="rapid-mac/${VERSION}/rapid-mlx-desktop-${DMG_SHA256}.dmg"
@@ -460,9 +448,70 @@ jobs:
             '.schema_version == 1 and .version == $version and .dmg_url == $dmg_url' \
             dist/latest.json >/dev/null
 
-          # Publish the mutable pointer last: this is the update transaction's
-          # commit point. The current bundled DMG needs no sidecar fields.
+      - name: Stage updater manifest for serialized publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-mac-update-manifest
+          path: dist/latest.json
+          if-no-files-found: error
+
+  # Every tag mirrors its immutable DMG above. Only the mutable pointer is
+  # serialized here. Turnstyle queues every run (unlike native concurrency,
+  # which keeps only one pending run and can drop an intermediate tag).
+  publish-updater-fallback:
+    needs: mirror-dist
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Queue behind earlier updater publications
+        uses: softprops/turnstyle@afaccda0f3c0136fb7cb4a734b9b96be03599948  # v3.3.2
+        with:
+          same-branch-only: false
+          queue-name: rapid-mac-dist-publish
+          poll-interval-seconds: 10
+
+      - name: Download staged updater manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: rapid-mac-update-manifest
+          path: dist
+
+      - name: Publish updater fallback monotonically
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.RAPID_MAC_DIST_R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || {
+            echo "::error::Cloudflare credentials are required to publish latest.json"
+            exit 1
+          }
+          [[ "$R2_BUCKET" == "rapid-desktop-dist" ]] || {
+            echo "::error::RAPID_MAC_DIST_R2_BUCKET must be rapid-desktop-dist"
+            exit 1
+          }
+          TARGET_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/latest.json)"
+
+          # Treat only a genuinely absent pointer as first publication. Auth,
+          # network, and parse failures remain fatal rather than bypassing the
+          # rollback guard.
+          if GET_OUTPUT="$(npx --yes wrangler@4.120.0 r2 object get "${R2_BUCKET}/latest.json" \
+              --file dist/current-latest.json --remote 2>&1)"; then
+            CURRENT_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/current-latest.json)"
+            if dpkg --compare-versions "$CURRENT_VERSION" gt "$TARGET_VERSION"; then
+              echo "::notice::Skipping stale updater manifest ${TARGET_VERSION}; current is ${CURRENT_VERSION}"
+              exit 0
+            fi
+          elif grep -Fq "The specified key does not exist." <<<"$GET_OUTPUT"; then
+            echo "::notice::No current latest.json; publishing the initial pointer"
+          else
+            printf '%s\n' "$GET_OUTPUT" >&2
+            exit 1
+          fi
+
+          # Commit point: no distribution writes may follow this command.
           npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/latest.json" \
             --file dist/latest.json --content-type application/json \
             --cache-control "no-cache, must-revalidate" --remote
-          echo "::notice::Published ${DMG_URL} and ${CDN_BASE%/}/latest.json"
+          echo "::notice::Published updater fallback version ${TARGET_VERSION}"

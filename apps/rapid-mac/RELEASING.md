@@ -104,9 +104,10 @@ only.
 | `RAPID_MAC_DIST_R2_BUCKET` | **variable** | `rapid-desktop-dist` |
 | `RAPID_MAC_DIST_CDN_BASE` | **variable** | `https://dl.rapidmlx.com` |
 
-The `mirror-dist` job fails a tagged release if these are absent. It uploads
-the immutable versioned DMG first and `latest.json` last, so the static updater
-fallback can never advertise a missing artifact. The two bucket/CDN names are
+The release jobs fail a tagged release if these are absent. They upload the
+content-addressed DMG first, then queue every tag's monotonic `latest.json`
+publication, so the static updater fallback cannot advertise a missing artifact
+or roll back when releases overlap. The two bucket/CDN names are
 **config, not credentials**, so they go in *Variables*, not *Secrets*.
 
 ### Dropped
