@@ -502,6 +502,11 @@ class TestDetectModelConfig:
         assert config.tool_call_parser is None
         assert config.reasoning_parser == "deepseek_r1_distill"
 
+    def test_distill_parent_directory_does_not_disable_child_tools(self):
+        config = detect_model_config("/models/DeepSeek-R1-Distill/qwen-model")
+        assert config is not None
+        assert config.tool_call_parser is not None
+
     # DeepSeek V2.5 (and older non-R1) → legacy ``deepseek`` parser.
     # R12-5: V3 vanilla checkpoints now route to ``deepseek_v3`` (the
     # dedicated parser) — see ``test_deepseek_v3_vanilla_routes_to_v3_parser``.

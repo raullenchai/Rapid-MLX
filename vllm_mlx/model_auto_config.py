@@ -70,6 +70,7 @@ ModelConfig = ModelProfile
 # still happens on the model-name SEGMENT rather than the full path (so a
 # family-named parent dir / org does not steal an unrelated model).
 _MISTRAL_FAMILY_SENTINEL = ModelConfig()
+_R1_DISTILL_FAMILY_SENTINEL = ModelConfig()
 
 # Model family patterns → optimal config.
 # Order matters: first match wins. More specific patterns go first.
@@ -124,15 +125,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # DeepSeek R1 (non-0528) — has reasoning
     (
         re.compile(r"deepseek.*r1.*distill", re.IGNORECASE),
-        ModelConfig(
-            # R1-Distill checkpoints do not reliably emit either supported
-            # DeepSeek tool wire format. Binding a parser advertises tools to
-            # agents, which then accept plausible fabricated prose as a tool
-            # result (#1569). Keep reasoning support, but make tool capability
-            # explicitly absent for both aliases and raw HF paths.
-            tool_call_parser=None,
-            reasoning_parser="deepseek_r1_distill",
-        ),
+        _R1_DISTILL_FAMILY_SENTINEL,
     ),
     (
         re.compile(r"deepseek.*r1", re.IGNORECASE),
@@ -1225,6 +1218,24 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     for pattern, config in _MODEL_PATTERNS:
         if not pattern.search(model_path):
             continue
+        if config is _R1_DISTILL_FAMILY_SENTINEL:
+            if not re.search(r"deepseek.*r1.*distill", name_segment, re.I):
+                continue
+            cfg = ModelConfig(
+                # R1-Distill checkpoints do not reliably emit either
+                # supported DeepSeek tool wire format. Binding a parser
+                # advertises tools to agents, which then accept plausible
+                # fabricated prose as a tool result (#1569).
+                tool_call_parser=None,
+                reasoning_parser="deepseek_r1_distill",
+            )
+            _log_resolution_once(
+                model_path,
+                f"Auto-detected R1-Distill family for '{model_path}' → "
+                "tool_call_parser=None, "
+                "reasoning_parser=deepseek_r1_distill",
+            )
+            return cfg
         # #1071: the Mistral-family entry is a full-path pre-filter that
         # delegates to a MODEL-NAME-SEGMENT-scoped resolver. This keeps the
         # family at its original precedence (so a compound name like
