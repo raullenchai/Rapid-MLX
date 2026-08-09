@@ -57,6 +57,41 @@ def test_does_not_coerce_template_that_accepts_original_order():
     assert rendered == MESSAGES
 
 
+def test_retry_preserves_structured_system_content_parts():
+    template = _RecordingTemplate(reject_mid_system=True)
+    structured = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "Inspect this."},
+                {"type": "image", "image": "first.png"},
+            ],
+        },
+        {"role": "user", "content": "Hi"},
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "Compare it."},
+                {"type": "image", "image": "second.png"},
+            ],
+        },
+        {"role": "user", "content": "Continue"},
+    ]
+
+    rendered = apply_chat_template(template, structured)
+
+    assert rendered[0] == {
+        "role": "system",
+        "content": [
+            {"type": "text", "text": "Inspect this."},
+            {"type": "image", "image": "first.png"},
+            {"type": "text", "text": "\n\n"},
+            {"type": "text", "text": "Compare it."},
+            {"type": "image", "image": "second.png"},
+        ],
+    }
+
+
 def test_unrelated_template_error_is_not_retried():
     class _BrokenTemplate:
         calls = 0

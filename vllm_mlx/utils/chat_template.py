@@ -1385,18 +1385,38 @@ def apply_chat_template(
             if not has_mid_system:
                 raise
 
-            system_text = "\n\n".join(
-                message.get("content", "")
+            system_contents = [
+                message.get("content")
                 for message in candidate_messages
                 if message.get("role") == "system" and message.get("content")
-            )
+            ]
+            if all(isinstance(content, str) for content in system_contents):
+                merged_system_content: str | list = "\n\n".join(system_contents)
+            else:
+                # Multimodal templates may carry structured content arrays.
+                # Preserve those parts instead of stringifying them; inject a
+                # text separator between instructions so their boundaries do
+                # not disappear when two system messages are combined.
+                merged_parts: list = []
+                for content in system_contents:
+                    if merged_parts:
+                        merged_parts.append({"type": "text", "text": "\n\n"})
+                    if isinstance(content, list):
+                        merged_parts.extend(content)
+                    elif isinstance(content, dict):
+                        merged_parts.append(content)
+                    else:
+                        merged_parts.append({"type": "text", "text": str(content)})
+                merged_system_content = merged_parts
             collapsed = [
                 message
                 for message in candidate_messages
                 if message.get("role") != "system"
             ]
-            if system_text:
-                collapsed.insert(0, {"role": "system", "content": system_text})
+            if merged_system_content:
+                collapsed.insert(
+                    0, {"role": "system", "content": merged_system_content}
+                )
 
             try:
                 return _apply_with_alternating_fallback(collapsed, candidate_kwargs)
