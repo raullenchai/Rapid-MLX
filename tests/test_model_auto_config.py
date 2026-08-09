@@ -493,17 +493,13 @@ class TestDetectModelConfig:
             "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
         ],
     )
-    def test_deepseek_r1_distill_routes_to_legacy_parser(self, model_path):
+    def test_deepseek_r1_distill_does_not_advertise_tool_calls(self, model_path):
         config = detect_model_config(model_path)
         assert config is not None
-        # MUST be the legacy ``deepseek`` parser, NOT ``deepseek_v3`` —
-        # the distills cannot emit the V3 wire shape.
-        assert config.tool_call_parser == "deepseek", (
-            f"{model_path}: tool_call_parser must be 'deepseek' (legacy), "
-            f"got {config.tool_call_parser!r}. R1-Distill family is "
-            "Qwen2/Llama2-arch SFT and cannot emit the V3 fenced-JSON "
-            "envelope. See Sven r12 dogfood HIGH-1 verdict (R12-S1)."
-        )
+        # The distills cannot reliably emit either the legacy or V3 wire
+        # shape. A parser binding advertises tool capability and causes agent
+        # clients to trust plausible fabricated prose (#1569).
+        assert config.tool_call_parser is None
         assert config.reasoning_parser == "deepseek_r1_distill"
 
     # DeepSeek V2.5 (and older non-R1) → legacy ``deepseek`` parser.
@@ -1316,8 +1312,8 @@ class TestGetProfile:
 class TestWarnMisboundDeepseekV3Parser:
     """R12-S1: cover the misbind-warning helper added in response to
     Sven r12 dogfood HIGH-1. The auto-detect path already routes the
-    R1-distill family to the legacy ``deepseek`` parser (covered by
-    ``test_deepseek_r1_distill_routes_to_legacy_parser`` above); this
+    R1-distill family deliberately leaves tool parsing unset (covered by
+    ``test_deepseek_r1_distill_does_not_advertise_tool_calls`` above); this
     helper exists so an EXPLICIT override (``--tool-call-parser
     deepseek_v3``) on a non-V3 model surfaces a loud startup warning
     instead of silently shipping ``arguments="{}"`` tool calls.
@@ -1453,12 +1449,11 @@ class TestWarnMisboundDeepseekV3Parser:
         # locate the misconfiguration without grepping the source.
         assert parser in msg
         assert model_path in msg
-        # Must point at the auto-detected suggestion (``deepseek`` for
-        # the R1-distill family) so the fix is one flag-flip away.
-        assert "deepseek" in msg
-        # Must mention the actionable remediation — drop the flag or
-        # switch to hermes for Qwen/Llama-arch SFTs.
-        assert "auto-detect" in msg.lower() or "hermes" in msg.lower()
+        # #1569: the family has no supported tool-emission contract, so the
+        # warning must not recommend swapping to another parser.
+        assert "do not reliably emit tool calls" in msg
+        assert "Remove the explicit" in msg
+        assert "hermes" not in msg.lower()
 
     # Also warn on V2.x and bare Qwen/Llama paths that someone might
     # explicitly try to coerce to the V3 parser.
@@ -1625,16 +1620,14 @@ class TestWarnMisboundDeepseekV3Parser:
         assert "Drop the explicit" not in msg
         assert "hermes" in msg
 
-    # Sanity check that the suggestion path still fires for the common
-    # case (non-V3-named parent, R1-Distill family, auto suggests the
-    # legacy ``deepseek`` parser).
-    def test_suggestion_still_fires_when_auto_picks_non_v3(self):
+    def test_r1_distill_override_warns_that_tools_are_unsupported(self):
         msg = warn_misbound_deepseek_v3_parser(
             "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", "deepseek_v3"
         )
         assert msg is not None
-        assert "Auto-detect would pick 'deepseek'" in msg
-        assert "Drop the explicit" in msg
+        assert "Auto-detect would pick" not in msg
+        assert "do not reliably emit tool calls" in msg
+        assert "Remove the explicit" in msg
 
     # Codex r5 follow-up nit: even when auto-detect's pick is a
     # DIFFERENT V3-family parser than the one bound (so the suggestion
@@ -2120,7 +2113,7 @@ class TestMistralFamilyToolParser:
     @pytest.mark.parametrize(
         "model_path,expected_tool",
         [
-            ("org/DeepSeek-R1-Distill-Mistral-7B", "deepseek"),
+            ("org/DeepSeek-R1-Distill-Mistral-7B", None),
             ("org/DeepSeek-V3-Mistral-Merge", "deepseek_v3"),
             ("some/Qwen3-Mistral-Merge-8B", "hermes"),
         ],

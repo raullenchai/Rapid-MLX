@@ -112,15 +112,15 @@ _FAMILY_ALIASES: dict[str, FamilyAlias] = {
         # from the PR body.
         #
         # R1-Distill-Qwen-32B-4bit stays above the "no cheap-alias"
-        # bar (32B params is comfortably Tier-1) and exercises the
-        # same ``deepseek`` tool-call parser + ``deepseek_r1``
-        # reasoning parser V4-Flash would have (per
-        # ``vllm_mlx/aliases.json``). No parser-coverage loss.
+        # bar (32B params is comfortably Tier-1) and exercises DeepSeek
+        # reasoning. It deliberately does not advertise tool calls: the
+        # strict-xfail block below records the checkpoint's architectural
+        # tool-emission gap (#1569). V4 tool-parser coverage remains #1041.
         alias="deepseek-r1-32b-4bit",
         reason=(
             "V4-Flash-8bit is 155 GB single-node-infeasible; "
-            "R1-Distill-Qwen-32B-4bit exercises the same tool_call + "
-            "reasoning parsers at ~16 GB"
+            "R1-Distill-Qwen-32B-4bit exercises reasoning at ~16 GB; "
+            "V4 tool-parser coverage remains tracked by #1041"
         ),
     ),
     "gptoss": FamilyAlias(

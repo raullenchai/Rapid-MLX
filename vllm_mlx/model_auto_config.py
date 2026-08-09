@@ -125,7 +125,12 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     (
         re.compile(r"deepseek.*r1.*distill", re.IGNORECASE),
         ModelConfig(
-            tool_call_parser="deepseek",
+            # R1-Distill checkpoints do not reliably emit either supported
+            # DeepSeek tool wire format. Binding a parser advertises tools to
+            # agents, which then accept plausible fabricated prose as a tool
+            # result (#1569). Keep reasoning support, but make tool capability
+            # explicitly absent for both aliases and raw HF paths.
+            tool_call_parser=None,
             reasoning_parser="deepseek_r1_distill",
         ),
     ),
@@ -1622,15 +1627,20 @@ def warn_misbound_deepseek_v3_parser(
     #      full-path regex even though the checkpoint name itself is
     #      non-V3. "Drop the flag" is actively bad advice — pin to
     #      ``hermes`` directly.
-    #   2. ``auto_parser is None`` (codex r6 PR-validate NIT): unknown
-    #      model, no regex match. "Drop the flag" leaves the user with
-    #      no tool parser at all, which is worse than the current
-    #      misbind. Pin explicitly to ``hermes`` for the typical
-    #      Qwen/Llama-arch case.
-    #   3. ``auto_parser`` is a non-V3 family parser: the auto-detect
-    #      knows the right answer (e.g. ``deepseek`` for R1-Distill).
-    #      Dropping the flag is the right call.
-    if auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS:
+    #   2. R1-Distill: auto-detect intentionally has no parser because the
+    #      checkpoint cannot reliably emit calls (#1569). Tell the user to
+    #      remove the override, not to swap parser families.
+    #   3. ``auto_parser is None`` for an unknown model: pin explicitly to
+    #      ``hermes`` for the typical Qwen/Llama-arch case.
+    #   4. ``auto_parser`` is a non-V3 family parser: auto-detect knows the
+    #      right answer, so dropping the flag is the right call.
+    is_r1_distill = bool(re.search(r"deepseek.*r1.*distill", model_path, re.I))
+    if is_r1_distill:
+        remediation = (
+            "Remove the explicit --tool-call-parser flag; R1-Distill "
+            "checkpoints do not reliably emit tool calls (#1569)."
+        )
+    elif auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS:
         remediation = "Pass --tool-call-parser hermes for this Qwen/Llama-arch model."
     elif auto_parser is None:
         remediation = (

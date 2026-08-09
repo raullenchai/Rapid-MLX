@@ -171,7 +171,7 @@ Family choice per matrix run:
 |---|---|---|
 | Qwen 3.6 | `qwen3.5-4b-4bit` | 3.6 has no <27B SKU; 3.5-4B shares `hermes` / `qwen3` parsers |
 | Gemma 4 | `gemma-4-12b-4bit` | Smallest text-only alias; ~7 GB at 4-bit |
-| DeepSeek | `deepseek-r1-32b-4bit` | 0.10.2 PR-2 pilot swapped from `deepseek-v4-flash-8bit` (~155 GB weights, single-node-infeasible on 256 GB M3 Ultra + G11 100 GB floor). R1-Distill-Qwen-32B-4bit at ~16 GB stays above the "no cheap-alias" bar and exercises the same `deepseek` tool-call + `deepseek_r1` reasoning parsers V4-Flash would have. **Full DeepSeek V4 Flash Tier-1 slot tracked in follow-up issue #1041** (hardware plan needed) |
+| DeepSeek | `deepseek-r1-32b-4bit` | 0.10.2 PR-2 pilot swapped from `deepseek-v4-flash-8bit` (~155 GB weights, single-node-infeasible on 256 GB M3 Ultra + G11 100 GB floor). R1-Distill-Qwen-32B-4bit at ~16 GB stays above the "no cheap-alias" bar and exercises DeepSeek reasoning, but deliberately does not advertise tools because the checkpoint cannot emit calls (#1569). **Full DeepSeek V4 Flash Tier-1 tool-parser slot tracked in follow-up issue #1041** (hardware plan needed). |
 | gpt-oss | `gpt-oss-20b-mxfp4-q8` | Smallest gpt-oss; ~11 GB |
 | Hy3 (Hunyuan 3) | `hy3-preview-4bit` | **Ultra-only** — 295B/21B-active MoE, 166 GB weights / ~156 GB peak (`min_memory_gb: 192`). No cheap alias exists; single-node-infeasible under G11 like DeepSeek V4-Flash. All 14 Hy3 cells `xfail(strict=True)`; real inference is weekly-Golden-Path-only; always-on CI coverage is the offline `test_hy3_offline.py` (parser wire, no model boot) |
 

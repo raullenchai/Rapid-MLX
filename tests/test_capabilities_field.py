@@ -270,6 +270,21 @@ class TestToolsCapability:
             f"Qwen3 alias should advertise 'tools' (hermes parser), got {caps}"
         )
 
+    def test_1569_r1_distill_does_not_advertise_tools(self, monkeypatch):
+        """A parser must not stand in for empirical checkpoint capability."""
+        model_id = "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit"
+        client, restore = _mount_models_app(
+            monkeypatch,
+            model_name=model_id,
+            model_alias="deepseek-r1-32b-4bit",
+            tool_call_parser=None,
+        )
+        try:
+            entry = _fetch_entry(client, model_id)
+        finally:
+            restore()
+        assert entry["capabilities"] == ["text"]
+
     def test_server_tool_parser_enables_tag_for_unregistered_id(self, monkeypatch):
         """Operator-supplied custom HF path + ``--tool-call-parser``
         flag → ``"tools"`` capability appears even without an alias

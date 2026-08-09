@@ -1077,6 +1077,7 @@ def test_gemma_3n_multimodal_aliases_share_family_sampling() -> None:
         "phi-3.5-mini-4bit",
         "gemma-3n-e2b-4bit",
         "gemma-3n-e4b-4bit",
+        "deepseek-r1-32b-4bit",
     ],
 )
 def test_no_tool_call_support_aliases_have_null_tool_call_parser(
@@ -1093,6 +1094,8 @@ def test_no_tool_call_support_aliases_have_null_tool_call_parser(
     * ``phi-3.5-mini-4bit`` (Microsoft Phi-3.5) — chat template only
       defines ``<|user|>`` / ``<|assistant|>`` / ``<|end|>``; no
       ``<tool_call>`` special tokens. Tool-call attempts get ignored.
+    * ``deepseek-r1-32b-4bit`` (DeepSeek R1 Distill Qwen 32B) — live
+      forced/auto tool prompts emit plausible prose instead of a call (#1569).
     * ``gemma-3n-e2b-4bit`` / ``gemma-3n-e4b-4bit`` (Google Gemma 3n
       multimodal) — chat template injects no tool-call markers; model
       replies with plain prose when asked to use a tool.
@@ -1114,14 +1117,14 @@ def test_no_tool_call_support_aliases_have_null_tool_call_parser(
     Pinned here so a future PR can't silently re-wire ``hermes``
     on the strength of "but the family default is hermes" — the
     family default is correct for the chat-format families that
-    ship tool tokens, and wrong for these three that don't.
+    ship tool tokens, and wrong for these checkpoints that don't.
     """
     profiles = list_profiles()
     assert alias in profiles, f"{alias} missing from aliases.json"
     assert profiles[alias].tool_call_parser is None, (
-        f"{alias}: tool_call_parser must be None — the model's chat "
-        f"template can't emit hermes-style tool grammar (PR #715 fuzz "
-        f"finding D). Got {profiles[alias].tool_call_parser!r}."
+        f"{alias}: tool_call_parser must be None — the checkpoint cannot "
+        f"reliably emit its configured tool grammar. "
+        f"Got {profiles[alias].tool_call_parser!r}."
     )
 
 

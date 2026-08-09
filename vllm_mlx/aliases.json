@@ -1130,7 +1130,7 @@
   },
   "deepseek-r1-32b-4bit": {
     "hf_path": "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
-    "tool_call_parser": "deepseek",
+    "tool_call_parser": null,
     "reasoning_parser": "deepseek_r1_distill",
     "is_hybrid": false,
     "supports_spec_decode": true,
