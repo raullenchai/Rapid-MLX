@@ -430,8 +430,7 @@ class TestDeepSeekR1Distill:
         )
         assert reasoning == "I should inspect the file."
         assert content == (
-            '<tool_call>{"name":"read_file","arguments":{"path":"a.py"}}'
-            "</tool_call>"
+            '<tool_call>{"name":"read_file","arguments":{"path":"a.py"}}</tool_call>'
         )
 
     def test_1570_prompt_primed_stream_keeps_untagged_trace_in_reasoning(self):
