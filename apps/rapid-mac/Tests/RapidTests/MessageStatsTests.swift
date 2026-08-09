@@ -381,7 +381,8 @@ struct MessageStatsTests {
             charCount: 100,
             promptTokens: 50,
             completionTokens: 25,
-            timeToFirstTokenSeconds: 0.4
+            timeToFirstTokenSeconds: 0.4,
+            reasoningEmitted: true
         )
         let data = try JSONEncoder().encode(msg)
         let back = try JSONDecoder().decode(ChatMessage.self, from: data)
@@ -390,5 +391,9 @@ struct MessageStatsTests {
         #expect(back.stats?.promptTokens == 50)
         #expect(back.stats?.completionTokens == 25)
         #expect(back.stats?.timeToFirstTokenSeconds == 0.4)
+        // Both new fields must survive the disk round trip. Without this,
+        // dropping `reasoningEmitted` from persistence would silently
+        // re-enable the mismatched estimate on every reloaded transcript.
+        #expect(back.stats?.reasoningEmitted == true)
     }
 }

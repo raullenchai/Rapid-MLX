@@ -506,7 +506,7 @@ enum DevSnapshot {
     /// Render at the host's current appearance via ``ImageRenderer``.
     ///
     /// Retained unchanged for the pre-v1.0 component scenes (Connect
-    /// Tools card body, Benchmark result, Consent, chat bubbles), which
+    /// Tools card body, Consent, chat bubbles), which
     /// are plain view trees that ``ImageRenderer`` rasterises correctly
     /// and which benefit from its ``scale`` support.
     ///

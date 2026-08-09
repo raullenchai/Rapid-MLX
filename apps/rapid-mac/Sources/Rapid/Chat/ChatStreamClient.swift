@@ -66,6 +66,22 @@ struct ChatStreamClient {
     /// the main actor so callers can mutate ``@Observable`` state without
     /// hopping.
     enum Event: Sendable {
+        /// The first generated token of the turn has arrived, on whichever
+        /// lane carried it. Emitted exactly once, before the payload event
+        /// that triggered it, and never for a turn that generates nothing.
+        ///
+        /// This exists because time-to-first-token is a property of the
+        /// STREAM, not of any one lane, and only this client sees all
+        /// three. A caller stamping the clock in its own `.content` and
+        /// `.reasoning` handlers misses a turn whose first output is a
+        /// tool-call fragment — it would then time the later prose instead
+        /// and report a decode window that excludes real generation,
+        /// inflating the rate.
+        ///
+        /// Deliberately NOT routed through the coalescer: it marks an
+        /// instant, not a payload, and batching it would move the very
+        /// measurement it exists to take.
+        case firstToken
         /// A delta to the visible ``content`` lane.
         case content(String)
         /// A delta to the hybrid-thinking ``reasoning_content`` lane.
@@ -451,6 +467,8 @@ struct ChatStreamClient {
         // (shouldn't happen, but spec-tolerant beats silent loss).
         var capturedFinishReason: String?
         var finalizedTools = false
+        /// One-shot latch for ``Event/firstToken``.
+        var sawFirstGeneratedDelta = false
         // Audit P1 — SSE delta coalescing. Per-delta MainActor.run on
         // a fast stream (M3 Ultra rapid-mlx can decode 200+ tok/s)
         // burned a main-actor hop per token. Coalesce content/reasoning
@@ -535,6 +553,13 @@ struct ChatStreamClient {
             }
             for choice in chunk.choices {
                 if let delta = choice.delta {
+                    let generated = !(delta.reasoning_content ?? "").isEmpty
+                        || !(delta.content ?? "").isEmpty
+                        || !(delta.tool_calls ?? []).isEmpty
+                    if generated, !sawFirstGeneratedDelta {
+                        sawFirstGeneratedDelta = true
+                        await MainActor.run { onEvent(.firstToken) }
+                    }
                     if let r = delta.reasoning_content, !r.isEmpty {
                         await coalescer.appendReasoning(r, onEvent: onEvent)
                     }

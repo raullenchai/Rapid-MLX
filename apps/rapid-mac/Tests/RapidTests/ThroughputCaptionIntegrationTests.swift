@@ -90,6 +90,78 @@ struct ThroughputCaptionIntegrationTests {
         let wholeTurnEstimate = (Double(stats.charCount) / 4.0) / stats.elapsedSeconds
         #expect(estimate > wholeTurnEstimate * 1.5)
     }
+
+    /// A reasoning turn stamps the clock on the reasoning trace, and records
+    /// that it had one.
+    @Test("A reasoning turn times the trace, not the prose that follows it")
+    func reasoningTurnStampsTheTraceAndIsMarked() async throws {
+        ReasoningFirstProtocol.reset()
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://reasoning")!,
+                session: ReasoningFirstProtocol.session()
+            ),
+            persistsConversations: false
+        )
+
+        model.send("think about it", alias: "test-model")
+        for _ in 0..<400 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let last = try #require(model.messages.last)
+        #expect(!last.reasoning.isEmpty, "fixture must emit a reasoning trace")
+        let stats = try #require(last.stats)
+
+        // Recorded, and recorded EARLY — the reasoning delta arrives at
+        // ~0.30 s, the prose only at ~0.75 s. A TTFT up at the prose would
+        // mean the reasoning lane never stamped the clock.
+        let ttft = try #require(stats.timeToFirstTokenSeconds)
+        #expect(ttft < 0.6, "TTFT \(ttft)s looks like it was taken at the prose, not the reasoning trace")
+
+        // And the turn is marked, so the char-count estimate knows its
+        // numerator and denominator disagree.
+        #expect(stats.emittedReasoning)
+        #expect(stats.estimatedTokensPerSecond == nil)
+    }
+}
+
+/// Emits a reasoning trace first, then visible prose, with a gap between —
+/// so a clock stamped on the wrong lane lands measurably late.
+private final class ReasoningFirstProtocol: URLProtocol, @unchecked Sendable {
+    static func reset() {}
+
+    static func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ReasoningFirstProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+
+        Thread.sleep(forTimeInterval: 0.30)
+        emit("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking hard \"}}]}\n\n")
+        Thread.sleep(forTimeInterval: 0.45)
+        emit("data: {\"choices\":[{\"delta\":{\"content\":\"Answer.\"}}]}\n\n")
+        Thread.sleep(forTimeInterval: 0.10)
+        emit("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+        emit("data: [DONE]\n\n")
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    private func emit(_ chunk: String) {
+        client?.urlProtocol(self, didLoad: Data(chunk.utf8))
+    }
+
+    override func stopLoading() {}
 }
 
 /// Streams a response whose time is spent almost entirely before the first
@@ -97,11 +169,21 @@ struct ThroughputCaptionIntegrationTests {
 /// to tell which one a rate was divided by.
 private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var prefillDelay: TimeInterval = 0.45
+    /// Held open between the first delta and the rest, so the decode window
+    /// is comfortably above production's 50 ms noise floor no matter how
+    /// fast the machine is.
+    nonisolated(unsafe) static var decodeWindow: TimeInterval = 0.25
     nonisolated(unsafe) static var contentDeltas = 12
     nonisolated(unsafe) static var completionTokens: Int? = 12
 
-    static func reset(prefillDelay: TimeInterval, contentDeltas: Int, completionTokens: Int?) {
+    static func reset(
+        prefillDelay: TimeInterval,
+        decodeWindow: TimeInterval = 0.25,
+        contentDeltas: Int,
+        completionTokens: Int?
+    ) {
         Self.prefillDelay = prefillDelay
+        Self.decodeWindow = decodeWindow
         Self.contentDeltas = contentDeltas
         Self.completionTokens = completionTokens
     }
@@ -128,7 +210,16 @@ private final class PrefillHeavyProtocol: URLProtocol, @unchecked Sendable {
         // a correctly-wired TTFT lands at or after it.
         Thread.sleep(forTimeInterval: Self.prefillDelay)
 
-        for _ in 0..<Self.contentDeltas {
+        // First token, then a deliberate decode window. Emitting every
+        // delta back-to-back would leave a decode window of microseconds,
+        // which production correctly refuses to rate (the 50 ms noise
+        // floor) — so the rate assertions below would fail on a fast
+        // runner and pass on a slow one, for reasons having nothing to do
+        // with the code under test. The window is staged, not hoped for.
+        emit("data: {\"choices\":[{\"delta\":{\"content\":\"word \"}}]}\n\n")
+        Thread.sleep(forTimeInterval: Self.decodeWindow)
+
+        for _ in 1..<Self.contentDeltas {
             emit("data: {\"choices\":[{\"delta\":{\"content\":\"word \"}}]}\n\n")
         }
         if let tokens = Self.completionTokens {

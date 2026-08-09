@@ -455,8 +455,8 @@ enum RapidTheme {
     /// Multiplier applied to a control's opacity when disabled.
     ///
     /// v1.0.2: raised 0.40 → 0.62. A disabled control still has to be
-    /// READ — "Speed on this Mac" and "Copy config" both explain, via
-    /// their tooltips, what would make them available, and at 0.40 on a
+    /// READ — a disabled "Copy config" explains, via its tooltip, what
+    /// would make it available, and at 0.40 on a
     /// warm canvas the label was close to invisible. 0.62 keeps the
     /// unmistakable "not right now" signal while leaving the text
     /// legible.

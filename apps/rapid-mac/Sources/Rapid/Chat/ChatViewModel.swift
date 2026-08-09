@@ -1686,8 +1686,14 @@ These rules apply to every tool, not just web search.
             try await client.send(request, bearerToken: server?.activeBearer) { [weak self] event in
                 guard let self else { return }
                 switch event {
-                case .content(let delta):
+                case .firstToken:
+                    // The stream says the first generated token landed, on
+                    // whichever lane carried it. Stamping per-lane here
+                    // instead would miss a turn that opens with a tool-call
+                    // fragment and time the later prose, reporting a decode
+                    // window that excludes real generation.
                     if firstTokenAt == nil { firstTokenAt = Date() }
+                case .content(let delta):
                     current.content += delta
                     // #478: announce the response start once, then the
                     // trailing un-announced sentence(s) on a throttled
@@ -1706,7 +1712,6 @@ These rules apply to every tool, not just web search.
                         }
                     }
                 case .reasoning(let delta):
-                    if firstTokenAt == nil { firstTokenAt = Date() }
                     current.reasoning += delta
                 case .toolCalls(let calls):
                     capturedCalls = calls

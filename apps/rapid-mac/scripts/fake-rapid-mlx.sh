@@ -254,8 +254,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions":
             self._json(404, {"error": "not_found"})
             return
-        # Decode only enough of the request to support both normal SSE chat
-        # and the in-app loaded-model speed test (`stream: false`).
+        # Decode only enough of the request to drive normal SSE chat.
         length = int(self.headers.get("content-length", "0") or "0")
         body = {}
         if length:
