@@ -5,13 +5,12 @@ AXApplication title="Rapid-MLX"
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
+          AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXButton desc="Connect your agents" help="Point an editor or agent at your local server" enabled=true
-          AXButton id="ChatView.SpeedOnThisMac" desc="Speed on this Mac" help="Start a model to run a speed test." enabled=false
           AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
