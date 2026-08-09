@@ -5699,6 +5699,7 @@ async def _create_chat_completion_impl(
             unconditional=bool(
                 getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
             ),
+            tools_requested=bool(request.tools),
         ),
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # None → back-compat no-op. Suppressed when the generation-time
@@ -5821,6 +5822,7 @@ async def _create_chat_completion_impl(
             unconditional=bool(
                 getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
             ),
+            tools_requested=bool(request.tools),
         )
         deepseek_v4_mid_think = bool(
             _uses_deepseek_v4_reasoning(cfg)
@@ -6931,6 +6933,7 @@ async def stream_chat_completion(
                     unconditional=bool(
                         getattr(rp, "implicit_reasoning_until_close", False)
                     ),
+                    tools_requested=bool(request.tools),
                 )
                 # D-STOP-THINK codex round-6 BLOCKING (PR #799):
                 # prefer the per-chunk accumulator over

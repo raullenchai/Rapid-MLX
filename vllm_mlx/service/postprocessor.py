@@ -351,6 +351,7 @@ class StreamingPostProcessor:
                                     False,
                                 )
                             ),
+                            tools_requested=self.tools_requested,
                         )
                     )
                 _configure(**configure_kwargs)
@@ -2440,6 +2441,7 @@ class StreamingPostProcessor:
                                     False,
                                 )
                             ),
+                            tools_requested=self.tools_requested,
                         )
                     )
                 _configure(**configure_kwargs)

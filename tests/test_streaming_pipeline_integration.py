@@ -123,6 +123,24 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
         templates = {"default": self.THINKING_TEMPLATE, "tool_use": "plain"}
         assert _should_start_in_thinking(templates, None) is True
 
+    def test_1570_named_tool_template_is_selected_when_tools_requested(self):
+        templates = {"default": self.THINKING_TEMPLATE, "tool_use": "plain"}
+        assert (
+            _should_start_in_thinking(
+                templates, None, unconditional=True, tools_requested=True
+            )
+            is False
+        )
+
+    def test_1570_named_tool_template_can_enable_implicit_thinking(self):
+        templates = {"default": "plain", "tool_use": self.THINKING_TEMPLATE}
+        assert (
+            _should_start_in_thinking(
+                templates, None, unconditional=True, tools_requested=True
+            )
+            is True
+        )
+
     def test_plain_template_never_starts_in_thinking(self):
         """Templates without an implicit think marker should start as text."""
         assert _should_start_in_thinking("{{ add_generation_prompt }}", None) is False

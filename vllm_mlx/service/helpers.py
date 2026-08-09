@@ -747,6 +747,7 @@ def _should_start_in_thinking(
     enable_thinking: bool | None,
     *,
     unconditional: bool = False,
+    tools_requested: bool = False,
 ) -> bool:
     """Shared predicate: does this chat template start the assistant
     response inside an implicit ``<think>`` block?
@@ -775,7 +776,11 @@ def _should_start_in_thinking(
     source of truth.
     """
     if isinstance(chat_template, dict):
-        if "default" in chat_template:
+        if tools_requested and "tool_use" in chat_template:
+            chat_template = chat_template["tool_use"]
+        elif tools_requested and "tools" in chat_template:
+            chat_template = chat_template["tools"]
+        elif "default" in chat_template:
             chat_template = chat_template["default"]
         elif len(chat_template) == 1:
             chat_template = next(iter(chat_template.values()))

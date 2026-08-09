@@ -674,6 +674,7 @@ def _should_start_in_thinking(
     enable_thinking: bool | None,
     *,
     unconditional: bool = False,
+    tools_requested: bool = False,
 ) -> bool:
     """Thin wrapper over the shared
     ``service.helpers._should_start_in_thinking`` predicate.
@@ -686,7 +687,12 @@ def _should_start_in_thinking(
     """
     from ..service.helpers import _should_start_in_thinking as _shared
 
-    return _shared(chat_template, enable_thinking, unconditional=unconditional)
+    return _shared(
+        chat_template,
+        enable_thinking,
+        unconditional=unconditional,
+        tools_requested=tools_requested,
+    )
 
 
 def _enforce_responses_tool_choice(
@@ -2128,6 +2134,7 @@ async def _non_stream(
             unconditional=bool(
                 getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
             ),
+            tools_requested=bool(openai_request.tools),
         ),
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
@@ -2869,6 +2876,7 @@ async def _stream_responses(
             _chat_template,
             chat_kwargs.get("enable_thinking"),
             unconditional=cfg.reasoning_parser_name == "deepseek_r1_distill",
+            tools_requested=bool(chat_kwargs.get("tools")),
         )
         think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
 
@@ -3016,6 +3024,7 @@ async def _stream_responses(
                             or "",
                             chat_kwargs.get("enable_thinking"),
                             unconditional=True,
+                            tools_requested=bool(chat_kwargs.get("tools")),
                         )
                     )
                 configure_request(**configure_kwargs)
