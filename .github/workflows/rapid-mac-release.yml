@@ -374,6 +374,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    concurrency:
+      group: rapid-mac-dist-publish
+      cancel-in-progress: false
     steps:
       - name: Download the notarised DMG artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
@@ -400,11 +403,33 @@ jobs:
             echo "::error::tagged releases require updater fallback publishing; missing: ${missing[*]}"
             exit 1
           fi
+          [[ "$R2_BUCKET" == "rapid-desktop-dist" ]] || {
+            echo "::error::RAPID_MAC_DIST_R2_BUCKET must be rapid-desktop-dist"
+            exit 1
+          }
+          [[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]] || {
+            echo "::error::RAPID_MAC_DIST_CDN_BASE must be https://dl.rapidmlx.com"
+            exit 1
+          }
           VERSION="${TAG#rapid-mac-v}"
+          [[ "$TAG" =~ ^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::release tag must be rapid-mac-vMAJOR.MINOR.PATCH"
+            exit 1
+          }
           DMG="dist/rapid-mlx-desktop.dmg"
           [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
           DMG_SHA256="$(sha256sum "$DMG" | awk '{print $1}')"
           DMG_SIZE="$(stat -c %s "$DMG")"
+
+          # The concurrency group closes the check/publish race between tag
+          # jobs. Refuse an out-of-order older tag before touching any object.
+          npx --yes wrangler@4.120.0 r2 object get "${R2_BUCKET}/latest.json" \
+            --file dist/current-latest.json --remote
+          CURRENT_VERSION="$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' dist/current-latest.json)"
+          if dpkg --compare-versions "$CURRENT_VERSION" gt "$VERSION"; then
+            echo "::error::refusing updater rollback from ${CURRENT_VERSION} to ${VERSION}"
+            exit 1
+          fi
 
           # Content-address the canonical payload. A rerun of the same tag can
           # never overwrite bytes referenced by an older manifest checksum.

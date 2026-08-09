@@ -26,6 +26,8 @@ struct ReleaseManifestWorkflowTests {
     func missingConfigFailsClosed() throws {
         let job = Self.mirrorJob
         #expect(job.contains("if: startsWith(github.ref, 'refs/tags/')"))
+        #expect(job.contains("group: rapid-mac-dist-publish"))
+        #expect(job.contains("cancel-in-progress: false"))
         #expect(job.contains("tagged releases require updater fallback publishing"))
         #expect(!job.contains("skipping the optional CDN mirror"))
         for requiredSetting in [
@@ -49,6 +51,9 @@ struct ReleaseManifestWorkflowTests {
         #expect(branch.contains("exit 1"))
         let firstUpload = try #require(job.range(of: "r2 object put"))
         #expect(branchEnd.upperBound < firstUpload.lowerBound)
+        #expect(job.contains(#"[[ "$R2_BUCKET" == "rapid-desktop-dist" ]]"#))
+        #expect(job.contains(#"[[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]]"#))
+        #expect(job.contains(#"[[ "$TAG" =~ ^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$ ]]"#))
     }
 
     @Test("manifest describes the bundled DMG and is committed last")
@@ -67,5 +72,8 @@ struct ReleaseManifestWorkflowTests {
         #expect(workflow.contains("rapid-mlx-desktop-${DMG_SHA256}.dmg"))
         #expect(!workflow.contains("wrangler@4 r2 object put"))
         #expect(workflow.contains("wrangler@4.120.0 r2 object put"))
+        let rollbackGuard = try #require(workflow.range(of: "dpkg --compare-versions"))
+        #expect(rollbackGuard.lowerBound < dmgUpload.lowerBound)
+        #expect(workflow.contains("refusing updater rollback"))
     }
 }
