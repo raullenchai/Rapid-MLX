@@ -1,0 +1,42 @@
+name: claude-code
+display_name: "Claude Code"
+repo: "anthropics/claude-code"
+stars: 140000
+
+# Claude Code speaks the Anthropic Messages API.  Unlike OpenAI-compatible
+# clients, its base URL must be the bare server origin: the Anthropic SDK adds
+# /v1/messages itself.
+config:
+  type: env
+  env_vars:
+    ANTHROPIC_BASE_URL: "{base_url_no_v1}"
+    ANTHROPIC_API_KEY: "not-needed"
+    ANTHROPIC_MODEL: "{model_id}"
+
+models:
+  recommended:
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-9b-4bit"
+    - "qwen3-coder-30b-4bit"
+
+streaming:
+  extra_tool_tags: []
+  max_tools: 25
+
+testing:
+  binary: claude
+  # The E2E suite asks Claude to read a fixture and run one echo command in
+  # isolated throwaway workspaces. Print mode requires those tools to be
+  # explicitly allowed or it refuses the calls non-interactively. Scope each
+  # permission to the exact fixture/command; changing cwd is not a sandbox.
+  query_cmd: "claude --allowedTools 'Read(pyproject.toml)' 'Bash(echo rapidmlx_claude-code_test)' -p '{query}'"
+  query_timeout: 180
+  install_cmd: "npm install -g @anthropic-ai/claude-code"
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "ANTHROPIC_BASE_URL must not end in /v1; the Anthropic SDK appends /v1/messages."
+  - "Environment variables apply to the current shell only; use `rapid-mlx launch claude-code` to patch Claude Code settings persistently."

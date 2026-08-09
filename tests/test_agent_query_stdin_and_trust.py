@@ -118,6 +118,57 @@ def test_query_placeholder_still_substitutes():
     assert out == "ARG:what is 2+2"
 
 
+def test_query_quotes_cannot_change_the_child_argv():
+    """Prompts are data even when they contain the template's quote style."""
+    script = "import json, sys; sys.stdout.write(json.dumps(sys.argv[1:]))"
+    cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} '{{query}}'"
+    query = "Run 'echo safe' and report the result"
+
+    out, err = _agent_query(sys.executable, cmd, query, timeout=_TIMEOUT_S)
+
+    assert err is None, f"unexpected error: {err}"
+    assert out == "[\"Run 'echo safe' and report the result\"]"
+
+
+def test_local_anthropic_query_drops_remote_provider_environment(monkeypatch):
+    """A Claude E2E run must not inherit selectors for a paid remote backend."""
+    conflicting = {
+        "ANTHROPIC_AUTH_TOKEN": "real-token",
+        "ANTHROPIC_BEDROCK_BASE_URL": "https://bedrock.example",
+        "ANTHROPIC_VERTEX_BASE_URL": "https://vertex.example",
+        "ANTHROPIC_FOUNDRY_BASE_URL": "https://foundry.example",
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "CLAUDE_CODE_USE_FOUNDRY": "1",
+    }
+    for key, value in conflicting.items():
+        monkeypatch.setenv(key, value)
+
+    keys = [*conflicting, "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]
+    script = (
+        "import json, os, sys; "
+        f"sys.stdout.write(json.dumps({{k: os.environ[k] for k in {keys!r} if k in os.environ}}, sort_keys=True))"
+    )
+    cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    out, err = _agent_query(
+        sys.executable,
+        cmd,
+        "unused",
+        timeout=_TIMEOUT_S,
+        env_overrides={
+            "ANTHROPIC_BASE_URL": "http://localhost:8000",
+            "ANTHROPIC_API_KEY": "not-needed",
+        },
+    )
+
+    assert err is None, f"unexpected error: {err}"
+    assert out == (
+        '{"ANTHROPIC_API_KEY": "not-needed", '
+        '"ANTHROPIC_BASE_URL": "http://localhost:8000"}'
+    )
+
+
 def test_agent_runs_in_the_given_workspace_not_the_callers_cwd():
     """`--skip-git-repo-check` is only safe in a directory we built ourselves.
 

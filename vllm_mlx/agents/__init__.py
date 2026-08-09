@@ -29,6 +29,12 @@ logger = logging.getLogger(__name__)
 _PROFILES: dict[str, AgentProfile] = {}
 _LOADED = False
 
+# User-facing spellings that should resolve to a canonical profile without
+# adding duplicate rows to ``rapid-mlx agents``.  Claude's executable is named
+# ``claude``, while the product and launch adapter use ``claude-code``; users
+# reasonably try either spelling.
+_PROFILE_ALIASES = {"claude": "claude-code"}
+
 PROFILES_DIR = Path(__file__).parent / "profiles"
 
 
@@ -188,7 +194,9 @@ def _ensure_loaded():
 def get_profile(name: str) -> AgentProfile | None:
     """Get an agent profile by name. Returns None if not found."""
     _ensure_loaded()
-    return _PROFILES.get(name)
+    # An explicitly installed user profile wins even when its name is also a
+    # built-in alias; aliases are only the fallback lookup path.
+    return _PROFILES.get(name) or _PROFILES.get(_PROFILE_ALIASES.get(name, name))
 
 
 def get_profile_or_generic(name: str) -> AgentProfile:
@@ -202,7 +210,7 @@ def get_profile_or_generic(name: str) -> AgentProfile:
     known.
     """
     _ensure_loaded()
-    profile = _PROFILES.get(name)
+    profile = get_profile(name)
     if profile:
         return profile
     # Hardcoded fallback — mirrors what the removed generic.yaml offered.

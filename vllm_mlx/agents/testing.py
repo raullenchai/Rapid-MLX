@@ -33,6 +33,16 @@ from .base import AgentProfile
 
 logger = logging.getLogger(__name__)
 
+_ANTHROPIC_REMOTE_ENV = (
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "ANTHROPIC_FOUNDRY_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+
 
 # ---------------------------------------------------------------------------
 # Test result types
@@ -814,7 +824,12 @@ def _workspace_or(cwd: str | None):
 
 
 def _agent_query(
-    binary: str, query_cmd: str, query: str, timeout: int = 120, cwd: str | None = None
+    binary: str,
+    query_cmd: str,
+    query: str,
+    timeout: int = 120,
+    cwd: str | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Run a single agent query. Returns (output, error).
 
@@ -837,15 +852,26 @@ def _agent_query(
         if not os.path.exists(binary_path):
             return None, f"Binary not found: {binary}"
 
-    # Substitute {query} placeholder and parse with shlex to respect quotes
-    cmd_str = query_cmd.replace("{query}", query)
+    # Parse the command template first, then substitute the query inside the
+    # already-separated argv entries. Substituting before ``shlex.split`` lets
+    # quotes or shell-like text in a prompt change the child argument vector.
     try:
-        cmd_parts = shlex.split(cmd_str)
+        cmd_parts = shlex.split(query_cmd)
     except ValueError:
         # Fallback: simple split if shlex can't parse
-        cmd_parts = cmd_str.split()
+        cmd_parts = query_cmd.split()
+    cmd_parts = [part.replace("{query}", query) for part in cmd_parts]
     # Replace first part with full binary path
     cmd_parts[0] = binary_path
+
+    child_env = os.environ.copy()
+    # A local Anthropic endpoint must win over every provider-selection path.
+    # Otherwise a developer's normal Bedrock/Vertex/Foundry setup can route an
+    # E2E prompt (and its tools) to a real remote account despite our overrides.
+    if env_overrides and "ANTHROPIC_BASE_URL" in env_overrides:
+        for key in _ANTHROPIC_REMOTE_ENV:
+            child_env.pop(key, None)
+    child_env.update(env_overrides or {})
 
     try:
         proc = subprocess.run(
@@ -866,6 +892,10 @@ def _agent_query(
             # got a chance to fail. Every agent CLI runs headless here, so
             # none of them has any business reading stdin (#1683).
             stdin=subprocess.DEVNULL,
+            # Env-profile setup returns shell exports; it cannot mutate the
+            # parent process. Pass those values explicitly so an E2E agent
+            # never falls back to its normal remote provider or real key.
+            env=child_env,
         )
         output = proc.stdout + proc.stderr
         if "error" in output.lower() and "HTTP 4" in output:
@@ -937,7 +967,11 @@ def _err_to_status(err: str | None) -> TestStatus:
 
 
 def _test_e2e_chat(
-    binary: str, query_cmd: str, timeout: int, cwd: str | None = None
+    binary: str,
+    query_cmd: str,
+    timeout: int,
+    cwd: str | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> TestResult:
     """Agent basic chat."""
     t0 = time.time()
@@ -965,6 +999,7 @@ def _test_e2e_chat(
             "What is 2+2? Reply with just the number.",
             timeout,
             workdir,
+            env_overrides,
         )
     if err:
         status = _err_to_status(err)
@@ -992,7 +1027,11 @@ def _test_e2e_chat(
 
 
 def _test_e2e_file_read(
-    binary: str, query_cmd: str, timeout: int, cwd: str | None = None
+    binary: str,
+    query_cmd: str,
+    timeout: int,
+    cwd: str | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> TestResult:
     """Agent reads a file via tool call."""
     t0 = time.time()
@@ -1020,6 +1059,7 @@ def _test_e2e_file_read(
             "Read the first line of pyproject.toml",
             timeout,
             workdir,
+            env_overrides,
         )
     if err:
         status = _err_to_status(err)
@@ -1049,7 +1089,12 @@ def _test_e2e_file_read(
 
 
 def _test_e2e_terminal(
-    binary: str, query_cmd: str, timeout: int, agent_name: str, cwd: str | None = None
+    binary: str,
+    query_cmd: str,
+    timeout: int,
+    agent_name: str,
+    cwd: str | None = None,
+    env_overrides: dict[str, str] | None = None,
 ) -> TestResult:
     """Agent runs a shell command."""
     t0 = time.time()
@@ -1078,6 +1123,7 @@ def _test_e2e_terminal(
             f"Run 'echo {marker}' and show me the output",
             timeout,
             workdir,
+            env_overrides,
         )
     if err:
         status = _err_to_status(err)
@@ -1253,6 +1299,17 @@ class AgentTestRunner:
         t0 = time.time()
         streaming = self.profile.get_streaming_for_version(self.agent_version)
         testing = self.profile.get_testing_for_version(self.agent_version)
+        rendered_config = self.profile.render_config(
+            self.base_url,
+            self.model_id,
+            self.agent_version,
+        )
+        active_config = self.profile.get_config_for_version(self.agent_version)
+        env_overrides = (
+            {str(key): str(value) for key, value in rendered_config.items()}
+            if active_config.type == "env" and isinstance(rendered_config, dict)
+            else None
+        )
 
         # --- API tests ---
         report.results.append(_test_plain_chat(self.base_url, self.model_id))
@@ -1294,12 +1351,20 @@ class AgentTestRunner:
             # its own, so one invocation's leftovers cannot become the
             # next one's starting condition.
             report.results.append(
-                _test_e2e_chat(binary, testing.query_cmd, testing.query_timeout)
+                _test_e2e_chat(
+                    binary,
+                    testing.query_cmd,
+                    testing.query_timeout,
+                    env_overrides=env_overrides,
+                )
             )
             if self.profile.needs_function_calling:
                 report.results.append(
                     _test_e2e_file_read(
-                        binary, testing.query_cmd, testing.query_timeout
+                        binary,
+                        testing.query_cmd,
+                        testing.query_timeout,
+                        env_overrides=env_overrides,
                     )
                 )
                 report.results.append(
@@ -1308,6 +1373,7 @@ class AgentTestRunner:
                         testing.query_cmd,
                         testing.query_timeout,
                         self.profile.name,
+                        env_overrides=env_overrides,
                     )
                 )
         elif testing.binary:
