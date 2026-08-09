@@ -63,6 +63,12 @@ done
 log() { printf '[gui-golden] %s\n' "$*"; }
 die() { printf '[gui-golden] FAIL: %s\n' "$*" >&2; exit 1; }
 pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
+flow_requires_screen_recording() {
+    case "$FLOW" in
+        all|fresh-install|low-memory-choice|browse-all-destination) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 pb_click_coords() {
     local coords="$1"
     shift
@@ -126,9 +132,13 @@ require_tools() {
     AX_DRIVER="$OUT_ROOT/rapid-ax"
     swiftc "$ROOT/scripts/rapid-ax.swift" -o "$AX_DRIVER"
     pb permissions status --json > "$OUT_ROOT/permissions.json"
-    jq -e '.success and ([.data.permissions[] | select(.isRequired) | .isGranted] | all)' \
-        "$OUT_ROOT/permissions.json" >/dev/null \
-        || die "Peekaboo needs Accessibility and Screen Recording permissions"
+    jq -e '.success and any(.data.permissions[]?; .name == "Accessibility" and .isGranted == true)' \
+        "$OUT_ROOT/permissions.json" >/dev/null || die "Peekaboo needs Accessibility permission"
+    if flow_requires_screen_recording; then
+        jq -e '.success and ([.data.permissions[] | select(.isRequired) | .isGranted] | all)' \
+            "$OUT_ROOT/permissions.json" >/dev/null \
+            || die "this screenshot flow needs Screen Recording permission"
+    fi
 }
 
 start_persona() {
@@ -188,13 +198,30 @@ stop_app() {
     APP_PID=""
 }
 
+refresh_main_window_id() {
+    MAIN_WINDOW_ID=""
+    pb list windows --app "PID:$APP_PID" --json > "$OUT/windows-current.json" 2>/dev/null \
+        || return 1
+    MAIN_WINDOW_ID="$(jq -r '(.data.windows // []) | map(select(.title == "Rapid-MLX"))[0].window_id // empty' "$OUT/windows-current.json" 2>/dev/null)"
+    [[ -n "$MAIN_WINDOW_ID" ]]
+}
+
 wait_for_window() {
     local windows="$OUT/windows.json"
     for _ in {1..80}; do
         kill -0 "$APP_PID" 2>/dev/null || die "app exited before opening a window"
-        pb list windows --app "PID:$APP_PID" --json > "$windows" 2>/dev/null || true
-        MAIN_WINDOW_ID="$(jq -r '(.data.windows // []) | map(select(.title == "Rapid-MLX"))[0].window_id // empty' "$windows" 2>/dev/null)"
-        [[ -n "$MAIN_WINDOW_ID" ]] && return
+        "$AX_DRIVER" dump "$APP_PID" > "$windows" 2>/dev/null || true
+        if jq -e '.success == true and .data.windows.complete == true
+                  and any(.data.windows.titles[]?; . == "Rapid-MLX")' \
+            "$windows" >/dev/null 2>&1; then
+            if flow_requires_screen_recording; then
+                if ! refresh_main_window_id; then
+                    sleep 0.25
+                    continue
+                fi
+            fi
+            return
+        fi
         sleep 0.25
     done
     die "main window did not appear"
@@ -202,10 +229,11 @@ wait_for_window() {
 
 see_main() {
     local destination="$1"
-    pb list windows --app "PID:$APP_PID" --json > "$OUT/windows-current.json"
-    local current_main
-    current_main="$(jq -r '(.data.windows // []) | map(select(.title == "Rapid-MLX"))[0].window_id // empty' "$OUT/windows-current.json")"
-    [[ -n "$current_main" ]] && MAIN_WINDOW_ID="$current_main"
+    # Only screenshot flows need a CGWindow id. Never retain a stale id if
+    # enumeration fails; visual evidence must target the current main window.
+    if flow_requires_screen_recording && ! refresh_main_window_id; then
+        die "could not refresh the main screenshot window ID"
+    fi
     "$AX_DRIVER" dump "$APP_PID" > "$destination"
 }
 
@@ -661,12 +689,33 @@ dismiss_first_run() {
 
 open_settings() {
     pb menu click --app "PID:$APP_PID" --item 'Settings…' --json > "$OUT/open-settings.json"
+    local probe=2 opened=0
     for _ in {1..40}; do
-        pb list windows --app "PID:$APP_PID" --json > "$OUT/settings-windows.json"
-        SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' "$OUT/settings-windows.json" | head -1)"
-        [[ -n "$SETTINGS_WINDOW_ID" ]] && return
+        probe=0
+        ax_window_present Settings "$OUT/settings-windows.json" || probe=$?
+        if [[ "$probe" == 0 ]]; then opened=1; break; fi
         sleep 0.25
     done
+    if [[ "$opened" == 1 ]]; then
+        # Screenshot flows retain the old window-id postcondition. Semantic
+        # flows intentionally stop at the AX proof above, avoiding a Screen
+        # Recording dependency for an ID they never consume.
+        if flow_requires_screen_recording; then
+            SETTINGS_WINDOW_ID=""
+            for _ in {1..40}; do
+                if ! pb list windows --app "PID:$APP_PID" --json > "$OUT/settings-cg-windows.json" 2>/dev/null; then
+                    sleep 0.25
+                    continue
+                fi
+                SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' "$OUT/settings-cg-windows.json" | head -1)"
+                [[ -n "$SETTINGS_WINDOW_ID" ]] && break
+                sleep 0.25
+            done
+            [[ -n "$SETTINGS_WINDOW_ID" ]] || die "Settings opened but has no screenshot window ID"
+        fi
+        return
+    fi
+    [[ "$probe" == 2 ]] && die "could not observe whether the Settings window opened"
     die "Settings window did not open"
 }
 
@@ -943,6 +992,10 @@ flow_restored_tools() {
         "$OUT/restored.json" | head -1)"
     [[ -n "$conversation_id" ]] || die "restored tool conversation row missing"
     press "$OUT/restored.json" "$conversation_id" "$OUT/opened.json"
+    # Relaunch starts a fresh sidecar. The restored transcript can become
+    # interactive before that sidecar is ready, so sending immediately races
+    # the readiness gate and silently leaves the prompt in the composer.
+    wait_send_idle "$OUT/restored-ready.json"
     send_prompt "What about technology? Find one concrete story and summarize it." restored-tools-followup
     wait_send_idle "$OUT/followup-settled.json"
     assert_tree_text "$OUT/followup-settled.json" "Golden technology story"
