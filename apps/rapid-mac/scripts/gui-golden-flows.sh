@@ -1978,7 +1978,7 @@ flow_image_generation() {
     jq -s '[.[] | select(.event == "image_response") | .sha256] | unique | length' \
         "$OUT/fake-events.jsonl" > "$OUT/ig-render-count.txt"
     [[ "$(cat "$OUT/ig-render-count.txt")" == "2" ]] \
-        || die "the two renders returned identical PNG bytes — a re-shown artifact, not a second render: $(jq -s -c '[.[] | select(.event == "image_response") | {index, sha256}]' "$OUT/fake-events.jsonl")"
+        || die "the sidecar returned identical PNG bytes for both renders — one image produced twice: $(jq -s -c '[.[] | select(.event == "image_response") | {index, sha256}]' "$OUT/fake-events.jsonl")"
 
     # A thumbnail is a way back to its prompt, not just a picture.
     press "$OUT/ig-result-2.json" Images.Gallery.Thumb.2 "$OUT/ig-revisit.json" \

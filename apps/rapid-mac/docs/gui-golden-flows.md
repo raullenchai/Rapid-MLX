@@ -358,7 +358,9 @@ before anything is pressed, because either signal alone can lie.
 The fake sidecar answers `/v1/images/generations` with a real 1×1 PNG after a
 scripted number of steps (`FAKE_IMAGE_STEPS`, `FAKE_IMAGE_STEP_MS`), so the
 in-flight card is observable rather than a frame between two polls, and the
-bytes differ per render so a re-shown first image cannot pass as a second one.
+bytes differ per render, and the flow compares their SHA-256s — which proves
+the SIDECAR returned two different images, not that the app drew two different
+ones. AX exposes no bitmap, so that last link is out of reach here; see #1719.
 `tests/test_fake_sidecar_image_catalog.py` pins the fixture's catalog row
 against the shape `ModelCatalog.parseImageRows` indexes — the two files never
 import each other, and the drift shows up on a Mac disguised as a product bug.

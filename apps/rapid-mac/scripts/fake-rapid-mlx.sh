@@ -238,8 +238,10 @@ def _tool_call_delta(call_id):
 #   * a render TAKES TIME, so the in-flight progress card (and its
 #     ``Images.Cancel``) is observable rather than a frame the flow can never
 #     catch;
-#   * each render returns DIFFERENT bytes, so "a second thumbnail appeared"
-#     cannot be satisfied by the UI re-showing the first one.
+#   * each render returns DIFFERENT bytes, and reports their SHA-256, so the
+#     flow can tell "the sidecar produced two images" from "it produced one
+#     twice". That is a claim about the WIRE; whether the app then draws both
+#     is past what an accessibility dump can see.
 #
 # The PNG is built here rather than pasted as a base64 literal: a blob nobody
 # can read is a blob nobody can verify, and a corrupt one would fail as
