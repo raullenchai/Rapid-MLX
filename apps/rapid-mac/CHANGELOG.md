@@ -16,7 +16,7 @@ can actually understand.
 ### Added
 
 - **A new Images tab generates pictures on your Mac.** Choose an image model,
-  load it the same way you load a chat model, type a prompt and generate. Each
+  follow the readiness prompt to load it, type a prompt and generate. Each
   render joins a filmstrip below the picture; selecting an earlier one brings
   its prompt back so you can adjust and re-run. Aspect ratio is 1:1, 3:4 or
   4:3, and the save button writes a PNG wherever you choose.
