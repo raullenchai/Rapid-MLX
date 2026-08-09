@@ -193,6 +193,20 @@ gh pr view <PR#> --repo raullenchai/Rapid-MLX --json mergeable,mergeStateStatus,
 
 Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `lint`, `type-check`, `version-check`, `test-matrix (3.10/3.11/3.12)`, `test-apple-silicon`, `tests`.
 
+**Final-snapshot rule (incident #1745).** The check list is evidence only for
+the exact commit and instant at which it was read. After the final push, fetch
+`statusCheckRollup` again immediately before merge and require every relevant
+platform/build check to have completed successfully. A pending check is not a
+pass; a non-required red check is still a blocker when it executes the surface
+the PR changed. Never rely on an earlier green subset or on `gh pr merge`
+allowing the operation.
+
+For language-specific suites, distinguish compilation from execution. `swift
+build`, `swift test list`, and “test target built” do not prove that any Swift
+test ran. The PR evidence must name the command that executed the tests and
+include its pass/fail count. If the host cannot execute that suite, its CI job
+must finish green before merge.
+
 **CI failure taxonomy** — different kinds of red are different problems:
 
 | Failure | Diagnosis signal | Action |
@@ -213,6 +227,10 @@ Before merge, the PR description must accurately reflect actual current state:
 - All `[x]` boxes have evidence in the PR or comments.
 
 ## Step 12 — Merge
+
+- Re-run the Step 10 `statusCheckRollup` query after the final push and directly
+  before invoking `gh pr merge`. Stop on `QUEUED`, `IN_PROGRESS`, `PENDING`,
+  `FAILURE`, `CANCELLED`, or `TIMED_OUT` for any relevant check.
 
 - **Squash-merge** for clean main history:
 
