@@ -1285,7 +1285,12 @@ class AgentTestRunner:
             self.model_id,
             self.agent_version,
         )
-        env_overrides = rendered_config if isinstance(rendered_config, dict) else None
+        active_config = self.profile.get_config_for_version(self.agent_version)
+        env_overrides = (
+            {str(key): str(value) for key, value in rendered_config.items()}
+            if active_config.type == "env" and isinstance(rendered_config, dict)
+            else None
+        )
 
         # --- API tests ---
         report.results.append(_test_plain_chat(self.base_url, self.model_id))
