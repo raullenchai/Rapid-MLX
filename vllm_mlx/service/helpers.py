@@ -773,8 +773,9 @@ def _should_start_in_thinking(
     route uses the same predicate and the contract has a single
     source of truth.
     """
-    if enable_thinking is False and not unconditional:
-        return False
+    if enable_thinking is False:
+        if not unconditional or "enable_thinking" in chat_template:
+            return False
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
 

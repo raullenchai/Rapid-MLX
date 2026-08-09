@@ -78,6 +78,20 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
         """No-thinking mode must emit direct answer tokens as text, not thinking."""
         assert _should_start_in_thinking(self.THINKING_TEMPLATE, False) is False
 
+    def test_1570_unconditional_distill_template_ignores_disabled_flag(self):
+        assert (
+            _should_start_in_thinking(self.THINKING_TEMPLATE, False, unconditional=True)
+            is True
+        )
+
+    def test_1570_conditional_distill_template_respects_disabled_flag(self):
+        conditional = (
+            "{% if add_generation_prompt and enable_thinking %}<think>{% endif %}"
+        )
+        assert (
+            _should_start_in_thinking(conditional, False, unconditional=True) is False
+        )
+
     def test_plain_template_never_starts_in_thinking(self):
         """Templates without an implicit think marker should start as text."""
         assert _should_start_in_thinking("{{ add_generation_prompt }}", None) is False
