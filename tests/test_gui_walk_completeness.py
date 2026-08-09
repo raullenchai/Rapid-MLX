@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Static contract for completeness-gated GUI absence assertions."""
 
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,3 +37,25 @@ def test_catalog_absence_checks_require_complete_walks():
         complete < absence
         for complete, absence in zip(complete_offsets, absence_offsets, strict=True)
     )
+
+
+def test_empty_persona_environment_is_safe_on_macos_bash3():
+    source = (ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh").read_text()
+    safe = '${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}'
+    assert source.count(safe) == 3
+
+    program = r"""
+set -u
+PERSONA_ENV=()
+empty=0
+for value in "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}"; do empty=$((empty + 1)); done
+PERSONA_ENV=("ONE=two words" "THREE=four")
+printf '%s\n' "$empty" "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}"
+"""
+    result = subprocess.run(
+        ["/bin/bash", "-c", program],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.splitlines() == ["0", "ONE=two words", "THREE=four"]

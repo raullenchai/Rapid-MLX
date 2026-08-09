@@ -147,7 +147,10 @@ start_persona() {
     local config="$PERSONA/home/.rapid-golden-fake.json"
     jq -n --arg event_log "$OUT/fake-events.jsonl" '{FAKE_EVENT_LOG: $event_log}' > "$config"
     local assignment key value updated
-    for assignment in "${PERSONA_ENV[@]}"; do
+    # macOS ships Bash 3.2, where expanding a declared-but-empty array under
+    # `set -u` raises "unbound variable". The `+` form expands to nothing
+    # when the array has no elements and preserves argv boundaries otherwise.
+    for assignment in "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}"; do
         key="${assignment%%=*}"
         value="${assignment#*=}"
         updated="$config.next"
@@ -155,7 +158,8 @@ start_persona() {
         mv "$updated" "$config"
     done
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
-        FAKE_EVENT_LOG="$OUT/fake-events.jsonl" "${PERSONA_ENV[@]}" \
+        FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
+        "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
         "$PERSONA/launch.sh" > "$OUT/app.log" 2>&1 &
     APP_PID=$!
     wait_for_window
@@ -165,7 +169,7 @@ relaunch_persona() {
     stop_app
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
         FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
-        "${PERSONA_ENV[@]}" \
+        "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
         "$PERSONA/launch.sh" >> "$OUT/app.log" 2>&1 &
     APP_PID=$!
     wait_for_window
