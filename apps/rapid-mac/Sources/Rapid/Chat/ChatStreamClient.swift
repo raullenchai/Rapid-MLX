@@ -1008,8 +1008,10 @@ enum Wire {
 ///     (usage, tool_calls, finish_reason, [DONE]) AND before
 ///     throwing on cancellation or transport error. The send()
 ///     scope guarantees the latter via a `defer` block.
-///   * The 16 ms window is opportunistic (checked on each
-///     append), not timed: if a delta burst stops mid-window,
+///   * The window is opportunistic (checked on each append), not
+///     timed, and its length is adaptive — 16 ms until the message
+///     passes ``adaptiveThresholdChars``, then proportional to the
+///     text so far up to ``maxWindowNs`` (#1743): if a delta burst stops mid-window,
 ///     the trailing text is held until the next event of any
 ///     kind or until send()'s defer flush. Real backends emit
 ///     a continuous stream of deltas terminated by
@@ -1036,8 +1038,8 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
 
     /// Ceiling on the widened window. At 250 ms a very long message
     /// still repaints four times a second, which reads as "streaming"
-    /// rather than "frozen", while costing a twentieth of what a 16 ms
-    /// cadence costs.
+    /// rather than "frozen", at about a sixteenth of the callback rate a
+    /// flat 16 ms cadence costs (250 / 16).
     private static let maxWindowNs: UInt64 = 250_000_000
 
     /// Total characters handed to the UI so far this turn.
@@ -1067,9 +1069,19 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         guard flushedCharacters > Self.adaptiveThresholdChars else {
             return Self.coalesceWindowNs
         }
-        let scale = UInt64(flushedCharacters / Self.adaptiveThresholdChars)
-        let widened = Self.coalesceWindowNs &* max(1, scale)
-        return min(widened, Self.maxWindowNs)
+        // Multiply BEFORE dividing so the growth is actually linear. Dividing
+        // first floors the ratio to an integer, which makes the window a
+        // staircase — flat from 2 000 to 3 999 characters and then jumping
+        // straight from 16 ms to 32 ms — rather than the smooth ramp the
+        // comment above promises.
+        //
+        // `characters` is clamped to the value that already yields the cap, so
+        // the multiplication cannot overflow no matter how long the message
+        // gets, and no masking operators are needed.
+        let capCharacters = Int(Self.maxWindowNs / Self.coalesceWindowNs) * Self.adaptiveThresholdChars
+        let characters = UInt64(min(flushedCharacters, capCharacters))
+        let widened = Self.coalesceWindowNs * characters / UInt64(Self.adaptiveThresholdChars)
+        return min(max(widened, Self.coalesceWindowNs), Self.maxWindowNs)
     }
 
     /// Codex r2 BLOCKING (unbounded queue): force-flush when the
@@ -1153,18 +1165,36 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         // Count `toEmit`, NOT `pending` — `pending` was just emptied, so
         // counting it leaves the total at zero forever and the adaptive
         // window silently never widens.
-        flushedCharacters &+= toEmit.reduce(0) { $0 + $1.text.count }
+        // Saturating, not wrapping: a wrapped total would silently drop the
+        // window back to its 16 ms floor, which is the bug this bounds.
+        let batch = toEmit.reduce(0) { $0 + $1.text.count }
+        flushedCharacters = (flushedCharacters > Int.max - batch)
+            ? Int.max
+            : flushedCharacters + batch
         lastFlushNs = nowNs()
         for segment in toEmit {
             switch segment.kind {
-            case .content:
-                contentEverFlushed = true
-                let s = segment.text
-                await MainActor.run { onEvent(.content(s)) }
-            case .reasoning:
-                reasoningEverFlushed = true
-                let s = segment.text
-                await MainActor.run { onEvent(.reasoning(s)) }
+            case .content: contentEverFlushed = true
+            case .reasoning: reasoningEverFlushed = true
+            }
+        }
+        // ONE hop for the whole batch, in wire order.
+        //
+        // Hopping per segment defeats the point of coalescing on an
+        // alternating content/reasoning stream: the `overCap` force-flush
+        // fires at 33 segments regardless of the adaptive window, and if each
+        // segment then gets its own MainActor mutation the view rebuilds —
+        // and re-parses the whole message — about once per delta again, which
+        // is exactly the #1743 failure the window is meant to bound. Applying
+        // them in a single hop keeps the queue bound AND the repaint bound,
+        // and order is preserved because the closure runs the array in
+        // sequence.
+        await MainActor.run {
+            for segment in toEmit {
+                switch segment.kind {
+                case .content: onEvent(.content(segment.text))
+                case .reasoning: onEvent(.reasoning(segment.text))
+                }
             }
         }
     }

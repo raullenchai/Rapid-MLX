@@ -178,24 +178,80 @@ struct SSEDeltaCoalescerTests {
         )
 
         // (2) Long message: the same 40 ms pause is no longer enough.
+        //
+        // Seed past the point where the window has reached its 250 ms
+        // ceiling in ONE flush, rather than creeping up to it over several.
+        // Creeping leaves the assertion comparing ~120 ms of sleeps against a
+        // ~128 ms window — 8 ms of slack, which a loaded CI runner eats, and
+        // the test then fails against correct code. From the ceiling the
+        // margin is 250 ms against 40 ms.
         let long = SSEDeltaCoalescer()
         let longRec = EventRecorder()
-        await long.appendContent("seed") { longRec.capture($0) }
-        // Push well past the adaptive threshold. Each append is separated
-        // by enough real time to be flushed on the old cadence, so by the
-        // end the coalescer has genuinely emitted this much text.
-        let chunk = String(repeating: "x", count: 4_000)
-        for _ in 0..<6 {
-            try? await Task.sleep(for: .milliseconds(40))
-            await long.appendContent(chunk) { longRec.capture($0) }
-        }
+        await long.appendContent(String(repeating: "x", count: 64_000)) { longRec.capture($0) }
         let afterBulk = longRec.events.count
+        #expect(afterBulk > 0, "the first delta must flush immediately regardless of size")
         try? await Task.sleep(for: .milliseconds(40))
         await long.appendContent("tail") { longRec.capture($0) }
         #expect(
             longRec.events.count == afterBulk,
-            "after ~24k characters a 40 ms gap still flushed — the window did not widen, so the repaint rate is still O(length²) (#1743)"
+            "a 40 ms gap still flushed after 64k characters — the window did not widen, so the repaint rate is still O(length²) (#1743)"
         )
+    }
+
+    /// The `overCap` force-flush path, which exists to bound the QUEUE, must
+    /// not also un-bound the repaint rate.
+    ///
+    /// It fires at 33 pending segments regardless of the window, so an
+    /// alternating content/reasoning stream reaches it constantly. If that
+    /// flush then hopped to the main actor once per segment, the view would
+    /// rebuild — and re-parse the whole message — about once per delta again,
+    /// which is the #1743 failure with extra steps. One flush must produce one
+    /// batch of events delivered together, in wire order.
+    @Test("#1743: an alternating stream still flushes as batches, in order")
+    @MainActor
+    func alternating_stream_flushes_in_ordered_batches() async {
+        let coalescer = SSEDeltaCoalescer()
+        let recorder = EventRecorder()
+        // Get both kinds past their first-delta immediate flush.
+        await coalescer.appendContent("c0") { recorder.capture($0) }
+        await coalescer.appendReasoning("r0") { recorder.capture($0) }
+        // Now alternate hard enough to trip the 32-segment cap, with no
+        // sleeps, so the window never expires and `overCap` is the only
+        // thing that can flush.
+        for i in 0..<40 {
+            await coalescer.appendContent("c\(i)") { recorder.capture($0) }
+            await coalescer.appendReasoning("r\(i)") { recorder.capture($0) }
+        }
+        await coalescer.flush { recorder.capture($0) }
+
+        // Wire order preserved across kinds.
+        let kinds = recorder.events.compactMap { event -> String? in
+            switch event {
+            case .content: return "c"
+            case .reasoning: return "r"
+            default: return nil
+            }
+        }
+        #expect(kinds.first == "c", "first event should be the first content delta")
+        // Every c\(i) must precede its r\(i): concatenating the payloads in
+        // arrival order must reproduce the order they were appended in.
+        var content = ""
+        var reasoning = ""
+        for event in recorder.events {
+            switch event {
+            case .content(let t): content += t
+            case .reasoning(let t): reasoning += t
+            default: break
+            }
+        }
+        var expectedContent = "c0"
+        var expectedReasoning = "r0"
+        for i in 0..<40 {
+            expectedContent += "c\(i)"
+            expectedReasoning += "r\(i)"
+        }
+        #expect(content == expectedContent, "content text was reordered or dropped by the batched flush")
+        #expect(reasoning == expectedReasoning, "reasoning text was reordered or dropped by the batched flush")
     }
 
     @Test("flush on empty buffers is a no-op")
