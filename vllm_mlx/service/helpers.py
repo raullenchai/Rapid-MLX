@@ -741,7 +741,12 @@ def _apply_reasoning_cap(
     return cleaned_text, truncated
 
 
-def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+def _should_start_in_thinking(
+    chat_template: str,
+    enable_thinking: bool | None,
+    *,
+    unconditional: bool = False,
+) -> bool:
     """Shared predicate: does this chat template start the assistant
     response inside an implicit ``<think>`` block?
 
@@ -768,7 +773,7 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     route uses the same predicate and the contract has a single
     source of truth.
     """
-    if enable_thinking is False and "enable_thinking" in chat_template:
+    if enable_thinking is False and not unconditional:
         return False
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 

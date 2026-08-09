@@ -5696,6 +5696,9 @@ async def _create_chat_completion_impl(
         prompt_thinking_active=_should_start_in_thinking(
             getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
             resolved_thinking,
+            unconditional=bool(
+                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
+            ),
         ),
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # None → back-compat no-op. Suppressed when the generation-time
@@ -5813,7 +5816,11 @@ async def _create_chat_completion_impl(
         if _tok and hasattr(_tok, "chat_template"):
             _chat_template_str = _tok.chat_template or ""
         prompt_thinking_active = _should_start_in_thinking(
-            _chat_template_str, resolved_thinking
+            _chat_template_str,
+            resolved_thinking,
+            unconditional=bool(
+                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
+            ),
         )
         deepseek_v4_mid_think = bool(
             _uses_deepseek_v4_reasoning(cfg)
@@ -6919,7 +6926,11 @@ async def stream_chat_completion(
                 if _tok_stream and hasattr(_tok_stream, "chat_template"):
                     _chat_template_str_stream = _tok_stream.chat_template or ""
                 prompt_thinking_active_stream = _should_start_in_thinking(
-                    _chat_template_str_stream, _stream_resolved_thinking
+                    _chat_template_str_stream,
+                    _stream_resolved_thinking,
+                    unconditional=bool(
+                        getattr(rp, "implicit_reasoning_until_close", False)
+                    ),
                 )
                 # D-STOP-THINK codex round-6 BLOCKING (PR #799):
                 # prefer the per-chunk accumulator over

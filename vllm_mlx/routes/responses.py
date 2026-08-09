@@ -669,7 +669,12 @@ def _attach_deepseek_codex_reasoning_budget(
     )
 
 
-def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+def _should_start_in_thinking(
+    chat_template: str,
+    enable_thinking: bool | None,
+    *,
+    unconditional: bool = False,
+) -> bool:
     """Thin wrapper over the shared
     ``service.helpers._should_start_in_thinking`` predicate.
 
@@ -681,7 +686,7 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     """
     from ..service.helpers import _should_start_in_thinking as _shared
 
-    return _shared(chat_template, enable_thinking)
+    return _shared(chat_template, enable_thinking, unconditional=unconditional)
 
 
 def _enforce_responses_tool_choice(
@@ -2120,6 +2125,9 @@ async def _non_stream(
         prompt_thinking_active=_should_start_in_thinking(
             getattr(getattr(engine, "tokenizer", None), "chat_template", "") or "",
             resolved_thinking,
+            unconditional=bool(
+                getattr(cfg.reasoning_parser, "implicit_reasoning_until_close", False)
+            ),
         ),
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
@@ -2858,7 +2866,9 @@ async def _stream_responses(
         if _tokenizer and hasattr(_tokenizer, "chat_template"):
             _chat_template = _tokenizer.chat_template or ""
         _starts_thinking = _should_start_in_thinking(
-            _chat_template, chat_kwargs.get("enable_thinking")
+            _chat_template,
+            chat_kwargs.get("enable_thinking"),
+            unconditional=cfg.reasoning_parser_name == "deepseek_r1_distill",
         )
         think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
 
@@ -3005,6 +3015,7 @@ async def _stream_responses(
                             )
                             or "",
                             chat_kwargs.get("enable_thinking"),
+                            unconditional=True,
                         )
                     )
                 configure_request(**configure_kwargs)

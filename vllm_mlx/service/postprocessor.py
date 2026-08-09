@@ -331,13 +331,27 @@ class StreamingPostProcessor:
                 # continuing after failure can route implicit scratch text to
                 # content using the parser's constructor defaults.
                 configure_kwargs = {"enable_thinking": enable_thinking}
-                if "prompt_thinking_active" in inspect.signature(_configure).parameters:
+                try:
+                    configure_parameters = inspect.signature(_configure).parameters
+                except (TypeError, ValueError):
+                    configure_parameters = {}
+                if "prompt_thinking_active" in configure_parameters:
                     from .helpers import _should_start_in_thinking
 
                     tokenizer = getattr(cfg.engine, "tokenizer", None)
                     template = getattr(tokenizer, "chat_template", "") or ""
                     configure_kwargs["prompt_thinking_active"] = (
-                        _should_start_in_thinking(template, enable_thinking)
+                        _should_start_in_thinking(
+                            template,
+                            enable_thinking,
+                            unconditional=bool(
+                                getattr(
+                                    self.reasoning_parser,
+                                    "implicit_reasoning_until_close",
+                                    False,
+                                )
+                            ),
+                        )
                     )
                 _configure(**configure_kwargs)
             _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
@@ -2406,13 +2420,27 @@ class StreamingPostProcessor:
             _configure = getattr(self.reasoning_parser, "configure_request", None)
             if callable(_configure):
                 configure_kwargs = {"enable_thinking": self.enable_thinking}
-                if "prompt_thinking_active" in inspect.signature(_configure).parameters:
+                try:
+                    configure_parameters = inspect.signature(_configure).parameters
+                except (TypeError, ValueError):
+                    configure_parameters = {}
+                if "prompt_thinking_active" in configure_parameters:
                     from .helpers import _should_start_in_thinking
 
                     tokenizer = getattr(self.cfg.engine, "tokenizer", None)
                     template = getattr(tokenizer, "chat_template", "") or ""
                     configure_kwargs["prompt_thinking_active"] = (
-                        _should_start_in_thinking(template, self.enable_thinking)
+                        _should_start_in_thinking(
+                            template,
+                            self.enable_thinking,
+                            unconditional=bool(
+                                getattr(
+                                    self.reasoning_parser,
+                                    "implicit_reasoning_until_close",
+                                    False,
+                                )
+                            ),
+                        )
                     )
                 _configure(**configure_kwargs)
             else:
