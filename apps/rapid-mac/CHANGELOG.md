@@ -15,6 +15,17 @@ can actually understand.
 
 ### Added
 
+- **A new Images tab generates pictures on your Mac.** Choose an image model,
+  load it the same way you load a chat model, type a prompt and generate. Each
+  render joins a filmstrip below the picture; selecting an earlier one brings
+  its prompt back so you can adjust and re-run. Aspect ratio is 1:1, 3:4 or
+  4:3, and the save button writes a PNG wherever you choose.
+
+- **Chat accepts image attachments.** With a model that can read images, attach
+  one to a message and ask about it. Models that cannot read images show the
+  attach button disabled with "This model doesn't support images", rather than
+  letting you attach one and failing later.
+
 - **Web-page approvals now include “Always allow.”** Choose it once to let the
   model read future public web pages without interrupting you for every URL.
   Private and local addresses remain blocked, and the permission can be turned
