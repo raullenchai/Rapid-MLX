@@ -554,8 +554,8 @@ enum RapidTheme {
 /// unresolved alias is the empty string — neither is a model, and
 /// neither should ever be rendered where a user expects one.
 ///
-/// Pure and free-standing so every surface (chat empty state, Connect
-/// Tools, benchmark header) answers "what model am I using?" the same
+/// Pure and free-standing so every surface (chat empty state, the model
+/// picker, settings) answers "what model am I using?" the same
 /// way, and so the mapping is unit-testable without SwiftUI.
 enum ModelDisplayName {
     /// Internal placeholder strings that must never surface as a name.

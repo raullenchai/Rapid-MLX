@@ -150,8 +150,8 @@ enum ModelSizing {
     /// 80%-of-total estimate and so only knows "does this model fit
     /// this Mac at all" — this projects the footprint on top of what
     /// is *actually in use this second*. A model that "fits the Mac"
-    /// is still flagged when other apps (or a model already loaded for
-    /// the benchmark's second copy) have eaten the free RAM. That gap
+    /// is still flagged when other apps — or a model already loaded in
+    /// this one — have eaten the free RAM. That gap
     /// is the reported near-crash: gemma-4-12b classifies ``.fits`` on
     /// a larger Mac, yet loading it with little free RAM pushed unified
     /// memory past the danger line.

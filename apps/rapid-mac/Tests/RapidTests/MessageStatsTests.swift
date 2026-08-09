@@ -111,11 +111,16 @@ struct MessageStatsTests {
         #expect(try #require(s.reportedTokensPerSecond) == 100.0)
         // The char-count fallback is suppressed here (usage present), so
         // assert the window it WOULD have used, on the same fixture minus
-        // the server-reported counts.
+        // the server-reported counts. 400 chars ≈ 100 estimated tokens, and
+        // the estimate carries the same -1 as the reported path above: the
+        // token that ENDED prefill was not produced inside the window, so
+        // 99 intervals span it. The two paths differing by anything other
+        // than their token source would mean one of them is measuring
+        // something the other is not.
         var noUsage = s
         noUsage.completionTokens = nil
         noUsage.promptTokens = nil
-        #expect(try #require(noUsage.estimatedTokensPerSecond) == 100.0)
+        #expect(try #require(noUsage.estimatedTokensPerSecond) == 99.0)
     }
 
     @Test("No TTFT recorded → the whole turn stays the denominator (old transcripts)")
@@ -127,8 +132,69 @@ struct MessageStatsTests {
             completionTokens: nil,
             timeToFirstTokenSeconds: nil
         )
+        // The field is ABSENT, not invalid: this row predates the
+        // measurement, so the whole turn is the only denominator there has
+        // ever been for it and 200 tokens all fall inside it.
+        #expect(!s.measuresPrefill)
         #expect(try #require(s.decodeSeconds) == 2.0)
         #expect(try #require(s.estimatedTokensPerSecond) == 100.0)
+    }
+
+    /// The pair that ``measuresPrefill`` separates, side by side on
+    /// otherwise identical numbers. Collapsing the two — by keying the
+    /// fallback off ``validTimeToFirstToken`` instead of the field's
+    /// presence — makes this test fail on whichever row it wrongs.
+    @Test("Absent TTFT and rejected TTFT are not the same row")
+    func absentAndCorruptTTFTAreDistinguished() throws {
+        let legacy = MessageStats(
+            elapsedSeconds: 2.0,
+            charCount: 800,
+            promptTokens: 50,
+            completionTokens: 100,
+            timeToFirstTokenSeconds: nil        // written before the field existed
+        )
+        let corrupt = MessageStats(
+            elapsedSeconds: 2.0,
+            charCount: 800,
+            promptTokens: 50,
+            completionTokens: 100,
+            timeToFirstTokenSeconds: 5.0        // a modern row, measured wrong
+        )
+        #expect(!legacy.measuresPrefill)
+        #expect(corrupt.measuresPrefill)
+        #expect(corrupt.validTimeToFirstToken == nil)
+
+        #expect(try #require(legacy.reportedTokensPerSecond) == 50.0)
+        #expect(corrupt.reportedTokensPerSecond == nil)
+
+        var legacyNoUsage = legacy
+        legacyNoUsage.completionTokens = nil
+        var corruptNoUsage = corrupt
+        corruptNoUsage.completionTokens = nil
+        #expect(try #require(legacyNoUsage.estimatedTokensPerSecond) == 100.0)
+        #expect(corruptNoUsage.estimatedTokensPerSecond == nil)
+    }
+
+    /// The estimate's own single-token case. ``singleTokenReplyHasNoRate``
+    /// covers it for a server that reports usage; a server that reports
+    /// none reaches the char-count path instead, where four visible
+    /// characters are one estimated token and zero token intervals.
+    @Test("A one-token reply with no server usage is not estimated either")
+    func singleTokenEstimateHasNoRate() throws {
+        let s = MessageStats(
+            elapsedSeconds: 1.0,
+            charCount: 4,               // ≈ 1 estimated token
+            promptTokens: nil,
+            completionTokens: nil,      // server reported no usage
+            timeToFirstTokenSeconds: 0.5,
+            reasoningEmitted: false
+        )
+        #expect(s.estimatedTokensPerSecond == nil)
+        // Two tokens' worth of characters is the first length that spans an
+        // interval, and it is rated: (2 - 1) / 0.5 s.
+        var twoTokens = s
+        twoTokens.charCount = 8
+        #expect(try #require(twoTokens.estimatedTokensPerSecond) == 2.0)
     }
 
     @Test("A one-token reply reports no rate rather than dividing by a window it never occupied")
@@ -183,9 +249,12 @@ struct MessageStatsTests {
             timeToFirstTokenSeconds: 1.2   // clock step, or a hand-edited session file
         )
         #expect(s.validTimeToFirstToken == nil)
-        // Falls back to the whole turn rather than producing a negative
-        // window…
-        #expect(try #require(s.reportedTokensPerSecond) == 20.0)
+        // The row CLAIMS a measurement and the claim is nonsense, so it
+        // gets no rate — not a fallback to 20 tok/s, which is the
+        // whole-turn number this change exists to stop printing and which
+        // no reader could tell apart from a real one.
+        #expect(s.reportedTokensPerSecond == nil)
+        #expect(s.decodeSeconds == nil)
         // …and the caption must not print "1.2 s to first token · 1.0 s".
         let caption = AssistantStatsFormatter.accessibilityCaption(for: s)
         #expect(!caption.contains("to the first token"), "caption rendered an impossible TTFT: \(caption)")
@@ -223,11 +292,11 @@ struct MessageStatsTests {
             timeToFirstTokenSeconds: 1.00
         )
         // A first token that arrived exactly when the turn ended leaves no
-        // decode window, so it is not prefill data. Rejected like any other
-        // impossible value, and the row falls back to the whole-turn number
-        // rather than losing its caption entirely.
+        // decode window, so it is not prefill data — and, coming from a
+        // build that stamps the field, not something to paper over with
+        // whole-turn arithmetic either.
         #expect(s.validTimeToFirstToken == nil)
-        #expect(try #require(s.reportedTokensPerSecond) == 20.0)
+        #expect(s.reportedTokensPerSecond == nil)
     }
 
     @Test("Sub-50ms elapsed returns nil — divide-by-near-zero would print a garbage TPS")

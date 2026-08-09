@@ -124,6 +124,101 @@ struct ThroughputCaptionIntegrationTests {
         #expect(stats.emittedReasoning)
         #expect(stats.estimatedTokensPerSecond == nil)
     }
+
+    /// The third lane, and the one with no coverage until now.
+    ///
+    /// ``Event/firstToken`` fires on content, reasoning, OR tool calls.
+    /// Every other test in this file drives a stream that opens with
+    /// content or reasoning, so deleting just the `tool_calls` clause from
+    /// the `generated` predicate leaves all of them green — the clause
+    /// would be load-bearing in production and unprotected in the suite,
+    /// which is the shape of a guard that cannot fail.
+    ///
+    /// A tool-first turn is the exact case the clause exists for, and it is
+    /// also the case that motivated this change: the reported defect was a
+    /// tool-carrying prompt whose prefill was 93 % of the turn. With the
+    /// clause gone the clock starts at the prose instead, the tool-call
+    /// generation lands inside "prefill", and the decode window shrinks to
+    /// the prose alone — a rate that reads plausible and is far too high.
+    @Test("A turn whose first output is a tool call times the tool call, not the prose")
+    func toolCallFirstStartsTheClock() async throws {
+        let client = ChatStreamClient(
+            baseURL: URL(string: "fake://toolfirst")!,
+            session: ToolCallFirstProtocol.session()
+        )
+
+        var firstTokenAt: ContinuousClock.Instant?
+        var order: [String] = []
+        let start = ContinuousClock.now
+        try await client.send(
+            ChatStreamClient.Request(
+                alias: "test-model",
+                messages: [ChatMessage(role: .user, content: "weather?")]
+            )
+        ) { event in
+            switch event {
+            case .firstToken(let at):
+                if firstTokenAt == nil { firstTokenAt = at }
+                order.append("firstToken")
+            case .content: order.append("content")
+            case .toolCalls: order.append("toolCalls")
+            default: break
+            }
+        }
+
+        let at = try #require(firstTokenAt, "no first-token event on a tool-first stream")
+        let offset = start.duration(to: at).seconds
+
+        // The tool-call fragment lands at ~0.30 s, the prose only at
+        // ~0.75 s. Anything past the midpoint means the clock skipped the
+        // tool-call lane and waited for text.
+        #expect(
+            offset > 0.2 && offset < 0.55,
+            "first token stamped \(offset)s in — the tool-call delta at ~0.30s did not start the clock"
+        )
+        #expect(order.first == "firstToken", "event order was \(order)")
+        #expect(order.contains("content"), "fixture must also emit prose after the tool call")
+    }
+}
+
+/// Opens with a tool-call fragment carrying no content and no reasoning,
+/// then falls silent, then emits prose. The gap is what makes the two
+/// candidate stamps distinguishable.
+private final class ToolCallFirstProtocol: URLProtocol, @unchecked Sendable {
+    static func session() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ToolCallFirstProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+
+        Thread.sleep(forTimeInterval: 0.30)
+        emit("""
+        data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",\
+        "type":"function","function":{"name":"get_weather","arguments":"{}"}}]}}]}\n\n
+        """)
+        Thread.sleep(forTimeInterval: 0.45)
+        emit("data: {\"choices\":[{\"delta\":{\"content\":\"Sunny.\"}}]}\n\n")
+        Thread.sleep(forTimeInterval: 0.10)
+        emit("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+        emit("data: [DONE]\n\n")
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    private func emit(_ chunk: String) {
+        client?.urlProtocol(self, didLoad: Data(chunk.utf8))
+    }
+
+    override func stopLoading() {}
 }
 
 /// Emits a reasoning trace first, then visible prose, with a gap between —

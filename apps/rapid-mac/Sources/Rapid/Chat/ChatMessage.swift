@@ -1158,8 +1158,27 @@ struct MessageStats: Codable, Equatable, Hashable {
         return timeToFirstTokenSeconds
     }
 
+    /// Whether this row came from a build that measures prefill at all.
+    ///
+    /// The field's PRESENCE is the discriminator, not its validity, and the
+    /// distinction decides what an unusable TTFT falls back to. A transcript
+    /// persisted before ``timeToFirstTokenSeconds`` existed decodes as `nil`
+    /// here and is legitimately captioned with the whole-turn arithmetic it
+    /// was first shown with — there is no better measurement to be had, and
+    /// re-rendering history is its own kind of wrong.
+    ///
+    /// A row that carries a value the guards then REJECT is a different
+    /// animal: a corrupt measurement from a build that should have produced
+    /// a good one. Falling back to the whole turn *there* would reintroduce
+    /// the plausible-but-wrong number this change exists to remove, on
+    /// precisely the rows already known to be untrustworthy, and it would be
+    /// indistinguishable from a real reading. Those get no rate at all.
+    var measuresPrefill: Bool { timeToFirstTokenSeconds != nil }
+
     var decodeSeconds: Double? {
-        guard let ttft = validTimeToFirstToken else { return elapsedSeconds }
+        guard let ttft = validTimeToFirstToken else {
+            return measuresPrefill ? nil : elapsedSeconds
+        }
         let decode = elapsedSeconds - ttft
         return decode > 0 ? decode : nil
     }
@@ -1184,11 +1203,23 @@ struct MessageStats: Codable, Equatable, Hashable {
     /// fallback path, the exact distortion this change removed from the
     /// main one. No number beats a wrong one; the caption still carries
     /// time-to-first-token and the total.
+    /// The estimate carries the same inverse-TPOT shape as the reported
+    /// path, and for the same reason: when there IS a measured prefill, the
+    /// first token is what ended it, so it was not produced inside
+    /// ``decodeSeconds`` and does not belong in the numerator. Leaving the
+    /// subtraction out here would make a four-character reply — one
+    /// estimated token, zero token intervals — divide by a window it never
+    /// occupied and print a rate, which is exactly what the reported path
+    /// declines to do one accessor below.
     var estimatedTokensPerSecond: Double? {
         guard completionTokens == nil, !emittedReasoning else { return nil }
         guard let decodeSeconds, decodeSeconds > 0.05 else { return nil }  // < 50 ms is noise
         let estTokens = Double(charCount) / 4.0
-        return estTokens / decodeSeconds
+        guard validTimeToFirstToken != nil else {
+            return estTokens / decodeSeconds
+        }
+        guard estTokens > 1 else { return nil }
+        return (estTokens - 1) / decodeSeconds
     }
 
     /// Authoritative tokens/sec when the server reported usage.
@@ -1206,7 +1237,11 @@ struct MessageStats: Codable, Equatable, Hashable {
     /// field existed therefore keep the exact arithmetic they were
     /// captioned with — `N / elapsed` — rather than silently shifting to
     /// `(N - 1) / elapsed` and re-rendering history slightly differently
-    /// than it was first shown.
+    /// than it was first shown. That branch is reachable *only* for those
+    /// legacy rows: see ``measuresPrefill``, which withholds
+    /// ``decodeSeconds`` entirely from a modern row whose stamp is corrupt,
+    /// so this accessor returns `nil` there instead of falling through to
+    /// the whole-turn number.
     var reportedTokensPerSecond: Double? {
         guard let completionTokens, completionTokens > 0,
               let decodeSeconds, decodeSeconds > 0.05 else { return nil }
@@ -1215,5 +1250,25 @@ struct MessageStats: Codable, Equatable, Hashable {
         }
         guard completionTokens > 1 else { return nil }
         return Double(completionTokens - 1) / decodeSeconds
+    }
+}
+
+extension Duration {
+    /// Whole plus fractional seconds, for storing an interval in the
+    /// `Double` fields of ``MessageStats``.
+    ///
+    /// The durations here come from ``ContinuousClock`` rather than
+    /// differences of `Date`, because both numbers this feeds are the
+    /// *difference* between two readings taken seconds apart. A wall clock
+    /// can be stepped by NTP or by the user between those two reads, and a
+    /// step of a few hundred milliseconds is enough to turn a real decode
+    /// window into a nonsensical one while still landing inside every
+    /// range guard — a silently wrong rate, which is the failure mode this
+    /// whole change set exists to eliminate. A monotonic clock cannot be
+    /// stepped, so that class of corruption stops being possible rather
+    /// than being detected after the fact.
+    var seconds: Double {
+        let parts = components
+        return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
     }
 }

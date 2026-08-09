@@ -1650,7 +1650,7 @@ These rules apply to every tool, not just web search.
         // may have been inserted seconds ago by the tool-call
         // loop (between rounds), and the user reads "elapsed
         // time" as "time the model spent on THIS round."
-        let streamStart = Date()
+        let streamStart = ContinuousClock.now
         // #478: VoiceOver live-region feedback. Streaming replies are
         // otherwise silent to a screen-reader user — no start / progress
         // / completion signal. ``AssistantStreamAnnouncer`` is the pure,
@@ -1677,7 +1677,7 @@ These rules apply to every tool, not just web search.
         // includes those tokens; starting the clock at the first `.content`
         // delta would divide every reasoning token by the prose-only window
         // and report a rate several times the real one.
-        var firstTokenAt: Date?
+        var firstTokenAt: ContinuousClock.Instant?
         do {
             // #17 desktop-half: thread the per-launch bearer through
             // every chat request. ``server.activeBearer`` rotates
@@ -1686,13 +1686,13 @@ These rules apply to every tool, not just web search.
             try await client.send(request, bearerToken: server?.activeBearer) { [weak self] event in
                 guard let self else { return }
                 switch event {
-                case .firstToken:
+                case .firstToken(let at):
                     // The stream says the first generated token landed, on
                     // whichever lane carried it. Stamping per-lane here
                     // instead would miss a turn that opens with a tool-call
                     // fragment and time the later prose, reporting a decode
                     // window that excludes real generation.
-                    if firstTokenAt == nil { firstTokenAt = Date() }
+                    if firstTokenAt == nil { firstTokenAt = at }
                 case .content(let delta):
                     current.content += delta
                     // #478: announce the response start once, then the
@@ -1930,14 +1930,14 @@ These rules apply to every tool, not just web search.
         // crashed mid-stream "produced" 1.7 s and 41 chars but
         // that's noise, not throughput).
         if current.status == .complete && !current.content.isEmpty {
-            let elapsed = Date().timeIntervalSince(streamStart)
+            let elapsed = streamStart.duration(to: .now).seconds
             current.stats = MessageStats(
                 elapsedSeconds: elapsed,
                 charCount: current.content.count,
                 promptTokens: capturedPromptTokens,
                 completionTokens: capturedCompletionTokens,
                 timeToFirstTokenSeconds: firstTokenAt
-                    .map { $0.timeIntervalSince(streamStart) },
+                    .map { streamStart.duration(to: $0).seconds },
                 reasoningEmitted: !current.reasoning.isEmpty
             )
             writeStreamMessage(at: placeholderIndex, epoch: epoch, current)
