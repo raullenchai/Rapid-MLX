@@ -2261,7 +2261,7 @@ class BatchedEngine(BaseEngine):
             if messages[i].get("role") == "user":
                 last_user_idx = i
                 break
-        if last_user_idx is None or last_user_idx == 0:
+        if last_user_idx is None:
             return 0
         try:
             template_tools = convert_tools_for_template(tools) if tools else None
