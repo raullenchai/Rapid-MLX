@@ -95,13 +95,63 @@ final class SamplingConfig {
     /// non-reasoning floor lowering can't silently downshift a
     /// reasoning alias below 2,048.
     ///
-    /// Tools floor ``4096`` — a multi-tool prompt on the same
-    /// reasoning alias routinely emits 3-4k completion tokens
-    /// before the *second* tool_call fires (cycle-2 repro at
-    /// 4,096 used 3,407 completion tokens for the single-tool
-    /// 27+45 case). Tools-on auto-scales to this floor instead
-    /// of the chat one so a reasoning-finetune with a heavy
-    /// preamble doesn't blow the budget mid-tool-call.
+    /// Tools floor ``16384`` — a multi-tool prompt on a reasoning
+    /// alias routinely emits 3-4k completion tokens before the
+    /// *second* tool_call fires (cycle-2 repro at 4,096 used 3,407
+    /// for the single-tool 27+45 case). Tools-on auto-scales to
+    /// this floor instead of the chat one so a reasoning-finetune
+    /// with a heavy preamble doesn't blow the budget mid-tool-call.
+    ///
+    /// This floor sat at ``4_096`` — identical to
+    /// ``maxTokensDefault`` — from the day it was introduced, so
+    /// ``max(maxTokens, effectiveToolsFloor)`` resolved to 4,096 on
+    /// every default install. **It never lifted anyone by a single
+    /// token.** The intent was recorded; the effect was not.
+    ///
+    /// What that cost, measured on 2026-08-09 through the shipped
+    /// GUI against `qwen3.5-4b-4bit` — the 16 GB tier's own
+    /// recommendation — asking one live web-research question five
+    /// times:
+    ///
+    /// | outcome | runs |
+    /// |---|---|
+    /// | tool budget exhausted, no answer | 2 |
+    /// | hit max_tokens with EMPTY content | 2 |
+    /// | answered | 1 |
+    ///
+    /// and the one that answered opened with "I can't access
+    /// real-time news or browse live pages" before contradicting
+    /// itself from the search results it had just been handed.
+    ///
+    /// Sizing this by measured consumption would be the wrong
+    /// instrument. ``max_tokens`` is a safety ceiling, not a budget
+    /// allocation: its job is to be high enough that legitimate work
+    /// never reaches it and low enough that a runaway is cut off in
+    /// tolerable time. Fitting it to a p95 of observed usage kills
+    /// the other 5% by construction, and would need re-deriving for
+    /// every new tool, model and quantisation.
+    ///
+    /// So it is set from the two real costs instead:
+    ///
+    ///   * **Memory: none.** The KV cache grows with tokens actually
+    ///     produced. The one place ``max_tokens`` could reserve
+    ///     capacity up front is
+    ///     ``SchedulerConfig.metal_cap_kv_bytes_per_token``, which
+    ///     defaults to ``0`` (disabled) and which the desktop never
+    ///     sets. Worst case for this model is 32 KB/token over its 8
+    ///     full-attention layers — 512 MB if a turn genuinely runs to
+    ///     16,384, against 2.9 GB of weights. Nothing is spent until
+    ///     the tokens are.
+    ///   * **Time: real.** At ~60 tok/s this is ~4.5 min of decode
+    ///     before the ceiling fires, and the tool loop allows up to
+    ///     four rounds. That is the price, and it is the right one to
+    ///     pay: a turn that runs long and then answers beats a turn
+    ///     that stops early and delivers nothing.
+    ///
+    /// A model that genuinely needs different numbers gets them
+    /// per-alias from the engine via
+    /// ``ServerModelProfile.reasoningToolsFloor`` rather than by
+    /// moving this global.
     ///
     /// Both floors are observed only via ``applyServerProfile``
     /// + ``effectiveMaxTokens(toolsEnabled:)``, so a user who
@@ -109,7 +159,7 @@ final class SamplingConfig {
     /// below) takes immediate priority — auto-scale never fights
     /// an explicit user choice.
     static let reasoningChatFloor: Int = 2_048
-    static let reasoningToolsFloor: Int = 4_096
+    static let reasoningToolsFloor: Int = 16_384
     /// FU-3 (post-v0.7.19) canonical names. ``reasoningChatFloor``
     /// and ``reasoningToolsFloor`` are the GLOBAL fallbacks the
     /// per-alias override (``ServerModelProfile.reasoningChatFloor``

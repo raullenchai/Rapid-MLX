@@ -222,9 +222,16 @@ final class ServerModelProfileTests {
     @Test("Cycle-3: reasoning floor constants exist + are non-decreasing (chat ≤ tools)")
     func reasoningFloorConstantsAreConsistent() {
         #expect(SamplingConfig.reasoningChatFloor == 2_048)
-        #expect(SamplingConfig.reasoningToolsFloor == 4_096)
+        #expect(SamplingConfig.reasoningToolsFloor == 16_384)
         #expect(SamplingConfig.reasoningChatFloor <= SamplingConfig.reasoningToolsFloor,
                 "tools floor must be at least the chat floor — tools-heavy prompts emit more reasoning tokens before the first call")
+        // The floor spent its whole life equal to maxTokensDefault, which
+        // made `max(maxTokens, effectiveToolsFloor)` a no-op and lifted
+        // nobody. A floor at or below the baseline is not a floor.
+        #expect(SamplingConfig.reasoningToolsFloor > SamplingConfig.maxTokensDefault,
+                "a tools floor that does not exceed the default budget can never raise it — see the 5-run repro in SamplingConfig")
+        #expect(SamplingConfig.reasoningToolsFloor <= SamplingConfig.maxTokensRange.upperBound,
+                "the floor must be reachable through the same range an explicit user choice obeys")
     }
 
     /// Non-reasoning alias path — the existing 4,096 default must NOT
@@ -363,8 +370,9 @@ final class ServerModelProfileTests {
     /// so a "Reset" press behaves like a clean v0.4.12 install. Without
     /// this clear, a user who resets while a reasoning alias is loaded
     /// would still see ``effectiveMaxTokens(toolsEnabled: true) ==
-    /// reasoningToolsFloor`` (which is OK at 4,096 == default today, but
-    /// would diverge the moment the floor is raised).
+    /// reasoningToolsFloor``. That used to be harmless because the floor
+    /// equalled the default; now that it is 16,384 the two genuinely
+    /// diverge, so this assertion carries real weight.
     @Test("Cycle-3: resetToDefaults clears activeReasoningParser + the auto-scale bookkeeping")
     func resetClearsReasoningBookkeeping() {
         let s = SamplingConfig(defaults: freshDefaults())

@@ -64,7 +64,7 @@ final class SamplingConfigPerAliasFloorTests {
         #expect(s.effectiveChatFloor == SamplingConfig.defaultReasoningChatFloor)
         #expect(s.effectiveToolsFloor == SamplingConfig.defaultReasoningToolsFloor)
         #expect(s.effectiveChatFloor == 2_048)
-        #expect(s.effectiveToolsFloor == 4_096)
+        #expect(s.effectiveToolsFloor == 16_384)
     }
 
     /// Pin the canonical default-alias names alias the legacy
