@@ -95,17 +95,18 @@ only.
 | `AC_API_ISSUER_ID` | App Store Connect issuer id (A2) |
 | `AC_API_KEY_P8_BASE64` | base64 of `AuthKey_<KEYID>.p8` (A2) |
 
-### Optional — only if you enable the CDN mirror job
+### Required for tagged releases — updater fallback publishing
 
 | Name | Kind | Value |
 |---|---|---|
 | `CLOUDFLARE_API_TOKEN` | secret | token scoped to *Workers R2 Storage: Edit* on the dist bucket |
 | `CLOUDFLARE_ACCOUNT_ID` | secret | the Cloudflare account id wrangler operates against |
-| `RAPID_MAC_DIST_R2_BUCKET` | **variable** | name of the R2 bucket to mirror into — TODO(owner) |
-| `RAPID_MAC_DIST_CDN_BASE` | **variable** | public CDN base URL fronting the bucket — TODO(owner) |
+| `RAPID_MAC_DIST_R2_BUCKET` | **variable** | `rapid-desktop-dist` |
+| `RAPID_MAC_DIST_CDN_BASE` | **variable** | `https://dl.rapidmlx.com` |
 
-The `mirror-dist` job no-ops cleanly if these are absent; the canonical
-GitHub Release DMG is published either way. The two bucket/CDN names are
+The `mirror-dist` job fails a tagged release if these are absent. It uploads
+the immutable versioned DMG first and `latest.json` last, so the static updater
+fallback can never advertise a missing artifact. The two bucket/CDN names are
 **config, not credentials**, so they go in *Variables*, not *Secrets*.
 
 ### Dropped
@@ -216,8 +217,7 @@ already in homebrew-core); the desktop app never claims it.
 ## Open TODO(owner) items
 
 - **Release repo owner is `raullenchai`** (`raullenchai/Rapid-MLX`).
-- **CDN mirror infra** (`RAPID_MAC_DIST_R2_BUCKET` / `RAPID_MAC_DIST_CDN_BASE`
-  + Cloudflare secrets) only needs provisioning if you want a stable
-  non-GitHub download URL. Optional.
-- **In-app auto-update `latest.json`** is not emitted yet (the minimal app has
-  no updater). Add it to the workflow when the updater lands.
+- **Updater fallback credentials** (`CLOUDFLARE_API_TOKEN` /
+  `CLOUDFLARE_ACCOUNT_ID`) must remain configured and scoped to the
+  `rapid-desktop-dist` bucket. Tagged releases fail closed if publishing the
+  mirrored DMG and `latest.json` is unavailable.

@@ -23,12 +23,12 @@
 #   AC_API_ISSUER_ID             App Store Connect issuer id
 #   AC_API_KEY_P8_BASE64         base64 of the AuthKey_XXX.p8
 #
-#   Optional — only if the "mirror-dist" job (bottom) is enabled:
+#   Required for tagged releases (the "mirror-dist" job at the bottom):
 #   CLOUDFLARE_API_TOKEN         token scoped to Workers R2 Storage:Edit on
 #                                the distribution bucket
 #   CLOUDFLARE_ACCOUNT_ID        account id wrangler operates against
 #
-#   Optional — only if the "mirror-dist" job is enabled — as Actions
+#   Required for tagged releases — as Actions
 #   VARIABLES (not secrets), since they are config, not credentials:
 #   RAPID_MAC_DIST_R2_BUCKET     name of the R2 bucket to mirror the DMG into
 #   RAPID_MAC_DIST_CDN_BASE      public CDN base URL that fronts the bucket
@@ -356,29 +356,20 @@ jobs:
         run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true
 
   # ─────────────────────────────────────────────────────────────────────
-  # OPTIONAL: mirror the notarised DMG to a CDN-fronted object store.
+  # REQUIRED FOR TAGS: mirror the notarised DMG and update the static fallback.
   #
-  # The public GitHub Release (attached above) is the canonical download
-  # and is enough on its own. This job exists only if you ALSO want a
-  # stable, vendor-neutral URL (e.g. for a landing page) that doesn't
-  # change across releases. It is a scrubbed stub of the desktop repo's
-  # Cloudflare R2 mirror + latest.json publish:
+  # The public GitHub Release (attached above) remains the canonical download.
+  # This job also publishes the static updater fallback used when the update
+  # Worker is unavailable. A tagged release is incomplete unless both the DMG
+  # mirror and latest.json are current, so missing distribution configuration
+  # is a hard failure rather than a successful no-op.
   #
   #   * No hardcoded bucket name (desktop used a specific private bucket) —
   #     read from the ``RAPID_MAC_DIST_R2_BUCKET`` Actions VARIABLE.
   #   * No hardcoded CDN hostname (desktop used dl.rapidmlx.com) — read from
   #     the ``RAPID_MAC_DIST_CDN_BASE`` Actions VARIABLE.
-  #   * No account attribution and no "repo is private, so
-  #     /releases/latest/download won't work for anonymous users"
-  #     assumption — the monorepo app repo is public, so the GitHub Release
-  #     URL already works unauthenticated; a CDN mirror is purely optional.
-  #   * The in-app auto-update ``latest.json`` manifest is intentionally
-  #     NOT reconstructed here — the minimal app has no in-app updater yet.
-  #     TODO(owner): add latest.json emission if/when the updater lands.
-  #
-  # The whole job no-ops cleanly when its secrets/vars are absent, so it is
-  # safe to leave enabled before the dist infra exists. To hard-disable it,
-  # delete this job or add ``if: false`` below.
+  #   * The manifest is uploaded last, after the immutable DMG, so clients can
+  #     never observe a release whose artifact is not available yet.
   mirror-dist:
     needs: build
     runs-on: ubuntu-latest
@@ -390,36 +381,61 @@ jobs:
           name: rapid-mlx-desktop-dmg
           path: dist
 
-      - name: Mirror DMG to the distribution bucket (optional)
+      - name: Mirror DMG and publish updater fallback
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # Config (not credentials) → Actions VARIABLES. TODO(owner): set
-          # these once the dist bucket + CDN exist, or leave unset to skip.
           R2_BUCKET: ${{ vars.RAPID_MAC_DIST_R2_BUCKET }}
           CDN_BASE: ${{ vars.RAPID_MAC_DIST_CDN_BASE }}
           TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ -z "${CLOUDFLARE_API_TOKEN:-}" || -z "${CLOUDFLARE_ACCOUNT_ID:-}" || -z "${R2_BUCKET:-}" ]]; then
-            echo "::notice::CLOUDFLARE_* secrets or RAPID_MAC_DIST_R2_BUCKET not configured — skipping the optional CDN mirror. The canonical GitHub Release DMG is unaffected."
-            exit 0
+          missing=()
+          [[ -n "${CLOUDFLARE_API_TOKEN:-}" ]] || missing+=(CLOUDFLARE_API_TOKEN)
+          [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [[ -n "${R2_BUCKET:-}" ]] || missing+=(RAPID_MAC_DIST_R2_BUCKET)
+          [[ -n "${CDN_BASE:-}" ]] || missing+=(RAPID_MAC_DIST_CDN_BASE)
+          if (( ${#missing[@]} )); then
+            echo "::error::tagged releases require updater fallback publishing; missing: ${missing[*]}"
+            exit 1
           fi
           VERSION="${TAG#rapid-mac-v}"
           DMG="dist/rapid-mlx-desktop.dmg"
           [[ -f "$DMG" ]] || { echo "::error::missing $DMG"; exit 1; }
 
-          # Versioned key (immutable) + an unversioned "latest" alias.
+          # Upload the immutable payload before making it discoverable.
           VERSIONED_KEY="rapid-mac/${VERSION}/rapid-mlx-desktop.dmg"
           ALIAS_KEY="rapid-mac/rapid-mlx-desktop.dmg"
+          DMG_URL="${CDN_BASE%/}/${VERSIONED_KEY}"
 
           npx --yes wrangler@4 r2 object put "${R2_BUCKET}/${VERSIONED_KEY}" \
             --file "$DMG" --content-type application/x-apple-diskimage --remote
           npx --yes wrangler@4 r2 object put "${R2_BUCKET}/${ALIAS_KEY}" \
             --file "$DMG" --content-type application/x-apple-diskimage --remote
 
-          if [[ -n "${CDN_BASE:-}" ]]; then
-            echo "::notice::Mirrored to ${CDN_BASE%/}/${VERSIONED_KEY} and ${CDN_BASE%/}/${ALIAS_KEY}"
-          else
-            echo "::notice::Mirrored to bucket ${R2_BUCKET} keys ${VERSIONED_KEY} and ${ALIAS_KEY} (set RAPID_MAC_DIST_CDN_BASE to print public URLs)."
-          fi
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+          DMG_SHA256="$(sha256sum "$DMG" | awk '{print $1}')"
+          DMG_SIZE="$(stat -c %s "$DMG")"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg tag_name "$TAG" \
+            --arg html_url "$(jq -r .html_url <<<"$RELEASE_JSON")" \
+            --arg notes "$(jq -r '.body // ""' <<<"$RELEASE_JSON")" \
+            --arg published_at "$(jq -r .published_at <<<"$RELEASE_JSON")" \
+            --arg dmg_url "$DMG_URL" \
+            --arg dmg_sha256 "$DMG_SHA256" \
+            --argjson dmg_size "$DMG_SIZE" \
+            '{schema_version: 1, version: $version, tag_name: $tag_name,
+              html_url: $html_url, notes: $notes, published_at: $published_at,
+              dmg_url: $dmg_url, dmg_sha256: $dmg_sha256, dmg_size: $dmg_size}' \
+            > dist/latest.json
+          jq -e --arg version "$VERSION" --arg dmg_url "$DMG_URL" \
+            '.schema_version == 1 and .version == $version and .dmg_url == $dmg_url' \
+            dist/latest.json >/dev/null
+
+          # Publish the mutable pointer last: this is the update transaction's
+          # commit point. The current bundled DMG needs no sidecar fields.
+          npx --yes wrangler@4 r2 object put "${R2_BUCKET}/latest.json" \
+            --file dist/latest.json --content-type application/json --remote
+          echo "::notice::Published ${DMG_URL} and ${CDN_BASE%/}/latest.json"

@@ -15,7 +15,7 @@
 #   which hands off to the monorepo-root workflow
 #   .github/workflows/rapid-mac-release.yml. CI builds, signs, notarises,
 #   enforces size gates and attaches the DMG to the GitHub Release (an
-#   OPTIONAL mirror job publishes to a CDN if its secrets are configured).
+#   required mirror job publishes the DMG and updater fallback to the CDN).
 #   MONOREPO: the app release tag is prefixed ``rapid-mac-v`` so it never
 #   collides with the engine's own ``v*`` release tags in the same repo.
 #   Rare. Stable (non-prerelease) tags only.
