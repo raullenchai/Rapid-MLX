@@ -422,12 +422,9 @@ jobs:
           # Content-address the canonical payload. A rerun of the same tag can
           # never overwrite bytes referenced by an older manifest checksum.
           VERSIONED_KEY="rapid-mac/${VERSION}/rapid-mlx-desktop-${DMG_SHA256}.dmg"
-          ALIAS_KEY="rapid-mac/rapid-mlx-desktop.dmg"
           DMG_URL="${CDN_BASE%/}/${VERSIONED_KEY}"
 
           npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/${VERSIONED_KEY}" \
-            --file "$DMG" --content-type application/x-apple-diskimage --remote
-          npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/${ALIAS_KEY}" \
             --file "$DMG" --content-type application/x-apple-diskimage --remote
 
           RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
