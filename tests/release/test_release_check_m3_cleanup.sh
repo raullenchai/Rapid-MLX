@@ -47,6 +47,7 @@ if bash -c '
       set -euo pipefail
       PIDFILE="'"$TMP"'/no-such-pidfile"
       CLUSTER_WORK=""
+      RELEASE_AGENT_HOME_ROOT=""
       . "'"$TMP"'/cleanup.sh"
       cleanup
       exit 0
@@ -61,6 +62,7 @@ if bash -c '
       set -euo pipefail
       PIDFILE="'"$TMP"'/no-such-pidfile"
       unset CLUSTER_WORK
+      unset RELEASE_AGENT_HOME_ROOT
       . "'"$TMP"'/cleanup.sh"
       cleanup
       exit 0
@@ -78,6 +80,7 @@ if bash -c '
       set -euo pipefail
       PIDFILE="'"$TMP"'/no-such-pidfile"
       CLUSTER_WORK="'"$WORK"'"
+      RELEASE_AGENT_HOME_ROOT=""
       . "'"$TMP"'/cleanup.sh"
       cleanup
       exit 0
@@ -95,6 +98,7 @@ if bash -c '
       set -euo pipefail
       PIDFILE="'"$PIDFILE_STALE"'"
       CLUSTER_WORK=""
+      RELEASE_AGENT_HOME_ROOT=""
       . "'"$TMP"'/cleanup.sh"
       cleanup
       exit 0
@@ -102,6 +106,41 @@ if bash -c '
   ok "tolerates a pidfile whose process is already gone, and removes it"
 else
   bad "a stale pidfile made cleanup fail, or left the file behind"
+fi
+
+# Agent homes are temporary fixtures. This both prevents the release gate from
+# loading an operator's plugins/MCPs and makes the pre-G12 cleanup a clean
+# boundary before the random sweep recreates its own configs.
+AGENT_ROOT="$TMP/agent-homes"
+mkdir -p "$AGENT_ROOT/codex" "$AGENT_ROOT/hermes"
+touch "$AGENT_ROOT/codex/config.toml" "$AGENT_ROOT/hermes/config.yaml"
+if bash -c '
+      set -euo pipefail
+      PIDFILE="'"$TMP"'/no-such-pidfile"
+      CLUSTER_WORK=""
+      RELEASE_AGENT_HOME_ROOT="'"$AGENT_ROOT"'"
+      . "'"$TMP"'/cleanup.sh"
+      cleanup
+      exit 0
+    ' 2>/dev/null && [ ! -e "$AGENT_ROOT" ]; then
+  ok "removes isolated Codex/Hermes config homes"
+else
+  bad "left isolated agent config behind, or cleanup returned non-zero"
+fi
+
+if grep -q 'export CODEX_HOME="$RELEASE_AGENT_HOME_ROOT/codex"' "$SCRIPT" \
+   && grep -q 'export HERMES_HOME="$RELEASE_AGENT_HOME_ROOT/hermes"' "$SCRIPT"; then
+  ok "release gate redirects Codex and Hermes into isolated config homes"
+else
+  bad "release gate can inherit or overwrite an operator agent config"
+fi
+
+trap_line=$(grep -n '^trap cleanup EXIT INT TERM$' "$SCRIPT" | cut -d: -f1)
+home_line=$(grep -n '^RELEASE_AGENT_HOME_ROOT="$(mktemp -d)"$' "$SCRIPT" | cut -d: -f1)
+if [ -n "$trap_line" ] && [ -n "$home_line" ] && [ "$trap_line" -lt "$home_line" ]; then
+  ok "installs cleanup trap before allocating the temporary agent home"
+else
+  bad "temporary agent home can leak when an early preflight exits"
 fi
 
 echo "── G12 call site"

@@ -196,8 +196,25 @@ cleanup() {
   if [ -n "${CLUSTER_WORK:-}" ]; then
     rm -rf "$CLUSTER_WORK"
   fi
+  if [ -n "${RELEASE_AGENT_HOME_ROOT:-}" ]; then
+    rm -rf "$RELEASE_AGENT_HOME_ROOT"
+  fi
 }
 trap cleanup EXIT INT TERM
+
+# G7b and G12 drive real agent CLIs. Their config is part of the test fixture,
+# not operator state: inheriting ~/.codex or ~/.hermes also inherits personal
+# plugins, MCP servers, skills, and stale model settings. On #1683 that turned
+# Codex's normal 13-tool / 5.5K-token request into 134 tools / 33K tokens; each
+# prefill took ~110s and a healthy file-read loop false-timed out at 120s.
+# Redirect both config homes for a deterministic gate and protect the user's
+# real agent config from setup writes. This allocation deliberately comes
+# AFTER the EXIT trap is installed, and after early preflight refusals, so
+# subsequent failures clean it up. cleanup's inline pre-G12 call clears it;
+# setup recreates it for the independent random sweep.
+RELEASE_AGENT_HOME_ROOT="$(mktemp -d)"
+export CODEX_HOME="$RELEASE_AGENT_HOME_ROOT/codex"
+export HERMES_HOME="$RELEASE_AGENT_HOME_ROOT/hermes"
 
 # Fail before downloading/booting models if a benchmark candidate has no
 # committed comparison point. Staleness is surfaced as a warning; refreshing a
