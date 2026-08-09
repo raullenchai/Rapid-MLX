@@ -34,11 +34,11 @@ _TOOL = {
     "function": {
         "name": "release_probe",
         "description": "Return a fixed release-gate marker.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
+        # No required arguments: the gate measures structured transport and
+        # replay, not whether a small model follows an optional-argument hint.
+        # This is deliberately non-strict; ordinary OpenAI tool schemas do not
+        # decoder-constrain model output unless strict=true is requested.
+        "parameters": {"type": "object"},
     },
 }
 
@@ -113,8 +113,11 @@ def _validate_forced_stream(lines: list[str]) -> None:
     if name != "release_probe":
         raise ValueError(f"forced stream tool name is invalid: {name!r}")
     raw_arguments = "".join(streamed_calls[0]["arguments"])
-    if json.loads(raw_arguments) != {}:
-        raise ValueError(f"forced stream arguments are not {{}}: {raw_arguments!r}")
+    parsed_arguments = json.loads(raw_arguments)
+    if not isinstance(parsed_arguments, dict):
+        raise ValueError(
+            f"forced stream arguments are not a JSON object: {raw_arguments!r}"
+        )
     leaked = _visible_wire_marker("".join(visible_chunks))
     if leaked:
         raise ValueError(f"native wire marker leaked into stream: {leaked!r}")
@@ -151,9 +154,10 @@ def main() -> int:
         "model": "default",
         "messages": [{"role": "user", "content": "Call release_probe now."}],
         "tools": [_TOOL],
-        # A named zero-argument call factors model competence out completely:
+        # A named call with no required arguments factors model competence out:
         # the engine need not invent a required value before it can prove the
-        # parser/template contract.
+        # parser/template contract. Optional model-generated fields are fine;
+        # the exact assistant call is replayed below.
         "tool_choice": {
             "type": "function",
             "function": {"name": "release_probe"},

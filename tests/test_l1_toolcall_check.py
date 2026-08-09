@@ -61,8 +61,8 @@ def test_gate_replays_tool_result_in_both_modes(monkeypatch):
         [
             _Response(
                 lines=[
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"release_","arguments":"{"}}]}}]}',
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"probe","arguments":"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"release_","arguments":"{\\"prompt\\":"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"probe","arguments":"\\"inspect\\"}"}}]}}]}',
                     "data: [DONE]",
                 ]
             ),
