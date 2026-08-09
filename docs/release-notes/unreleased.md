@@ -12,19 +12,25 @@ filmstrip you can step back through, and selecting an older one restores the
 prompt that produced it (#1705). Chat gained the other direction at the same
 time — you can attach images to a message and ask about them (#1723).
 
-**Tool calls on Qwen models stopped losing their arguments.** A long series of
-fixes to the Qwen streaming parser: arguments split across chunks, wrapper
-closers that arrive in pieces, truncated calls, and content that follows a
-wrapper close were each mis-framed in ways that produced a call with the wrong
-arguments rather than a visible failure. `AutoToolParser`'s balanced-JSON scan
-was fixed alongside them (#1726), and a replayed terminal chunk under
-`tool_choice: auto` no longer duplicates content into the answer (#1711).
+**The Qwen tool-call parser handles awkward arguments correctly.** A long
+series of fixes to `qwen3_coder_xml` (#1730), most of them around legacy raw
+string arguments whose own content contains XML-like closing tags — the case
+where the parser cannot tell an argument's text from the wrapper around it.
+Different fixes in the series address different symptoms: some produced wrong
+arguments, others leaked wrapper framing into the answer or dropped the text
+that followed a call. `AutoToolParser`'s balanced-JSON scan was fixed alongside
+them (#1726), and a replayed terminal chunk under `tool_choice: auto` no longer
+duplicates content into the answer (#1711).
 
-**Tool-using turns are no longer cut off mid-thought.** The desktop's floor for
-reasoning-plus-tools turns was set to exactly the default token budget, so the
-`max()` that was supposed to lift it never lifted anyone. It is now 16384
-(#1722). Short budgets do not fail loudly — they deliver a truncated answer, so
-this showed up as models that "could not do it" rather than as an error.
+**Reasoning-plus-tools turns get a much larger default token budget.** The
+desktop's floor for those turns was set to exactly the default budget, so the
+`max()` meant to lift it never lifted anyone; it is now 16384 (#1722). This
+applies to turns with a reasoning model and tools enabled, and only while the
+Max Tokens slider is still at its default — an explicit setting is respected.
+16384 is a ceiling too, so this makes a truncated answer much less likely
+rather than impossible. Worth knowing because a short budget does not fail
+loudly: it returns a cut-off answer, which reads as a model that "could not do
+it".
 
 **The scheduler reclaims paged full-KV and free-block memory** instead of
 wedging on a `D-METAL-CAP` 503 under sustained load (#1646). A prefix-cache
@@ -59,7 +65,10 @@ to always-allow rather than prompting every time (#1695).
 Mostly invisible, but it is why the above is trustworthy: the app and engine
 are now cut in one event instead of two that could drift (#1649); a release
 gate that had not run for eleven releases was found dead and repaired (#1671);
-the Codex review step fails closed when the reviewer is unavailable rather than
-passing silently (#1700); and the GUI golden flows run on every desktop PR
-(#1721), driving the app through the accessibility API with no screen recording
-(#1708) so they work unattended in CI.
+a Codex review that is actually invoked now fails closed on backend, auth,
+timeout or execution failure rather than passing silently (#1700) — a missing
+Codex binary is still reported as a skip; and three AX-only GUI golden flows
+(`chat-restore`, `slow-stream-stop`, `model-crash-recovery`) run on every
+desktop PR (#1721), driving the app through the accessibility API with no
+screen recording (#1708) so they work unattended in CI. The remaining flows
+still need Peekaboo locally and are not part of the CI set.
