@@ -306,6 +306,7 @@ class DeepSeekR1DistillReasoningParser(DeepSeekR1ReasoningParser):
 
     def configure_request(self, *, enable_thinking: bool | None = None) -> None:
         del enable_thinking
+        self.reset_state()
         self._prompt_primed_thinking = True
 
     def extract_reasoning(

@@ -427,6 +427,26 @@ class TestDeepSeekR1Distill:
         assert result.reasoning == trace
         assert result.content is None
 
+    def test_1570_configure_request_clears_prior_stream_state(self):
+        self.parser._saw_any_tag = True
+        self.parser._streaming_phase = "content"
+        self.parser._reasoning_carry = "<th"
+        self.parser._in_tool_call = True
+        self.parser._tool_call_buffer = "<tool_call>{"
+
+        self.parser.configure_request(enable_thinking=False)
+
+        assert self.parser._saw_any_tag is False
+        assert self.parser._streaming_phase is None
+        assert self.parser._reasoning_carry == ""
+        assert self.parser._in_tool_call is False
+        assert self.parser._tool_call_buffer == ""
+        trace = "Okay, I need to reason about the next request."
+        result = self.parser.extract_reasoning_streaming("", trace, trace)
+        assert result is not None
+        assert result.reasoning == trace
+        assert result.content is None
+
 
 class TestThinkParserSSEBoundary:
     """SSE-boundary withhold for split ``<think>`` / ``</think>`` tags
