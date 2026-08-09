@@ -25,6 +25,82 @@ GOLDEN_FLOWS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 IMAGE_TAG = "[image:gen]"
 
 
+# --- Mirrors of the Swift gates, byte-for-byte ---------------------------
+#
+# These re-implement `ModelCatalog` rules that decide whether a fixture row is
+# READ or SILENTLY DROPPED. Approximating them is worse than not testing: a
+# looser rule is green on exactly the rows the app throws away, which is the
+# failure this file exists to catch. Each mirror names its Swift source so the
+# two can be diffed by hand when either moves.
+
+MAX_ALIAS_BYTES = 128  # ModelCatalog.maxAliasBytes
+MAX_HF_REPO_BYTES = 192  # ModelCatalog.maxHuggingFaceRepoBytes
+_ALIAS_BYTES = set(b"-._") | set(
+    bytes(range(48, 58)) + bytes(range(65, 91)) + bytes(range(97, 123))
+)
+
+
+def _is_safe_alias(alias: str) -> bool:
+    """``ModelCatalog.isSafeAlias``.
+
+    The first byte must be an ASCII letter or digit — a regex of
+    ``[A-Za-z0-9._-]+`` accepts a leading ``.``/``_``/``-`` that Swift
+    rejects — and the whole alias is capped in BYTES, not characters.
+    """
+    raw = alias.encode("utf-8")
+    if not raw or len(raw) > MAX_ALIAS_BYTES:
+        return False
+    if not (48 <= raw[0] <= 57 or 65 <= raw[0] <= 90 or 97 <= raw[0] <= 122):
+        return False
+    return all(b in _ALIAS_BYTES for b in raw)
+
+
+def _sanitized_hf_repo(repo: str) -> str | None:
+    """``ModelCatalog.sanitizedHuggingFaceRepo``. ``None`` means "dropped"."""
+    trimmed = repo.strip()
+    if not trimmed or len(trimmed.encode("utf-8")) > MAX_HF_REPO_BYTES:
+        return None
+    if trimmed in ("-", "\u2014"):
+        return None
+    parts = trimmed.split("/")
+    if not 1 <= len(parts) <= 2:
+        return None
+    for part in parts:
+        if not part or part in (".", ".."):
+            return None
+        if not all(b in _ALIAS_BYTES for b in part.encode("utf-8")):
+            return None
+    return trimmed
+
+
+def _split_on_multi_space(line: str) -> list[str]:
+    """``ModelCatalog.splitOnMultiSpace``.
+
+    Columns are separated by runs of TWO OR MORE spaces/tabs; a single space
+    stays inside its column (``5d ago`` is one field). Python's ``str.split()``
+    breaks on any run, so a single-spaced row parses cleanly here and is
+    rejected by Swift — the fixture would then look fine while the app fell
+    through to its download path.
+    """
+    result: list[str] = []
+    current = ""
+    space_run = 0
+    for ch in line:
+        if ch in (" ", "\t"):
+            space_run += 1
+            continue
+        if space_run >= 2 and current:
+            result.append(current)
+            current = ""
+        elif space_run == 1 and current:
+            current += " "
+        current += ch
+        space_run = 0
+    if current:
+        result.append(current)
+    return [field.strip() for field in result]
+
+
 def run_fake(subcommand: str) -> str:
     return subprocess.run(
         [str(FAKE), subcommand],
@@ -67,9 +143,12 @@ def test_image_row_has_the_shape_the_parser_indexes(models_output):
     assert tag_index > 1, "no size column: parseImageRows would read size as empty"
     assert tag_index + 1 < len(fields), "no HF id after the tag: the repo would be nil"
     alias, repo = fields[0], fields[tag_index + 1]
-    # ``isSafeAlias`` rejects anything outside this set, and a rejected alias
-    # is dropped silently — the picker would simply stay empty.
-    assert re.fullmatch(r"[A-Za-z0-9._-]+", alias), alias
+    # A rejected alias is dropped SILENTLY and the picker simply stays empty,
+    # so this has to be the app's own rule rather than something close to it.
+    assert _is_safe_alias(alias), f"parseImageRows would drop this alias: {alias!r}"
+    assert _sanitized_hf_repo(repo) is not None, (
+        f"sanitizedHuggingFaceRepo would drop this repo: {repo!r}"
+    )
     assert "/" in repo, f"HF id should be owner/name, got {repo!r}"
 
 
@@ -83,9 +162,9 @@ def test_image_alias_is_cached_so_the_tab_resolves_without_a_download():
     (fields,) = image_rows(run_fake("models"))
     alias, repo = fields[0], fields[fields.index(IMAGE_TAG) + 1]
     cached = run_fake("ls")
-    cached_rows = [line.split() for line in cached.splitlines()]
+    cached_rows = [_split_on_multi_space(line.strip()) for line in cached.splitlines()]
     assert any(row[:2] == [alias, repo] for row in cached_rows if len(row) >= 2), (
-        f"{alias} -> {repo} is not in `ls`:\n{cached}"
+        f"{alias} -> {repo} is not in `ls` as 2+-space-separated columns:\n{cached}"
     )
 
 

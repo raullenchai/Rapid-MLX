@@ -122,14 +122,24 @@ cleanup_persona() {
     fi
     APP_PID=""
     if [[ -n "$OUT" && -f "$OUT/fake-events.jsonl" ]]; then
-        while read -r fake_pid; do
+        # Pair each pid with the alias it was started for, and require the
+        # live command to still name THAT alias. A bare `serve fake-alias`
+        # match missed `serve fake-image-alias` entirely and left the image
+        # flow's sidecar listening after the run — an orphan that then
+        # contaminates the next local run. Matching the recorded alias keeps
+        # the recycled-pid guard the substring test was there for, without
+        # having to remember to extend it for every new fixture alias.
+        while IFS=$'\t' read -r fake_pid fake_alias; do
             [[ "$fake_pid" =~ ^[0-9]+$ ]] || continue
+            [[ -n "$fake_alias" && "$fake_alias" != "null" ]] || continue
             local command
             command="$(ps -p "$fake_pid" -o command= 2>/dev/null || true)"
-            if [[ "$command" == *"serve fake-alias"* ]]; then
+            if [[ "$command" == *"serve $fake_alias"* ]]; then
                 kill "$fake_pid" 2>/dev/null || true
             fi
-        done < <(jq -r 'select(.event == "server_started") | .pid' "$OUT/fake-events.jsonl" 2>/dev/null | sort -u)
+        done < <(jq -r 'select(.event == "server_started")
+                        | "\(.pid)\t\(.alias // "")"' \
+                     "$OUT/fake-events.jsonl" 2>/dev/null | sort -u)
     fi
     if [[ "$KEEP" == 0 && -n "$BUNDLE_ID" ]]; then
         defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
@@ -1846,10 +1856,15 @@ flow_image_generation() {
     local settled=0
     for ((i=0; i<200; i++)); do
         see_main "$OUT/ig-result.json"
-        if jq -e '[.data.ui_elements[]? | .identifier // ""] as $ids
-                  | ($ids | index("Images.Gallery.Thumb.1")) != null
-                    and ($ids | index("Images.EmptyState")) == null
-                    and ($ids | index("Images.Cancel")) == null' \
+        # `index(...) == null` is a claim of ABSENCE, and a walk that fell
+        # short of a full inventory satisfies it by never having looked. The
+        # driver already says whether it can vouch for `ui_elements`; require
+        # that before reading a missing node as a cleared one.
+        if jq -e '.success == true and .data.walk.complete == true
+                  and ([.data.ui_elements[]? | .identifier // ""] as $ids
+                       | ($ids | index("Images.Gallery.Thumb.1")) != null
+                         and ($ids | index("Images.EmptyState")) == null
+                         and ($ids | index("Images.Cancel")) == null)' \
                "$OUT/ig-result.json" >/dev/null; then
             settled=1; break
         fi
@@ -1867,29 +1882,65 @@ flow_image_generation() {
     local second=0
     for ((i=0; i<240; i++)); do
         see_main "$OUT/ig-result-2.json"
-        if jq -e '[.data.ui_elements[]? | .identifier // ""] as $ids
-                  | ($ids | index("Images.Gallery.Thumb.2")) != null
-                    and ($ids | index("Images.Cancel")) == null' \
+        if jq -e '.success == true and .data.walk.complete == true
+                  and ([.data.ui_elements[]? | .identifier // ""] as $ids
+                       | ($ids | index("Images.Gallery.Thumb.2")) != null
+                         and ($ids | index("Images.Cancel")) == null)' \
                "$OUT/ig-result-2.json" >/dev/null; then
             second=1; break
         fi
         sleep 0.25
     done
     [[ "$second" == 1 ]] || die "re-prompting produced no second thumbnail"
-    # Exactly two requests on the wire, with DIFFERENT prompts. The unique
-    # count alone is not enough: a UI that re-submits (a double press, a silent
-    # retry) sends a third request whose prompt duplicates an earlier one, and
-    # `unique | length` still reads 2. So assert the TOTAL request count is 2 as
-    # well — the refine step is one render, not one-plus-a-resend — and, without
-    # the prompt check, a UI that re-submits the FIRST prompt would also pass.
+    # Exactly two requests on the wire. A UI that re-submits (a double press,
+    # a silent retry) sends a third whose prompt duplicates an earlier one, so
+    # the TOTAL count is the thing that catches it — the refine step is one
+    # render, not one-plus-a-resend.
     jq -s '[.[] | select(.event == "image_request")] | length' \
         "$OUT/fake-events.jsonl" > "$OUT/ig-request-count.txt"
-    jq -s '[.[] | select(.event == "image_request") | .prompt] | unique | length' \
-        "$OUT/fake-events.jsonl" > "$OUT/ig-prompt-count.txt"
     [[ "$(cat "$OUT/ig-request-count.txt")" == "2" ]] \
         || die "the sidecar saw $(cat "$OUT/ig-request-count.txt") image requests, expected exactly 2 — a render was dropped or re-sent"
-    [[ "$(cat "$OUT/ig-prompt-count.txt")" == "2" ]] \
-        || die "the sidecar did not see two distinct prompts — the refine step re-sent the first"
+    # The ORDERED prompts, compared to what was actually typed — not a unique
+    # count. `unique | length == 2` is satisfied by two prompts that are
+    # merely different from each other: truncated, transformed, or swapped
+    # text all pass it, and so does a first request that never carried the
+    # user's words at all.
+    jq -s -c '[.[] | select(.event == "image_request") | .prompt]' \
+        "$OUT/fake-events.jsonl" > "$OUT/ig-prompts.json"
+    local expected_prompts
+    expected_prompts="$(jq -n -c --arg a "a cheetah on a red couch" --arg b "the same cheetah, at night" '[$a,$b]')"
+    [[ "$(cat "$OUT/ig-prompts.json")" == "$expected_prompts" ]] \
+        || die "the prompts on the wire were $(cat "$OUT/ig-prompts.json"), expected $expected_prompts"
+    # And the rest of the payload. Without this the picker can show and load
+    # the image alias while the request names something else entirely — the
+    # tab would look right and render with the wrong model.
+    jq -s -e --arg alias "$FAKE_IMAGE_ALIAS" \
+        'all(.[] | select(.event == "image_request");
+             .model == $alias and .n == 1 and ((.size // "") | test("^[0-9]+x[0-9]+$")))' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "an image request named the wrong model, asked for n != 1, or carried no WxH size: $(jq -s -c '[.[] | select(.event == "image_request") | {model, size, n}]' "$OUT/fake-events.jsonl")"
+
+    # Two thumbnails is not two renders — and the two ways that can go wrong
+    # need two different witnesses.
+    #
+    # This one is the DISPLAY side: the gallery can list a second entry and
+    # bind the first result to it. Nothing above notices, because AX carries
+    # no pixel data and both cases dump identically. Each thumb's label is
+    # bound to its OWN prompt, so a duplicated record announces the duplicated
+    # prompt. Pins the newest-first order at the same time. The render-index
+    # check below is the other half — it covers the SIDECAR producing one
+    # bitmap twice, which this cannot see and which cannot see this.
+    local thumb1 thumb2
+    thumb1="$(jq -r '.data.ui_elements[]? | select(.identifier == "Images.Gallery.Thumb.1")
+                     | (.description // .title // "")' "$OUT/ig-result-2.json" | head -1)"
+    thumb2="$(jq -r '.data.ui_elements[]? | select(.identifier == "Images.Gallery.Thumb.2")
+                     | (.description // .title // "")' "$OUT/ig-result-2.json" | head -1)"
+    [[ "$thumb1" == *"at night"* ]] \
+        || die "the newest thumbnail does not name the second render's prompt (got: $thumb1)"
+    [[ "$thumb2" == *"red couch"* ]] \
+        || die "the older thumbnail does not name the first render's prompt (got: $thumb2)"
+    [[ "$thumb1" != "$thumb2" ]] \
+        || die "both thumbnails describe the same render — the refine step redrew the first instead of adding a second"
     # ...and two DISTINCT renders were produced, not one artifact shown twice.
     # The fake stamps each response with an incrementing index, and the PNG
     # bytes derive from it, so two equal indices would mean the "second"

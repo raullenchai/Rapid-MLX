@@ -316,7 +316,30 @@ struct ImagesView: View {
         // inside it, so this is the only place a screen-reader user hears
         // which render is active.
         .accessibilityIdentifier("Images.Gallery.Thumb.\(ordinal)")
-        .accessibilityLabel(selected ? "Image \(ordinal), selected" : "Image \(ordinal)")
+        // The label names the render, not just its slot. "Image 2" tells a
+        // VoiceOver user only where in the strip they are — every thumb in a
+        // gallery of near-identical variations then sounds the same, and the
+        // one thing that distinguishes them, the prompt that produced each
+        // one, is the caption sighted users can already read.
+        //
+        // It is also the only thing in the accessibility tree that is derived
+        // from the RESULT rather than from its position. Positional labels
+        // are satisfied by a gallery that lists two entries and shows the
+        // same render for both, which is a real failure mode and one the
+        // golden flow could not otherwise see: AX carries no pixel data, so a
+        // dump of a duplicated image is byte-identical to a dump of two
+        // distinct ones. Binding the label to each entry's own prompt makes
+        // the flow's "a second render, not a redraw of the first" assertion
+        // actually testable. (It pins the RECORD, not the pixels: two
+        // separate entries that somehow carried identical image data would
+        // still read as distinct. Proving that would mean publishing a
+        // content digest through the UI, which is scaffolding a shipping
+        // surface should not carry.)
+        .accessibilityLabel(
+            selected
+                ? "Image \(ordinal), \(image.prompt), selected"
+                : "Image \(ordinal), \(image.prompt)"
+        )
     }
 
     // MARK: - Composer (mirrors ChatView's compose box)

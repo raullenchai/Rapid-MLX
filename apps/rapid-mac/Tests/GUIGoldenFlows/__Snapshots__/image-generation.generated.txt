@@ -12,8 +12,8 @@ AXApplication title="Rapid-MLX"
           AXButton id="Images.Stage" desc="Download" help="Save image" enabled=true
           AXImage id="Images.Stage" enabled=true
           AXScrollArea id="Images.Gallery"
-            AXButton id="Images.Gallery.Thumb.1" desc="Image 1" enabled=true
-            AXButton id="Images.Gallery.Thumb.2" desc="Image 2, selected" enabled=true
+            AXButton id="Images.Gallery.Thumb.1" desc="Image 1, the same cheetah, at night" enabled=true
+            AXButton id="Images.Gallery.Thumb.2" desc="Image 2, a cheetah on a red couch, selected" enabled=true
           AXScrollArea id="Images.Prompt"
             AXTextArea id="rapid.images.compose" desc="Image prompt field" value=text
           AXButton id="Images.Aspect" desc="1:1" enabled=true
