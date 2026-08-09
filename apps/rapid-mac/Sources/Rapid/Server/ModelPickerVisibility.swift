@@ -229,10 +229,34 @@ enum ModelPickerVisibility {
     /// (the dropdown stays clean). Pulled to a helper so tests can
     /// pin the singular / plural copy without standing up a SwiftUI
     /// host.
+    /// Short enough to survive the menu.
+    ///
+    /// The previous copy — "N small (<1B) models hidden · toggle in
+    /// Settings → Models" — was 56 characters against a widest alias row of
+    /// about 33 ("mistral-small-4-119b-8bit · small"), so AppKit ellipsised
+    /// it. What it cut was the tail, which is the only part that told the
+    /// user where the toggle lives: the row degraded into a fragment that
+    /// began with a digit and sat directly under the real alias rows, so it
+    /// read as a broken model entry rather than as a note about the list.
+    /// The full sentence moves to ``hiddenFooterHelp`` on hover, where it
+    /// has room.
     static func hiddenFooterCopy(hiddenCount count: Int) -> String? {
         guard count > 0 else { return nil }
         let noun = count == 1 ? "model" : "models"
-        return "\(count) small (<1B) \(noun) hidden · toggle in Settings → Models"
+        return "\(count) small \(noun) hidden · Settings"
+    }
+
+    /// Hover copy for the footer row — carries the detail the visible
+    /// label can no longer afford: what "small" means, why they are hidden,
+    /// and the exact path to the toggle.
+    static func hiddenFooterHelp(hiddenCount count: Int) -> String? {
+        guard count > 0 else { return nil }
+        let subject = count == 1
+            ? "One model under 1B parameters is"
+            : "\(count) models under 1B parameters are"
+        return "\(subject) hidden — they tend to contradict themselves within "
+            + "a couple of turns and exist for unit tests, not chat. "
+            + "Show them from Settings → Models."
     }
 
     // MARK: - cycle-10: quality buckets / picker sticker (F9-004)

@@ -941,7 +941,10 @@ struct ModelPickerBar: View {
                     if !sorted.isEmpty {
                         Divider()
                     }
-                    Button(footer) { }.disabled(true)
+                    Button(footer) { }
+                        .disabled(true)
+                        .help(ModelPickerVisibility.hiddenFooterHelp(
+                            hiddenCount: hiddenCount) ?? "")
                 }
             }
         }

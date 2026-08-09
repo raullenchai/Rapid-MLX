@@ -383,7 +383,7 @@ struct ModelPickerVisibilityTests {
     func footerSingular() {
         #expect(
             ModelPickerVisibility.hiddenFooterCopy(hiddenCount: 1)
-                == "1 small (<1B) model hidden · toggle in Settings → Models"
+                == "1 small model hidden · Settings"
         )
     }
 
@@ -391,8 +391,48 @@ struct ModelPickerVisibilityTests {
     func footerPlural() {
         #expect(
             ModelPickerVisibility.hiddenFooterCopy(hiddenCount: 2)
-                == "2 small (<1B) models hidden · toggle in Settings → Models"
+                == "2 small models hidden · Settings"
         )
+    }
+
+    /// The footer shares an NSMenu with the alias rows, and AppKit sizes
+    /// that menu to its widest item. The old 56-character copy was ~1.7x
+    /// the widest realistic alias row, so it ellipsised — and the part it
+    /// dropped was the tail naming Settings, i.e. the entire reason the
+    /// row exists.
+    ///
+    /// 34 is the budget: "mistral-small-4-119b-8bit · small" is 33
+    /// characters, and a footer no wider than the widest alias row cannot
+    /// be the item that forces truncation.
+    @Test("hiddenFooterCopy fits the menu — it must never be the widest row")
+    func footerFitsMenuWidth() throws {
+        let widestRealisticAliasRow = "mistral-small-4-119b-8bit · small"
+        for count in [1, 2, 9, 42, 100] {
+            let copy = try #require(
+                ModelPickerVisibility.hiddenFooterCopy(hiddenCount: count))
+            #expect(
+                copy.count <= widestRealisticAliasRow.count + 1,
+                "footer for count=\(count) is \(copy.count) chars: \(copy)"
+            )
+        }
+    }
+
+    @Test("Everything the short footer drops survives on hover")
+    func footerHelpCarriesTheDetail() throws {
+        let help = try #require(ModelPickerVisibility.hiddenFooterHelp(hiddenCount: 5))
+        // The three facts the visible label can no longer afford.
+        #expect(help.contains("1B"))
+        #expect(help.contains("Settings → Models"))
+        #expect(help.contains("5 models"))
+
+        let singular = try #require(ModelPickerVisibility.hiddenFooterHelp(hiddenCount: 1))
+        #expect(singular.contains("One model"))
+        #expect(!singular.contains("1 models"))
+    }
+
+    @Test("hiddenFooterHelp is nil when nothing is hidden, matching the visible copy")
+    func footerHelpNilWhenNothingHidden() {
+        #expect(ModelPickerVisibility.hiddenFooterHelp(hiddenCount: 0) == nil)
     }
 
     // MARK: - parseSmallestParamsBillions sanity (regression-pin the parser our filter rides on)
