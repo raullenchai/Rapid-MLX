@@ -2005,7 +2005,14 @@ async def _stream_anthropic_messages(
     if reasoning_parser:
         configure_request = getattr(reasoning_parser, "configure_request", None)
         if callable(configure_request):
-            configure_request(enable_thinking=chat_kwargs.get("enable_thinking"))
+            configure_kwargs = {"enable_thinking": chat_kwargs.get("enable_thinking")}
+            if getattr(reasoning_parser, "implicit_reasoning_until_close", False):
+                configure_kwargs["prompt_thinking_active"] = _should_start_in_thinking(
+                    getattr(getattr(engine, "tokenizer", None), "chat_template", "")
+                    or "",
+                    chat_kwargs.get("enable_thinking"),
+                )
+            configure_request(**configure_kwargs)
         else:
             reasoning_parser.reset_state()
 
