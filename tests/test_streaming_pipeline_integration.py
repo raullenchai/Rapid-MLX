@@ -126,6 +126,14 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
         )
         assert _should_start_in_thinking(conditional, False, unconditional=True) is True
 
+    def test_1570_inactive_false_branch_does_not_prime_when_enabled(self):
+        conditional = (
+            "{% if enable_thinking %}plain{% else %}"
+            "{% if add_generation_prompt %}<think>{% endif %}"
+            "{% endif %}"
+        )
+        assert _should_start_in_thinking(conditional, True, unconditional=True) is False
+
     def test_1570_inactive_elif_marker_does_not_prime_thinking(self):
         conditional = (
             "{% if not enable_thinking %}plain"

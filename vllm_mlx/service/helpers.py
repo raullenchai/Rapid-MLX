@@ -790,11 +790,10 @@ def _should_start_in_thinking(
         return False
     if enable_thinking is False and not unconditional:
         return False
-    if unconditional and enable_thinking is not True:
-        # Distill parsers need the rendered branch for both an explicit false
-        # flag and the ordinary unspecified (None) request. Jinja treats None
-        # as falsey, so a marker living only in ``{% if enable_thinking %}``
-        # is not part of the actual prompt.
+    if unconditional:
+        # Distill parsers need the rendered branch for every flag value. A
+        # marker can live exclusively in either the truthy or falsey branch;
+        # searching the template source would classify the inactive branch.
         if "<think>" not in chat_template:
             return False
         # Follow the active Jinja branch instead of treating every enclosing
