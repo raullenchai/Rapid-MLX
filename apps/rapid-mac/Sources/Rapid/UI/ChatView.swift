@@ -1435,6 +1435,12 @@ struct ComposeField: View {
     /// Raycast convention). Default ``{ nil }`` so existing call
     /// sites that don't wire it stay quiet.
     var onRecallLastUser: () -> String? = { nil }
+    /// Accessibility identity forwarded to the underlying ``NSTextView``.
+    /// Defaults to the chat compose field; the Images tab overrides it so the
+    /// two surfaces are distinguishable to VoiceOver and to automation.
+    var axIdentifier: String = AutosizingTextView.composeAccessibilityIdentifier
+    var axLabel: String = AutosizingTextView.composeAccessibilityLabel
+    var axRoleDescription: String = AutosizingTextView.composeAccessibilityRoleDescription
 
     /// One text line + the editor's vertical inset. Floor for the
     /// field so a single line never collapses below a tappable row.
@@ -1468,6 +1474,9 @@ struct ComposeField: View {
                 onCancel: onCancel,
                 onPasteImages: onPasteImages,
                 onRecallLastUser: onRecallLastUser,
+                axIdentifier: axIdentifier,
+                axLabel: axLabel,
+                axRoleDescription: axRoleDescription,
                 onMeasuredHeight: { measured in
                     let clamped = min(max(measured, minHeight), maxHeight)
                     if abs(clamped - contentHeight) > 0.5 {
@@ -1552,10 +1561,26 @@ final class AutosizingTextView: NSTextView {
     static let composeAccessibilityIdentifier = "rapid.chat.compose"
     static let composeAccessibilityRoleDescription = "Chat message input"
 
-    static func applyComposeAccessibility(_ tv: NSTextView) {
-        tv.setAccessibilityLabel(composeAccessibilityLabel)
-        tv.setAccessibilityIdentifier(composeAccessibilityIdentifier)
-        tv.setAccessibilityRoleDescription(composeAccessibilityRoleDescription)
+    /// The Images tab reuses ``ComposeField``, so before these existed its
+    /// editor announced itself as the CHAT compose field: one identifier on
+    /// two different surfaces. The semantic ``Images.Prompt`` identifier sits
+    /// on the SwiftUI wrapper, which resolves to the placeholder static text
+    /// and the scroll area — not to the NSTextView — so anything driving the
+    /// prompt by identifier (VoiceOver, cliclick, the GUI golden flows) either
+    /// hit the wrong element or had to pretend the Images tab was chat.
+    static let imagePromptAccessibilityLabel = "Image prompt field"
+    static let imagePromptAccessibilityIdentifier = "rapid.images.compose"
+    static let imagePromptAccessibilityRoleDescription = "Image prompt input"
+
+    static func applyComposeAccessibility(
+        _ tv: NSTextView,
+        identifier: String = composeAccessibilityIdentifier,
+        label: String = composeAccessibilityLabel,
+        roleDescription: String = composeAccessibilityRoleDescription
+    ) {
+        tv.setAccessibilityLabel(label)
+        tv.setAccessibilityIdentifier(identifier)
+        tv.setAccessibilityRoleDescription(roleDescription)
     }
 }
 
@@ -1576,6 +1601,16 @@ struct ComposeTextEditor: NSViewRepresentable {
     var onCancel: () -> Void
     var onPasteImages: () -> Bool
     var onRecallLastUser: () -> String?
+    /// Accessibility identity of the underlying ``NSTextView``. Defaults to
+    /// the chat compose field so every existing call site — and the external
+    /// tooling pinned to ``rapid.chat.compose`` — is unchanged.
+    ///
+    /// Declared BEFORE ``onMeasuredHeight`` on purpose: the memberwise
+    /// initialiser takes arguments in declaration order, and the call site
+    /// passes these ahead of the trailing height closure.
+    var axIdentifier: String = AutosizingTextView.composeAccessibilityIdentifier
+    var axLabel: String = AutosizingTextView.composeAccessibilityLabel
+    var axRoleDescription: String = AutosizingTextView.composeAccessibilityRoleDescription
     /// Reports the editor's laid-out content height so ``ComposeField``
     /// can size the field to the draft.
     var onMeasuredHeight: (CGFloat) -> Void
@@ -1615,7 +1650,12 @@ struct ComposeTextEditor: NSViewRepresentable {
         // ``.textArea`` by default, but with no label / identifier
         // AppleScript and cliclick can't tell which text area is the
         // chat compose vs the system-prompt editor or search bar.
-        AutosizingTextView.applyComposeAccessibility(tv)
+        AutosizingTextView.applyComposeAccessibility(
+            tv,
+            identifier: axIdentifier,
+            label: axLabel,
+            roleDescription: axRoleDescription
+        )
 
         // Hosting the editor in a scroll view is what makes the height
         // cap usable: past ``ComposeField.maxHeight`` the draft scrolls

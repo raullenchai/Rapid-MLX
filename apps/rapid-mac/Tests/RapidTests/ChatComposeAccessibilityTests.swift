@@ -37,6 +37,41 @@ struct ChatComposeAccessibilityTests {
         #expect(AutosizingTextView.composeAccessibilityIdentifier == "rapid.chat.compose")
     }
 
+    @Test("The Images composer is a different element from the chat composer")
+    func imagePromptHasItsOwnIdentity() {
+        // ``ComposeField`` is shared, so before the configurator took
+        // arguments the Images tab's editor announced itself as
+        // "rapid.chat.compose": one identifier on two surfaces. Anything
+        // driving a text field by identifier — VoiceOver, cliclick, the
+        // `image-generation` golden flow — then either hit the chat field or
+        // hit ``Images.Prompt``, which resolves to the placeholder static text
+        // rather than the NSTextView, reports a successful set-value, and
+        // changes nothing.
+        let tv = AutosizingTextView()
+        AutosizingTextView.applyComposeAccessibility(
+            tv,
+            identifier: AutosizingTextView.imagePromptAccessibilityIdentifier,
+            label: AutosizingTextView.imagePromptAccessibilityLabel,
+            roleDescription: AutosizingTextView.imagePromptAccessibilityRoleDescription
+        )
+        #expect(tv.accessibilityIdentifier() == "rapid.images.compose")
+        #expect(tv.accessibilityLabel() == AutosizingTextView.imagePromptAccessibilityLabel)
+        #expect(
+            AutosizingTextView.imagePromptAccessibilityIdentifier
+                != AutosizingTextView.composeAccessibilityIdentifier
+        )
+    }
+
+    @Test("The configurator still defaults to chat when given no identity")
+    func defaultsRemainTheChatComposer() {
+        // The new parameters must not move the default: every existing call
+        // site, and the external tooling pinned to "rapid.chat.compose",
+        // depends on the no-argument form staying exactly as it was.
+        let tv = AutosizingTextView()
+        AutosizingTextView.applyComposeAccessibility(tv)
+        #expect(tv.accessibilityIdentifier() == "rapid.chat.compose")
+    }
+
     @Test("NSTextView role stays at AXTextArea after configurator runs")
     func textAreaRolePreserved() {
         // Pin AppKit's NSTextView default so VoiceOver still narrates

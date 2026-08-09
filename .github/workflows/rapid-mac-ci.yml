@@ -41,6 +41,7 @@ on:
       - "tests/test_ax_baseline_os_variance.py"
       - "tests/test_gui_preflight_contract.py"
       - "tests/fixtures/ax_baseline/**"
+      - "tests/test_fake_sidecar_image_catalog.py"
 
 permissions:
   contents: read
@@ -117,11 +118,12 @@ jobs:
         run: pytest tests/test_rapid_mac_ax_identifiers.py -q
 
   # Text-only contracts protecting the golden-flow harness itself. Ubuntu is
-  # deliberate: both suites read captured dumps and script sources, so they
-  # cost seconds, need no GPU or GUI, and — for the OS-independence suite
-  # especially — must not themselves depend on a macOS version.
+  # deliberate: the suites read captured dumps, script sources, and the fake
+  # sidecar fixture, so they cost seconds, need no GPU or GUI, and — for the
+  # OS-independence suite especially — must not themselves depend on a macOS
+  # version.
   #
-  # These guard the two ways this gate can rot into uselessness:
+  # These guard the ways this gate can rot into uselessness:
   #
   #   * a baseline that only one macOS can produce. Developers here are on
   #     macOS 26 and the runner is macOS 15, so any OS-variable attribute that
@@ -130,6 +132,9 @@ jobs:
   #   * a deleted preflight. Removing it breaks nothing on a healthy machine;
   #     it only restores the misdiagnosis on an unhealthy one, where a missing
   #     permission or a locked screen again reads as "the app is broken".
+  #   * a fake sidecar that drifts from the Swift catalog parser it feeds:
+  #     nothing else notices, and the failure surfaces on a Mac, hours later,
+  #     disguised as a product defect.
   gui-harness-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -150,6 +155,9 @@ jobs:
 
       - name: GUI preflight contract
         run: pytest tests/test_gui_preflight_contract.py -q
+
+      - name: Fake sidecar catalog contract
+        run: pytest tests/test_fake_sidecar_image_catalog.py -q
 
   build:
     # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's
@@ -277,7 +285,7 @@ jobs:
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
       #
-      # These three drive the app through `rapid-ax` alone (see
+      # These four drive the app through `rapid-ax` alone (see
       # `flow_requires_peekaboo` in the harness). Most other flows shell out to
       # peekaboo — a third-party install whose bridge socket comes from the
       # Peekaboo app rather than its CLI, with its own permission surface. The
@@ -307,9 +315,14 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/model-crash-recovery
 
+      - name: 'Golden flow: image-generation'
+        run: ./scripts/gui-golden-flows.sh --flow image-generation
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/image-generation
+
       # The harness stops at the FIRST mismatched baseline and the job stops at
-      # the first failing flow, so one red run reveals exactly one line. With 6
-      # baselines across 4 flows that is up to 6 push-and-wait cycles to see a
+      # the first failing flow, so one red run reveals exactly one line. With 5
+      # baselines across 4 flows that is up to 5 push-and-wait cycles to see a
       # difference that was fully visible on the runner the first time — which
       # is precisely what the OS-variance round trip on PR #1721 cost.
       #
@@ -329,7 +342,7 @@ jobs:
           set -uo pipefail
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
-          for flow in chat-restore slow-stream-stop model-crash-recovery; do
+          for flow in chat-restore slow-stream-stop model-crash-recovery image-generation; do
             RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
             RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
               ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true

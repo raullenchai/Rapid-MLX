@@ -33,7 +33,8 @@ covered, and each one names the defect it would have caught:
     chat catalog's `hasNonChatKindTag` drops `image` alongside `audio`/`video`,
     so a 24 GB FLUX/Qwen-Image checkpoint can never surface in the chat picker.
 
-12. `image-generation` — the Images tab turns a text prompt into a picture and
+12. `image-generation` — a journey, not an invariant (listed here to keep the
+    numbering stable): the Images tab turns a text prompt into a picture and
     lets the user iterate by re-prompting (see **Image generation** below). The
     instruction-**edit** path exists in code but is parked as a slow, batch-only
     lane on current hardware (~20 min/edit at q4); the interactive golden flow is
@@ -55,7 +56,30 @@ were all invisible to journey-shaped tests:
 
 ### Current baseline
 
-Run on 2026-08-07, on a build of this checkout:
+**2026-08-09** — the whole suite (`gui-golden-flows.sh`, no `--flow`) passes on
+a build of this checkout, twice in a row, the second run against the committed
+baselines rather than the run that wrote them.
+
+Getting there meant refreshing every structural baseline, and the reason is
+worth recording: they were last updated **2026-08-07** (#1666), while
+`Sidebar.Images` landed in #1705 and `ChatView.AddPhotos` in #1723 — both on
+**2026-08-09**. The suite had therefore been red on `main` through two merges
+and nobody knew, because it runs by hand and not in CI. Every line in the
+refresh diff is one of exactly three things:
+
+| Added | Source |
+| --- | --- |
+| `Sidebar.Images` (×12) | #1705 |
+| `ChatView.AddPhotos` (×12) | #1723 |
+| `Settings.ModelManagement.CapabilityTabs` + its Chat/Image segments (×4) | this change — the fake now emits an `[image:gen]` alias, so the capability tabs have a second capability to show |
+
+One line changed rather than appeared: the sidebar conversation menu gained
+`title="More"`, an AXTitle AppKit synthesises for a borderless `Menu` (our code
+sets only `accessibilityLabel`). It held across the verification run; if it
+ever flickers it is noise the normalizer should scrub, not a UI change.
+
+The per-flow results below were recorded on 2026-08-07, on a build of that
+checkout:
 
 | Flow | Result |
 | --- | --- |
@@ -301,10 +325,43 @@ hermetic tests rather than a live flow: a text-to-image server answers
 of returning a silent wrong result. The Images tab itself only drives
 `/v1/images/generations`.
 
-> Status: the AX identifiers and states above are **defined and shipped** in
-> product code; the runnable `gui-golden-flows.sh --flow image-generation`
-> journey and its structural baseline are the next increment (added the same way
-> every other flow was — identifiers first, then the scripted journey).
+### What the journey does and does not drive
+
+`gui-golden-flows.sh --flow image-generation` is runnable, and its structural
+baseline is committed as `image-generation.generated.txt`.
+
+Two things the scripted journey deliberately does **not** do, so the list above
+is not read as a coverage claim:
+
+* **Aspect ratio** — asserted present (`Images.Aspect`), not exercised. The
+  individual options inside the menu carry no identifiers of their own, so
+  driving them would mean clicking coordinates, which is the one thing this
+  harness exists to avoid.
+* **`Images.Result.Save`** — out of AX scope like every other file picker in
+  the app; the flow stops at the focal image.
+
+Writing it surfaced two defects that no tree dump could show, both now fixed:
+
+| Defect | Why nothing caught it |
+| --- | --- |
+| The prompt editor announced itself as `rapid.chat.compose` — ``ComposeField``'s default, shared with chat | `Images.Prompt` sits on the SwiftUI wrapper and resolves to the placeholder `AXStaticText`. `set-value` on it returns `{"success":true}` and changes nothing: the binding never updates, `Images.Generate` stays disabled, and the press is silently dropped. A green type step, then a render that never happened. |
+| Filmstrip thumbnails lacked a stable, baseline-compatible identifier | Their whole label is an image, so they reached VoiceOver — and the flow — as unnamed buttons. (#1725 later gave them a per-render `Images.Thumb.<uuid>`, but a UUID changes every run and cannot anchor a repeatable baseline; the positional `Images.Gallery.Thumb.<n>` can.) "A second render produced a second thumbnail" was unassertable except by counting anonymous buttons. |
+
+The editor now carries `rapid.images.compose` (pinned by
+`ChatComposeAccessibilityTests`) and each thumb carries
+`Images.Gallery.Thumb.<n>`, newest first.
+
+`type_prompt` in the flow is the guard against the first defect returning: it
+requires the composer to hold the text **and** `Images.Generate` to be enabled
+before anything is pressed, because either signal alone can lie.
+
+The fake sidecar answers `/v1/images/generations` with a real 1×1 PNG after a
+scripted number of steps (`FAKE_IMAGE_STEPS`, `FAKE_IMAGE_STEP_MS`), so the
+in-flight card is observable rather than a frame between two polls, and the
+bytes differ per render so a re-shown first image cannot pass as a second one.
+`tests/test_fake_sidecar_image_catalog.py` pins the fixture's catalog row
+against the shape `ModelCatalog.parseImageRows` indexes — the two files never
+import each other, and the drift shows up on a Mac disguised as a product bug.
 
 ## Run
 

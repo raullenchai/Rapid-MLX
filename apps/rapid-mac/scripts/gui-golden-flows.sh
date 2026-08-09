@@ -15,6 +15,10 @@ BASELINE_DIR="${RAPID_GUI_BASELINE_DIR:-$ROOT/Tests/GUIGoldenFlows/__Snapshots__
 # The fixture alias is scrubbed out of baselines so renaming the fake model
 # is not a structural change to the UI.
 FAKE_ALIAS="fake-alias"
+# The fake's image-generation fixture (see fake-rapid-mlx.sh). Scrubbed from
+# baselines for the same reason as FAKE_ALIAS: renaming a fixture must not read
+# as a structural change to the UI.
+FAKE_IMAGE_ALIAS="fake-image-alias"
 UPDATE_BASELINES=0
 FLOW="all"
 KEEP=0
@@ -35,7 +39,7 @@ Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-l
        slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
-       browse-all-destination, all
+       browse-all-destination, image-generation, all
 
 chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
 restored-tools and tool-loop-budget drive the app through the accessibility
@@ -95,7 +99,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         chat-restore|restored-tools|tool-loop-budget|chat-depth) return 1 ;;
-        slow-stream-stop|model-crash-recovery) return 1 ;;
+        slow-stream-stop|model-crash-recovery|image-generation) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -903,11 +907,13 @@ baseline() {
     local committed="$BASELINE_DIR/$name.txt"
     local observed="$OUT/$name.observed.txt"
     if [[ "$UPDATE_BASELINES" == 1 ]]; then
-        python3 "$BASELINE_TOOL" check "$tree" --scrub "$FAKE_ALIAS" \
+        python3 "$BASELINE_TOOL" check "$tree" \
+            --scrub "$FAKE_ALIAS" --scrub "$FAKE_IMAGE_ALIAS" \
             --baseline "$committed" --observed "$observed" --update \
             || die "could not update AX structural baseline: $name"
     else
-        python3 "$BASELINE_TOOL" check "$tree" --scrub "$FAKE_ALIAS" \
+        python3 "$BASELINE_TOOL" check "$tree" \
+            --scrub "$FAKE_ALIAS" --scrub "$FAKE_IMAGE_ALIAS" \
             --baseline "$committed" --observed "$observed" \
             || die "AX structural baseline mismatch: $name"
     fi
@@ -1687,6 +1693,234 @@ flow_catalog_integrity() {
     cleanup_persona
 }
 
+# Wait until the fake has recorded an event matching a jq predicate.
+#
+# The event log is the independent witness. Every "did it work?" question in
+# this flow has a UI answer and a wire answer, and only the wire answer can
+# tell a render that happened from a render the UI merely drew a card for.
+wait_fake_event() {
+    local predicate="$1" what="$2" i
+    for ((i=0; i<200; i++)); do
+        if [[ -s "$OUT/fake-events.jsonl" ]] \
+           && jq -e -s "any(.[]; $predicate)" "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    die "$what"
+}
+
+# Put text in the Images composer and PROVE it arrived.
+#
+# ``set-value`` reports success on whatever element carries the identifier,
+# which is not the same thing as the SwiftUI binding updating. Measured: with
+# the identifier on the wrapper, the driver set the placeholder AXStaticText,
+# answered {"success":true}, the prompt stayed empty, ``Images.Generate``
+# stayed disabled, and the subsequent press was silently dropped — a green
+# type step followed by a render that never happened. The editor now carries
+# its own identifier (``rapid.images.compose``), and the gate below is what
+# keeps a future regression of that wiring loud.
+type_prompt() {
+    local text="$1" prefix="$2" i
+    "$AX_DRIVER" set-value "$APP_PID" rapid.images.compose "$text" \
+        > "$OUT/$prefix-type.json"
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/$prefix.json"
+        # The composer holds the text AND the button it gates is live. Either
+        # alone can lie: the editor can hold text the binding never saw, and
+        # the button is disabled for an empty prompt as well as for a model
+        # that is not ready.
+        if jq -e --arg t "$text" \
+               '[.data.ui_elements[]?] as $e
+                | (($e[] | select(.identifier == "rapid.images.compose")
+                          | select(has("value") and .value == $t)) != null)
+                  and (($e[] | select(.identifier == "Images.Generate")
+                          | select(.enabled == true)) != null)' \
+               "$OUT/$prefix.json" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    die "the prompt never reached the composer binding (Images.Generate stayed disabled): $text"
+}
+
+flow_image_generation() {
+    # Text→image, the interactive half of the Images tab (#1705).
+    #
+    # The tab shipped with its identifiers but no journey, so nothing walked
+    # it: a prompt that never reaches the wire, a progress card that never
+    # clears, a gallery that shows the first render twice — all of them look
+    # exactly like success in a tree dump. Each assertion below therefore pairs
+    # the UI's story with the fake's recorded requests.
+    #
+    # No diffusion weights: the fake answers /v1/images/* with a real 1x1 PNG
+    # whose bytes differ per render, after a scripted number of steps so the
+    # in-flight card is observable rather than a frame between two polls.
+    start_persona image-generation FAKE_IMAGE_STEPS=8 FAKE_IMAGE_STEP_MS=300
+
+    dismiss_first_run
+
+    # 1. The tab and its empty state.
+    see_main "$OUT/ig-chat.json"
+    press "$OUT/ig-chat.json" Sidebar.Images "$OUT/ig-open.json" \
+        || die "Sidebar.Images is not pressable — the Images tab is unreachable"
+    wait_identifier Images.EmptyState "$OUT/ig-empty.json"
+
+    # 2. The picker resolved to the image model on its own.
+    #    ``ImageGenViewModel.resolveAlias`` prefers a CACHED image entry and the
+    #    fake marks exactly one, so this is deterministic without opening the
+    #    menu. AXHelp carries "Model: <alias>" — the picker's own account of
+    #    what the next render will use.
+    #    Polled, not read once: ``refreshCatalog`` shells out to
+    #    ``rapid-mlx models`` and ``ls`` from a `.task`, so the tab renders
+    #    with an unresolved picker ("Choose a model") for as long as those two
+    #    subprocesses take. A single read here fails on the app being
+    #    correctly asynchronous.
+    local i resolved=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/ig-empty.json"
+        if jq -e --arg alias "$FAKE_IMAGE_ALIAS" \
+               '.data.ui_elements[]? | select(.identifier == "Images.ModelPicker")
+                | select((.help // "") | contains($alias))' "$OUT/ig-empty.json" >/dev/null; then
+            resolved=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$resolved" == 1 ]] \
+        || die "Images.ModelPicker never resolved to $FAKE_IMAGE_ALIAS — the tab has no model to render with"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/ig-empty.json" >/dev/null \
+        || die "Images.Aspect is missing — no way to choose an aspect ratio"
+
+    # 3. Load the model. rapid-mlx serves one model per process, so opening the
+    #    tab cannot silently inherit a ready server: the readiness gate holds
+    #    Generate shut until the image model is actually up.
+    wait_identifier Readiness.Action "$OUT/ig-readiness.json"
+    press "$OUT/ig-readiness.json" Readiness.Action "$OUT/ig-start.json" \
+        || die "Readiness.Action is not pressable — the tab offers no way to load its model"
+    # Match the ALIAS, not merely "a server started": the app may already have
+    # started one on the chat alias at launch, and that event would satisfy a
+    # bare grep while the image model never loaded at all.
+    wait_fake_event \
+        ".event == \"server_started\" and .alias == \"$FAKE_IMAGE_ALIAS\"" \
+        "the image model never started — Readiness.Action did not switch the server"
+
+    # ``help`` distinguishes "not ready" from "ready with an empty prompt":
+    # the button is disabled in both, and only the hint separates them.
+    local i ready=0
+    for ((i=0; i<200; i++)); do
+        see_main "$OUT/ig-ready.json"
+        if jq -e '.data.ui_elements[]? | select(.identifier == "Images.Generate")
+                  | select((.help // "") == "Generate")' "$OUT/ig-ready.json" >/dev/null; then
+            ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$ready" == 1 ]] || die "Images.Generate never became ready after the model loaded"
+
+    # 4. Generate.
+    type_prompt "a cheetah on a red couch" ig-draft
+    press "$OUT/ig-draft.json" Images.Generate "$OUT/ig-generate.json" \
+        || die "Images.Generate is not pressable with a prompt and a ready model"
+
+    # The in-flight card. Asserted BEFORE the result so a render that returns
+    # instantly (or a card that never appears) is a failure rather than a frame
+    # nobody looked at.
+    local inflight=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/ig-inflight.json"
+        if jq -e '.data.ui_elements[]? | select(.identifier == "Images.Cancel")' \
+               "$OUT/ig-inflight.json" >/dev/null; then
+            inflight=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$inflight" == 1 ]] \
+        || die "no in-flight progress card: Images.Cancel never appeared during a render"
+
+    wait_fake_event '.event == "image_request"' \
+        "no image_request reached the sidecar — the prompt was never sent"
+    wait_fake_event '.event == "image_response" and .cancelled == false' \
+        "the render never completed"
+
+    # The result, and the card that has to go away again.
+    local settled=0
+    for ((i=0; i<200; i++)); do
+        see_main "$OUT/ig-result.json"
+        if jq -e '[.data.ui_elements[]? | .identifier // ""] as $ids
+                  | ($ids | index("Images.Gallery.Thumb.1")) != null
+                    and ($ids | index("Images.EmptyState")) == null
+                    and ($ids | index("Images.Cancel")) == null' \
+               "$OUT/ig-result.json" >/dev/null; then
+            settled=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$settled" == 1 ]] \
+        || die "after the render the gallery had no thumbnail, or the empty state / progress card never cleared"
+    log "  first render landed"
+
+    # 5. Refine by re-prompting — a SECOND render, not a redraw of the first.
+    type_prompt "the same cheetah, at night" ig-draft-2
+    press "$OUT/ig-draft-2.json" Images.Generate "$OUT/ig-generate-2.json" \
+        || die "Images.Generate is not pressable for a second render"
+
+    local second=0
+    for ((i=0; i<240; i++)); do
+        see_main "$OUT/ig-result-2.json"
+        if jq -e '[.data.ui_elements[]? | .identifier // ""] as $ids
+                  | ($ids | index("Images.Gallery.Thumb.2")) != null
+                    and ($ids | index("Images.Cancel")) == null' \
+               "$OUT/ig-result-2.json" >/dev/null; then
+            second=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$second" == 1 ]] || die "re-prompting produced no second thumbnail"
+    # Exactly two requests on the wire, with DIFFERENT prompts. The unique
+    # count alone is not enough: a UI that re-submits (a double press, a silent
+    # retry) sends a third request whose prompt duplicates an earlier one, and
+    # `unique | length` still reads 2. So assert the TOTAL request count is 2 as
+    # well — the refine step is one render, not one-plus-a-resend — and, without
+    # the prompt check, a UI that re-submits the FIRST prompt would also pass.
+    jq -s '[.[] | select(.event == "image_request")] | length' \
+        "$OUT/fake-events.jsonl" > "$OUT/ig-request-count.txt"
+    jq -s '[.[] | select(.event == "image_request") | .prompt] | unique | length' \
+        "$OUT/fake-events.jsonl" > "$OUT/ig-prompt-count.txt"
+    [[ "$(cat "$OUT/ig-request-count.txt")" == "2" ]] \
+        || die "the sidecar saw $(cat "$OUT/ig-request-count.txt") image requests, expected exactly 2 — a render was dropped or re-sent"
+    [[ "$(cat "$OUT/ig-prompt-count.txt")" == "2" ]] \
+        || die "the sidecar did not see two distinct prompts — the refine step re-sent the first"
+    # ...and two DISTINCT renders were produced, not one artifact shown twice.
+    # The fake stamps each response with an incrementing index, and the PNG
+    # bytes derive from it, so two equal indices would mean the "second"
+    # thumbnail is a re-show of the first render. The displayed pixels are past
+    # what an AX structural dump can read; the render index is the wire-level
+    # witness that the two thumbnails stand for two different bitmaps.
+    jq -s '[.[] | select(.event == "image_response") | .index] | unique | length' \
+        "$OUT/fake-events.jsonl" > "$OUT/ig-render-count.txt"
+    [[ "$(cat "$OUT/ig-render-count.txt")" == "2" ]] \
+        || die "the two thumbnails came from the same render index — a re-shown artifact, not a second render"
+
+    # A thumbnail is a way back to its prompt, not just a picture.
+    press "$OUT/ig-result-2.json" Images.Gallery.Thumb.2 "$OUT/ig-revisit.json" \
+        || die "Images.Gallery.Thumb.2 is not pressable — the filmstrip is decorative"
+    local revisited=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-revisited.json"
+        if jq -e '.data.ui_elements[]? | select(.identifier == "rapid.images.compose")
+                  | select(has("value") and (.value | test("red couch")))' \
+               "$OUT/ig-revisited.json" >/dev/null; then
+            revisited=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$revisited" == 1 ]] \
+        || die "selecting the older thumbnail did not restore its prompt"
+
+    baseline image-generation.generated "$OUT/ig-revisited.json"
+    log "  image-generation OK"
+}
+
 if [[ -d "$OUT_ROOT" && -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
     RESULT_WRITTEN=1
     die "artifact directory is not empty: $OUT_ROOT"
@@ -1708,6 +1942,7 @@ case "$FLOW" in
     no-dead-controls) flow_no_dead_controls ;;
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
+    image-generation) flow_image_generation ;;
     all)
         flow_fresh_install
         flow_settings_persistence
@@ -1723,6 +1958,7 @@ case "$FLOW" in
         flow_no_dead_controls
         flow_catalog_integrity
         flow_browse_all_destination
+        flow_image_generation
         ;;
     *) die "unknown flow: $FLOW" ;;
 esac

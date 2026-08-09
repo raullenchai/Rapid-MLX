@@ -33,10 +33,14 @@ set -euo pipefail
 # install.
 exec /usr/bin/env python3 - "$@" <<'PYEOF'
 import argparse
+import base64
 import json
 import os
+import struct
 import sys
+import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -223,6 +227,98 @@ def _tool_call_delta(call_id):
     }]}
 
 
+# --------------------------------------------------------------------------
+# Image generation.
+#
+# The Images tab talks to ``/v1/images/*`` and nothing else, so the fake can
+# answer it without any notion of diffusion. Two properties matter and neither
+# needs weights:
+#
+#   * a render TAKES TIME, so the in-flight progress card (and its
+#     ``Images.Cancel``) is observable rather than a frame the flow can never
+#     catch;
+#   * each render returns DIFFERENT bytes, so "a second thumbnail appeared"
+#     cannot be satisfied by the UI re-showing the first one.
+#
+# The PNG is built here rather than pasted as a base64 literal: a blob nobody
+# can read is a blob nobody can verify, and a corrupt one would fail as
+# "the gallery stayed empty" — pointing at the app instead of at this file.
+FAKE_IMAGE_ALIAS = "fake-image-alias"
+FAKE_IMAGE_REPO = "fake-org/fake-image-repo"
+
+
+def _one_pixel_png(rgb):
+    """A real, decodable 1x1 truecolour PNG."""
+
+    def chunk(tag, payload):
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00" + bytes(rgb))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+class _ImageRenders:
+    """Server-side render state, shared by the generate and progress routes.
+
+    ``ThreadingHTTPServer`` serves the progress polls on other threads while a
+    generate call is still sleeping through its steps, which is exactly the
+    concurrency the real engine has — and the reason the counters are taken
+    under a lock rather than read raw.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.running = False
+        self.step = 0
+        self.total = 0
+        self.started_at = 0.0
+        self.cancelled = False
+        self.count = 0
+
+    def begin(self, total):
+        with self._lock:
+            self.running = True
+            self.step = 0
+            self.total = total
+            self.started_at = time.time()
+            self.cancelled = False
+            self.count += 1
+            return self.count
+
+    def advance(self):
+        with self._lock:
+            self.step += 1
+            return self.cancelled
+
+    def end(self):
+        with self._lock:
+            self.running = False
+            self.step = self.total
+
+    def cancel(self):
+        with self._lock:
+            self.cancelled = True
+
+    def snapshot(self):
+        with self._lock:
+            elapsed = int((time.time() - self.started_at) * 1000) if self.started_at else 0
+            return {
+                "running": self.running,
+                "step": self.step,
+                "total": self.total,
+                "elapsed_ms": elapsed,
+            }
+
+
+RENDERS = _ImageRenders()
+
+
 class Handler(BaseHTTPRequestHandler):
     """Minimal OpenAI-shaped surface that's enough to satisfy
     ChatStreamClient + ServerManager's /healthz poll.
@@ -248,9 +344,72 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             })
             return
+        if self.path == "/v1/images/progress":
+            # Polled every few hundred ms while a render is in flight. Answer
+            # it even when nothing is running: the client treats a transport
+            # failure and "idle" identically, so a 404 here would be
+            # indistinguishable from the daemon being down.
+            self._json(200, RENDERS.snapshot())
+            return
         self._json(404, {"error": "not_found"})
 
+    def _images_generate(self):
+        """``POST /v1/images/generations`` — a timed render of a real PNG."""
+        length = int(self.headers.get("content-length", "0") or "0")
+        body = {}
+        if length:
+            try:
+                body = json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                body = {}
+        prompt = body.get("prompt") if isinstance(body.get("prompt"), str) else ""
+        raw_count = body.get("n")
+        count = raw_count if isinstance(raw_count, int) and raw_count > 0 else 1
+        total = max(1, int(_setting("FAKE_IMAGE_STEPS", 8)))
+        step_ms = max(0, int(_setting("FAKE_IMAGE_STEP_MS", 300)))
+        index = RENDERS.begin(total)
+        _event(
+            "image_request",
+            prompt=prompt,
+            model=body.get("model"),
+            size=body.get("size"),
+            n=count,
+        )
+        cancelled = False
+        for _ in range(total):
+            time.sleep(step_ms / 1000)
+            if RENDERS.advance():
+                cancelled = True
+                break
+        RENDERS.end()
+        png = _one_pixel_png(((index * 70) % 256, (index * 130) % 256, (index * 190) % 256))
+        encoded = base64.b64encode(png).decode("ascii")
+        _event("image_response", index=index, cancelled=cancelled, bytes=len(png))
+        self._json(
+            200,
+            {"data": [{"b64_json": encoded} for _ in range(count)], "cancelled": cancelled},
+        )
+
     def do_POST(self):
+        if self.path == "/v1/images/generations":
+            self._images_generate()
+            return
+        if self.path == "/v1/images/cancel":
+            RENDERS.cancel()
+            _event("image_cancel")
+            self._json(200, {"cancelled": True})
+            return
+        if self.path == "/v1/images/edits":
+            # The tab only drives generations. Mirroring the engine's
+            # model-vs-endpoint 409 keeps the fake honest about a boundary the
+            # real server enforces, instead of inventing a success the product
+            # would never see from a text-to-image process.
+            self._json(409, {"error": {
+                "message": "This server is running a text-to-image model; "
+                           "use /v1/images/generations",
+                "code": "image_endpoint_mismatch",
+            }})
+            return
         if self.path != "/v1/chat/completions":
             self._json(404, {"error": "not_found"})
             return
@@ -430,12 +589,25 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Size       Kind        HF id")
         print("---------------------  ---------  ----------  ------")
         print("fake-video-alias       13.3 GiB   [video:gen] fake/video-mlx")
+        # An image-generation row, in its own tagged section (mirroring video).
+        # It feeds TWO surfaces from one line, which is the point: the Images
+        # tab must OFFER it (``ModelCatalog.parseImageRows``), and the chat
+        # picker must REFUSE it (``hasNonChatKindTag``). A single fixture keeps
+        # those two assertions about the same model.
+        print()
+        print("Image models (1 aliases)")
+        print("Alias                  Size       Kind        HF id")
+        print("---------------------  ---------  ----------  ------")
+        print(f"{FAKE_IMAGE_ALIAS}       4.6 GiB    [image:gen] {FAKE_IMAGE_REPO}")
         return True
     if subcommand == "ls":
         print("Cached models")
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
         print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+        # Cached, so the Images tab resolves to it without a download path —
+        # ``ImageGenViewModel.resolveAlias`` prefers a cached entry.
+        print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")
         return True
     if subcommand == "info":
         print(f"Alias: {alias} -> {FAKE_REPO}")
