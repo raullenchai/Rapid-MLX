@@ -711,6 +711,15 @@ class TestAutoToolParser:
         assert result.tool_calls == []
         assert result.content == text
 
+    def test_qwen_bracket_unterminated_outer_call_masks_nested_marker(self, parser):
+        text = '[Calling tool: f({"x": "[Calling tool: g({})]"'
+
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.tool_calls == []
+        assert result.content == text
+
     def test_qwen_bracket_streaming_waits_for_real_outer_closer(self, parser):
         partial = '[Calling tool: f({"x": "literal })] text"}'
         complete = partial + ")]"

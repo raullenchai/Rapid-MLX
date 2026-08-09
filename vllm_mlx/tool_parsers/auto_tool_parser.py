@@ -49,6 +49,9 @@ def _parse_qwen_bracket_calls(
         start = match.start()
         end = _balanced_block_end(text, start)
         if end == -1:
+            # Do not search inside an unfinished outer envelope. A complete
+            # marker later in the bytes may only be string data belonging to
+            # this call, and dispatching it cannot be undone by streaming.
             break
 
         calls = _parse_text_format_block(text[start:end])
