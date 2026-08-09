@@ -17,7 +17,8 @@ What the normalizer keeps
   * nesting depth and parent/child relationships (rendered as indentation)
   * ``AXRole`` and ``AXSubrole``
   * ``accessibilityIdentifier``
-  * ``AXTitle`` / ``AXDescription`` / ``AXHelp`` (scrubbed, see below)
+  * ``AXDescription`` / ``AXHelp``, and ``AXTitle`` only when the element
+    publishes no ``AXDescription`` (scrubbed, see below)
   * ``AXEnabled``
   * the *kind* of ``AXValue`` — ``bool:true`` / ``bool:false`` for toggles,
     ``number`` / ``text`` / ``empty`` for everything else
@@ -38,6 +39,12 @@ What it drops or rewrites, and why
     conversation row identifier legitimately carries a fresh UUID.
   * caller-supplied tokens (``--scrub``) — the golden flows pass the fake
     model alias so a rename of the fixture is not a baseline change.
+  * ``AXTitle`` on an element that also publishes ``AXDescription`` — the
+    description is the label the app authored, the title is AppKit's own
+    synthesis from how the control is drawn, and that synthesis differs
+    between macOS releases (see ``render_node``). A baseline that pins it
+    cannot be regenerated on one macOS and used on another, in either
+    direction.
   * ``AXSelected`` — dumped by ``rapid-ax.swift`` (a flow has to be able to ask
     which model card the user chose, see #1653) but deliberately NOT rendered
     here. Which of several equal-looking cards is highlighted is state, not
@@ -242,9 +249,15 @@ def build_tree(records: list[dict]) -> Node | None:
 
 def window_sort_key(node: Node) -> tuple[str, str, str, str]:
     record = node.record
+    # Sort on exactly what gets RENDERED, including the title rule in
+    # `render_node`. Ordering windows by an attribute the baseline then hides
+    # would let two machines emit identical lines in a different order — the
+    # same un-regenerable baseline this normalizer exists to prevent, only
+    # harder to read.
+    title = "" if record.get("description") else (record.get("title", "") or "")
     return (
         record.get("identifier", "") or "",
-        record.get("title", "") or "",
+        title,
         record.get("subrole", "") or "",
         record.get("role", "") or "",
     )
@@ -266,7 +279,36 @@ def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
         normalized = normalize_identifier(identifier, extra_tokens)
         if normalized:
             parts.append(f"id={quote(normalized)}")
+    # AXTitle is dropped whenever AXDescription is published on the same
+    # element.
+    #
+    # SwiftUI's accessibilityLabel lands in AXDescription: that is the label
+    # the APP authored. AppKit may additionally synthesise an AXTitle for the
+    # same control out of how it happens to be drawn, and that synthesis is
+    # not stable across macOS releases. Measured on one commit, two machines:
+    # the conversation "..." menu publishes
+    #     AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>"
+    #         title="More" desc="Conversation actions"
+    # on macOS 15 (hosted runner) and the same line WITHOUT the title on
+    # macOS 26 (dev machine). Pinning that makes a baseline un-regenerable in
+    # both directions — whoever writes it turns the other OS red, and
+    # `--update-baselines` becomes a trap rather than a tool.
+    #
+    # Deliberately narrow. A title with NO description beside it is the only
+    # label the element has and is kept, which preserves every title the
+    # committed baselines actually rely on: AXApplication and AXWindow
+    # titles, and controls such as `Settings.ModelManagement.SortMenu`
+    # (title="Sort", no description) that are otherwise indistinguishable
+    # from a neighbouring popup.
+    #
+    # What this gives up, stated plainly: a change to a control's VISIBLE text
+    # while its accessibility label stays put. That was never this file's job
+    # — see the scope note at the top of the module; visible text belongs to
+    # the PNG snapshots in Tests/RapidTests.
+    description = record.get("description")
     for key, label in (("title", "title"), ("description", "desc"), ("help", "help")):
+        if key == "title" and description:
+            continue
         text = record.get(key)
         if text:
             parts.append(f"{label}={quote(scrub(text, extra_tokens))}")

@@ -153,26 +153,29 @@ trap finish EXIT
 trap 'cleanup_persona; exit 130' INT
 trap 'cleanup_persona; exit 143' TERM
 
-# The one permission every flow depends on and none of them can observe.
+# The preconditions every flow depends on and none of them can observe:
+# permission to read another process's AX tree, and a session that can actually
+# put a window on screen.
 #
-# Checked BEFORE the first app launch. Without it a machine that lacks the
-# Accessibility grant spends 20 s per flow inside `wait_for_window` and then
-# dies on "main window did not appear" — a message that accuses the app of
-# never opening a window when the truth is that we were never allowed to look.
-# On an unattended runner that is the difference between a diagnosable red and
-# a fortnight of blaming the product.
+# Checked BEFORE the first app launch. Both failures otherwise look identical
+# and identically wrong: the flow spends 20 s inside `wait_for_window` and dies
+# on "main window did not appear", accusing the app of never opening a window
+# when the truth is either that we were not allowed to look or that nothing can
+# be shown at all. Both were observed for real while building this — a missing
+# grant, and a Mac that locked its screen mid-run.
 #
 # Aimed at the Dock when one is running, because the grant has to work against
 # ANOTHER process and `AXIsProcessTrusted()` alone is only the system's opinion
-# about us until a real cross-process read backs it up. With no Dock at all —
-# no GUI session — the trust bit is still checked and the flows then fail on
-# their own window wait, which is the honest outcome for a session that cannot
-# show a window in the first place.
+# about us until a real cross-process read backs it up. rapid-ax adds the lock
+# check, which that read cannot supply: the Dock reads perfectly behind a lock
+# screen.
 require_ax_trust() {
     local dock_pid
     dock_pid="$(pgrep -x Dock | head -1 || true)"
+    # rapid-ax prints the specific reason to stderr; do not restate it here and
+    # risk naming the wrong one of the two.
     "$AX_DRIVER" trust ${dock_pid:+"$dock_pid"} > "$OUT_ROOT/ax-trust.json" \
-        || die "Accessibility is not usable by this process (see $OUT_ROOT/ax-trust.json)"
+        || die "GUI preconditions not met — see the rapid-ax line above and $OUT_ROOT/ax-trust.json"
 }
 
 require_tools() {

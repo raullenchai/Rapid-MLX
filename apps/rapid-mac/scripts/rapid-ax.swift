@@ -31,6 +31,29 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
     var payload: [String: Any] = ["trusted": trusted]
     var readSucceeded = true
 
+    // A LOCKED screen produces the exact symptom this command exists to
+    // prevent being misread. Measured while writing this: with the screen
+    // locked, Accessibility is still granted and the Dock's AX tree still
+    // reads fine, but no application can present a window, so every golden
+    // flow dies on "main window did not appear" — indistinguishable from the
+    // app being broken. The permission check alone does NOT see it.
+    //
+    // Complementary signals, deliberately: reading another process's tree is
+    // positive evidence that a GUI session exists at all; the lock bit is the
+    // one negative signal that evidence cannot carry, because the Dock is
+    // perfectly readable behind a lock screen.
+    //
+    // Only an explicit `true` fails. An unreadable session dictionary is
+    // recorded and left to the cross-process read above to adjudicate, rather
+    // than inventing a verdict from a failed read.
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    let screenLocked = (session?["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue
+    payload["session_readable"] = session != nil
+    payload["screen_locked"] = screenLocked ?? false
+    if let onConsole = (session?["kCGSSessionOnConsoleKey"] as? NSNumber)?.boolValue {
+        payload["on_console"] = onConsole
+    }
+
     if CommandLine.arguments.count >= 3 {
         guard let target = pid_t(CommandLine.arguments[2]) else {
             fail("trust: target must be a pid")
@@ -51,12 +74,21 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
         payload["target_read_error"] = Int(result.rawValue)
     }
 
-    payload["success"] = trusted && readSucceeded
+    payload["success"] = trusted && readSucceeded && !(screenLocked ?? false)
     let data = try! JSONSerialization.data(
         withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     FileHandle.standardOutput.write(data)
     FileHandle.standardOutput.write(Data("\n".utf8))
 
+    if screenLocked == true {
+        fail(
+            "the screen is locked (CGSSessionScreenIsLocked). Accessibility is "
+            + "fine and other processes' trees still read, but no app can "
+            + "present a window while locked, so every flow would fail with "
+            + "\"main window did not appear\" and look like an app regression. "
+            + "Unlock the screen and re-run."
+        )
+    }
     if !trusted {
         fail(
             "this process is NOT trusted for Accessibility "

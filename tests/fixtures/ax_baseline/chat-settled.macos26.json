@@ -1,0 +1,477 @@
+{
+  "data" : {
+    "pid" : 88326,
+    "ui_elements" : [
+      {
+        "depth" : 0,
+        "role" : "AXApplication",
+        "title" : "Rapid-MLX"
+      },
+      {
+        "bounds" : {
+          "height" : 820,
+          "width" : 1200,
+          "x" : 725,
+          "y" : 145
+        },
+        "depth" : 1,
+        "identifier" : "main",
+        "role" : "AXWindow",
+        "subrole" : "AXStandardWindow",
+        "title" : "Rapid-MLX"
+      },
+      {
+        "bounds" : {
+          "height" : 820,
+          "width" : 1200,
+          "x" : 725,
+          "y" : 145
+        },
+        "depth" : 2,
+        "role" : "AXGroup",
+        "subrole" : "AXHostingView"
+      },
+      {
+        "bounds" : {
+          "height" : 820,
+          "width" : 1200,
+          "x" : 725,
+          "y" : 145
+        },
+        "depth" : 3,
+        "identifier" : "main, SidebarNavigationSplitView",
+        "role" : "AXSplitGroup"
+      },
+      {
+        "bounds" : {
+          "height" : 804,
+          "width" : 200,
+          "x" : 733,
+          "y" : 153
+        },
+        "depth" : 4,
+        "role" : "AXGroup",
+        "subrole" : "AXHostingView"
+      },
+      {
+        "bounds" : {
+          "height" : 30,
+          "width" : 184,
+          "x" : 741,
+          "y" : 209
+        },
+        "depth" : 5,
+        "description" : "New Chat",
+        "enabled" : true,
+        "identifier" : "Sidebar.NewChat",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 30,
+          "width" : 184,
+          "x" : 741,
+          "y" : 240
+        },
+        "depth" : 5,
+        "description" : "Images",
+        "enabled" : true,
+        "identifier" : "Sidebar.Images",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 30,
+          "width" : 184,
+          "x" : 741,
+          "y" : 271
+        },
+        "depth" : 5,
+        "description" : "Launch",
+        "enabled" : true,
+        "identifier" : "Sidebar.Launch",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 642,
+          "width" : 184,
+          "x" : 741,
+          "y" : 302
+        },
+        "depth" : 5,
+        "role" : "AXScrollArea"
+      },
+      {
+        "bounds" : {
+          "height" : 14,
+          "width" : 33,
+          "x" : 749,
+          "y" : 318
+        },
+        "depth" : 6,
+        "description" : "Today",
+        "enabled" : true,
+        "role" : "AXHeading"
+      },
+      {
+        "bounds" : {
+          "height" : 24,
+          "width" : 24,
+          "x" : 877,
+          "y" : 340
+        },
+        "depth" : 6,
+        "description" : "Pin conversation",
+        "enabled" : true,
+        "help" : "Pin conversation",
+        "identifier" : "Sidebar.Conversation.Pin.DEE0E540-1032-47E8-900C-26396E845A5B",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 14,
+          "width" : 20,
+          "x" : 901,
+          "y" : 345
+        },
+        "depth" : 6,
+        "description" : "Conversation actions",
+        "enabled" : true,
+        "identifier" : "Sidebar.Conversation.Menu.DEE0E540-1032-47E8-900C-26396E845A5B",
+        "role" : "AXMenuButton"
+      },
+      {
+        "bounds" : {
+          "height" : 30,
+          "width" : 184,
+          "x" : 741,
+          "y" : 337
+        },
+        "depth" : 6,
+        "description" : "golden restore marker",
+        "enabled" : true,
+        "identifier" : "Sidebar.Conversation.DEE0E540-1032-47E8-900C-26396E845A5B",
+        "role" : "AXButton",
+        "selected" : true
+      },
+      {
+        "bounds" : {
+          "height" : 768,
+          "width" : 0,
+          "x" : 933,
+          "y" : 197
+        },
+        "depth" : 4,
+        "enabled" : false,
+        "role" : "AXSplitter",
+        "selected" : false,
+        "value" : 208
+      },
+      {
+        "bounds" : {
+          "height" : 820,
+          "width" : 1200,
+          "x" : 725,
+          "y" : 145
+        },
+        "depth" : 4,
+        "role" : "AXGroup",
+        "subrole" : "AXHostingView"
+      },
+      {
+        "bounds" : {
+          "height" : 659,
+          "width" : 992,
+          "x" : 933,
+          "y" : 197
+        },
+        "depth" : 5,
+        "role" : "AXScrollArea"
+      },
+      {
+        "bounds" : {
+          "height" : 196,
+          "width" : 742,
+          "x" : 1047,
+          "y" : 231
+        },
+        "depth" : 6,
+        "enabled" : true,
+        "role" : "AXOpaqueProviderGroup",
+        "subrole" : "AXOpaqueProviderList"
+      },
+      {
+        "bounds" : {
+          "height" : 16,
+          "width" : 134,
+          "x" : 1641,
+          "y" : 231
+        },
+        "depth" : 7,
+        "enabled" : true,
+        "role" : "AXStaticText",
+        "value" : "golden restore marker"
+      },
+      {
+        "bounds" : {
+          "height" : 24,
+          "width" : 24,
+          "x" : 1739,
+          "y" : 261
+        },
+        "depth" : 7,
+        "description" : "Copy message",
+        "enabled" : true,
+        "help" : "Copy message",
+        "identifier" : "ChatView.Message.Copy.44CB1487-9FD1-4EED-90DE-555119D732B2",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 24,
+          "width" : 24,
+          "x" : 1765,
+          "y" : 261
+        },
+        "depth" : 7,
+        "description" : "Edit message",
+        "enabled" : true,
+        "help" : "Edit message",
+        "identifier" : "ChatView.Message.Edit.44CB1487-9FD1-4EED-90DE-555119D732B2",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 13.02294921875,
+          "width" : 109.5,
+          "x" : 1047,
+          "y" : 306
+        },
+        "depth" : 7,
+        "description" : "Reasoning",
+        "enabled" : true,
+        "role" : "AXDisclosureTriangle",
+        "value" : false
+      },
+      {
+        "bounds" : {
+          "height" : 43,
+          "width" : 700,
+          "x" : 1069,
+          "y" : 331
+        },
+        "depth" : 7,
+        "enabled" : true,
+        "role" : "AXStaticText",
+        "value" : "Hello from the fake rapid-mlx mock. I return deterministic content so the smoke test has something to assert on."
+      },
+      {
+        "bounds" : {
+          "height" : 13,
+          "width" : 91,
+          "x" : 1069,
+          "y" : 382.02294921875
+        },
+        "depth" : 7,
+        "enabled" : true,
+        "role" : "AXStaticText",
+        "value" : "~77 tok\/s · 365 ms"
+      },
+      {
+        "bounds" : {
+          "height" : 24,
+          "width" : 24,
+          "x" : 1069,
+          "y" : 403
+        },
+        "depth" : 7,
+        "description" : "Copy response",
+        "enabled" : true,
+        "help" : "Copy response",
+        "identifier" : "ChatView.Message.Copy.4F48ED27-F31F-478E-8949-B7AC5E6A5799",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 24,
+          "width" : 24,
+          "x" : 1095,
+          "y" : 403
+        },
+        "depth" : 7,
+        "description" : "Retry response",
+        "enabled" : true,
+        "identifier" : "ChatView.Message.Retry.4F48ED27-F31F-478E-8949-B7AC5E6A5799",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 19,
+          "width" : 125,
+          "x" : 1089,
+          "y" : 882.5
+        },
+        "depth" : 5,
+        "enabled" : true,
+        "role" : "AXStaticText",
+        "value" : "Send a message…"
+      },
+      {
+        "bounds" : {
+          "height" : 31,
+          "width" : 700,
+          "x" : 1079,
+          "y" : 877
+        },
+        "depth" : 5,
+        "role" : "AXScrollArea"
+      },
+      {
+        "bounds" : {
+          "height" : 31,
+          "width" : 700,
+          "x" : 1079,
+          "y" : 877
+        },
+        "depth" : 6,
+        "description" : "Message compose field",
+        "identifier" : "rapid.chat.compose",
+        "role" : "AXTextArea",
+        "value" : ""
+      },
+      {
+        "bounds" : {
+          "height" : 28,
+          "width" : 118,
+          "x" : 1625,
+          "y" : 913
+        },
+        "depth" : 5,
+        "description" : "Model",
+        "enabled" : true,
+        "help" : "Choose which model to run",
+        "identifier" : "ModelPickerBar.ModelMenu",
+        "role" : "AXMenuButton",
+        "value" : "fake-alias"
+      },
+      {
+        "bounds" : {
+          "height" : 28,
+          "width" : 28,
+          "x" : 1751,
+          "y" : 913
+        },
+        "depth" : 5,
+        "description" : "Send message",
+        "enabled" : false,
+        "identifier" : "ChatView.SendOrStopButton",
+        "role" : "AXButton"
+      },
+      {
+        "bounds" : {
+          "height" : 52,
+          "width" : 1200,
+          "x" : 725,
+          "y" : 145
+        },
+        "depth" : 2,
+        "role" : "AXToolbar"
+      },
+      {
+        "bounds" : {
+          "height" : 52,
+          "width" : 47,
+          "x" : 886,
+          "y" : 145
+        },
+        "depth" : 3,
+        "description" : "Hide Sidebar",
+        "enabled" : true,
+        "identifier" : "",
+        "role" : "AXButton",
+        "selected" : false
+      },
+      {
+        "bounds" : {
+          "height" : 16,
+          "width" : 16,
+          "x" : 743,
+          "y" : 163
+        },
+        "depth" : 2,
+        "enabled" : true,
+        "role" : "AXButton",
+        "subrole" : "AXCloseButton"
+      },
+      {
+        "bounds" : {
+          "height" : 16,
+          "width" : 16,
+          "x" : 789,
+          "y" : 163
+        },
+        "depth" : 2,
+        "enabled" : true,
+        "help" : "this button also has an action to zoom the window",
+        "role" : "AXButton",
+        "subrole" : "AXFullScreenButton"
+      },
+      {
+        "bounds" : {
+          "height" : 14,
+          "width" : 14,
+          "x" : 790,
+          "y" : 164
+        },
+        "depth" : 3,
+        "role" : "AXGroup"
+      },
+      {
+        "bounds" : {
+          "height" : 14,
+          "width" : 14,
+          "x" : 790,
+          "y" : 164
+        },
+        "depth" : 4,
+        "role" : "AXGroup"
+      },
+      {
+        "bounds" : {
+          "height" : 16,
+          "width" : 16,
+          "x" : 766,
+          "y" : 163
+        },
+        "depth" : 2,
+        "enabled" : true,
+        "role" : "AXButton",
+        "subrole" : "AXMinimizeButton"
+      },
+      {
+        "bounds" : {
+          "height" : 52,
+          "width" : 984,
+          "x" : 937,
+          "y" : 145
+        },
+        "depth" : 2,
+        "enabled" : true,
+        "role" : "AXStaticText",
+        "value" : "Rapid-MLX"
+      }
+    ],
+    "walk" : {
+      "complete" : true,
+      "record_count" : 38
+    },
+    "windows" : {
+      "complete" : true,
+      "titles" : [
+        "Rapid-MLX"
+      ]
+    }
+  },
+  "success" : true
+}

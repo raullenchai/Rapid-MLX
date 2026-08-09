@@ -35,6 +35,12 @@ on:
       # ...and its regression suite, which is the only thing that runs when a
       # PR touches the detector but no Swift at all.
       - "tests/test_rapid_mac_ax_identifiers.py"
+      # Same reasoning for the harness contract suites and the captured
+      # cross-OS dumps they assert against: a PR that edits only those must
+      # still run them.
+      - "tests/test_ax_baseline_os_variance.py"
+      - "tests/test_gui_preflight_contract.py"
+      - "tests/fixtures/ax_baseline/**"
 
 permissions:
   contents: read
@@ -109,6 +115,41 @@ jobs:
       # pinned cases at once, and seeing all of them is the point.
       - name: Gate regression suite
         run: pytest tests/test_rapid_mac_ax_identifiers.py -q
+
+  # Text-only contracts protecting the golden-flow harness itself. Ubuntu is
+  # deliberate: both suites read captured dumps and script sources, so they
+  # cost seconds, need no GPU or GUI, and — for the OS-independence suite
+  # especially — must not themselves depend on a macOS version.
+  #
+  # These guard the two ways this gate can rot into uselessness:
+  #
+  #   * a baseline that only one macOS can produce. Developers here are on
+  #     macOS 26 and the runner is macOS 15, so any OS-variable attribute that
+  #     reaches a baseline means whoever runs --update-baselines turns CI red
+  #     for everyone, and regenerating on the other side turns it red locally.
+  #   * a deleted preflight. Removing it breaks nothing on a healthy machine;
+  #     it only restores the misdiagnosis on an unhealthy one, where a missing
+  #     permission or a locked screen again reads as "the app is broken".
+  gui-harness-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      # Separate steps so a red names which contract broke.
+      - name: Baselines are OS-independent
+        run: pytest tests/test_ax_baseline_os_variance.py -q
+
+      - name: GUI preflight contract
+        run: pytest tests/test_gui_preflight_contract.py -q
 
   build:
     # macos-15 → default Xcode 16 → Swift 6.0, matching Package.swift's
@@ -264,6 +305,37 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/model-crash-recovery
 
+      # The harness stops at the FIRST mismatched baseline and the job stops at
+      # the first failing flow, so one red run reveals exactly one line. With 6
+      # baselines across 4 flows that is up to 6 push-and-wait cycles to see a
+      # difference that was fully visible on the runner the first time — which
+      # is precisely what the OS-variance round trip on PR #1721 cost.
+      #
+      # So on failure, regenerate the whole set against a throwaway baseline
+      # directory and diff it against the committed one. The result is "here is
+      # everything this runner actually sees", in one artifact.
+      #
+      # `|| true` is on a DIAGNOSTIC, never on a check: this step only runs when
+      # the job has already failed, and `if: failure()` steps cannot turn a red
+      # job green. Swallowing errors here keeps a flow that dies for a
+      # non-baseline reason from hiding the diff for the ones that did not.
+      - name: Regenerate baselines on this runner (diagnostic)
+        if: failure()
+        env:
+          SCRATCH: ${{ runner.temp }}/os-baselines
+        run: |
+          set -uo pipefail
+          mkdir -p "$SCRATCH/snapshots"
+          cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
+          for flow in chat-restore chat-depth slow-stream-stop model-crash-recovery; do
+            RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
+            RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
+              ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true
+          done
+          echo "=== committed (left) vs this runner (right) ==="
+          diff -ru Tests/GUIGoldenFlows/__Snapshots__ "$SCRATCH/snapshots" \
+            | tee "$SCRATCH/runner-vs-committed.diff" || true
+
       # A structural mismatch is only actionable with the observed tree beside
       # the committed one. The harness writes `<name>.observed.txt` next to the
       # raw AX dump it came from, which is what someone re-generating a
@@ -273,5 +345,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: gui-golden-flow-evidence
-          path: ${{ runner.temp }}/golden
+          # Both halves: the failing flow's own dumps, and the full
+          # runner-vs-committed regeneration from the diagnostic step above.
+          path: |
+            ${{ runner.temp }}/golden
+            ${{ runner.temp }}/os-baselines
           retention-days: 7
