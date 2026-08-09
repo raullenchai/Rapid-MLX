@@ -831,6 +831,7 @@ def _should_start_in_thinking(
             return False
         if "<think>" not in rendered:
             return False
+        return True
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
 
