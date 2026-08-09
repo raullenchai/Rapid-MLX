@@ -494,8 +494,7 @@ final class ChatViewModel {
         // previous turn. Inherit across the immediately preceding user turn;
         // this also covers a restored thread where the first broad search ran
         // but the user now asks for a narrower, fresh query.
-        let tail = priorMessages.suffix(8)
-        guard let previous = tail.last(where: { $0.role == .user }),
+        guard let previous = priorMessages.last(where: { $0.role == .user }),
               promptLooksLikeFollowUp(prompt),
               promptRequiresFreshWebEvidence(previous.content)
         else { return nil }
@@ -507,8 +506,10 @@ final class ChatViewModel {
         guard !value.isEmpty else { return false }
         let phrases = [
             "latest", "recent", "today", "yesterday", "this week", "last week",
-            "this month", "this year", "current", "right now", "breaking news",
+            "this month", "this year", "right now", "breaking news",
             "news story", "news about", "world cup 2026", "2026 world cup",
+            "current price", "current weather", "current version", "current president",
+            "current status", "current score", "current exchange rate",
             "最新", "最近", "今天", "昨天", "本周", "上周", "这个月", "本月",
             "今年", "当前", "现在", "刚刚", "新闻", "今年世界杯"
         ]
@@ -543,7 +544,7 @@ final class ChatViewModel {
         priorMessages: [ChatMessage]
     ) -> String {
         if promptRequiresFreshWebEvidence(prompt) { return prompt }
-        if let previous = priorMessages.suffix(8).last(where: {
+        if let previous = priorMessages.last(where: {
             $0.role == .user && promptRequiresFreshWebEvidence($0.content)
         }) {
             return "\(previous.content)\nFollow-up focus: \(prompt)"

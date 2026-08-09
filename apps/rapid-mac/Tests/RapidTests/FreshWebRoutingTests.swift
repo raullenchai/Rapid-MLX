@@ -54,6 +54,35 @@ struct FreshWebRoutingTests {
             priorMessages: [],
             enabledToolNames: enabled
         ) == nil)
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "Explain electric current and a current account",
+            priorMessages: [],
+            enabledToolNames: enabled
+        ) == nil)
+    }
+
+    @Test("Follow-up survives a long multi-tool preceding turn")
+    func longToolTurnFollowUp() {
+        var history = [ChatMessage(
+            role: .user,
+            content: "What happened in the news last week?"
+        )]
+        for index in 0..<6 {
+            history.append(ChatMessage(
+                role: .assistant,
+                toolCalls: [ToolCall(id: "c\(index)", name: "web_search", arguments: "{}")]
+            ))
+            history.append(ChatMessage(
+                role: .tool,
+                content: "result \(index)",
+                toolCallID: "c\(index)"
+            ))
+        }
+        #expect(ChatViewModel.forcedToolForUserTurn(
+            "What about technology?",
+            priorMessages: history,
+            enabledToolNames: enabled
+        ) == "web_search")
     }
 
     @Test("Disabled web search is never forced")
