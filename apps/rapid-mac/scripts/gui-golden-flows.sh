@@ -31,7 +31,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, restored-tools, chat-depth,
+Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice, loaded-model-benchmark,
        update-state, no-dead-controls, catalog-integrity,
@@ -951,6 +951,27 @@ flow_restored_tools() {
     cleanup_persona
 }
 
+flow_tool_loop_budget() {
+    log "runaway tool use ends with a bounded synthesis answer"
+    start_persona tool-loop-budget RAPID_GUI_WEB_SEARCH_FIXTURE=1
+    dismiss_first_run
+    start_model
+    send_prompt "shape:tool-loop research this topic thoroughly" tool-loop-budget
+    wait_send_idle "$OUT/settled.json"
+    assert_tree_text "$OUT/settled.json" "Golden tool-loop synthesis"
+
+    jq -s -e '[.[] | select(.event == "tool_loop_call")] | length == 3' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the app did not stop after exactly three tool executions"
+    jq -s -e '[.[] | select(.event == "tool_loop_synthesis" and .tool_results == 3)] | length == 1' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the capped loop did not finish with one synthesis request"
+    jq -s -e '[.[] | select(.event == "chat_request")][-1].tools == []' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the final synthesis request still advertised tools"
+    cleanup_persona
+}
+
 flow_slow_stream_stop() {
     log "4/6 controlled slow stream and Stop"
     start_persona slow-stream-stop FAKE_INTER_TOKEN_SLEEP_S=0.01 FAKE_CONTENT_REPEAT=20000
@@ -1511,6 +1532,7 @@ case "$FLOW" in
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
     restored-tools) flow_restored_tools ;;
+    tool-loop-budget) flow_tool_loop_budget ;;
     chat-depth) flow_chat_depth ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
@@ -1525,6 +1547,7 @@ case "$FLOW" in
         flow_settings_persistence
         flow_chat_restore
         flow_restored_tools
+        flow_tool_loop_budget
         flow_chat_depth
         flow_slow_stream_stop
         flow_model_crash_recovery

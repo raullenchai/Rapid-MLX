@@ -12,7 +12,7 @@ import Observation
 /// (in parallel via ``TaskGroup``), append the ``role: "tool"`` results
 /// to the transcript, open a fresh assistant placeholder, and start
 /// another stream. The loop terminates on any non-tool finish reason
-/// or when ``maxToolRounds`` is hit.
+/// or after a tools-disabled synthesis round when ``maxToolExecutions`` is hit.
 @MainActor
 @Observable
 final class ChatViewModel {
@@ -51,9 +51,15 @@ final class ChatViewModel {
     /// content), which is what unit tests and the no-tools build get.
     let tools: any ToolRegistry
 
-    /// Hard cap on tool-call rounds within a single user turn — stops a
-    /// runaway model that just keeps asking for the same tool.
-    private let maxToolRounds: Int = 10
+    /// Hard cap on tool executions within a single user turn. Three leaves
+    /// room for the useful search → open page → refine pattern without making
+    /// a user wait through a long local-model loop. After the budget is spent
+    /// we give the model one tools-disabled round to synthesize what it has.
+    private let maxToolExecutions: Int = 3
+
+    nonisolated private static let toolBudgetSynthesisPreamble = """
+    The tool-use budget for this turn is exhausted. Do not request or describe any more tool calls. Answer the user's question now using the evidence already present in the conversation. If that evidence is insufficient, say what remains uncertain.
+    """
 
     /// Per-tool on/off flags, persisted in ``UserDefaults`` under keys of the
     /// form ``rapid.tools.enabled.<name>``. Reads fall through to ``true``
@@ -1169,8 +1175,8 @@ final class ChatViewModel {
     /// ``finish_reason: "tool_calls"`` we run the referenced tools, append the
     /// results as ``role: "tool"`` rows, open a fresh assistant placeholder,
     /// and loop. Any other finish reason (or a transport failure, or Stop)
-    /// ends the turn. Bounded by ``maxToolRounds`` so a misbehaving model
-    /// can't pin the loop forever.
+    /// ends the turn. Bounded by ``maxToolExecutions`` plus one tools-disabled
+    /// synthesis round so a misbehaving model can't pin the loop forever.
     ///
     /// The KEEP-path wire hygiene is preserved on every round: empty-prose
     /// and forward-incompatible ``.unknown`` rows are stripped from the wire
@@ -1192,8 +1198,9 @@ final class ChatViewModel {
             }
         }
         var currentPlaceholder = initialPlaceholder
-        var roundsLeft = maxToolRounds
+        var toolExecutionsLeft = maxToolExecutions
         var appGroundingSources: [GroundingSource] = []
+        var isFinalSynthesisRound = false
 
         // `tool_choice:function` is advisory in several local chat templates:
         // the shipped 1.2B starter can ignore it and answer "I can search".
@@ -1202,7 +1209,7 @@ final class ChatViewModel {
         // tool(result) transcript it would have produced itself. The model's
         // job is then only evidence synthesis, which is much more reliable.
         if let query = forcedWebSearchQuery,
-           roundsLeft > 1,
+           toolExecutionsLeft > 0,
            !query.isEmpty
         {
             let call = ToolCall(
@@ -1235,11 +1242,10 @@ final class ChatViewModel {
                 toolCallID: result.toolCallID
             ))
             currentPlaceholder = appendMessage(ChatMessage(role: .assistant, status: .streaming))
-            roundsLeft -= 1
+            toolExecutionsLeft -= 1
         }
 
-        while roundsLeft > 0 {
-            roundsLeft -= 1
+        while toolExecutionsLeft > 0 || isFinalSynthesisRound {
             // History for this request: everything BEFORE the streaming
             // placeholder. The placeholder itself is excluded because the
             // assistant hasn't said anything yet.
@@ -1261,7 +1267,7 @@ final class ChatViewModel {
             // definitions so the broken-tool-caller strip runs against the
             // model that will actually answer this round.
             let wireAlias = server?.servingAlias ?? alias
-            let definitions = ChatViewModel.wireDefinitions(
+            let definitions = isFinalSynthesisRound ? [] : ChatViewModel.wireDefinitions(
                 forAlias: wireAlias,
                 enabled: enabledDefinitions
             )
@@ -1308,6 +1314,11 @@ final class ChatViewModel {
             {
                 history.removeFirst()
             }
+            // Add this after the ambient/evidence consistency check above so
+            // combining the two system instructions cannot defeat that guard.
+            if isFinalSynthesisRound {
+                history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
+            }
             let request: ChatStreamClient.Request
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
@@ -1353,10 +1364,10 @@ final class ChatViewModel {
                     finaliseCancelledPlaceholder(at: currentPlaceholder, epoch: epoch)
                     return
                 }
-                // On the last allowed round, executing the requested tools is
-                // wasted work — there is no follow-up round left to consume
-                // the results. Bail before the side-effects fire.
-                if roundsLeft == 0 {
+                // A tools-disabled synthesis request should never produce a
+                // structured call. Keep a defensive failure for malformed
+                // model output rather than looping forever.
+                if isFinalSynthesisRound {
                     failWithToolRoundCap(at: currentPlaceholder, epoch: epoch)
                     return
                 }
@@ -1370,6 +1381,20 @@ final class ChatViewModel {
                         finaliseCancelledPlaceholder(at: currentPlaceholder, epoch: epoch)
                         return
                     }
+                    // A model may batch many calls into one assistant turn.
+                    // Enforce the budget per requested call, and still emit a
+                    // matching result for every skipped call so the transcript
+                    // remains a valid assistant(tool_calls) → tool sequence.
+                    guard toolExecutionsLeft > 0 else {
+                        results.append(ToolCallResult(
+                            toolCallID: call.id,
+                            content: "Tool budget exhausted. Answer using the results already available.",
+                            isError: true,
+                            failureKind: .toolFailed
+                        ))
+                        continue
+                    }
+                    toolExecutionsLeft -= 1
                     // Refuse rather than dispatch when the tool was not
                     // advertised this round — a malformed model can emit a
                     // tool_call for a tool we never offered, and ``tools.run``
@@ -1419,6 +1444,9 @@ final class ChatViewModel {
                 }
                 // Open the next assistant placeholder and loop.
                 currentPlaceholder = appendMessage(ChatMessage(role: .assistant, status: .streaming))
+                if toolExecutionsLeft == 0 {
+                    isFinalSynthesisRound = true
+                }
             }
         }
     }
@@ -1432,12 +1460,11 @@ final class ChatViewModel {
         updateMessage(at: index, with: stale)
     }
 
-    /// The model kept asking for tools until ``maxToolRounds`` ran out. Surface
-    /// it as a failed row + banner rather than leaving the user staring at a
-    /// half-finished transcript.
+    /// Defensive fallback when a model emits a structured call even though
+    /// the final synthesis request advertised no tools.
     private func failWithToolRoundCap(at index: Int, epoch: Int) {
         guard epoch == conversationEpoch else { return }
-        let message = ChatViewModel.toolRoundCapMessage(cap: maxToolRounds)
+        let message = ChatViewModel.toolRoundCapMessage(cap: maxToolExecutions)
         if var capped = currentMessage(index: index) {
             capped.status = .failed
             capped.failureKind = .toolFailed
@@ -1452,7 +1479,24 @@ final class ChatViewModel {
     /// Copy for the round-cap failure. Static so a test can pin it without
     /// driving a full loop.
     static func toolRoundCapMessage(cap: Int) -> String {
-        "The model kept calling tools without answering (\(cap) rounds). Try rephrasing, or turn a tool off."
+        "The model could not finish after \(cap) tool calls. Try rephrasing, or turn a tool off."
+    }
+
+    /// Add the tools-disabled final-round instruction without introducing a
+    /// second system row, which several local chat templates reject.
+    nonisolated static func addingToolBudgetSynthesisPreamble(
+        to messages: [ChatMessage]
+    ) -> [ChatMessage] {
+        var result = messages
+        if result.first?.role == .system {
+            result[0].content += "\n\n" + toolBudgetSynthesisPreamble
+        } else {
+            result.insert(
+                ChatMessage(role: .system, content: toolBudgetSynthesisPreamble, status: .complete),
+                at: 0
+            )
+        }
+        return result
     }
 
     /// Wire-side filter — what actually ends up in the request body's ``tools``
