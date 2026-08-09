@@ -678,6 +678,53 @@ class TestAutoToolParser:
         assert result.tools_called
         assert result.tool_calls[0]["name"] == "add"
 
+    def test_qwen_bracket_closer_inside_string_is_not_truncated(self, parser):
+        text = '[Calling tool: f({"x": "literal })] text"})]'
+
+        result = parser.extract_tool_calls(text)
+
+        assert result.tools_called
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "f"
+        assert json.loads(result.tool_calls[0]["arguments"]) == {
+            "x": "literal })] text"
+        }
+        assert result.content is None
+
+    def test_qwen_bracket_rejects_invalid_json_without_dispatching_nested_call(
+        self, parser
+    ):
+        text = '[Calling tool: f({"x": "[Calling tool: g({})]"} trailing)]'
+
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.tool_calls == []
+        assert result.content == text
+
+    def test_qwen_bracket_invalid_json_remains_content(self, parser):
+        text = '[Calling tool: f({"x": invalid})]'
+
+        result = parser.extract_tool_calls(text)
+
+        assert not result.tools_called
+        assert result.tool_calls == []
+        assert result.content == text
+
+    def test_qwen_bracket_streaming_waits_for_real_outer_closer(self, parser):
+        partial = '[Calling tool: f({"x": "literal })] text"}'
+        complete = partial + ")]"
+
+        first = parser.extract_tool_calls_streaming("", partial, partial)
+        second = parser.extract_tool_calls_streaming(partial, complete, ")]")
+
+        assert first is None
+        assert second is not None
+        assert len(second["tool_calls"]) == 1
+        function = second["tool_calls"][0]["function"]
+        assert function["name"] == "f"
+        assert json.loads(function["arguments"]) == {"x": "literal })] text"}
+
     def test_detects_llama(self, parser):
         """Test auto detection of Llama format."""
         text = '<function=multiply>{"x": 2}</function>'

@@ -16,12 +16,57 @@ from .abstract_tool_parser import (
     ToolParser,
     ToolParserManager,
 )
-from .lfm_tool_parser import LFM_CALL_START, parse_lfm_tool_calls
+from .lfm_tool_parser import (
+    LFM_CALL_START,
+    TEXT_CALL_START,
+    _balanced_block_end,
+    _parse_text_format_block,
+    parse_lfm_tool_calls,
+)
 
 
 def generate_tool_id() -> str:
     """Generate a unique tool call ID."""
     return f"call_{uuid.uuid4().hex[:8]}"
+
+
+def _parse_qwen_bracket_calls(
+    text: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Extract balanced ``[Calling tool: name({json})]`` blocks.
+
+    A regex cannot distinguish an envelope-closing ``})]`` from the same
+    bytes inside a JSON string. Walk the whole bracket block with the
+    quote/escape-aware LFM scanner, then accept it only when its payload is
+    a JSON object. Rejected blocks remain content, and scanning resumes after
+    their closing bracket so markup inside an argument is never dispatched.
+    """
+    tool_calls: list[dict[str, Any]] = []
+    accepted_spans: list[tuple[int, int]] = []
+    search_from = 0
+
+    while match := TEXT_CALL_START.search(text, search_from):
+        start = match.start()
+        end = _balanced_block_end(text, start)
+        if end == -1:
+            break
+
+        calls = _parse_text_format_block(text[start:end])
+        if calls:
+            tool_calls.extend(calls)
+            accepted_spans.append((start, end))
+        search_from = end
+
+    if not accepted_spans:
+        return tool_calls, text
+
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in accepted_spans:
+        pieces.append(text[cursor:start])
+        cursor = end
+    pieces.append(text[cursor:])
+    return tool_calls, "".join(pieces).strip()
 
 
 @ToolParserManager.register_module(["auto", "generic"])
@@ -44,9 +89,6 @@ class AutoToolParser(ToolParser):
     # Patterns for different formats
     MISTRAL_TOKEN = "[TOOL_CALLS]"
 
-    QWEN_BRACKET_PATTERN = re.compile(
-        r"\[Calling tool:\s*(\w+)\((\{.*?\})\)\]", re.DOTALL
-    )
     QWEN_XML_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
     LLAMA_PATTERN = re.compile(r"<function=([^>]+)>(\{.*?\})</function>", re.DOTALL)
     NEMOTRON_PATTERN = re.compile(
@@ -138,33 +180,9 @@ class AutoToolParser(ToolParser):
                     content=content if content else None,
                 )
 
-        # 2. Try Qwen bracket pattern
-        bracket_matches = self.QWEN_BRACKET_PATTERN.findall(model_output)
-        for name, args_str in bracket_matches:
-            try:
-                arguments = json.loads(args_str)
-                tool_calls.append(
-                    {
-                        "id": generate_tool_id(),
-                        "name": name.strip(),
-                        "arguments": (
-                            json.dumps(arguments, ensure_ascii=False)
-                            if isinstance(arguments, dict)
-                            else str(arguments)
-                        ),
-                    }
-                )
-            except json.JSONDecodeError:
-                tool_calls.append(
-                    {
-                        "id": generate_tool_id(),
-                        "name": name.strip(),
-                        "arguments": args_str,
-                    }
-                )
-
-        if bracket_matches:
-            cleaned_text = self.QWEN_BRACKET_PATTERN.sub("", cleaned_text).strip()
+        # 2. Try Qwen bracket format with balanced, JSON-aware scanning.
+        bracket_calls, cleaned_text = _parse_qwen_bracket_calls(cleaned_text)
+        tool_calls.extend(bracket_calls)
 
         # 3. Try Nemotron pattern (before Qwen XML as it's more specific)
         nemotron_matches = self.NEMOTRON_PATTERN.findall(cleaned_text)
