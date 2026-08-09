@@ -829,7 +829,9 @@ def _should_start_in_thinking(
             # primed thinking: a false positive would silently discard a valid
             # public answer. The shipped distill templates render above.
             return False
-        if "<think>" not in rendered:
+        # Priming means the rendered prompt ends *inside* a think block, not
+        # merely that it contains a historical closed block.
+        if rendered.rfind("<think>") <= rendered.rfind("</think>"):
             return False
         return True
     return "<think>" in chat_template and "add_generation_prompt" in chat_template

@@ -179,6 +179,10 @@ class TestAnthropicThinkingStartDecision(unittest.TestCase):
     def test_1570_rendered_marker_does_not_require_generation_variable(self):
         assert _should_start_in_thinking("prefix<think>", False, unconditional=True)
 
+    def test_1570_closed_rendered_block_does_not_prime_generation(self):
+        template = "prefix<think>private</think>answer-prefix"
+        assert _should_start_in_thinking(template, False, unconditional=True) is False
+
     def test_1570_unrelated_enable_variable_does_not_hide_unconditional_marker(self):
         template = (
             "{% set enable_thinking = false %}"
