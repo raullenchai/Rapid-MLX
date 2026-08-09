@@ -32,14 +32,15 @@ rather than impossible. Worth knowing because a short budget does not fail
 loudly: it returns a cut-off answer, which reads as a model that "could not do
 it".
 
+**A follow-up message no longer re-reads the whole conversation.** #1732 fixes
+the cache boundary for the first turn, which is what the second turn needs in
+order to reuse it. Measured on `qwen3.6-27b-4bit` with a ~9.9K-token document:
+the opening turn prefills 9922 tokens (32.4 s to first token), and the next
+turn prefills **34** instead of 9941 — 1.45 s, about 22x faster. It grows with
+the conversation, so the longer the chat the more it saves.
+
 **The scheduler reclaims paged full-KV and free-block memory** instead of
-wedging on a `D-METAL-CAP` 503 under sustained load (#1646). A prefix-cache
-boundary fix also landed (#1732) — but note that on hybrid models (Qwen3.5 and
-Qwen3.6, which includes the recommended chat picks) a follow-up turn still
-re-prefills the whole conversation rather than reusing the previous turn's
-cache. Measured after #1732: an extension turn on `qwen3.6-27b-4bit` prefills
-all 9940 tokens where a dense model prefills 24. That is tracked in #1737 and
-is NOT fixed in this release.
+wedging on a `D-METAL-CAP` 503 under sustained load (#1646).
 
 **Claude Code has an agent profile** (#1720), and browsing approvals can be set
 to always-allow rather than prompting every time (#1695).
