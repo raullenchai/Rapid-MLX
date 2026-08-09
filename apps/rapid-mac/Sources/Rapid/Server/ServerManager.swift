@@ -2520,22 +2520,18 @@ final class ServerManager {
     /// Desktop-specific prefix-cache budget: the smallest of 8% physical RAM,
     /// 20% currently available RAM, and 4 GiB. The available-RAM clamp keeps
     /// this override from raising the engine's ordinary 20%-of-available
-    /// budget on a machine that is already under pressure. A missing
-    /// available-memory probe retains the physical-RAM policy; a zero physical
-    /// probe omits the override instead of manufacturing an invalid zero-byte
-    /// cache. Kept pure so the spawn contract is deterministic in tests.
+    /// budget on a machine that is already under pressure. If either probe
+    /// fails, omit the override and retain the engine's live available-memory
+    /// fallback instead of manufacturing an unsafe fixed ceiling. Kept pure so
+    /// the spawn contract is deterministic in tests.
     nonisolated internal static func desktopPrefixCacheMaxBytes(
         physicalRAMBytes: UInt64,
         availableRAMBytes: UInt64 = 0
     ) -> UInt64? {
-        guard physicalRAMBytes > 0 else { return nil }
+        guard physicalRAMBytes > 0, availableRAMBytes > 0 else { return nil }
         let fourGiB = UInt64(4) << 30
         let eightPercent = (physicalRAMBytes / 100) * 8
-        var ceiling = min(eightPercent, fourGiB)
-        if availableRAMBytes > 0 {
-            ceiling = min(ceiling, availableRAMBytes / 5)
-        }
-        return ceiling
+        return min(min(eightPercent, availableRAMBytes / 5), fourGiB)
     }
 }
 

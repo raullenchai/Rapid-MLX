@@ -161,7 +161,8 @@ struct SpawnEnvAllowlistTests {
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",
             ambient: ["RAPID_MLX_PREFIX_CACHE_MAX_BYTES": "999999999999"],
-            physicalRAMBytes: sixteenGiB
+            physicalRAMBytes: sixteenGiB,
+            availableRAMBytes: sixteenGiB
         )
 
         let expected = (sixteenGiB / 100) * 8
@@ -173,7 +174,8 @@ struct SpawnEnvAllowlistTests {
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",
             ambient: [:],
-            physicalRAMBytes: UInt64(256) << 30
+            physicalRAMBytes: UInt64(256) << 30,
+            availableRAMBytes: UInt64(256) << 30
         )
 
         #expect(
@@ -197,12 +199,25 @@ struct SpawnEnvAllowlistTests {
         )
     }
 
-    @Test("Unavailable RAM probe omits prefix-cache override")
-    func unavailableRAMProbeKeepsEngineFallback() {
+    @Test("Unavailable physical RAM probe preserves engine fallback")
+    func unavailablePhysicalRAMProbeKeepsEngineFallback() {
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",
             ambient: [:],
-            physicalRAMBytes: 0
+            physicalRAMBytes: 0,
+            availableRAMBytes: UInt64(8) << 30
+        )
+
+        #expect(env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"] == nil)
+    }
+
+    @Test("Unavailable free RAM probe preserves engine fallback")
+    func unavailableFreeRAMProbeKeepsEngineFallback() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: [:],
+            physicalRAMBytes: UInt64(32) << 30,
+            availableRAMBytes: 0
         )
 
         #expect(env["RAPID_MLX_PREFIX_CACHE_MAX_BYTES"] == nil)
