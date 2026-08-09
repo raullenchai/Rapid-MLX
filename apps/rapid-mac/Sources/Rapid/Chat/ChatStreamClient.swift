@@ -1024,7 +1024,53 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
     /// 16 ms = 1 frame at 60 Hz. Tight enough that the user
     /// perceives a smooth typing effect; loose enough to amortise
     /// MainActor hop cost.
+    ///
+    /// This is the FLOOR, not the whole story — see ``currentWindowNs``.
     private static let coalesceWindowNs: UInt64 = 16_000_000
+
+    /// Above this many flushed characters the window starts to widen.
+    /// Chosen so an ordinary reply never changes behaviour at all: the
+    /// median chat answer is a few hundred characters and the long tail
+    /// of "write me a function" answers still lands under 2 000.
+    private static let adaptiveThresholdChars: Int = 2_000
+
+    /// Ceiling on the widened window. At 250 ms a very long message
+    /// still repaints four times a second, which reads as "streaming"
+    /// rather than "frozen", while costing a twentieth of what a 16 ms
+    /// cadence costs.
+    private static let maxWindowNs: UInt64 = 250_000_000
+
+    /// Total characters handed to the UI so far this turn.
+    private var flushedCharacters: Int = 0
+
+    /// How long to coalesce before the next flush, given how much text
+    /// the message already holds.
+    ///
+    /// Every flush makes the chat view rebuild its body, and
+    /// ``LaTeXMarkdownView`` re-parses the ENTIRE accumulated message
+    /// through MarkdownUI on each rebuild — parsing is O(length), and a
+    /// fixed 16 ms cadence therefore costs O(length²) across a turn. On a
+    /// long answer that saturates the main thread: measured on a fake
+    /// stream, main-thread CPU climbed 47 % → 68 % → 94 % → 100 % as the
+    /// message grew, and a real 9-minute answer left the app pinned at
+    /// 100 % with the window gone and RSS climbing ~11 MB/s until it was
+    /// force-killed (#1743).
+    ///
+    /// Widening the window in proportion to the text bounds the repaint
+    /// RATE, which is the term that makes the cost quadratic. Below the
+    /// threshold the arithmetic is a no-op and short replies stream
+    /// exactly as they did before.
+    ///
+    /// This does not make a single parse cheaper — that is #1624, and it
+    /// is the real fix. This stops the app melting while that is done.
+    private func currentWindowNs() -> UInt64 {
+        guard flushedCharacters > Self.adaptiveThresholdChars else {
+            return Self.coalesceWindowNs
+        }
+        let scale = UInt64(flushedCharacters / Self.adaptiveThresholdChars)
+        let widened = Self.coalesceWindowNs &* max(1, scale)
+        return min(widened, Self.maxWindowNs)
+    }
 
     /// Codex r2 BLOCKING (unbounded queue): force-flush when the
     /// pending queue would exceed this many segments. An adversarial
@@ -1080,7 +1126,7 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         // Codex r2 BLOCKING: cap pending segments to bound queue
         // growth on adversarial alternating-kind streams.
         let overCap = pending.count > Self.maxPendingSegments
-        if !contentEverFlushed || elapsed >= Self.coalesceWindowNs || overCap {
+        if !contentEverFlushed || elapsed >= currentWindowNs() || overCap {
             await flush(onEvent: onEvent)
         }
     }
@@ -1093,7 +1139,7 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         appendSegment(kind: .reasoning, text: r)
         let elapsed = nowNs() &- lastFlushNs
         let overCap = pending.count > Self.maxPendingSegments
-        if !reasoningEverFlushed || elapsed >= Self.coalesceWindowNs || overCap {
+        if !reasoningEverFlushed || elapsed >= currentWindowNs() || overCap {
             await flush(onEvent: onEvent)
         }
     }
@@ -1104,6 +1150,10 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         guard !pending.isEmpty else { return }
         let toEmit = pending
         pending.removeAll(keepingCapacity: true)
+        // Count `toEmit`, NOT `pending` — `pending` was just emptied, so
+        // counting it leaves the total at zero forever and the adaptive
+        // window silently never widens.
+        flushedCharacters &+= toEmit.reduce(0) { $0 + $1.text.count }
         lastFlushNs = nowNs()
         for segment in toEmit {
             switch segment.kind {

@@ -143,6 +143,61 @@ struct SSEDeltaCoalescerTests {
         #expect(collapsed == ["C", "R", "C"], "kind order leaked: got \(kindOrder)")
     }
 
+    /// #1743: the repaint RATE has to fall as the message grows.
+    ///
+    /// Every flush makes the chat view rebuild, and that rebuild re-parses
+    /// the WHOLE accumulated message through MarkdownUI. Parsing is
+    /// O(length), so a fixed 16 ms cadence costs O(length²) over a turn.
+    /// Measured on a fake stream before the fix, main-thread CPU climbed
+    /// 47 % → 68 % → 94 % → 100 % as the answer grew and stayed pinned;
+    /// a real 9-minute answer left the app at 100 % with its window gone
+    /// and RSS climbing ~11 MB/s until it was force-killed.
+    ///
+    /// This pins the two halves of the contract that matter:
+    ///
+    ///   1. a SHORT message is untouched — 16 ms still flushes, so the
+    ///      overwhelming majority of replies stream exactly as before;
+    ///   2. a LONG message does not, because the window has widened.
+    ///
+    /// Both directions are asserted deliberately. A "fix" that simply
+    /// slowed everything down would pass (2) and fail (1), and would be
+    /// a visible regression on every ordinary answer.
+    @Test("#1743: the coalescing window widens once the message is long")
+    @MainActor
+    func window_widens_with_accumulated_length() async {
+        // (1) Short message: 16 ms is still enough to flush.
+        let short = SSEDeltaCoalescer()
+        let shortRec = EventRecorder()
+        await short.appendContent("seed") { shortRec.capture($0) }   // first flush
+        let afterSeed = shortRec.events.count
+        try? await Task.sleep(for: .milliseconds(40))
+        await short.appendContent("more") { shortRec.capture($0) }
+        #expect(
+            shortRec.events.count > afterSeed,
+            "a short message must still flush on the 16 ms cadence — widening it unconditionally would slow every normal reply"
+        )
+
+        // (2) Long message: the same 40 ms pause is no longer enough.
+        let long = SSEDeltaCoalescer()
+        let longRec = EventRecorder()
+        await long.appendContent("seed") { longRec.capture($0) }
+        // Push well past the adaptive threshold. Each append is separated
+        // by enough real time to be flushed on the old cadence, so by the
+        // end the coalescer has genuinely emitted this much text.
+        let chunk = String(repeating: "x", count: 4_000)
+        for _ in 0..<6 {
+            try? await Task.sleep(for: .milliseconds(40))
+            await long.appendContent(chunk) { longRec.capture($0) }
+        }
+        let afterBulk = longRec.events.count
+        try? await Task.sleep(for: .milliseconds(40))
+        await long.appendContent("tail") { longRec.capture($0) }
+        #expect(
+            longRec.events.count == afterBulk,
+            "after ~24k characters a 40 ms gap still flushed — the window did not widen, so the repaint rate is still O(length²) (#1743)"
+        )
+    }
+
     @Test("flush on empty buffers is a no-op")
     @MainActor
     func empty_flush_emits_nothing() async {
