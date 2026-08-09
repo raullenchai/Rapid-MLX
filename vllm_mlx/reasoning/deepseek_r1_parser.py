@@ -315,5 +315,5 @@ class DeepSeekR1DistillReasoningParser(DeepSeekR1ReasoningParser):
         enable_thinking: bool | None = None,
     ) -> tuple[str | None, str | None]:
         if self.start_token not in model_output and self.end_token not in model_output:
-            return model_output.strip() or None, None
+            return self._promote_tool_calls(model_output.strip() or None, None)
         return super().extract_reasoning(model_output, enable_thinking=enable_thinking)

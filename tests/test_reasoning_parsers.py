@@ -419,6 +419,21 @@ class TestDeepSeekR1Distill:
         assert reasoning == trace
         assert content is None
 
+    def test_1570_no_tag_complete_output_promotes_tool_call(self):
+        output = (
+            "I should inspect the file.\n"
+            '<tool_call>{"name":"read_file","arguments":{"path":"a.py"}}'
+            "</tool_call>"
+        )
+        reasoning, content = self.parser.extract_reasoning(
+            output, enable_thinking=False
+        )
+        assert reasoning == "I should inspect the file."
+        assert content == (
+            '<tool_call>{"name":"read_file","arguments":{"path":"a.py"}}'
+            "</tool_call>"
+        )
+
     def test_1570_prompt_primed_stream_keeps_untagged_trace_in_reasoning(self):
         self.parser.configure_request(enable_thinking=False)
         trace = "Okay, so I need to figure out unified memory. " * 3
