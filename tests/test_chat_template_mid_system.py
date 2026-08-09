@@ -129,3 +129,15 @@ def test_no_mid_system_does_not_retry_matching_error():
     with pytest.raises(RuntimeError, match="System message must be at the beginning"):
         apply_chat_template(template, leading_only)
     assert template.calls == 1
+
+
+def test_system_metadata_is_not_silently_discarded_by_retry():
+    template = _RecordingTemplate(reject_mid_system=True)
+    named_system = [dict(message) for message in MESSAGES]
+    named_system[3]["name"] = "policy-update"
+
+    with pytest.raises(RuntimeError, match="System message must be at the beginning"):
+        apply_chat_template(template, named_system)
+
+    assert len(template.calls) == 1
+    assert template.calls[0][3]["name"] == "policy-update"

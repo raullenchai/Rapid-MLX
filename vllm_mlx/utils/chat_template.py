@@ -1385,10 +1385,21 @@ def apply_chat_template(
             if not has_mid_system:
                 raise
 
+            system_messages = [
+                message
+                for message in candidate_messages
+                if message.get("role") == "system"
+            ]
+            # Collapsing multiple system messages cannot faithfully preserve
+            # per-message metadata such as ``name``. Refuse that lossy retry
+            # and surface the template's original diagnostic instead.
+            if any(set(message) - {"role", "content"} for message in system_messages):
+                raise
+
             system_contents = [
                 message.get("content")
-                for message in candidate_messages
-                if message.get("role") == "system" and message.get("content")
+                for message in system_messages
+                if message.get("content")
             ]
             if all(isinstance(content, str) for content in system_contents):
                 merged_system_content: str | list = "\n\n".join(system_contents)
