@@ -1144,9 +1144,10 @@ struct MessageStats: Codable, Equatable, Hashable {
     /// The recorded TTFT, but only when it describes an interval that can
     /// exist: inside the turn it belongs to, and not negative.
     ///
-    /// A persisted transcript can carry nonsense here — a clock step
-    /// between the two `Date()` reads, or a hand-edited session file — and
-    /// a value at or past ``elapsedSeconds`` is not a prefill measurement.
+    /// A persisted transcript can carry nonsense here — a hand-edited
+    /// session file, or a row written by a build that measured this with a
+    /// wall clock rather than the monotonic one used now — and a value at
+    /// or past ``elapsedSeconds`` is not a prefill measurement.
     /// One accessor so arithmetic and presentation can never disagree
     /// about which values are real: rejecting it for the rate while still
     /// rendering "1.2 s to first token · 1.0 s" would just move the lie

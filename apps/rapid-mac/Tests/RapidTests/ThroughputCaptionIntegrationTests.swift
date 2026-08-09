@@ -179,6 +179,64 @@ struct ThroughputCaptionIntegrationTests {
         #expect(order.first == "firstToken", "event order was \(order)")
         #expect(order.contains("content"), "fixture must also emit prose after the tool call")
     }
+
+    /// Where the instant is SAMPLED, as distinct from when it is delivered.
+    ///
+    /// Every other test here leaves the main actor idle, so `MainActor.run`
+    /// is entered immediately and a stamp taken inside it reads the same as
+    /// one taken outside. Moving `ContinuousClock.now` back into the hop
+    /// would pass all of them — the fix would be unprotected by the tests
+    /// written for it.
+    ///
+    /// So block the main actor straight through the window the first delta
+    /// lands in. Delivery necessarily waits; the question is whether the
+    /// value carried was read before the wait. If it was not, the number
+    /// being called "time to first token" is partly a measurement of how
+    /// busy the UI was, and it errs by shrinking the decode window — which
+    /// inflates the rate, the same direction as the original defect.
+    @Test("The first-token instant is sampled before the main actor is free to deliver it")
+    func stampIsSampledBeforeTheActorHop() async throws {
+        PrefillHeavyProtocol.reset(prefillDelay: 0.30, contentDeltas: 4, completionTokens: 4)
+        let box = InstantBox()
+        let client = ChatStreamClient(
+            baseURL: URL(string: "fake://hop")!,
+            session: PrefillHeavyProtocol.session()
+        )
+        let request = ChatStreamClient.Request(
+            alias: "test-model",
+            messages: [ChatMessage(role: .user, content: "hi")]
+        )
+
+        let sending = Task.detached {
+            try await client.send(request) { event in
+                if case .firstToken(let at) = event, box.value == nil {
+                    box.value = at
+                }
+            }
+        }
+
+        // Hold the actor past the end of the whole stream, so there is no
+        // arrangement of scheduling in which a hop-side stamp could sneak in
+        // early.
+        Thread.sleep(forTimeInterval: 0.9)
+        let released = ContinuousClock.now
+        try await sending.value
+
+        let at = try #require(box.value, "no first-token event arrived")
+        #expect(
+            at < released,
+            "the stamp was taken after the main actor was released, so it is timing UI contention rather than prefill"
+        )
+    }
+}
+
+/// Carries the instant back out of the `@MainActor` event handler. A local
+/// `var` cannot be captured by an escaping closure, and the handler runs
+/// while the test itself is blocking the actor, so the value has to outlive
+/// the call.
+@MainActor
+private final class InstantBox {
+    var value: ContinuousClock.Instant?
 }
 
 /// Opens with a tool-call fragment carrying no content and no reasoning,
