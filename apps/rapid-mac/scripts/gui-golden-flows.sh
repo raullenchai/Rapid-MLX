@@ -1505,6 +1505,11 @@ flow_catalog_integrity() {
     dismiss_first_run
     see_main "$OUT/catalog-main.json"
 
+    jq -e '.data.walk.complete == true' "$OUT/catalog-main.json" >/dev/null \
+        || die "could not completely observe the chat catalog"
+    jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.ModelMenu" and .value == "fake-alias")' \
+        "$OUT/catalog-main.json" >/dev/null \
+        || die "chat catalog inventory was not observed"
     jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
         "$OUT/catalog-main.json" >/dev/null \
         || die "a video-gen alias reached the chat surface"
@@ -1514,6 +1519,11 @@ flow_catalog_integrity() {
     press "$OUT/catalog-settings.json" Settings.Category.modelManagement \
         "$OUT/catalog-open-mm.json"
     see_main "$OUT/catalog-model-management.json"
+    jq -e '.data.walk.complete == true' "$OUT/catalog-model-management.json" >/dev/null \
+        || die "could not completely observe Model Management"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-alias")' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "Model Management inventory was not observed"
     jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "a video-gen alias reached Model Management"

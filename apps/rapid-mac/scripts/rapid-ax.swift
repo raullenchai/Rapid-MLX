@@ -16,9 +16,13 @@ guard CommandLine.arguments.count >= 3,
 
 let command = CommandLine.arguments[1]
 let application = AXUIElementCreateApplication(pid)
-var visited = Set<CFHashCode>()
+var visited = Set<AXUIElement>()
 var records = [[String: Any]]()
 var match: AXUIElement?
+// A negative assertion over ui_elements is valid only if the descendant walk
+// reached every child. Caps and AX read failures are observations of
+// "unknown", not proof that an element is absent.
+var elementWalkComplete = true
 // The window list is NOT a by-product of the tree walk, because every way the
 // walk can come up short is silent: it skips a root child whose AXRole read
 // failed, drops a title it could not read, and stops dead at the record cap.
@@ -65,9 +69,11 @@ func size(_ element: AXUIElement, _ name: CFString) -> CGSize? {
 }
 
 func walk(_ element: AXUIElement, depth: Int) {
-    guard depth <= 40, records.count < 12_000 else { return }
-    let identity = CFHash(element)
-    guard visited.insert(identity).inserted else { return }
+    guard depth <= 40, records.count < 12_000 else {
+        elementWalkComplete = false
+        return
+    }
+    guard visited.insert(element).inserted else { return }
 
     let identifier = string(element, kAXIdentifierAttribute as CFString)
     var record: [String: Any] = ["depth": depth]
@@ -118,8 +124,17 @@ func walk(_ element: AXUIElement, depth: Int) {
     if depth == 0 {
         children = windowElements
     } else {
-        guard let kids = attribute(element, kAXChildrenAttribute as CFString) as? [AXUIElement] else { return }
-        children = kids
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(
+            element, kAXChildrenAttribute as CFString, &value)
+        if result == .attributeUnsupported || result == .noValue {
+            children = []
+        } else if result == .success, let kids = value as? [AXUIElement] {
+            children = kids
+        } else {
+            elementWalkComplete = false
+            return
+        }
     }
     for child in children {
         walk(child, depth: depth + 1)
@@ -151,6 +166,7 @@ if let rootChildren = attribute(application, kAXChildrenAttribute as CFString) a
 }
 
 walk(application, depth: 0)
+elementWalkComplete = elementWalkComplete && windowListComplete
 
 if command == "dump" {
     let payload: [String: Any] = [
@@ -158,6 +174,10 @@ if command == "dump" {
         "data": [
             "pid": pid,
             "ui_elements": records,
+            "walk": [
+                "complete": elementWalkComplete,
+                "record_count": records.count
+            ],
             // The authority for "is window X open?" — see the note above. Callers
             // must treat `complete: false` as "could not observe", never as an
             // answer in either direction.
