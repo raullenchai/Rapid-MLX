@@ -327,7 +327,7 @@ struct AutoStartDecisionTests {
         #expect(decision == .start(alias: "qwen3.5-4b-4bit"))
     }
 
-    @Test("Codex r1 MAJOR: rejectsAlias does NOT filter lastServed (explicit prior intent honoured)")
+    @Test("Codex r1 MAJOR: rejectsAlias does NOT filter lastServed when no catalog snapshot is supplied (legacy contract)")
     func rejectsAliasDoesNotFilterLastServed() {
         let decision = AutoStartDecision.decide(
             lastServedAlias: "qwen3.5-122b-8bit",
@@ -335,8 +335,12 @@ struct AutoStartDecisionTests {
             binaryReachable: true,
             cachedAliases: ["qwen3.5-122b-8bit"],
             serverState: .idle,
-            // Reject everything — proves the predicate is only
-            // consulted for the cached-fallback tier.
+            // ``catalogAliases`` defaults to nil here (legacy call
+            // shape). Reject everything — with no catalog snapshot the
+            // stored tier keeps its unconditional-honour contract and
+            // the predicate is consulted only for the cached-fallback
+            // tier. The #1706 tests below cover the supplied-catalog
+            // case where the stored tier IS filtered.
             rejectsAlias: { _ in true }
         )
         #expect(decision == .start(alias: "qwen3.5-122b-8bit"))
@@ -387,6 +391,115 @@ struct AutoStartDecisionTests {
         )
         #expect(decision == .skip(reason: .noResolvableAlias))
         #expect(invoked == false)
+    }
+
+    // MARK: - #1706: stored last-served alias must be servable now
+
+    /// The reporter's exact case: ``rapid.serve.lastAlias`` held an
+    /// image-generation alias (``flux2-klein-4b``) written by another
+    /// checkout's build; it is absent from the chat catalog entirely.
+    /// With a catalog snapshot supplied, the stored non-member must NOT
+    /// be restored — resolution falls through to the real cached model.
+    @Test("#1706: stored alias absent from the catalog falls through to the cached model")
+    func storedNonMemberFallsThroughToCached() {
+        let decision = AutoStartDecision.decide(
+            lastServedAlias: "flux2-klein-4b",
+            bundledFallbackAlias: nil,
+            binaryReachable: true,
+            cachedAliases: ["qwen3.5-4b-4bit"],
+            serverState: .idle,
+            catalogAliases: ["qwen3.5-4b-4bit"]
+        )
+        #expect(decision == .start(alias: "qwen3.5-4b-4bit"))
+    }
+
+    /// Stored non-member with nothing else to fall back to → the picker
+    /// (``noResolvableAlias``), NOT a ``promptDownload`` of an alias the
+    /// engine cannot serve. This is the exact repro from the issue
+    /// ("the picker shows does-not-exist-9b" is what we must avoid).
+    @Test("#1706: stored non-member with no fallback → picker, never promptDownload of an unservable alias")
+    func storedNonMemberNoFallbackShowsPicker() {
+        let decision = AutoStartDecision.decide(
+            lastServedAlias: "does-not-exist-9b",
+            bundledFallbackAlias: nil,
+            binaryReachable: true,
+            cachedAliases: [],
+            serverState: .idle,
+            catalogAliases: ["qwen3.5-4b-4bit"]
+        )
+        #expect(decision == .skip(reason: .noResolvableAlias))
+    }
+
+    /// A stored alias that IS a catalog member but that ``rejectsAlias``
+    /// refuses (``ModelSizing.classify == .tooBig`` — free memory shrank
+    /// since it last served) must decline to a servable alternative
+    /// rather than auto-OOM. "Worked last time" is not a RAM guarantee.
+    @Test("#1706: stored member the OOM guard rejects falls through to a fitting cached model")
+    func storedMemberRejectedByGuardFallsThrough() {
+        let decision = AutoStartDecision.decide(
+            lastServedAlias: "qwen3.5-122b-8bit",
+            bundledFallbackAlias: nil,
+            binaryReachable: true,
+            cachedAliases: ["qwen3.5-122b-8bit", "qwen3.5-4b-4bit"],
+            serverState: .idle,
+            catalogAliases: ["qwen3.5-122b-8bit", "qwen3.5-4b-4bit"],
+            // Only the oversized alias is refused; the small one fits.
+            rejectsAlias: { $0 == "qwen3.5-122b-8bit" }
+        )
+        #expect(decision == .start(alias: "qwen3.5-4b-4bit"))
+    }
+
+    /// The dominant behaviour is preserved: a stored alias that IS a
+    /// catalog member, merely not downloaded yet and not oversized, is
+    /// still honoured as the user's intent → ``.promptDownload``.
+    /// Catalog membership is orthogonal to cached-ness — the fix must
+    /// not collapse "not downloaded" into "not servable".
+    @Test("#1706: stored member that is uncached-but-servable is still honoured → promptDownload")
+    func storedUncachedMemberStillPromptsDownload() {
+        let decision = AutoStartDecision.decide(
+            lastServedAlias: "qwen3.5-122b-8bit",
+            bundledFallbackAlias: nil,
+            binaryReachable: true,
+            cachedAliases: ["qwen3.5-4b-4bit"],
+            serverState: .idle,
+            catalogAliases: ["qwen3.5-122b-8bit", "qwen3.5-4b-4bit"],
+            rejectsAlias: { _ in false }
+        )
+        #expect(decision == .promptDownload(alias: "qwen3.5-122b-8bit"))
+    }
+
+    /// Back-compat: with ``catalogAliases`` left nil (every legacy call
+    /// site and the 50+ existing tests), the stored tier keeps its
+    /// unconditional-honour contract — no membership check, so a
+    /// non-member stored alias is still returned. Guards against the fix
+    /// silently changing callers that cannot supply a catalog snapshot.
+    @Test("#1706: nil catalog snapshot preserves the legacy unconditional-honour contract")
+    func nilCatalogPreservesLegacyHonour() {
+        let decision = AutoStartDecision.decide(
+            lastServedAlias: "flux2-klein-4b",
+            bundledFallbackAlias: nil,
+            binaryReachable: true,
+            cachedAliases: ["qwen3.5-4b-4bit"],
+            serverState: .idle
+            // catalogAliases omitted → nil → legacy path.
+        )
+        #expect(decision == .promptDownload(alias: "flux2-klein-4b"))
+    }
+
+    /// When the stored alias is unservable, the fall-through respects
+    /// the full precedence ladder: a product-curated bundled alias is
+    /// preferred over the alphabetical cached scan.
+    @Test("#1706: unservable stored alias falls through to the bundled tier before the cached scan")
+    func storedNonMemberFallsThroughToBundled() {
+        let decision = AutoStartDecision.decide(
+            lastServedAlias: "flux2-klein-4b",
+            bundledFallbackAlias: "bonsai-1.7b-2bit",
+            binaryReachable: true,
+            cachedAliases: ["bonsai-1.7b-2bit", "qwen3.5-4b-4bit"],
+            serverState: .idle,
+            catalogAliases: ["bonsai-1.7b-2bit", "qwen3.5-4b-4bit"]
+        )
+        #expect(decision == .start(alias: "bonsai-1.7b-2bit"))
     }
 
     // MARK: - FU-1 (v0.7.19 audit): user opt-out for launch-time auto-start

@@ -711,12 +711,21 @@ struct ContentView: View {
         let aliasAtEntry = alias
         let userSelectionRevisionAtEntry = userSelectionRevision
         var cachedAliases: Set<String> = []
+        // #1706: the full catalog membership snapshot (cached AND
+        // uncached entries the sidecar can serve), used to validate the
+        // stored last-served alias before we resume it. `nil` would ask
+        // ``decide`` to skip the membership check; we always pass a
+        // concrete set when the binary is reachable so a stored alias
+        // the engine can't serve (renamed/dropped/wrong-modality) falls
+        // through to the picker instead of a failed serve.
+        var catalogAliases: Set<String>? = nil
         if let binary = server.binaryPath {
             let entries = await ModelCatalogCache.shared.entries(
                 binary: binary,
                 generation: downloads.cacheGeneration
             )
             cachedAliases = Set(entries.filter { $0.cached }.map(\.alias))
+            catalogAliases = Set(entries.map(\.alias))
         }
         guard case .idle = server.state else {
             autoStartPendingDownload = nil
@@ -749,6 +758,7 @@ struct ContentView: View {
             binaryReachable: server.binaryPath != nil,
             cachedAliases: cachedAliases,
             serverState: server.state,
+            catalogAliases: catalogAliases,
             rejectsAlias: rejectsAlias,
             userOptedIn: autoStartOnLaunch,
             // #1589: the two first-run surfaces get the launch before

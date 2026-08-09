@@ -239,7 +239,11 @@ enum AutoStartDecision: Equatable {
     /// 1. ``lastServedAlias`` — the user already picked something on
     ///    a prior launch; honour it even if it isn't cached (we'll
     ///    return ``.promptDownload``, the user's intent stays
-    ///    represented).
+    ///    represented). Gated by ``storedAliasIsServable`` when a
+    ///    ``catalogAliases`` snapshot is supplied: a stored alias that
+    ///    is not a catalog member, or that ``rejectsAlias`` refuses,
+    ///    falls through to the tiers below rather than being restored
+    ///    into a guaranteed serve failure (#1706).
     /// 2. ``bundledFallbackAlias`` — the BUNDLE_MODEL=1 dev build
     ///    instant-on path.
     /// 3. First entry in ``cachedAliases`` sorted alphabetically —
@@ -258,6 +262,7 @@ enum AutoStartDecision: Equatable {
         binaryReachable: Bool,
         cachedAliases: Set<String>,
         serverState: ServerState,
+        catalogAliases: Set<String>? = nil,
         rejectsAlias: (String) -> Bool = { _ in false },
         userOptedIn: Bool = true,
         firstRunDecisionPending: Bool = false,
@@ -324,18 +329,22 @@ enum AutoStartDecision: Equatable {
         }
 
         // Alias resolution — strict precedence per the doc comment.
-        // ``rejectsAlias`` is only applied to the CACHED-FALLBACK tier
-        // (codex r1 MAJOR): lastServed represents an explicit prior
-        // user choice we don't second-guess, bundled is hand-picked
-        // by us, but the alphabetically-first cached entry is a
+        // ``rejectsAlias`` always guards the CACHED-FALLBACK tier
+        // (codex r1 MAJOR): the alphabetically-first cached entry is a
         // best-effort heuristic that must respect the same
-        // ``ModelSizing.tooBig`` guard the picker's Start CTA
-        // enforces (otherwise a cleared-defaults user with one large
-        // cached model on disk gets auto-OOM'd on launch).
+        // ``ModelSizing.tooBig`` guard the picker's Start CTA enforces
+        // (otherwise a cleared-defaults user with one large cached
+        // model on disk gets auto-OOM'd on launch). Since #1706 it also
+        // guards the STORED lastServed tier — together with a catalog-
+        // membership check — whenever ``catalogAliases`` is supplied, so
+        // a stale/oversized/renamed stored alias declines to the picker
+        // instead of being restored into a failed serve. bundled stays
+        // product-curated and unconditionally honoured.
         let resolved = resolveAlias(
             lastServedAlias: lastServedAlias,
             bundledFallbackAlias: bundledFallbackAlias,
             cachedAliases: cachedAliases,
+            catalogAliases: catalogAliases,
             rejectsAlias: rejectsAlias
         )
         guard let alias = resolved else {
@@ -386,17 +395,22 @@ enum AutoStartDecision: Equatable {
     /// Pure resolver — extracted so the precedence rules can be
     /// pinned without standing up the wider ``decide`` machinery.
     ///
-    /// ``rejectsAlias`` is consulted ONLY for the cached-fallback
-    /// tier. The lastServed and bundled tiers carry user-level or
-    /// product-level intent we don't override — see ``decide``'s
-    /// doc comment for the codex r1 MAJOR rationale.
+    /// ``rejectsAlias`` is always consulted for the cached-fallback
+    /// tier, and — when ``catalogAliases`` is supplied — for the
+    /// stored ``lastServedAlias`` tier as well (see
+    /// ``storedAliasIsServable`` and #1706). The bundled tier is
+    /// product-curated and unconditionally honoured.
     private static func resolveAlias(
         lastServedAlias: String?,
         bundledFallbackAlias: String?,
         cachedAliases: Set<String>,
+        catalogAliases: Set<String>?,
         rejectsAlias: (String) -> Bool
     ) -> String? {
-        if let stored = trimmed(lastServedAlias) {
+        if let stored = trimmed(lastServedAlias),
+           storedAliasIsServable(
+               stored, catalogAliases: catalogAliases, rejectsAlias: rejectsAlias
+           ) {
             return stored
         }
         if let bundled = trimmed(bundledFallbackAlias) {
@@ -428,6 +442,58 @@ enum AutoStartDecision: Equatable {
             }
         }
         return nil
+    }
+
+    /// Whether a stored ``lastServedAlias`` may be resumed as-is.
+    ///
+    /// ## Why (issue #1706)
+    ///
+    /// Before this gate the stored alias was returned unconditionally.
+    /// That let the desktop try to restore an alias the bundled engine
+    /// cannot serve *now* — the reported case was an image-generation
+    /// alias (``flux2-klein-4b``) left in ``rapid.serve.lastAlias`` by a
+    /// different checkout's build, which is absent from the chat catalog
+    /// entirely. The stored alias also stops being servable when it is
+    /// renamed/dropped across engine versions, when the engine is
+    /// downgraded, or when free memory has shrunk since the last run
+    /// (the ``.tooBig`` classification is a per-launch fact, not a
+    /// last-time guarantee). In every case the old path spent a model
+    /// load on a request it could have known would fail, and greeted the
+    /// returning user with a failure banner instead of the picker.
+    ///
+    /// Two membership-scoped checks, mirroring how ``CacheAwareDefault``
+    /// validates the RAM-bucketed default:
+    ///
+    /// 1. **Catalog membership.** The alias must appear in the catalog
+    ///    the sidecar can serve. A member that simply is not downloaded
+    ///    yet still qualifies here — cached-vs-uncached is a separate
+    ///    axis that ``decide`` uses to choose ``.start`` vs
+    ///    ``.promptDownload``, so honouring an uncached-but-real alias
+    ///    (the user's prior intent) is preserved.
+    /// 2. **OOM guard.** The alias must pass ``rejectsAlias`` — the same
+    ///    ``ModelSizing.classify(...) == .tooBig`` predicate the
+    ///    cached-fallback tier and the picker's Start CTA enforce, so a
+    ///    "worked last time" alias that no longer fits this Mac's free
+    ///    memory declines to the picker rather than auto-OOM-ing.
+    ///
+    /// When either fails, ``resolveAlias`` falls through to the bundled
+    /// / cached-scan ladder — "restore what I was using" stays the
+    /// dominant behaviour and only yields when the alias genuinely
+    /// cannot be served now.
+    ///
+    /// ``catalogAliases == nil`` means the caller did not supply an
+    /// authoritative catalog snapshot (legacy call sites / unit tests
+    /// that predate #1706). There we keep the historical unconditional-
+    /// honour contract so those callers are unaffected; the production
+    /// launch hook in ``ContentView`` always supplies the real set.
+    private static func storedAliasIsServable(
+        _ alias: String,
+        catalogAliases: Set<String>?,
+        rejectsAlias: (String) -> Bool
+    ) -> Bool {
+        guard let catalogAliases else { return true }
+        guard catalogAliases.contains(alias) else { return false }
+        return !rejectsAlias(alias)
     }
 
     private static func trimmed(_ s: String?) -> String? {
