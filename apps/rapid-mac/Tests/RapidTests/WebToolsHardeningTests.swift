@@ -12,6 +12,7 @@ struct WebToolsHardeningTests {
     @Test("Brave distinguishes malformed JSON from a valid empty result set")
     func braveParseFailureIsNotEmptySuccess() {
         #expect(BraveSearchClient.parseResults(Data(#"{"web":{"results":[]}}"#.utf8), cap: 6) == [])
+        #expect(BraveSearchClient.parseResults(Data(#"{}"#.utf8), cap: 6) == [])
         #expect(BraveSearchClient.parseResults(Data(#"{"web":{"unexpected":[]}}"#.utf8), cap: 6) == nil)
         #expect(BraveSearchClient.parseResults(Data("not-json".utf8), cap: 6) == nil)
     }

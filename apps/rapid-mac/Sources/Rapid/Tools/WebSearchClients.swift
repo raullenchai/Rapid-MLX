@@ -119,10 +119,11 @@ enum BraveSearchClient {
     /// doesn't need to know which backend ran the query.
     ///
     /// Brave returns ``{ "web": { "results": [{ "title", "url",
-    /// "description" }] } }``. The envelope and results array are required so
-    /// schema drift is distinguishable from a legitimate empty array. Fields
-    /// within a result remain optional: a missing title is fine when the URL
-    /// is present.
+    /// "description" }] } }``. Brave legitimately omits the entire `web`
+    /// vertical when it has no web hits, so absent `web` is an empty success;
+    /// a present vertical still requires a valid results array so schema drift
+    /// is distinguishable from emptiness. Fields within a result remain
+    /// optional: a missing title is fine when the URL is present.
     static func parseResults(_ data: Data, cap: Int) -> [WebSearchTool.Result]? {
         struct Envelope: Decodable {
             struct Web: Decodable {
@@ -133,12 +134,12 @@ enum BraveSearchClient {
                 let url: String?
                 let description: String?
             }
-            let web: Web
+            let web: Web?
         }
         guard let env = try? JSONDecoder().decode(Envelope.self, from: data) else {
             return nil
         }
-        let items = env.web.results
+        let items = env.web?.results ?? []
         var out: [WebSearchTool.Result] = []
         for item in items {
             if out.count >= cap { break }
