@@ -3059,6 +3059,11 @@ class Scheduler:
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.
         self._pending_abort_ids: set[str] = set()
+        # #1759: targeted second edge from engine cleanup to the executor.
+        # ``remove_finished_request`` adds an id only when its running slot is
+        # still live; normal completions remove ``running`` first.  This avoids
+        # an O(batch) reconciliation scan on every decode tick.
+        self._orphaned_running_candidates: set[str] = set()
         # M-01 codex r2 BLOCKING #1: lifetime de-dup set for the
         # cancellation counter. ``_pending_abort_ids`` is the wrong
         # ledger to dedupe against — it's a DEFERRED-ABORT QUEUE that
@@ -5765,6 +5770,7 @@ class Scheduler:
         with self._cancel_counter_lock:
             self._cancelled_request_ids.discard(request.request_id)
             self._disconnect_abort_ids.discard(request.request_id)
+            self._orphaned_running_candidates.discard(request.request_id)
             self.requests[request.request_id] = request
         self.waiting.append(request)
 
@@ -6142,7 +6148,13 @@ class Scheduler:
         through the same BatchGenerator-aware abort implementation.
         """
         with self._cancel_counter_lock:
-            orphaned = [rid for rid in self.running if rid not in self.requests]
+            candidates = self._orphaned_running_candidates
+            self._orphaned_running_candidates = set()
+            orphaned = [
+                rid
+                for rid in candidates
+                if rid in self.running and rid not in self.requests
+            ]
 
         for request_id in orphaned:
             logger.warning(
@@ -7635,6 +7647,8 @@ class Scheduler:
         # False per F-151). The ledgers stay populated indefinitely.
         with self._cancel_counter_lock:
             popped = self.requests.pop(request_id, None)
+            if popped is not None and request_id in self.running:
+                self._orphaned_running_candidates.add(request_id)
         return popped
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:
@@ -7831,6 +7845,7 @@ class Scheduler:
         """
         # Drain any pending deferred aborts
         self._pending_abort_ids.clear()
+        self._orphaned_running_candidates.clear()
 
         # Abort all requests directly (reset is synchronous)
         for request_id in list(self.requests.keys()):

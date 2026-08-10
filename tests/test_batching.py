@@ -315,9 +315,7 @@ class TestSchedulerBasic:
         assert scheduler.abort_request("known-1") is True
         assert scheduler.abort_request("known-1") is True
 
-    def test_step_reaps_disconnect_orphan_before_next(
-        self, mock_model, mock_tokenizer
-    ):
+    def test_step_reaps_disconnect_orphan_before_next(self, mock_model, mock_tokenizer):
         """#1759: engine cleanup without a surviving abort must not leak a slot.
 
         This is the deterministic form of the production race: the streaming
@@ -335,12 +333,16 @@ class TestSchedulerBasic:
         request.status = RequestStatus.RUNNING
         uid = 73
 
-        # Deliberately do not populate scheduler.requests: this models
-        # EngineCore._cleanup_request having already released the consumer.
+        scheduler.requests[request.request_id] = request
         scheduler.running[request.request_id] = request
         scheduler.request_id_to_uid[request.request_id] = uid
         scheduler.uid_to_request_id[uid] = request.request_id
         scheduler._pending_abort_ids.clear()
+
+        # The engine releases its canonical tracking entry while the running
+        # slot is still live.  This is the production cleanup edge that arms
+        # the targeted reconciliation fallback.
+        scheduler.remove_finished_request(request.request_id)
 
         batch = MagicMock()
         batch.next.side_effect = AssertionError("ghost slot was decoded")
