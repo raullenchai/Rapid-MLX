@@ -30,12 +30,23 @@ CHECKOUTS="$2"
 VENDOR_SWIFTMATH_LICENSE="$3"
 OUT="$4"
 
-# Stage into a clean directory so a package removed from Package.resolved cannot
-# leave a stale notice behind on an incremental run — the staged set is exactly
-# the current dependency set. (In the real build the whole .app is rm -rf'd
-# first, but keep the script correct when invoked on its own.)
-rm -rf "$OUT"
+# Guard the destination before touching the filesystem: this script clears the
+# notices it manages, so a stray argument must never let that escape onto an
+# arbitrary path. Require a non-empty target whose final component is
+# ``Licenses`` (the bundle contract), rejecting root/`.`/mislabeled dirs.
+case "$OUT" in
+    "" | "/" | ".") echo "ERR: refusing unsafe output path: '$OUT'" >&2; exit 2 ;;
+esac
+if [[ "$(basename "$OUT")" != "Licenses" ]]; then
+    echo "ERR: output dir must be named 'Licenses', got: $OUT" >&2
+    exit 2
+fi
+
+# Clear only the notices we manage (``*.txt``) rather than ``rm -rf`` the
+# directory, so a package removed from Package.resolved leaves no stale notice
+# yet no recursive delete is ever issued against the caller's path.
 mkdir -p "$OUT"
+rm -f "$OUT"/*.txt
 
 # Locate a license file inside a package directory. Echoes the path on success,
 # returns non-zero when none of the conventional names is present.

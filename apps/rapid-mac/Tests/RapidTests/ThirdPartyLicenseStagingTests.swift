@@ -290,19 +290,34 @@ struct ThirdPartyLicenseStagingTests {
     func buildScriptInvokesStagingScript() throws {
         let script = Self.appRoot.appendingPathComponent("scripts/build.sh")
         let text = try String(contentsOf: script, encoding: .utf8)
-        // A real invocation line, not merely a mention in a comment: find a
-        // non-comment line that runs the script.
+        // Require the script in *command position*: a non-comment line whose
+        // trimmed text begins with the quoted invocation. This rejects a mere
+        // mention in a comment, a value passed as data, or an `echo` of the
+        // path — only a line that runs the script counts.
         let invokes = text.split(separator: "\n").contains { rawLine in
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            return !line.hasPrefix("#") && line.contains("scripts/stage-licenses.sh")
+            return line.hasPrefix("\"$ROOT/scripts/stage-licenses.sh\"")
         }
         #expect(
             invokes,
             """
-            build.sh no longer invokes scripts/stage-licenses.sh on a live \
-            (non-comment) line; the license-staging step from #1596 must not be \
+            build.sh no longer invokes "$ROOT/scripts/stage-licenses.sh" in \
+            command position; the license-staging step from #1596 must not be \
             silently removed.
             """
         )
+        // And it must forward the four contract arguments, so the wiring is
+        // real and not a no-arg stub.
+        for argument in [
+            "$ROOT/Package.resolved",
+            "$ROOT/.build/checkouts",
+            "$ROOT/Vendor/SwiftMath/LICENSE",
+            "$CONTENTS/Resources/Licenses",
+        ] {
+            #expect(
+                text.contains("\"\(argument)\""),
+                "build.sh no longer forwards \(argument) to the staging script."
+            )
+        }
     }
 }
