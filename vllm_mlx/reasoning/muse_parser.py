@@ -56,11 +56,15 @@ def _segments(text: str) -> list[tuple[str, str]]:
         return [("user", text)] if text else []
 
     # Region before the first explicit header belongs to the implicit
-    # segment (when present).
+    # segment (when present). Without an implicit header, plain text
+    # before the first explicit header is still model output — it is
+    # user-facing content, not discardable plumbing (codex r4 #4).
     if first is not None:
         start = first.end()
         end = matches[0].start() if matches else len(text)
         segs.append((first.group("to") or "user", text[start:end]))
+    elif matches and matches[0].start() > 0:
+        segs.append(("user", text[: matches[0].start()]))
     for i, m in enumerate(matches):
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)

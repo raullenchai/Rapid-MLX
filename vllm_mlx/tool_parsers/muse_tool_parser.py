@@ -57,10 +57,8 @@ _BLOCK_OPEN = "<atem:function_calls>"
 _BLOCK_CLOSE = "</atem:function_calls>"
 _PARAM_CLOSE = "</atem:parameter>"
 
-_INVOKE_RE = re.compile(
-    r'<atem:invoke\s+name="(?P<name>[^"]+)">(?P<body>.*?)</atem:invoke>',
-    re.DOTALL,
-)
+_INVOKE_OPEN_RE = re.compile(r'<atem:invoke\s+name="(?P<name>[^"]+)">')
+_INVOKE_CLOSE = "</atem:invoke>"
 _PARAM_OPEN_RE = re.compile(r'<atem:parameter\s+name="(?P<name>[^"]+)">')
 
 # Muse channel plumbing (Harmony-flavored, but a distinct token set:
@@ -135,6 +133,58 @@ def _completed_blocks(text: str) -> list[tuple[int, int, str]]:
     return blocks
 
 
+def _scan_invokes(body: str) -> list[tuple[str, str]]:
+    """``(name, inner)`` for each invoke in a block body.
+
+    An invoke's close is the first ``</atem:invoke>`` at which the
+    inner PARAMETER structure is balanced — a literal invoke closer
+    inside a parameter value sits between that parameter's opener and
+    closer, leaves the count unbalanced, and is skipped (codex r4 #3;
+    same rule one level down from ``_completed_blocks``). The rule errs
+    toward "unparseable stays content": a truly unbalanced body yields
+    no invoke rather than a wrong call.
+    """
+    out: list[tuple[str, str]] = []
+    pos = 0
+    while True:
+        opener = _INVOKE_OPEN_RE.search(body, pos)
+        if opener is None:
+            break
+        inner_start = opener.end()
+        search = inner_start
+        close_idx = -1
+        while True:
+            candidate = body.find(_INVOKE_CLOSE, search)
+            if candidate < 0:
+                break
+            inner = body[inner_start:candidate]
+            if inner.count("<atem:parameter") <= inner.count("</atem:parameter>"):
+                close_idx = candidate
+                break
+            search = candidate + len(_INVOKE_CLOSE)
+        if close_idx < 0:
+            break
+        out.append((opener.group("name"), body[inner_start:close_idx]))
+        pos = close_idx + len(_INVOKE_CLOSE)
+    return out
+
+
+def _allows_null(cfg: Any) -> bool:
+    """Whether the property schema explicitly permits ``null``."""
+    if not isinstance(cfg, dict):
+        return False
+    declared = cfg.get("type")
+    if declared == "null":
+        return True
+    if isinstance(declared, list) and "null" in declared:
+        return True
+    return any(
+        any(_allows_null(sub) for sub in cfg[key])
+        for key in ("anyOf", "oneOf")
+        if isinstance(cfg.get(key), list)
+    )
+
+
 def _declared_type(cfg: Any) -> str | None:
     """Normalize a property schema to one simple type name, or None.
 
@@ -198,7 +248,11 @@ def _convert_param_value(raw: str, param_name: str, props: dict) -> Any:
     declared = _declared_type(cfg)
     if declared == "string":
         return raw
-    if raw == "null" and declared is not None:
+    if raw == "null" and _allows_null(cfg):
+        # Only when the schema PERMITS null (codex r4 #1): a bare
+        # ``null`` against a non-nullable type stays the raw string so
+        # downstream strict validation rejects it visibly instead of
+        # receiving a silently-forged None.
         return None
     if declared == "boolean":
         if raw in ("true", "false"):
@@ -239,11 +293,21 @@ def _scan_parameters(body: str, declared: set[str] | None) -> list[tuple[str, st
     ambiguous there (the template says regex, not XML), and the schema
     is the only disambiguator, exactly as in the qwen scanner.
     """
-    openers = [
-        m
-        for m in _PARAM_OPEN_RE.finditer(body)
-        if declared is None or m.group("name") in declared
-    ]
+    openers: list[re.Match[str]] = []
+    seen: set[str] = set()
+    for m in _PARAM_OPEN_RE.finditer(body):
+        name = m.group("name")
+        if declared is not None and name not in declared:
+            continue
+        if name in seen:
+            # The template emits each parameter at most once, so a
+            # SECOND opener with the same name is value text — without
+            # this, a fake opener reusing a declared name would
+            # overwrite the real value (codex r4 #2). Its bytes stay in
+            # the current segment and the last-closer rule keeps them.
+            continue
+        seen.add(name)
+        openers.append(m)
     params: list[tuple[str, str]] = []
     for i, m in enumerate(openers):
         seg_end = openers[i + 1].start() if i + 1 < len(openers) else len(body)
@@ -299,13 +363,12 @@ class MuseToolParser(ToolParser):
         (codex r1 BLOCKING #2; the #44 injection-surface concern).
         """
         calls: list[dict[str, str]] = []
-        for match in _INVOKE_RE.finditer(body):
-            name = match.group("name")
+        for name, inner in _scan_invokes(body):
             props = _schema_properties(name, request)
             declared = declared_parameter_names(name, request)
             arguments = {
                 pname: _convert_param_value(raw, pname, props)
-                for pname, raw in _scan_parameters(match.group("body"), declared)
+                for pname, raw in _scan_parameters(inner, declared)
             }
             calls.append(
                 {
@@ -361,7 +424,7 @@ class MuseToolParser(ToolParser):
         pos = 0
         for start, end, body in blocks:
             pieces.append(text[pos:start])
-            if _INVOKE_RE.search(body) is None:
+            if not _scan_invokes(body):
                 # Completed but malformed — no parseable invoke, so the
                 # bytes are model output the client must see (codex r3
                 # #2; non-stream applies the identical rule above).
