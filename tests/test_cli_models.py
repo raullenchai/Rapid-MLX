@@ -852,6 +852,17 @@ def test_external_roots_json_preserves_path_separator_in_folder_name(
     assert cli._external_model_roots() == [os.path.realpath(str(root))]
 
 
+def test_resolve_external_model_accepts_desktop_json_roots(tmp_path, monkeypatch):
+    import json
+
+    root = tmp_path / "models:archive"
+    model = root / "local-model"
+    _write_mlx_model(model)
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", json.dumps([str(root)]))
+
+    assert resolve_model("local-model") == os.path.realpath(model)
+
+
 def test_external_roots_default_to_empty(monkeypatch):
     """Scanning a user's disk uninvited is not ours to decide."""
     monkeypatch.delenv("RAPID_MLX_EXTRA_MODEL_ROOTS", raising=False)

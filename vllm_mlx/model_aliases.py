@@ -681,7 +681,7 @@ def _resolve_external_model_path(name: str) -> str | None:
 
     from ._download_gate import _snapshot_is_complete
 
-    for raw_root in raw_roots.split(os.pathsep):
+    for raw_root in _external_model_root_values(raw_roots):
         raw_root = raw_root.strip()
         if not raw_root:
             continue
@@ -695,6 +695,24 @@ def _resolve_external_model_path(name: str) -> str | None:
         if os.path.isdir(candidate) and _snapshot_is_complete(candidate):
             return candidate
     return None
+
+
+def _external_model_root_values(raw: str) -> list[str]:
+    """Decode the shared desktop/engine external-root environment value."""
+    raw = raw.strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            import json
+
+            decoded = json.loads(raw)
+            if isinstance(decoded, list):
+                return [value for value in decoded if isinstance(value, str)]
+        except (TypeError, ValueError):
+            pass
+        return []
+    return raw.split(os.pathsep)
 
 
 def _external_model_identifier_parts(name: str) -> list[str] | None:

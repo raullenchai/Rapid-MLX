@@ -4915,22 +4915,10 @@ def _external_model_roots() -> list[str]:
     raw = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip()
     if not raw:
         return []
-    parts: list[str]
-    if raw.startswith("["):
-        try:
-            import json
+    from vllm_mlx.model_aliases import _external_model_root_values
 
-            decoded = json.loads(raw)
-            parts = decoded if isinstance(decoded, list) else []
-        except (TypeError, ValueError):
-            parts = []
-    else:
-        # Backward compatibility for shells and older desktop builds.
-        parts = raw.split(os.pathsep)
     roots: list[str] = []
-    for part in parts:
-        if not isinstance(part, str):
-            continue
+    for part in _external_model_root_values(raw):
         path = os.path.expanduser(part.strip())
         if path and os.path.isdir(path):
             roots.append(os.path.realpath(path))
