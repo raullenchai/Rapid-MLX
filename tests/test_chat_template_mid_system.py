@@ -190,6 +190,19 @@ def test_gpt_oss_identity_hoists_when_template_source_is_unavailable():
     assert all(message["role"] != "system" for message in rendered[1:])
 
 
+def test_non_harmony_template_source_overrides_gpt_oss_model_name():
+    template = _RecordingTemplate(reject_mid_system=False)
+    template.chat_template = (
+        "{% for message in messages %}{{ message.content }}{% endfor %}"
+    )
+
+    rendered = apply_chat_template(
+        template, MESSAGES, model_name="custom/gpt-oss-experiment"
+    )
+
+    assert rendered == MESSAGES
+
+
 def test_harmony_refuses_lossy_mid_system_metadata():
     template = _SilentHarmonyTemplate()
     messages = [dict(message) for message in MESSAGES]

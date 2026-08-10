@@ -1156,14 +1156,14 @@ def _is_gpt_oss_harmony_template(
     tools: list[dict] | None = None,
 ) -> bool:
     """Identify GPT-OSS templates whose wire format is OpenAI Harmony."""
-    if _looks_like_gpt_oss(model_name):
-        return True
-    return any(
-        _looks_like_gpt_oss_harmony_template(template)
-        for template in _chat_template_strings(
-            getattr(template_applicator, "chat_template", None), tools=tools
-        )
+    templates = _chat_template_strings(
+        getattr(template_applicator, "chat_template", None), tools=tools
     )
+    if templates:
+        return any(
+            _looks_like_gpt_oss_harmony_template(template) for template in templates
+        )
+    return _looks_like_gpt_oss(model_name)
 
 
 def _collapse_harmony_system_messages(messages: list[dict]) -> list[dict]:
