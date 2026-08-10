@@ -502,6 +502,10 @@ final class NoUsageProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        // ``ChatStreamClient`` uploads through an HTTP body stream. Drain it
+        // before replying: Foundation can otherwise wait forever for the
+        // upload to finish on CI even though this stub ignores the payload.
+        _ = requestBodyData(from: request)
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
@@ -541,6 +545,7 @@ final class UsageEmittingProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        _ = requestBodyData(from: request)
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
@@ -586,23 +591,7 @@ final class FakeChatProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        if let stream = request.httpBodyStream {
-            stream.open()
-            var data = Data()
-            let bufSize = 4096
-            var buf = [UInt8](repeating: 0, count: bufSize)
-            while stream.hasBytesAvailable {
-                let n = buf.withUnsafeMutableBufferPointer { ptr in
-                    stream.read(ptr.baseAddress!, maxLength: bufSize)
-                }
-                if n > 0 { data.append(buf, count: n) }
-                if n <= 0 { break }
-            }
-            stream.close()
-            FakeChatProtocol.lastRequestBody = data
-        } else {
-            FakeChatProtocol.lastRequestBody = request.httpBody
-        }
+        FakeChatProtocol.lastRequestBody = requestBodyData(from: request)
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,
@@ -622,6 +611,22 @@ final class FakeChatProtocol: URLProtocol, @unchecked Sendable {
     }
 
     override func stopLoading() {}
+}
+
+private func requestBodyData(from request: URLRequest) -> Data? {
+    guard let stream = request.httpBodyStream else { return request.httpBody }
+    stream.open()
+    defer { stream.close() }
+    var data = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = buffer.withUnsafeMutableBufferPointer { pointer in
+            stream.read(pointer.baseAddress!, maxLength: pointer.count)
+        }
+        if count > 0 { data.append(buffer, count: count) }
+        if count == 0 { return data }
+        if count < 0 { return nil }
+    }
 }
 
 /// #896: rapid-mlx that crashes mid-response closes the TCP socket

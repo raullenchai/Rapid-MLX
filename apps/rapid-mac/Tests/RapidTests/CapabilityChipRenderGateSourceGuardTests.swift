@@ -494,51 +494,9 @@ struct CapabilityChipRenderGateSourceGuardTests {
 
     // MARK: - Strip helper (mirrors ChatViewAssistantContentBidiTests)
 
-    /// Strip ``//`` line comments, ``/*…*/`` block comments, and all
-    /// whitespace so the source-grep tests can pin against a
-    /// canonical form. The same shape ``ChatViewAssistantContentBidiTests``
-    /// uses (PR #329 carryover) — we keep it private so the two
-    /// suites can't drift on the strip rules.
+    /// Strip comments and whitespace without mistaking comment markers inside
+    /// string or extended-regex literals for comments.
     static func stripCommentsAndWhitespace(_ source: String) -> String {
-        var out = ""
-        out.reserveCapacity(source.count)
-        var i = source.startIndex
-        while i < source.endIndex {
-            let c = source[i]
-            // Block comment
-            if c == "/", source.index(after: i) < source.endIndex,
-               source[source.index(after: i)] == "*" {
-                var j = source.index(i, offsetBy: 2)
-                while j < source.endIndex {
-                    if source[j] == "*",
-                       source.index(after: j) < source.endIndex,
-                       source[source.index(after: j)] == "/" {
-                        j = source.index(j, offsetBy: 2)
-                        break
-                    }
-                    j = source.index(after: j)
-                }
-                i = j
-                continue
-            }
-            // Line comment
-            if c == "/", source.index(after: i) < source.endIndex,
-               source[source.index(after: i)] == "/" {
-                var j = source.index(after: i)
-                while j < source.endIndex, source[j] != "\n" {
-                    j = source.index(after: j)
-                }
-                i = j
-                continue
-            }
-            // Strip whitespace
-            if c.isWhitespace {
-                i = source.index(after: i)
-                continue
-            }
-            out.append(c)
-            i = source.index(after: i)
-        }
-        return out
+        SourceGuardSupport.canonicalSource(source, literals: .preserve)
     }
 }

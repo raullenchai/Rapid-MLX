@@ -394,10 +394,10 @@ struct ContentView: View {
     ///
     /// Lives here rather than in ``ChatView`` because starting a model is
     /// a window-level concern — the Launch page raises the same actions.
-    /// Start routes through ``ServerManager.start``, which is the one
-    /// choke point that applies the launch flags and the live
-    /// free-memory guard (#1435), so this path inherits the same OOM
-    /// protection the implicit send-start path already had.
+    /// Start routes through ``ServerManager.ensureServing`` so the action also
+    /// replaces a different resident model (for example after using Images).
+    /// ``ensureServing`` delegates its cold-start leg to ``start``, preserving
+    /// the launch flags and live free-memory guard (#1435).
     private func performReadinessAction(_ action: ModelReadiness.Action) {
         switch action {
         case .chooseModel:
