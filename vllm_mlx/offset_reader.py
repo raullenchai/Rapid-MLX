@@ -145,7 +145,9 @@ def _load_weight_map(path: Path) -> dict | None:
     return json.loads(index_path.read_text())["weight_map"]
 
 
-def _resolve_shard_path(path: Path, tensor_name: str, weight_map: dict | None = _UNSET) -> Path:
+def _resolve_shard_path(
+    path: Path, tensor_name: str, weight_map: dict | None = _UNSET
+) -> Path:
     """Resolve the concrete safetensors file holding ``tensor_name``, for
     both the ``"stacked"`` and ``"direct"`` layouts — the directory-vs-file
     resolution is identical either way. A safetensors tensor is never split
@@ -181,7 +183,9 @@ def _resolve_shard_path(path: Path, tensor_name: str, weight_map: dict | None = 
     if weight_map is not None:
         shard_name = weight_map.get(tensor_name)
         if shard_name is None:
-            raise KeyError(f"{tensor_name!r} not found in {path}'s index.json weight_map")
+            raise KeyError(
+                f"{tensor_name!r} not found in {path}'s index.json weight_map"
+            )
         # shard_name comes straight from the checkpoint's own (untrusted)
         # index.json. `path / shard_name` alone is not safe: if shard_name
         # is absolute, pathlib's `/` discards `path` entirely, and a
@@ -189,20 +193,10 @@ def _resolve_shard_path(path: Path, tensor_name: str, weight_map: dict | None = 
         # directory — either way the caller below would happily open a
         # file outside `path`.
         #
-        # Reject traversal *lexically* on shard_name itself -- do NOT
-        # `.resolve()` the candidate and compare it against a resolved
-        # `path` (`is_relative_to`). Every real HuggingFace-cache
-        # checkpoint directory is made entirely of symlinks into a
-        # shared `blobs/` store one level up
-        # (`snapshots/<sha>/model-...safetensors -> ../../blobs/<hash>`),
-        # so resolving symlinks walks every legitimate shard "outside"
-        # its own snapshot directory and rejects every real cached
-        # checkpoint (confirmed against the actual local HF cache layout
-        # for mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit). The actual
-        # attack surface is the *shard_name string* -- an absolute path,
-        # or a relative path containing a ".." component -- which a pure
-        # parts-based check catches without ever touching the
-        # filesystem's real symlink targets.
+        # Reject both lexical traversal and a basename symlink that escapes
+        # the checkpoint. Hugging Face snapshots legitimately symlink into
+        # their repository-local ``blobs`` sibling, so that is the only
+        # outside-snapshot target accepted.
         shard_path = Path(shard_name)
         if shard_path.is_absolute() or ".." in shard_path.parts:
             raise ValueError(
@@ -211,7 +205,24 @@ def _resolve_shard_path(path: Path, tensor_name: str, weight_map: dict | None = 
                 f"absolute path or escapes the checkpoint directory via "
                 f"'..'"
             )
-        return path / shard_name
+        candidate = path / shard_name
+        resolved_candidate = candidate.resolve(strict=True)
+        resolved_checkpoint = path.resolve(strict=True)
+
+        if path.parent.name == "snapshots":
+            blobs_root = (path.parent.parent / "blobs").resolve(strict=True)
+            if not resolved_candidate.is_relative_to(blobs_root):
+                raise ValueError(
+                    f"refusing to resolve tensor {tensor_name!r}: shard symlink "
+                    f"target {resolved_candidate} is outside {blobs_root}"
+                )
+        elif not resolved_candidate.is_relative_to(resolved_checkpoint):
+            raise ValueError(
+                f"refusing to resolve tensor {tensor_name!r}: shard symlink "
+                f"target {resolved_candidate} is outside checkpoint "
+                f"{resolved_checkpoint}"
+            )
+        return candidate
     return path / "model.safetensors"
 
 
@@ -273,7 +284,9 @@ def fetch_expert_bundle(
         bundle[proj] = {}
         for component in adapter.tensor_components:
             if layout == "stacked":
-                tensor_name = adapter.tensor_template.tensor_name(layer_idx, proj, component)
+                tensor_name = adapter.tensor_template.tensor_name(
+                    layer_idx, proj, component
+                )
                 slice_expert_id = expert_id
             else:  # "direct"
                 tensor_name = adapter.tensor_template.tensor_name(

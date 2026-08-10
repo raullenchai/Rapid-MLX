@@ -94,7 +94,8 @@ def qwen2_moe_streaming_forward(
     # hardcoding, so a differently-quantized checkpoint is handled
     # correctly rather than silently mismatched.
     gate_proj = block.switch_mlp.gate_proj
-    group_size, bits, mode = gate_proj.group_size, gate_proj.bits, gate_proj.mode
+    up_proj = block.switch_mlp.up_proj
+    down_proj = block.switch_mlp.down_proj
 
     B, L, D = x.shape
     inds_list = inds.tolist()  # [B][L][k] expert ids selected per token
@@ -117,9 +118,9 @@ def qwen2_moe_streaming_forward(
                     scales=gp["scales"],
                     biases=gp["biases"],
                     transpose=True,
-                    group_size=group_size,
-                    bits=bits,
-                    mode=mode,
+                    group_size=gate_proj.group_size,
+                    bits=gate_proj.bits,
+                    mode=gate_proj.mode,
                 )
                 up_out = mx.quantized_matmul(
                     tok_x,
@@ -127,9 +128,9 @@ def qwen2_moe_streaming_forward(
                     scales=up["scales"],
                     biases=up["biases"],
                     transpose=True,
-                    group_size=group_size,
-                    bits=bits,
-                    mode=mode,
+                    group_size=up_proj.group_size,
+                    bits=up_proj.bits,
+                    mode=up_proj.mode,
                 )
                 h = nn.silu(gate_out) * up_out
                 down_out = mx.quantized_matmul(
@@ -138,9 +139,9 @@ def qwen2_moe_streaming_forward(
                     scales=dp["scales"],
                     biases=dp["biases"],
                     transpose=True,
-                    group_size=group_size,
-                    bits=bits,
-                    mode=mode,
+                    group_size=down_proj.group_size,
+                    bits=down_proj.bits,
+                    mode=down_proj.mode,
                 )
                 acc = acc + down_out[0] * scores[b, pos, kk]
             rows_l.append(acc)
@@ -148,7 +149,9 @@ def qwen2_moe_streaming_forward(
     y = mx.stack(rows_b, axis=0)
 
     shared_expert_output = block.shared_expert(x)
-    shared_expert_output = mx.sigmoid(block.shared_expert_gate(x)) * shared_expert_output
+    shared_expert_output = (
+        mx.sigmoid(block.shared_expert_gate(x)) * shared_expert_output
+    )
     return y + shared_expert_output
 
 

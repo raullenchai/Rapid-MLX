@@ -24,7 +24,8 @@ would have, with no MLX import required here.
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Callable, Hashable
+from collections.abc import Callable, Hashable
+from typing import Any
 
 
 def _default_size_fn(bundle: Any) -> int:
@@ -69,10 +70,12 @@ class ExpertCache:
         budget_bytes: int = 1_000_000_000,
         size_fn: Callable[[Any], int] = _default_size_fn,
     ) -> None:
+        if budget_bytes <= 0:
+            raise ValueError(f"budget_bytes must be positive, got {budget_bytes}")
         self._fetch_fn = fetch_fn
         self._budget_bytes = budget_bytes
         self._size_fn = size_fn
-        self._store: "OrderedDict[Hashable, tuple[Any, int]]" = OrderedDict()
+        self._store: OrderedDict[Hashable, tuple[Any, int]] = OrderedDict()
         self._total_bytes = 0
         self._hits = 0
         self._misses = 0
@@ -100,10 +103,13 @@ class ExpertCache:
         bundle = self._fetch_fn(layer_idx, expert_id)
         size = self._size_fn(bundle)
 
+        # A single expert may exceed a deliberately tiny operator budget.
+        # Return it for this forward pass but do not retain it; the cache's
+        # advertised byte bound must remain a hard invariant.
+        if size > self._budget_bytes:
+            return bundle
+
         # Evict LRU entries (oldest-first in OrderedDict) until it fits.
-        # ponytail: a single bundle larger than budget_bytes still gets
-        # cached (best effort, budget invariant can't hold for it) --
-        # raise instead if a future caller needs a hard cap.
         while self._store and self._total_bytes + size > self._budget_bytes:
             _, (_, evicted_size) = self._store.popitem(last=False)
             self._total_bytes -= evicted_size
@@ -119,7 +125,7 @@ if __name__ == "__main__":
     class _Bundle:
         nbytes = 10
 
-    cache = ExpertCache(lambda l, e: _Bundle(), budget_bytes=25)
+    cache = ExpertCache(lambda layer, expert: _Bundle(), budget_bytes=25)
     cache.get(0, 0)
     cache.get(0, 1)
     cache.get(0, 0)  # hit, refreshes recency

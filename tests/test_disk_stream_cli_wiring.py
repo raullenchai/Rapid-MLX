@@ -142,6 +142,14 @@ def test_disk_stream_flags_parsed_and_reach_load_model(monkeypatch):
     assert min_memory_calls == ["mlx-community/Qwen3-7B-4bit"]
 
 
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
+def test_disk_stream_cache_budget_rejects_non_positive_or_non_finite(value):
+    from vllm_mlx.cli import positive_finite_float
+
+    with pytest.raises(Exception, match="positive finite"):
+        positive_finite_float(value)
+
+
 # ---------------------------------------------------------------------------
 # 2. _check_alias_min_memory's warning still fires (direct-call unit test,
 #    per the ticket: "doesn't need --disk-stream wired end-to-end").
@@ -286,9 +294,12 @@ with (
 """
 
 
-def _run_subprocess(script_tail: str, model_type: str, install_patch: str) -> subprocess.CompletedProcess:
+def _run_subprocess(
+    script_tail: str, model_type: str, install_patch: str
+) -> subprocess.CompletedProcess:
     script = (
-        _SUBPROCESS_PREAMBLE % {"model_type": model_type, "install_patch": install_patch}
+        _SUBPROCESS_PREAMBLE
+        % {"model_type": model_type, "install_patch": install_patch}
     ) + textwrap.dedent(script_tail)
     return subprocess.run(
         [sys.executable, "-c", script],

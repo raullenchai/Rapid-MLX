@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from vllm_mlx.expert_cache import ExpertCache
 
 
@@ -53,6 +55,13 @@ def _sized(n: int) -> _Sized:
 
 
 class TestExpertCache:
+    def test_rejects_non_positive_budget(self):
+        with pytest.raises(ValueError, match="must be positive"):
+            ExpertCache(lambda layer, expert: object(), budget_bytes=0)
+
+        with pytest.raises(ValueError, match="must be positive"):
+            ExpertCache(lambda layer, expert: object(), budget_bytes=-1)
+
     """Tests for ExpertCache: miss/hit correctness, LRU eviction order,
     recency refresh on hit, and the byte-budget invariant.
     """
@@ -81,7 +90,19 @@ class TestExpertCache:
 
         for expert_id in range(10):  # force many evictions
             cache.get(0, expert_id)
-            assert cache.total_bytes <= 25
+        assert cache.total_bytes <= 25
+
+    def test_oversized_bundle_is_returned_but_not_cached(self):
+        fetcher = CountingFetcher(nbytes=30)
+        cache = ExpertCache(fetcher, budget_bytes=25)
+
+        first = cache.get(0, 0)
+        second = cache.get(0, 0)
+
+        assert first.tag == second.tag == "L0E0"
+        assert len(fetcher.calls) == 2
+        assert cache.total_bytes == 0
+        assert not cache._store
 
         # Repeated hits on the same key must not grow total_bytes either.
         for _ in range(5):

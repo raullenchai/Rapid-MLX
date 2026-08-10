@@ -69,6 +69,10 @@ class UnsupportedModelTypeError(ValueError):
     """
 
 
+class DiskStreamInstallError(RuntimeError):
+    """Raised when a registered adapter cannot be installed safely."""
+
+
 @dataclass
 class InstallResult:
     """What :func:`install` hands back: enough to report what happened and
@@ -115,6 +119,13 @@ def install(
     checkpoint_path = Path(checkpoint_path)
     moe_block_cls = adapter.moe_block_cls
 
+    if is_installed(moe_block_cls):
+        raise DiskStreamInstallError(
+            f"disk-streaming is already installed on {moe_block_cls.__name__}; "
+            "a second class-level installation would mix model instances and "
+            "expert caches"
+        )
+
     cache = ExpertCache(
         fetch_fn=lambda layer_idx, expert_id: fetch_expert_bundle(
             adapter, checkpoint_path, layer_idx, expert_id
@@ -131,6 +142,12 @@ def install(
         block = getattr(layer, adapter.moe_block_attr, None)
         if isinstance(block, moe_block_cls):
             layer_of_block[id(block)] = i
+
+    if not layer_of_block:
+        raise DiskStreamInstallError(
+            f"disk-streaming found no {moe_block_cls.__name__} instances in "
+            f"model_type={model_type!r}; refusing to report a successful install"
+        )
 
     orig_call = moe_block_cls.__call__
     streaming_forward = adapter.streaming_forward
@@ -210,7 +227,8 @@ def _streaming_moe_forward(block, x, layer_idx: int, cache: ExpertCache):
     # of hardcoding, so a differently-quantized checkpoint is handled
     # correctly rather than silently mismatched.
     gate_proj = block.switch_mlp.gate_proj
-    group_size, bits, mode = gate_proj.group_size, gate_proj.bits, gate_proj.mode
+    up_proj = block.switch_mlp.up_proj
+    down_proj = block.switch_mlp.down_proj
 
     B, L, _D = x.shape
     inds_list = inds.tolist()  # [B][L][k] expert ids selected per token
@@ -233,9 +251,9 @@ def _streaming_moe_forward(block, x, layer_idx: int, cache: ExpertCache):
                     scales=gp["scales"],
                     biases=gp["biases"],
                     transpose=True,
-                    group_size=group_size,
-                    bits=bits,
-                    mode=mode,
+                    group_size=gate_proj.group_size,
+                    bits=gate_proj.bits,
+                    mode=gate_proj.mode,
                 )
                 up_out = mx.quantized_matmul(
                     tok_x,
@@ -243,9 +261,9 @@ def _streaming_moe_forward(block, x, layer_idx: int, cache: ExpertCache):
                     scales=up["scales"],
                     biases=up["biases"],
                     transpose=True,
-                    group_size=group_size,
-                    bits=bits,
-                    mode=mode,
+                    group_size=up_proj.group_size,
+                    bits=up_proj.bits,
+                    mode=up_proj.mode,
                 )
                 h = nn.silu(gate_out) * up_out
                 down_out = mx.quantized_matmul(
@@ -254,9 +272,9 @@ def _streaming_moe_forward(block, x, layer_idx: int, cache: ExpertCache):
                     scales=dp["scales"],
                     biases=dp["biases"],
                     transpose=True,
-                    group_size=group_size,
-                    bits=bits,
-                    mode=mode,
+                    group_size=down_proj.group_size,
+                    bits=down_proj.bits,
+                    mode=down_proj.mode,
                 )
                 term = down_out[0] * scores[b, pos, kk]
                 acc = term if acc is None else acc + term

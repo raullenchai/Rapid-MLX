@@ -140,7 +140,7 @@ def test_streaming_forward_raises_not_implemented_when_unconfigured():
     )
 
     with pytest.raises(NotImplementedError):
-        adapter.streaming_forward
+        _ = adapter.streaming_forward
 
 
 def test_get_adapter_unknown_model_type_returns_none():

@@ -145,6 +145,23 @@ def non_negative_int(value: str) -> int:
     return n
 
 
+def positive_finite_float(value: str) -> float:
+    """Argparse type for positive, finite resource-budget values."""
+    import math
+
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive finite number, got {value!r}"
+        ) from None
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive finite number, got {value!r}"
+        )
+    return number
+
+
 def _apply_body_receive_timeout_env(server_mod, *, logger=None) -> None:
     """Resolve ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` onto
     ``server_mod._body_receive_timeout_seconds`` (H-14 / F-072
@@ -4559,9 +4576,7 @@ def bench_command(args):
                     getattr(args, "disk_stream_cache_gb", 1.0),
                 ).result()
             else:
-                model, tokenizer = model_load_executor.submit(
-                    load, args.model
-                ).result()
+                model, tokenizer = model_load_executor.submit(load, args.model).result()
         except Exception as e:
             # Opt-in telemetry (Phase 2.2 error wiring): mirror the
             # ``serve`` path — record a bucketed model-load failure
@@ -7977,7 +7992,7 @@ Examples:
     )
     serve_parser.add_argument(
         "--disk-stream-cache-gb",
-        type=float,
+        type=positive_finite_float,
         default=1.0,
         help=(
             "Byte budget (GB) for the disk-stream expert LRU cache. Only "
@@ -9002,7 +9017,7 @@ Examples:
     )
     bench_parser.add_argument(
         "--disk-stream-cache-gb",
-        type=float,
+        type=positive_finite_float,
         default=1.0,
         help="Byte budget (GB) for the disk-stream expert LRU cache.",
     )

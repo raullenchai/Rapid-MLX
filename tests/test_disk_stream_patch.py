@@ -33,6 +33,7 @@ Tiers, per the PRD's testing decision:
 from __future__ import annotations
 
 import gc
+import inspect
 import json
 from pathlib import Path
 
@@ -40,6 +41,7 @@ import pytest
 
 from vllm_mlx import registry
 from vllm_mlx.disk_stream_patch import (
+    DiskStreamInstallError,
     UnsupportedModelTypeError,
     install,
     is_installed,
@@ -139,7 +141,7 @@ def test_install_sets_marker_and_uninstall_restores_original_call():
     registry._register(fake_adapter)
 
     class _FakeModel:
-        layers: list = []
+        layers = [type("Layer", (), {"feed_forward": _FakeMoeBlock()})()]
 
     orig_call = _FakeMoeBlock.__call__
     assert not is_installed(_FakeMoeBlock)
@@ -159,6 +161,48 @@ def test_install_sets_marker_and_uninstall_restores_original_call():
 
     assert not is_installed(_FakeMoeBlock)
     assert _FakeMoeBlock.__call__ is orig_call
+
+
+def test_install_rejects_zero_matching_layers_and_duplicate_install():
+    fake_adapter = registry.StreamingAdapter(
+        model_type="_disk_stream_patch_guard_test",
+        moe_block_module=__name__,
+        moe_block_class_name="_FakeMoeBlock",
+        tensor_template=registry.ExpertTensorTemplate(
+            layout="stacked", name_template="unused.{layer}.{proj}.{component}"
+        ),
+        num_experts=1,
+        streaming_forward_module=__name__,
+        streaming_forward_fn_name="_fake_streaming_forward",
+    )
+    registry._register(fake_adapter)
+
+    empty_model = type("EmptyModel", (), {"layers": []})()
+    with pytest.raises(DiskStreamInstallError, match="found no"):
+        install(empty_model, fake_adapter.model_type, "/nonexistent")
+    assert not is_installed(_FakeMoeBlock)
+
+    layer = type("Layer", (), {"feed_forward": _FakeMoeBlock()})()
+    model = type("FakeModel", (), {"layers": [layer]})()
+    result = install(model, fake_adapter.model_type, "/nonexistent")
+    try:
+        with pytest.raises(DiskStreamInstallError, match="already installed"):
+            install(model, fake_adapter.model_type, "/nonexistent")
+    finally:
+        uninstall(result.moe_block_cls, result.orig_call)
+
+
+def test_streaming_forwards_use_each_projections_quantization_parameters():
+    """Mixed-quantization checkpoints must not reuse gate settings."""
+    from vllm_mlx.disk_stream_patch import _streaming_moe_forward
+    from vllm_mlx.qwen2_moe_forward import qwen2_moe_streaming_forward
+
+    for forward in (_streaming_moe_forward, qwen2_moe_streaming_forward):
+        source = inspect.getsource(forward)
+        for projection in ("gate_proj", "up_proj", "down_proj"):
+            assert f"group_size={projection}.group_size" in source
+            assert f"bits={projection}.bits" in source
+            assert f"mode={projection}.mode" in source
 
 
 def _local_lfm25_checkpoint() -> Path | None:

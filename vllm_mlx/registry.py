@@ -155,7 +155,10 @@ class StreamingAdapter:
 
     @property
     def streaming_forward(self):
-        if self.streaming_forward_module is None or self.streaming_forward_fn_name is None:
+        if (
+            self.streaming_forward_module is None
+            or self.streaming_forward_fn_name is None
+        ):
             raise NotImplementedError(
                 f"{self.model_type!r} adapter has no streaming_forward "
                 f"configured (streaming_forward_module/streaming_forward_fn_name "

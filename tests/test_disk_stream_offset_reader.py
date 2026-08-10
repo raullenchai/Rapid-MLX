@@ -161,7 +161,9 @@ def test_fetch_expert_bundle_stacked_layout_resolves_checkpoint_directory(
     ``model.safetensors`` rather than the file itself.
     """
     path, sources = stacked_checkpoint
-    checkpoint_dir = path.parent  # stacked_checkpoint already writes model.safetensors here
+    checkpoint_dir = (
+        path.parent
+    )  # stacked_checkpoint already writes model.safetensors here
     assert path.name == "model.safetensors"
     adapter = _stacked_fixture_adapter()
 
@@ -173,7 +175,9 @@ def test_fetch_expert_bundle_stacked_layout_resolves_checkpoint_directory(
             assert mx.array_equal(bundle[proj][component], expected)
 
 
-def test_fetch_expert_bundle_stacked_layout_rejects_negative_expert_id(stacked_checkpoint):
+def test_fetch_expert_bundle_stacked_layout_rejects_negative_expert_id(
+    stacked_checkpoint,
+):
     """A negative ``expert_id`` must raise a clear ``ValueError`` naming the
     offending id and ``num_experts`` -- not silently wrap around (Python's
     negative-indexing-like arithmetic) and return a *different* expert's
@@ -390,6 +394,24 @@ def test_resolve_shard_path_rejects_dotdot_relative_shard_name(tmp_path):
         _resolve_shard_path(checkpoint_dir, tensor_name)
 
 
+def test_resolve_shard_path_rejects_basename_symlink_escape(tmp_path):
+    """A lexical basename is still unsafe when the file itself is a symlink."""
+    from vllm_mlx.offset_reader import _resolve_shard_path
+
+    checkpoint_dir = tmp_path / "checkpoint"
+    checkpoint_dir.mkdir()
+    secret = tmp_path / "secret.safetensors"
+    secret.write_bytes(b"outside")
+    (checkpoint_dir / "model-00001.safetensors").symlink_to(secret)
+
+    tensor_name = "model.layers.0.mlp.experts.0.gate_proj.weight"
+    index = {"weight_map": {tensor_name: "model-00001.safetensors"}}
+    (checkpoint_dir / "model.safetensors.index.json").write_text(json.dumps(index))
+
+    with pytest.raises(ValueError, match="outside checkpoint"):
+        _resolve_shard_path(checkpoint_dir, tensor_name)
+
+
 # ---------------------------------------------------------------------
 # Defensive/error-path coverage for `_fetch_tensor_slice` /
 # `_resolve_shard_path` -- malformed/inconsistent headers and sharded
@@ -517,7 +539,9 @@ def test_fetch_expert_bundle_parses_header_once_per_shard_not_per_tensor(
 
     fetch_expert_bundle(adapter, path, layer_idx=3, expert_id=1)
 
-    assert call_count == 1, f"expected 1 header parse for a single-shard bundle, got {call_count}"
+    assert call_count == 1, (
+        f"expected 1 header parse for a single-shard bundle, got {call_count}"
+    )
 
 
 def test_fetch_expert_bundle_parses_index_json_once_per_call(tmp_path, monkeypatch):
@@ -547,7 +571,9 @@ def test_fetch_expert_bundle_parses_index_json_once_per_call(tmp_path, monkeypat
         call_count += 1
         return real_load_weight_map(p)
 
-    monkeypatch.setattr(offset_reader_module, "_load_weight_map", counting_load_weight_map)
+    monkeypatch.setattr(
+        offset_reader_module, "_load_weight_map", counting_load_weight_map
+    )
 
     fetch_expert_bundle(adapter, tmp_path, layer_idx=3, expert_id=1)
 
