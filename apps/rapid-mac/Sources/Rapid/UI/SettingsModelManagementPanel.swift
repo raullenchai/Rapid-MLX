@@ -868,15 +868,24 @@ struct SettingsModelManagementPanel: View {
                         .lineLimit(1)
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 }
-                Button(role: .destructive) {
-                    pendingDeletion = entry
-                } label: {
-                    Image(systemName: "trash").font(.system(size: 11))
+                // A model another MLX runtime downloaded gets no delete
+                // button (#1718). Deletion rebuilds
+                // ``<hub-root>/models--<repo>``, which is not where this
+                // one lives, so the button would either do nothing or
+                // remove an unrelated hub entry of the same name. We did
+                // not download it, so it is not ours to remove — same
+                // reasoning as the absent delete on a serving model below.
+                if !entry.isExternal {
+                    Button(role: .destructive) {
+                        pendingDeletion = entry
+                    } label: {
+                        Image(systemName: "trash").font(.system(size: 11))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Delete \(entry.alias) from disk")
+                    .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Delete \(entry.alias) from disk")
-                .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
             }
         case .inUse:
             // A serving model is a CACHED model, so it owes the same
@@ -1123,14 +1132,28 @@ struct SettingsModelManagementPanel: View {
     private func actionButton(for entry: ModelEntry, badge: ModelCacheActions.StatusBadge) -> some View {
         switch badge {
         case .cached:
-            Button(role: .destructive) {
-                pendingDeletion = entry
-            } label: {
-                Text("Delete")
+            if entry.isExternal {
+                // Downloaded by another MLX runtime (#1718): usable, but
+                // outside the hub root the delete path addresses. Say where
+                // it came from instead of offering a delete that cannot
+                // reach it.
+                Text("External")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .help("Found outside Rapid's models folder. Rapid didn't download it, so it can't remove it.")
+                    .accessibilityIdentifier(
+                        "Settings.ModelManagement.Recommended.External.\(entry.alias)"
+                    )
+            } else {
+                Button(role: .destructive) {
+                    pendingDeletion = entry
+                } label: {
+                    Text("Delete")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("Settings.ModelManagement.Recommended.Delete.\(entry.alias)")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .accessibilityIdentifier("Settings.ModelManagement.Recommended.Delete.\(entry.alias)")
         case .inUse:
             // rapid-mlx holds the weights mmap'd — a mid-serve rm would
             // either fail or corrupt inference. Mirror the picker's

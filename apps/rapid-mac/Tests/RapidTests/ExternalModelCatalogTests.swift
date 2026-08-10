@@ -38,18 +38,69 @@ struct ExternalModelCatalogTests {
         #expect(!rows.contains { $0.0 == "(incomplete)" })
     }
 
-    /// The load-bearing test: an external model must not reach the picker as
-    /// a cached entry, because cached entries are offered for deletion.
-    @Test("An (external) row never becomes a deletable entry")
-    func externalRowDoesNotBecomeDeletableEntry() {
+    /// The point of the issue: a model already on disk must be visible, or
+    /// the user re-downloads weights they have. An earlier draft of this fix
+    /// dropped external rows entirely — that satisfied "not deletable" by
+    /// making them invisible, which is the bug, not the fix.
+    @Test("An (external) row reaches the catalog so the user can see and use it")
+    func externalRowBecomesAVisibleEntry() {
         let entries = ModelCatalog.mergeAvailableAndCached(
             available: [],
             cached: ModelCatalog.parseCached(Self.listing),
             excluded: []
         )
 
-        #expect(!entries.contains { $0.alias == "(external)" })
-        #expect(!entries.contains { $0.hfRepo == "mlx-community/Outsider-4bit" })
+        let outsider = entries.first { $0.hfRepo == "mlx-community/Outsider-4bit" }
+        #expect(outsider != nil, "an on-disk model must not be hidden")
+        #expect(outsider?.cached == true, "it is on disk — no re-download prompt")
+        #expect(outsider?.isExternal == true, "and it is flagged read-only")
+        // The repo is the identifier: ``(external)`` is a status marker, not
+        // a name, and the repo is what ``serve`` accepts.
+        #expect(outsider?.alias == "mlx-community/Outsider-4bit")
+    }
+
+    /// The safety half: visible, but never deletable.
+    @Test("Deleting an external model is refused at the dispatcher")
+    func externalDeletionIsRefused() async {
+        let entry = ModelEntry(
+            alias: "mlx-community/Outsider-4bit",
+            hfRepo: "mlx-community/Outsider-4bit",
+            sizeOnDisk: "1.1 GiB",
+            cached: true,
+            isExternal: true
+        )
+
+        let outcome = await ModelCacheActions.runDeletion(
+            for: entry,
+            binaryPath: URL(fileURLWithPath: "/bin/echo")
+        )
+
+        guard case .failure(let message) = outcome else {
+            Issue.record("expected refusal, got \(outcome)")
+            return
+        }
+        #expect(message.contains("another app"))
+    }
+
+    @Test("A normal cached entry is still deletable")
+    func normalEntryIsNotRefused() async {
+        let entry = ModelEntry(
+            alias: "qwen3.5-4b-4bit",
+            hfRepo: "mlx-community/Qwen3.5-4B",
+            sizeOnDisk: "2.3 GiB",
+            cached: true
+        )
+
+        let outcome = await ModelCacheActions.runDeletion(
+            for: entry,
+            binaryPath: URL(fileURLWithPath: "/nonexistent-binary")
+        )
+
+        // It fails (no real binary), but NOT with the external refusal —
+        // the guard must not swallow ordinary deletes.
+        if case .failure(let message) = outcome {
+            #expect(!message.contains("another app"))
+        }
     }
 
     @Test("A real alias in the same listing is still admitted")

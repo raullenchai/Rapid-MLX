@@ -34,6 +34,15 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// Drives a green dot in the picker so the user can tell at a glance
     /// which models start in seconds vs. which trigger a 5-80 GB pull.
     let cached: Bool
+    /// True for a model another MLX runtime downloaded, found outside the
+    /// hub cache (#1718).
+    ///
+    /// Such a model is listed and usable, but must never be offered for
+    /// deletion: the delete path rebuilds ``<hub-root>/models--<repo>``,
+    /// which is not where it lives, so the delete would either miss or
+    /// remove an unrelated hub entry of the same name. We did not download
+    /// it and cannot manage it.
+    var isExternal: Bool = false
 
     /// What the model is for. Defaults to ``.chat`` so every existing
     /// construction site keeps working; the image catalog tags ``.image``.
@@ -313,6 +322,29 @@ enum ModelCatalog {
                 hfRepo: hf,
                 sizeOnDisk: size,
                 cached: true
+            ))
+        }
+
+        // Models another MLX runtime downloaded (#1718). These arrive with
+        // ``(external)`` in the alias column — a status marker, not a name —
+        // so the repo is the only identifier they have, and it is what
+        // ``serve`` accepts for them.
+        //
+        // They are admitted so the user can SEE and USE a model already on
+        // disk; that is the entire point of the issue. What they must not be
+        // is deletable, which ``isExternal`` conveys to the UI. Dropping them
+        // here instead would satisfy "not deletable" by making them invisible
+        // — and leave the user re-downloading weights they already have.
+        for (alias, hf, size) in cached
+        where alias == "(external)" {
+            guard let repo = hf, !seenAliases.contains(repo) else { continue }
+            seenAliases.insert(repo)
+            entries.append(ModelEntry(
+                alias: repo,
+                hfRepo: repo,
+                sizeOnDisk: size,
+                cached: true,
+                isExternal: true
             ))
         }
         return entries

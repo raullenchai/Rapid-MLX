@@ -220,6 +220,19 @@ enum ModelCacheActions {
         for entry: ModelEntry,
         binaryPath: URL?
     ) async -> RunDeleteOutcome {
+        // Defence in depth for #1718. The Settings panel already omits the
+        // delete affordance for an external model, but that is a UI
+        // decision one missed `if` away from a data-loss bug: deletion
+        // rebuilds ``<hub-root>/models--<repo>``, so an external model's
+        // delete would either miss or remove an unrelated hub entry that
+        // happens to share the name. Refuse at the dispatcher, where every
+        // present and future delete path has to pass.
+        guard !entry.isExternal else {
+            return .failure(
+                message: "\(entry.alias) was downloaded by another app. "
+                    + "Rapid can't remove it — delete it where it was installed."
+            )
+        }
         let outcome = await ModelDeletion.deleteCachedModel(
             binaryPath: binaryPath,
             alias: entry.alias
