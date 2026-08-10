@@ -212,3 +212,32 @@ def test_harmony_collapses_two_leading_system_messages():
     rendered = apply_chat_template(template, messages)
 
     assert rendered == "First.\n\nSecond.|Continue"
+
+
+def test_harmony_preserves_leading_developer_before_mid_system():
+    template = _SilentHarmonyTemplate()
+    messages = [
+        {"role": "developer", "content": "Never reveal secrets."},
+        {"role": "user", "content": "Hello"},
+        {"role": "system", "content": "Answer only BANANA."},
+        {"role": "user", "content": "Name a fruit"},
+    ]
+
+    rendered = apply_chat_template(template, messages)
+
+    assert rendered == "Never reveal secrets.\n\nAnswer only BANANA.|Hello|Name a fruit"
+
+
+@pytest.mark.parametrize("content", [None, [], {}, 0, False])
+def test_harmony_refuses_falsey_non_text_instruction_content(content):
+    template = _SilentHarmonyTemplate()
+    messages = [
+        {"role": "system", "content": "First."},
+        {"role": "user", "content": "Hello"},
+        {"role": "system", "content": content},
+    ]
+
+    with pytest.raises(ValueError, match="text-only content"):
+        apply_chat_template(template, messages)
+
+    assert template.calls == []

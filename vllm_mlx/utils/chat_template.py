@@ -1177,30 +1177,33 @@ def _collapse_harmony_system_messages(messages: list[dict]) -> list[dict]:
     # Harmony consumes at most the first message as an instruction. This also
     # catches two consecutive leading system messages: the second is otherwise
     # just as invisible as one placed after a user turn.
+    instruction_roles = {"system", "developer"}
     if not any(
-        index > 0 and message.get("role") == "system"
+        index > 0 and message.get("role") in instruction_roles
         for index, message in enumerate(messages)
     ):
         return messages
 
-    system_messages = [m for m in messages if m.get("role") == "system"]
-    if any(set(message) - {"role", "content"} for message in system_messages):
+    instruction_messages = [
+        message for message in messages if message.get("role") in instruction_roles
+    ]
+    if any(set(message) - {"role", "content"} for message in instruction_messages):
         raise ValueError(
-            "GPT-OSS/Harmony cannot preserve metadata on a mid-conversation "
-            "system message"
+            "GPT-OSS/Harmony cannot preserve metadata on a conversation "
+            "instruction message"
         )
 
-    contents = [
-        message.get("content") for message in system_messages if message.get("content")
-    ]
+    contents = [message.get("content") for message in instruction_messages]
     if not all(isinstance(content, str) for content in contents):
         raise ValueError(
-            "GPT-OSS/Harmony system messages must contain text-only content"
+            "GPT-OSS/Harmony system and developer messages must contain "
+            "text-only content"
         )
 
-    collapsed = [message for message in messages if message.get("role") != "system"]
-    if contents:
-        collapsed.insert(0, {"role": "system", "content": "\n\n".join(contents)})
+    collapsed = [
+        message for message in messages if message.get("role") not in instruction_roles
+    ]
+    collapsed.insert(0, {"role": "system", "content": "\n\n".join(contents)})
     return collapsed
 
 
