@@ -997,6 +997,9 @@ flow_fresh_install() {
         || die "fresh install did not show telemetry consent"
     baseline fresh-install.consent "$OUT/consent-visible.json"
     dismiss_first_run
+    selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
+    [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \
+        || die "#1564: skipping Quickstart selected '$selected_model' instead of the small starter"
     for id in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
         jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/steady.json" >/dev/null \
             || die "post-onboarding shell missing $id"

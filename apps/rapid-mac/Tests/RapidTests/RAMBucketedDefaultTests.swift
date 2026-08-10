@@ -362,6 +362,21 @@ struct CacheAwareDefaultTests {
         ModelEntry(alias: alias, hfRepo: "synthetic/\(alias)", sizeOnDisk: nil, cached: cached)
     }
 
+    @Test("Cached preference walks closest eligible tier downward, smart before fast")
+    func curatedPreferenceOrder() {
+        let order = RAMBucketedDefault.preferenceOrder(forPhysicalRAMGB: 256)
+        #expect(order.prefix(4) == [
+            "qwen3.5-122b-mxfp4",
+            "qwen3.6-35b-4bit",
+            "qwen3.6-35b-8bit",
+            "gemma-4-26b-4bit",
+        ])
+        #expect(Set(order).count == order.count)
+        #expect(RAMBucketedDefault.preferenceOrder(forPhysicalRAMGB: 4).prefix(2) == [
+            "lfm2.5-2.6b-4bit", "lfm2.5-1b-4bit",
+        ])
+    }
+
     // MARK: - Headline case (issue #436 repro)
 
     @Test("256 GB Mac with retired Bonsai cached — picker chooses coherent cached LFM")
@@ -399,19 +414,19 @@ struct CacheAwareDefaultTests {
 
     // MARK: - Step 2: cached-and-fits beats not-cached bucketed (the #436 fix)
 
-    @Test("Step 2: bucketed not cached, multiple cached candidates — alphabetical wins")
-    func multipleCachedAlphabeticalTieBreak() {
+    @Test("#1581 repro: cached fallback prefers the closest curated tier over alphabetical Bonsai")
+    func multipleCachedQualityAwareTieBreak() {
         let catalog = [
-            entry("qwen3.6-35b-4bit", cached: false),       // bucketed default
-            entry("gemma-4-12b-4bit", cached: true),        // alphabetical first
-            entry("qwen3.5-9b-4bit", cached: true),
+            entry("qwen3.5-122b-mxfp4", cached: false),
+            entry("bonsai-27b-2bit", cached: true),
+            entry("qwen3.6-35b-4bit", cached: true),
         ]
         let pick = CacheAwareDefault.pick(
             catalog: catalog,
             hardware: host(gb: 256),
-            bucketedDefault: "qwen3.6-35b-4bit"
+            bucketedDefault: "qwen3.5-122b-mxfp4"
         )
-        #expect(pick == "gemma-4-12b-4bit")
+        #expect(pick == "qwen3.6-35b-4bit")
     }
 
     @Test("Step 2: bucketed missing from catalog entirely — cached candidate wins")

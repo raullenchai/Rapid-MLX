@@ -231,6 +231,22 @@ enum RAMBucketedDefault {
         tier(forPhysicalRAMGB: physicalRAMGB).picks
     }
 
+    /// Quality-aware order for choosing among models that are already on
+    /// disk. Begin with the closest tier this Mac qualifies for and walk
+    /// downward, preserving smart-before-fast within each tier and removing
+    /// aliases repeated across tiers.
+    static func preferenceOrder(forPhysicalRAMGB physicalRAMGB: Double) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        let effectiveRAMGB = max(physicalRAMGB, tiers[0].floorGB)
+        for tier in tiers.reversed() where tier.floorGB <= effectiveRAMGB {
+            for alias in tier.picks.map(\.alias) where seen.insert(alias).inserted {
+                result.append(alias)
+            }
+        }
+        return result
+    }
+
     /// Launch flags to apply when starting ``alias`` AS the recommended
     /// model for a Mac at ``physicalRAMGB`` — empty unless the alias is
     /// this Mac's primary or alt pick. This is why a 64 GB Mac that hand-
@@ -395,24 +411,17 @@ enum SafeDefaultFallback {
 ///    unparseable aliases so a coder/flash quant doesn't phantom-
 ///    classify as small).
 ///
-/// ## Why alphabetical tie-break inside the cached set
+/// ## Cached-candidate ordering
 ///
-/// ``localizedStandardCompare`` mirrors ``ModelCatalog.load``'s
-/// post-cached sort and ``AutoStartDecision.resolveAlias``'s
-/// first-cached fallback — three surfaces, one tie-break. A
-/// 256 GB Mac with both ``bonsai-1.7b-2bit`` and ``qwen3.6-35b-4bit``
-/// cached would land on ``bonsai-1.7b-2bit`` (alphabetically first),
-/// instant-boot. The user swaps via the picker the moment they
-/// want the larger model — same affordance as today, but
-/// without paying a multi-GB download just to swap back to a
-/// model that was already on disk.
-///
-/// "Smallest by footprint" was considered and rejected — on a
-/// catalog where every cached alias has a real ``<n>b`` token the
-/// two heuristics converge for the dominant Quickstart case
-/// (bonsai-1.7b-2bit wins on both), and alphabetical avoids the
-/// estimator-overhead the picker doesn't otherwise need on the
-/// hot path.
+/// A cached model is only useful as a default if it is also a good default.
+/// Alphabetical order made a 256 GB Mac choose ``bonsai-27b-2bit`` while the
+/// stronger ``qwen3.6-35b-4bit`` was already on disk. Rank known candidates
+/// by the curated RAM table instead: start at this Mac's tier, walk downward,
+/// and keep each tier's smart pick ahead of its fast alternative. This reuses
+/// the same measured capability decisions the recommendation UI presents.
+/// Aliases outside that table retain an alphabetical fallback; inventing a
+/// quality score from parameter count or quantization would be less honest
+/// than admitting that no curated comparison exists.
 ///
 /// ## Why we filter out unparseable-params aliases for step 2
 ///
@@ -484,7 +493,7 @@ enum CacheAwareDefault {
             .filter { $0.cached }
             .filter { ModelSizing.estimate(alias: $0.alias).paramsBillions != nil }
             .filter { isSafe($0, on: hardware) }
-        if let pick = firstAlphabetical(cachedCandidates) {
+        if let pick = preferredCachedAlias(cachedCandidates, on: hardware) {
             return pick
         }
 
@@ -512,5 +521,17 @@ enum CacheAwareDefault {
             .map(\.alias)
             .sorted(by: { $0.localizedStandardCompare($1) == .orderedAscending })
             .first
+    }
+
+    private static func preferredCachedAlias(
+        _ entries: [ModelEntry], on hardware: MacHardware
+    ) -> String? {
+        let aliases = Set(entries.map(\.alias))
+        if let curated = RAMBucketedDefault.preferenceOrder(
+            forPhysicalRAMGB: hardware.physicalRAMGB
+        ).first(where: aliases.contains) {
+            return curated
+        }
+        return firstAlphabetical(entries)
     }
 }

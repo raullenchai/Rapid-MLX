@@ -90,6 +90,24 @@ struct ModelPickerBarSectionOrderTests {
         #expect(pick != "bonsai-1.7b-2bit")
     }
 
+    @Test("#1564: skipping first-run guidance keeps the small starter instead of the 96 GB tier download")
+    func freshSkipKeepsStarterInsteadOfHugeTierDefault() {
+        let catalog = [
+            entry(QuickstartCoordinator.defaultChoice.alias,
+                  hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit", cached: false),
+            entry("qwen3.5-122b-mxfp4",
+                  hfRepo: "mlx-community/Qwen3.5-122B-A10B-mxfp4", cached: false),
+        ]
+
+        let pick = ModelPickerBar.quickstartEligibleDefault(
+            catalog: catalog,
+            eligible: true
+        )
+
+        #expect(pick == QuickstartCoordinator.defaultChoice.alias)
+        #expect(pick != "qwen3.5-122b-mxfp4")
+    }
+
     @Test("Completed or ineligible user is left to normal cache/RAM default policy")
     func ineligibleDefaultDoesNotOverrideNormalPolicy() {
         let catalog = [
