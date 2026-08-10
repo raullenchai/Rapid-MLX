@@ -666,7 +666,12 @@ def _resolve_external_model_path(name: str) -> str | None:
     escaping the user-nominated root.  Completeness is rechecked at launch so
     a row that became partial after catalog refresh cannot be served as ready.
     """
-    parts = name.split("/")
+    # A known Rapid alias may correspond to an external store's canonical
+    # publisher/repo layout. Search by that repo id while preserving the short
+    # alias as the desktop-facing identity.
+    profile = _load().get(name)
+    external_name = profile.hf_path if profile is not None else name
+    parts = external_name.split("/")
     if len(parts) not in (1, 2) or any(part in ("", ".", "..") for part in parts):
         return None
 

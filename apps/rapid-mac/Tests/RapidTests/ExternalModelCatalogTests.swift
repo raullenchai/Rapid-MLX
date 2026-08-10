@@ -59,6 +59,38 @@ struct ExternalModelCatalogTests {
         #expect(outsider?.alias == "mlx-community/Outsider-4bit")
     }
 
+    @Test("External copies merge into an existing catalog alias")
+    func externalCopyMarksKnownAliasCached() {
+        let cached = [
+            ("(external)", "mlx-community/Qwen3.5-4B", "2.3 GiB")
+        ]
+        let entries = ModelCatalog.mergeAvailableAndCached(
+            available: [("qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B")],
+            cached: cached,
+            excluded: []
+        )
+
+        #expect(entries.count == 1)
+        #expect(entries[0].alias == "qwen3.5-4b-4bit")
+        #expect(entries[0].cached)
+        #expect(entries[0].isExternal)
+        #expect(entries[0].sizeOnDisk == "2.3 GiB")
+    }
+
+    @Test("A root-level external model matching an alias is not dropped")
+    func rootLevelExternalMatchesAlias() {
+        let entries = ModelCatalog.mergeAvailableAndCached(
+            available: [("local-model", nil)],
+            cached: [("(external)", "local-model", "1.0 GiB")],
+            excluded: []
+        )
+
+        #expect(entries.count == 1)
+        #expect(entries[0].alias == "local-model")
+        #expect(entries[0].cached)
+        #expect(entries[0].isExternal)
+    }
+
     /// The safety half: visible, but never deletable.
     @Test("Deleting an external model is refused at the dispatcher")
     func externalDeletionIsRefused() async {

@@ -310,17 +310,31 @@ enum ModelCatalog {
         for (alias, hf, size) in cached where !alias.isEmpty && !isStatusAlias(alias) {
             cachedIndex[alias] = (hf, size)
         }
+        var externalIndex: [String: (hfRepo: String?, size: String?)] = [:]
+        for (alias, hf, size) in cached where alias == "(external)" {
+            guard let identifier = hf else { continue }
+            externalIndex[identifier] = (hf, size)
+        }
 
         var entries: [ModelEntry] = []
         var seenAliases: Set<String> = []
+        var consumedExternal: Set<String> = []
         for (alias, hfHint) in available {
             seenAliases.insert(alias)
             let cachedHit = cachedIndex[alias]
+            let externalIdentifier: String? = {
+                if externalIndex.keys.contains(alias) { return alias }
+                if let hfHint, externalIndex.keys.contains(hfHint) { return hfHint }
+                return nil
+            }()
+            if let externalIdentifier { consumedExternal.insert(externalIdentifier) }
             entries.append(ModelEntry(
                 alias: alias,
-                hfRepo: cachedHit?.hfRepo ?? hfHint,
-                sizeOnDisk: cachedHit?.size,
-                cached: cachedHit != nil
+                hfRepo: cachedHit?.hfRepo ?? hfHint ?? externalIdentifier,
+                sizeOnDisk: cachedHit?.size
+                    ?? externalIdentifier.flatMap { externalIndex[$0]?.size },
+                cached: cachedHit != nil || externalIdentifier != nil,
+                isExternal: cachedHit == nil && externalIdentifier != nil
             ))
         }
         // A cached model with no row in ``rapid-mlx models`` is unusual
@@ -357,7 +371,9 @@ enum ModelCatalog {
         // — and leave the user re-downloading weights they already have.
         for (alias, hf, size) in cached
         where alias == "(external)" {
-            guard let repo = hf, !seenAliases.contains(repo) else { continue }
+            guard let repo = hf,
+                  !consumedExternal.contains(repo),
+                  !seenAliases.contains(repo) else { continue }
             seenAliases.insert(repo)
             entries.append(ModelEntry(
                 alias: repo,

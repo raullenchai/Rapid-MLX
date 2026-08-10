@@ -4983,6 +4983,14 @@ def _scan_external_model_dirs(
         out.append((repo, _snapshot_size_bytes(directory), mtime))
 
     for root in roots:
+        canonical_root = os.path.realpath(root)
+
+        def _contained(path: str, *, _root: str = canonical_root) -> bool:
+            try:
+                return os.path.commonpath((_root, os.path.realpath(path))) == _root
+            except (OSError, ValueError):
+                return False
+
         try:
             first_level = sorted(os.listdir(root))
         except OSError:
@@ -5000,7 +5008,7 @@ def _scan_external_model_dirs(
 
             # A model may sit directly at <root>/<name>/ as well as at
             # <root>/<publisher>/<name>/ — accept both.
-            if _snapshot_is_complete(pub_dir):
+            if _contained(pub_dir) and _snapshot_is_complete(pub_dir):
                 _record(pub_dir, publisher)
                 continue
 
@@ -5012,7 +5020,11 @@ def _scan_external_model_dirs(
                 if name.startswith("."):
                     continue
                 model_dir = os.path.join(pub_dir, name)
-                if os.path.isdir(model_dir) and _snapshot_is_complete(model_dir):
+                if (
+                    os.path.isdir(model_dir)
+                    and _contained(model_dir)
+                    and _snapshot_is_complete(model_dir)
+                ):
                     _record(model_dir, f"{publisher}/{name}")
 
     return out
@@ -5138,7 +5150,13 @@ def _print_cached_models() -> None:
                 mod = f"{delta // 86400}d ago"
         # Truncate over-long HF paths so the row doesn't wrap on a
         # narrow terminal; the alias column carries the canonical name.
-        repo_disp = repo if len(repo) <= 50 else (repo[:47] + "...")
+        # External identifiers are machine-consumed by the desktop and must
+        # remain byte-for-byte launchable. Hub rows may still be truncated for
+        # interactive display because their registered alias is the canonical
+        # launch identity; external rows have no independent alias channel.
+        repo_disp = (
+            repo if repo in external_repos or len(repo) <= 50 else (repo[:47] + "...")
+        )
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")

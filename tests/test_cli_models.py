@@ -737,6 +737,16 @@ def test_external_scan_deduplicates_symlinked_roots(tmp_path):
     assert len(rows) == 1
 
 
+def test_external_scan_rejects_model_directory_symlink_outside_root(tmp_path):
+    """Discovery and launch resolution enforce the same root boundary."""
+    root = tmp_path / "models"
+    root.mkdir()
+    outside = _write_mlx_model(tmp_path / "outside" / "pub" / "Model")
+    (root / "pub").symlink_to(outside.parent, target_is_directory=True)
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
 def test_external_scan_deduplicates_same_repo_across_roots(tmp_path):
     """First configured root wins when two stores carry the same repo."""
     first = tmp_path / "first"
@@ -758,6 +768,15 @@ def test_external_repo_resolves_to_local_model_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
 
     assert resolve_model("mlx-community/Outsider-4bit") == os.path.realpath(model)
+
+
+def test_registered_alias_resolves_to_external_hf_layout(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    profile = list_profiles()["qwen3.5-4b-4bit"]
+    model = _write_mlx_model(root.joinpath(*profile.hf_path.split("/")))
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    assert resolve_model("qwen3.5-4b-4bit") == os.path.realpath(model)
 
 
 def test_external_resolution_rejects_parent_traversal(tmp_path, monkeypatch):
@@ -924,3 +943,19 @@ def test_cached_row_columns_stay_split_for_a_full_width_size(
     # modified time.
     assert re.fullmatch(r"[\d.]+ [KMGT]iB", columns[2]), columns[2]
     assert columns[2] == "1023.9 MiB"
+
+
+def test_external_repo_identifier_is_never_truncated(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "external"
+    repo = "Model-" + "x" * 60
+    _write_mlx_model(root / "mlx-community" / repo, size=1)
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(cli, "_snapshot_size_bytes", lambda _path: 1)
+
+    cli._print_cached_models()
+    row = next(
+        line for line in capsys.readouterr().out.splitlines() if "(external)" in line
+    )
+
+    assert f"mlx-community/{repo}" in row
+    assert "..." not in row
