@@ -2,32 +2,27 @@ import Foundation
 import Testing
 
 /// Static, network-free checks that every third-party notice which must travel
-/// with the binary actually can.
+/// with the binary actually can — and that the mechanism which stages them is
+/// exercised, not merely present as text.
 ///
 /// The shipped `.app` (and the DMG around it) is the "distribution" that
 /// swift-cmark's BSD-2-Clause and the linked MIT packages ask their notice to
 /// accompany. Before #1596 `scripts/build.sh` staged none of them: an accurate
 /// `THIRD_PARTY.md` sat in the repo while the download carried no license text
-/// at all. A `URL(string:)`-style bug — correct on paper, wrong in the artifact
-/// — that nothing in the build could notice.
+/// at all — a bug nothing in the build could notice.
 ///
-/// This suite closes that at `swift test`, reading the working tree only, in
-/// the same spirit as `RepositoryLinkTargetsTests`:
+/// Rather than inspect `.build/checkouts` (nondeterministic — a resolved cache
+/// that may hold stale entries, or be laid out under a custom scratch path),
+/// this suite runs the real staging script, `scripts/stage-licenses.sh`,
+/// against constructed fixtures. That deterministically proves both the success
+/// path (a package with a license is staged) and the fail-closed path (a
+/// package without one aborts the build), and it stays honest if the executable
+/// staging call is ever deleted, since the fixtures execute the script itself.
 ///
-/// * the vendored SwiftMath notice exists in-tree (it is compiled into the
-///   binary and cannot rely on an ephemeral checkout);
-/// * every remote package pinned in `Package.resolved` has a discoverable
-///   license file in its resolved checkout — the exact precondition
-///   `build.sh` hard-fails on, surfaced earlier and faster here;
-/// * `THIRD_PARTY.md` points at the shipped `Contents/Resources/Licenses/`
-///   location, so the repo document and the bundle cannot silently diverge;
-/// * the staging mechanism in `build.sh` is present, so it cannot be deleted
-///   without a test going red.
-///
-/// Scope, stated plainly: this proves the notices are *stageable* from this
-/// checkout. It does not run `build.sh` or inspect an assembled bundle — the
-/// build itself is the enforcement that the staged files land under
-/// `Contents/`; this suite guards the inputs that build depends on.
+/// It also pins the working-tree invariants the real build depends on: the
+/// vendored SwiftMath notice exists in-tree, `THIRD_PARTY.md` points at the
+/// shipped `Contents/Resources/Licenses/` location, and `build.sh` actually
+/// invokes the staging script.
 @Suite("Third-party license staging")
 struct ThirdPartyLicenseStagingTests {
     /// Repository root, derived from this file's own compile-time location:
@@ -45,19 +40,208 @@ struct ThirdPartyLicenseStagingTests {
         repositoryRoot.appendingPathComponent("apps/rapid-mac", isDirectory: true)
     }
 
-    /// The conventional license filenames `build.sh` searches for, kept in sync
-    /// with `find_license_file` in that script.
-    private static let licenseFileNames = [
-        "LICENSE", "LICENSE.txt", "LICENSE.md", "LICENCE",
-        "COPYING", "COPYING.txt", "COPYRIGHT", "NOTICE",
-    ]
-
-    private static func containsLicenseFile(in directory: URL) -> Bool {
-        let fm = FileManager.default
-        return licenseFileNames.contains {
-            fm.fileExists(atPath: directory.appendingPathComponent($0).path)
-        }
+    private static var stagingScript: URL {
+        appRoot.appendingPathComponent("scripts/stage-licenses.sh")
     }
+
+    // MARK: - Fixture harness
+
+    private struct StagingResult {
+        let exitCode: Int32
+        let stagedFiles: [String]
+        let stderr: String
+    }
+
+    /// Run `stage-licenses.sh` against a throwaway fixture tree and report what
+    /// it staged. `resolvedBody` is written verbatim as `Package.resolved`;
+    /// `checkoutLicenses` maps a checkout directory name to the license file to
+    /// drop inside it (nil ⇒ create the directory with no license), and a name
+    /// mapped through `omittedCheckouts` is referenced by the resolved file but
+    /// its directory is not created at all.
+    private static func runStaging(
+        resolvedBody: String,
+        checkoutLicenses: [String: (filename: String, contents: String)?],
+        vendorLicense: String? = "SwiftMath MIT license text",
+        createCheckoutsDir: Bool = true
+    ) throws -> StagingResult {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("lic-fixture-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let resolved = root.appendingPathComponent("Package.resolved")
+        try resolvedBody.write(to: resolved, atomically: true, encoding: .utf8)
+
+        let checkouts = root.appendingPathComponent("checkouts", isDirectory: true)
+        if createCheckoutsDir {
+            try fm.createDirectory(at: checkouts, withIntermediateDirectories: true)
+            for (name, license) in checkoutLicenses {
+                let dir = checkouts.appendingPathComponent(name, isDirectory: true)
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                if let license {
+                    try license.contents.write(
+                        to: dir.appendingPathComponent(license.filename),
+                        atomically: true, encoding: .utf8
+                    )
+                }
+            }
+        }
+
+        let vendorLicensePath: String
+        if let vendorLicense {
+            // Mirror the real source basename (Vendor/SwiftMath/LICENSE) so the
+            // staged name is SwiftMath-LICENSE.txt, not SwiftMath-<file>.txt.
+            let vendorDir = root.appendingPathComponent("vendor", isDirectory: true)
+            try fm.createDirectory(at: vendorDir, withIntermediateDirectories: true)
+            let vendor = vendorDir.appendingPathComponent("LICENSE")
+            try vendorLicense.write(to: vendor, atomically: true, encoding: .utf8)
+            vendorLicensePath = vendor.path
+        } else {
+            vendorLicensePath = root.appendingPathComponent("does-not-exist").path
+        }
+
+        let out = root.appendingPathComponent("Licenses", isDirectory: true)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            stagingScript.path,
+            resolved.path,
+            checkouts.path,
+            vendorLicensePath,
+            out.path,
+        ]
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        process.standardOutput = Pipe()
+        try process.run()
+        process.waitUntilExit()
+
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let staged =
+            (try? fm.contentsOfDirectory(atPath: out.path))?.sorted() ?? []
+        return StagingResult(
+            exitCode: process.terminationStatus,
+            stagedFiles: staged,
+            stderr: String(data: errData, encoding: .utf8) ?? ""
+        )
+    }
+
+    /// A minimal `Package.resolved` (v3) body pinning the given repo URLs.
+    private static func resolved(locations: [String]) -> String {
+        let pins = locations.enumerated().map { index, loc in
+            """
+                  {
+                    "identity" : "pkg\(index)",
+                    "kind" : "remoteSourceControl",
+                    "location" : "\(loc)",
+                    "state" : { "revision" : "deadbeef", "version" : "1.0.0" }
+                  }
+            """
+        }.joined(separator: ",\n")
+        return """
+            {
+              "pins" : [
+            \(pins)
+              ],
+              "version" : 3
+            }
+            """
+    }
+
+    // MARK: - Fixture-driven behavior
+
+    @Test("staging copies each linked package's license plus the vendored one")
+    func stagesEveryDeclaredLicense() throws {
+        let result = try Self.runStaging(
+            resolvedBody: Self.resolved(locations: [
+                "https://github.com/example/FakePkg",
+                "https://github.com/example/OtherPkg.git",
+            ]),
+            checkoutLicenses: [
+                "FakePkg": (filename: "LICENSE", contents: "MIT for FakePkg"),
+                // `.git` suffix in the URL must be stripped to the checkout name,
+                // and a `COPYING` (BSD-style) file must be discovered too.
+                "OtherPkg": (filename: "COPYING", contents: "BSD for OtherPkg"),
+            ]
+        )
+
+        #expect(result.exitCode == 0, "staging failed: \(result.stderr)")
+        #expect(
+            result.stagedFiles == [
+                "FakePkg-LICENSE.txt",
+                "OtherPkg-COPYING.txt",
+                "SwiftMath-LICENSE.txt",
+            ],
+            "unexpected staged set: \(result.stagedFiles)"
+        )
+    }
+
+    @Test("staging fails closed when a linked package has no license file")
+    func failsWhenPackageHasNoLicense() throws {
+        let result = try Self.runStaging(
+            resolvedBody: Self.resolved(locations: [
+                "https://github.com/example/FakePkg"
+            ]),
+            checkoutLicenses: ["FakePkg": nil]  // directory exists, no license
+        )
+        #expect(
+            result.exitCode != 0,
+            """
+            a package without a license must abort the build, but staging \
+            returned 0 and staged: \(result.stagedFiles)
+            """
+        )
+    }
+
+    @Test("staging fails closed when a resolved pin has no checkout")
+    func failsWhenPinHasNoCheckout() throws {
+        let result = try Self.runStaging(
+            resolvedBody: Self.resolved(locations: [
+                "https://github.com/example/FakePkg"
+            ]),
+            checkoutLicenses: [:]  // pin referenced, but no FakePkg/ directory
+        )
+        #expect(
+            result.exitCode != 0,
+            "a resolved pin with no checkout must abort, but staging returned 0"
+        )
+    }
+
+    @Test("staging fails closed when no remote pins are present")
+    func failsWhenNoPins() throws {
+        let result = try Self.runStaging(
+            resolvedBody: #"{ "pins" : [], "version" : 3 }"#,
+            checkoutLicenses: [:]
+        )
+        #expect(
+            result.exitCode != 0,
+            """
+            an empty pin set must abort rather than silently staging only the \
+            vendored notice
+            """
+        )
+    }
+
+    @Test("staging fails closed when the vendored SwiftMath notice is missing")
+    func failsWhenVendoredNoticeMissing() throws {
+        let result = try Self.runStaging(
+            resolvedBody: Self.resolved(locations: [
+                "https://github.com/example/FakePkg"
+            ]),
+            checkoutLicenses: [
+                "FakePkg": (filename: "LICENSE", contents: "MIT for FakePkg")
+            ],
+            vendorLicense: nil
+        )
+        #expect(
+            result.exitCode != 0,
+            "a missing vendored SwiftMath notice must abort the build"
+        )
+    }
+
+    // MARK: - Working-tree invariants
 
     @Test("the vendored SwiftMath notice ships from the tree, not a checkout")
     func vendoredSwiftMathLicenseExists() throws {
@@ -86,107 +270,23 @@ struct ThirdPartyLicenseStagingTests {
         )
     }
 
-    @Test("build.sh still stages third-party licenses and fails closed")
-    func buildScriptStagesLicenses() throws {
+    @Test("build.sh actually invokes the license-staging script")
+    func buildScriptInvokesStagingScript() throws {
         let script = Self.appRoot.appendingPathComponent("scripts/build.sh")
         let text = try String(contentsOf: script, encoding: .utf8)
-        for marker in [
-            "Contents/Resources/Licenses",
-            "stage_license",
-            "find_license_file",
-            "no license file found for Swift package",
-        ] {
-            #expect(
-                text.contains(marker),
-                """
-                build.sh no longer contains '\(marker)'; the license-staging \
-                mechanism from #1596 must not be silently removed.
-                """
-            )
+        // A real invocation line, not merely a mention in a comment: find a
+        // non-comment line that runs the script.
+        let invokes = text.split(separator: "\n").contains { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            return !line.hasPrefix("#") && line.contains("scripts/stage-licenses.sh")
         }
-    }
-
-    /// The remote SPM checkout directory for a pin: the basename of its
-    /// repository URL with any trailing `.git` stripped (SPM's on-disk name,
-    /// which preserves the upstream repo's casing rather than the lowercased
-    /// identity).
-    private static func checkoutName(forLocation location: String) -> String {
-        var name = URL(string: location)?.lastPathComponent ?? location
-        if name.hasSuffix(".git") {
-            name = String(name.dropLast(4))
-        }
-        return name
-    }
-
-    private struct ResolvedPin {
-        let identity: String
-        let checkoutName: String
-    }
-
-    private static func resolvedPins() throws -> [ResolvedPin] {
-        let resolved = appRoot.appendingPathComponent("Package.resolved")
-        let data = try Data(contentsOf: resolved)
-        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let pins = root?["pins"] as? [[String: Any]] ?? []
-        return pins.compactMap { pin in
-            guard let identity = pin["identity"] as? String else { return nil }
-            let location = pin["location"] as? String ?? identity
-            return ResolvedPin(
-                identity: identity,
-                checkoutName: checkoutName(forLocation: location)
-            )
-        }
-    }
-
-    @Test("Package.resolved still pins the license-bearing linked packages")
-    func resolvedPinsAreRecognised() throws {
-        let identities = Set(try Self.resolvedPins().map(\.identity))
-        // swift-cmark is the BSD-2-Clause package whose notice-must-travel
-        // requirement motivated #1596; guard it explicitly so an over-loose
-        // parse cannot pass on an empty set.
         #expect(
-            identities.contains("swift-cmark"),
+            invokes,
             """
-            Package.resolved no longer pins swift-cmark; if a dependency was \
-            removed, update THIRD_PARTY.md and this suite together.
+            build.sh no longer invokes scripts/stage-licenses.sh on a live \
+            (non-comment) line; the license-staging step from #1596 must not be \
+            silently removed.
             """
         )
-        #expect(!identities.isEmpty, "Package.resolved parsed to zero pins.")
-    }
-
-    @Test("every resolved remote package carries a discoverable license file")
-    func everyResolvedPackageHasALicense() throws {
-        let checkouts = Self.appRoot
-            .appendingPathComponent(".build/checkouts", isDirectory: true)
-        var isDirectory: ObjCBool = false
-        guard
-            FileManager.default.fileExists(
-                atPath: checkouts.path, isDirectory: &isDirectory
-            ), isDirectory.boolValue
-        else {
-            // `swift test` resolves dependencies before building, so the
-            // checkouts are normally present. If a non-standard scratch layout
-            // hides them, the build-time hard-fail in build.sh remains the
-            // backstop; don't fail spuriously here.
-            return
-        }
-
-        for pin in try Self.resolvedPins() {
-            let dir = checkouts.appendingPathComponent(
-                pin.checkoutName, isDirectory: true
-            )
-            guard
-                FileManager.default.fileExists(atPath: dir.path)
-            else { continue }
-            #expect(
-                Self.containsLicenseFile(in: dir),
-                """
-                Swift package '\(pin.identity)' has no license file in its \
-                resolved checkout (\(pin.checkoutName)). build.sh would fail to \
-                stage its notice and abort the release build. Confirm the \
-                upstream ships a LICENSE/COPYING, or vendor the notice.
-                """
-            )
-        }
     }
 }
