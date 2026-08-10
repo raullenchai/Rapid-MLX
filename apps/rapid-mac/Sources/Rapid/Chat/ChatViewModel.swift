@@ -1687,23 +1687,40 @@ final class ChatViewModel {
         return history[start...].contains { $0.role == .tool }
     }
 
-    /// Like ``carriesToolResultForThisTurn`` but requires a SUCCESSFUL tool
-    /// result — a ``.tool`` row for this turn that did not fail. The grounding
+    /// Like ``carriesToolResultForThisTurn`` but requires usable current data
+    /// from one of the built-in live-data tools. The grounding
     /// correction (BUG C) asserts "the tool result above was fetched just now
     /// and IS the current data", so it must not fire when the only tool result
     /// this turn is a failed/empty one (e.g. a search that errored): there the
     /// model's "I can't get current data" answer is correct, not a
-    /// confabulation. All three built-in tools (web_search, browse, weather)
-    /// are live-data sources, so a non-failed result from any of them is
-    /// real-time evidence.
+    /// confabulation. Tool rows are joined back to their calls by ID so a
+    /// successful calculator or MCP result cannot accidentally arm this
+    /// live-data-specific retry.
     static func carriesSuccessfulToolResultForThisTurn(_ history: [ChatMessage]) -> Bool {
         let start =
             history.lastIndex { $0.role == .user }
             .map { history.index(after: $0) } ?? history.startIndex
-        return history[start...].contains {
-            $0.role == .tool
-                && $0.status == .complete
-                && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let turn = history[start...]
+        let liveToolNames: Set<String> = ["web_search", "browse", "weather"]
+        var liveCallIDs: Set<String> = []
+        for message in turn where message.role == .assistant {
+            for call in message.toolCalls ?? []
+            where liveToolNames.contains(call.function.name) {
+                liveCallIDs.insert(call.id)
+            }
+        }
+        return turn.contains { message in
+            guard message.role == .tool,
+                message.status == .complete,
+                let toolCallID = message.toolCallID,
+                liveCallIDs.contains(toolCallID)
+            else { return false }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return false }
+            // A successful transport can still produce no evidence. In that
+            // case a refusal may be accurate, and the correction preamble must
+            // not claim that current data exists.
+            return !content.lowercased().contains("no results found")
         }
     }
 

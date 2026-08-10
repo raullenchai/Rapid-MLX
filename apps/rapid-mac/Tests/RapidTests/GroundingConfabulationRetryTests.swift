@@ -295,6 +295,55 @@ struct SuccessfulToolResultScopingTests {
         #expect(ChatViewModel.carriesToolResultForThisTurn(h))
         #expect(!ChatViewModel.carriesSuccessfulToolResultForThisTurn(h))
     }
+
+    @Test("A successful non-live tool result does not arm the current-data correction")
+    func nonLiveResultIsNotCurrentData() {
+        let h = [
+            ChatMessage(role: .user, content: "Calculate 17 times 23."),
+            ChatMessage(
+                role: .assistant,
+                toolCalls: [ToolCall(id: "c1", name: "calculator", arguments: "{}")]
+            ),
+            ChatMessage(role: .tool, content: "391", status: .complete, toolCallID: "c1")
+        ]
+        #expect(!ChatViewModel.carriesSuccessfulToolResultForThisTurn(h))
+    }
+
+    @Test("A successful search with no results does not claim current data exists")
+    func noResultsIsNotCurrentData() {
+        let h = [
+            ChatMessage(role: .user, content: "Find the latest frobnicator news."),
+            ChatMessage(
+                role: .assistant,
+                toolCalls: [ToolCall(id: "s1", name: "web_search", arguments: "{}")]
+            ),
+            ChatMessage(
+                role: .tool,
+                content: "web_search: no results found for frobnicator",
+                status: .complete,
+                toolCallID: "s1"
+            )
+        ]
+        #expect(!ChatViewModel.carriesSuccessfulToolResultForThisTurn(h))
+    }
+
+    @Test("A live result must match the originating live tool call ID")
+    func resultMustMatchLiveCallID() {
+        let h = [
+            ChatMessage(role: .user, content: "What's the weather?"),
+            ChatMessage(
+                role: .assistant,
+                toolCalls: [ToolCall(id: "w1", name: "weather", arguments: "{}")]
+            ),
+            ChatMessage(
+                role: .tool,
+                content: "72 F and sunny",
+                status: .complete,
+                toolCallID: "other"
+            )
+        ]
+        #expect(!ChatViewModel.carriesSuccessfulToolResultForThisTurn(h))
+    }
 }
 
 @MainActor
