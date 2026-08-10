@@ -655,9 +655,10 @@ class MLLMScheduler:
         # Same ``request is not None`` guard as below — late/duplicate
         # aborts arrive after self.requests.pop() and would otherwise
         # raise AttributeError on the dereference.
-        if request is not None and request.num_output_tokens > 0:
-            self.total_completion_tokens += request.num_output_tokens
+        if request is not None:
             self.total_prompt_tokens += request.num_prompt_tokens
+            if request.num_output_tokens > 0:
+                self.total_completion_tokens += request.num_output_tokens
 
         # Mark as aborted
         if request is not None:
@@ -1018,6 +1019,7 @@ class MLLMScheduler:
                 request.finish_reason = finish_reason
                 self._detokenizer_pool.pop(request_id, None)
 
+                self.total_prompt_tokens += request.num_prompt_tokens
                 self.total_completion_tokens += request.num_output_tokens
                 self.num_requests_processed += 1
 

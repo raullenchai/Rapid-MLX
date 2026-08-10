@@ -15,6 +15,7 @@ import functools
 import json
 import logging
 import threading
+import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -836,6 +837,7 @@ class BatchedEngine(BaseEngine):
         self._mllm_instance = None  # MLXMultimodalLM instance
         self._loaded = False
         self._engine_started = False  # Track if engine loop is running
+        self._start_time: float | None = None
 
         # Atomic admission counter. Tracks in-flight requests admitted
         # via ``check_admission``; released by
@@ -1012,6 +1014,7 @@ class BatchedEngine(BaseEngine):
             await self._start_llm()
 
         self._loaded = True
+        self._start_time = time.monotonic()
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
 
     async def _start_mllm(self) -> None:
@@ -1354,6 +1357,7 @@ class BatchedEngine(BaseEngine):
         # (handed off in start()). Drop our reference so __del__ doesn't
         # double-shutdown.
         self._model_load_executor = None
+        self._start_time = None
 
         self._model = None
         self._tokenizer = None
@@ -2848,18 +2852,19 @@ class BatchedEngine(BaseEngine):
         if self._mllm_scheduler:
             mllm_stats = self._mllm_scheduler.get_stats()
             stats["mllm_scheduler"] = mllm_stats
-            # Promote Metal memory stats + batch_generator throughput to
-            # top-level for /v1/status. Without "batch_generator" forwarded,
-            # generation_tps/prompt_tps stay invisible to monitoring even
-            # though the underlying counters are populated.
-            for key in (
-                "metal_active_memory_gb",
-                "metal_peak_memory_gb",
-                "metal_cache_memory_gb",
-                "batch_generator",
-            ):
-                if key in mllm_stats:
-                    stats[key] = mllm_stats[key]
+            # The health and Prometheus routes consume the common top-level
+            # stats contract. MLLM scheduler values used to remain nested
+            # under ``mllm_scheduler``, leaving Gemma's activity and token
+            # counters permanently at zero while generation was successful.
+            # Keep the detailed nested snapshot and promote the same fields
+            # that the text engine exposes at the top level.
+            stats.update(mllm_stats)
+            stats["steps_executed"] = getattr(self._mllm_scheduler, "_step_count", 0)
+            stats["uptime_seconds"] = (
+                max(0.0, time.monotonic() - self._start_time)
+                if self._start_time is not None
+                else 0.0
+            )
         elif self._engine:
             stats.update(self._engine.get_stats())
 
