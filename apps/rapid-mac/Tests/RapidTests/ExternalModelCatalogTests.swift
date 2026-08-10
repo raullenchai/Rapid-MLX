@@ -221,11 +221,13 @@ struct ExternalModelCatalogTests {
             selected: root + "/."
         )
 
-        #expect(merged == "[\"/first\",\"\(canonical)\"]")
+        #expect(Self.decodeRoots(merged) == ["/first", canonical])
 
         let colonPath = root + ":archive"
-        #expect(ModelCatalog.mergedExtraModelRoots(existing: nil, selected: colonPath)
-            == "[\"\(colonPath)\"]")
+        #expect(Self.decodeRoots(ModelCatalog.mergedExtraModelRoots(
+            existing: nil,
+            selected: colonPath
+        )) == [colonPath])
     }
 
     @Test("Serve child receives the same external root used for discovery")
@@ -236,7 +238,12 @@ struct ExternalModelCatalogTests {
             modelsFolderOverride: "/selected"
         )
 
-        #expect(env[ModelCatalog.extraModelRootsEnvKey] == "[\"/ambient\",\"/selected\"]")
+        #expect(Self.decodeRoots(env[ModelCatalog.extraModelRootsEnvKey]) == ["/ambient", "/selected"])
         #expect(env["HF_HUB_CACHE"] == "/selected")
+    }
+
+    private static func decodeRoots(_ value: String?) -> [String]? {
+        guard let value else { return nil }
+        return try? JSONDecoder().decode([String].self, from: Data(value.utf8))
     }
 }

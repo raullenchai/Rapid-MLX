@@ -1455,7 +1455,7 @@ enum RecommendedCardLayout {
     static let actionButtonTitles = ["Download", "Delete", "Cancel", "Retry"]
 
     /// Every status pill the same slot can render.
-    static let actionPillTitles = ["On disk", "In use", "Serving"]
+    static let actionPillTitles = ["On disk", "In use", "Serving", "External"]
 
     /// Intrinsic width of a small push-button with this title.
     static func buttonWidth(title: String) -> CGFloat {

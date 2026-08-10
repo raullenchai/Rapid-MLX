@@ -262,6 +262,7 @@ struct SpawnEnvAllowlistTests {
             "SSL_CERT_FILE", "SSL_CERT_DIR",
             "__CFBundleIdentifier", "XPC_SERVICE_NAME",
             "HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME",
+            "RAPID_MLX_EXTRA_MODEL_ROOTS",
             "HF_ENDPOINT", "HF_HUB_OFFLINE",
             "HF_HUB_DISABLE_TELEMETRY", "HF_HUB_ENABLE_HF_TRANSFER",
         ]
