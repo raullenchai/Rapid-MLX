@@ -1223,6 +1223,16 @@ final class ChatViewModel {
         var toolExecutionsLeft = maxToolExecutions
         var appGroundingSources: [GroundingSource] = []
         var isFinalSynthesisRound = false
+        // dogfood-0810 BUG C: one-shot grounding-correction retry. Set when a
+        // grounded synthesis answer denies real-time access; forces a single
+        // tools-disabled correction round carrying ``groundingCorrectionPreamble``.
+        var groundingCorrectionUsed = false
+        var forceGroundingCorrection = false
+        // The confabulated draft we are replacing, kept until the correction
+        // round produces a usable answer. Restored if the retry stream fails,
+        // is cancelled, or comes back empty — a wrong-but-present answer beats
+        // a blank message.
+        var draftBeforeCorrection: String?
 
         // `tool_choice:function` is advisory in several local chat templates:
         // the shipped 1.2B starter can ignore it and answer "I can search".
@@ -1339,6 +1349,12 @@ final class ChatViewModel {
             if isFinalSynthesisRound {
                 history = ChatViewModel.addingToolBudgetSynthesisPreamble(to: history)
             }
+            // BUG C: on the forced correction round, name the exact failure so
+            // the retry has a stronger steer than the preamble that already
+            // rode on the draft it is correcting.
+            if forceGroundingCorrection {
+                history = ChatViewModel.addingGroundingCorrectionPreamble(to: history)
+            }
             let request: ChatStreamClient.Request
             if let s = sampling {
                 let resolved = s.resolved(toolsEnabled: !definitions.isEmpty)
@@ -1367,6 +1383,78 @@ final class ChatViewModel {
             )
             switch outcome {
             case .terminal:
+                // BUG C: if this .terminal ends a grounding-correction round
+                // that failed to produce a usable answer (transport error,
+                // cancellation, or an empty stream), restore the original draft
+                // — a wrong-but-present answer is better than a blank message.
+                // A successful, non-empty correction is kept as-is.
+                if let original = draftBeforeCorrection {
+                    draftBeforeCorrection = nil
+                    guard epoch == conversationEpoch else { return }
+                    let corrected = currentMessage(index: currentPlaceholder)
+                    let correctedText =
+                        (corrected?.content ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Keep the correction only if it produced a usable, non-
+                    // failed answer of its own. Restore the original draft on
+                    // failure, an empty stream, OR cancellation — a cancelled
+                    // retry must never leave the blanked placeholder empty.
+                    let correctionUsable =
+                        !Task.isCancelled
+                        && !correctedText.isEmpty
+                        && corrected?.status != .failed
+                    if !correctionUsable,
+                        var restore = currentMessage(index: currentPlaceholder)
+                    {
+                        restore.content = original
+                        restore.status = .complete
+                        restore.errorMessage = nil
+                        restore.failureKind = nil
+                        updateMessage(at: currentPlaceholder, with: restore)
+                    }
+                    appendGroundingSources(
+                        appGroundingSources,
+                        to: currentPlaceholder,
+                        epoch: epoch
+                    )
+                    return
+                }
+                // The model finished in prose, but if it denied having
+                // real-time/current data while a SUCCESSFUL tool result for
+                // THIS turn is on the wire, that answer confabulates a refusal
+                // over live evidence. Force exactly one tools-disabled
+                // correction round. Guarded so it fires at most once, only with
+                // a successful tool result present, and never on a cancelled/
+                // superseded turn. The ``!answerReliesOnEvidence`` clause spares
+                // the caveat case ("I can't browse directly, but the results
+                // show X"): a disclaimer in front of a grounded answer is not a
+                // refusal.
+                if !groundingCorrectionUsed,
+                    epoch == conversationEpoch,
+                    !Task.isCancelled,
+                    ChatViewModel.carriesSuccessfulToolResultForThisTurn(
+                        Array(messages.prefix(currentPlaceholder))
+                    ),
+                    let produced = currentMessage(index: currentPlaceholder)?.content,
+                    ChatViewModel.looksLikeUngroundedRefusal(produced),
+                    !ChatViewModel.answerReliesOnEvidence(produced)
+                {
+                    groundingCorrectionUsed = true
+                    forceGroundingCorrection = true
+                    isFinalSynthesisRound = true
+                    // Stash the draft and reset the placeholder so the
+                    // correction streams fresh instead of appending onto the
+                    // refusal text. The stash is restored above if the retry
+                    // does not produce a usable answer.
+                    draftBeforeCorrection = produced
+                    if var staged = currentMessage(index: currentPlaceholder) {
+                        staged.content = ""
+                        staged.toolCalls = nil
+                        staged.status = .streaming
+                        updateMessage(at: currentPlaceholder, with: staged)
+                    }
+                    continue
+                }
                 appendGroundingSources(
                     appGroundingSources,
                     to: currentPlaceholder,
@@ -1599,6 +1687,26 @@ final class ChatViewModel {
         return history[start...].contains { $0.role == .tool }
     }
 
+    /// Like ``carriesToolResultForThisTurn`` but requires a SUCCESSFUL tool
+    /// result — a ``.tool`` row for this turn that did not fail. The grounding
+    /// correction (BUG C) asserts "the tool result above was fetched just now
+    /// and IS the current data", so it must not fire when the only tool result
+    /// this turn is a failed/empty one (e.g. a search that errored): there the
+    /// model's "I can't get current data" answer is correct, not a
+    /// confabulation. All three built-in tools (web_search, browse, weather)
+    /// are live-data sources, so a non-failed result from any of them is
+    /// real-time evidence.
+    static func carriesSuccessfulToolResultForThisTurn(_ history: [ChatMessage]) -> Bool {
+        let start =
+            history.lastIndex { $0.role == .user }
+            .map { history.index(after: $0) } ?? history.startIndex
+        return history[start...].contains {
+            $0.role == .tool
+                && $0.status == .complete
+                && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     static func ambientSystemMessages(
         historyOpensWithSystem: Bool,
         toolsAdvertised: Bool,
@@ -1629,6 +1737,113 @@ You have access to tools that fetch real-time information. When you use one of t
 
 These rules apply to every tool, not just web search.
 """
+
+    /// Failure-specific instruction for the one correction round the tool loop
+    /// forces when a grounded synthesis still denies having current data
+    /// (dogfood-0810 BUG C). The anti-confabulation preamble already rode on
+    /// the draft that failed, so a plain retry would likely repeat it; this
+    /// names the exact mistake so the retry has a different, stronger steer.
+    nonisolated static let groundingCorrectionPreamble: String = """
+Your previous draft refused the question by claiming you lack real-time access or that your knowledge has a cutoff. That is FALSE for this turn: the tool result above was fetched just now and IS the current, real-time data. Answer the user's question again using ONLY the tool result. Do NOT mention a knowledge cutoff, a training date, or any inability to access real-time / current information. If the tool result genuinely does not contain the answer, say specifically what it is missing — do not fall back to a blanket refusal.
+"""
+
+    /// Prepend/merge the grounding-correction instruction onto the wire body of
+    /// the forced correction round. Mirrors ``addingToolBudgetSynthesisPreamble``
+    /// so both can stack on a single leading system row.
+    nonisolated static func addingGroundingCorrectionPreamble(
+        to messages: [ChatMessage]
+    ) -> [ChatMessage] {
+        var result = messages
+        if result.first?.role == .system {
+            result[0].content += "\n\n" + groundingCorrectionPreamble
+        } else {
+            result.insert(
+                ChatMessage(
+                    role: .system,
+                    content: groundingCorrectionPreamble,
+                    status: .complete
+                ),
+                at: 0
+            )
+        }
+        return result
+    }
+
+    /// True when an assistant answer is a FIRST-PERSON temporal-denial refusal
+    /// — "I can't access real-time information", "my knowledge is only up to
+    /// 2024", etc. Every phrase carries its own first-person subject (``i ``,
+    /// ``my ``, ``as of my ``, or the Chinese ``我``) so a grounded answer that
+    /// reports a cutoff about a third party ("the model's knowledge cutoff is
+    /// 2023") or quotes a tool result ("users were 'unable to browse'") is not
+    /// flagged. Typographic apostrophes are normalized first so a curly
+    /// ``can't`` matches too. Used ONLY with ``carriesToolResultForThisTurn``
+    /// so the signal is "denied despite having evidence", never "no data".
+    nonisolated static func looksLikeUngroundedRefusal(_ text: String) -> Bool {
+        let value =
+            text
+            .lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")  // ’ right single quote
+            .replacingOccurrences(of: "\u{2018}", with: "'")  // ‘ left single quote
+            .replacingOccurrences(of: "\u{02BC}", with: "'")  // ʼ modifier apostrophe
+        guard !value.isEmpty else { return false }
+        let firstPersonDenials = [
+            "i can't access real-time", "i cannot access real-time",
+            "i can't access current", "i cannot access current",
+            "i can't access the internet", "i cannot access the internet",
+            "i can't provide real-time", "i cannot provide real-time",
+            "i can't provide current", "i cannot provide current",
+            "i can't give you real-time", "i cannot give you real-time",
+            "i don't have access to real-time", "i do not have access to real-time",
+            "i don't have real-time", "i do not have real-time",
+            "i don't have access to current", "i do not have access to current",
+            "i don't have internet access", "i do not have internet access",
+            "i have no access to real-time", "i have no access to current",
+            "i'm unable to access real-time", "i am unable to access real-time",
+            "i'm unable to access current", "i am unable to access current",
+            "i'm unable to provide real-time", "i am unable to provide real-time",
+            "i can't browse the internet", "i cannot browse the internet",
+            "i can't browse", "i cannot browse",
+            "i'm not able to browse", "i am not able to browse",
+            "i don't have browsing", "i do not have browsing",
+            "my knowledge is only up to", "my knowledge only goes up to",
+            "my knowledge cutoff", "my knowledge is current up to",
+            "my knowledge only extends to", "my knowledge ends in",
+            "as of my last update", "as of my last training",
+            "as of my knowledge cutoff", "my training data only goes",
+            "my training only goes", "i was last trained", "my last training",
+            // Chinese equivalents (the app ships a zh UI), anchored on the
+            // first-person 我 so a third-party report does not match.
+            "我无法访问实时", "我无法获取实时", "我无法提供实时",
+            "我无法访问最新", "我无法获取最新", "我没有实时",
+            "我不能访问实时", "我无法联网", "我无法上网", "我不能联网",
+            "我的知识截止", "我的知识只到", "我的训练数据截止"
+        ]
+        return firstPersonDenials.contains(where: value.contains)
+    }
+
+    /// True when an answer visibly draws on the tool result — a citation link,
+    /// or a CONCRETE reference to the fetched results. Used to spare the caveat
+    /// case ("I can't browse directly, BUT the tool results show X"): the model
+    /// prefaced a grounded answer with a disclaimer, so it did NOT confabulate.
+    ///
+    /// Deliberately concrete: only a link or an explicit reference to the
+    /// fetched *results* counts. Vague connectors like "according to" or "the
+    /// source" are excluded because they attach just as readily to a refusal
+    /// ("According to my knowledge cutoff, I cannot provide current data") and
+    /// would let a confabulation slip through the correction.
+    nonisolated static func answerReliesOnEvidence(_ text: String) -> Bool {
+        let value = text.lowercased()
+        guard !value.isEmpty else { return false }
+        let groundingSignals = [
+            "](",  // a Markdown-linked source inside a formatted answer
+            "the results", "the result show", "the result indicate",
+            "search result", "the tool result", "the tool output",
+            "the search returned", "the fetched",
+            // Chinese concrete-result references.
+            "搜索结果", "结果显示", "工具结果", "抓取"
+        ]
+        return groundingSignals.contains(where: value.contains)
+    }
 
     // MARK: - Single-stream driver
 
