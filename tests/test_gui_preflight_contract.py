@@ -94,6 +94,7 @@ def test_peekaboo_requirement_is_default_deny():
         "slow-stream-stop",
         "model-crash-recovery",
         "image-generation",
+        "window-close-prompt",
     }
     named = {
         flow
