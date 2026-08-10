@@ -91,7 +91,13 @@ final class MCPCatalog {
             return false
         }
         do {
+            // Fetch BOTH routes before publishing anything. Committing the
+            // server rows and then failing the tools fetch would leave the two
+            // inconsistent — new servers advertised alongside a stale tool list
+            // that a reload may have just changed. Build locals, commit as one.
             let serversResponse: ServersResponse = try await get("/v1/mcp/servers", ep)
+            let toolsResponse: ToolsResponse = try await get("/v1/mcp/tools", ep)
+
             servers = serversResponse.servers.map {
                 ServerStatus(
                     name: $0.name,
@@ -103,8 +109,6 @@ final class MCPCatalog {
             }
             subsystemError = serversResponse.error
             isConfigured = serversResponse.configured ?? false
-
-            let toolsResponse: ToolsResponse = try await get("/v1/mcp/tools", ep)
             tools = toolsResponse.tools.map {
                 ToolDefinition(
                     name: $0.name,
@@ -120,7 +124,8 @@ final class MCPCatalog {
             return true
         } catch {
             // Don't wipe the last-known-good list on a transient failure — a
-            // dropped poll shouldn't make every connector row flicker away.
+            // dropped poll shouldn't make every connector row flicker away, and
+            // nothing was committed above, so servers and tools stay in sync.
             // Say we couldn't check instead.
             fetchError = error.localizedDescription
             return false

@@ -86,6 +86,20 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         return true
     }
 
+    /// True when `other` would launch or reach a different program than `self`
+    /// — a changed transport, command, arguments, environment, or URL.
+    ///
+    /// Deliberately ignores `name`, `enabled`, and `timeout`: those don't
+    /// change what code runs, so they don't invalidate a consent grant. Drives
+    /// ``MCPConfigStore``'s grant invalidation on edit.
+    func runsDifferentCode(from other: MCPServerConfig) -> Bool {
+        transport != other.transport
+            || command != other.command
+            || args != other.args
+            || env != other.env
+            || url != other.url
+    }
+
     /// Human-readable reason this entry can't be saved, or `nil` when it can.
     /// Drives the editor sheet's inline error and its disabled Save button.
     var validationError: String? {

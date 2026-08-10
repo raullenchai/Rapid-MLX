@@ -250,7 +250,10 @@ struct SettingsConnectorsPanel: View {
     /// panel exists to answer.
     private func statusLine(for entry: MCPServerConfig, status: MCPCatalog.ServerStatus?) -> String {
         if !entry.enabled { return "Turned off" }
-        if let error = status?.error { return error }
+        // The engine's error string can carry a connector's own stderr, so
+        // scrub it the same way the tool rows and approval sheet scrub server
+        // text — a bidi/zero-width scalar must not spoof this status line.
+        if let error = status?.error { return BrowseApprovalStore.displaySafe(error) }
         if let status {
             if status.isConnected {
                 let n = status.toolsCount

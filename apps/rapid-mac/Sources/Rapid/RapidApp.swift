@@ -146,6 +146,12 @@ struct RapidApp: App {
         manager.mcpConfigPathProvider = { [weak mcpConfigStore] in
             MainActor.assumeIsolated { mcpConfigStore?.launchConfigPath }
         }
+        // Editing what a connector runs (or removing it) drops any "always
+        // allow" remembered against it, so consent can't transfer to code the
+        // user never approved.
+        mcpConfigStore.onServerReconfigured = { [weak mcpApprovalStore] serverName in
+            mcpApprovalStore?.revokeGrants(forServer: serverName)
+        }
         _mcpConfig = State(initialValue: mcpConfigStore)
         _mcpCatalog = State(initialValue: mcpCatalog)
         _mcpApproval = State(initialValue: mcpApprovalStore)

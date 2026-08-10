@@ -106,6 +106,25 @@ final class MCPToolApprovalStore {
         grantedTools = []
     }
 
+    /// Revoke every remembered grant for a server's tools.
+    ///
+    /// A grant is keyed on the namespaced `server__tool` name, which is stable
+    /// across a *reconfiguration*: point the "fs" connector at a different
+    /// command and "always allow fs__read_file" would silently authorize the
+    /// new program. The connector's identity effectively changed, so its
+    /// grants must not carry over. ``MCPConfigStore`` calls this whenever a
+    /// server's command/URL/args/env changes, when it is renamed, or when it is
+    /// removed — the next call re-prompts.
+    func revokeGrants(forServer serverName: String) {
+        let prefix = "\(serverName)__"
+        let affected = grantedTools.filter { $0.hasPrefix(prefix) }
+        guard !affected.isEmpty else { return }
+        for name in affected {
+            defaults.removeObject(forKey: Self.grantKey(name))
+        }
+        grantedTools.subtract(affected)
+    }
+
     // MARK: - Gate
 
     /// Gate one tool call. Returns immediately when already approved,
@@ -122,9 +141,12 @@ final class MCPToolApprovalStore {
         if pendingRequest != nil { return .unavailable }
 
         let shortName = Self.shortToolName(toolName)
-        let preview = BrowseApprovalStore.displaySafe(
-            BrowseApprovalStore.previewLine(argumentsJSON, cap: 400)
-        )
+        // The FULL arguments, display-safe — not a capped preview. The sheet
+        // scrolls, so truncating here would only let content past the cutoff be
+        // approved unseen, which is exactly what the consent gate exists to
+        // prevent. Model output is token-bounded, so there is no unbounded-size
+        // concern to cap against.
+        let preview = BrowseApprovalStore.displaySafe(argumentsJSON)
 
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Decision, Never>) in

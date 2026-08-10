@@ -42,6 +42,12 @@ final class MCPConfigStore {
         }
     }
 
+    /// Invoked with a server's name when that server's execution identity
+    /// changes — a command/URL/args/env edit, a rename, or a removal. Wired to
+    /// ``MCPToolApprovalStore/revokeGrants(forServer:)`` so a remembered
+    /// "always allow" can't silently transfer to code the user did not approve.
+    var onServerReconfigured: ((String) -> Void)?
+
     init(defaults: UserDefaults = .standard, fileURL: URL? = nil) {
         self.defaults = defaults
         self.fileURL = fileURL ?? Self.defaultFileURL
@@ -169,8 +175,16 @@ final class MCPConfigStore {
         if servers.contains(where: { $0.name == server.name && $0.name != originalName }) {
             throw SaveError.duplicateName(server.name)
         }
+        // Consent invalidation. If an edit changes what code this connector
+        // runs — a new command/URL/args/env, or a rename — any "always allow"
+        // remembered against the old name must be dropped, or it would silently
+        // authorize the replacement. Enable/timeout edits don't change the code
+        // and keep their grants.
         var next = servers
         if let originalName, let idx = next.firstIndex(where: { $0.name == originalName }) {
+            if next[idx].runsDifferentCode(from: server) || originalName != server.name {
+                onServerReconfigured?(originalName)
+            }
             next[idx] = server
         } else {
             next.append(server)
@@ -179,6 +193,9 @@ final class MCPConfigStore {
     }
 
     func remove(named name: String) throws {
+        // A removed server's grants are dead keys; drop them so re-adding the
+        // same name later starts from a clean, unapproved slate.
+        onServerReconfigured?(name)
         try persist(servers.filter { $0.name != name })
     }
 

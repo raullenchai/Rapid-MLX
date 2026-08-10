@@ -252,6 +252,17 @@ final class MCPConnectorsTests {
         MCPToolApprovalStore(defaults: freshDefaults())
     }
 
+    /// Wait until the approval sheet is up, deterministically. A fixed sleep
+    /// flakes on a loaded worker that hasn't scheduled the requesting task yet;
+    /// this returns the instant `pendingRequest` populates, and gives up after
+    /// a generous bound so a genuine hang fails loudly instead of spinning.
+    private func waitForPending(_ store: MCPToolApprovalStore) async {
+        for _ in 0..<400 {
+            if store.pendingRequest != nil { return }
+            try? await Task.sleep(nanoseconds: 5_000_000)  // 5ms; ~2s ceiling
+        }
+    }
+
     @Test("Always-allow is remembered for that tool and no other")
     func grantIsPerTool() async {
         let store = makeApproval()
@@ -262,7 +273,7 @@ final class MCPConnectorsTests {
             serverName: "fs",
             argumentsJSON: #"{"path":"/etc/hosts"}"#
         )
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await waitForPending(store)
         store.answer(.alwaysAllowTool)
         let answered = await decision
         #expect(answered == .alwaysAllowTool)
@@ -286,7 +297,7 @@ final class MCPConnectorsTests {
         async let decision = store.requestApproval(
             toolName: "fs__read_file", serverName: "fs", argumentsJSON: "{}"
         )
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await waitForPending(store)
         store.answer(.allowOnce)
         _ = await decision
         #expect(!store.isGranted("fs__read_file"))
@@ -319,7 +330,7 @@ final class MCPConnectorsTests {
                 toolName: "fs__read_file", serverName: "fs", argumentsJSON: "{}"
             )
         }
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await waitForPending(store)
         task.cancel()
         let outcome = await task.value
         #expect(outcome == .unavailable)
@@ -332,7 +343,7 @@ final class MCPConnectorsTests {
         async let first = store.requestApproval(
             toolName: "fs__a", serverName: "fs", argumentsJSON: "{}"
         )
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await waitForPending(store)
         let second = await store.requestApproval(
             toolName: "fs__b", serverName: "fs", argumentsJSON: "{}"
         )
@@ -340,6 +351,53 @@ final class MCPConnectorsTests {
         store.answer(.deny)
         let firstOutcome = await first
         #expect(firstOutcome == .deny)
+    }
+
+    @Test("Repointing a connector at different code revokes its remembered grants")
+    func reconfiguringAConnectorRevokesGrants() throws {
+        let defaults = freshDefaults()
+        // A remembered "always allow" for a tool on the "fs" connector.
+        defaults.set(true, forKey: MCPToolApprovalStore.grantKey("fs__read_file"))
+        let approval = MCPToolApprovalStore(defaults: defaults)
+        #expect(approval.isGranted("fs__read_file"))
+
+        let url = tempConfigURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let store = MCPConfigStore(defaults: defaults, fileURL: url)
+        store.onServerReconfigured = { approval.revokeGrants(forServer: $0) }
+
+        try store.upsert(MCPServerConfig(name: "fs", command: "npx"))
+        #expect(approval.isGranted("fs__read_file"), "adding a connector is not a reconfiguration")
+
+        // Point the SAME name at a different command. The grant would otherwise
+        // silently authorize the new program — it must be dropped instead.
+        try store.upsert(MCPServerConfig(name: "fs", command: "evil"), replacing: "fs")
+        #expect(!approval.isGranted("fs__read_file"))
+    }
+
+    @Test("A non-code edit keeps the grant, but removing the connector drops it")
+    func benignEditKeepsGrantRemovalDropsIt() throws {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: MCPToolApprovalStore.grantKey("fs__read_file"))
+        let approval = MCPToolApprovalStore(defaults: defaults)
+
+        let url = tempConfigURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        let store = MCPConfigStore(defaults: defaults, fileURL: url)
+        store.onServerReconfigured = { approval.revokeGrants(forServer: $0) }
+        try store.upsert(MCPServerConfig(name: "fs", command: "npx"))
+
+        // Bumping the timeout doesn't change what code runs — the grant stays.
+        try store.upsert(MCPServerConfig(name: "fs", command: "npx", timeout: 60), replacing: "fs")
+        #expect(approval.isGranted("fs__read_file"))
+
+        // Removing the connector drops the grant so re-adding starts unapproved.
+        try store.remove(named: "fs")
+        #expect(!approval.isGranted("fs__read_file"))
     }
 
     @Test("Auto-approve mode skips the prompt entirely")
@@ -414,7 +472,7 @@ final class MCPConnectorsTests {
         async let result = registry.run(
             ToolCall(id: "c1", name: "fs__read_file", arguments: #"{"path":"/etc/passwd"}"#)
         )
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await waitForPending(approval)
         #expect(approval.pendingRequest != nil, "the user is asked before anything runs")
         approval.answer(.deny)
 
@@ -434,12 +492,30 @@ final class MCPConnectorsTests {
             serverName: "fs",
             argumentsJSON: "{\"path\":\"/etc/\u{202E}gnp.txt\"}"
         )
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        await waitForPending(approval)
         let pending = approval.pendingRequest
         #expect(pending?.serverName == "fs")
         #expect(pending?.shortName == "read_file")
         #expect(pending?.argumentsPreview.contains("\\u{202E}") == true)
         #expect(pending?.argumentsPreview.contains("\u{202E}") == false)
+        approval.answer(.deny)
+        _ = await decision
+    }
+
+    @Test("The prompt shows the whole argument payload, not a capped preview")
+    func promptShowsFullArguments() async {
+        let approval = makeApproval()
+        // The consent gate executes the complete JSON, so it has to SHOW the
+        // complete JSON. A model can push the dangerous part past any cap; the
+        // sheet scrolls, so there is no reason to hide it.
+        let tail = "rm -rf /important"
+        let bigArgs = "{\"cmd\":\"" + String(repeating: "a", count: 600) + tail + "\"}"
+        async let decision = approval.requestApproval(
+            toolName: "sh__run", serverName: "sh", argumentsJSON: bigArgs
+        )
+        await waitForPending(approval)
+        let preview = approval.pendingRequest?.argumentsPreview ?? ""
+        #expect(preview.contains(tail), "content past the old 400-char cap must be visible")
         approval.answer(.deny)
         _ = await decision
     }
