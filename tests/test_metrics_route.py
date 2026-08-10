@@ -288,13 +288,22 @@ def test_metrics_omits_cache_series_when_no_cache_active(metrics_client):
     assert "rapid_mlx_requests_processed_total 0" in body
 
 
-def test_metrics_exposes_mllm_prefix_cache_zero_counters(metrics_client):
-    """An enabled MLLM prefix cache must not disappear at zero traffic.
+def test_metrics_prefix_cache_family_is_all_or_nothing_on_mllm_lane(metrics_client):
+    """The ``rapid_mlx_prefix_cache_*`` family is exposed together or not at all.
 
-    ``BatchedEngine.get_stats()`` keeps the MLLM scheduler snapshot nested,
-    including the enabled ``MLLMPrefixCacheManager`` under ``vision_cache``.
-    Prometheus must distinguish that active cache with zero lookups from a
-    deployment where prefix caching is disabled and the series is absent.
+    Regression for #1777. The MLLM lane runs an ``MLLMScheduler`` with **no**
+    ``AsyncEngineCore`` (``BatchedEngine.start`` returns after ``_start_mllm``),
+    so it has no prompt prefix cache: ``get_stats()`` carries no top-level
+    ``prefix_cache``/``paged_cache``/``memory_aware_cache`` key. The real image
+    cache lives under ``mllm_scheduler.vision_embedding_cache`` and is *not* a
+    prefix cache.
+
+    Before the fix, ``metrics.py`` looked up a never-populated
+    ``mllm_scheduler.vision_cache`` manager (so hits/misses/evictions/
+    tokens_saved were absent) while ``pressure_evictions`` rendered
+    unconditionally at 0 — a lone survivor that made the dashboard read as
+    "prefix caching is off but somehow evicting". The whole family must be
+    absent together on this lane.
     """
     stats = {
         "num_waiting": 0,
@@ -305,12 +314,13 @@ def test_metrics_exposes_mllm_prefix_cache_zero_counters(metrics_client):
         "steps_executed": 0,
         "uptime_seconds": 0,
         "is_mllm": True,
+        # The only real MLLM-lane cache — an image embedding cache, published
+        # under its own key. It is deliberately NOT wired to the prefix-cache
+        # metric family (that would misname vision hits as prefix-cache hits).
         "mllm_scheduler": {
-            "vision_cache": {
-                "hits": 0,
-                "misses": 0,
-                "evictions": 0,
-                "tokens_saved": 0,
+            "vision_embedding_cache": {
+                "pixel_cache_hits": 3,
+                "pixel_cache_misses": 1,
             }
         },
     }
@@ -318,10 +328,57 @@ def test_metrics_exposes_mllm_prefix_cache_zero_counters(metrics_client):
 
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_prefix_cache_hits_total 0" in body
-    assert "rapid_mlx_prefix_cache_misses_total 0" in body
-    assert "rapid_mlx_prefix_cache_evictions_total 0" in body
-    assert "rapid_mlx_prefix_cache_tokens_saved_total 0" in body
+    prefix_family = (
+        "rapid_mlx_prefix_cache_hits_total",
+        "rapid_mlx_prefix_cache_misses_total",
+        "rapid_mlx_prefix_cache_evictions_total",
+        "rapid_mlx_prefix_cache_tokens_saved_total",
+        # The former lone survivor — must vanish with the rest of the family.
+        "rapid_mlx_prefix_cache_pressure_evictions_total",
+    )
+    # Match on the ``# TYPE`` declaration, not a bare substring: several HELP
+    # strings cross-reference sibling metric names in prose (e.g. the pressure
+    # counter's help mentions ``rapid_mlx_prefix_cache_evictions_total``), and
+    # only a declared series carries a ``# TYPE`` line.
+    for name in prefix_family:
+        assert f"# TYPE {name} " not in body, (
+            f"{name} leaked without the rest of the family"
+        )
+    # Sanity: non-cache series are unaffected.
+    assert "rapid_mlx_requests_processed_total 0" in body
+
+
+def test_metrics_pressure_evictions_travels_with_the_prefix_cache_family(
+    metrics_client,
+):
+    """On a lane that HAS a prefix cache, ``pressure_evictions`` is exposed too.
+
+    The all-or-nothing invariant cuts both ways: when the family is present
+    (text lane with an active prefix cache), the pressure-eviction counter
+    renders alongside it — defaulting to 0 when the scheduler never recorded
+    a pressure-driven eviction.
+    """
+    stats = {
+        "num_waiting": 0,
+        "num_running": 0,
+        "num_requests_processed": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "steps_executed": 0,
+        "uptime_seconds": 0,
+        "prefix_cache": {
+            "hits": 5,
+            "misses": 2,
+            "evictions": 0,
+            "tokens_saved": 40,
+        },
+    }
+    metrics_client.cfg.engine = _fake_engine(stats)
+
+    body = metrics_client.client.get("/metrics").text
+
+    assert "rapid_mlx_prefix_cache_hits_total 5" in body
+    assert "rapid_mlx_prefix_cache_pressure_evictions_total 0" in body
 
 
 def test_metrics_exposes_r7_m1_prefix_cache_cap_and_current_bytes(metrics_client):

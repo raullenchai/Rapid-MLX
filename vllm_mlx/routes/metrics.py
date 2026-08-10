@@ -1269,18 +1269,18 @@ def _render_prometheus(cfg: Any) -> str:
             cache_stats = candidate
             break
 
-    # The MLLM lane keeps its enabled ``MLLMPrefixCacheManager`` snapshot
-    # below ``mllm_scheduler.vision_cache`` instead of promoting it to one
-    # of the canonical text-lane keys above.  Treat that specific nested
-    # snapshot as the same prefix-cache counter source.  Do not synthesize
-    # an empty dict when the key is absent: absence still means the cache is
-    # disabled, and its Prometheus series should remain absent accordingly.
-    if cache_stats is None:
-        mllm_stats = stats.get("mllm_scheduler")
-        if isinstance(mllm_stats, dict):
-            mllm_cache_stats = mllm_stats.get("vision_cache")
-            if isinstance(mllm_cache_stats, dict):
-                cache_stats = mllm_cache_stats
+    # The MLLM lane runs an ``MLLMScheduler`` with no ``AsyncEngineCore``
+    # (``BatchedEngine.start`` returns after ``_start_mllm``), so it has no
+    # prompt prefix cache and exposes none of the canonical keys above. It
+    # deliberately does NOT feed this family: ``mllm_scheduler.vision_cache``
+    # is a vestigial, never-populated ``MLLMPrefixCacheManager`` (nothing
+    # inserts into it), and the live image cache under
+    # ``mllm_scheduler.vision_embedding_cache`` is an embedding cache, not a
+    # prefix cache — surfacing it here would misname vision hits as
+    # prefix-cache hits. So on that lane ``cache_stats`` stays ``None`` and
+    # the whole ``rapid_mlx_prefix_cache_*`` family is absent together (see
+    # the pressure-eviction counter below, which is gated on the same
+    # condition so it can never survive alone — #1777).
 
     if cache_stats is not None:
         # The raw cache counters are reset by ``cache.clear()``; pipe each
@@ -1662,20 +1662,29 @@ def _render_prometheus(cfg: Any) -> str:
             int(_coerce_number(stats.get("num_metal_cap_violations"))),
         )
     )
-    lines.extend(
-        _fmt_metric(
-            "rapid_mlx_prefix_cache_pressure_evictions_total",
-            "counter",
-            (
-                "Prefix-cache entries evicted by the Metal-pressure "
-                "trigger (D-METAL-PFX). Disjoint from "
-                "rapid_mlx_prefix_cache_evictions_total which counts "
-                "LRU-on-capacity evictions performed by the cache "
-                "itself."
-            ),
-            int(_coerce_number(stats.get("num_prefix_cache_pressure_evictions"))),
+    # #1777: this counter belongs to the ``rapid_mlx_prefix_cache_*`` family,
+    # so it is emitted on the same all-or-nothing condition as the hit/miss/
+    # eviction series above — never alone. Pressure eviction is only possible
+    # when a prefix cache exists to evict from, so ``cache_stats is None``
+    # (no cache on this lane, e.g. the MLLM scheduler) correctly suppresses
+    # the whole family together instead of leaving this one flat-lining at 0.
+    # ``num_metal_cap_violations`` above is a separate D-METAL-CAP admission
+    # counter, independent of prefix caching, and stays unconditional.
+    if cache_stats is not None:
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_prefix_cache_pressure_evictions_total",
+                "counter",
+                (
+                    "Prefix-cache entries evicted by the Metal-pressure "
+                    "trigger (D-METAL-PFX). Disjoint from "
+                    "rapid_mlx_prefix_cache_evictions_total which counts "
+                    "LRU-on-capacity evictions performed by the cache "
+                    "itself."
+                ),
+                int(_coerce_number(stats.get("num_prefix_cache_pressure_evictions"))),
+            )
         )
-    )
 
     # ---- R15-P1 disk-backed KV checkpoints (task #296) -----------------
     # Counters are process-monotonic by construction (the module-level
