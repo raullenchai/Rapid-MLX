@@ -3,10 +3,10 @@ import SwiftUI
 /// Shared primitives for the first-run onboarding wizard (#1524).
 ///
 /// These are the reusable pieces the ``QuickstartView`` steps compose:
-/// a brand mark, a top bar with step dots, a Back/primary footer, an
+/// a brand mark, a top bar with step progress, a Back/primary footer, an
 /// attribute chip, and the two model-choice cards. The patterns are
 /// borrowed from FluidVoice's onboarding framework (a shared footer
-/// scaffold + progress dots + selectable cards) but rebuilt on
+/// scaffold + progress affordance + selectable cards) but rebuilt on
 /// ``RapidTheme`` tokens — we deliberately did NOT port FluidVoice's
 /// whole theme-as-EnvironmentValue system for one wizard.
 ///
@@ -35,26 +35,33 @@ struct OnboardingBrandMark: View {
     }
 }
 
-// MARK: - Progress dots
+// MARK: - Step progress
 
-/// The thin capsule step indicator (current step widens + goes brand
-/// blue). ``current`` is 0-indexed.
-struct OnboardingStepDots: View {
+/// Honest wizard progress. The old three capsules looked like a carousel
+/// page control even though onboarding only advances through its explicit
+/// buttons (#1792). A labelled linear meter communicates position without
+/// advertising swipe, drag, or arbitrary-page navigation.
+/// ``current`` is 0-indexed.
+struct OnboardingStepProgress: View {
     let current: Int
     let total: Int
 
     var body: some View {
-        HStack(spacing: 7) {
-            ForEach(0..<total, id: \.self) { i in
-                Capsule()
-                    .fill(i == current ? RapidTheme.brand : RapidTheme.hairline)
-                    .frame(width: i == current ? 20 : 7, height: 6)
-            }
+        VStack(alignment: .trailing, spacing: 5) {
+            Text("Step \(current + 1) of \(total)")
+                .scaledSystemFont(10, weight: .medium)
+                .foregroundStyle(.secondary)
+            ProgressView(value: Double(current + 1), total: Double(total))
+                .progressViewStyle(.linear)
+                .tint(RapidTheme.brand)
+                .frame(width: 92)
         }
-        // #547 §3/§4: the active capsule springs 7→20pt as the user
-        // advances instead of hard-snapping; instant under Reduce Motion.
-        .rapidAnimation(RapidMotion.standard, value: current)
-        .accessibilityHidden(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("Quickstart.Progress")
+        // A custom SwiftUI container is AXUnknown on macOS and drops its
+        // AXValue. Keep the full status in the label so VoiceOver receives it
+        // reliably instead of announcing only "Setup progress".
+        .accessibilityLabel("Setup progress, step \(current + 1) of \(total)")
     }
 }
 
@@ -70,7 +77,7 @@ struct OnboardingTopBar: View {
             OnboardingBrandMark(size: 26)
             Text("Rapid-MLX").scaledSystemFont(13, weight: .semibold)
             Spacer()
-            OnboardingStepDots(current: step, total: 3)
+            OnboardingStepProgress(current: step, total: 3)
         }
     }
 }

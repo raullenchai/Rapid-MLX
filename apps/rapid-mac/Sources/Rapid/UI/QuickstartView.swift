@@ -1017,7 +1017,7 @@ struct QuickstartView: View {
             .accessibilityLabel("Skip onboarding and go to the app")
             .padding(.bottom, 18)
 
-            OnboardingStepDots(current: 0, total: 3).padding(.bottom, 34)
+            OnboardingStepProgress(current: 0, total: 3).padding(.bottom, 34)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 44)

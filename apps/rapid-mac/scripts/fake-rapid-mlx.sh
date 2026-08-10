@@ -662,7 +662,13 @@ def main():
     # output rather than falling through to the server, so a future
     # ``ModelCatalog`` subcommand can't resurrect the hang.
     if args.subcommand != "serve":
-        _event("command", subcommand=args.subcommand, alias=args.alias, pid=os.getpid())
+        _event(
+            "command",
+            subcommand=args.subcommand,
+            alias=args.alias,
+            pid=os.getpid(),
+            do_not_track=os.environ.get("DO_NOT_TRACK"),
+        )
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
 

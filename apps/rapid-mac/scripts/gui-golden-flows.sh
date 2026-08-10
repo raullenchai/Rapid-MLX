@@ -1036,8 +1036,16 @@ flow_cached_quickstart() {
         press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
     fi
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Progress")
+            | select(.description == "Setup progress, step 1 of 3")' "$OUT/welcome.json" >/dev/null \
+        || die "Quickstart welcome does not expose honest step progress"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/chooser.json"
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Progress")
+            | select(.description == "Setup progress, step 2 of 3")' "$OUT/chooser.json" >/dev/null \
+        || die "Quickstart chooser does not advance its honest step progress"
     press "$OUT/chooser.json" "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/select-cached.json"
     see_main "$OUT/selected.json"
     assert_tree_text "$OUT/selected.json" "Start existing model"
@@ -1491,6 +1499,25 @@ flow_no_dead_controls() {
             || die "Settings > $category exposes no identified controls of its own"
         log "  $category: $count identified controls"
     done
+
+    local ax_contracts=(
+        "dead-panel-tools.json|Settings.Tools.Toggle.web_search|Web search"
+        "dead-panel-tools.json|Settings.Tools.Toggle.browse|Browse pages"
+        "dead-panel-tools.json|Settings.Tools.Toggle.weather|Weather"
+        "dead-panel-tools.json|Settings.Tools.Browse.AutoApproveToggle|Approve every page automatically"
+        "dead-panel-app.json|Settings.App.HideDockOnCloseToggle|Hide Dock icon when closing window"
+    )
+    local contract file identifier label
+    for contract in "${ax_contracts[@]}"; do
+        IFS='|' read -r file identifier label <<< "$contract"
+        jq -e --arg identifier "$identifier" --arg label "$label" \
+            '.data.ui_elements[]?
+             | select(.identifier == $identifier)
+             | select(.description == $label)' \
+            "$OUT/$file" >/dev/null \
+            || die "$identifier has no readable VoiceOver label"
+    done
+    log "  Settings toggles expose readable VoiceOver labels"
     cleanup_persona
 }
 
@@ -1796,6 +1823,15 @@ flow_catalog_integrity() {
     start_persona catalog-integrity
     dismiss_first_run
     see_main "$OUT/catalog-main.json"
+
+    # The catalog is populated by app-owned `models` / `ls` / `info` probes.
+    # They are implementation details, not real engine sessions (#1415).
+    wait_fake_event '.event == "command"' \
+        "the catalog did not invoke the fake CLI probes"
+    jq -e -s '[.[] | select(.event == "command")]
+              | length > 0 and all(.[]; .do_not_track == "1")' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "an internal catalog probe launched with engine telemetry enabled"
 
     jq -e '.data.walk.complete == true' "$OUT/catalog-main.json" >/dev/null \
         || die "could not completely observe the chat catalog"
