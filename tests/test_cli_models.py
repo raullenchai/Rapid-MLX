@@ -804,6 +804,9 @@ def test_registered_alias_resolves_to_external_hf_layout(tmp_path, monkeypatch):
     profile = list_profiles()["qwen3.5-4b-4bit"]
     model = _write_mlx_model(root.joinpath(*profile.hf_path.split("/")))
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
+    )
 
     assert resolve_model("qwen3.5-4b-4bit") == os.path.realpath(model)
 
@@ -916,6 +919,9 @@ def test_registered_alias_prefers_root_level_external_directory(tmp_path, monkey
     model = root / "qwen3.5-4b-4bit"
     _write_mlx_model(model)
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: False
+    )
 
     assert resolve_model("qwen3.5-4b-4bit") == os.path.realpath(model)
 
@@ -929,6 +935,17 @@ def test_external_resolution_tolerates_completeness_race(tmp_path, monkeypatch):
         raise PermissionError("drive unplugged during launch")
 
     monkeypatch.setattr("vllm_mlx._download_gate._snapshot_is_complete", vanished)
+
+    assert resolve_model("local-model") == "local-model"
+
+
+def test_runnable_managed_hub_copy_wins_over_external_copy(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    _write_mlx_model(root / "local-model")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases._managed_hub_model_is_runnable", lambda _name: True
+    )
 
     assert resolve_model("local-model") == "local-model"
 

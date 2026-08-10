@@ -645,12 +645,27 @@ def resolve_model(name: str) -> str:
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)
+    if _managed_hub_model_is_runnable(name):
+        profile = _load().get(name)
+        return profile.hf_path if profile is not None else name
     if external := _resolve_external_model_path(name):
         return external
     if "/" in name:
         return name
     profile = _load().get(name)
     return profile.hf_path if profile is not None else name
+
+
+def _managed_hub_model_is_runnable(name: str) -> bool:
+    """Apply the cached-listing's managed-hub precedence at launch too."""
+    profile = _load().get(name)
+    repo = profile.hf_path if profile is not None else name
+    try:
+        from ._download_gate import _snapshot_is_complete_split_model, is_repo_cached
+
+        return is_repo_cached(repo) or _snapshot_is_complete_split_model(repo)
+    except Exception:
+        return False
 
 
 def _resolve_external_model_path(name: str) -> str | None:

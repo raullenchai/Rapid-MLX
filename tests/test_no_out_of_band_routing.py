@@ -163,10 +163,6 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # hatch for sandboxed / read-only-home environments. Pure state-file
         # placement knob — never selects a model, parser, or routing tier.
         "RAPID_MLX_STATE_DIR",
-        # User-selected read-only roots to discover already-downloaded model
-        # files. Storage discovery only; it never selects a parser, scheduler,
-        # or request-routing path.
-        "RAPID_MLX_EXTRA_MODEL_ROOTS",
         # Community benchmark board endpoint and local archive root. These
         # affect upload/storage destinations only; neither is read by model,
         # parser, scheduler, or request-routing code.
@@ -1030,6 +1026,16 @@ def _check_env_constant(
     # Strip RAPID_ prefix for the routing-shape check so both
     # RAPID_MLX_FORCE_* and MLX_FORCE_* are caught.
     if not (value.startswith("RAPID_MLX_") or value.startswith("MLX_")):
+        return
+    if value == "RAPID_MLX_EXTRA_MODEL_ROOTS":
+        # Narrow, reviewed local-storage exception for #1718. It may appear
+        # only in discovery and the matching alias-to-local-path resolver;
+        # any new consumer is an unreviewed model-selection surface.
+        if rel not in {"cli.py", "model_aliases.py"}:
+            offenders.append(
+                f"{rel}:{lineno} references `{value}` outside its approved "
+                "external-model discovery/resolution boundary."
+            )
         return
     if value in ALLOWED_RAPID_MLX_ENV_VARS:
         return
