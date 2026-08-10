@@ -2,9 +2,14 @@
 
 Rapid-MLX Desktop incorporates open-source software from the following
 projects. Each is used under the terms of its original license. The
-full license texts are reproduced in the linked repositories, and — for
-the bundled Python payload — inside the shipped app itself, under
+full license texts are reproduced in the linked repositories and — so
+the notices travel with the binary as BSD/MIT ask — inside the shipped
+app itself: the Swift packages linked into the executable under
+`Contents/Resources/Licenses/`, and the bundled Python payload under
 `Contents/Resources/rapid-mlx/site-packages/*.dist-info/licenses/`.
+`scripts/build.sh` stages the Swift set from each package's resolved
+checkout and fails the build if any linked package has no license file,
+so this document and the shipped bundle cannot silently disagree (#1596).
 
 This is the document the app's **Settings → Privacy → "Open-source
 credits"** link opens.

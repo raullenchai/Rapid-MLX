@@ -136,6 +136,77 @@ if [[ ! -d "$SWIFTMATH_FONTS" ]]; then
 fi
 cp -R "$SWIFTMATH_FONTS" "$CONTENTS/Resources/mathFonts.bundle"
 
+# Third-party license texts (#1596). BSD-2-Clause (swift-cmark) and the MIT
+# licenses of the other linked Swift packages ask their notice to travel "with
+# the distribution" — and a downloaded .app IS that distribution. Assembling
+# only the repo's THIRD_PARTY.md does not satisfy that; the notice has to be
+# inside the bundle. Stage each into Contents/Resources/Licenses/ so it ships.
+#
+# Structural, not a hand-kept list: the vendored SwiftMath notice comes from
+# the in-tree Vendor/ copy (survives a `swift package purge`), and every remote
+# package is discovered from its resolved checkout — so a newly added Swift
+# dependency is picked up automatically, and the build FAILS if any linked
+# package has no recognizable license file, in the same spirit as the offline
+# link-target test from #1595. The Python payload's licenses already travel via
+# pip's `*.dist-info/licenses/` under the staged sidecar and are not re-copied.
+LICENSES_DIR="$CONTENTS/Resources/Licenses"
+mkdir -p "$LICENSES_DIR"
+
+# Locate a license file inside a package directory. Echoes the path on success,
+# returns non-zero when none of the conventional names is present.
+find_license_file() {
+    local dir="$1" name
+    for name in LICENSE LICENSE.txt LICENSE.md LICENCE COPYING COPYING.txt \
+        COPYRIGHT NOTICE; do
+        if [[ -f "$dir/$name" ]]; then
+            printf '%s\n' "$dir/$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Stage one license as ``<label>-<original-filename>.txt`` so provenance is
+# obvious in the shipped Licenses/ folder. Hard-fails when the source is
+# missing — a package must never ship without its notice.
+stage_license() {
+    local label="$1" src="$2"
+    if [[ ! -f "$src" ]]; then
+        echo "ERR: license for '$label' not found at: $src" >&2
+        echo "     A linked dependency must ship its license text (#1596)." >&2
+        exit 1
+    fi
+    cp "$src" "$LICENSES_DIR/${label}-$(basename "$src").txt"
+}
+
+# (a) Vendored Swift source compiled into the binary — notice lives in-tree.
+stage_license "SwiftMath" "$ROOT/Vendor/SwiftMath/LICENSE"
+
+# (b) Remote SPM packages linked into the binary. Their notices live in the
+#     resolved checkouts, present after the `swift build` above. Enumerating
+#     the checkouts (rather than a hardcoded roster) means adding a dependency
+#     stages its license with no edit here — and a dependency whose checkout
+#     carries no license file trips the hard-fail in stage_license.
+CHECKOUTS="$ROOT/.build/checkouts"
+if [[ -d "$CHECKOUTS" ]]; then
+    for pkg_dir in "$CHECKOUTS"/*/; do
+        [[ -d "$pkg_dir" ]] || continue
+        pkg="$(basename "$pkg_dir")"
+        # SwiftMath is built from Vendor/ (local path); its stale remote
+        # checkout, if any, would only duplicate the notice staged in (a).
+        [[ "$pkg" == "SwiftMath" ]] && continue
+        if lic="$(find_license_file "${pkg_dir%/}")"; then
+            stage_license "$pkg" "$lic"
+        else
+            echo "ERR: no license file found for Swift package '$pkg' in $pkg_dir" >&2
+            echo "     Add its notice or exclude it — a linked dep cannot ship" >&2
+            echo "     without its license text (#1596)." >&2
+            exit 1
+        fi
+    done
+fi
+echo "==> staged $(ls -1 "$LICENSES_DIR" | wc -l | tr -d ' ') third-party license file(s) into Contents/Resources/Licenses/"
+
 # App accent colour. AppKit paints NSMenu highlights, checkboxes and focus
 # rings with the app's accent colour, and nothing in SwiftUI reaches those:
 # ``.tint()`` styles SwiftUI's own views only, so without this the ··· row
