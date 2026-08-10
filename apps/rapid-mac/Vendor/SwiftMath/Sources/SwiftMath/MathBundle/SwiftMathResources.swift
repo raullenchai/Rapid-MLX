@@ -5,8 +5,8 @@ import Foundation
 /// generated accessor instead probes the app wrapper root. Prefer the real
 /// application bundle and retain the generated bundle as the development and
 /// test fallback.
-enum SwiftMathResources {
-    static var fontsBundleURL: URL? {
+public enum SwiftMathResources {
+    public static var fontsBundleURL: URL? {
         Bundle.main.url(forResource: "mathFonts", withExtension: "bundle")
             ?? Bundle.module.url(forResource: "mathFonts", withExtension: "bundle")
     }

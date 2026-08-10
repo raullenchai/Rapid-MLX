@@ -106,7 +106,14 @@ struct MathView: View {
     /// Cost is one ~1 MB font read, once per process (`static let`), on the
     /// first message containing math — not per render.
     private static let mathFontsAvailable: Bool = {
-        guard let fontsURL = Bundle.main.url(forResource: "mathFonts", withExtension: "bundle"),
+        // An assembled app must prove its own signed resources are complete;
+        // never let the build checkout hide a packaging regression. Bare
+        // SwiftPM binaries have no app wrapper and intentionally share
+        // SwiftMath's Bundle.module development fallback.
+        let fontsURL = Bundle.main.bundleURL.pathExtension == "app"
+            ? Bundle.main.url(forResource: "mathFonts", withExtension: "bundle")
+            : SwiftMathResources.fontsBundleURL
+        guard let fontsURL,
               let fonts = Bundle(url: fontsURL),
               let fontPath = fonts.path(forResource: "latinmodern-math", ofType: "otf"),
               let tableURL = fonts.url(forResource: "latinmodern-math", withExtension: "plist"),
