@@ -1833,12 +1833,14 @@ def load_model(
         )
         if _auto_text_fallback:
             logger.info(
-                "Model %r auto-downgraded to the text-only mlx-lm lane: it is a "
-                "multimodal checkpoint with a hybrid/linear-attention language "
-                "backbone, which the MLLM continuous-batching engine cannot "
-                "serve (GitHub #352). The vision path is unavailable for this "
-                "backbone. Pass --mllm to force the multimodal engine (it will "
-                "error), or --no-mllm to silence this notice.",
+                "Model %r auto-downgraded to the text-only mlx-lm lane: it is "
+                "a multimodal checkpoint the MLLM continuous-batching engine "
+                "cannot serve — either a hybrid/linear-attention language "
+                "backbone (GitHub #352) or an architecture the installed "
+                "mlx-vlm does not support yet (e.g. muse_glimmer, served via "
+                "the vendored text backbone). The vision path is unavailable "
+                "for this checkpoint. Pass --mllm to force the multimodal "
+                "engine (it will error), or --no-mllm to silence this notice.",
                 model_name,
             )
 

@@ -1186,6 +1186,28 @@
     "supports_spec_decode": true,
     "min_memory_gb": 192
   },
+  "muse-glimmer-30b-4bit": {
+    "hf_path": "mlx-community/Muse-Glimmer-30B-4bit",
+    "is_text_only": true,
+    "tool_call_parser": "muse",
+    "reasoning_parser": "muse",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "min_memory_gb": 24
+  },
+  "muse-glimmer-30b-bf16": {
+    "hf_path": "mlx-community/Muse-Glimmer-30B-bf16",
+    "is_text_only": true,
+    "tool_call_parser": "muse",
+    "reasoning_parser": "muse",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "min_memory_gb": 96
+  },
   "qwen3-vl-8b-4bit": {
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
     "tool_call_parser": "hermes",

@@ -1191,6 +1191,52 @@ def is_mllm_model(model_name: str) -> bool:
 is_vlm_model = is_mllm_model
 
 
+# Multimodal model_types for which we ship a vendored TEXT backbone
+# (``vllm_mlx/models/<model_type>.py``) while the installed mlx-vlm has no
+# model package for the arch. ``resolve_serving_lane`` auto-downgrades these
+# to the text lane instead of letting the MLLM engine crash at load on an
+# unknown architecture. The ``find_spec`` probe in
+# :func:`mllm_arch_unsupported_but_text_vendored` flips a type back to
+# multimodal routing automatically once a dependency bump ships support —
+# no code change needed here (remove the entry when the vendored backbone
+# itself is retired).
+_VENDORED_TEXT_FALLBACK_MODEL_TYPES = ("muse_glimmer",)
+
+
+def mllm_arch_unsupported_but_text_vendored(model_name: str) -> bool:
+    """True iff the checkpoint's arch needs the text-lane vendored fallback.
+
+    Offline (cached config only, never loads weights). Returns True when
+    BOTH hold:
+
+    1. ``config.model_type`` is in ``_VENDORED_TEXT_FALLBACK_MODEL_TYPES``
+       (we vendor its text backbone), and
+    2. the installed mlx-vlm has no ``mlx_vlm.models.<model_type>``
+       package (including mlx-vlm not installed at all) — so the MLLM
+       lane would crash at load.
+
+    Once mlx-vlm ships the arch (e.g. Blaizzy/mlx-vlm#1838 for
+    ``muse_glimmer``) the ``find_spec`` probe finds the package and this
+    returns False, restoring normal multimodal routing without a code
+    change.
+    """
+    metadata = read_model_metadata(model_name)
+    config = metadata.config if metadata is not None else None
+    if not isinstance(config, dict):
+        return False
+    if config.get("model_type") not in _VENDORED_TEXT_FALLBACK_MODEL_TYPES:
+        return False
+    import importlib.util as _importlib_util
+
+    try:
+        spec = _importlib_util.find_spec(f"mlx_vlm.models.{config['model_type']}")
+    except (ImportError, ValueError):
+        # mlx-vlm absent entirely (no ``[vision]`` extra) — the MLLM lane
+        # is unavailable regardless, so the vendored text fallback applies.
+        spec = None
+    return spec is None
+
+
 def mllm_backbone_is_hybrid(model_name: str) -> bool:
     """True when a checkpoint's *language* backbone is hybrid/linear-attention.
 
@@ -1286,9 +1332,16 @@ def resolve_serving_lane(
         return (True, False)
     if not is_mllm_model(model_name):
         return (False, False)
-    # Auto-routed to the MLLM lane by its vision weights — but a
-    # hybrid/linear-attention backbone cannot be served there; downgrade to the
-    # text-only lane and mark it as an automatic fallback.
+    # Auto-routed to the MLLM lane by its vision weights — but the lane
+    # cannot serve every backbone. Two auto-downgrade causes, both marked
+    # with the same ``auto_text_fallback`` flag:
+    #  * the installed mlx-vlm has no model package for the arch and we
+    #    vendor a text backbone for it (Muse Glimmer until
+    #    Blaizzy/mlx-vlm#1838 ships in a release we pin);
+    #  * a hybrid/linear-attention backbone produces ArraysCache layers the
+    #    MLLM continuous-batching engine cannot assemble (GitHub #352).
+    if mllm_arch_unsupported_but_text_vendored(model_name):
+        return (False, True)
     if mllm_backbone_is_hybrid(model_name):
         return (False, True)
     return (True, False)

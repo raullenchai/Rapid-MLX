@@ -680,6 +680,36 @@ def _register_vendored_archs() -> None:
             # still doesn't know the arch, native mlx-lm module or not).
             _VENDORED_MODEL_TYPES.add("hy_v3")
 
+    if "mlx_lm.models.muse_glimmer" not in sys.modules:
+        # Meta Muse Glimmer 30B — vendored text backbone (see
+        # ``vllm_mlx/models/muse_glimmer.py`` for the why + sync policy).
+        # Defer to native mlx-lm support the moment upstream ships it,
+        # same probe as ``hy_v3`` above.
+        import importlib.util as _importlib_util
+
+        _muse_native_spec = None
+        try:
+            _muse_native_spec = _importlib_util.find_spec("mlx_lm.models.muse_glimmer")
+        except (ImportError, ValueError):
+            _muse_native_spec = None
+
+        if _muse_native_spec is None:
+            try:
+                from ..models import muse_glimmer as _muse
+
+                sys.modules.setdefault("mlx_lm.models.muse_glimmer", _muse)
+            except Exception as e:
+                logger.warning(
+                    "muse_glimmer vendored module failed to register — "
+                    "mlx-community/Muse-Glimmer-30B-* will not load until "
+                    "resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("muse_glimmer")
+        else:
+            _VENDORED_MODEL_TYPES.add("muse_glimmer")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""

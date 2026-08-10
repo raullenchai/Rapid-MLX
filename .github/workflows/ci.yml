@@ -258,6 +258,7 @@ jobs:
             tests/test_audio_music_route.py \
             tests/test_audio_route_registration_gate.py \
             tests/test_forced_alignment_route_hardening.py \
+            tests/test_muse_glimmer_model.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"
