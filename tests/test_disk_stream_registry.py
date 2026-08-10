@@ -12,6 +12,8 @@ weights.
 
 from __future__ import annotations
 
+import pytest
+
 from vllm_mlx.registry import get_adapter
 
 
@@ -86,6 +88,59 @@ def test_qwen2_moe_streaming_forward_resolves_and_lfm2_moe_unaffected():
     lfm2_adapter = get_adapter("lfm2_moe")
     assert qwen_adapter.streaming_forward is qwen2_moe_streaming_forward
     assert lfm2_adapter.streaming_forward is _streaming_moe_forward
+
+
+def test_direct_layout_tensor_name_requires_expert_id():
+    """A ``"direct"``-layout template (qwen2_moe) must raise ``ValueError``
+    when ``expert_id`` is omitted, rather than silently formatting
+    ``expert=None`` into the tensor name (e.g.
+    ``"model.layers.2.mlp.experts.None.gate_proj.weight"``) — that bogus
+    name would otherwise only fail much later and less clearly, as a
+    ``KeyError`` deep inside ``offset_reader._fetch_tensor_slice``.
+    """
+    adapter = get_adapter("qwen2_moe")
+    with pytest.raises(ValueError, match="expert_id"):
+        adapter.tensor_template.tensor_name(
+            layer_idx=2, proj="gate_proj", component="weight"
+        )
+
+
+def test_stacked_layout_tensor_name_ignores_missing_expert_id():
+    """The ``"stacked"`` layout (LFM2.5) doesn't reference ``{expert}`` in
+    its template, so omitting ``expert_id`` must keep working exactly as
+    before the ``"direct"``-layout validation was added.
+    """
+    adapter = get_adapter("lfm2_moe")
+    name = adapter.tensor_template.tensor_name(
+        layer_idx=2, proj="gate_proj", component="weight"
+    )
+    assert name == "model.layers.2.feed_forward.switch_mlp.gate_proj.weight"
+
+
+def test_streaming_forward_raises_not_implemented_when_unconfigured():
+    """A ``StreamingAdapter`` with ``streaming_forward_module``/
+    ``streaming_forward_fn_name`` left ``None`` (the module docstring's
+    documented state for "adapters that predate this field") must raise
+    ``NotImplementedError`` from the ``streaming_forward`` property,
+    rather than failing some other, less clear way.
+    """
+    from vllm_mlx.registry import ExpertTensorTemplate, StreamingAdapter
+
+    adapter = StreamingAdapter(
+        model_type="_test_unconfigured",
+        moe_block_module="not.imported.in.this.test",
+        moe_block_class_name="Unused",
+        tensor_template=ExpertTensorTemplate(
+            layout="stacked",
+            name_template="layer{layer}.{proj}.{component}",
+        ),
+        num_experts=1,
+        streaming_forward_module=None,
+        streaming_forward_fn_name=None,
+    )
+
+    with pytest.raises(NotImplementedError):
+        adapter.streaming_forward
 
 
 def test_get_adapter_unknown_model_type_returns_none():

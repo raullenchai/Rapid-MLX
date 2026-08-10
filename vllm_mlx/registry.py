@@ -43,7 +43,7 @@ installer — depends on being unambiguous):
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # The 3 routed-expert sub-projections and 3 per-projection tensors that
 # make up one expert's 9-tensor bundle. Shared by every "stacked" layout
@@ -66,10 +66,12 @@ class ExpertTensorTemplate:
       that tensor, computed from ``data_offsets`` and ``expert_id`` — see
       ``offset_reader.fetch_expert_bundle``.
     * ``"direct"`` — each expert has its own separately-named tensor per
-      component (qwen2_moe-style). Not implemented by ``offset_reader``
-      yet (out of scope for this ticket / LFM2.5); registering a
-      ``"direct"`` adapter today would raise ``NotImplementedError`` on
-      first fetch.
+      component (qwen2_moe-style). Both layouts are implemented by
+      ``offset_reader.fetch_expert_bundle``: ``"direct"`` resolves each
+      expert's per-component tensor name directly (optionally via a
+      sharded checkpoint's ``model.safetensors.index.json``) rather than
+      slicing a stacked tensor — see qwen2_moe's registration below for a
+      real ``"direct"`` adapter.
 
     ``name_template`` is a ``str.format`` template with ``{layer}``,
     ``{proj}`` (one of ``SUB_PROJECTIONS``) and ``{component}`` (one of
@@ -92,6 +94,13 @@ class ExpertTensorTemplate:
         component: str,
         expert_id: int | None = None,
     ) -> str:
+        if self.layout == "direct" and expert_id is None:
+            raise ValueError(
+                f"{self.layout!r}-layout tensor template requires "
+                f"expert_id (got None): each expert has its own "
+                f"separately-named tensor, so omitting expert_id would "
+                f"silently format a malformed tensor name"
+            )
         return self.name_template.format(
             layer=layer_idx, proj=proj, component=component, expert=expert_id
         )
@@ -129,11 +138,15 @@ class StreamingAdapter:
     moe_block_class_name: str
     tensor_template: ExpertTensorTemplate
     num_experts: int
+    # ponytail: kept defaulted (not made required) — tests/test_disk_stream_
+    # offset_reader.py constructs StreamingAdapter directly in 3 fixtures
+    # without passing moe_block_attr; dropping the default would break them,
+    # and that file is out of scope for this fix. Reviewer nit acknowledged.
     moe_block_attr: str = "feed_forward"
     streaming_forward_module: str | None = None
     streaming_forward_fn_name: str | None = None
-    sub_projections: tuple[str, ...] = field(default=SUB_PROJECTIONS)
-    tensor_components: tuple[str, ...] = field(default=TENSOR_COMPONENTS)
+    sub_projections: tuple[str, ...] = SUB_PROJECTIONS
+    tensor_components: tuple[str, ...] = TENSOR_COMPONENTS
 
     @property
     def moe_block_cls(self):

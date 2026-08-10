@@ -73,12 +73,19 @@ class UnsupportedModelTypeError(ValueError):
 class InstallResult:
     """What :func:`install` hands back: enough to report what happened and
     to inspect cache behavior (hit rate etc.) after a generation run.
+
+    ``moe_block_cls``/``orig_call`` are the class :func:`install` patched
+    and its pre-patch ``__call__`` — pass both to :func:`uninstall` to
+    restore it (see that function's docstring). Additive fields; existing
+    callers that only read the first four are unaffected.
     """
 
     model_type: str
     checkpoint_path: Path
     num_moe_layers_patched: int
     cache: ExpertCache
+    moe_block_cls: type
+    orig_call: Any
 
 
 def install(
@@ -135,13 +142,46 @@ def install(
         return streaming_forward(self, x, layer_idx, cache)
 
     moe_block_cls.__call__ = streaming_call
+    # Upstream-class marker (mirrors deepseek_v32_indexer_gate.py's
+    # ``_RAPID_MLX_INDEXER_GATE_INSTALLED`` convention) so an argument-free,
+    # out-of-process check (e.g. a subprocess wiring test per CONTRIBUTING.md's
+    # "Testing install-time patches" section) can confirm the patch actually
+    # fired without needing this function's return value in hand.
+    moe_block_cls._RAPID_MLX_DISK_STREAM_INSTALLED = True
 
     return InstallResult(
         model_type=model_type,
         checkpoint_path=checkpoint_path,
         num_moe_layers_patched=len(layer_of_block),
         cache=cache,
+        moe_block_cls=moe_block_cls,
+        orig_call=orig_call,
     )
+
+
+def is_installed(moe_block_cls: type) -> bool:
+    """Return whether :func:`install` has patched ``moe_block_cls.__call__``.
+
+    Reads the class-level marker :func:`install` sets, so this works from
+    a fresh process/import with no reference to the ``InstallResult`` the
+    original ``install()`` call returned.
+    """
+    return bool(getattr(moe_block_cls, "_RAPID_MLX_DISK_STREAM_INSTALLED", False))
+
+
+def uninstall(moe_block_cls: type, orig_call: Any) -> None:
+    """Undo :func:`install`'s class-level ``__call__`` monkeypatch.
+
+    ``orig_call`` is the pre-install callable captured by
+    :attr:`InstallResult.orig_call` (``install(...).orig_call``). Restores
+    ``moe_block_cls.__call__`` to it and clears the marker so
+    :func:`is_installed` reports ``False`` again. Test-only today (like
+    ``deepseek_v32_indexer_gate.uninstall_deepseek_v32_indexer_gate``,
+    the same restore shape for the same class-level-monkeypatch pattern);
+    production code installs once per served model and never tears down.
+    """
+    moe_block_cls.__call__ = orig_call
+    moe_block_cls._RAPID_MLX_DISK_STREAM_INSTALLED = False
 
 
 def _streaming_moe_forward(block, x, layer_idx: int, cache: ExpertCache):

@@ -350,6 +350,237 @@ def test_disk_stream_install_fires_on_real_bench_load_path():
     )
 
 
+# ---------------------------------------------------------------------------
+# 3b. Same wiring-regression guarantee, but for the ``serve`` path — the
+#     PRD's primary user story (``rapid-mlx serve --disk-stream``) is what
+#     an operator actually runs; ``bench`` above only proves the flag isn't
+#     dead on the benchmark harness. Named analogously to both the bench
+#     test above and this repo's own precedent,
+#     ``test_deepseek_v32_indexer_gate.py::test_install_fires_on_real_serve_import_path``.
+# ---------------------------------------------------------------------------
+
+_SERVE_SUBPROCESS_SCRIPT = """
+import asyncio
+import contextlib
+import io
+import sys
+from pathlib import Path
+from unittest import mock
+
+# Import the real serve-path modules FIRST — never `disk_stream_patch`
+# directly. Mirrors the bench test's discipline: the assertion must be
+# about what the REAL boot path
+#   cli.serve_command -> server.load_model -> BatchedEngine(...)
+#   -> BatchedEngine._start_llm
+#   -> engine.batched._load_lazy_and_install_disk_stream
+#   -> utils.tokenizer.load_model_with_fallback(lazy=True) -> mlx_lm.load
+# does, not about what this test script calls directly.
+import vllm_mlx.utils.tokenizer  # noqa: F401
+import vllm_mlx.cli as cli
+import vllm_mlx.server as server
+import vllm_mlx.disk_stream_patch as disk_stream_patch
+import mlx_lm
+
+
+class _Stop(Exception):
+    pass
+
+
+calls = []
+
+
+def _fake_mlx_lm_load(path_or_hf_repo, tokenizer_config=None, model_config=None,
+                       adapter_path=None, lazy=False, return_config=False,
+                       revision=None):
+    if not lazy:
+        print("FAIL: mlx_lm.load called with lazy=False on --disk-stream path")
+        sys.exit(1)
+    model = object()
+    tokenizer = object()
+    config = {"model_type": "qwen2_moe"}
+    if return_config:
+        return model, tokenizer, config
+    return model, tokenizer
+
+
+def _fake_install(model, model_type, checkpoint_path, cache_budget_gb=1.0):
+    calls.append((model_type, str(checkpoint_path), cache_budget_gb))
+    raise _Stop
+
+
+mlx_lm.load = _fake_mlx_lm_load
+disk_stream_patch.install = _fake_install
+
+
+def _fake_run_uvicorn(app, args, log_level):
+    # ``serve`` never loads real weights inside ``server.load_model`` —
+    # unlike bench, load_model() only *constructs* the BatchedEngine (see
+    # server.py: "server lifespan's startup_event runs ``await
+    # _engine.start()`` like it does for BatchedEngine"). The real weight
+    # load — and with it, ``_start_llm`` -> ``_load_lazy_and_install_
+    # disk_stream`` -> ``disk_stream_patch.install`` — only fires inside
+    # the FastAPI ``lifespan`` async generator's startup half, which is
+    # normally driven by uvicorn.Server.startup() as part of the ASGI
+    # lifespan protocol, right before uvicorn starts accept()-ing
+    # connections on the bound socket.
+    #
+    # Binding a real socket and running a full uvicorn.Server just to
+    # reach that one startup step would be slow, flaky in CI, and
+    # wouldn't prove anything a lighter probe can't. Starlette's own
+    # lifespan wrapper for a bare async-generator ``lifespan`` function
+    # does nothing more than ``await agen.__anext__()`` to drive it up to
+    # its ``yield`` — that IS the whole mechanism uvicorn relies on. So
+    # instead of stubbing this out to a no-op (which would prove nothing
+    # about disk-stream wiring), drive that exact same real ``server.
+    # lifespan`` generator here. This exercises the literal production
+    # startup hook with no server ever bound to a port.
+    async def _drive_lifespan_startup():
+        agen = server.lifespan(app)
+        await agen.__anext__()
+
+    asyncio.run(_drive_lifespan_startup())
+
+
+with (
+    mock.patch.object(cli, "_check_disk_space", lambda *a, **k: None),
+    mock.patch.object(cli, "_check_memory_capacity", lambda *a, **k: None),
+    mock.patch.object(cli, "_ensure_model_downloaded", lambda *a, **k: None),
+    mock.patch.object(cli, "_port_preflight_or_die", lambda *a, **k: None),
+    mock.patch.object(cli, "_resolve_audio_model_for_serve", lambda _n: None),
+    mock.patch.object(cli, "_run_uvicorn", _fake_run_uvicorn),
+    # server.load_model()'s own MLLM-vs-text routing safety gate (#352):
+    # it prefetches + verifies the checkpoint config exists on disk before
+    # ``resolve_serving_lane`` reads it, and hard-fails if that verification
+    # doesn't find one. Unrelated to disk-stream wiring (it's a routing
+    # pre-check, not part of the install() chain this test pins) — stub it
+    # out so this fake ``does-not-exist/...`` repo doesn't trip the
+    # "could not materialize checkpoint config" fail-fast.
+    mock.patch.object(server, "_ensure_routing_config", lambda *a, **k: None),
+    mock.patch("vllm_mlx.api.utils.is_mllm_model", lambda _n: False),
+    mock.patch("vllm_mlx.audio.probe.is_audio_model_alias", lambda _n: False),
+    mock.patch(
+        "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
+    ),
+    mock.patch(
+        "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+    ),
+    mock.patch(
+        "vllm_mlx.utils.tokenizer._resolve_model_path",
+        # A real Path, not a bare str — see the bench test's identical
+        # comment: _apply_chat_template_sidecar does `model_path / "..."`.
+        lambda name: Path("/fake/disk-stream-checkpoint"),
+    ),
+    # Same as the bench test: stub the two lazy-path post-load fixups
+    # that hit the network by design, so this fake ``does-not-exist/...``
+    # model name doesn't have to round-trip the real Hub.
+    mock.patch(
+        "vllm_mlx.utils.tokenizer._try_inject_mtp_post_load",
+        lambda model, model_name: None,
+    ),
+    mock.patch(
+        "vllm_mlx.utils.tokenizer._neutralize_unbundled_template_types",
+        lambda model_name, tokenizer_config: tokenizer_config,
+    ),
+    mock.patch.object(
+        sys,
+        "argv",
+        [
+            "rapid-mlx",
+            "serve",
+            "does-not-exist/definitely-not-a-real-model",
+            "--port",
+            "0",
+            "--disk-stream",
+        ],
+    ),
+    # Non-interactive stdin short-circuits cli.main()'s auto-pull confirm
+    # gate (which would otherwise probe the real HF Hub for this fake
+    # repo's size) — same reasoning as the bench test's identical stub.
+    mock.patch.object(sys.stdin, "isatty", return_value=False),
+):
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            cli.main()
+    except (_Stop, SystemExit):
+        pass
+    stdout_text = buf.getvalue()
+
+if not calls:
+    print("FAIL: disk_stream_patch.install was never called")
+    print(stdout_text)
+    sys.exit(1)
+model_type, checkpoint_path, cache_gb = calls[0]
+if model_type != "qwen2_moe":
+    print(f"FAIL: unexpected model_type {model_type!r}")
+    sys.exit(1)
+if checkpoint_path != "/fake/disk-stream-checkpoint":
+    print(f"FAIL: unexpected checkpoint_path {checkpoint_path!r}")
+    sys.exit(1)
+if cache_gb != 1.0:
+    print(f"FAIL: unexpected cache_budget_gb {cache_gb!r}")
+    sys.exit(1)
+print("OK")
+"""
+
+
+def test_disk_stream_install_fires_on_real_serve_load_path():
+    """Serve-path counterpart of ``test_disk_stream_install_fires_on_real_
+    bench_load_path`` above — the wiring-regression test that one leaves
+    uncovered. The PRD's primary user story is ``rapid-mlx serve
+    --disk-stream``, not ``bench --disk-stream``; a future refactor could
+    wire the installer to a helper ``bench`` happens to share while
+    ``serve`` quietly stops calling it (exactly the PR #967 bug class: an
+    installer wired to a code path the real production boot doesn't
+    actually use) and the bench test alone would never catch it.
+
+    Drives the REAL ``cli.main()`` -> ``serve_command`` ->
+    ``server.load_model`` -> ``BatchedEngine(...)`` chain in a subprocess
+    (same isolation rationale as the bench test and
+    ``test_deepseek_v32_indexer_gate.py``'s precedent: a pristine
+    interpreter per run, no in-process module-patching pollution across
+    the test session). Only ``mlx_lm.load`` and ``disk_stream_patch.
+    install`` are stubbed (no real weights); everything in between,
+    including the real ``BatchedEngine`` construction, is production
+    wiring.
+
+    ``serve`` (unlike ``bench``) does not load weights synchronously
+    inside ``cli.main()`` — ``server.load_model()`` only constructs the
+    ``BatchedEngine``; the actual weight load happens inside FastAPI's
+    ``lifespan`` startup hook, which real ``uvicorn.run()`` drives as
+    part of the ASGI lifespan protocol immediately before it starts
+    accepting connections. Rather than binding a real socket and running
+    a full ``uvicorn.Server`` just to reach that hook, ``cli._run_uvicorn``
+    is stubbed to instead drive the real ``server.lifespan`` async
+    generator directly up to its startup ``yield`` — the exact mechanism
+    Starlette itself uses to run a bare async-generator lifespan
+    function, and so the same thing uvicorn would have done. No server
+    ever binds a port; the real startup code path still runs in full.
+
+    A future refactor that wires --disk-stream's install call to a
+    module the real serve boot path never touches makes this subprocess
+    assertion fail.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _SERVE_SUBPROCESS_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, (
+        f"subprocess wiring check failed (exit={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\n"
+        "--disk-stream's install() was not reached through the real "
+        "cli -> serve_command -> server.load_model -> BatchedEngine -> "
+        "_start_llm chain (PR #967-class wiring regression)."
+    )
+    assert "OK" in result.stdout, (
+        f"subprocess did not print OK marker. stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+
+
 def test_disk_stream_unregistered_model_type_fails_clearly_at_load_time():
     """AC #5 — an unregistered model_type must fail at load time with
     disk_stream_patch's own clear UnsupportedModelTypeError message, not a

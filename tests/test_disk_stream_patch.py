@@ -32,12 +32,19 @@ Tiers, per the PRD's testing decision:
 
 from __future__ import annotations
 
+import gc
 import json
 from pathlib import Path
 
 import pytest
 
-from vllm_mlx.disk_stream_patch import UnsupportedModelTypeError, install
+from vllm_mlx import registry
+from vllm_mlx.disk_stream_patch import (
+    UnsupportedModelTypeError,
+    install,
+    is_installed,
+    uninstall,
+)
 
 # Same fixed prompt/seed/greedy/token-count as the spike's ticket 01
 # baseline and ticket 04 e2e script (.scratch/moe-disk-stream/scripts/
@@ -84,6 +91,74 @@ def test_install_unregistered_model_type_raises_immediately():
             "totally_unregistered_model_type",
             checkpoint_path="/nonexistent",
         )
+
+
+class _FakeMoeBlock:
+    """Lightweight stand-in MoE block for install/is_installed/uninstall
+    bookkeeping tests below. Deliberately NOT a real mlx_lm class and NOT
+    used to test streaming math -- this stays inside the PRD's "no mock-
+    based unit test for the STREAMING logic itself" boundary because
+    is_installed()/uninstall() are pure bookkeeping around the class-level
+    monkeypatch, not the streaming forward.
+    """
+
+    def __call__(self, x):
+        return "orig-call"
+
+
+def _fake_streaming_forward(block, x, layer_idx, cache):  # pragma: no cover
+    """Never invoked -- install() reads ``adapter.streaming_forward`` eagerly
+    (to build the ``streaming_call`` closure) even though this test never
+    calls the patched ``__call__``, so the adapter needs a resolvable
+    streaming_forward_module/fn_name pair or ``install()`` itself raises.
+    """
+    raise AssertionError("not expected to be called by this bookkeeping test")
+
+
+def test_install_sets_marker_and_uninstall_restores_original_call():
+    """install() sets the ``is_installed()`` marker and patches
+    ``__call__``; uninstall() restores both to pre-install state.
+
+    Mirrors ``test_uninstall_restores_originals_across_module_reload`` in
+    ``tests/test_deepseek_v32_indexer_gate.py`` (this repo's precedent for
+    the same class-level-``__call__``-monkeypatch shape), scoped to a fake
+    class registered just for this test so it doesn't touch the real
+    lfm2_moe/qwen2_moe adapters other tests in this file rely on.
+    """
+    fake_adapter = registry.StreamingAdapter(
+        model_type="_disk_stream_patch_test_fake",
+        moe_block_module=__name__,
+        moe_block_class_name="_FakeMoeBlock",
+        tensor_template=registry.ExpertTensorTemplate(
+            layout="stacked", name_template="unused.{layer}.{proj}.{component}"
+        ),
+        num_experts=1,
+        streaming_forward_module=__name__,
+        streaming_forward_fn_name="_fake_streaming_forward",
+    )
+    registry._register(fake_adapter)
+
+    class _FakeModel:
+        layers: list = []
+
+    orig_call = _FakeMoeBlock.__call__
+    assert not is_installed(_FakeMoeBlock)
+
+    result = install(
+        _FakeModel(),
+        "_disk_stream_patch_test_fake",
+        checkpoint_path="/nonexistent",
+    )
+
+    assert is_installed(_FakeMoeBlock)
+    assert _FakeMoeBlock.__call__ is not orig_call
+    assert result.moe_block_cls is _FakeMoeBlock
+    assert result.orig_call is orig_call
+
+    uninstall(result.moe_block_cls, result.orig_call)
+
+    assert not is_installed(_FakeMoeBlock)
+    assert _FakeMoeBlock.__call__ is orig_call
 
 
 def _local_lfm25_checkpoint() -> Path | None:
@@ -134,6 +209,12 @@ def test_install_streams_lfm25_token_exact_with_lower_peak_memory():
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
 
+    # mx.get_peak_memory() is a process-wide running maximum, not scoped
+    # per-test -- reset it before the lazy load so the "near-zero peak"
+    # assertion below is meaningful regardless of what ran earlier in this
+    # pytest session (e.g. the qwen2_moe slow test below, if collection/
+    # run order ever changes).
+    mx.reset_peak_memory()
     model, tokenizer = load(HF_REPO, lazy=True)
     peak_after_load_bytes = mx.get_peak_memory()
     assert peak_after_load_bytes < 1e7, (
@@ -146,30 +227,50 @@ def test_install_streams_lfm25_token_exact_with_lower_peak_memory():
     )
     assert result.num_moe_layers_patched > 0
 
-    mx.random.seed(SEED)
-    sampler = make_sampler(temp=0.0)
-    messages = [{"role": "user", "content": PROMPT}]
-    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+    try:
+        mx.random.seed(SEED)
+        sampler = make_sampler(temp=0.0)
+        messages = [{"role": "user", "content": PROMPT}]
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
 
-    token_ids = []
-    for response in stream_generate(
-        model, tokenizer, prompt, max_tokens=NUM_TOKENS, sampler=sampler
-    ):
-        token_ids.append(response.token)
+        token_ids = []
+        for response in stream_generate(
+            model, tokenizer, prompt, max_tokens=NUM_TOKENS, sampler=sampler
+        ):
+            token_ids.append(response.token)
 
-    streaming_peak_gb = mx.get_peak_memory() / 1e9
-    baseline_peak_gb = baseline["peak_memory_gb_mx_get_peak_memory"]
+        streaming_peak_gb = mx.get_peak_memory() / 1e9
+        baseline_peak_gb = baseline["peak_memory_gb_mx_get_peak_memory"]
 
-    assert token_ids == baseline["token_ids"], (
-        "streaming generation must be token-exact vs. the non-streaming "
-        f"baseline. streaming={token_ids} baseline={baseline['token_ids']}"
-    )
-    assert streaming_peak_gb < baseline_peak_gb, (
-        f"streaming peak memory ({streaming_peak_gb:.4f} GB) must be "
-        f"measurably lower than the full resident baseline "
-        f"({baseline_peak_gb:.4f} GB)"
-    )
-    assert result.cache.misses > 0  # cache actually did streaming fetches
+        assert token_ids == baseline["token_ids"], (
+            "streaming generation must be token-exact vs. the non-streaming "
+            f"baseline. streaming={token_ids} baseline={baseline['token_ids']}"
+        )
+        assert streaming_peak_gb < baseline_peak_gb, (
+            f"streaming peak memory ({streaming_peak_gb:.4f} GB) must be "
+            f"measurably lower than the full resident baseline "
+            f"({baseline_peak_gb:.4f} GB)"
+        )
+        assert result.cache.misses > 0  # cache actually did streaming fetches
+    finally:
+        # ``install()`` patches Lfm2MoeSparseMoeBlock.__call__ at the CLASS
+        # level; without tearing it back down, the streaming_call closure
+        # keeps this test's ~1GB ExpertCache alive for the rest of the
+        # pytest session (confirmed empirically: active memory stayed at
+        # ~997MB after del+gc.collect() alone, until uninstall() dropped
+        # the class's reference to it) -- which is exactly what made the
+        # qwen2_moe test's own near-zero-peak-after-lazy-load assertion
+        # below fail when both slow tests ran together, even with
+        # mx.reset_peak_memory() at that test's top: reset zeroes the
+        # *peak* counter, but get_peak_memory() immediately reports
+        # whatever is still actively allocated, and this leaked cache was
+        # part of that. gc.collect() + mx.clear_cache() then release the
+        # now-unreferenced buffers so the next test starts from a clean
+        # slate.
+        uninstall(result.moe_block_cls, result.orig_call)
+        del model, tokenizer, result
+        gc.collect()
+        mx.clear_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +331,13 @@ def test_install_streams_qwen2_moe_token_exact_with_lower_peak_memory():
     from mlx_lm import load, stream_generate
     from mlx_lm.sample_utils import make_sampler
 
+    # See the matching comment in the LFM2.5 test above: mx.get_peak_memory()
+    # is a process-wide running maximum left over from whatever ran earlier
+    # in this pytest session (notably the LFM2.5 slow test above, which by
+    # its own success criterion drives the peak up to ~1GB) -- reset it here
+    # so this test's own near-zero-peak-after-lazy-load assertion is
+    # trustworthy when both slow tests run together in one session.
+    mx.reset_peak_memory()
     model, tokenizer = load(QWEN_HF_REPO, lazy=True)
     peak_after_load_bytes = mx.get_peak_memory()
     assert peak_after_load_bytes < 1e7, (
@@ -242,27 +350,36 @@ def test_install_streams_qwen2_moe_token_exact_with_lower_peak_memory():
     )
     assert result.num_moe_layers_patched > 0
 
-    mx.random.seed(SEED)
-    sampler = make_sampler(temp=0.0)
-    messages = [{"role": "user", "content": PROMPT}]
-    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+    try:
+        mx.random.seed(SEED)
+        sampler = make_sampler(temp=0.0)
+        messages = [{"role": "user", "content": PROMPT}]
+        prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True)
 
-    token_ids = []
-    for response in stream_generate(
-        model, tokenizer, prompt, max_tokens=NUM_TOKENS, sampler=sampler
-    ):
-        token_ids.append(response.token)
+        token_ids = []
+        for response in stream_generate(
+            model, tokenizer, prompt, max_tokens=NUM_TOKENS, sampler=sampler
+        ):
+            token_ids.append(response.token)
 
-    streaming_peak_gb = mx.get_peak_memory() / 1e9
-    baseline_peak_gb = baseline["peak_memory_gb_mx_get_peak_memory"]
+        streaming_peak_gb = mx.get_peak_memory() / 1e9
+        baseline_peak_gb = baseline["peak_memory_gb_mx_get_peak_memory"]
 
-    assert token_ids == baseline["token_ids"], (
-        "streaming generation must be token-exact vs. the non-streaming "
-        f"baseline. streaming={token_ids} baseline={baseline['token_ids']}"
-    )
-    assert streaming_peak_gb < baseline_peak_gb, (
-        f"streaming peak memory ({streaming_peak_gb:.4f} GB) must be "
-        f"measurably lower than the full resident baseline "
-        f"({baseline_peak_gb:.4f} GB)"
-    )
-    assert result.cache.misses > 0  # cache actually did streaming fetches
+        assert token_ids == baseline["token_ids"], (
+            "streaming generation must be token-exact vs. the non-streaming "
+            f"baseline. streaming={token_ids} baseline={baseline['token_ids']}"
+        )
+        assert streaming_peak_gb < baseline_peak_gb, (
+            f"streaming peak memory ({streaming_peak_gb:.4f} GB) must be "
+            f"measurably lower than the full resident baseline "
+            f"({baseline_peak_gb:.4f} GB)"
+        )
+        assert result.cache.misses > 0  # cache actually did streaming fetches
+    finally:
+        # Same leak-prevention teardown as the LFM2.5 test above -- keeps
+        # this test's own ExpertCache from leaking into whatever slow test
+        # runs after it if this file's suite grows a third one.
+        uninstall(result.moe_block_cls, result.orig_call)
+        del model, tokenizer, result
+        gc.collect()
+        mx.clear_cache()

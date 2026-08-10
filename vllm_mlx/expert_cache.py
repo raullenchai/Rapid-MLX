@@ -47,6 +47,20 @@ def _default_size_fn(bundle: Any) -> int:
 class ExpertCache:
     """LRU cache of `(layer_idx, expert_id) -> bundle`, bounded by total
     bundle bytes rather than entry count. Single public method: `get`.
+
+    Not thread-safe. `get()`'s check-then-fetch-then-insert sequence is
+    unguarded: concurrent misses on the same `(layer_idx, expert_id)` key
+    from two threads can both pass the `key in self._store` check, both
+    call `fetch_fn` (double-fetch), and both insert -- `_total_bytes` then
+    accumulates both entries' sizes even though only one survives in
+    `_store`, permanently drifting the byte count upward relative to what
+    is actually cached. This class was built for the current disk-stream
+    round's single-request/single-threaded generation flow, where that
+    race cannot occur. Rapid-MLX does handle concurrent requests elsewhere
+    in the codebase, so callers using an `ExpertCache` instance from a
+    multi-threaded/concurrent-request context must serialize access to it
+    externally -- or this class needs real locking added first, which is
+    out of scope for this round.
     """
 
     def __init__(

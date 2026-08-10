@@ -31,6 +31,7 @@ contract for a genuinely unrecognized third layout value) plus real
 from __future__ import annotations
 
 import json
+import struct
 from pathlib import Path
 
 import mlx.core as mx
@@ -170,6 +171,39 @@ def test_fetch_expert_bundle_stacked_layout_resolves_checkpoint_directory(
         for component in ("weight", "scales", "biases"):
             expected = sources[f"{proj}.{component}"][2]
             assert mx.array_equal(bundle[proj][component], expected)
+
+
+def test_fetch_expert_bundle_stacked_layout_rejects_negative_expert_id(stacked_checkpoint):
+    """A negative ``expert_id`` must raise a clear ``ValueError`` naming the
+    offending id and ``num_experts`` -- not silently wrap around (Python's
+    negative-indexing-like arithmetic) and return a *different* expert's
+    bytes with no signal anything went wrong.
+    """
+    path, _sources = stacked_checkpoint
+    adapter = _stacked_fixture_adapter()
+
+    with pytest.raises(ValueError) as exc_info:
+        fetch_expert_bundle(adapter, path, layer_idx=3, expert_id=-1)
+    message = str(exc_info.value)
+    assert "-1" in message
+    assert str(NUM_EXPERTS) in message
+
+
+def test_fetch_expert_bundle_stacked_layout_rejects_expert_id_at_or_above_num_experts(
+    stacked_checkpoint,
+):
+    """An out-of-range (too-high) ``expert_id`` must raise a clear
+    ``ValueError`` rather than reading whatever bytes happen to follow the
+    stacked tensor in the file -- which may or may not hit EOF depending on
+    file layout, so it must not be allowed to fail only "by accident".
+    """
+    path, _sources = stacked_checkpoint
+    adapter = _stacked_fixture_adapter()
+
+    with pytest.raises(ValueError) as exc_info:
+        fetch_expert_bundle(adapter, path, layer_idx=3, expert_id=NUM_EXPERTS)
+    message = str(exc_info.value)
+    assert str(NUM_EXPERTS) in message
 
 
 def test_unknown_layout_raises_not_implemented(stacked_checkpoint):
@@ -354,6 +388,170 @@ def test_resolve_shard_path_rejects_dotdot_relative_shard_name(tmp_path):
 
     with pytest.raises(ValueError, match=tensor_name):
         _resolve_shard_path(checkpoint_dir, tensor_name)
+
+
+# ---------------------------------------------------------------------
+# Defensive/error-path coverage for `_fetch_tensor_slice` /
+# `_resolve_shard_path` -- malformed/inconsistent headers and sharded
+# lookup misses. `mx.save_safetensors` always produces a self-consistent
+# header, so these hand-craft the raw safetensors bytes (8-byte
+# little-endian header length + JSON header + data) to exercise headers
+# that don't agree with their own declared shape/dtype/data_offsets.
+# ---------------------------------------------------------------------
+
+
+def _write_raw_safetensors_file(path: Path, header: dict, data: bytes) -> None:
+    """Write a safetensors file from an exact, hand-crafted header + data
+    section, bypassing ``mx.save_safetensors``'s always-consistent output --
+    lets tests construct the malformed headers the defensive ``ValueError``
+    branches in ``_fetch_tensor_slice`` are meant to catch.
+    """
+    header_bytes = json.dumps(header).encode("utf-8")
+    with open(path, "wb") as f:
+        f.write(struct.pack("<Q", len(header_bytes)))
+        f.write(header_bytes)
+        f.write(data)
+
+
+def test_fetch_tensor_slice_raises_on_uneven_stacking(tmp_path):
+    """A stacked-layout tensor whose byte range doesn't evenly divide by its
+    own declared ``shape[0]`` (num_experts) must raise a clear ``ValueError``
+    naming the tensor, not silently mis-slice.
+    """
+    from vllm_mlx.offset_reader import _fetch_tensor_slice
+
+    path = tmp_path / "model.safetensors"
+    # shape (3, 2, 2) F32 = 48 bytes total, but data_offsets claims only 47
+    # bytes -- 47 is not evenly divisible by num_experts=3.
+    header = {
+        "layer0.tensor": {"dtype": "F32", "shape": [3, 2, 2], "data_offsets": [0, 47]}
+    }
+    _write_raw_safetensors_file(path, header, data=b"\x00" * 48)
+
+    with pytest.raises(ValueError, match="not evenly stacked"):
+        _fetch_tensor_slice(path, "layer0.tensor", expert_id=0)
+
+
+def test_fetch_tensor_slice_raises_on_byte_range_size_mismatch(tmp_path):
+    """A tensor whose declared byte range doesn't match its own declared
+    shape x dtype size (a corrupted/inconsistent header) must raise a clear
+    ``ValueError`` rather than silently reshaping the wrong amount of data.
+    """
+    from vllm_mlx.offset_reader import _fetch_tensor_slice
+
+    path = tmp_path / "model.safetensors"
+    # shape (2, 2) F32 expects 16 bytes; data_offsets claims only 12.
+    header = {
+        "layer0.tensor": {"dtype": "F32", "shape": [2, 2], "data_offsets": [0, 12]}
+    }
+    _write_raw_safetensors_file(path, header, data=b"\x00" * 16)
+
+    with pytest.raises(ValueError, match="byte-range size"):
+        _fetch_tensor_slice(path, "layer0.tensor")
+
+
+def test_fetch_tensor_slice_raises_on_short_read(tmp_path):
+    """If the file is truncated so fewer bytes exist than the header
+    promises, the resulting short read must raise a clear ``ValueError``
+    instead of silently returning a too-small/garbage array.
+    """
+    from vllm_mlx.offset_reader import _fetch_tensor_slice
+
+    path = tmp_path / "model.safetensors"
+    # shape (2, 2) F32 = 16 bytes, header says data_offsets=[0, 16], but the
+    # file only actually has 8 bytes of data after the header.
+    header = {
+        "layer0.tensor": {"dtype": "F32", "shape": [2, 2], "data_offsets": [0, 16]}
+    }
+    _write_raw_safetensors_file(path, header, data=b"\x00" * 8)
+
+    with pytest.raises(ValueError, match="short read"):
+        _fetch_tensor_slice(path, "layer0.tensor")
+
+
+def test_resolve_shard_path_raises_keyerror_on_missing_tensor(tmp_path):
+    """A tensor name absent from ``index.json``'s ``weight_map`` entirely
+    (as opposed to a hit) must raise a clear ``KeyError`` naming the tensor,
+    not silently return a bogus/None-derived path.
+    """
+    from vllm_mlx.offset_reader import _resolve_shard_path
+
+    checkpoint_dir = tmp_path / "checkpoint"
+    checkpoint_dir.mkdir()
+    index = {"weight_map": {"some.other.tensor": "model-00001-of-00001.safetensors"}}
+    (checkpoint_dir / "model.safetensors.index.json").write_text(json.dumps(index))
+
+    missing_name = "model.layers.3.mlp.experts.2.gate_proj.weight"
+    with pytest.raises(KeyError) as exc_info:
+        _resolve_shard_path(checkpoint_dir, missing_name)
+    assert missing_name in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------
+# Regression coverage: header/index.json metadata must be parsed once per
+# `fetch_expert_bundle` call (9 tensors sharing one shard's header, or one
+# checkpoint's index.json), not once per tensor.
+# ---------------------------------------------------------------------
+
+
+def test_fetch_expert_bundle_parses_header_once_per_shard_not_per_tensor(
+    stacked_checkpoint, monkeypatch
+):
+    """A single-shard 9-tensor bundle fetch must parse that shard's header
+    exactly once, not once per tensor (9x).
+    """
+    import vllm_mlx.offset_reader as offset_reader_module
+
+    path, _sources = stacked_checkpoint
+    adapter = _stacked_fixture_adapter()
+
+    call_count = 0
+    real_read_header = offset_reader_module._read_header
+
+    def counting_read_header(p):
+        nonlocal call_count
+        call_count += 1
+        return real_read_header(p)
+
+    monkeypatch.setattr(offset_reader_module, "_read_header", counting_read_header)
+
+    fetch_expert_bundle(adapter, path, layer_idx=3, expert_id=1)
+
+    assert call_count == 1, f"expected 1 header parse for a single-shard bundle, got {call_count}"
+
+
+def test_fetch_expert_bundle_parses_index_json_once_per_call(tmp_path, monkeypatch):
+    """A sharded 'direct'-layout checkpoint's ``index.json`` must be parsed
+    once per ``fetch_expert_bundle`` call, not once per tensor lookup (9x).
+    """
+    import vllm_mlx.offset_reader as offset_reader_module
+
+    adapter = _direct_fixture_adapter()
+    tensors = {}
+    for proj in ("gate_proj", "up_proj", "down_proj"):
+        for component in ("weight", "scales", "biases"):
+            dtype = _DTYPES[component]
+            name = f"model.layers.3.mlp.experts.1.{proj}.{component}"
+            tensors[name] = mx.full((OUT_DIM, IN_DIM), 1, dtype=dtype)
+
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    mx.save_safetensors(str(shard), tensors)
+    index = {"weight_map": {name: shard.name for name in tensors}}
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
+
+    call_count = 0
+    real_load_weight_map = offset_reader_module._load_weight_map
+
+    def counting_load_weight_map(p):
+        nonlocal call_count
+        call_count += 1
+        return real_load_weight_map(p)
+
+    monkeypatch.setattr(offset_reader_module, "_load_weight_map", counting_load_weight_map)
+
+    fetch_expert_bundle(adapter, tmp_path, layer_idx=3, expert_id=1)
+
+    assert call_count == 1, f"expected 1 index.json parse per call, got {call_count}"
 
 
 # ---------------------------------------------------------------------

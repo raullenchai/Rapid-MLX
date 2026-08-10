@@ -15,7 +15,11 @@ same module and its no-caching discipline.
 
 No caching at this layer, by design (PRD: caching is ``expert_cache.py``,
 a separate module/ticket) — every call does a fresh ``open()``/``seek()``/
-``read()`` per tensor.
+``read()`` per tensor. The one exception: within a single
+:func:`fetch_expert_bundle` call, the tiny header/index *metadata* JSON for
+each distinct file is parsed once and reused across that call's 9 tensor
+fetches (instead of 9x) — nothing is memoized *across* separate
+:func:`fetch_expert_bundle` calls, and tensor byte reads are never reused.
 """
 
 from __future__ import annotations
@@ -64,12 +68,25 @@ def _fetch_tensor_slice(
     path: Path,
     tensor_name: str,
     expert_id: int | None = None,
+    header: tuple[dict, int] | None = None,
 ) -> mx.array:
     """Fetch one tensor (or, if ``expert_id`` is given, one axis-0 slice of
     a stacked-experts tensor) via a single seek+read of exactly its byte
     range. No ``mx.load``, no whole-file safetensors load, no caching.
+
+    ``header``, if given, is an already-parsed ``(header_dict, data_start)``
+    pair (as returned by ``_read_header``) — lets a caller that's fetching
+    several tensors from the same file within one logical operation (see
+    ``fetch_expert_bundle``) parse the header once and reuse it, instead of
+    this function re-reading/re-parsing it itself. Tensor *byte* reads
+    still always do a fresh ``open()``/``seek()``/``read()`` below — only
+    the tiny metadata-JSON parse is ever reused, and only within that one
+    caller-scoped batch, never across separate calls to this function.
     """
-    header, data_start = _read_header(path)  # re-read + re-parse every call
+    if header is None:
+        header, data_start = _read_header(path)  # re-read + re-parse every call
+    else:
+        header, data_start = header
     meta = header[tensor_name]
     dtype_str = meta["dtype"]
     shape = list(meta["shape"])
@@ -77,6 +94,11 @@ def _fetch_tensor_slice(
 
     if expert_id is not None:
         num_experts = shape[0]
+        if not (0 <= expert_id < num_experts):
+            raise ValueError(
+                f"{tensor_name}: expert_id {expert_id} out of range "
+                f"[0, {num_experts}) (num_experts={num_experts})"
+            )
         if (end - start) % num_experts != 0:
             raise ValueError(f"{tensor_name}: not evenly stacked on axis 0")
         per_expert_nbytes = (end - start) // num_experts
@@ -106,7 +128,24 @@ def _fetch_tensor_slice(
     return mx_arr
 
 
-def _resolve_shard_path(path: Path, tensor_name: str) -> Path:
+_UNSET = object()  # sentinel: "no weight_map given, look it up yourself"
+
+
+def _load_weight_map(path: Path) -> dict | None:
+    """Parse ``<path>/model.safetensors.index.json``'s ``weight_map`` once,
+    or return ``None`` if ``path`` is a single file (no index.json to
+    resolve) or the directory has no index.json (single-file checkpoint in
+    directory form).
+    """
+    if path.is_file():
+        return None
+    index_path = path / "model.safetensors.index.json"
+    if not index_path.is_file():
+        return None
+    return json.loads(index_path.read_text())["weight_map"]
+
+
+def _resolve_shard_path(path: Path, tensor_name: str, weight_map: dict | None = _UNSET) -> Path:
     """Resolve the concrete safetensors file holding ``tensor_name``, for
     both the ``"stacked"`` and ``"direct"`` layouts — the directory-vs-file
     resolution is identical either way. A safetensors tensor is never split
@@ -126,15 +165,23 @@ def _resolve_shard_path(path: Path, tensor_name: str) -> Path:
       that directory's ``model.safetensors.index.json`` ``weight_map``
       when present (qwen2_moe's real checkpoint ships 2 shards), else
       ``path/model.safetensors`` (single-file checkpoint in directory form).
+
+    ``weight_map``, if given, is an already-parsed ``index.json``
+    ``weight_map`` dict (or ``None``, meaning "no index.json") — lets a
+    caller resolving several tensor names against the same checkpoint
+    directory within one logical operation (see ``fetch_expert_bundle``)
+    parse ``index.json`` once and reuse it, instead of this function
+    re-reading/re-parsing it itself on every call. Leave unset to have
+    this function look it up itself (the original, single-call behavior).
     """
     if path.is_file():
         return path
-    index_path = path / "model.safetensors.index.json"
-    if index_path.is_file():
-        weight_map = json.loads(index_path.read_text())["weight_map"]
+    if weight_map is _UNSET:
+        weight_map = _load_weight_map(path)
+    if weight_map is not None:
         shard_name = weight_map.get(tensor_name)
         if shard_name is None:
-            raise KeyError(f"{tensor_name!r} not found in {index_path}'s weight_map")
+            raise KeyError(f"{tensor_name!r} not found in {path}'s index.json weight_map")
         # shard_name comes straight from the checkpoint's own (untrusted)
         # index.json. `path / shard_name` alone is not safe: if shard_name
         # is absolute, pathlib's `/` discards `path` entirely, and a
@@ -209,22 +256,39 @@ def fetch_expert_bundle(
         )
 
     path = Path(path)
+
+    # Parse index.json (if any) and each distinct shard's header ONCE for
+    # this whole bundle fetch, instead of once per tensor (9x) — see the
+    # "efficiency" finding in the disk-stream review. This is scoped to a
+    # single `fetch_expert_bundle` call only (a local dict, thrown away on
+    # return): it does NOT persist across calls, so the module's "no
+    # caching of weight bytes across calls" design is unaffected — actual
+    # tensor byte reads inside `_fetch_tensor_slice` still always do a
+    # fresh open()/seek()/read().
+    weight_map = _load_weight_map(path)
+    header_cache: dict[Path, tuple[dict, int]] = {}
+
     bundle: dict[str, dict[str, mx.array]] = {}
     for proj in adapter.sub_projections:
         bundle[proj] = {}
         for component in adapter.tensor_components:
             if layout == "stacked":
                 tensor_name = adapter.tensor_template.tensor_name(layer_idx, proj, component)
-                shard_path = _resolve_shard_path(path, tensor_name)
-                bundle[proj][component] = _fetch_tensor_slice(
-                    shard_path, tensor_name, expert_id=expert_id
-                )
+                slice_expert_id = expert_id
             else:  # "direct"
                 tensor_name = adapter.tensor_template.tensor_name(
                     layer_idx, proj, component, expert_id=expert_id
                 )
-                shard_path = _resolve_shard_path(path, tensor_name)
-                bundle[proj][component] = _fetch_tensor_slice(
-                    shard_path, tensor_name, expert_id=None
-                )
+                slice_expert_id = None
+
+            shard_path = _resolve_shard_path(path, tensor_name, weight_map=weight_map)
+            if shard_path not in header_cache:
+                header_cache[shard_path] = _read_header(shard_path)
+
+            bundle[proj][component] = _fetch_tensor_slice(
+                shard_path,
+                tensor_name,
+                expert_id=slice_expert_id,
+                header=header_cache[shard_path],
+            )
     return bundle
