@@ -287,21 +287,35 @@ enum ServerLocator {
                 return .rapidBin
             }
         }
+        let runtimeMatches: Bool
         if let overrideURL = applicationSupportURL?
             .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx") {
             let override = overrideURL.standardizedFileURL.path
             let resolvedOverride = overrideURL.resolvingSymlinksInPath().standardizedFileURL.path
-            if override == path || resolvedOverride == path {
-                return .runtimeOverride
-            }
+            runtimeMatches = override == path || resolvedOverride == path
+        } else {
+            runtimeMatches = false
         }
+        let bundledMatches: Bool
         if let bundledURL = bundleResourceURL?
             .appendingPathComponent("rapid-mlx/bin/rapid-mlx") {
             let bundled = bundledURL.standardizedFileURL.path
             let resolvedBundled = bundledURL.resolvingSymlinksInPath().standardizedFileURL.path
-            if bundled == path || resolvedBundled == path {
-                return .bundled
-            }
+            bundledMatches = bundled == path || resolvedBundled == path
+        } else {
+            bundledMatches = false
+        }
+        switch (runtimeMatches, bundledMatches) {
+        case (true, false): return .runtimeOverride
+        case (false, true): return .bundled
+        case (true, true):
+            // Both managed launchers can point at the same checkout. Once
+            // `find()` has resolved the symlink target, path inspection cannot
+            // recover which slot won VERSION selection. Unknown is honest;
+            // choosing either source here would display the wrong slot's
+            // VERSION for one of the two possible outcomes.
+            return .unknown
+        case (false, false): break
         }
         // No PATH / brew / pipx / uv slots to match: ``find()`` stopped
         // surfacing them in the v0.8.10 cutover, and a real ``RAPID_BIN``

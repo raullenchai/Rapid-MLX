@@ -64,6 +64,23 @@ struct AboutPanelEngineIdentityTests {
     func missingIdentity() {
         #expect(AboutPanel.engineIdentity(binaryPath: nil) == nil)
     }
+
+    @Test("Shared symlink targets do not invent managed-slot provenance")
+    func ambiguousManagedTarget() throws {
+        let fixture = try Fixture(sharedManagedTarget: true)
+        defer { fixture.remove() }
+
+        let identity = AboutPanel.engineIdentity(
+            binaryPath: fixture.runtimeBinary.resolvingSymlinksInPath(),
+            environment: [:],
+            bundleResourceURL: fixture.bundleResources,
+            applicationSupportURL: fixture.applicationSupport
+        )
+
+        #expect(identity?.source == .unknown)
+        #expect(identity?.summary == "Engine 0.1.0 · Unknown origin")
+        #expect(identity?.isOverride == false)
+    }
 }
 
 private struct Fixture {
@@ -73,7 +90,7 @@ private struct Fixture {
     let runtimeBinary: URL
     let bundledBinary: URL
 
-    init(symlinkRuntime: Bool = false) throws {
+    init(symlinkRuntime: Bool = false, sharedManagedTarget: Bool = false) throws {
         let fm = FileManager.default
         root = fm.temporaryDirectory
             .appendingPathComponent("rapid-about-engine-\(UUID().uuidString)", isDirectory: true)
@@ -83,7 +100,17 @@ private struct Fixture {
             .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx")
         bundledBinary = bundleResources
             .appendingPathComponent("rapid-mlx/bin/rapid-mlx")
-        if symlinkRuntime {
+        if sharedManagedTarget {
+            let target = root.appendingPathComponent("checkout/bin/rapid-mlx")
+            try Self.writeSidecar(binary: target, version: "0.1.0")
+            for binary in [runtimeBinary, bundledBinary] {
+                try fm.createDirectory(
+                    at: binary.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try fm.createSymbolicLink(at: binary, withDestinationURL: target)
+            }
+        } else if symlinkRuntime {
             let target = root.appendingPathComponent("checkout/bin/rapid-mlx")
             try Self.writeSidecar(binary: target, version: "0.1.0")
             try fm.createDirectory(
@@ -99,7 +126,9 @@ private struct Fixture {
         } else {
             try Self.writeSidecar(binary: runtimeBinary, version: "99.0.0")
         }
-        try Self.writeSidecar(binary: bundledBinary, version: "0.12.7")
+        if !sharedManagedTarget {
+            try Self.writeSidecar(binary: bundledBinary, version: "0.12.7")
+        }
     }
 
     func remove() {
