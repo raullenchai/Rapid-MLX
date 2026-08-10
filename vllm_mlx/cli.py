@@ -5473,12 +5473,15 @@ def _external_tree_size_bytes(path: str) -> int:
     """Logical external-tree bytes, following shared files only once."""
     total = 0
     seen: set[tuple[int, int]] = set()
-    for current, _directories, files in os.walk(path, followlinks=False):
+
+    def inaccessible(error: OSError) -> None:
+        raise error
+
+    for current, _directories, files in os.walk(
+        path, followlinks=False, onerror=inaccessible
+    ):
         for name in files:
-            try:
-                stat = os.stat(os.path.join(current, name), follow_symlinks=True)
-            except OSError:
-                continue
+            stat = os.stat(os.path.join(current, name), follow_symlinks=True)
             identity = (stat.st_dev, stat.st_ino)
             if identity in seen:
                 continue
