@@ -2858,11 +2858,29 @@ class BatchedEngine(BaseEngine):
             # counters permanently at zero while generation was successful.
             # Keep the detailed nested snapshot and promote the same fields
             # that the text engine exposes at the top level.
-            stats.update(mllm_stats)
+            for key in (
+                "num_waiting",
+                "num_running",
+                "num_finished",
+                "num_requests_processed",
+                "total_prompt_tokens",
+                "total_completion_tokens",
+                "num_requests_cancelled",
+                "num_requests_cancelled_via_disconnect",
+                "metal_active_memory_gb",
+                "metal_peak_memory_gb",
+                "metal_cache_memory_gb",
+                "batch_generator",
+                "vision_embedding_cache",
+                "vision_cache",
+            ):
+                if key in mllm_stats:
+                    stats[key] = mllm_stats[key]
             stats["steps_executed"] = getattr(self._mllm_scheduler, "_step_count", 0)
+            start_time = getattr(self, "_start_time", None)
             stats["uptime_seconds"] = (
-                max(0.0, time.monotonic() - self._start_time)
-                if self._start_time is not None
+                max(0.0, time.monotonic() - start_time)
+                if start_time is not None
                 else 0.0
             )
         elif self._engine:

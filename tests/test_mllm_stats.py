@@ -82,6 +82,37 @@ def test_batched_engine_promotes_mllm_stats_to_common_top_level():
     assert stats["uptime_seconds"] >= 2.0
 
 
+def test_batched_engine_mllm_stats_cannot_overwrite_engine_identity():
+    """A scheduler snapshot must not replace BatchedEngine-owned fields."""
+
+    class FakeScheduler:
+        _step_count = 0
+
+        def get_stats(self) -> dict[str, object]:
+            return {
+                "engine_type": "scheduler-controlled",
+                "model_name": "wrong-model",
+                "loaded": False,
+                "total_prompt_tokens": 5,
+            }
+
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._model_name = "real-model"
+    engine._is_mllm = True
+    engine._loaded = True
+    engine._stream_interval = 1
+    engine._mllm_scheduler = FakeScheduler()
+    engine._engine = None
+
+    stats = engine.get_stats()
+
+    assert stats["engine_type"] == "batched"
+    assert stats["model_name"] == "real-model"
+    assert stats["loaded"] is True
+    assert stats["total_prompt_tokens"] == 5
+    assert stats["uptime_seconds"] == 0.0
+
+
 def test_mllm_completed_request_adds_prompt_and_completion_tokens():
     """Completed MLLM requests must contribute both token counters."""
     scheduler = _bare_scheduler()
