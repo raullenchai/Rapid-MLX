@@ -163,6 +163,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # hatch for sandboxed / read-only-home environments. Pure state-file
         # placement knob — never selects a model, parser, or routing tier.
         "RAPID_MLX_STATE_DIR",
+        # User-selected read-only roots to discover already-downloaded model
+        # files. Storage discovery only; it never selects a parser, scheduler,
+        # or request-routing path.
+        "RAPID_MLX_EXTRA_MODEL_ROOTS",
         # Community benchmark board endpoint and local archive root. These
         # affect upload/storage destinations only; neither is read by model,
         # parser, scheduler, or request-routing code.

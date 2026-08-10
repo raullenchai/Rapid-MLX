@@ -193,29 +193,6 @@ def test_missing_model_exits_1_without_prompt() -> None:
     assert "not in the HuggingFace cache" in out
 
 
-def test_external_identity_refuses_deleting_same_named_incomplete_hub_stub() -> None:
-    repo = _make_repo()
-    cache, strategy = _patched_scan(repo)
-    args = SimpleNamespace(model=repo.repo_id, yes=True)
-    buf = io.StringIO()
-
-    with (
-        patch("huggingface_hub.scan_cache_dir", return_value=cache),
-        patch(
-            "vllm_mlx.model_aliases._resolve_external_model_path",
-            return_value="/external/model",
-        ),
-        patch.object(cli, "_cache_entry_is_runnable", return_value=False),
-        patch.object(sys, "stdout", buf),
-        pytest.raises(SystemExit) as exc,
-    ):
-        cli.rm_command(args)
-
-    assert exc.value.code == 1
-    assert "Refusing to remove external model" in buf.getvalue()
-    strategy.execute.assert_not_called()
-
-
 # ----- size formatting ----------------------------------------------------
 
 

@@ -5578,18 +5578,6 @@ def rm_command(args):
         print("  Nothing to remove.")
         sys.exit(1)
 
-    # An external row uses the repo id as its launch/display identity. If an
-    # interrupted same-named hub download also exists, deleting by that id
-    # would target the hub stub while appearing to delete the read-only model
-    # another runtime owns. A complete Rapid-managed hub copy wins discovery
-    # and remains removable; otherwise refuse before constructing a strategy.
-    from vllm_mlx.model_aliases import _resolve_external_model_path
-
-    if _resolve_external_model_path(repo_id) and not _cache_entry_is_runnable(repo_id):
-        print(f"\n  Refusing to remove external model '{repo_id}'.")
-        print("  It is managed by another MLX runtime; remove it there instead.")
-        sys.exit(1)
-
     repo = matching[0]
     size_str = _format_bytes(repo.size_on_disk)
 
