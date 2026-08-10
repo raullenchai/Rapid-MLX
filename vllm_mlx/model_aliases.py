@@ -706,11 +706,12 @@ def _resolve_external_model_path(name: str) -> str | None:
 
     from ._download_gate import _snapshot_is_complete
 
-    for raw_root in _external_model_root_values(raw_roots):
-        raw_root = raw_root.strip()
-        if not raw_root:
-            continue
-        root = os.path.realpath(os.path.expanduser(raw_root))
+    trusted_roots = [
+        os.path.realpath(os.path.expanduser(value.strip()))
+        for value in _external_model_root_values(raw_roots)
+        if value.strip()
+    ]
+    for root in trusted_roots:
         for external_name in external_names:
             parts = _external_model_identifier_parts(external_name)
             if parts is None:
@@ -724,7 +725,7 @@ def _resolve_external_model_path(name: str) -> str | None:
             if os.path.isdir(candidate):
                 try:
                     if _external_model_tree_is_contained(
-                        candidate, [root]
+                        candidate, trusted_roots
                     ) and _snapshot_is_complete(candidate):
                         return candidate
                 except OSError:
@@ -733,12 +734,7 @@ def _resolve_external_model_path(name: str) -> str | None:
 
 
 def _external_model_tree_is_contained(directory: str, roots: list[str]) -> bool:
-    """Require a readable, symlink-free external model tree.
-
-    A target-containment preflight is inherently racy because another runtime
-    can swap a link after audit and before mlx-lm opens it. Rejecting links is
-    the only portable way to keep the selected roots a real trust boundary.
-    """
+    """Require a readable tree whose links stay in explicitly trusted roots."""
     canonical_roots = [os.path.realpath(root) for root in roots]
 
     def contained(path: str) -> bool:
@@ -763,7 +759,7 @@ def _external_model_tree_is_contained(directory: str, roots: list[str]) -> bool:
         ):
             for name in (*directories, *files):
                 path = os.path.join(current, name)
-                if os.path.islink(path):
+                if os.path.islink(path) and not contained(path):
                     return False
     except OSError:
         return False

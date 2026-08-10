@@ -4972,12 +4972,21 @@ def _scan_external_model_dirs(
         except OSError:
             return False
 
-    def _root_has_symlink(directory: str) -> bool:
+    def _looks_like_model_root(directory: str) -> bool:
         try:
             with os.scandir(directory) as entries:
-                return any(entry.is_symlink() for entry in entries)
+                return any(
+                    entry.name == "model.safetensors.index.json"
+                    or (
+                        entry.name.startswith("model")
+                        and entry.name.endswith(".safetensors")
+                    )
+                    for entry in entries
+                )
         except OSError:
-            return True
+            return False
+
+    canonical_roots = [os.path.realpath(root) for root in roots]
 
     def _record(directory: str, repo: str, canonical_root: str) -> None:
         real = os.path.realpath(directory)
@@ -4995,17 +5004,17 @@ def _scan_external_model_dirs(
             # The loader probe is root-only and bounded. Run it before the
             # recursive symlink audit/size walk so a broad selected folder
             # does not turn every ordinary directory into a deep traversal.
-            if _root_has_symlink(real) or not _complete(real):
+            if not _looks_like_model_root(real):
                 return
-            if not _external_model_tree_is_contained(real, [canonical_root]):
+            if not _external_model_tree_is_contained(real, canonical_roots):
+                return
+            if not _complete(real):
                 return
             mtime = os.path.getmtime(real)
         except OSError:
             return
-        # The containment audit above rejects symlinks, so this recursive size
-        # walk cannot be redirected outside the selected root after preflight.
         try:
-            size = _snapshot_size_bytes(real)
+            size = _external_tree_size_bytes(real)
         except OSError:
             # External trees are owned by another process and may disappear,
             # lose permission, or contain a broken link while we scan. One
@@ -5457,6 +5466,24 @@ def _snapshot_size_bytes(path) -> int:
                 continue
     except OSError:
         pass
+    return total
+
+
+def _external_tree_size_bytes(path: str) -> int:
+    """Logical external-tree bytes, following shared files only once."""
+    total = 0
+    seen: set[tuple[int, int]] = set()
+    for current, _directories, files in os.walk(path, followlinks=False):
+        for name in files:
+            try:
+                stat = os.stat(os.path.join(current, name), follow_symlinks=True)
+            except OSError:
+                continue
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            total += stat.st_size
     return total
 
 

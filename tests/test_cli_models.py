@@ -853,7 +853,7 @@ def test_external_scan_skips_model_when_size_measurement_races(tmp_path, monkeyp
     def vanished(_directory):
         raise FileNotFoundError("weight disappeared during scan")
 
-    monkeypatch.setattr(cli, "_snapshot_size_bytes", vanished)
+    monkeypatch.setattr(cli, "_external_tree_size_bytes", vanished)
 
     assert cli._scan_external_model_dirs([str(root)]) == []
 
@@ -1031,7 +1031,7 @@ def test_complete_external_copy_keeps_incomplete_hub_stub_visible_for_cleanup(
     assert "(unmapped)" in out
 
 
-def test_external_scan_rejects_symlinked_weights_even_within_root(tmp_path):
+def test_external_scan_measures_symlinked_weights_within_trusted_root(tmp_path):
     root = tmp_path / "models"
     real = root / "blobs"
     real.mkdir(parents=True)
@@ -1043,7 +1043,10 @@ def test_external_scan_rejects_symlinked_weights_even_within_root(tmp_path):
     (model / "model.safetensors").symlink_to(blob)
     (model / "config.json").write_text("{}")
 
-    assert cli._scan_external_model_dirs([str(root)]) == []
+    rows = cli._scan_external_model_dirs([str(root)])
+
+    assert len(rows) == 1
+    assert rows[0][1] >= 4096
 
 
 def test_external_scan_rejects_weight_symlink_outside_selected_root(
@@ -1084,7 +1087,7 @@ def test_cached_row_columns_stay_split_for_a_full_width_size(
     )
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
     # Exactly 10 characters: the old padding-dependent separator collapsed.
-    monkeypatch.setattr(cli, "_snapshot_size_bytes", lambda _path: 1_073_636_966)
+    monkeypatch.setattr(cli, "_external_tree_size_bytes", lambda _path: 1_073_636_966)
 
     cli._print_cached_models()
     row = next(
