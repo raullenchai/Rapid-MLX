@@ -818,6 +818,14 @@ def test_external_scan_tolerates_missing_and_unreadable_roots(tmp_path):
     """A root on an unplugged drive must not raise — it should vanish."""
     assert cli._scan_external_model_dirs([str(tmp_path / "gone")]) == []
 
+    unreadable = tmp_path / "unreadable"
+    unreadable.mkdir()
+    unreadable.chmod(0)
+    try:
+        assert cli._scan_external_model_dirs([str(unreadable)]) == []
+    finally:
+        unreadable.chmod(0o700)
+
 
 def test_external_roots_env_is_pathsep_separated(tmp_path, monkeypatch):
     a = tmp_path / "a"
@@ -830,6 +838,18 @@ def test_external_roots_env_is_pathsep_separated(tmp_path, monkeypatch):
         os.path.realpath(str(a)),
         os.path.realpath(str(b)),
     ]
+
+
+def test_external_roots_json_preserves_path_separator_in_folder_name(
+    tmp_path, monkeypatch
+):
+    import json
+
+    root = tmp_path / "models:archive"
+    root.mkdir()
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", json.dumps([str(root)]))
+
+    assert cli._external_model_roots() == [os.path.realpath(str(root))]
 
 
 def test_external_roots_default_to_empty(monkeypatch):

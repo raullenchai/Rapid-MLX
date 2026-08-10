@@ -71,7 +71,8 @@ enum ModelCatalog {
     private static let pipeReadChunkBytes = 16 * 1024
 
     /// Engine env var naming the directories to scan for models another MLX
-    /// runtime downloaded (``os.pathsep``-separated, like ``PATH``).
+    /// runtime downloaded (a JSON string array; the engine also accepts the
+    /// legacy ``os.pathsep`` representation from shells and older builds).
     ///
     /// Kept as a named constant because it is a cross-process contract with
     /// ``vllm_mlx.cli._external_model_roots`` — a typo on either side fails
@@ -86,8 +87,15 @@ enum ModelCatalog {
     static func mergedExtraModelRoots(existing: String?, selected: String?) -> String? {
         var roots: [String] = []
         var seen: Set<String> = []
-        let candidates = (existing ?? "").split(separator: ":").map(String.init)
-            + [selected].compactMap { $0 }
+        let inherited: [String] = {
+            guard let existing, !existing.isEmpty else { return [] }
+            if let data = existing.data(using: .utf8),
+               let decoded = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                return decoded
+            }
+            return existing.split(separator: ":").map(String.init)
+        }()
+        let candidates = inherited + [selected].compactMap { $0 }
         for candidate in candidates {
             let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
@@ -96,7 +104,10 @@ enum ModelCatalog {
             guard seen.insert(canonical).inserted else { continue }
             roots.append(canonical)
         }
-        return roots.isEmpty ? nil : roots.joined(separator: ":")
+        guard !roots.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: roots),
+              let encoded = String(data: data, encoding: .utf8) else { return nil }
+        return encoded
     }
 
     /// All known aliases plus their installation status. Empty array on

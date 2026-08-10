@@ -174,9 +174,11 @@ struct ExternalModelCatalogTests {
 
     @Test("The extra-roots env key matches the engine's contract")
     func envKeyMatchesEngine() {
-        // Cross-process contract with vllm_mlx.cli._external_model_roots.
-        // A typo fails silently as "no models found".
-        #expect(ModelCatalog.extraModelRootsEnvKey == "RAPID_MLX_EXTRA_MODEL_ROOTS")
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repository.deleteLastPathComponent() }
+        let engineSource = try? String(contentsOf: repository
+            .appendingPathComponent("vllm_mlx/cli.py"), encoding: .utf8)
+        #expect(engineSource?.contains("os.environ.get(\"\(ModelCatalog.extraModelRootsEnvKey)\"") == true)
     }
 
     @Test("Selected model root is merged with ambient roots and deduplicated")
@@ -190,7 +192,11 @@ struct ExternalModelCatalogTests {
             selected: root + "/."
         )
 
-        #expect(merged == "/first:\(canonical)")
+        #expect(merged == "[\"/first\",\"\(canonical)\"]")
+
+        let colonPath = root + ":archive"
+        #expect(ModelCatalog.mergedExtraModelRoots(existing: nil, selected: colonPath)
+            == "[\"\(colonPath)\"]")
     }
 
     @Test("Serve child receives the same external root used for discovery")
@@ -201,7 +207,7 @@ struct ExternalModelCatalogTests {
             modelsFolderOverride: "/selected"
         )
 
-        #expect(env[ModelCatalog.extraModelRootsEnvKey] == "/ambient:/selected")
+        #expect(env[ModelCatalog.extraModelRootsEnvKey] == "[\"/ambient\",\"/selected\"]")
         #expect(env["HF_HUB_CACHE"] == "/selected")
     }
 }
