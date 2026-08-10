@@ -125,6 +125,7 @@ from .engine import (
     BatchedEngine,
 )
 from .runtime.model_registry import ModelEntry, ModelRegistry
+from .runtime.resident_models import ResidentModelManager, estimate_model_bytes
 from .service.helpers import (  # noqa: F401 — re-export for backward compat
     _FALLBACK_TEMPERATURE,
     _FALLBACK_TOP_P,
@@ -188,6 +189,10 @@ def configure_logging(log_level: str) -> str:
 # When populated, get_engine() routes by request model name.
 # Backward-compatible: single-model mode still uses _engine global as before.
 _model_registry = ModelRegistry()
+_residency_manager: ResidentModelManager | None = None
+_resident_memory_limit_bytes: int = 0
+_resident_idle_ttl_seconds: float = 0.0
+_resident_gpu_memory_utilization: float = 0.90
 
 # Global engine instance (single-model legacy path, also primary model in multi-model)
 _engine: BaseEngine | None = None
@@ -627,6 +632,37 @@ async def lifespan(app: FastAPI):
         _warmup_secs = _time.monotonic() - _warmup_start
         logger.info(f"Warmup complete ({_warmup_secs:.1f}s)")
 
+    # Publish the startup engine into the resident-model lifecycle after it is
+    # fully started. Legacy routes still expose this engine through cfg.engine,
+    # so it is the protected primary; additional engines are manager-owned and
+    # eligible for LRU/TTL eviction.
+    global _residency_manager
+    if _residency_manager is None:
+        _residency_manager = configure_model_residency(
+            memory_limit_gb=_resident_memory_limit_bytes / 1024**3,
+            idle_ttl_seconds=_resident_idle_ttl_seconds,
+            gpu_memory_utilization=_resident_gpu_memory_utilization,
+        )
+    if _engine is not None:
+        _primary_entry = next(
+            (
+                entry
+                for entry in _model_registry.list_entries()
+                if entry.engine is _engine
+            ),
+            None,
+        )
+        if _primary_entry is not None and not _residency_manager.contains(
+            _primary_entry.model_name
+        ):
+            _residency_manager.register_primary(
+                _primary_entry,
+                estimated_bytes=estimate_model_bytes(
+                    _model_alias or _primary_entry.model_name
+                ),
+            )
+    await _residency_manager.start()
+
     # Tool-grammar warmup (#558): the FIRST grammar-constrained tool call
     # otherwise pays a one-time ~1s llguidance ``LLTokenizer`` build on the
     # request path (measured on gpt-oss-20b: ~1.7s cold first tool-call vs
@@ -787,6 +823,8 @@ async def lifespan(app: FastAPI):
         if _mcp_manager is not None:
             await _mcp_manager.stop()
             logger.info("MCP manager stopped")
+        if _residency_manager is not None:
+            await _residency_manager.shutdown()
         if _engine is not None:
             await _engine.stop()
             logger.info("Engine stopped")
@@ -2049,6 +2087,129 @@ def load_model(
     register_audio_routes_if_enabled()
 
 
+async def _load_dynamic_resident_model(
+    model_name: str, model_path: str | None
+) -> ModelEntry:
+    """Construct and start one non-primary engine for the residency manager."""
+
+    from .model_aliases import resolve_profile
+
+    profile = resolve_profile(model_name) or (
+        resolve_profile(model_path) if model_path else None
+    )
+    resolved_path = model_path or (
+        profile.hf_path if profile is not None else model_name
+    )
+    modality = profile.modality if profile is not None else "text"
+
+    if modality == "image-gen":
+        from .runtime.image_lane import ImageEngine
+
+        engine = ImageEngine(model_name=resolved_path)
+        # Dynamic loads are explicit operator/app requests. Materialize the
+        # lazy mflux weights before returning so "resident" and budget usage
+        # have their literal meanings on the control-plane response.
+        await asyncio.to_thread(engine.ensure_resident)
+    elif modality == "text-diffusion":
+        from .runtime.diffusion_lane import DiffusionEngine
+
+        engine = DiffusionEngine(
+            model_name=resolved_path,
+            max_tokens=_default_max_tokens,
+        )
+        engine._load_blocking()  # noqa: SLF001
+        if hasattr(engine, "_loaded") and not engine._loaded:
+            await engine.start()
+        engine.generate_warmup()
+    elif modality in ("video-gen", "audio"):
+        raise RuntimeError(
+            f"runtime residency loading is not available for modality {modality!r}"
+        )
+    else:
+        engine = BatchedEngine(
+            model_name=resolved_path,
+            force_text=bool(profile is not None and profile.is_text_only),
+            gpu_memory_utilization=_resident_gpu_memory_utilization,
+        )
+        await engine.start()
+        try:
+            engine.generate_warmup()
+        except Exception as exc:  # noqa: BLE001 - warmup is an optimization
+            logger.debug("Dynamic model warmup failed (non-fatal): %s", exc)
+
+    return ModelEntry(
+        engine=engine,
+        model_name=model_name,
+        model_path=resolved_path,
+        aliases=set(),
+        tool_call_parser=(profile.tool_call_parser if profile is not None else None),
+        reasoning_parser=(profile.reasoning_parser if profile is not None else None),
+        is_mllm=getattr(engine, "is_mllm", False),
+        max_tokens=_default_max_tokens,
+    )
+
+
+def configure_model_residency(
+    *,
+    memory_limit_gb: float = 0,
+    idle_ttl_seconds: float = 0,
+    gpu_memory_utilization: float = 0.90,
+) -> ResidentModelManager:
+    """Configure the process-wide resident-model manager before startup."""
+
+    global _residency_manager
+    global _resident_memory_limit_bytes
+    global _resident_idle_ttl_seconds
+    global _resident_gpu_memory_utilization
+
+    _resident_memory_limit_bytes = max(0, int(float(memory_limit_gb) * 1024**3))
+    _resident_idle_ttl_seconds = max(0.0, float(idle_ttl_seconds))
+    _resident_gpu_memory_utilization = float(gpu_memory_utilization)
+    _residency_manager = ResidentModelManager(
+        _model_registry,
+        _load_dynamic_resident_model,
+        memory_limit_bytes=_resident_memory_limit_bytes,
+        idle_ttl_seconds=_resident_idle_ttl_seconds,
+        on_primary_changed=_set_resident_primary,
+    )
+    get_config().residency_manager = _residency_manager
+    return _residency_manager
+
+
+def _set_resident_primary(entry: ModelEntry) -> None:
+    """Publish a replacement assistant as the legacy/default engine."""
+
+    global _engine, _model_name, _model_alias, _model_path
+    global _enable_auto_tool_choice, _tool_call_parser, _tool_parser_instance
+    global _reasoning_parser, _reasoning_parser_name
+
+    _engine = entry.engine
+    _model_name = entry.model_name
+    _model_alias = entry.model_name
+    _model_path = entry.model_path
+    _tool_call_parser = entry.tool_call_parser
+    _tool_parser_instance = None
+    _enable_auto_tool_choice = entry.tool_call_parser is not None
+    _reasoning_parser_name = entry.reasoning_parser
+    if entry.reasoning_parser is not None:
+        from .reasoning import get_parser
+
+        _reasoning_parser = get_parser(entry.reasoning_parser)()
+    else:
+        _reasoning_parser = None
+
+    cfg = get_config()
+    cfg.engine = entry.engine
+    cfg.model_name = entry.model_name
+    cfg.model_alias = entry.model_name
+    cfg.model_path = entry.model_path
+    cfg.enable_auto_tool_choice = _enable_auto_tool_choice
+    cfg.tool_call_parser = entry.tool_call_parser
+    cfg.tool_parser_instance = None
+    cfg.reasoning_parser = _reasoning_parser
+    cfg.reasoning_parser_name = entry.reasoning_parser
+
+
 def _sync_config() -> None:
     """Copy server globals into the ServerConfig singleton.
 
@@ -2100,6 +2261,7 @@ def _sync_config() -> None:
     cfg.pinned_system_prompt_hash = _pinned_system_prompt_hash
     cfg.mcp_executor = _mcp_executor
     cfg.model_registry = _model_registry
+    cfg.residency_manager = _residency_manager
     cfg.enable_audio_lane = _enable_audio_lane
 
 
@@ -2175,6 +2337,7 @@ from .routes.images import router as _images_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
+from .routes.residency import router as _residency_router
 from .routes.responses import router as _responses_router
 from .routes.video import router as _video_router
 
@@ -2184,6 +2347,9 @@ app.include_router(_health_router)
 # ``X-Rapid-MLX-Internal: true`` gate ALSO applies when ``--api-key`` is unset.
 app.include_router(_health_admin_router)
 app.include_router(_metrics_router)
+# Keep literal residency paths ahead of ``/v1/models/{model_id:path}`` so the
+# latter cannot consume ``residency`` as an ordinary model id.
+app.include_router(_residency_router)
 app.include_router(_models_router)
 app.include_router(_chat_router)
 app.include_router(_completions_router)

@@ -1107,6 +1107,48 @@ def test_is_weightless_stub_false_for_video_component_weights(tmp_path, monkeypa
     assert gate.is_weightless_stub("dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4") is False
 
 
+def _seed_mflux_snapshot(repo_root, sha: str, *, omit: tuple[str, str] | None = None):
+    snap = repo_root / "snapshots" / sha
+    (snap / "tokenizer").mkdir(parents=True)
+    (snap / "tokenizer" / "tokenizer.json").write_text("{}")
+    for component in ("transformer", "text_encoder", "vae"):
+        component_dir = snap / component
+        component_dir.mkdir()
+        (component_dir / "model.safetensors.index.json").write_text(
+            '{"weight_map": {"a": "0.safetensors", "b": "1.safetensors"}}'
+        )
+        for shard in ("0.safetensors", "1.safetensors"):
+            if omit != (component, shard):
+                (component_dir / shard).write_bytes(b"weights")
+    _seed_refs_main(repo_root, sha)
+
+
+def test_complete_mflux_snapshot_is_runnable(tmp_path, monkeypatch):
+    """A complete image-gen component layout is a cached runnable model."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "a" * 40)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached(repo) is False
+    assert gate._snapshot_is_complete_mflux_model(repo) is True
+    assert gate.is_weightless_stub(repo) is False
+
+
+def test_partial_mflux_snapshot_is_not_runnable(tmp_path, monkeypatch):
+    """Every shard from every required mflux component must be present."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "b" * 40, omit=("transformer", "1.safetensors"))
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate._snapshot_is_complete_mflux_model(repo) is False
+
+
 def test_is_weightless_stub_true_for_partial_split_model_components(
     tmp_path, monkeypatch
 ):

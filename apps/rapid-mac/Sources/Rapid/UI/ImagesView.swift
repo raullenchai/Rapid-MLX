@@ -108,13 +108,12 @@ struct ImagesView: View {
 
     // MARK: - Readiness (mirrors ChatView: same "load the model first" flow)
 
-    /// Readiness for the selected image model. Because rapid serves one model
-    /// per process, this reports "isn't running" whenever the server is
-    /// serving something else (e.g. a chat model) — exactly the "load FLUX
-    /// first" guidance chat gives, produced by the same resolver.
+    /// Readiness for the selected image model. A healthy sidecar may keep this
+    /// engine resident beside the chat engine; otherwise the shared resolver
+    /// presents the same on-demand load guidance used by Chat.
     private var readiness: ModelReadiness {
         ModelReadiness.resolve(
-            serverState: server.state,
+            serverState: server.readinessState(for: viewModel.selectedAlias),
             alias: viewModel.selectedAlias,
             cacheState: imageCacheState,
             sizeText: viewModel.imageModels
@@ -144,8 +143,8 @@ struct ImagesView: View {
         )
     }
 
-    /// The banner's next-step action: start (or download-and-start) the
-    /// selected image model, switching the single server process to it.
+    /// The banner's next-step action: start the sidecar or load the selected
+    /// image engine into the already-running process.
     private func handleReadinessAction(_ action: ModelReadiness.Action) {
         switch action {
         case .chooseModel:

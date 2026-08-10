@@ -371,6 +371,23 @@ def test_cached_view_marks_known_partial_repo_incomplete(tmp_path, monkeypatch, 
     assert alias not in out
 
 
+def test_cached_view_renders_complete_mflux_alias(monkeypatch, capsys):
+    """A complete mflux cache must map back to its image alias in ``ls``."""
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [(repo, 4 * 1024**3, 0.0)],
+    )
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: True)
+
+    cli._print_cached_models()
+
+    out = capsys.readouterr().out
+    assert "flux2-klein-4b" in out
+    assert "(incomplete)" not in out
+
+
 def test_format_bytes_unit_selection():
     """``_format_bytes`` picks the largest unit where value >= 1.
 

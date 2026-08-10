@@ -30,8 +30,8 @@ struct RapidApp: App {
     /// keeping a process-wide instance is fine.
     @State private var chatViewModel: ChatViewModel
     /// Images-tab controller — text→image / image-edit against an image-gen
-    /// alias (rapid serves one model per process, so this is decoupled from
-    /// chat and reloads the server when switching to an image model).
+    /// alias. It keeps its own UI state while sharing the resident-model
+    /// sidecar with Chat.
     @State private var imageGen: ImageGenViewModel
     /// Self-update poller. GETs a public static manifest on R2 at
     /// `https://dl.rapidmlx.com/latest.json`. See ``UpdateChecker``.

@@ -32,16 +32,6 @@ struct ContentView: View {
     /// An absent telemetry preference is an undecided first run, not
     /// implicit consent.
     @State private var telemetryConsentPending = TelemetryConsent.needsDecision()
-    /// Set when the user picks a different alias while a server is
-    /// already serving a different one — drives the reload confirm.
-    @State private var pendingReloadAlias: String?
-    /// Set by "Switch and reload" so the implicit dismiss doesn't roll
-    /// ``alias`` back to the old model.
-    @State private var switchConfirmed: Bool = false
-    /// Alias the user confirmed via "Switch and reload" whose footprint
-    /// classifies ``.tooBig`` — drives a follow-up OOM confirm alert.
-    @State private var pendingTooBigSwitch: String?
-    @State private var switchAlertHardware: MacHardware = MacHardware.detect()
     @SceneStorage("Rapid.showLogs") private var showLogs: Bool = false
     /// Per-session "browse all models" dismissal of the Quickstart card.
     @State private var quickstartDismissedThisSession: Bool = false
@@ -79,7 +69,8 @@ struct ContentView: View {
                 onSelectConversation: { id in
                     chat.selectConversation(id)
                     section = .chat
-                }
+                },
+                server: server
             )
             // v1.0: the rail paints an explicit warm surface rather than
             // inheriting the system sidebar material. The material is a
@@ -115,102 +106,12 @@ struct ContentView: View {
                 }
             }
         }
-        .onChange(of: alias) { _, newValue in
-            // Auto-reload affordance: picking a new model while another
-            // is running surfaces a confirm rather than stranding the
-            // user in a manual Stop → Start dance.
-            guard !newValue.isEmpty else { return }
-            if server.servingAlias == newValue { return }
-            if let running = runningAlias, running != newValue {
-                pendingReloadAlias = newValue
-            }
-        }
         .onChange(of: server.state) { _, newState in
             // Sync the picker breadcrumb when the server lands in
             // ``.ready(<alias>)`` against a different alias than shown.
             if case .ready(let serving) = newState, !serving.isEmpty, serving != alias {
                 alias = serving
             }
-        }
-        .confirmationDialog(
-            "Switch to \(pendingReloadAlias ?? "")?",
-            isPresented: Binding(
-                get: { pendingReloadAlias != nil },
-                set: { presented in
-                    if !presented {
-                        if !switchConfirmed, let running = runningAlias {
-                            alias = running
-                        }
-                        switchConfirmed = false
-                        pendingReloadAlias = nil
-                    }
-                }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingReloadAlias
-        ) { newAlias in
-            Button("Switch and reload") {
-                switchConfirmed = true
-                alias = newAlias
-                let fit = ModelSizing.classify(
-                    ModelSizing.estimate(alias: newAlias),
-                    on: switchAlertHardware
-                )
-                // A recommended pick trusts the curated table's measured
-                // footprint over ModelSizing's estimate (which over-states
-                // low-bit / MoE models), so switching to it skips the
-                // .tooBig gate — mirrors ModelPickerBar.handleStartTap.
-                let isRecommended = RAMBucketedDefault.isRecommendedPick(
-                    alias: newAlias, physicalRAMGB: switchAlertHardware.physicalRAMGB)
-                if fit == .tooBig && !isRecommended {
-                    pendingReloadAlias = nil
-                    pendingTooBigSwitch = newAlias
-                    return
-                }
-                Task {
-                    await server.stop()
-                    await server.start(alias: newAlias)
-                    pendingReloadAlias = nil
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                if let running = runningAlias { alias = running }
-                pendingReloadAlias = nil
-            }
-        } message: { newAlias in
-            Text("Stops the current model and loads \(newAlias). Chat history stays put.")
-        }
-        .alert(
-            ModelPickerBar.tooBigAlertTitle(
-                alias: pendingTooBigSwitch ?? "",
-                physicalRAMGB: switchAlertHardware.physicalRAMGB
-            ),
-            isPresented: Binding(
-                get: { pendingTooBigSwitch != nil },
-                set: { if !$0 { pendingTooBigSwitch = nil } }
-            ),
-            presenting: pendingTooBigSwitch
-        ) { aliasToStart in
-            Button("Cancel", role: .cancel) {
-                if let running = runningAlias { alias = running }
-                pendingTooBigSwitch = nil
-            }
-            Button("Start anyway", role: .destructive) {
-                let confirmed = aliasToStart
-                pendingTooBigSwitch = nil
-                Task {
-                    await server.stop()
-                    await server.start(alias: confirmed)
-                }
-            }
-        } message: { aliasToStart in
-            Text(
-                ModelPickerBar.tooBigAlertMessage(
-                    alias: aliasToStart,
-                    footprint: ModelSizing.estimate(alias: aliasToStart),
-                    hardware: switchAlertHardware
-                )
-            )
         }
         .alert(
             server.pendingMemoryWarning?.title ?? "",
@@ -285,6 +186,12 @@ struct ContentView: View {
         )) {
             await refreshCatalogSnapshot()
         }
+        .task {
+            while !Task.isCancelled {
+                await server.refreshResidency()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
     }
 
     // MARK: - Readiness (the one shared lifecycle value)
@@ -297,7 +204,7 @@ struct ContentView: View {
     /// rules and the copy contract.
     private var readiness: ModelReadiness {
         ModelReadiness.resolve(
-            serverState: server.state,
+            serverState: server.readinessState(for: alias),
             alias: alias,
             cacheState: cacheState(for: alias),
             sizeText: sizeText(for: alias),
@@ -428,7 +335,43 @@ struct ContentView: View {
         // ``ensureServing`` via the shared helper, NOT ``server.start``: start is
         // cold-start only and no-ops while a different model (e.g. an Images
         // checkpoint) is resident, silently dropping the switch (#1739).
-        Task { await ReadinessModelStart.perform(server, alias: target, hfPath: hfPath) }
+        Task {
+            _ = await server.ensureServing(
+                alias: target,
+                hfPath: hfPath,
+                estimatedMemoryGB: nil,
+                replacementGroup: .assistant
+            )
+        }
+    }
+
+    private func selectChatModel(_ target: String) {
+        userSelectionRevision &+= 1
+        // Selecting an on-disk model is an activation request: load it and
+        // release the previous assistant immediately. An uncached selection
+        // still waits for the explicit Download & start action, so browsing
+        // the catalog never starts a multi-GB network transfer by itself.
+        let entry = catalogEntries.first(where: { $0.alias == target })
+        guard Self.activatesChatModelOnSelection(
+            isResident: server.isModelResident(target),
+            isCached: entry?.cached == true
+        ) else { return }
+        let hfPath = entry?.hfRepo
+        Task {
+            _ = await server.ensureServing(
+                alias: target,
+                hfPath: hfPath,
+                estimatedMemoryGB: nil,
+                replacementGroup: .assistant
+            )
+        }
+    }
+
+    static func activatesChatModelOnSelection(
+        isResident: Bool,
+        isCached: Bool
+    ) -> Bool {
+        isResident || isCached
     }
 
     private func restartModel(_ target: String) {
@@ -471,7 +414,7 @@ struct ContentView: View {
                 server: server,
                 alias: $alias,
                 readiness: readiness,
-                onUserModelSelection: { userSelectionRevision &+= 1 },
+                onUserModelSelection: selectChatModel,
                 onReadinessAction: performReadinessAction
             )
         case .missing:

@@ -103,6 +103,24 @@ enum ModelSizing {
         )
     }
 
+    /// Default budget for all engines held by the desktop sidecar. Reuses the
+    /// same 80%-of-physical usable pool as picker classification so startup
+    /// warnings and runtime eviction do not disagree about available memory.
+    static func residentMemoryCeilingGB(on hardware: MacHardware) -> Double {
+        max(4, floor(hardware.usableRAMGB))
+    }
+
+    /// Residency charge sent to the server. Downloaded bytes are better
+    /// evidence for image aliases whose names carry no parameter count; add a
+    /// modest runtime margin and keep the ordinary model estimate as a floor.
+    static func residentEstimateGB(alias: String, sizeText: String? = nil) -> Double {
+        let heuristic = estimate(alias: alias).totalGB
+        guard let bytes = ModelCacheActions.parseSizeBytes(sizeText), bytes > 0
+        else { return heuristic }
+        let diskGiB = Double(bytes) / Double(UInt64(1) << 30)
+        return max(heuristic, diskGiB * 1.25 + 0.5)
+    }
+
     /// Pick a KV-reserve target proportional to model size — bigger
     /// models have bigger per-token cache cost. The picker is mostly
     /// concerned with order-of-magnitude, not precision.

@@ -49,6 +49,13 @@ final class ServerManager {
     /// Current lifecycle phase. Drives all UI state controls.
     private(set) var state: ServerState
 
+    /// Models currently held by the one sidecar process, plus total process
+    /// memory against its configured ceiling.
+    private(set) var residency: ModelResidencySnapshot = .empty
+
+    @ObservationIgnored
+    private var residencyClient = ServerResidencyClient()
+
     /// Set when ``start`` declines a load because the model's footprint
     /// on top of live memory use would risk exhausting RAM (#324). A
     /// top-level view binds a confirmation alert to this; the user
@@ -93,6 +100,29 @@ final class ServerManager {
     var servingAlias: String? {
         if case .ready(let alias) = state { return alias }
         return nil
+    }
+
+    func isModelResident(_ alias: String) -> Bool {
+        guard case .ready = state else { return false }
+        return residency.contains(alias) || servingAlias == alias
+    }
+
+    /// Feed the existing readiness resolver an alias-specific view of a
+    /// process that may now hold several ready engines.
+    func readinessState(for alias: String) -> ServerState {
+        isModelResident(alias) ? .ready(alias: alias) : state
+    }
+
+    func refreshResidency() async {
+        guard case .ready = state else {
+            residency = .empty
+            return
+        }
+        guard let snapshot = await residencyClient.fetch(
+            port: activePort,
+            bearer: activeBearer
+        ) else { return }
+        residency = snapshot
     }
 
     /// Alias of the child that currently owns the runtime — for BOTH
@@ -468,9 +498,14 @@ final class ServerManager {
     /// disk. Not part of any production code path; the underscore
     /// prefix mirrors the Swift Standard Library convention for
     /// "API kept around for testing only."
-    internal init(testingState: ServerState, binaryPath: URL? = nil) {
+    internal init(
+        testingState: ServerState,
+        binaryPath: URL? = nil,
+        residency: ModelResidencySnapshot = .empty
+    ) {
         self.state = testingState
         self.binaryPath = binaryPath
+        self.residency = residency
         self.binaryResolution = binaryPath.map {
             ServerLocator.Resolution(binary: $0, source: .unknown, version: nil)
         }
@@ -620,10 +655,66 @@ final class ServerManager {
     ///   installs the bytes-on-disk progress monitor; without it the
     ///   user watches a featureless spinner for the whole download.
     func ensureServing(alias: String, hfPath: String? = nil) async -> Bool {
+        await ensureServing(
+            alias: alias,
+            hfPath: hfPath,
+            estimatedMemoryGB: nil,
+            replacementGroup: nil
+        )
+    }
+
+    func ensureServing(
+        alias: String,
+        hfPath: String?,
+        estimatedMemoryGB: Double?,
+        replacementGroup: ResidentModelReplacementGroup? = nil
+    ) async -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        if case .ready(let current) = state, current == trimmed {
+        if replacementGroup == nil,
+           case .ready(let current) = state, current == trimmed {
             return true
+        }
+        if replacementGroup == nil, isModelResident(trimmed) { return true }
+
+        // A healthy sidecar can admit another engine without replacing the
+        // process. Only a 404/405 from an older bundled server falls back to
+        // the legacy stop/start path; capacity and load failures stay failures
+        // so we never hide a rejected ceiling by unloading the primary model.
+        if case .ready = state, child != nil {
+            let estimate = estimatedMemoryGB ?? ModelSizing.estimate(alias: trimmed).totalGB
+            let result = await residencyClient.load(
+                alias: trimmed,
+                hfPath: hfPath,
+                estimatedSizeGB: estimate,
+                replaceGroup: replacementGroup,
+                port: activePort,
+                bearer: activeBearer
+            )
+            switch result {
+            case .loaded(let status):
+                if !residency.contains(status.id) {
+                    residency = ModelResidencySnapshot(
+                        memoryLimitBytes: residency.memoryLimitBytes,
+                        memoryUsedBytes: residency.memoryUsedBytes,
+                        memoryAvailableBytes: residency.memoryAvailableBytes,
+                        idleTTLSeconds: residency.idleTTLSeconds,
+                        loadsTotal: residency.loadsTotal + 1,
+                        evictionsTotal: residency.evictionsTotal,
+                        models: residency.models + [status]
+                    )
+                }
+                await refreshResidency()
+                if replacementGroup != nil {
+                    state = .ready(alias: trimmed)
+                }
+                return true
+            case .unsupported:
+                break
+            case .rejected(let message):
+                appendLogLines(["Resident model load declined: \(message)"])
+                return false
+            }
         }
         // Someone else — the picker's Start CTA, auto-start on launch,
         // Quickstart — may already be bringing up the very alias we
@@ -1105,18 +1196,24 @@ final class ServerManager {
         // passed as a plain ``--port <int>`` so the child binds via
         // the standard ``uvicorn`` shape.
         // Per-recommendation launch flags, derived HERE so every start
-        // path funnels through one place — the composer's `ensureServing`,
-        // ContentView's switch/reload, and auto-respawn all reach `start`
+        // path funnels through one place — the composer's cold-start path,
+        // explicit crash recovery, and auto-respawn all reach `start`
         // but none of them thread flags, so computing at the call sites
         // (as an earlier revision did) silently dropped them. RAM-gated:
         // `launchFlags` returns the flags only when this alias is the pick
         // for this Mac's RAM tier (e.g. the --no-mllm + kv-cache trio for
         // the 24 GB gemma-4-26b), so a hand-picked model that isn't the
         // recommendation gets none.
-        let extraFlags = RAMBucketedDefault.launchFlags(
+        let hardware = MacHardware.detect()
+        var extraFlags = RAMBucketedDefault.launchFlags(
             forAlias: trimmedAlias,
-            physicalRAMGB: MacHardware.detect().physicalRAMGB
+            physicalRAMGB: hardware.physicalRAMGB
         )
+        extraFlags.append(contentsOf: [
+            "--resident-memory-limit-gb",
+            String(format: "%.0f", ModelSizing.residentMemoryCeilingGB(on: hardware)),
+            "--resident-model-idle-ttl", "1800",
+        ])
         let arguments = Self.serveArguments(
             alias: trimmedAlias,
             host: host,
@@ -1379,6 +1476,7 @@ final class ServerManager {
                 // crashed launch attempt doesn't strand the resume
                 // logic on a model the user can't actually load.
                 UserDefaults.standard.set(trimmedAlias, forKey: Self.lastServedAliasKey)
+                await refreshResidency()
                 // v0.6 audit P1 (silent-crash detection): now that
                 // the child is ready, start the runtime health
                 // monitor so a subsequent silent crash surfaces

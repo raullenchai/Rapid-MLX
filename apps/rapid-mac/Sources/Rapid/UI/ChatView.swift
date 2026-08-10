@@ -189,7 +189,7 @@ struct ChatView: View {
     var readiness: ModelReadiness
     /// Explicit picker gesture signal used by launch auto-start arbitration.
     /// Catalog-driven default selection intentionally does not call this.
-    var onUserModelSelection: () -> Void = {}
+    var onUserModelSelection: (String) -> Void = { _ in }
     /// Perform the readiness banner's next-step action (start, download
     /// & start, retry). Owned by ``ContentView`` because starting a model
     /// is a window-level concern, not a chat-surface one.

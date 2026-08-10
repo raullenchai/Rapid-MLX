@@ -3186,8 +3186,8 @@ def parse_image_size(value: str) -> tuple[int, int]:
 class ImageGenerationRequest(BaseModel):
     """Request for text-to-image (OpenAI ``/v1/images/generations`` compatible).
 
-    Rapid-MLX serves one image model per process (like the audio/video lanes),
-    so ``model`` is advisory — the loaded alias decides the family. ``size`` is
+    Rapid-MLX routes ``model`` to an exact resident image engine. It may be
+    omitted only when exactly one image model is resident. ``size`` is
     parsed and bounds-checked here so a malformed or oversized request surfaces
     a 400 ``invalid_request_error`` BEFORE mflux loads multi-gigabyte weights.
 

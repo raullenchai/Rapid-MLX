@@ -2674,6 +2674,12 @@ def serve_command(args):
             "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
         )
         sys.exit(1)
+    if getattr(args, "resident_memory_limit_gb", 0.0) < 0:
+        print("Error: --resident-memory-limit-gb must be >= 0")
+        sys.exit(1)
+    if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
+        print("Error: --resident-model-idle-ttl must be >= 0")
+        sys.exit(1)
 
     # Validate PFlash config and reject unsupported model combinations
     # at startup. Done here (not lazily in the scheduler) so a typo in
@@ -3766,6 +3772,11 @@ def serve_command(args):
             file=sys.stderr,
         )
         sys.exit(2)
+    server.configure_model_residency(
+        memory_limit_gb=getattr(args, "resident_memory_limit_gb", 0.0),
+        idle_ttl_seconds=getattr(args, "resident_model_idle_ttl", 0.0),
+        gpu_memory_utilization=args.gpu_memory_utilization,
+    )
     try:
         load_model(
             args.model,
@@ -4911,11 +4922,16 @@ def _cache_entry_is_runnable(repo: str) -> bool:
     """
     try:
         from vllm_mlx._download_gate import (
+            _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
             is_repo_cached,
         )
 
-        return is_repo_cached(repo) or _snapshot_is_complete_split_model(repo)
+        return (
+            is_repo_cached(repo)
+            or _snapshot_is_complete_split_model(repo)
+            or _snapshot_is_complete_mflux_model(repo)
+        )
     except Exception:
         return False
 
@@ -8219,6 +8235,25 @@ Examples:
         help="Fraction of device memory for Metal allocation limit and emergency "
         "cache clear threshold (0.0-1.0, default: 0.90). Increase to 0.95 for "
         "large models (200GB+) that need more memory headroom.",
+    )
+    serve_parser.add_argument(
+        "--resident-memory-limit-gb",
+        type=float,
+        default=0.0,
+        help=(
+            "Process-wide resident model ceiling in GiB. Loading another model "
+            "evicts the least-recently-used idle unpinned model first. 0 disables "
+            "the ceiling (default: 0)."
+        ),
+    )
+    serve_parser.add_argument(
+        "--resident-model-idle-ttl",
+        type=float,
+        default=0.0,
+        help=(
+            "Evict idle unpinned secondary models after this many seconds. "
+            "0 disables idle eviction (default: 0)."
+        ),
     )
     # Paged cache options (experimental)
     serve_parser.add_argument(

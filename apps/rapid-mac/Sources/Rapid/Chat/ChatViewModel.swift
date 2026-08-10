@@ -441,7 +441,12 @@ final class ChatViewModel {
             // `ensureServing` short-circuits when we are already serving
             // this alias, so the warm path pays only a state read.
             if let server {
-                let ready = await server.ensureServing(alias: alias, hfPath: startupHFPath)
+                let ready = await server.ensureServing(
+                    alias: alias,
+                    hfPath: startupHFPath,
+                    estimatedMemoryGB: nil,
+                    replacementGroup: .assistant
+                )
                 // A user Stop during the (possibly cold, multi-second)
                 // bring-up cancels THIS task. That is a deliberate
                 // cancel, not a start failure — route it through the
@@ -1164,7 +1169,12 @@ final class ChatViewModel {
         let trimmed = newAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if let server {
-            let ok = await server.ensureServing(alias: trimmed)
+            let ok = await server.ensureServing(
+                alias: trimmed,
+                hfPath: nil,
+                estimatedMemoryGB: nil,
+                replacementGroup: .assistant
+            )
             guard ok else {
                 lastFailureKind = .modelLoadFailed
                 lastError = FailureDiagnoser.diagnosis(
@@ -1273,12 +1283,10 @@ final class ChatViewModel {
             // Issue #477: drop any forward-incompatible ``.unknown``-role rows
             // so a serialised ``{"role":"unknown"}`` never 400s the send.
             history = ChatViewModel.filterUnknownRolesForWire(history)
-            // v0.5.1: outgoing ``model:`` is the alias the server is ACTUALLY
-            // serving right now, falling back to the caller-supplied alias
-            // until the server reports ``.ready``. Resolved BEFORE the tool
-            // definitions so the broken-tool-caller strip runs against the
-            // model that will actually answer this round.
-            let wireAlias = server?.servingAlias ?? alias
+            // Multi-model servers route each request by this selected alias.
+            // ``servingAlias`` is the protected startup/default engine and is
+            // no longer authoritative once secondary models are resident.
+            let wireAlias = alias
             let definitions = isFinalSynthesisRound ? [] : ChatViewModel.wireDefinitions(
                 forAlias: wireAlias,
                 enabled: enabledDefinitions

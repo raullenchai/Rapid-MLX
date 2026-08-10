@@ -56,6 +56,9 @@ class ModelRegistry:
         self._default: str | None = None
         # Lookup index: any name/alias -> canonical_name
         self._index: dict[str, str] = {}
+        # Optional residency hook. Kept callback-shaped so this import-light
+        # name registry does not depend on the lifecycle manager.
+        self.on_engine_access = None
 
     def add(self, entry: ModelEntry, is_default: bool = False):
         """Register a model. First model added is default unless specified."""
@@ -115,17 +118,26 @@ class ModelRegistry:
         # None, empty, or "default" → default engine
         if not model_name or model_name == "default":
             if self._default and self._default in self._entries:
-                return self._entries[self._default].engine
+                engine = self._entries[self._default].engine
+                if self.on_engine_access is not None:
+                    self.on_engine_access(self._default)
+                return engine
             raise KeyError("No default model set")
 
         # Exact lookup via index
         canonical = self._index.get(model_name)
         if canonical and canonical in self._entries:
-            return self._entries[canonical].engine
+            engine = self._entries[canonical].engine
+            if self.on_engine_access is not None:
+                self.on_engine_access(canonical)
+            return engine
 
         # Fallback: default
         if self._default and self._default in self._entries:
-            return self._entries[self._default].engine
+            engine = self._entries[self._default].engine
+            if self.on_engine_access is not None:
+                self.on_engine_access(self._default)
+            return engine
 
         raise KeyError(f"Model '{model_name}' not found")
 
@@ -183,6 +195,16 @@ class ModelRegistry:
         if self._default:
             return self._entries.get(self._default)
         return None
+
+    def set_default(self, name: str) -> ModelEntry:
+        """Promote an already-registered model to the default engine."""
+
+        canonical = self._index.get(name)
+        if canonical is None or canonical not in self._entries:
+            raise KeyError(name)
+        self._default = canonical
+        logger.info("Promoted model %r to registry default", canonical)
+        return self._entries[canonical]
 
     def __len__(self) -> int:
         return len(self._entries)

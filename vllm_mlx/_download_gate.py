@@ -580,6 +580,85 @@ def _snapshot_is_complete_split_model(repo_id: str) -> bool:
         return False
 
 
+def _snapshot_is_complete_mflux_model(repo_id: str) -> bool:
+    """True when a registered image-gen repo has every mflux weight shard.
+
+    mflux checkpoints keep independent sharded indexes below ``transformer/``,
+    ``text_encoder/``, and ``vae/``. They therefore satisfy neither the text
+    ``model*.safetensors`` probe nor mlx-video's ``split_model.json`` probe.
+    Anchor this layout to an explicit image-gen alias, then validate every
+    shard named by each required component index.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        from vllm_mlx.model_aliases import resolve_profile
+
+        profile = resolve_profile(repo_id)
+        if profile is None or profile.modality != "image-gen":
+            return False
+
+        repo_root = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+        )
+        resolved_sha = _resolved_snapshot_sha(repo_root)
+        if resolved_sha is None:
+            return False
+        snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
+        if not os.path.isdir(snap_dir):
+            return False
+
+        repo_root_real = os.path.realpath(repo_root)
+
+        def _is_nonempty_repo_file(path: str) -> bool:
+            if not os.path.isfile(path):
+                return False
+            real = os.path.realpath(path)
+            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+                return False
+            try:
+                return os.path.getsize(path) > 0
+            except OSError:
+                return False
+
+        # All currently supported mflux families use these three components
+        # and a local tokenizer. Requiring the full set prevents an interrupted
+        # pull with only one component index from looking runnable.
+        tokenizer = os.path.join(snap_dir, "tokenizer", "tokenizer.json")
+        if not _is_nonempty_repo_file(tokenizer):
+            return False
+
+        import json
+
+        for component in ("transformer", "text_encoder", "vae"):
+            component_dir = os.path.join(snap_dir, component)
+            index_path = os.path.join(component_dir, "model.safetensors.index.json")
+            if not _is_nonempty_repo_file(index_path):
+                return False
+            try:
+                with open(index_path) as fh:
+                    index = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                return False
+            weight_map = index.get("weight_map") if isinstance(index, dict) else None
+            if not isinstance(weight_map, dict) or not weight_map:
+                return False
+            for shard in set(weight_map.values()):
+                if (
+                    not isinstance(shard, str)
+                    or not shard.endswith(".safetensors")
+                    or os.path.basename(shard) != shard
+                    or shard in (".", "..")
+                ):
+                    return False
+                if not _is_nonempty_repo_file(os.path.join(component_dir, shard)):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
 def is_weightless_stub(repo_id: str) -> bool:
     """True if ``repo_id``'s config is cached but its weight shards are NOT.
 
@@ -627,7 +706,9 @@ def is_weightless_stub(repo_id: str) -> bool:
         # manifest lists components and EVERY one is cached, the weights are
         # present — not a stub. Check this BEFORE the text-glob probe so a
         # fully-cached video model doesn't mis-fire the notice.
-        if _snapshot_is_complete_split_model(repo_id):
+        if _snapshot_is_complete_split_model(
+            repo_id
+        ) or _snapshot_is_complete_mflux_model(repo_id):
             return False
         # Config is on disk; the stub is exactly "config present but the
         # loader's weight glob (model*.safetensors) is not satisfied".

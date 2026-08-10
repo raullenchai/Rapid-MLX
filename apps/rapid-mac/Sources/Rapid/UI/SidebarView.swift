@@ -37,6 +37,9 @@ struct SidebarView: View {
     var onNewChat: () -> Void
     /// Open a saved conversation (switches the detail pane back to chat).
     var onSelectConversation: (UUID) -> Void
+    /// Optional in isolated snapshot fixtures; the shipping ContentView passes
+    /// it so residency and the enforced memory ceiling remain visible globally.
+    var server: ServerManager? = nil
 
     /// The "now" the date buckets are computed against. Rolled forward by
     /// ``dayBoundaryTicker`` at each midnight so an open, untouched sidebar
@@ -141,6 +144,13 @@ struct SidebarView: View {
             }
 
             Spacer(minLength: 0)
+
+            if let server, !server.residency.models.isEmpty {
+                residencyFooter(
+                    server.residency,
+                    preferredAlias: server.servingAlias
+                )
+            }
         }
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.vertical, RapidTheme.Space.md)
@@ -177,6 +187,66 @@ struct SidebarView: View {
         } message: { _ in
             Text("This permanently deletes the conversation. It can't be undone.")
         }
+    }
+
+    private func residencyFooter(
+        _ snapshot: ModelResidencySnapshot,
+        preferredAlias: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+            HStack(spacing: RapidTheme.Space.xs) {
+                Image(systemName: "memorychip")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text("Resident")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text(memorySummary(snapshot))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if snapshot.memoryLimitBytes > 0 {
+                ProgressView(
+                    value: min(1, Double(snapshot.memoryUsedBytes) / Double(snapshot.memoryLimitBytes))
+                )
+                .controlSize(.mini)
+                .tint(RapidTheme.brandAmber)
+            }
+
+            ForEach(snapshot.models.prefix(4)) { model in
+                HStack(spacing: RapidTheme.Space.xs) {
+                    Image(systemName: model.pinned ? "lock.fill" : "circle.fill")
+                        .font(.system(size: model.pinned ? 9 : 6, weight: .semibold))
+                        .foregroundStyle(model.pinned ? RapidTheme.brandAmber : .secondary)
+                        .frame(width: 12)
+                    Text(model.displayName(preferredAlias: preferredAlias))
+                        .font(RapidFont.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text(Self.formatBytes(model.displayBytes))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("Sidebar.ResidentModel.\(model.id)")
+            }
+        }
+        .padding(.horizontal, RapidTheme.Space.sm)
+        .padding(.vertical, RapidTheme.Space.sm)
+        .accessibilityIdentifier("Sidebar.Residency")
+    }
+
+    private func memorySummary(_ snapshot: ModelResidencySnapshot) -> String {
+        let used = Self.formatBytes(snapshot.memoryUsedBytes)
+        guard snapshot.memoryLimitBytes > 0 else { return used }
+        return "\(used) / \(Self.formatBytes(snapshot.memoryLimitBytes))"
+    }
+
+    nonisolated private static func formatBytes(_ bytes: UInt64) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .memory)
     }
 
     // MARK: - Accessibility identifiers

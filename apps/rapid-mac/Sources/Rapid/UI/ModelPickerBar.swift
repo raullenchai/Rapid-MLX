@@ -79,7 +79,7 @@ struct ModelPickerBar: View {
     var composerStyle: Bool = false
     /// Called only for explicit model-row gestures, never when catalog
     /// initialization fills an empty selection.
-    var onUserSelection: () -> Void = {}
+    var onUserSelection: (String) -> Void = { _ in }
 
     /// The alias the Quickstart flow is currently aimed at — the wizard's
     /// live selection (#1524) while a coordinator is attached, else the
@@ -776,7 +776,7 @@ struct ModelPickerBar: View {
     /// ``entryLabel`` comment for the same trap).
     private func quickstartRow(entry: ModelEntry) -> some View {
         return Button {
-            onUserSelection()
+            onUserSelection(entry.alias)
             alias = entry.alias
         } label: {
             Label(
@@ -1018,7 +1018,7 @@ struct ModelPickerBar: View {
         // inside a ``Menu`` is silently dropped once the dropdown becomes
         // an NSMenu — and doubles as the row's accessibility label.
         return Button {
-            onUserSelection()
+            onUserSelection(entry.alias)
             alias = entry.alias
         } label: {
             // The image slot carries download state, uniformly with
@@ -1136,7 +1136,7 @@ struct ModelPickerBar: View {
         let bucket = ModelPickerVisibility.qualityBucket(for: entry.alias)
         let footprint = ModelSizing.estimate(alias: entry.alias)
         return Button {
-            onUserSelection()
+            onUserSelection(entry.alias)
             alias = entry.alias
         } label: {
             Label(
@@ -1806,7 +1806,7 @@ struct ModelPickerBar: View {
     private func commitCustomAlias() {
         let trimmed = customDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
-            onUserSelection()
+            onUserSelection(trimmed)
             alias = trimmed
         }
         showCustom = false

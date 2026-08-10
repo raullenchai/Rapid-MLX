@@ -166,20 +166,30 @@ final class ImageGenViewModel {
         cancelling = true
         let port = server.activePort
         let bearer = server.activeBearer
-        cancelTask = Task { await client.cancel(port: port, bearer: bearer) }
+        let model = selectedAlias
+        cancelTask = Task { await client.cancel(model: model, port: port, bearer: bearer) }
     }
 
     private func runGenerate() async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !selectedAlias.isEmpty else { return }
         await withRequest {
-            let hf = self.imageModels.first { $0.alias == self.selectedAlias }?.hfRepo
-            guard await self.server.ensureServing(alias: self.selectedAlias, hfPath: hf) else {
+            let selected = self.imageModels.first { $0.alias == self.selectedAlias }
+            let hf = selected?.hfRepo
+            let estimatedGB = ModelSizing.residentEstimateGB(
+                alias: self.selectedAlias,
+                sizeText: selected?.sizeOnDisk
+            )
+            guard await self.server.ensureServing(
+                alias: self.selectedAlias,
+                hfPath: hf,
+                estimatedMemoryGB: estimatedGB
+            ) else {
                 throw ImageClientError.notReady
             }
             let port = self.server.activePort
             let bearer = self.server.activeBearer
-            let poll = self.startPolling(port: port, bearer: bearer)
+            let poll = self.startPolling(model: self.selectedAlias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.generate(
                 prompt: trimmed, model: self.selectedAlias, size: self.aspect.size,
@@ -200,13 +210,22 @@ final class ImageGenViewModel {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !selectedAlias.isEmpty else { return }
         await withRequest {
-            let hf = self.imageModels.first { $0.alias == self.selectedAlias }?.hfRepo
-            guard await self.server.ensureServing(alias: self.selectedAlias, hfPath: hf) else {
+            let selected = self.imageModels.first { $0.alias == self.selectedAlias }
+            let hf = selected?.hfRepo
+            let estimatedGB = ModelSizing.residentEstimateGB(
+                alias: self.selectedAlias,
+                sizeText: selected?.sizeOnDisk
+            )
+            guard await self.server.ensureServing(
+                alias: self.selectedAlias,
+                hfPath: hf,
+                estimatedMemoryGB: estimatedGB
+            ) else {
                 throw ImageClientError.notReady
             }
             let port = self.server.activePort
             let bearer = self.server.activeBearer
-            let poll = self.startPolling(port: port, bearer: bearer)
+            let poll = self.startPolling(model: self.selectedAlias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.edit(
                 imagePNG: source.pngData, prompt: trimmed, model: self.selectedAlias,
@@ -224,10 +243,14 @@ final class ImageGenViewModel {
 
     /// Poll the server's live denoise progress ~3×/second and mirror it into
     /// ``progress`` / ``phase`` so the stage shows a true step bar and ETA.
-    private func startPolling(port: Int, bearer: String?) -> Task<Void, Never> {
+    private func startPolling(model: String, port: Int, bearer: String?) -> Task<Void, Never> {
         Task { [weak self] in
             while !Task.isCancelled {
-                if let snap = await self?.client.fetchProgress(port: port, bearer: bearer) {
+                if let snap = await self?.client.fetchProgress(
+                    model: model,
+                    port: port,
+                    bearer: bearer
+                ) {
                     self?.progress = snap
                     self?.phase = snap.running ? .denoising : .preparing
                     if snap.running, self?.denoiseStartedAt == nil {

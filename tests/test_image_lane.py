@@ -403,6 +403,31 @@ def test_route_happy_path_returns_b64(client, monkeypatch):
     assert raw.startswith(_PNG_MAGIC)
 
 
+def test_route_selects_resident_image_engine_by_model(client, monkeypatch):
+    from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
+
+    chat = types.SimpleNamespace(is_image_gen=False)
+    image = _FakeImageEngine()
+    registry = ModelRegistry()
+    registry.add(ModelEntry(chat, "chat", "repo/chat"), is_default=True)
+    registry.add(ModelEntry(image, "image", "repo/image"))
+    monkeypatch.setattr(
+        "vllm_mlx.config.get_config",
+        lambda: types.SimpleNamespace(
+            engine=chat,
+            model_registry=registry,
+            residency_manager=None,
+        ),
+    )
+
+    resp = client.post(
+        "/v1/images/generations",
+        json={"model": "image", "prompt": "a resident fox", "seed": 7},
+    )
+    assert resp.status_code == 200
+    assert image.seeds == [7]
+
+
 def test_route_multi_image_offsets_seed(client, monkeypatch):
     engine = _FakeImageEngine()
     _patch_engine(monkeypatch, engine)

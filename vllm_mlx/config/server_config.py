@@ -41,6 +41,10 @@ class ServerConfig:
     model_name: str | None = None
     model_alias: str | None = None
     model_path: str | None = None
+    # Runtime owner for additional engines loaded into this process. The
+    # legacy ``engine`` fields remain the protected startup/default model;
+    # request routes consult this manager for residency, eviction, and status.
+    residency_manager: Any = None
     # True only after lifespan has finished engine.start(), warmup,
     # prefix-cache load_from_disk, and MCP init. Used by /health/ready
     # so callers (e.g. validation pipelines) can wait for a real

@@ -62,6 +62,15 @@ class ImageEngine:
         self.model_name = model_name
         self._engine = ImageGenerationEngine(model_name)
 
+    @property
+    def is_resident(self) -> bool:
+        """Whether mflux weights, rather than only the adapter, are loaded."""
+        return self._engine._model is not None  # noqa: SLF001
+
+    def ensure_resident(self) -> None:
+        """Eagerly materialize lazy mflux weights for budgeted residency."""
+        self._engine._ensure_loaded()  # noqa: SLF001
+
     def get_stats(self) -> dict:
         """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).
 

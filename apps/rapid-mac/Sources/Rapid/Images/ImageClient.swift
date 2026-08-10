@@ -220,8 +220,13 @@ struct ImageClient {
 
     /// ``GET /v1/images/progress`` — polled during a render. Returns nil on any
     /// transport hiccup so the caller simply keeps its last known state.
-    func fetchProgress(port: Int, bearer: String?) async -> ImageProgress? {
-        let url = Self.loopbackURL(port: port).appendingPathComponent("v1/images/progress")
+    func fetchProgress(model: String, port: Int, bearer: String?) async -> ImageProgress? {
+        var components = URLComponents(
+            url: Self.loopbackURL(port: port).appendingPathComponent("v1/images/progress"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "model", value: model)]
+        let url = components.url!
         var req = URLRequest(url: url)
         req.timeoutInterval = 5
         req.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -236,8 +241,13 @@ struct ImageClient {
 
     /// ``POST /v1/images/cancel`` — best-effort; the render stops at its next
     /// denoise step and its in-flight ``generate`` returns the finished images.
-    func cancel(port: Int, bearer: String?) async {
-        let url = Self.loopbackURL(port: port).appendingPathComponent("v1/images/cancel")
+    func cancel(model: String, port: Int, bearer: String?) async {
+        var components = URLComponents(
+            url: Self.loopbackURL(port: port).appendingPathComponent("v1/images/cancel"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "model", value: model)]
+        let url = components.url!
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 5

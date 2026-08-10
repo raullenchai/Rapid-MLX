@@ -134,11 +134,41 @@ def install_image_body_limit_middleware(app) -> None:
 _DEFAULT_EDIT_STEPS = 20
 
 
-def _image_engine():
-    """Return the loaded image engine or raise a 409 if this isn't an image server."""
+def _image_engine(model_name: str = ""):
+    """Resolve an image engine exactly by request model, with single-model fallback."""
     from ..config import get_config
 
-    img_engine = get_config().engine
+    cfg = get_config()
+    registry = getattr(cfg, "model_registry", None)
+    img_engine = None
+
+    if model_name and registry:
+        try:
+            registry.validate_model_name(model_name)
+            img_engine = registry.get_engine(model_name)
+        except KeyError:
+            img_engine = None
+    elif model_name:
+        accepted = {
+            getattr(cfg, "model_name", None),
+            getattr(cfg, "model_alias", None),
+            getattr(cfg, "model_path", None),
+        }
+        if model_name in accepted:
+            img_engine = getattr(cfg, "engine", None)
+    elif registry:
+        image_entries = [
+            entry
+            for entry in registry.list_entries()
+            if getattr(entry.engine, "is_image_gen", False)
+        ]
+        # Backward compatibility for clients that omit model: it remains
+        # unambiguous when exactly one image model is resident.
+        if len(image_entries) == 1:
+            img_engine = image_entries[0].engine
+    else:
+        img_engine = getattr(cfg, "engine", None)
+
     if img_engine is None or not getattr(img_engine, "is_image_gen", False):
         raise HTTPException(
             status_code=409,
@@ -154,6 +184,9 @@ def _image_engine():
                 }
             },
         )
+    manager = getattr(cfg, "residency_manager", None)
+    if manager is not None:
+        manager.touch(model_name or getattr(img_engine, "model_name", None))
     return img_engine
 
 
@@ -189,11 +222,11 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
     """
     from ..image.engine import ImageRuntimeError
 
-    img_engine = _image_engine()
+    img_engine = _image_engine(request.model)
 
-    # A single server hosts exactly one image model. When that model is the
-    # instruction-edit family, text-to-image generation is the wrong endpoint —
-    # 409 toward /v1/images/edits instead of silently ignoring the mismatch.
+    # When the selected resident engine is an instruction-edit model,
+    # text-to-image generation is the wrong endpoint. Point the caller to
+    # /v1/images/edits instead of silently ignoring the mismatch.
     if getattr(img_engine, "is_edit", False):
         raise HTTPException(
             status_code=409,
@@ -262,7 +295,7 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
 
 
 @router.get("/v1/images/progress")
-async def image_progress():
+async def image_progress(model: str = ""):
     """Live denoise progress for the single in-flight render.
 
     Diffusion has a fixed step count, so this is a *true* ``step / total``
@@ -270,12 +303,12 @@ async def image_progress():
     streaming parser, and honest on slow hardware (the bar can't outrun the
     real steps). Single-flight: the server renders one image at a time.
     """
-    img_engine = _image_engine()
+    img_engine = _image_engine(model)
     return img_engine.progress_snapshot()
 
 
 @router.post("/v1/images/cancel")
-async def image_cancel():
+async def image_cancel(model: str = ""):
     """Ask the in-flight render to stop at the next denoise step.
 
     By design the image lane is **single-flight**: the engine's process lock
@@ -284,7 +317,7 @@ async def image_cancel():
     single-user server (the desktop app issues one generation at a time), so
     there is deliberately no per-request generation id to thread through.
     """
-    img_engine = _image_engine()
+    img_engine = _image_engine(model)
     img_engine.request_cancel()
     return {"ok": True}
 
@@ -346,7 +379,7 @@ async def edit_image(
     """
     from ..image.engine import ImageGenerationCancelled, ImageRuntimeError
 
-    img_engine = _image_engine()
+    img_engine = _image_engine(model)
 
     # /v1/images/edits requires the edit family; a txt2img server points the
     # caller at /v1/images/generations instead of silently ignoring the image.
