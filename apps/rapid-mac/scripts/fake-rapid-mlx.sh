@@ -669,6 +669,13 @@ def main():
             pid=os.getpid(),
             do_not_track=os.environ.get("DO_NOT_TRACK"),
         )
+        if args.subcommand == "pull" and _setting("FAKE_DOWNLOAD_OVERRUN") == "1":
+            # #1550 fixture: the alias-derived estimate said 563 MiB after
+            # 633 MiB had already arrived. Keep the process alive long enough
+            # for the AX flow to inspect the in-flight progress card.
+            print("[bytes] 663748608/590348288", flush=True)
+            time.sleep(5)
+            sys.exit(0)
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
 

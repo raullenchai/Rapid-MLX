@@ -90,6 +90,7 @@ def test_peekaboo_requirement_is_default_deny():
     peekaboo_free = {
         "chat-restore",
         "cached-quickstart",
+        "download-progress",
         "restored-tools",
         "tool-loop-budget",
         "chat-depth",

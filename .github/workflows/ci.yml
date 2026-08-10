@@ -28,10 +28,10 @@ jobs:
           pip install ruff pyyaml
 
       - name: Run ruff lint
-        run: ruff check vllm_mlx/ tests/
+        run: ruff check .
 
       - name: Run ruff format check
-        run: ruff format --check vllm_mlx/ tests/
+        run: ruff format --check .
 
       # Structural check — catches "silent flag drop" bugs where a CLI
       # arg is defined but never plumbed to its target config (#400).

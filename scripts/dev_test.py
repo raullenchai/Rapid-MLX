@@ -52,10 +52,20 @@ def run_lint():
         [PY, "-m", "ruff", "--version"], capture_output=True, cwd=REPO_ROOT
     )
     if result.returncode == 0:
-        return run([PY, "-m", "ruff", "check", "vllm_mlx/", "tests/"], "Lint (ruff)")
+        check = run([PY, "-m", "ruff", "check", "."], "Lint (ruff)")
+        formatted = run(
+            [PY, "-m", "ruff", "format", "--check", "."],
+            "Format (ruff)",
+        )
+        return check and formatted
     ruff_bin = shutil.which("ruff")
     if ruff_bin:
-        return run([ruff_bin, "check", "vllm_mlx/", "tests/"], "Lint (ruff)")
+        check = run([ruff_bin, "check", "."], "Lint (ruff)")
+        formatted = run(
+            [ruff_bin, "format", "--check", "."],
+            "Format (ruff)",
+        )
+        return check and formatted
     print("  ruff not installed — pip install ruff")
     return False
 

@@ -574,16 +574,29 @@ struct DownloadProgressTests {
         #expect(progress.totalBytes == 500_000_000)
     }
 
-    @Test("R2 byte heartbeat with done>total clamps progressFraction to 1.0")
-    func r2BytesHeartbeatClampsOverrun() {
+    @Test("R2 byte heartbeat with done>total discards the contradictory total")
+    func r2BytesHeartbeatDiscardsOverrunTotal() {
         let progress = DownloadProgress()
         // Edge case: a mirror that lied about Content-Length might
         // deliver more bytes than expected. The byte channel ITSELF
         // is what the UI binds to; the clamp lives in
         // ``progressFraction``. Don't let the bar ever read > 100%.
         progress.ingest("  [bytes] 1500/1000")
-        let frac = progress.progressFraction ?? -1
-        #expect(frac == 1.0)
+        #expect(progress.progressFraction == nil)
+        #expect(progress.totalBytes == nil)
+        #expect(progress.progressSubtitle == "1.5 KB downloaded")
+    }
+
+    @Test("An estimate smaller than observed bytes is not shown as a contradictory total (#1550)")
+    func estimatedTotalBelowObservedBytesBecomesUnknown() {
+        let progress = DownloadProgress()
+        progress.setTotalBytes(563 * 1024 * 1024)
+        progress.seedDiskBaseline(bytes: 0)
+        progress.applyDiskObservation(bytes: 633 * 1024 * 1024)
+
+        #expect(progress.totalBytes == nil)
+        #expect(progress.progressFraction == nil)
+        #expect(progress.progressSubtitle == "633 MB downloaded")
     }
 
     @Test("ServerManager log-suppression classifier matches plain + ANSI heartbeats")

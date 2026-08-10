@@ -367,7 +367,7 @@ enum BrowseTool {
             // anything else textual → return as-is (still budgeted + cached
             // downstream). A binary type is near-useless as text; surface a note.
             if mime.contains("html") || mime.contains("xml") {
-                return HTMLToMarkdown.extract(text)
+                return HTMLToMarkdown.extract(text, baseURL: fetched.finalURL)
             }
             if mime.isEmpty || mime.hasPrefix("text/") || mime.contains("json") {
                 return HTMLToMarkdown.Result(title: nil, markdown: text)

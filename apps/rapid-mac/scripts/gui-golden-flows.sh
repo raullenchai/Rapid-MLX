@@ -36,13 +36,13 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
+Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
        browse-all-destination, image-generation, all
 
-chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
+download-progress, chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
 restored-tools, tool-loop-budget and image-generation drive the app through
 the accessibility API alone. They need no peekaboo and no Screen Recording, which is what lets
 them run unattended in CI (see the gui-golden-flows job in
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
+        cached-quickstart|download-progress|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
         slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
         *) return 0 ;;
     esac
@@ -1069,6 +1069,44 @@ flow_cached_quickstart() {
     fi
     cleanup_persona
     cleanup_operator_server
+}
+
+flow_download_progress() {
+    log "download progress never shows observed bytes above its total (#1550)"
+    start_persona download-progress FAKE_DOWNLOAD_OVERRUN=1
+
+    see_main "$OUT/consent.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
+        "$OUT/consent.json" >/dev/null; then
+        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    fi
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier Quickstart.Footer.Primary "$OUT/chooser.json"
+    assert_tree_text "$OUT/chooser.json" "~633 MB"
+    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/download-start.json"
+
+    local observed=0
+    for _ in {1..40}; do
+        see_main "$OUT/downloading.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("633 MB downloaded")' \
+            "$OUT/downloading.json" >/dev/null; then
+            observed=1
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "$observed" == 1 ]] \
+        || die "overrun fixture never reached a truthful bytes-downloaded state"
+    if jq -e '(.data.ui_elements | tostring)
+              | test("633 MB[[:space:]]*/[[:space:]]*563 MB")' \
+        "$OUT/downloading.json" >/dev/null; then
+        die "download progress still shows observed bytes above its displayed total"
+    fi
+    jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "download-progress flow never exercised the pull subprocess"
+    cleanup_persona
 }
 
 flow_settings_persistence() {
@@ -2187,6 +2225,7 @@ require_tools
 case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     cached-quickstart) flow_cached_quickstart ;;
+    download-progress) flow_download_progress ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
     restored-tools) flow_restored_tools ;;
@@ -2205,6 +2244,7 @@ case "$FLOW" in
     all)
         flow_fresh_install
         flow_cached_quickstart
+        flow_download_progress
         flow_settings_persistence
         flow_chat_restore
         flow_restored_tools

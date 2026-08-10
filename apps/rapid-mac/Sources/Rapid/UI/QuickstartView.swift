@@ -139,6 +139,11 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     /// HF repo backing the byte monitor. Pinned for the starter; ``nil``
     /// for bigger options (tqdm-fallback progress is acceptable there).
     let hfRepo: String?
+    /// Curated download size for choices whose alias rounds away a meaningful
+    /// parameter fraction. The starter alias says `1b` for a 1.2B repository;
+    /// using its alias estimate under-reported both the chooser and progress
+    /// denominator. Other choices continue to use `ModelSizing` estimates.
+    let downloadBytes: Int64?
     /// One-line blurb shown under the name in the chooser.
     let blurb: String
     /// Where this choice belongs in the deliberately short onboarding
@@ -146,6 +151,22 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
     /// they are materially less capable, but ``lowMemory`` gives a user
     /// who cannot safely load the starter an honest escape hatch.
     let tier: Tier
+
+    init(
+        alias: String,
+        displayName: String,
+        hfRepo: String?,
+        downloadBytes: Int64? = nil,
+        blurb: String,
+        tier: Tier
+    ) {
+        self.alias = alias
+        self.displayName = displayName
+        self.hfRepo = hfRepo
+        self.downloadBytes = downloadBytes
+        self.blurb = blurb
+        self.tier = tier
+    }
 
     var isStarter: Bool { tier == .starter }
     var isLowMemory: Bool { tier == .lowMemory }
@@ -238,6 +259,7 @@ final class QuickstartCoordinator {
         alias: "lfm2.5-1b-4bit",
         displayName: "LFM2.5 · 1.2B",
         hfRepo: "mlx-community/LFM2.5-1.2B-Instruct-4bit",
+        downloadBytes: 663_397_140,
         blurb: "Small download (~0.6 GB), runs on any Mac. Answers instantly and follows instructions well. Upgrade anytime for more depth.",
         tier: .starter
     )
@@ -1072,7 +1094,7 @@ struct QuickstartView: View {
                         QuickstartRecommendedCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(for: choice.alias)
+                            sizeText: Self.sizeText(for: choice)
                         ) { coordinator.select(choice) }
                         .padding(.bottom, 16)
                     }
@@ -1087,7 +1109,7 @@ struct QuickstartView: View {
                             QuickstartLowMemoryCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
-                                sizeText: Self.sizeText(for: choice.alias)
+                                sizeText: Self.sizeText(for: choice)
                             ) { coordinator.select(choice) }
                             .padding(.bottom, 16)
                         }
@@ -1104,7 +1126,7 @@ struct QuickstartView: View {
                                 QuickstartCompactCard(
                                     choice: choice,
                                     selected: coordinator.selection.alias == choice.alias,
-                                    sizeText: Self.sizeText(for: choice.alias)
+                                    sizeText: Self.sizeText(for: choice)
                                 ) { coordinator.select(choice) }
                             }
                         }
@@ -1154,6 +1176,17 @@ struct QuickstartView: View {
             return "~\(Int((gb * 1024).rounded())) MB"
         }
         return String(format: "%.1f GB", gb)
+    }
+
+    static func sizeText(for choice: QuickstartModelChoice) -> String {
+        guard let bytes = choice.downloadBytes else {
+            return sizeText(for: choice.alias)
+        }
+        let mib = Double(bytes) / Double(1 << 20)
+        if mib < 1024 {
+            return "~\(Int(mib.rounded())) MB"
+        }
+        return String(format: "%.1f GB", mib / 1024)
     }
 
     /// Stable, bounded presentation for models already on disk. The catalogue
@@ -1617,7 +1650,8 @@ struct QuickstartView: View {
         // the entire 700 MB pull (HF tqdm counts files, not bytes).
         let started = downloads.startDownload(
             alias: coordinator.selection.alias,
-            hfPath: coordinator.selection.hfRepo
+            hfPath: coordinator.selection.hfRepo,
+            totalBytes: coordinator.selection.downloadBytes
         )
         // ``startDownload`` returns ``false`` either because the
         // binary is missing (the synthetic ``.failed`` job already

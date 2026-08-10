@@ -8,6 +8,9 @@ Rapid-MLX Desktop app without loading a real model.
 1. fresh install, consent, onboarding, and steady-state shell; its
    `cached-quickstart` companion proves a first-run user can select and start
    an existing chat model without a second download (#1793);
+   `download-progress` drives a deliberately undersized download estimate and
+   proves the first-run card falls back to truthful “bytes downloaded” copy
+   instead of displaying more bytes downloaded than its total (#1550);
 2. Settings mutation and persistence across an app relaunch;
 3. basic chat, persisted conversation row, and restored transcript;
 4. a deliberately slow stream and semantic **Stop generating** action;
