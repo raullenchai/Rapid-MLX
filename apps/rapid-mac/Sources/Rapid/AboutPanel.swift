@@ -10,6 +10,21 @@ import SwiftUI
 /// the About window can stay a simple, on-brand credit: mark, version,
 /// one-line what-it-is, and the public links.
 enum AboutPanel {
+    struct EngineIdentity: Equatable, Sendable {
+        let version: String?
+        let source: ServerLocator.ResolvedSource
+        let path: String
+
+        var summary: String {
+            let versionLabel = version.map { "Engine \($0)" } ?? "Engine version unknown"
+            return "\(versionLabel) · \(source.displayLabel)"
+        }
+
+        var isOverride: Bool {
+            source == .runtimeOverride || source == .rapidBin
+        }
+    }
+
     private static let website = "https://rapidmlx.com"
     private static let repoURL = "https://github.com/raullenchai/Rapid-MLX"
     /// The policy in the repository, not `rapidmlx.com/privacy` — that page
@@ -36,6 +51,7 @@ enum AboutPanel {
         let view = AboutView(
             version: bundleShortVersion(),
             build: bundleBuildNumber(),
+            engine: engineIdentity(binaryPath: server.binaryPath),
             website: website,
             repoURL: repoURL,
             privacyURL: privacyURL
@@ -83,12 +99,54 @@ enum AboutPanel {
     static func bundleBuildNumber() -> String? {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String
     }
+
+    /// Describe the binary the server will actually spawn, rather than the
+    /// sidecar merely shipped inside this app bundle. A runtime override can
+    /// legitimately win version selection; surfacing that fact prevents a
+    /// dogfood session from silently attributing its behaviour to the wrong
+    /// engine (#1712).
+    static func engineIdentity(
+        binaryPath: URL?,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundleResourceURL: URL? = Bundle.main.resourceURL,
+        applicationSupportURL: URL? = nil
+    ) -> EngineIdentity? {
+        guard let binaryPath else { return nil }
+        let supportURL = applicationSupportURL ??
+            ApplicationSupportLocator.applicationSupportRoot(environment: environment)
+        let source = ServerLocator.classify(
+            resolved: binaryPath,
+            environment: environment,
+            bundleResourceURL: bundleResourceURL,
+            applicationSupportURL: supportURL
+        )
+        // Managed launchers may be symlinks. `find()` resolves the executable
+        // target, but VERSION belongs to the slot root, not necessarily the
+        // target checkout; read the same metadata path version selection used.
+        let versionBinary: URL
+        switch source {
+        case .runtimeOverride:
+            versionBinary = supportURL
+                .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx")
+        case .bundled:
+            versionBinary = bundleResourceURL?
+                .appendingPathComponent("rapid-mlx/bin/rapid-mlx") ?? binaryPath
+        case .rapidBin, .unknown:
+            versionBinary = binaryPath
+        }
+        return EngineIdentity(
+            version: ServerLocator.sidecarVersion(forBinary: versionBinary),
+            source: source,
+            path: binaryPath.path
+        )
+    }
 }
 
 /// The branded About content.
 private struct AboutView: View {
     let version: String
     let build: String?
+    let engine: AboutPanel.EngineIdentity?
     let website: String
     let repoURL: String
     let privacyURL: String
@@ -119,6 +177,21 @@ private struct AboutView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+
+            if let engine {
+                HStack(spacing: 5) {
+                    if engine.isOverride {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    Text(engine.summary)
+                }
+                .font(.caption.weight(engine.isOverride ? .semibold : .regular))
+                .foregroundStyle(engine.isOverride ? .primary : .secondary)
+                .help(engine.path)
+                .accessibilityLabel("\(engine.summary). Path: \(engine.path)")
+                .textSelection(.enabled)
+            }
 
             Text("Fast, private AI that runs on your Mac.")
                 .font(.callout)

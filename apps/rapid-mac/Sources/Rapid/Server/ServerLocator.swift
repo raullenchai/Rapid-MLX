@@ -167,7 +167,7 @@ enum ServerLocator {
     }
 
     /// Read `<sidecar-root>/VERSION` for a `.../bin/rapid-mlx` candidate.
-    private static func sidecarVersion(forBinary binary: URL) -> String? {
+    static func sidecarVersion(forBinary binary: URL) -> String? {
         let versionFile = binary
             .deletingLastPathComponent() // bin/
             .deletingLastPathComponent() // rapid-mlx/
@@ -287,17 +287,21 @@ enum ServerLocator {
                 return .rapidBin
             }
         }
-        if let override = applicationSupportURL?
-            .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx")
-            .standardizedFileURL.path,
-           override == path {
-            return .runtimeOverride
+        if let overrideURL = applicationSupportURL?
+            .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx") {
+            let override = overrideURL.standardizedFileURL.path
+            let resolvedOverride = overrideURL.resolvingSymlinksInPath().standardizedFileURL.path
+            if override == path || resolvedOverride == path {
+                return .runtimeOverride
+            }
         }
-        if let bundled = bundleResourceURL?
-            .appendingPathComponent("rapid-mlx/bin/rapid-mlx")
-            .standardizedFileURL.path,
-           bundled == path {
-            return .bundled
+        if let bundledURL = bundleResourceURL?
+            .appendingPathComponent("rapid-mlx/bin/rapid-mlx") {
+            let bundled = bundledURL.standardizedFileURL.path
+            let resolvedBundled = bundledURL.resolvingSymlinksInPath().standardizedFileURL.path
+            if bundled == path || resolvedBundled == path {
+                return .bundled
+            }
         }
         // No PATH / brew / pipx / uv slots to match: ``find()`` stopped
         // surfacing them in the v0.8.10 cutover, and a real ``RAPID_BIN``
