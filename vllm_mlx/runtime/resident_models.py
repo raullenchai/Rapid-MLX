@@ -389,9 +389,7 @@ class ResidentModelManager:
                 raise
             return record
 
-    async def _replace_group_locked(
-        self, target: ResidencyRecord, group: str
-    ) -> None:
+    async def _replace_group_locked(self, target: ResidencyRecord, group: str) -> None:
         """Make ``target`` the sole unpinned model in a lifecycle group.
 
         The desktop uses the ``assistant`` group for its chat picker: changing
@@ -507,9 +505,7 @@ class ResidentModelManager:
                     "id": record.model_id,
                     "model_path": record.entry.model_path,
                     "aliases": sorted(record.entry.aliases),
-                    "modality": (
-                        _modality(record.entry)
-                    ),
+                    "modality": (_modality(record.entry)),
                     "state": record.state if resident else "registered",
                     "pinned": record.pinned,
                     "primary": record.primary,
