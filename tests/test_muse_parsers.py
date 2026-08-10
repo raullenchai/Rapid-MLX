@@ -483,6 +483,32 @@ def test_non_finite_number_stays_raw():
     assert args == {"a": "NaN", "b": "1e309", "c": 2.5}
 
 
+@BOTH_MODES
+def test_quoted_opener_in_prose_does_not_swallow_later_call(streaming):
+    # Codex r6 #2: a definitively malformed (quoted-in-prose) opener
+    # must not stop the scan — a real call later in the response fires.
+    text = "The wire wraps calls in <atem:function_calls> as you know.\n" + _block(
+        _invoke("get_weather", {"city": "Oslo"})
+    )
+    content, calls = run_tool_extraction(
+        _tool_parser(), _chars(text), streaming=streaming
+    )
+    assert [c.name for c in calls] == ["get_weather"]
+    assert "as you know." in (content or "")
+
+
+@BOTH_MODES
+def test_reasoning_trailing_partial_sentinel_parity(streaming):
+    # Codex r6 #3: output ending in a partial sentinel must not lose
+    # those bytes in streaming — finalize releases the hold.
+    text = " to=user<|message|>answer <|eo"
+    reasoning, content = run_reasoning_extraction(
+        _reasoning_parser(), _chars(text), streaming=streaming
+    )
+    assert reasoning is None
+    assert content == "answer <|eo"
+
+
 def test_truncated_block_keeps_bytes_as_content():
     # An opener with no parseable invoke must not vanish silently.
     parser = _tool_parser()

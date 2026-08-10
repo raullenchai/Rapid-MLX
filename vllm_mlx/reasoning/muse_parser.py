@@ -133,8 +133,34 @@ class MuseReasoningParser(ReasoningParser):
             content=new_content or None,
         )
 
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
+    ) -> DeltaMessage | None:
+        """Release bytes the in-flight holds withheld (codex r6 #3).
+
+        At end of stream a partial sentinel (``<``, ``<|eo``…) or a
+        never-completed header can no longer grow into plumbing — the
+        non-streaming path keeps those bytes, so the stream must too.
+        The parser is stateless, so what was emitted is exactly the
+        held view of the accumulated text; the correction is the
+        unheld view's suffix beyond it.
+        """
+        del matched_stop, prompt_thinking_active, finish_reason
+        emitted_r, emitted_c = self._visible(accumulated_text)
+        final_r, final_c = self._visible(accumulated_text, hold=False)
+        extra_r = final_r[len(emitted_r) :]
+        extra_c = final_c[len(emitted_c) :]
+        if not extra_r and not extra_c:
+            return None
+        return DeltaMessage(reasoning=extra_r or None, content=extra_c or None)
+
     @classmethod
-    def _visible(cls, text: str) -> tuple[str, str]:
+    def _visible(cls, text: str, *, hold: bool = True) -> tuple[str, str]:
         """(reasoning_bytes, content_bytes) safely emittable for ``text``.
 
         Recomputed per delta from the full accumulated text — O(n) per
@@ -149,9 +175,13 @@ class MuseReasoningParser(ReasoningParser):
         # recipient decides reasoning vs content), so hold it. Without
         # this, the tail of ``…<|eom|><|start|>assistant to=u`` would
         # survive token-stripping as literal "assistant to=u" bytes.
-        pending = text.rfind("<|start|>")
-        if pending >= 0 and "<|message|>" not in text[pending:]:
-            text = text[:pending]
+        # ``hold=False`` (finalize): the stream is over, a header that
+        # never completed is model bytes — keep them, matching the
+        # non-streaming path.
+        if hold:
+            pending = text.rfind("<|start|>")
+            if pending >= 0 and "<|message|>" not in text[pending:]:
+                text = text[:pending]
         segs = _segments(text)
         # Header-in-progress: the tail may be a partial header for a
         # segment we cannot classify yet. ``_segments`` only recognises
@@ -163,10 +193,10 @@ class MuseReasoningParser(ReasoningParser):
         # AFTER the region ``_segments`` assigned, and since each
         # segment runs to the next header (or end), only the no-marker
         # fallback can misfire; guard it separately.
-        if segs and segs == [("user", text)] and cls._could_be_header(text):
+        if hold and segs == [("user", text)] and cls._could_be_header(text):
             return "", ""
         for i, (recipient, body) in enumerate(segs):
-            if i == len(segs) - 1:
+            if hold and i == len(segs) - 1:
                 body = cls._hold_partial_sentinel(body)
             for token in _CONTROL_TOKENS:
                 body = body.replace(token, "")

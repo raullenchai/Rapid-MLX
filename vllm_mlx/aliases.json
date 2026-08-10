@@ -1833,22 +1833,6 @@
     "is_hybrid": false,
     "supports_spec_decode": false
   },
-  "muse-glimmer-30b-4bit": {
-    "hf_path": "mlx-community/Muse-Glimmer-30B-4bit",
-    "tool_call_parser": "muse",
-    "reasoning_parser": "muse",
-    "is_hybrid": false,
-    "is_moe": false,
-    "supports_spec_decode": false
-  },
-  "muse-glimmer-30b-8bit": {
-    "hf_path": "mlx-community/Muse-Glimmer-30B-8bit",
-    "tool_call_parser": "muse",
-    "reasoning_parser": "muse",
-    "is_hybrid": false,
-    "is_moe": false,
-    "supports_spec_decode": false
-  },
   "minicpm5-1b-4bit": {
     "hf_path": "openbmb/MiniCPM5-1B-MLX",
     "tool_call_parser": "minicpm",

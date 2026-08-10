@@ -68,9 +68,35 @@ _BLOCK_CLOSE = "</atem:function_calls>"
 _PARAM_CLOSE = "</atem:parameter>"
 _INVOKE_CLOSE = "</atem:invoke>"
 
-_INVOKE_OPEN_RE = re.compile(r'<atem:invoke\s+name="(?P<name>[^"]+)">')
-_PARAM_OPEN_RE = re.compile(r'<atem:parameter\s+name="(?P<name>[^"]+)">')
+# CANONICAL opener forms only — exactly what the chat template renders
+# (single space, double quotes). Deliberately no ``\s+`` tolerance: the
+# in-flight partial-prefix classifiers below must agree byte-for-byte
+# with these, or a structure could flip between "malformed" and
+# "parsed" as a stream grows (prefix-stability). A model emitting a
+# non-canonical variant degrades to visible content, never a call.
+_INVOKE_OPEN_RE = re.compile(r'<atem:invoke name="(?P<name>[^"]+)">')
+_PARAM_OPEN_RE = re.compile(r'<atem:parameter name="(?P<name>[^"]+)">')
+_INVOKE_OPEN_LITERAL = '<atem:invoke name="'
+_PARAM_OPEN_LITERAL = '<atem:parameter name="'
 _WS_RE = re.compile(r"[ \t\r\n]*")
+
+# Scan-state sentinels (see ``_walk_invoke`` / ``_scan_text``).
+_INCOMPLETE = "incomplete"
+_MALFORMED = "malformed"
+
+
+def _tail_could_grow_into_opener(tail: str, literal: str) -> bool:
+    """Whether ``tail`` (which runs to end of input) could still become
+    the canonical opener ``literal<name>">`` with more bytes."""
+    if literal.startswith(tail):
+        return True
+    if not tail.startswith(literal):
+        return False
+    rest = tail[len(literal) :]
+    # Inside the name: any bytes without a closing quote yet, or the
+    # quote with the ``>`` still to come.
+    return re.fullmatch(r'[^"]*(?:">?)?', rest) is not None and not rest.endswith('">')
+
 
 # Muse channel plumbing (Harmony-flavored, but a distinct token set:
 # <|eot|>/<|eom|> terminators instead of <|end|>/<|return|>/<|call|>,
@@ -108,8 +134,13 @@ def _generate_tool_id() -> str:
 
 def _walk_invoke(
     text: str, opener: re.Match[str]
-) -> tuple[str, list[tuple[str, str]], int] | None:
-    """Walk one invoke starting at ``opener``; None if malformed/incomplete.
+) -> tuple[str, list[tuple[str, str]], int] | str:
+    """Walk one invoke starting at ``opener``.
+
+    Returns ``(name, params, end)`` on success, ``_INCOMPLETE`` when
+    more bytes could still legally complete the structure (a stream in
+    flight), or ``_MALFORMED`` when no continuation can (bytes present
+    that diverge from every legal token).
 
     Positional grammar walk: after the invoke opener, the only legal
     tokens (whitespace-separated) are parameter openers and the invoke
@@ -125,6 +156,8 @@ def _walk_invoke(
     cursor = opener.end()
     while True:
         j = _WS_RE.match(text, cursor).end()
+        if j >= len(text):
+            return _INCOMPLETE
         pm = _PARAM_OPEN_RE.match(text, j)
         if pm is not None:
             value_start = pm.end()
@@ -133,7 +166,8 @@ def _walk_invoke(
             while True:
                 idx = text.find(_PARAM_CLOSE, pos)
                 if idx < 0:
-                    break
+                    # No boundary-valid closer yet; one may still arrive.
+                    return _INCOMPLETE
                 after = idx + len(_PARAM_CLOSE)
                 k = _WS_RE.match(text, after).end()
                 if (
@@ -147,42 +181,52 @@ def _walk_invoke(
                     break
                 pos = after
             if not closed:
-                return None
+                return _INCOMPLETE
             continue
         if text.startswith(_INVOKE_CLOSE, j):
             return (opener.group("name"), params, j + len(_INVOKE_CLOSE))
-        # Unexpected bytes (or end of input) inside the invoke.
-        return None
+        tail = text[j:]
+        if _INVOKE_CLOSE.startswith(tail) or _tail_could_grow_into_opener(
+            tail, _PARAM_OPEN_LITERAL
+        ):
+            return _INCOMPLETE
+        return _MALFORMED
 
 
-def _completed_blocks(text: str) -> list[_Block]:
-    """Every completed, structurally valid ATEM block in ``text``.
+def _scan_text(text: str) -> tuple[list[_Block], int | None]:
+    """``(completed_blocks, pending_open_idx)`` for ``text``.
 
-    Prefix-stable: a completed block's geometry depends only on the
-    bytes up to its close (every lookahead that validated a closer is
-    internal to the block once the block close itself validates), so as
-    a stream grows, already-completed blocks never change. The
+    ``pending_open_idx`` is the offset of an opener whose block is
+    still legally completable (more bytes may arrive) — the streaming
+    hold point — or None. A DEFINITIVELY malformed opener (bytes
+    present that no continuation can repair) is skipped and its bytes
+    stay visible content, so a quoted/broken opener earlier in the
+    response cannot swallow a real call after it (codex r6 #2).
+
+    Prefix-stable both ways: a completed block's geometry depends only
+    on bytes up to its close, and a malformed verdict is only reached
+    on diverging bytes that later input cannot un-diverge. The
     streaming path's ``_stream_blocks_emitted`` cursor relies on this.
-
-    A block whose interior fails the walk is treated as in-flight /
-    malformed: scanning stops at its opener, and the bytes surface as
-    visible content instead of calls.
     """
     blocks: list[_Block] = []
     pos = 0
     while True:
         open_idx = text.find(_BLOCK_OPEN, pos)
         if open_idx < 0:
-            break
+            return blocks, None
         invokes: list[tuple[str, list[tuple[str, str]]]] = []
         cursor = open_idx + len(_BLOCK_OPEN)
-        completed = False
+        verdict: str | None = None
         while True:
             j = _WS_RE.match(text, cursor).end()
+            if j >= len(text):
+                verdict = _INCOMPLETE
+                break
             im = _INVOKE_OPEN_RE.match(text, j)
             if im is not None:
                 walked = _walk_invoke(text, im)
-                if walked is None:
+                if isinstance(walked, str):
+                    verdict = walked
                     break
                 name, params, end = walked
                 invokes.append((name, params))
@@ -191,12 +235,21 @@ def _completed_blocks(text: str) -> list[_Block]:
             if text.startswith(_BLOCK_CLOSE, j):
                 blocks.append((open_idx, j + len(_BLOCK_CLOSE), invokes))
                 pos = j + len(_BLOCK_CLOSE)
-                completed = True
+                verdict = None
                 break
+            tail = text[j:]
+            if _BLOCK_CLOSE.startswith(tail) or _tail_could_grow_into_opener(
+                tail, _INVOKE_OPEN_LITERAL
+            ):
+                verdict = _INCOMPLETE
+                break
+            verdict = _MALFORMED
             break
-        if not completed:
-            break
-    return blocks
+        if verdict == _INCOMPLETE:
+            return blocks, open_idx
+        if verdict == _MALFORMED:
+            # Resume AFTER the opener token; its bytes remain content.
+            pos = open_idx + len(_BLOCK_OPEN)
 
 
 def _allows_null(cfg: Any) -> bool:
@@ -387,7 +440,7 @@ class MuseToolParser(ToolParser):
     ) -> ExtractedToolCallInformation:
         calls = [
             call
-            for _, _, invokes in _completed_blocks(model_output)
+            for _, _, invokes in _scan_text(model_output)[0]
             for call in self._convert_invokes(invokes, request)
         ]
         # One content rule for BOTH modes (codex r2 #2, r3 #2): the
@@ -414,12 +467,12 @@ class MuseToolParser(ToolParser):
         blocks therefore streams normally (codex r1 #1).
 
         Monotonic in ``text`` by construction: completed blocks are
-        prefix-stable (see ``_completed_blocks``), a parseable block's
+        prefix-stable (see ``_scan_text``), a parseable block's
         removal never exposes earlier bytes, and an empty block's bytes
         appear in one piece at its close. That is what lets callers
         emit from an absolute cursor.
         """
-        blocks = _completed_blocks(text)
+        blocks, pending = _scan_text(text)
         pieces: list[str] = []
         pos = 0
         for start, end, invokes in blocks:
@@ -428,13 +481,12 @@ class MuseToolParser(ToolParser):
                 pieces.append(text[start:end])
             pos = end
         tail = text[pos:]
-        first_open = tail.find(_BLOCK_OPEN)
-        if first_open >= 0:
+        if pending is not None:
             if hold_tail:
-                tail = tail[:first_open]
-            # hold_tail=False (end of stream): the opener can no longer
-            # complete, so its literal bytes are content — matching the
-            # non-streaming path (codex r2 #3; the #1766 principle).
+                tail = text[pos:pending]
+            # hold_tail=False (end of stream): the pending opener can no
+            # longer complete, so its literal bytes are content — matching
+            # the non-streaming path (codex r2 #3; the #1766 principle).
         elif hold_tail:
             # In-flight holds apply to the TAIL only — bytes before a
             # completed block are already-visible history and truncating
@@ -473,9 +525,7 @@ class MuseToolParser(ToolParser):
         return text if max_hold == 0 else text[: len(text) - max_hold]
 
     def has_pending_tool_call(self, text: str) -> bool:
-        blocks = _completed_blocks(text)
-        after = blocks[-1][1] if blocks else 0
-        return _BLOCK_OPEN in text[after:]
+        return _scan_text(text)[1] is not None
 
     def flush_held_content(self, full_text: str) -> str:
         """Release held-but-safe bytes at end of stream.
@@ -504,12 +554,12 @@ class MuseToolParser(ToolParser):
 
         # A block close just completed — parse ONLY the newly completed
         # blocks (already-emitted blocks keep their ids and are never
-        # re-scanned; codex r1 #4). ``_completed_blocks`` is
-        # prefix-stable, so the cursor into its result is safe.
+        # re-scanned; codex r1 #4). ``_scan_text`` is prefix-stable,
+        # so the cursor into its result is safe.
         prev_closes = previous_text.count(_BLOCK_CLOSE)
         curr_closes = current_text.count(_BLOCK_CLOSE)
         if curr_closes > prev_closes:
-            blocks = _completed_blocks(current_text)
+            blocks, _ = _scan_text(current_text)
             new_blocks = blocks[self._stream_blocks_emitted :]
             self._stream_blocks_emitted = len(blocks)
             fresh = [
