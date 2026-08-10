@@ -48,18 +48,27 @@ fi
 mkdir -p "$OUT"
 rm -f "$OUT"/*.txt
 
-# Locate a license file inside a package directory. Echoes the path on success,
-# returns non-zero when none of the conventional names is present.
-find_license_file() {
-    local dir="$1" name
-    for name in LICENSE LICENSE.txt LICENSE.md LICENCE COPYING COPYING.txt \
-        COPYRIGHT NOTICE; do
+# Conventional license / notice filenames, in priority order. A single package
+# may legitimately split its terms across more than one (e.g. an Apache-2.0
+# LICENSE alongside a required NOTICE), so every one that exists is staged —
+# not just the first.
+LICENSE_FILENAMES=(
+    LICENSE LICENSE.txt LICENSE.md LICENCE
+    COPYING COPYING.txt COPYRIGHT NOTICE
+)
+
+# Stage every conventional notice file found in a package directory under the
+# given label. Echoes how many it staged; returns non-zero when none is present.
+stage_package_licenses() {
+    local label="$1" dir="$2" name staged=0
+    for name in "${LICENSE_FILENAMES[@]}"; do
         if [[ -f "$dir/$name" ]]; then
-            printf '%s\n' "$dir/$name"
-            return 0
+            stage_license "$label" "$dir/$name"
+            staged=$((staged + 1))
         fi
     done
-    return 1
+    printf '%s\n' "$staged"
+    [[ "$staged" -gt 0 ]]
 }
 
 # Stage one license as ``<label>-<original-filename>.txt`` so provenance is
@@ -123,9 +132,8 @@ for ((i = 0; i < pin_count; i++)); do
         echo "     the notice (#1596)." >&2
         exit 1
     fi
-    if lic="$(find_license_file "$dir")"; then
-        stage_license "$name" "$lic"
-        remote_count=$((remote_count + 1))
+    if staged="$(stage_package_licenses "$name" "$dir")"; then
+        remote_count=$((remote_count + staged))
     else
         echo "ERR: no license file found for Swift package '$name' in $dir" >&2
         echo "     Add its notice or exclude it — a linked dep cannot ship" >&2

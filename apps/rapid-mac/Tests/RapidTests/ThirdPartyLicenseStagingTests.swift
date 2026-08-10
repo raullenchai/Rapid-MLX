@@ -66,7 +66,8 @@ struct ThirdPartyLicenseStagingTests {
         resolvedBody: String,
         checkoutLicenses: [String: (filename: String, contents: String)?],
         vendorLicense: String? = "SwiftMath MIT license text",
-        createCheckoutsDir: Bool = true
+        createCheckoutsDir: Bool = true,
+        populate: ((URL) throws -> Void)? = nil
     ) throws -> StagingResult {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
@@ -90,6 +91,7 @@ struct ThirdPartyLicenseStagingTests {
                     )
                 }
             }
+            try populate?(checkouts)
         }
 
         let vendorLicensePath: String
@@ -194,6 +196,35 @@ struct ThirdPartyLicenseStagingTests {
         )
     }
 
+    @Test("staging copies every notice file when a package splits its terms")
+    func stagesAllNoticeFilesPerPackage() throws {
+        // An Apache-2.0-style package ships LICENSE *and* a required NOTICE;
+        // both must travel, not just the first match.
+        let result = try Self.runStaging(
+            resolvedBody: Self.resolved(locations: [
+                "https://github.com/example/ApachePkg"
+            ]),
+            checkoutLicenses: [:]  // populated below with two files
+        ) { checkouts in
+            let dir = checkouts.appendingPathComponent("ApachePkg", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true
+            )
+            try "apache license".write(
+                to: dir.appendingPathComponent("LICENSE"),
+                atomically: true, encoding: .utf8
+            )
+            try "required notice".write(
+                to: dir.appendingPathComponent("NOTICE"),
+                atomically: true, encoding: .utf8
+            )
+        }
+
+        #expect(result.exitCode == 0, "staging failed: \(result.stderr)")
+        #expect(result.staged["ApachePkg-LICENSE.txt"] == "apache license")
+        #expect(result.staged["ApachePkg-NOTICE.txt"] == "required notice")
+    }
+
     @Test("staging fails closed when a linked package has no license file")
     func failsWhenPackageHasNoLicense() throws {
         let result = try Self.runStaging(
@@ -286,38 +317,74 @@ struct ThirdPartyLicenseStagingTests {
         )
     }
 
-    @Test("build.sh actually invokes the license-staging script")
+    /// Reassemble the single shell statement that begins at the staging-script
+    /// invocation, following `\` line continuations, so arguments are checked
+    /// against *that command* — not against anything that merely appears
+    /// elsewhere in build.sh (a comment, an unrelated echo).
+    private static func stagingInvocation(in buildScript: String) -> String? {
+        let lines = buildScript.split(separator: "\n", omittingEmptySubsequences: false)
+        guard
+            let start = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespaces)
+                    .hasPrefix("\"$ROOT/scripts/stage-licenses.sh\"")
+            })
+        else { return nil }
+
+        var statement = ""
+        var i = start
+        while i < lines.count {
+            var line = String(lines[i])
+            let continues = line.hasSuffix("\\")
+            if continues { line.removeLast() }
+            statement += line + " "
+            if !continues { break }
+            i += 1
+        }
+        return statement
+    }
+
+    @Test("build.sh invokes the staging script with all four arguments in order")
     func buildScriptInvokesStagingScript() throws {
         let script = Self.appRoot.appendingPathComponent("scripts/build.sh")
         let text = try String(contentsOf: script, encoding: .utf8)
-        // Require the script in *command position*: a non-comment line whose
-        // trimmed text begins with the quoted invocation. This rejects a mere
-        // mention in a comment, a value passed as data, or an `echo` of the
-        // path — only a line that runs the script counts.
-        let invokes = text.split(separator: "\n").contains { rawLine in
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            return line.hasPrefix("\"$ROOT/scripts/stage-licenses.sh\"")
+
+        guard let invocation = Self.stagingInvocation(in: text) else {
+            Issue.record(
+                """
+                build.sh no longer invokes "$ROOT/scripts/stage-licenses.sh" in \
+                command position; the license-staging step from #1596 must not \
+                be silently removed.
+                """
+            )
+            return
         }
-        #expect(
-            invokes,
-            """
-            build.sh no longer invokes "$ROOT/scripts/stage-licenses.sh" in \
-            command position; the license-staging step from #1596 must not be \
-            silently removed.
-            """
-        )
-        // And it must forward the four contract arguments, so the wiring is
-        // real and not a no-arg stub.
-        for argument in [
+
+        // The four contract arguments must appear within this one statement, in
+        // order — so dropping or reordering an argument fails even if the string
+        // still occurs elsewhere in the file.
+        let orderedArgs = [
             "$ROOT/Package.resolved",
             "$ROOT/.build/checkouts",
             "$ROOT/Vendor/SwiftMath/LICENSE",
             "$CONTENTS/Resources/Licenses",
-        ] {
-            #expect(
-                text.contains("\"\(argument)\""),
-                "build.sh no longer forwards \(argument) to the staging script."
-            )
+        ]
+        var searchRange = invocation.startIndex..<invocation.endIndex
+        for argument in orderedArgs {
+            guard
+                let found = invocation.range(
+                    of: "\"\(argument)\"", range: searchRange
+                )
+            else {
+                Issue.record(
+                    """
+                    the stage-licenses.sh invocation in build.sh does not pass \
+                    \(argument) in the expected position; the four contract \
+                    arguments must be forwarded in order.
+                    """
+                )
+                return
+            }
+            searchRange = found.upperBound..<invocation.endIndex
         }
     }
 }
