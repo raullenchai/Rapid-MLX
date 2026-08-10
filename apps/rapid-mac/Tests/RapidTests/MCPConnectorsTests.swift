@@ -605,6 +605,50 @@ final class MCPConnectorsTests {
         #expect(result.content.contains("web_search"))
     }
 
+    @Test("Golden path: a live connector tool joins the built-in surface, dispatches, and the master switch collapses it")
+    func compositeConnectorGoldenPath() async {
+        // The end-to-end surface the chat loop actually reads: built-ins plus a
+        // connected MCP tool, one registry, gated by the master switch. Covers
+        // in one flow what the unit tests check in pieces — advertise, route,
+        // and the connectors-off collapse.
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = """
+        {"servers":[{"name":"time","state":"connected","transport":"stdio","tools_count":1,"error":null}],
+         "error":null,"configured":true}
+        """
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
+        {"tools":[{"name":"time__now","description":"d","server":"time","parameters":{}}],"count":1}
+        """
+        await catalog.refresh()
+
+        let defaults = enabledDefaults()
+        let composite = CompositeToolRegistry(
+            builtin: BuiltinToolRegistry(
+                browseApproval: BrowseApprovalStore(defaults: freshDefaults()),
+                webSearch: WebSearchConfig(defaults: freshDefaults(), keychain: NullKeychain())
+            ),
+            mcp: MCPToolRegistry(catalog: catalog, approval: makeApproval(), defaults: defaults)
+        )
+
+        // Connectors on: the connector tool sits alongside the built-in three.
+        #expect(composite.definitions.map { $0.function.name }
+            == ["web_search", "browse", "weather", "time__now"])
+        // And a call for it routes to the MCP side (reaching the approval gate),
+        // not the unknown-tool branch.
+        async let dispatched = composite.run(
+            ToolCall(id: "c1", name: "time__now", arguments: "{}")
+        )
+        await waitForPending(composite.mcp.approval)
+        composite.mcp.approval.answer(.deny)
+        let routed = await dispatched
+        #expect(!routed.content.contains("unknown tool"))
+
+        // Master switch off collapses the surface back to the built-ins.
+        defaults.set(false, forKey: MCPConfigStore.enabledKey)
+        #expect(composite.definitions.map { $0.function.name }
+            == ["web_search", "browse", "weather"])
+    }
+
     // MARK: - Catalog / hot reload
 
     /// Hands out a port nobody else in this run is using.
@@ -701,6 +745,23 @@ final class MCPConnectorsTests {
         // carries server rows, so it must follow up with the tools route or a
         // newly-added connector's tools would never reach the model.
         #expect(catalog.tools.map { $0.function.name } == ["time__get_current_time"])
+    }
+
+    @Test("A tool whose namespaced name exceeds the 64-char function limit is dropped")
+    func overlongToolNameIsNotAdvertised() async {
+        let (catalog, port) = stubbedCatalog()
+        let longName = "srv__" + String(repeating: "x", count: 70)  // 75 > 64
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] =
+            #"{"servers":[],"error":null,"configured":true}"#
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
+        {"tools":[{"name":"srv__ok","description":"d","server":"srv","parameters":{}},
+                  {"name":"\(longName)","description":"d","server":"srv","parameters":{}}],"count":2}
+        """
+        await catalog.refresh()
+        // The over-long one can't be a legal OpenAI function name, so it is not
+        // offered rather than advertised as a tool the model can never call.
+        #expect(catalog.tools.map { $0.function.name } == ["srv__ok"])
+        #expect(catalog.serverForTool[longName] == nil)
     }
 
     @Test("A reload whose tool re-fetch fails reports failure, not success")

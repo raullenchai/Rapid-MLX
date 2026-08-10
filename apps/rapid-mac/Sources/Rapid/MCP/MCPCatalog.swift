@@ -52,6 +52,13 @@ final class MCPCatalog {
     /// than knowing it's bad.
     private(set) var fetchError: String?
 
+    /// Bumped at the start of every ``refresh`` / ``reload``. Each run captures
+    /// its value and, after its network awaits, commits only if still current —
+    /// so a slow poll that started before a reload can't complete last and
+    /// restore the tools the reload just removed. `@MainActor` makes the
+    /// bump-and-capture and the compare-and-commit each atomic between awaits.
+    private var mutationGeneration = 0
+
     private let session: URLSession
     /// Resolves the live endpoint. A closure rather than a stored host/port
     /// because both float across a restart (`ServerManager.activePort`
@@ -90,6 +97,8 @@ final class MCPCatalog {
             clear()
             return false
         }
+        mutationGeneration += 1
+        let generation = mutationGeneration
         do {
             // Fetch BOTH routes before publishing anything. Committing the
             // server rows and then failing the tools fetch would leave the two
@@ -97,6 +106,10 @@ final class MCPCatalog {
             // that a reload may have just changed. Build locals, commit as one.
             let serversResponse: ServersResponse = try await get("/v1/mcp/servers", ep)
             let toolsResponse: ToolsResponse = try await get("/v1/mcp/tools", ep)
+
+            // A newer refresh/reload started while we were on the network; its
+            // result is the current truth. Discard ours rather than clobber it.
+            guard generation == mutationGeneration else { return false }
 
             servers = serversResponse.servers.map {
                 ServerStatus(
@@ -109,7 +122,13 @@ final class MCPCatalog {
             }
             subsystemError = serversResponse.error
             isConfigured = serversResponse.configured ?? false
-            tools = toolsResponse.tools.map {
+            // Drop any tool whose namespaced `server__tool` name can't be a
+            // legal OpenAI function name (64 chars). Capping the server half at
+            // 32 doesn't bound a connector's own tool names, and advertising a
+            // name the model can't emit — or that 400s on the wire — reads as
+            // "that tool silently does nothing". Not advertising it is honest.
+            let usableTools = toolsResponse.tools.filter { $0.name.count <= 64 }
+            tools = usableTools.map {
                 ToolDefinition(
                     name: $0.name,
                     description: $0.description,
@@ -117,7 +136,7 @@ final class MCPCatalog {
                 )
             }
             serverForTool = Dictionary(
-                toolsResponse.tools.map { ($0.name, $0.server) },
+                usableTools.map { ($0.name, $0.server) },
                 uniquingKeysWith: { first, _ in first }
             )
             fetchError = nil
@@ -148,8 +167,12 @@ final class MCPCatalog {
     @discardableResult
     func reload() async -> Bool {
         guard let ep = endpoint() else { return false }
+        mutationGeneration += 1
+        let generation = mutationGeneration
         do {
             let response: ServersResponse = try await post("/v1/mcp/reload", ep)
+            // Superseded by a newer mutation while the reload was in flight.
+            guard generation == mutationGeneration else { return false }
             servers = response.servers.map {
                 ServerStatus(
                     name: $0.name,
