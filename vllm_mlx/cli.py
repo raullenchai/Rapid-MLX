@@ -4985,9 +4985,12 @@ def _scan_external_model_dirs(
         if real in seen_paths or repo in seen_repos:
             return
         try:
-            if not _external_model_tree_is_contained(
-                real, [canonical_root]
-            ) or not _complete(real):
+            # The loader probe is root-only and bounded. Run it before the
+            # recursive symlink audit/size walk so a broad selected folder
+            # does not turn every ordinary directory into a deep traversal.
+            if not _complete(real):
+                return
+            if not _external_model_tree_is_contained(real, [canonical_root]):
                 return
             mtime = os.path.getmtime(real)
         except OSError:
@@ -5038,6 +5041,8 @@ def _scan_external_model_dirs(
             # <root>/<publisher>/<name>/ — accept both.
             if _contained(pub_dir):
                 _record(pub_dir, publisher, canonical_root)
+                if publisher in seen_repos:
+                    continue
 
             try:
                 second_level = sorted(os.listdir(pub_dir))
@@ -5089,19 +5094,13 @@ def _print_cached_models() -> None:
 
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
-    # A RUNNABLE hub copy wins because it is managed by Rapid.  An incomplete
-    # hub stub must not hide a complete external copy: in that case keep the
-    # external row and suppress the unusable duplicate so the UI can launch
-    # the working local directory without double-counting disk usage.
-    external_repos_all = {repo for repo, _, _ in external_rows}
+    # A RUNNABLE hub copy wins because it is managed by Rapid. Keep an
+    # incomplete same-named hub row alongside the external copy: it is a real,
+    # independently removable cache entry, and hiding it makes `rm <repo>` look
+    # like it targets the read-only external row.
     runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
-    rows = [
-        row
-        for row in rows
-        if row[0] not in external_repos_all or row[0] in runnable_hub_repos
-    ]
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
-    external_repos = {repo for repo, _, _ in external_rows}
+    external_row_keys = set(external_rows)
     rows = rows + external_rows
     print()
     if not rows:
@@ -5142,6 +5141,7 @@ def _print_cached_models() -> None:
     # Sort by size descending so the biggest-disk-hog row is first — the
     # most useful ordering for "what do I rm to free space?".
     for repo, size, mtime in sorted(rows, key=lambda r: -r[1]):
+        is_external_row = (repo, size, mtime) in external_row_keys
         total_bytes += size
         alias = hf_to_alias.get(repo, "(unmapped)")
         # Models found outside the hub cache are listed but never labelled
@@ -5153,7 +5153,7 @@ def _print_cached_models() -> None:
         # path) or, worse, delete an unrelated hub entry that happens to
         # share the name. Read-only is the honest state — we did not
         # download them and we cannot manage them.
-        if repo in external_repos:
+        if is_external_row:
             alias = "(external)"
         # Keep partial directories visible for disk cleanup, but never label
         # a known alias as downloaded/runnable. The desktop parser deliberately
@@ -5178,9 +5178,7 @@ def _print_cached_models() -> None:
         # remain byte-for-byte launchable. Hub rows may still be truncated for
         # interactive display because their registered alias is the canonical
         # launch identity; external rows have no independent alias channel.
-        repo_disp = (
-            repo if repo in external_repos or len(repo) <= 50 else (repo[:47] + "...")
-        )
+        repo_disp = repo if is_external_row or len(repo) <= 50 else (repo[:47] + "...")
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")

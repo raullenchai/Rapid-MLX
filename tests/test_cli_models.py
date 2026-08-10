@@ -689,14 +689,14 @@ def test_external_scan_accepts_a_model_directly_under_the_root(tmp_path):
     assert [r[0] for r in rows] == ["SoloModel-4bit"]
 
 
-def test_root_level_model_does_not_hide_nested_model(tmp_path):
+def test_root_level_model_is_not_double_counted_with_nested_model(tmp_path):
     root = tmp_path / "models"
     _write_mlx_model(root / "publisher")
     _write_mlx_model(root / "publisher" / "nested")
 
     repos = {repo for repo, _, _ in cli._scan_external_model_dirs([str(root)])}
 
-    assert repos == {"publisher", "publisher/nested"}
+    assert repos == {"publisher"}
 
 
 def test_external_scan_skips_incomplete_directories(tmp_path):
@@ -1007,7 +1007,7 @@ def test_runnable_hub_copy_wins_when_a_repo_exists_in_both_places(
     assert "(external)" not in out
 
 
-def test_complete_external_copy_wins_over_incomplete_hub_stub(
+def test_complete_external_copy_keeps_incomplete_hub_stub_visible_for_cleanup(
     tmp_path, monkeypatch, capsys
 ):
     hub = tmp_path / "hub"
@@ -1026,9 +1026,9 @@ def test_complete_external_copy_wins_over_incomplete_hub_stub(
     cli._print_cached_models()
     out = capsys.readouterr().out
 
-    assert out.count("mlx-community/Dup") == 1
+    assert out.count("mlx-community/Dup") == 2
     assert "(external)" in out
-    assert "(incomplete)" not in out
+    assert "(unmapped)" in out
 
 
 def test_external_scan_measures_symlinked_weights(tmp_path):
