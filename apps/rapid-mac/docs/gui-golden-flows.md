@@ -21,7 +21,9 @@ Rapid-MLX Desktop app without loading a real model.
 added after a release where every escaped defect landed on a surface no journey
 covered, and each one names the defect it would have caught:
 
-8. `update-state` — Settings → App must name the version the app actually is.
+8. `update-state` — Settings → App must name the version the app actually is;
+   a restored updater window on that same release must show one coherent
+   up-to-date state (no install CTA or false missing-DMG warning).
 9. `no-dead-controls` — every Settings panel must expose controls of its own.
 10. `catalog-integrity` — a model that cannot chat must never be offered as one.
     Now covers **image-gen** aliases too: `rapid-mlx models` tags them

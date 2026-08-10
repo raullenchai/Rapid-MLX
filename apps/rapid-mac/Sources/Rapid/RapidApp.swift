@@ -168,7 +168,25 @@ struct RapidApp: App {
         _mcpTools = State(initialValue: mcpRegistry)
 
         let chat = ChatViewModel(tools: toolRegistry, sampling: samplingConfig, server: manager)
-        let updateChecker = UpdateChecker()
+        let updateChecker: UpdateChecker
+        if ProcessInfo.processInfo.environment["RAPID_GUI_UPDATE_CURRENT"] == "1" {
+            // Deterministic GUI-golden fixture: exercise the restored update
+            // window while the published release equals the running build.
+            // Production launches never set this harness-only variable.
+            let current = UpdateChecker.bundleVersion()
+            let fixture = UpdateChecker.Release(
+                schemaVersion: 1,
+                version: current,
+                tagName: "rapid-mac-v\(current)",
+                htmlURL: "https://github.com/machinefi/rapid-desktop/releases/tag/rapid-mac-v\(current)",
+                notes: "",
+                publishedAt: "2026-08-10T00:00:00Z",
+                dmgURL: "https://dl.rapidmlx.com/rapid-mac/\(current)/rapid-mlx-desktop.dmg"
+            )
+            updateChecker = UpdateChecker(currentVersion: current) { fixture }
+        } else {
+            updateChecker = UpdateChecker()
+        }
         let installerInstance = Installer()
         let downloadsInstance = DownloadManager(binaryPath: manager.binaryPath)
         // #253: let ``ServerManager.start(alias:)`` await any in-flight
@@ -253,6 +271,9 @@ struct RapidApp: App {
                         settingsRouter.route(to: category) {
                             openWindow(id: "settings")
                         }
+                    }
+                    if ProcessInfo.processInfo.environment["RAPID_GUI_OPEN_UPDATE_WINDOW"] == "1" {
+                        openWindow(id: "update-install")
                     }
                 }
                 .task {

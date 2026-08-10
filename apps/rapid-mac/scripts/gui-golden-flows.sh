@@ -1312,6 +1312,24 @@ flow_update_state() {
         || die "update panel ($state) says '$shown' but the app is $expected"
     log "  update state names the running version ($expected, via ${state##*.})"
     cleanup_persona
+
+    # Reproduce #636 directly: a restorable updater window can exist even
+    # when the fetched release equals the running build. It must render a
+    # coherent up-to-date state, never an update CTA plus a false missing-DMG
+    # diagnosis. The fixture makes this independent of the live channel.
+    start_persona update-window-current \
+        RAPID_GUI_UPDATE_CURRENT=1 RAPID_GUI_OPEN_UPDATE_WINDOW=1
+    wait_identifier UpdateInstall.UpToDate "$OUT/update-window-current.json"
+    local title
+    title="$(element_field "$OUT/update-window-current.json" UpdateInstall.Title value)"
+    [[ "$title" == "Rapid-MLX is up to date" ]] \
+        || die "current-release updater title is contradictory: '$title'"
+    ! jq -e '.data.ui_elements[]? | select(
+        ((.value // .label // "") | tostring | test("DMG not available|doesn.t ship a DMG"; "i"))
+    )' "$OUT/update-window-current.json" >/dev/null \
+        || die "current-release updater still reports a missing DMG"
+    log "  restored updater window renders one coherent up-to-date state"
+    cleanup_persona
 }
 
 flow_no_dead_controls() {

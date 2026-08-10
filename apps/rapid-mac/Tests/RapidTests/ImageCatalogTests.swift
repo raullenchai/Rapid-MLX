@@ -48,6 +48,21 @@ struct ImageCatalogTests {
         #expect(klein?.size == "4.3 GiB")
     }
 
+    @Test("complete mflux caches are marked downloaded in Images")
+    func mfluxCachesReachImagesAsDownloaded() {
+        let rows = ModelCatalog.parseImageRows(Self.sample)
+        let cached = ModelCatalog.mergeImageRows(
+            rows,
+            cachedRepos: [
+                "Runpod/FLUX.2-klein-4B-mflux-4bit",
+                "filipstrand/Z-Image-Turbo-mflux-4bit",
+            ]
+        )
+
+        #expect(cached.first { $0.alias == "flux2-klein-4b" }?.cached == true)
+        #expect(cached.first { $0.alias == "z-image-turbo" }?.cached == true)
+    }
+
     @Test("[image:gen] rows are excluded from the chat catalog")
     func imageRowsExcludedFromChat() {
         // hasNonChatKindTag now drops image alongside audio/video.

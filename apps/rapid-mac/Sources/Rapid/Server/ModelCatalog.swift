@@ -341,6 +341,17 @@ enum ModelCatalog {
         )
         let rows = parseImageRows(await modelsOut)
         let cachedRepos = Set((await cachedTask).compactMap { $0.1 })
+        return mergeImageRows(rows, cachedRepos: cachedRepos)
+    }
+
+    /// Join the engine's image catalog to its runnable-cache view. Keeping
+    /// this seam pure pins the cross-process contract: component-layout
+    /// mflux snapshots reported by `rapid-mlx ls` must reach the Images UI as
+    /// cached even though they intentionally have no root `config.json`.
+    static func mergeImageRows(
+        _ rows: [(alias: String, hfRepo: String?, size: String?)],
+        cachedRepos: Set<String>
+    ) -> [ModelEntry] {
         return rows.map { row in
             ModelEntry(
                 alias: row.alias,

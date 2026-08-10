@@ -21,6 +21,13 @@ import SwiftUI
 /// surrounding chrome, the in-app path is primary and the browser
 /// fallback is one click away on every state.
 struct UpdateInstallView: View {
+    enum Presentation: Equatable {
+        case update(UpdateChecker.Release)
+        case checking
+        case upToDate
+        case unavailable(String?)
+    }
+
     @Environment(UpdateChecker.self) private var updater
     @Environment(Installer.self) private var installer
     @Environment(\.dismissWindow) private var dismissWindow
@@ -48,14 +55,23 @@ struct UpdateInstallView: View {
                 .font(.system(size: 28, weight: .regular))
                 .foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
-                Text("A new version of Rapid-MLX is available")
+                Text(headerTitle)
                     .font(.headline)
-                if let release = updater.availableUpdate {
+                    .accessibilityIdentifier("UpdateInstall.Title")
+                if case .update(let release) = presentation {
                     Text("Rapid-MLX v\(release.version) — you have v\(updater.currentVersion)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                } else {
+                } else if presentation == .upToDate {
                     Text("You're already on the latest version (v\(updater.currentVersion)).")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else if presentation == .checking {
+                    Text("Checking the update channel…")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Update information isn't available right now.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -66,14 +82,26 @@ struct UpdateInstallView: View {
 
     @ViewBuilder
     private var releaseNotes: some View {
-        if let release = updater.availableUpdate,
+        if case .update(let release) = presentation,
            !release.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             // Render the CHANGELOG Markdown properly instead of dumping
             // raw ``##`` / ``-`` / ``**`` characters (pre-v0.8.18 the
             // bare ``Text(release.notes)`` showed the literal source).
             ReleaseNotesMarkdown(raw: release.notes)
-        } else {
+        } else if case .update = presentation {
             Text("No release notes provided.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else if presentation == .upToDate {
+            Text("Rapid-MLX is up to date. We'll let you know when a newer version is ready.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("UpdateInstall.UpToDate")
+        } else if presentation == .checking {
+            ProgressView("Checking for updates…")
+                .controlSize(.small)
+        } else if case .unavailable(let message) = presentation {
+            Text(message ?? "Check your connection and try again.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -102,6 +130,26 @@ struct UpdateInstallView: View {
     }
 
     private var idleFooter: some View {
+        Group {
+            if case .update = presentation {
+                updateFooter
+            } else {
+                HStack {
+                    Spacer()
+                    Button("Close") { dismissWindow(id: "update-install") }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("UpdateInstall.Close")
+                    Button(updater.checking ? "Checking…" : "Check Again") {
+                        Task { await updater.check() }
+                    }
+                    .disabled(updater.checking)
+                    .accessibilityIdentifier("UpdateInstall.CheckAgain")
+                }
+            }
+        }
+    }
+
+    private var updateFooter: some View {
         VStack(alignment: .trailing, spacing: 8) {
             HStack {
                 Button("Open release page") { openReleasePage() }
@@ -149,6 +197,36 @@ struct UpdateInstallView: View {
     static func displayProgress(_ progress: Double) -> Double {
         guard progress.isFinite else { return 0 }
         return min(max(progress, 0), 1)
+    }
+
+    static func resolvePresentation(
+        availableUpdate: UpdateChecker.Release?,
+        latest: UpdateChecker.Release?,
+        checking: Bool,
+        lastError: String?
+    ) -> Presentation {
+        if let availableUpdate { return .update(availableUpdate) }
+        if checking { return .checking }
+        if latest != nil { return .upToDate }
+        return .unavailable(lastError)
+    }
+
+    private var presentation: Presentation {
+        Self.resolvePresentation(
+            availableUpdate: updater.availableUpdate,
+            latest: updater.latest,
+            checking: updater.checking,
+            lastError: updater.lastError
+        )
+    }
+
+    private var headerTitle: String {
+        switch presentation {
+        case .update: "A new version of Rapid-MLX is available"
+        case .checking: "Checking for updates"
+        case .upToDate: "Rapid-MLX is up to date"
+        case .unavailable: "Unable to check for updates"
+        }
     }
 
     private func failedFooter(message: String) -> some View {
