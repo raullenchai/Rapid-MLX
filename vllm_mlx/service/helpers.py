@@ -580,7 +580,40 @@ def _finalize_content_and_reasoning(
         # same ``(reasoning, None)`` shape but the cleaned_text in
         # that case is the legitimate final-channel answer that
         # MUST survive (codex R2 BLOCKING).
-        if enable_thinking is True and first_parse_was_case4:
+        #
+        # R1-Distill mid-think leak: the gate must ALSO honour
+        # ``prompt_thinking_active``, not just ``enable_thinking is
+        # True``. The R1-Distill chat template UNCONDITIONALLY primes
+        # ``<think>`` in the prompt (it ignores ``enable_thinking``), so
+        # its ``extract_reasoning`` routes a no-tag output to reasoning
+        # on ``prompt_thinking_active`` — the exact signal that produced
+        # ``first_parse_was_case4`` here. When an agentic client attaches
+        # tools (``maybe_auto_disable_thinking_for_tools`` resolves
+        # ``enable_thinking=False``) or pins the flag off explicitly, the
+        # template still primes thinking, so the parser routes the trace
+        # to reasoning but the old ``enable_thinking is True``-only gate
+        # left ``cleaned_text`` populated — shipping the same bytes in
+        # both fields AND suppressing the truncation sentinel (content
+        # was non-empty). The union of the two flags matches the exact
+        # set of conditions under which a ``<think>``-family parser routes
+        # a no-tag output wholly to reasoning, keeping the non-streaming
+        # surface symmetric with the streaming Case-3 path.
+        #
+        # The harmony final-channel answer stays SAFE under this wider
+        # gate: ``first_parse_was_case4`` is captured from the FIRST parse
+        # (before the harmony reasoning-from-raw-text retry — see the
+        # capture site above), and harmony's first parse on the already-
+        # channel-stripped ``cleaned_text`` returns ``(None, None)``, so
+        # ``first_parse_was_case4`` is False for it regardless of either
+        # thinking flag. Among shipped parsers only the R1-Distill family
+        # (and any future ``implicit_reasoning_until_close`` parser with
+        # the same contract) can set ``first_parse_was_case4`` via
+        # ``prompt_thinking_active`` alone — every other ``<think>`` parser
+        # keys its own no-tag Case-4 routing off ``enable_thinking``. See
+        # ``TestHarmonyPromptPrimedAnswerSurvives`` for the regression pin.
+        if (enable_thinking is True or prompt_thinking_active is True) and (
+            first_parse_was_case4
+        ):
             cleaned_text = ""
             # F-041 (2026-06-19): same rationale as the codex r3 P2 plug
             # below for ``first_parse_was_truncated_think`` — when the
@@ -2814,6 +2847,32 @@ def _validate_model_name(request_model: str) -> None:
 # ── Tool call parsing ──────────────────────────────────────────────
 
 
+def tool_choice_is_none(request) -> bool:
+    """True when the request set OpenAI ``tool_choice="none"``.
+
+    Parser-agnostic: ``"none"`` is a hard contract that the model will NOT
+    emit a tool call this turn, so the server must surface ZERO
+    ``tool_calls`` regardless of what wire markup a non-compliant model
+    produced. The prompt-level lever (dropping ``tools`` before rendering,
+    ``routes/chat.py``) is best-effort only — a tool-trained model can
+    still echo ``[name({...})]``-style markup it was never shown, and the
+    text parser would otherwise promote it. This gate is the reliable,
+    parser-independent enforcement of the ``"none"`` mode; it fires on
+    both the streaming and non-streaming paths.
+
+    ``request`` may be a pydantic request model (non-streaming) or the
+    plain dict the postprocessor holds (streaming), so both shapes are
+    accepted — mirroring ``_forced_tool_choice_name``.
+    """
+    if request is None:
+        return False
+    if isinstance(request, dict):
+        tc = request.get("tool_choice")
+    else:
+        tc = getattr(request, "tool_choice", None)
+    return isinstance(tc, str) and tc == "none"
+
+
 def _request_declared_tool_names(request_dict: dict | None) -> set[str]:
     """Executable function names after applying tool_choice=none."""
     if not isinstance(request_dict, dict) or request_dict.get("tool_choice") == "none":
@@ -2838,6 +2897,32 @@ def _request_declared_tool_names(request_dict: dict | None) -> set[str]:
 
 
 def _parse_tool_calls_with_parser(
+    output_text: str,
+    request=None,
+    *,
+    structured_tool_calls: list[dict] | None = None,
+) -> tuple[str, list | None]:
+    """Parse tool calls, then honor ``tool_choice="none"`` by dropping them.
+
+    The parser still RUNS under ``"none"`` — that is what strips the wire
+    markup out of ``content`` (the R12 sanitizer invariant: raw
+    ``<tool_call>…</tool_call>`` / ``[name({…})]`` must never leak to the
+    client). What ``"none"`` forbids is *surfacing a call*: the OpenAI
+    contract says the model will not call a tool this turn, so any call it
+    emitted anyway is DROPPED rather than forwarded as a phantom the client
+    cannot execute. Parser-agnostic — covers the text parsers AND the
+    structured harmony/gemma4 channel. The cleaned content (markup removed)
+    is preserved unchanged.
+    """
+    content, tool_calls = _run_tool_parser(
+        output_text, request, structured_tool_calls=structured_tool_calls
+    )
+    if tool_choice_is_none(request):
+        return content, None
+    return content, tool_calls
+
+
+def _run_tool_parser(
     output_text: str,
     request=None,
     *,

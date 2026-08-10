@@ -3059,6 +3059,11 @@ class Scheduler:
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.
         self._pending_abort_ids: set[str] = set()
+        # #1759: targeted second edge from engine cleanup to the executor.
+        # ``remove_finished_request`` adds an id only when its running slot is
+        # still live; normal completions remove ``running`` first.  This avoids
+        # an O(batch) reconciliation scan on every decode tick.
+        self._orphaned_running_candidates: dict[str, Request] = {}
         # M-01 codex r2 BLOCKING #1: lifetime de-dup set for the
         # cancellation counter. ``_pending_abort_ids`` is the wrong
         # ledger to dedupe against — it's a DEFERRED-ABORT QUEUE that
@@ -5765,6 +5770,7 @@ class Scheduler:
         with self._cancel_counter_lock:
             self._cancelled_request_ids.discard(request.request_id)
             self._disconnect_abort_ids.discard(request.request_id)
+            self._orphaned_running_candidates.pop(request.request_id, None)
             self.requests[request.request_id] = request
         self.waiting.append(request)
 
@@ -6122,7 +6128,58 @@ class Scheduler:
             request_id = self._pending_abort_ids.pop()
             self._do_abort_request(request_id)
 
-    def _do_abort_request(self, request_id: str) -> bool:
+    def _reconcile_orphaned_running_requests(self) -> list[str]:
+        """Reap running slots whose engine-side request was already released.
+
+        ``EngineCore._cleanup_request`` removes the canonical ``requests``
+        entry when a streaming consumer disconnects.  The scheduler normally
+        consumes the corresponding deferred abort at the start of the next
+        step.  Production issue #1759 demonstrated that relying on that single
+        edge is not sufficient: after a rare disconnect race, the abort edge
+        can be gone while ``running`` and the BatchGenerator uid remain.  The
+        empty consumer can then be decoded forever and permanently occupies a
+        ``max_num_seqs`` slot.
+
+        After pending aborts have been drained, a running id missing from
+        ``requests`` is impossible for a live request: normal completions are
+        removed from ``running`` on the executor thread *before* engine cleanup,
+        while disconnect cleanup deliberately removes ``requests`` first.  Use
+        that invariant as a narrow executor-thread safety net and route cleanup
+        through the same BatchGenerator-aware abort implementation.
+        """
+        with self._cancel_counter_lock:
+            candidates = self._orphaned_running_candidates
+            self._orphaned_running_candidates = {}
+        orphaned = []
+        for request_id, request in candidates.items():
+            if self._do_abort_request(request_id, expected_orphan=request):
+                orphaned.append(request_id)
+                logger.warning(
+                    "[abort_reconcile] reaped orphaned running request %s",
+                    request_id[:12],
+                )
+        return orphaned
+
+    def _do_abort_request(
+        self, request_id: str, *, expected_orphan: Request | None = None
+    ) -> bool:
+        """Serialize abort cleanup and optionally bind it to one lifetime.
+
+        The orphan reconciler crosses from engine cleanup back onto the
+        scheduler thread.  An ID alone is insufficient because callers may
+        reuse one after cleanup.  Validate the exact ``Request`` identity and
+        perform the ID-based teardown while holding the same lock used by the
+        admission commit, closing the check-to-abort window.
+        """
+        with self._cancel_counter_lock:
+            if expected_orphan is not None and not (
+                self.running.get(request_id) is expected_orphan
+                and request_id not in self.requests
+            ):
+                return False
+            return self._do_abort_request_impl(request_id)
+
+    def _do_abort_request_impl(self, request_id: str) -> bool:
         """
         Actually abort a request. Must be called from the executor thread.
 
@@ -7366,6 +7423,11 @@ class Scheduler:
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
         self._process_pending_aborts()
+        # #1759: the engine has no consumer for a running request once its
+        # canonical tracking entry is gone.  Reconcile that invariant before
+        # invoking BatchGenerator.next(), otherwise a lost disconnect-abort can
+        # spend this and every later tick decoding a ghost slot.
+        self._reconcile_orphaned_running_requests()
 
         for attempt in range(max_retries + 1):
             try:
@@ -7600,6 +7662,8 @@ class Scheduler:
         # False per F-151). The ledgers stay populated indefinitely.
         with self._cancel_counter_lock:
             popped = self.requests.pop(request_id, None)
+            if popped is not None and self.running.get(request_id) is popped:
+                self._orphaned_running_candidates[request_id] = popped
         return popped
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:
@@ -7794,11 +7858,17 @@ class Scheduler:
         started (correct) or sees the cleared state and no-ops
         (correct: the request is gone, attribution is meaningless).
         """
-        # Drain any pending deferred aborts
-        self._pending_abort_ids.clear()
+        # Drain both cross-thread cleanup edges under their shared lock.
+        # Snapshot the union before teardown: a disconnect orphan has already
+        # left ``requests`` and would otherwise survive a reset that iterated
+        # only the canonical map.
+        with self._cancel_counter_lock:
+            self._pending_abort_ids.clear()
+            self._orphaned_running_candidates.clear()
+            teardown_ids = list(dict.fromkeys((*self.requests, *self.running)))
 
         # Abort all requests directly (reset is synchronous)
-        for request_id in list(self.requests.keys()):
+        for request_id in teardown_ids:
             self._do_abort_request(request_id)
 
         self.waiting.clear()

@@ -659,6 +659,15 @@ def test_terminal_finish_snapshot_does_not_replay_streamed_content(
             "stream": True,
             "max_tokens": 16,
             "messages": [{"role": "user", "content": "say hello world"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "dummy",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
         },
     )
     assert resp.status_code == 200, resp.text
@@ -752,6 +761,15 @@ def test_terminal_replay_guard_suppresses_snapshot_split_across_fields(monkeypat
             "stream": True,
             "max_tokens": 16,
             "messages": [{"role": "user", "content": "say hello world"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "dummy",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
         },
     )
     assert resp.status_code == 200, resp.text

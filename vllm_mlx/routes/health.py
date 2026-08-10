@@ -77,14 +77,35 @@ async def health():
             "tools_available": len(cfg.mcp_manager.get_all_tools()),
         }
 
-    engine_stats = cfg.engine.get_stats() if cfg.engine else {}
+    # The image-gen / video-gen lanes are thin adapters (``ImageEngine`` /
+    # ``VideoEngine``). Previously they did not implement the route-facing
+    # engine surface, so ``get_stats()`` / ``is_mllm`` raised ``AttributeError``
+    # and ``/health`` answered 500 for the whole life of an image/video serve
+    # (issue #1776) — including to container ``HEALTHCHECK``s and blackbox
+    # probes that poll it. The fix follows the #500 rule the route-engine
+    # contract enforces: the surface lives on the engines (both adapters now
+    # define ``get_stats`` + ``is_mllm``), so the route calls it unconditionally
+    # rather than hasattr-guarding. ``model_type`` is classified from the
+    # capability flags; ``getattr`` defaults keep a not-yet-loaded engine and
+    # any future lane from tripping the handler.
+    engine = cfg.engine
+    engine_stats = engine.get_stats() if engine is not None else {}
+
+    if getattr(engine, "is_image_gen", False):
+        model_type = "image-gen"
+    elif getattr(engine, "is_video_gen", False):
+        model_type = "video-gen"
+    elif getattr(engine, "is_mllm", False):
+        model_type = "mllm"
+    else:
+        model_type = "llm"
 
     return {
         "status": "healthy",
         "ready": cfg.ready,
-        "model_loaded": cfg.engine is not None,
+        "model_loaded": engine is not None,
         "model_name": cfg.model_name,
-        "model_type": "mllm" if (cfg.engine and cfg.engine.is_mllm) else "llm",
+        "model_type": model_type,
         "engine_type": engine_stats.get("engine_type", "unknown"),
         "mcp": mcp_info,
     }

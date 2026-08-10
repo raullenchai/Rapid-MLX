@@ -9,7 +9,7 @@ and respect HF_HOME via huggingface_hub.constants.HF_HUB_CACHE.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,8 +18,11 @@ from vllm_mlx.cli import _check_disk_space
 
 def _make_info(file_sizes_bytes: list[int]) -> SimpleNamespace:
     """Build a fake huggingface_hub.ModelInfo with sibling file sizes."""
-    siblings = [SimpleNamespace(size=sz) for sz in file_sizes_bytes]
-    return SimpleNamespace(siblings=siblings, safetensors=None)
+    siblings = [
+        SimpleNamespace(rfilename=f"file-{index}.safetensors", size=size)
+        for index, size in enumerate(file_sizes_bytes)
+    ]
+    return SimpleNamespace(siblings=siblings, safetensors=None, sha="current-sha")
 
 
 def _fake_statvfs(free_bytes: int):
@@ -91,17 +94,107 @@ class TestDiskSpaceCheck:
         # Should not raise even without mocking model_info — must short-circuit.
         _check_disk_space(str(local))
 
-    def test_skips_already_cached(self):
-        """If config.json is in the cache, skip the size check entirely."""
+    def test_skips_already_cached(self, tmp_path):
+        """A cached root config keeps the selective-loader fast path."""
+        cached_file = tmp_path / "cached"
+        cached_file.write_bytes(b"present")
+        model_info = MagicMock()
+        statvfs = MagicMock()
         with (
             patch(
                 "huggingface_hub.try_to_load_from_cache",
-                return_value="/fake/path/config.json",
+                return_value=str(cached_file),
             ),
-            patch("os.path.exists", return_value=True),
+            patch("huggingface_hub.model_info", model_info),
+            patch("os.statvfs", statvfs),
         ):
-            # Should not raise even without mocking model_info.
             _check_disk_space("mlx-community/Some-Model")
+        model_info.assert_not_called()
+        statvfs.assert_not_called()
+
+    def test_complete_mflux_cache_without_root_config_skips_gate(self, tmp_path):
+        """A component-layout mflux repo has no root config.json.
+
+        Completeness is determined from every file at the current revision,
+        so a fully cached 5.5 GB Z-Image snapshot must not be rejected merely
+        because only 3.5 GB remains free.
+        """
+        names_and_sizes = [
+            ("transformer/0.safetensors", int(3.2 * 1024**3)),
+            ("text_encoder/0.safetensors", int(2.1 * 1024**3)),
+            ("vae/0.safetensors", int(0.2 * 1024**3)),
+            ("tokenizer/tokenizer.json", 10_000),
+        ]
+        info = SimpleNamespace(
+            siblings=[
+                SimpleNamespace(rfilename=name, size=size)
+                for name, size in names_and_sizes
+            ],
+            sha="z-image-sha",
+        )
+        cached_paths = {}
+        for index, (name, _size) in enumerate(names_and_sizes):
+            path = tmp_path / str(index)
+            path.write_bytes(b"present")
+            cached_paths[name] = str(path)
+
+        def cache_lookup(repo_id, filename, revision=None):
+            assert repo_id == "filipstrand/Z-Image-Turbo-mflux-4bit"
+            if revision is None:
+                assert filename == "config.json"
+                return None
+            assert revision == "z-image-sha"
+            return cached_paths[filename]
+
+        statvfs = MagicMock()
+        with (
+            patch("huggingface_hub.model_info", return_value=info),
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                side_effect=cache_lookup,
+            ),
+            patch("os.statvfs", statvfs),
+        ):
+            _check_disk_space("filipstrand/Z-Image-Turbo-mflux-4bit")
+        statvfs.assert_not_called()
+
+    def test_partial_mflux_cache_counts_only_missing_files(self, tmp_path):
+        """A partial component cache requires space only for missing weights."""
+        cached_transformer = tmp_path / "transformer.safetensors"
+        cached_transformer.write_bytes(b"present")
+        info = SimpleNamespace(
+            siblings=[
+                SimpleNamespace(
+                    rfilename="transformer/0.safetensors", size=int(3 * 1024**3)
+                ),
+                SimpleNamespace(
+                    rfilename="text_encoder/0.safetensors",
+                    size=int(2.5 * 1024**3),
+                ),
+            ],
+            sha="z-image-sha",
+        )
+
+        def cache_lookup(_repo_id, filename, revision=None):
+            if revision is None:
+                return None
+            assert revision == "z-image-sha"
+            if filename == "transformer/0.safetensors":
+                return str(cached_transformer)
+            return None
+
+        with (
+            patch("huggingface_hub.model_info", return_value=info),
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                side_effect=cache_lookup,
+            ),
+            # 3 GB fits the missing 2.5 GB shard plus headroom, but not the
+            # full 5.5 GB repository. Counting the cached transformer would
+            # therefore make this call raise SystemExit.
+            patch("os.statvfs", return_value=_fake_statvfs(int(3 * 1024**3))),
+        ):
+            _check_disk_space("filipstrand/Z-Image-Turbo-mflux-4bit")
 
     def test_uses_hf_hub_cache_for_statvfs(self):
         """The probe must use HF_HUB_CACHE (respects HF_HOME), not the

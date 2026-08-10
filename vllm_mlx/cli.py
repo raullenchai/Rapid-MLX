@@ -917,7 +917,8 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
     Behaviour:
 
     - Model is already a local path → return.
-    - ``config.json`` is in the cache → assume already downloaded → return.
+    - Files already cached for the current Hub revision are excluded from the
+      required download size.
     - HF API call fails (offline, gated repo, etc.) → return silently. The
       loader's 404/auth handlers will surface the real error if there is one.
     - Determined size and disk is insufficient → print actionable error
@@ -941,31 +942,58 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
 
     _prefix = checkpoint_prefix(model_name)
 
-    # Skip if model is already in the HF cache.
+    # Keep the historical fast path for ordinary text-model repositories.
+    # Their loaders may intentionally fetch only one of several weight formats,
+    # so treating every uncached sibling as an impending download would count
+    # optional artifacts that the selected loader never requests.
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        cached = try_to_load_from_cache(model_name, f"{_prefix}config.json")
-        if isinstance(cached, str) and os.path.exists(cached):
+        cached_config = try_to_load_from_cache(
+            model_name,
+            f"{_prefix}config.json",
+        )
+        if isinstance(cached_config, str) and os.path.exists(cached_config):
             return
     except Exception:
         pass
 
-    # Query HF for repo size + free space on the actual HF cache filesystem.
+    # Query HF for the current revision and repo size + free space on the
+    # actual HF cache filesystem. Component-layout repositories such as mflux
+    # have no root config.json, so exclude each file already cached at the
+    # current revision instead of assuming the entire snapshot is missing.
     # Only this alias's checkpoint counts — a subfolder-per-quant repo would
     # otherwise demand disk for seven quantizations nobody asked for.
     try:
-        from huggingface_hub import model_info
+        from huggingface_hub import model_info, try_to_load_from_cache
         from huggingface_hub.constants import HF_HUB_CACHE
 
         info = model_info(model_name, files_metadata=True)
-        model_size_bytes = sum(
-            (s.size or 0)
-            for s in (getattr(info, "siblings", None) or [])
-            if hasattr(s, "size") and (not _prefix or s.rfilename.startswith(_prefix))
-        )
+        revision = getattr(info, "sha", None)
+        siblings = [
+            sibling
+            for sibling in (getattr(info, "siblings", None) or [])
+            if hasattr(sibling, "size")
+            and hasattr(sibling, "rfilename")
+            and (not _prefix or sibling.rfilename.startswith(_prefix))
+        ]
+        model_size_bytes = 0
+        for sibling in siblings:
+            try:
+                cached = try_to_load_from_cache(
+                    model_name,
+                    sibling.rfilename,
+                    revision=revision,
+                )
+                is_cached = isinstance(cached, str) and os.path.exists(cached)
+            except Exception:
+                # A cache lookup is only an optimization. If it is unreadable,
+                # retain the file in the conservative download estimate.
+                is_cached = False
+            if not is_cached:
+                model_size_bytes += sibling.size or 0
         if model_size_bytes == 0:
-            return  # Can't determine size — skip rather than guess.
+            return  # Nothing left to download (or size unavailable).
 
         # statvfs needs an existing path; HF_HUB_CACHE may not exist yet on
         # a fresh install. Walk up to the first ancestor that does.
@@ -994,7 +1022,7 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
 
         print()
         print("  Error: Insufficient disk space for download.")
-        print(f"    Model size:    {model_size_gb:>7.1f} GB")
+        print(f"    Download size: {model_size_gb:>7.1f} GB")
         print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})")
         print(f"    Need to free:  {need_to_free_gb:>7.1f} GB")
         print()

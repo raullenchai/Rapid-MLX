@@ -123,7 +123,9 @@ def _extract_stream(parser_name: str, text: str) -> list:
     surface PR #426 fixed.
     """
     cfg = _make_cfg_for_parser(parser_name)
-    pp = StreamingPostProcessor(cfg)
+    # This helper intentionally exercises a configured parser without a full
+    # request object, so declare the capability explicitly.
+    pp = StreamingPostProcessor(cfg, tools_requested=True)
     pp.reset()
     pp.tool_accumulated_text = text
     events = pp.finalize()

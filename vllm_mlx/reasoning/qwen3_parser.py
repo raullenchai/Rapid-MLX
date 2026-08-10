@@ -158,6 +158,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         self,
         model_output: str,
         enable_thinking: bool | None = None,
+        prompt_thinking_active: bool = False,
     ) -> tuple[str | None, str | None]:
         """
         Extract reasoning from Qwen3 output.
@@ -175,10 +176,51 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 the entire thought trace leaked to ``content``). When
                 None / False the no-tag case is treated as plain
                 content as before.
+            prompt_thinking_active: Whether the rendered prompt already
+                opened the reasoning channel. This is the evidence that a
+                later generated opener is an echoed literal rather than
+                the structural opener for this turn.
 
         Returns:
             (reasoning, content) tuple.
         """
+        # #1778: Qwen chat templates prime the structural ``<think>`` in
+        # the prompt, so an opener generated after ordinary answer text is
+        # an echoed literal, not a new reasoning boundary.  The streaming
+        # parser already keeps that leading text on the content lane; the
+        # old full-output parser instead partitioned at any opener and
+        # silently moved either the prefix or suffix into reasoning.
+        #
+        # Preserve an unmatched mid-answer opener verbatim (important for
+        # Markdown such as ``` `<think>` ```).  For a balanced literal pair,
+        # remove only the tag wrappers so the downstream content sanitizer
+        # cannot mistake the pair for a structural block and erase its body.
+        # A leading opener (allowing whitespace) remains structural, and a
+        # lone closer retains the implicit-reasoning contract.
+        start_index = model_output.find(self.start_token)
+        end_index = model_output.find(self.end_token)
+        if end_index != -1 and (start_index == -1 or end_index < start_index):
+            reasoning = model_output[:end_index].strip() or None
+            content = model_output[end_index + len(self.end_token) :].strip() or None
+            return self._promote_tool_calls(reasoning, content)
+        if (
+            prompt_thinking_active
+            and start_index > 0
+            and model_output[:start_index].strip()
+            and self.end_token not in model_output[:start_index]
+        ):
+            literal_end_index = model_output.find(
+                self.end_token, start_index + len(self.start_token)
+            )
+            if literal_end_index == -1:
+                return None, model_output
+            content = (
+                model_output[:start_index]
+                + model_output[start_index + len(self.start_token) : literal_end_index]
+                + model_output[literal_end_index + len(self.end_token) :]
+            )
+            return None, content
+
         # If no end token at all:
         if self.end_token not in model_output:
             # If start token is present, model started thinking but never finished

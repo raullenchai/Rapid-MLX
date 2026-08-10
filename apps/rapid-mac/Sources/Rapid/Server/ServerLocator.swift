@@ -53,18 +53,36 @@ import Foundation
 /// the bootstrapper) rather than silently fall back to a sibling
 /// install of a different version.
 enum ServerLocator {
-    /// Returns the absolute path to `rapid-mlx`, or `nil` if no candidate
-    /// resolves to a regular executable file.
-    static func find() -> URL? {
-        find(environment: ProcessInfo.processInfo.environment)
+    struct Resolution: Equatable, Sendable {
+        let binary: URL
+        let source: ResolvedSource
+        let version: String?
     }
 
-    static func find(environment: [String: String]) -> URL? {
-        find(
+    /// Resolve the executable together with the provenance decided by the
+    /// same priority/version comparison. Callers that surface diagnostics
+    /// must use this instead of trying to reconstruct a winning slot from a
+    /// symlink-resolved path (#1712).
+    static func locate() -> Resolution? {
+        locate(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func locate(environment: [String: String]) -> Resolution? {
+        locate(
             environment: environment,
             bundleResourceURL: Self.defaultBundleResourceURL,
             applicationSupportURL: Self.defaultApplicationSupportURL(environment: environment)
         )
+    }
+
+    /// Returns the absolute path to `rapid-mlx`, or `nil` if no candidate
+    /// resolves to a regular executable file.
+    static func find() -> URL? {
+        locate()?.binary
+    }
+
+    static func find(environment: [String: String]) -> URL? {
+        locate(environment: environment)?.binary
     }
 
     /// Test seam: `bundleResourceURL` and `applicationSupportURL` are
@@ -75,6 +93,18 @@ enum ServerLocator {
         bundleResourceURL: URL?,
         applicationSupportURL: URL?
     ) -> URL? {
+        locate(
+            environment: environment,
+            bundleResourceURL: bundleResourceURL,
+            applicationSupportURL: applicationSupportURL
+        )?.binary
+    }
+
+    static func locate(
+        environment: [String: String],
+        bundleResourceURL: URL?,
+        applicationSupportURL: URL?
+    ) -> Resolution? {
         // 1. ``RAPID_BIN`` — test/dev override. TestDriver chat smoke
         // uses this to swap in ``scripts/fake-rapid-mlx.sh`` so the
         // lifecycle test runs in <2 s. Power users running their own
@@ -82,7 +112,11 @@ enum ServerLocator {
         if let override = environment["RAPID_BIN"],
            !override.isEmpty,
            let resolved = executableURL(path: override, allowRelative: true) {
-            return resolved
+            return Resolution(
+                binary: resolved,
+                source: .rapidBin,
+                version: sidecarVersion(forBinary: resolved)
+            )
         }
 
         // Managed sidecars. Resolve both executable slots before choosing:
@@ -128,22 +162,34 @@ enum ServerLocator {
 
         // There is intentionally no PATH / Homebrew / pipx / uv fallback:
         // if both managed slots miss, callers re-run the supported bootstrap.
+        // Read metadata from the managed slots rather than the resolved
+        // executable targets. This also preserves the correct VERSION when a
+        // launcher is a symlink into a checkout.
+        let runtimeVersion = runtimeOverride.flatMap { sidecarVersion(forBinary: $0) }
+        let bundledVersion = bundled.flatMap { sidecarVersion(forBinary: $0) }
+
         switch (resolvedRuntimeOverride, resolvedBundled) {
         case let (runtime?, resolvedBundle?):
-            // Read metadata from the managed slot rather than the resolved
-            // executable target. That keeps VERSION discovery correct if a
-            // slot uses a symlinked launcher.
-            let runtimeVersion = runtimeOverride.flatMap { sidecarVersion(forBinary: $0) }
-            let bundledVersion = bundled.flatMap { sidecarVersion(forBinary: $0) }
-            return shouldPreferBundled(
+            if shouldPreferBundled(
                 runtimeOverrideVersion: runtimeVersion,
                 bundledVersion: bundledVersion
-            ) ? resolvedBundle : runtime
+            ) {
+                return Resolution(binary: resolvedBundle, source: .bundled, version: bundledVersion)
+            }
+            return Resolution(binary: runtime, source: .runtimeOverride, version: runtimeVersion)
         case let (runtime?, nil):
             // Slim DMG: bootstrap owns the only populated sidecar slot.
-            return runtime
+            return Resolution(
+                binary: runtime,
+                source: .runtimeOverride,
+                version: runtimeVersion
+            )
         case let (nil, bundled?):
-            return bundled
+            return Resolution(
+                binary: bundled,
+                source: .bundled,
+                version: bundledVersion
+            )
         case (nil, nil):
             return nil
         }

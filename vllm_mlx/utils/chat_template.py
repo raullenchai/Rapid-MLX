@@ -1149,6 +1149,80 @@ def _template_uses_reasoning_effort_without_enable_thinking(
     )
 
 
+def _is_gpt_oss_harmony_template(
+    template_applicator,
+    *,
+    model_name: str = "",
+    tools: list[dict] | None = None,
+) -> bool:
+    """Identify GPT-OSS templates whose wire format is OpenAI Harmony."""
+    templates = _chat_template_strings(
+        getattr(template_applicator, "chat_template", None), tools=tools
+    )
+    if templates:
+        return any(
+            _looks_like_gpt_oss_harmony_template(template) for template in templates
+        )
+    return _looks_like_gpt_oss(model_name)
+
+
+def _collapse_harmony_system_messages(messages: list[dict]) -> list[dict]:
+    """Make every system instruction visible to leading-only Harmony templates.
+
+    GPT-OSS' published template consumes a system/developer role only at index
+    zero and silently skips later system roles.  Harmony has no mid-conversation
+    system frame, so preserve authority by joining all system instructions into
+    the single leading developer frame the template does support.
+    """
+    # Harmony consumes at most the first message as an instruction. This also
+    # catches two consecutive leading system messages: the second is otherwise
+    # just as invisible as one placed after a user turn.
+    instruction_roles = {"system", "developer"}
+    if not any(
+        index > 0 and message.get("role") in instruction_roles
+        for index, message in enumerate(messages)
+    ):
+        return messages
+
+    instruction_messages = [
+        message for message in messages if message.get("role") in instruction_roles
+    ]
+    if any(set(message) - {"role", "content"} for message in instruction_messages):
+        raise ValueError(
+            "GPT-OSS/Harmony cannot preserve metadata on a conversation "
+            "instruction message"
+        )
+
+    contents = [message.get("content") for message in instruction_messages]
+    if not all(isinstance(content, str) for content in contents):
+        raise ValueError(
+            "GPT-OSS/Harmony system and developer messages must contain "
+            "text-only content"
+        )
+
+    instruction_role = instruction_messages[0]["role"]
+    if any(message["role"] != instruction_role for message in instruction_messages):
+        raise ValueError(
+            "GPT-OSS/Harmony cannot preserve mixed system and developer "
+            "instruction roles"
+        )
+
+    collapsed = [
+        message for message in messages if message.get("role") not in instruction_roles
+    ]
+    # All instructions have the same authority role here, so folding them into
+    # the single leading frame supported by Harmony is lossless with respect to
+    # role authority.
+    collapsed.insert(
+        0,
+        {
+            "role": instruction_role,
+            "content": "\n\n".join(contents),
+        },
+    )
+    return collapsed
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -1256,6 +1330,16 @@ def apply_chat_template(
             e,
         )
         tools = _baseline_sanitize_tools(tools)
+
+    # The published GPT-OSS template accepts a mid-conversation system role but
+    # has no loop branch for it, so rendering succeeds while deleting the
+    # instruction.  Error-driven compatibility fallback (#1543) cannot catch a
+    # successful lossy render.  Normalize only the Harmony family, whose wire
+    # protocol has a single leading developer instruction frame.
+    if _is_gpt_oss_harmony_template(
+        template_applicator, model_name=model_name, tools=tools
+    ):
+        messages = _collapse_harmony_system_messages(messages)
 
     # DeepSeek-V4-Flash-0731 intentionally ships a Python encoder instead of
     # a Jinja template.  Route by model identity before the generic tokenizer

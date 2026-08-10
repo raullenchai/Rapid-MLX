@@ -113,6 +113,11 @@ final class ServerManager {
     /// `.missing` so the user knows what we looked for.
     private(set) var binaryPath: URL?
 
+    /// Provenance captured by the same decision that selected `binaryPath`.
+    /// A resolved path alone is insufficient when two managed launchers point
+    /// at the same target; About uses this to report the actual winning slot.
+    private(set) var binaryResolution: ServerLocator.Resolution?
+
     /// Tail of stdout/stderr lines from the live child, oldest first.
     /// Bounded to `logBufferCapacity` entries.
     private(set) var logLines: [String] = []
@@ -442,9 +447,10 @@ final class ServerManager {
     // MARK: - Construction
 
     init() {
-        let located = ServerLocator.find()
-        self.binaryPath = located
-        self.state = (located == nil) ? .missing : .idle
+        let resolution = ServerLocator.locate()
+        self.binaryResolution = resolution
+        self.binaryPath = resolution?.binary
+        self.state = (resolution == nil) ? .missing : .idle
     }
 
     /// Wire the app's ``DownloadManager`` so ``start(alias:)`` can
@@ -465,6 +471,9 @@ final class ServerManager {
     internal init(testingState: ServerState, binaryPath: URL? = nil) {
         self.state = testingState
         self.binaryPath = binaryPath
+        self.binaryResolution = binaryPath.map {
+            ServerLocator.Resolution(binary: $0, source: .unknown, version: nil)
+        }
     }
 
     /// codex r1 BLOCKING #3 test seam — install a stub
@@ -727,9 +736,10 @@ final class ServerManager {
     /// the correct initial state even if the user installed rapid-mlx
     /// just before launching Rapid.
     func refreshBinary() {
-        let path = ServerLocator.find()
-        self.binaryPath = path
-        if path == nil {
+        let resolution = ServerLocator.locate()
+        self.binaryResolution = resolution
+        self.binaryPath = resolution?.binary
+        if resolution == nil {
             state = .missing
         } else if case .missing = state {
             state = .idle

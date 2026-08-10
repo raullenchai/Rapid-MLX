@@ -8,6 +8,8 @@ import SwiftUI
 struct ImagesView: View {
     @Bindable var viewModel: ImageGenViewModel
     @Bindable var server: ServerManager
+    @Environment(\.openWindow) private var openWindow
+    @Environment(SettingsRouter.self) private var settingsRouter
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
 
@@ -150,12 +152,21 @@ struct ImagesView: View {
             break  // the composer's model picker owns this step
         case .downloadAndStart(let target), .start(let target), .retry(let target):
             let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
-            // ``ensureServing`` (not ``start``): the user is almost always
-            // switching FROM a running chat model TO the image model. Plain
-            // ``start`` is cold-start only — it no-ops when a child is already
-            // serving — so it would silently do nothing here; ``ensureServing``
-            // stops the current model and brings the target up.
-            Task { _ = await server.ensureServing(alias: target, hfPath: hf) }
+            // Same shared helper as Chat: ``ensureServing`` (not ``start``),
+            // because the user is almost always switching FROM a running chat
+            // model TO the image model, and cold-start ``start`` would no-op
+            // while that model is resident. See ``ReadinessModelStart``.
+            Task { await ReadinessModelStart.perform(server, alias: target, hfPath: hf) }
+        case .restart(let target):
+            let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
+            Task {
+                await server.stop()
+                _ = await server.ensureServing(alias: target, hfPath: hf)
+            }
+        case .openModelManagement:
+            settingsRouter.route(.openModelManagement) {
+                openWindow(id: "settings")
+            }
         }
     }
 

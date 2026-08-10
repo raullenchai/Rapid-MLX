@@ -247,6 +247,25 @@ class TestNeedsBoundedTrimFreeReuseRealAliases:
 
         assert _needs_bounded_trim_free_reuse("qwen3.6-27b-4bit") is True
 
+    def test_lfm25_26b_hybrid_alias_needs_bounded_reuse(self):
+        """LFM2.5's declared ArraysCache routing must retain cache entries."""
+        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+        from vllm_mlx.model_aliases import resolve_profile
+
+        profile = resolve_profile("lfm2.5-2.6b-4bit")
+        assert profile is not None
+        assert profile.is_hybrid is True
+        assert _needs_bounded_trim_free_reuse("lfm2.5-2.6b-4bit") is True
+        assert (
+            _resolve_hybrid_cache_entries(
+                enable_prefix_cache=True,
+                explicit_value=0,
+                user_set_explicit=False,
+                model_name="lfm2.5-2.6b-4bit",
+            )
+            == _DEFAULT_HYBRID_CACHE_ENTRIES
+        )
+
     def test_moe_hybrid_still_needs_bounded_reuse(self):
         from vllm_mlx.cli import _needs_bounded_trim_free_reuse
 

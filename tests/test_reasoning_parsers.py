@@ -1744,6 +1744,78 @@ class TestQwen3:
         assert reasoning is None
         assert content == "content"
 
+    @pytest.mark.parametrize(
+        "text,expected_content",
+        [
+            ("BEGIN <think> AFTER END", "BEGIN <think> AFTER END"),
+            (
+                "BEGIN <think>inner</think> AFTER END",
+                "BEGIN inner AFTER END",
+            ),
+            ("BEGIN `<think>` AFTER END", "BEGIN `<think>` AFTER END"),
+        ],
+    )
+    def test_1778_mid_answer_think_literal_stays_content(self, text, expected_content):
+        """A generated opener after visible prose is literal Qwen output.
+
+        Non-streaming used to partition at the opener regardless of its
+        position, truncating Markdown explanations and moving either side
+        of a balanced pair into ``reasoning_content``.  Thinking is enabled
+        here to match the served aliases from the issue report.
+        """
+        from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+
+        content, reasoning = _finalize_content_and_reasoning(
+            raw_text=text,
+            cleaned_text=text,
+            tool_calls=[],
+            reasoning_parser=self.parser,
+            enable_thinking=True,
+            prompt_thinking_active=True,
+        )
+        assert reasoning is None
+        assert content == expected_content
+
+    def test_1778_leading_opener_remains_structural(self):
+        """The literal guard must not disable ordinary Qwen reasoning."""
+        reasoning, content = self.parser.extract_reasoning(
+            "  <think>analysis</think>answer",
+            enable_thinking=True,
+            prompt_thinking_active=True,
+        )
+        assert reasoning == "analysis"
+        assert content == "answer"
+
+    def test_1778_lone_closer_remains_implicit_reasoning(self):
+        """Prompt-primed Qwen output still closes reasoning normally."""
+        reasoning, content = self.parser.extract_reasoning(
+            "implicit reasoning</think>answer",
+            enable_thinking=True,
+            prompt_thinking_active=True,
+        )
+        assert reasoning == "implicit reasoning"
+        assert content == "answer"
+
+    def test_1778_mid_output_opener_without_prompt_prime_stays_structural(self):
+        """Autonomous explicit reasoning still supports a short preamble."""
+        reasoning, content = self.parser.extract_reasoning(
+            "preamble <think>analysis</think>answer",
+            enable_thinking=True,
+            prompt_thinking_active=False,
+        )
+        assert reasoning == "analysis"
+        assert content == "answer"
+
+    def test_1778_implicit_close_before_literal_opener_keeps_reasoning(self):
+        """A real implicit close before answer prose stays authoritative."""
+        reasoning, content = self.parser.extract_reasoning(
+            "reasoning</think>answer <think>literal</think>",
+            enable_thinking=True,
+            prompt_thinking_active=True,
+        )
+        assert reasoning == "reasoning"
+        assert content == "answer <think>literal</think>"
+
     # ---- #575 fast-path coverage (Qwen3 override branch) ----------------
 
     def test_575_qwen3_fast_path_no_tags_enable_thinking_true(self):

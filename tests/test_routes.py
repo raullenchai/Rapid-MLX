@@ -23,6 +23,12 @@ def mock_engine():
     """Mock engine with standard attributes."""
     engine = MagicMock()
     engine.is_mllm = False
+    # A real BatchedEngine has no image/video-gen attributes, so /health's
+    # getattr(...) resolves them to False. Pin that on the mock — otherwise a
+    # bare MagicMock auto-vivifies them into truthy children and misclassifies
+    # model_type as image-gen (the #1776 classification path).
+    engine.is_image_gen = False
+    engine.is_video_gen = False
     engine.get_stats.return_value = {
         "engine_type": "batched",
         "running": False,
@@ -122,6 +128,101 @@ class TestHealthRoutes:
             assert data["model_loaded"] is True
             assert data["model_name"] == "test-model"
             assert data["engine_type"] == "batched"
+        finally:
+            self._restore_config(orig)
+
+    def test_health_ok_for_image_gen_engine(self):
+        """#1776: an image-gen serve must answer /health 200, not 500.
+
+        The fix moves the route-facing surface onto the engines: the real
+        ``ImageEngine`` now defines ``get_stats`` + ``is_mllm``. This stand-in
+        mirrors that exact fixed surface (a plain object, NOT a MagicMock,
+        which would auto-vivify anything and mask a missing attribute). It
+        pins the integration invariant — an image-gen engine served through
+        the real handler returns 200 with the right model_type — and it
+        reproduces the pre-fix 500 when ``get_stats`` is removed (see
+        ``test_image_engine_exposes_health_surface`` for the unit form).
+        """
+
+        class _ImageEngineLike:
+            is_image_gen = True
+            is_mllm = False
+            _loaded = True
+
+            def get_stats(self):
+                return {"engine_type": "image"}
+
+        orig = self._patch_config(
+            engine=_ImageEngineLike(), mcp_manager=None, model_name="z-image-turbo"
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/health")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["status"] == "healthy"
+            assert data["model_loaded"] is True
+            assert data["model_type"] == "image-gen"
+            assert data["engine_type"] == "image"
+        finally:
+            self._restore_config(orig)
+
+    def test_health_ok_for_video_gen_engine(self):
+        """#1776 sibling lane: a video-gen serve must also answer /health 200."""
+
+        class _VideoEngineLike:
+            is_video_gen = True
+            is_mllm = False
+            _loaded = True
+
+            def get_stats(self):
+                return {"engine_type": "video"}
+
+        orig = self._patch_config(
+            engine=_VideoEngineLike(), mcp_manager=None, model_name="ltx2-video"
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/health")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["model_type"] == "video-gen"
+            assert data["engine_type"] == "video"
+        finally:
+            self._restore_config(orig)
+
+    def test_image_engine_exposes_health_surface(self):
+        """The real ImageEngine/VideoEngine must carry the route-facing surface
+        (#500 rule) so /health never has to hasattr-guard the call. Pin it at
+        the class level so a future refactor that drops the method fails here,
+        localized, rather than only as a 500 in an integration test."""
+        from vllm_mlx.runtime.image_lane import ImageEngine
+        from vllm_mlx.runtime.video_lane import VideoEngine
+
+        for eng in (ImageEngine, VideoEngine):
+            assert callable(eng.get_stats), f"{eng.__name__} must define get_stats"
+            assert eng.is_mllm is False, f"{eng.__name__}.is_mllm must be False"
+        assert ImageEngine.get_stats(object.__new__(ImageEngine)) == {
+            "engine_type": "image"
+        }
+        assert VideoEngine.get_stats(object.__new__(VideoEngine)) == {
+            "engine_type": "video"
+        }
+
+    def test_health_reports_mllm_for_mllm_engine(self, mock_engine):
+        """The text/mllm classification the pre-fix code already had must
+        survive the capability rewrite: is_mllm=True → model_type 'mllm'."""
+        mock_engine.is_mllm = True
+        mock_engine.is_image_gen = False
+        mock_engine.is_video_gen = False
+        orig = self._patch_config(
+            engine=mock_engine, mcp_manager=None, model_name="gemma-4-26b-4bit"
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/health")
+            assert r.status_code == 200
+            assert r.json()["model_type"] == "mllm"
         finally:
             self._restore_config(orig)
 

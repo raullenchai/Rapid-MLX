@@ -315,6 +315,90 @@ class TestSchedulerBasic:
         assert scheduler.abort_request("known-1") is True
         assert scheduler.abort_request("known-1") is True
 
+    def test_step_reaps_disconnect_orphan_before_next(self, mock_model, mock_tokenizer):
+        """#1759: engine cleanup without a surviving abort must not leak a slot.
+
+        This is the deterministic form of the production race: the streaming
+        consumer is gone (``requests`` was popped), but the scheduler's running
+        map, uid maps and mlx-lm batch slot remain while the deferred-abort set
+        is empty.  Before the reconciliation guard, ``step()`` called
+        ``BatchGenerator.next()`` forever and ``num_running`` stayed pinned.
+        """
+        scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer)
+        request = Request(
+            request_id="disconnect-orphan",
+            prompt="Hello",
+            sampling_params=SamplingParams(max_tokens=512),
+        )
+        request.status = RequestStatus.RUNNING
+        uid = 73
+
+        scheduler.requests[request.request_id] = request
+        scheduler.running[request.request_id] = request
+        scheduler.request_id_to_uid[request.request_id] = uid
+        scheduler.uid_to_request_id[uid] = request.request_id
+        scheduler._pending_abort_ids.clear()
+
+        # The engine releases its canonical tracking entry while the running
+        # slot is still live.  This is the production cleanup edge that arms
+        # the targeted reconciliation fallback.
+        scheduler.remove_finished_request(request.request_id)
+
+        batch = MagicMock()
+        batch.next.side_effect = AssertionError("ghost slot was decoded")
+        scheduler.batch_generator = batch
+
+        scheduler.step()
+
+        batch.remove.assert_called_once_with([uid])
+        batch.next.assert_not_called()
+        assert request.request_id not in scheduler.running
+        assert request.request_id not in scheduler.request_id_to_uid
+        assert uid not in scheduler.uid_to_request_id
+        assert scheduler.get_num_running() == 0
+
+    def test_orphan_candidate_cannot_abort_reused_request_id(
+        self, mock_model, mock_tokenizer
+    ):
+        """A stale cleanup candidate is scoped to one Request identity."""
+        scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer)
+        old = Request("reused-id", "old", SamplingParams())
+        old.status = RequestStatus.RUNNING
+        scheduler.requests[old.request_id] = old
+        scheduler.running[old.request_id] = old
+        scheduler.remove_finished_request(old.request_id)
+
+        new = Request("reused-id", "new", SamplingParams())
+        new.status = RequestStatus.RUNNING
+        scheduler.requests[new.request_id] = new
+        scheduler.running[new.request_id] = new
+        scheduler.batch_generator = MagicMock()
+
+        assert scheduler._reconcile_orphaned_running_requests() == []
+        assert scheduler.running[new.request_id] is new
+        scheduler.batch_generator.remove.assert_not_called()
+
+    def test_reset_removes_running_orphan_missing_from_requests(
+        self, mock_model, mock_tokenizer
+    ):
+        """Reset must tear down ghost slots, not only canonical requests."""
+        scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer)
+        orphan = Request("reset-orphan", "old", SamplingParams())
+        orphan.status = RequestStatus.RUNNING
+        uid = 91
+        scheduler.running[orphan.request_id] = orphan
+        scheduler.request_id_to_uid[orphan.request_id] = uid
+        scheduler.uid_to_request_id[uid] = orphan.request_id
+        batch = MagicMock()
+        scheduler.batch_generator = batch
+
+        scheduler.reset()
+
+        batch.remove.assert_called_once_with([uid])
+        assert not scheduler.running
+        assert not scheduler.request_id_to_uid
+        assert not scheduler.uid_to_request_id
+
     def test_get_stats(self, mock_model, mock_tokenizer):
         """Test getting scheduler stats."""
         scheduler = Scheduler(
