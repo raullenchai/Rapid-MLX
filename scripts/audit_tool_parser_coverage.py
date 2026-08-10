@@ -111,6 +111,13 @@ MATRIX_EXEMPT: dict[str, str] = {
         "invariant is pinned in tests/test_tool_call_streaming_parity.py."
     ),
     "hy3": "alias of hy_v3",
+    "muse": (
+        "TODO: add Muse Glimmer to golden_models when the standard matrix "
+        "has a 24 GB+ slot; ATEM parser unit, hostile-value fidelity, and "
+        "streaming-parity coverage live in tests/test_muse_parsers.py, "
+        "tests/test_tool_call_value_fidelity.py, and "
+        "tests/test_tool_call_streaming_parity.py"
+    ),
     # UI-TARS (ByteDance) — GUI-agent VLM. Adding a real golden_models
     # entry requires running a Qwen2-VL / Qwen2.5-VL backbone in the
     # pr_validate matrix (mlx-vlm path, not the plain mlx-lm path the

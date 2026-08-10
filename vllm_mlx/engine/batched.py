@@ -2430,9 +2430,10 @@ class BatchedEngine(BaseEngine):
         and erased (codex r6 #1). Resolved once per engine — the
         model_name is fixed for the engine's lifetime.
         """
-        if self._is_muse_wire is None:
-            self._is_muse_wire = (
-                _resolve_hf_model_type(self._model_name) == "muse_glimmer"
+        if getattr(self, "_is_muse_wire", None) is None:
+            model_name = getattr(self, "_model_name", None)
+            self._is_muse_wire = bool(
+                model_name and _resolve_hf_model_type(model_name) == "muse_glimmer"
             )
         return self._is_muse_wire
 
