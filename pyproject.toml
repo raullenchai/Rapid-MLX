@@ -506,6 +506,10 @@ extend-exclude = [
 # Vendored upstream files — keep formatting identical to the source PR
 # so future syncs produce a clean diff.
 exclude = [
+    # Ruff 0.16+ formats Python fenced blocks inside Markdown. Documentation
+    # examples intentionally optimize for readability and are not Python source;
+    # the repository-wide Python gate should not mechanically rewrite them.
+    "*.md",
     "vllm_mlx/models/deepseek_v4*.py",
     "vllm_mlx/models/gemma4_vendored/*.py",
     "vllm_mlx/models/hy_v3.py",

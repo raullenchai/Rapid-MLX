@@ -58,3 +58,11 @@ def test_github_ci_uses_the_same_whole_repository_ruff_scope():
     assert "run: ruff check ." in workflow
     assert "run: ruff format --check ." in workflow
     assert "ruff check vllm_mlx/ tests/" not in workflow
+
+
+def test_repository_format_gate_excludes_markdown_examples():
+    config = (Path(__file__).parents[1] / "pyproject.toml").read_text()
+    format_config = config.split("[tool.ruff.format]", 1)[1].split(
+        "[tool.ruff.lint]", 1
+    )[0]
+    assert '"*.md"' in format_config
