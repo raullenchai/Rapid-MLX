@@ -48,8 +48,12 @@ struct ThirdPartyLicenseStagingTests {
 
     private struct StagingResult {
         let exitCode: Int32
-        let stagedFiles: [String]
+        /// Staged filename → file contents, so tests can assert the notice text
+        /// actually landed (not just that a same-named file exists).
+        let staged: [String: String]
         let stderr: String
+
+        var stagedFiles: [String] { staged.keys.sorted() }
     }
 
     /// Run `stage-licenses.sh` against a throwaway fixture tree and report what
@@ -119,11 +123,16 @@ struct ThirdPartyLicenseStagingTests {
         process.waitUntilExit()
 
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        let staged =
-            (try? fm.contentsOfDirectory(atPath: out.path))?.sorted() ?? []
+        var staged: [String: String] = [:]
+        for name in (try? fm.contentsOfDirectory(atPath: out.path)) ?? [] {
+            staged[name] =
+                (try? String(
+                    contentsOf: out.appendingPathComponent(name), encoding: .utf8
+                )) ?? ""
+        }
         return StagingResult(
             exitCode: process.terminationStatus,
-            stagedFiles: staged,
+            staged: staged,
             stderr: String(data: errData, encoding: .utf8) ?? ""
         )
     }
@@ -175,6 +184,13 @@ struct ThirdPartyLicenseStagingTests {
                 "SwiftMath-LICENSE.txt",
             ],
             "unexpected staged set: \(result.stagedFiles)"
+        )
+        // Assert the notice *text* landed, not merely a same-named file — an
+        // empty or truncated copy would satisfy a filename-only check.
+        #expect(result.staged["FakePkg-LICENSE.txt"] == "MIT for FakePkg")
+        #expect(result.staged["OtherPkg-COPYING.txt"] == "BSD for OtherPkg")
+        #expect(
+            result.staged["SwiftMath-LICENSE.txt"] == "SwiftMath MIT license text"
         )
     }
 

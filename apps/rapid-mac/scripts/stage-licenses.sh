@@ -30,6 +30,11 @@ CHECKOUTS="$2"
 VENDOR_SWIFTMATH_LICENSE="$3"
 OUT="$4"
 
+# Stage into a clean directory so a package removed from Package.resolved cannot
+# leave a stale notice behind on an incremental run — the staged set is exactly
+# the current dependency set. (In the real build the whole .app is rm -rf'd
+# first, but keep the script correct when invoked on its own.)
+rm -rf "$OUT"
 mkdir -p "$OUT"
 
 # Locate a license file inside a package directory. Echoes the path on success,
@@ -77,20 +82,27 @@ if [[ ! -d "$CHECKOUTS" ]]; then
     exit 1
 fi
 
-# Each remote pin carries a "location" URL; its on-disk checkout name is that
-# URL's basename with a trailing ``.git`` stripped (SPM preserves upstream
-# casing, e.g. NetworkImage vs the lowercased identity). Parse with grep/sed so
-# the script needs no JSON tooling.
-locations="$(sed -nE 's/.*"location"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$RESOLVED")"
-if [[ -z "$locations" ]]; then
+# Parse Package.resolved *structurally* with plutil (always present on macOS,
+# which is the only platform this .app builds on) rather than a line-oriented
+# regex — a compact single-line JSON would defeat the latter. Each remote pin
+# carries a "location" URL; its on-disk checkout name is that URL's basename
+# with a trailing ``.git`` stripped (SPM preserves upstream casing, e.g.
+# NetworkImage vs the lowercased identity).
+pin_count="$(plutil -extract pins raw -o - "$RESOLVED" 2>/dev/null || true)"
+if ! [[ "$pin_count" =~ ^[0-9]+$ ]] || [[ "$pin_count" -eq 0 ]]; then
     echo "ERR: no remote package pins parsed from $RESOLVED" >&2
     echo "     Expected at least one linked SPM dependency (#1596)." >&2
     exit 1
 fi
 
 remote_count=0
-while IFS= read -r loc; do
-    [[ -n "$loc" ]] || continue
+for ((i = 0; i < pin_count; i++)); do
+    loc="$(plutil -extract "pins.$i.location" raw -o - "$RESOLVED" 2>/dev/null || true)"
+    if [[ -z "$loc" ]]; then
+        echo "ERR: pin #$i in $RESOLVED has no 'location'; unsupported shape" >&2
+        echo "     (registry pins are not handled). Update stage-licenses.sh." >&2
+        exit 1
+    fi
     name="$(basename "$loc")"
     name="${name%.git}"
     dir="$CHECKOUTS/$name"
@@ -109,6 +121,6 @@ while IFS= read -r loc; do
         echo "     without its license text (#1596)." >&2
         exit 1
     fi
-done <<<"$locations"
+done
 
 echo "staged $((remote_count + 1)) third-party license file(s) into $OUT"
