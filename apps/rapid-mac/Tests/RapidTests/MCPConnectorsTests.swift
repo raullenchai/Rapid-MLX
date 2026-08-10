@@ -461,27 +461,44 @@ final class MCPConnectorsTests {
 
     // MARK: - Catalog / hot reload
 
-    private func stubbedCatalog() -> MCPCatalog {
+    /// Hands out a port nobody else in this run is using.
+    ///
+    /// swift-testing runs tests in PARALLEL. The stub's response table is
+    /// necessarily static (URLProtocol instances are created by URLSession,
+    /// so there is nowhere else to put it), and an earlier version had every
+    /// test write to the same keys and call a global `reset()`. Tests then
+    /// wiped each other's fixtures mid-run: one reload test failed outright,
+    /// and — worse — the other passed for the wrong reason, because it
+    /// asserted `!applied` and a stubbed-out request fails too. Keying every
+    /// fixture by port keeps the tests independent without serialising them.
+    private static var nextStubPort = 9000
+
+    /// Fixture key: port scopes it to one test, path selects the route.
+    private func key(_ port: Int, _ path: String) -> String { "\(port)\(path)" }
+
+    private func stubbedCatalog() -> (catalog: MCPCatalog, port: Int) {
+        let port = Self.nextStubPort
+        Self.nextStubPort += 1
         let cfg = URLSessionConfiguration.ephemeral
         cfg.protocolClasses = [MCPStubProtocol.self]
-        return MCPCatalog(
+        let catalog = MCPCatalog(
             session: URLSession(configuration: cfg),
-            endpoint: { (host: "127.0.0.1", port: 8000, bearer: "secret") }
+            endpoint: { (host: "127.0.0.1", port: port, bearer: "secret") }
         )
+        return (catalog, port)
     }
 
     @Test("Refresh publishes the engine's server rows, tools, and tool→server map")
     func refreshPublishesEngineState() async {
-        MCPStubProtocol.reset()
-        MCPStubProtocol.responses["/v1/mcp/servers"] = """
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = """
         {"servers":[{"name":"fs","state":"connected","transport":"stdio","tools_count":1,"error":null}],
          "error":null,"configured":true}
         """
-        MCPStubProtocol.responses["/v1/mcp/tools"] = """
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
         {"tools":[{"name":"fs__read_file","description":"Read a file","server":"fs",
                    "parameters":{"type":"object"}}],"count":1}
         """
-        let catalog = stubbedCatalog()
         await catalog.refresh()
 
         #expect(catalog.servers.map(\.name) == ["fs"])
@@ -501,12 +518,11 @@ final class MCPConnectorsTests {
         // succeeded" as "the change applied" would clear the restart banner
         // while the user's edit sat inert — the exact silently-ignored-edit
         // failure issue #1716 calls out.
-        MCPStubProtocol.reset()
-        MCPStubProtocol.responses["/v1/mcp/reload"] = """
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/reload")] = """
         {"servers":[],"error":"No MCP config path known — start the server with --mcp-config",
          "configured":false}
         """
-        let catalog = stubbedCatalog()
         let applied = await catalog.reload()
         #expect(!applied)
         #expect(catalog.subsystemError != nil)
@@ -520,19 +536,18 @@ final class MCPConnectorsTests {
 
     @Test("A successful reload against a configured engine clears the restart condition")
     func reloadAgainstConfiguredEngineSucceeds() async {
-        MCPStubProtocol.reset()
-        MCPStubProtocol.responses["/v1/mcp/reload"] = """
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/reload")] = """
         {"servers":[{"name":"time","state":"connected","transport":"stdio","tools_count":1,"error":null}],
          "error":null,"configured":true}
         """
-        MCPStubProtocol.responses["/v1/mcp/servers"] = """
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = """
         {"servers":[{"name":"time","state":"connected","transport":"stdio","tools_count":1,"error":null}],
          "error":null,"configured":true}
         """
-        MCPStubProtocol.responses["/v1/mcp/tools"] = """
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
         {"tools":[{"name":"time__get_current_time","description":"d","server":"time","parameters":{}}],"count":1}
         """
-        let catalog = stubbedCatalog()
         let applied = await catalog.reload()
         #expect(applied)
         #expect(catalog.isConfigured)
@@ -544,27 +559,29 @@ final class MCPConnectorsTests {
 
     @Test("A reload against an engine with no reload route reports failure")
     func reloadAgainstOlderEngineIsNotSuccess() async {
-        MCPStubProtocol.reset()
-        MCPStubProtocol.statusCodes["/v1/mcp/reload"] = 404
-        let catalog = stubbedCatalog()
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.statusCodes[key(port, "/v1/mcp/reload")] = 404
         let applied = await catalog.reload()
         #expect(!applied, "an older engine build must fall back to the restart banner")
+        // Pin WHY it failed. `!applied` alone also holds when the request
+        // never reached the stub at all, which is how the parallel-fixture bug
+        // let this test pass while its sibling failed.
+        #expect(catalog.fetchError?.contains("404") == true)
     }
 
     @Test("A transient fetch failure keeps the last-known-good list")
     func refreshFailureDoesNotWipeState() async {
-        MCPStubProtocol.reset()
-        MCPStubProtocol.responses["/v1/mcp/servers"] = """
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = """
         {"servers":[{"name":"fs","state":"connected","transport":"stdio","tools_count":0,"error":null}],
          "error":null,"configured":true}
         """
-        MCPStubProtocol.responses["/v1/mcp/tools"] = #"{"tools":[],"count":0}"#
-        let catalog = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = #"{"tools":[],"count":0}"#
         await catalog.refresh()
         #expect(catalog.servers.count == 1)
 
         // A dropped poll must not make every connector row flicker away.
-        MCPStubProtocol.statusCodes["/v1/mcp/servers"] = 503
+        MCPStubProtocol.statusCodes[key(port, "/v1/mcp/servers")] = 503
         await catalog.refresh()
         #expect(catalog.servers.count == 1)
         #expect(catalog.fetchError != nil, "…but it must say we couldn't check")
@@ -572,12 +589,11 @@ final class MCPConnectorsTests {
 
     @Test("Clearing the catalog drops every tool")
     func clearDropsTools() async {
-        MCPStubProtocol.reset()
-        MCPStubProtocol.responses["/v1/mcp/servers"] = #"{"servers":[],"error":null,"configured":true}"#
-        MCPStubProtocol.responses["/v1/mcp/tools"] = """
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = #"{"servers":[],"error":null,"configured":true}"#
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
         {"tools":[{"name":"fs__read_file","description":"d","server":"fs","parameters":{}}],"count":1}
         """
-        let catalog = stubbedCatalog()
         await catalog.refresh()
         #expect(!catalog.tools.isEmpty)
 
@@ -596,23 +612,25 @@ final class MCPConnectorsTests {
 }
 
 /// Stubs the loopback MCP routes so the catalog can be driven without an
-/// engine. Keyed by path so one instance serves the two-GET refresh.
+/// engine.
+///
+/// Fixtures are keyed `"<port><path>"`, not by path alone. URLSession
+/// instantiates the protocol itself, so the table has to be static — and
+/// swift-testing runs tests in parallel, so a path-only key had concurrent
+/// tests overwriting and clearing each other's fixtures. There is
+/// deliberately no `reset()`: a global wipe is precisely what broke them.
 final class MCPStubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var responses: [String: String] = [:]
     nonisolated(unsafe) static var statusCodes: [String: Int] = [:]
-
-    static func reset() {
-        responses = [:]
-        statusCodes = [:]
-    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let path = request.url?.path ?? ""
-        let status = Self.statusCodes[path] ?? 200
-        let body = Self.responses[path] ?? "{}"
+        let url = request.url
+        let key = "\(url?.port ?? 0)\(url?.path ?? "")"
+        let status = Self.statusCodes[key] ?? 200
+        let body = Self.responses[key] ?? "{}"
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: status,
