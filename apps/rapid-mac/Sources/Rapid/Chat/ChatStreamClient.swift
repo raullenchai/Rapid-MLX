@@ -986,9 +986,14 @@ enum Wire {
 /// Per-token MainActor hops on a fast stream (M3 Ultra rapid-mlx
 /// at 200+ tok/s) burned a hop per emitted delta. This coalescer
 /// accumulates ``content`` and ``reasoning_content`` deltas inside
-/// a 16 ms window (one display frame at 60 Hz) and emits ONE
-/// MainActor callback per window — collapsing a 500-token stream
-/// from ~500 hops to ~30.
+/// a coalescing window and emits ONE MainActor callback per window
+/// — collapsing a 500-token stream from ~500 hops to ~30.
+///
+/// The window starts at 16 ms (one display frame at 60 Hz) and, past
+/// ``adaptiveThresholdChars``, widens in proportion to the text already
+/// flushed, up to ``maxWindowNs``. A fixed window would leave the turn
+/// quadratic: each repaint re-parses the whole message, so an O(length)
+/// parse at a fixed rate costs O(length²) over the turn (#1743).
 ///
 /// Held as a reference type so the captured mutable state survives
 /// the ``await`` boundary the SSE loop crosses on every line
@@ -999,8 +1004,9 @@ enum Wire {
 ///     SINGLE ordered queue keyed by kind, merging into the
 ///     trailing entry when the kind matches. The first call of
 ///     each kind surfaces IMMEDIATELY (first-token visibility —
-///     the typing indicator must not wait 16 ms). Subsequent calls
-///     flush when the 16 ms coalesce window has elapsed.
+///     the typing indicator must not wait a frame). Subsequent
+///     calls flush once the current window (see
+///     ``currentWindowNs()``) has elapsed.
 ///   * ``flush`` emits the pending queue IN ORDER, so a
 ///     content→reasoning interleave preserves the server's wire
 ///     order — there is no cross-kind reordering.
@@ -1078,7 +1084,17 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         // `characters` is clamped to the value that already yields the cap, so
         // the multiplication cannot overflow no matter how long the message
         // gets, and no masking operators are needed.
-        let capCharacters = Int(Self.maxWindowNs / Self.coalesceWindowNs) * Self.adaptiveThresholdChars
+        //
+        // Derive that clamp by solving for it, not by scaling the window
+        // ratio: `maxWindowNs / coalesceWindowNs` is 250/16, which floors to
+        // 15, capping at 30 000 characters and a 240 ms window — so
+        // `maxWindowNs` would never actually be reached and the ceiling the
+        // rest of this file talks about would not exist. The exact answer is
+        // 31 250. (250e6 * 2000 fits in UInt64 with ~7 orders of magnitude to
+        // spare, so the numerator here is safe.)
+        let capCharacters = Int(
+            Self.maxWindowNs * UInt64(Self.adaptiveThresholdChars) / Self.coalesceWindowNs
+        )
         let characters = UInt64(min(flushedCharacters, capCharacters))
         let widened = Self.coalesceWindowNs * characters / UInt64(Self.adaptiveThresholdChars)
         return min(max(widened, Self.coalesceWindowNs), Self.maxWindowNs)
@@ -1094,6 +1110,16 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
     /// into one flush, but tight enough that a runaway stream gets
     /// drained promptly.
     private static let maxPendingSegments: Int = 32
+
+    /// How many times ``flush`` has applied a batch on the main actor — one
+    /// per flush, by construction.
+    ///
+    /// Exposed because the emitted event stream cannot distinguish one hop
+    /// carrying N segments from N hops carrying one each, and that difference
+    /// is the whole point: it is what decides whether the view rebuilds once
+    /// or N times per flush. A test asserting only on events would pass just
+    /// as happily against the per-segment version this replaced.
+    private(set) var mainActorApplications: Int = 0
 
     enum Kind { case content, reasoning }
 
@@ -1178,6 +1204,7 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
             case .reasoning: reasoningEverFlushed = true
             }
         }
+        mainActorApplications += 1
         // ONE hop for the whole batch, in wire order.
         //
         // Hopping per segment defeats the point of coalescing on an

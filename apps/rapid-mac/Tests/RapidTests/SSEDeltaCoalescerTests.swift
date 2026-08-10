@@ -224,34 +224,49 @@ struct SSEDeltaCoalescerTests {
         }
         await coalescer.flush { recorder.capture($0) }
 
-        // Wire order preserved across kinds.
-        let kinds = recorder.events.compactMap { event -> String? in
+        // (1) The batching itself. Asserting on the events cannot show this —
+        // one hop carrying N segments and N hops carrying one each produce an
+        // identical event list — so ask the coalescer how many times it
+        // actually touched the main actor. 82 deltas went in; the per-segment
+        // version this replaced would report ~82 applications, one repaint
+        // each, which is #1743 all over again.
+        let hops = coalescer.mainActorApplications
+        #expect(
+            hops < 12,
+            "\(hops) main-actor applications for 82 deltas — flush is hopping per segment again, so the view rebuilds (and re-parses the whole message) about once per delta"
+        )
+
+        // (2) Wire order across kinds, as the sequence it actually is, not as
+        // two payloads checked separately: concatenating per kind would pass
+        // even if every reasoning delta arrived after every content delta.
+        let arrived = recorder.events.compactMap { event -> String? in
             switch event {
-            case .content: return "c"
-            case .reasoning: return "r"
+            case .content(let t): return "c:\(t)"
+            case .reasoning(let t): return "r:\(t)"
             default: return nil
             }
         }
-        #expect(kinds.first == "c", "first event should be the first content delta")
-        // Every c\(i) must precede its r\(i): concatenating the payloads in
-        // arrival order must reproduce the order they were appended in.
-        var content = ""
-        var reasoning = ""
-        for event in recorder.events {
-            switch event {
-            case .content(let t): content += t
-            case .reasoning(let t): reasoning += t
-            default: break
+        var expected = ["c:c0", "r:r0"]
+        for i in 0..<40 {
+            expected.append("c:c\(i)")
+            expected.append("r:r\(i)")
+        }
+        // Adjacent same-kind deltas merge into one segment, so compare the
+        // merged form: fold neighbours of equal kind together on both sides.
+        func merged(_ items: [String]) -> [String] {
+            items.reduce(into: [String]()) { acc, item in
+                let kind = item.prefix(2)
+                if let last = acc.last, last.hasPrefix(kind) {
+                    acc[acc.count - 1] = last + item.dropFirst(2)
+                } else {
+                    acc.append(item)
+                }
             }
         }
-        var expectedContent = "c0"
-        var expectedReasoning = "r0"
-        for i in 0..<40 {
-            expectedContent += "c\(i)"
-            expectedReasoning += "r\(i)"
-        }
-        #expect(content == expectedContent, "content text was reordered or dropped by the batched flush")
-        #expect(reasoning == expectedReasoning, "reasoning text was reordered or dropped by the batched flush")
+        #expect(
+            merged(arrived) == merged(expected),
+            "the batched flush reordered, dropped, or cross-mixed the stream"
+        )
     }
 
     @Test("flush on empty buffers is a no-op")
