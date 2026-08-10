@@ -6150,21 +6150,36 @@ class Scheduler:
         with self._cancel_counter_lock:
             candidates = self._orphaned_running_candidates
             self._orphaned_running_candidates = {}
-            orphaned = [
-                rid
-                for rid, request in candidates.items()
-                if self.running.get(rid) is request and rid not in self.requests
-            ]
-
-        for request_id in orphaned:
-            logger.warning(
-                "[abort_reconcile] reaping orphaned running request %s",
-                request_id[:12],
-            )
-            self._do_abort_request(request_id)
+        orphaned = []
+        for request_id, request in candidates.items():
+            if self._do_abort_request(request_id, expected_orphan=request):
+                orphaned.append(request_id)
+                logger.warning(
+                    "[abort_reconcile] reaped orphaned running request %s",
+                    request_id[:12],
+                )
         return orphaned
 
-    def _do_abort_request(self, request_id: str) -> bool:
+    def _do_abort_request(
+        self, request_id: str, *, expected_orphan: Request | None = None
+    ) -> bool:
+        """Serialize abort cleanup and optionally bind it to one lifetime.
+
+        The orphan reconciler crosses from engine cleanup back onto the
+        scheduler thread.  An ID alone is insufficient because callers may
+        reuse one after cleanup.  Validate the exact ``Request`` identity and
+        perform the ID-based teardown while holding the same lock used by the
+        admission commit, closing the check-to-abort window.
+        """
+        with self._cancel_counter_lock:
+            if expected_orphan is not None and not (
+                self.running.get(request_id) is expected_orphan
+                and request_id not in self.requests
+            ):
+                return False
+            return self._do_abort_request_impl(request_id)
+
+    def _do_abort_request_impl(self, request_id: str) -> bool:
         """
         Actually abort a request. Must be called from the executor thread.
 
