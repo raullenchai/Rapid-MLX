@@ -22,6 +22,8 @@ Available parsers:
 - functionary/meetkai: MeetKai Functionary models
 - glm47/glm4: GLM-4.7 and GLM-4.7-Flash models
 - harmony/gpt-oss: GPT-OSS models (Harmony format with channels)
+- muse: Meta Muse Glimmer (ATEM function-calls blocks on
+  recipient-routed channels)
 - seed_oss/seed/gpt_oss: Seed-OSS / GPT-OSS models (XML format)
 - deepseek_v31: DeepSeek V3.1 thinking-channel wire shape only
 - qwen/qwen3/qwen3_xml: Qwen models (<tool_call>JSON</tool_call> and [Calling tool:] formats)
@@ -69,6 +71,7 @@ from .llama_tool_parser import LlamaToolParser
 from .minicpm_tool_parser import MiniCPMToolParser
 from .minimax_tool_parser import MiniMaxToolParser
 from .mistral_tool_parser import MistralToolParser
+from .muse_tool_parser import MuseToolParser
 from .nemotron_tool_parser import NemotronToolParser
 from .qwen3coder_tool_parser import Qwen3CoderToolParser
 from .qwen_tool_parser import QwenToolParser
@@ -100,6 +103,7 @@ __all__ = [
     "HyV3ToolParser",
     "MiniCPMToolParser",
     "MiniMaxToolParser",
+    "MuseToolParser",
     "SeedOssToolParser",
     "DeepSeekV3ToolParser",
     "DeepSeekV40731ToolParser",

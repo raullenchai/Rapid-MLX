@@ -396,6 +396,15 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         re.compile(r"ministral|mistral|devstral|magistral", re.IGNORECASE),
         _MISTRAL_FAMILY_SENTINEL,
     ),
+    # Meta Muse Glimmer — ATEM function-calls blocks on recipient-routed
+    # channels; reasoning on the ``to=self`` channel.
+    (
+        re.compile(r"muse[-_]?glimmer", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="muse",
+            reasoning_parser="muse",
+        ),
+    ),
     # Gemma 4 (native tool format)
     (
         re.compile(r"gemma[-_]?4", re.IGNORECASE),

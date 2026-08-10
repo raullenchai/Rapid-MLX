@@ -153,6 +153,19 @@ PARITY_FIXTURES: list = [
         '<function name="read_file"><param name="path">/etc/hostname</param></function>',
         [("read_file", {"path": "/etc/hostname"})],
     ),
+    # Muse Glimmer — ATEM function-calls block (Anthropic-style XML on
+    # recipient-routed channels). Value is a bare string per the chat
+    # template ("String and scalar parameters should be specified as is").
+    (
+        "muse",
+        "muse_atem",
+        (
+            '<atem:function_calls>\n<atem:invoke name="read_file">\n'
+            '<atem:parameter name="path">/etc/hostname</atem:parameter>\n'
+            "</atem:invoke>\n</atem:function_calls>"
+        ),
+        [("read_file", {"path": "/etc/hostname"})],
+    ),
     # hermes — JSON body inside <tool_call>...</tool_call>
     (
         "hermes",

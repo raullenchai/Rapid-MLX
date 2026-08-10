@@ -126,6 +126,10 @@ class ExtractedToolCallInformation:
 #                           preview checkpoint.
 #   minicpm_native        — <function name="NAME"><param name="KEY">VALUE
 #                           </param></function>  (MiniCPM5 XML tool contract)
+#   muse_atem             — <atem:function_calls><atem:invoke name="NAME">
+#                           <atem:parameter name="K">V</atem:parameter>
+#                           </atem:invoke></atem:function_calls> on
+#                           recipient-routed channels (Meta Muse Glimmer)
 WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
     {
         "tool_call_json",
@@ -152,6 +156,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "ui_tars_action",
         "hy3_native",
         "minicpm_native",
+        "muse_atem",
     }
 )
 

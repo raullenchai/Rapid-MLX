@@ -92,6 +92,7 @@ def _register_builtin_parsers():
     from .harmony_parser import HarmonyReasoningParser
     from .hy3_parser import Hy3ReasoningParser
     from .minimax_parser import MiniMaxReasoningParser
+    from .muse_parser import MuseReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
     from .ui_tars_parser import UiTarsReasoningParser
 
@@ -113,6 +114,9 @@ def _register_builtin_parsers():
     register_parser("gpt_oss", GptOssReasoningParser)
     register_parser("harmony", HarmonyReasoningParser)
     register_parser("minimax", MiniMaxReasoningParser)
+    # ``muse`` — Meta Muse Glimmer recipient-routed channels
+    # (``to=self`` -> reasoning). Pairs with the ``muse`` tool parser.
+    register_parser("muse", MuseReasoningParser)
     # ``ui_tars`` — UI-TARS Thought:/Reflection: preamble splitter (no
     # ``<think>`` tags; labels are literal). Auto-wired by the ``ui-tars*``
     # regex in ``model_auto_config`` and by the alias entries in
