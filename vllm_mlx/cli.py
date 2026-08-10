@@ -5164,7 +5164,9 @@ def _print_cached_models() -> None:
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
     if external_rows:
-        print("  Note: total is logical model size; shared external weights may repeat.")
+        print(
+            "  Note: total is logical model size; shared external weights may repeat."
+        )
     print()
     if external_rows:
         print("  Tip: `rapid-mlx rm` only removes Rapid-managed cache entries.")

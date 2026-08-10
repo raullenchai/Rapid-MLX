@@ -201,7 +201,10 @@ def test_external_identity_refuses_deleting_same_named_incomplete_hub_stub() -> 
 
     with (
         patch("huggingface_hub.scan_cache_dir", return_value=cache),
-        patch("vllm_mlx.model_aliases._resolve_external_model_path", return_value="/external/model"),
+        patch(
+            "vllm_mlx.model_aliases._resolve_external_model_path",
+            return_value="/external/model",
+        ),
         patch.object(cli, "_cache_entry_is_runnable", return_value=False),
         patch.object(sys, "stdout", buf),
         pytest.raises(SystemExit) as exc,
