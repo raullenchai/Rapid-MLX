@@ -1806,6 +1806,16 @@ class TestQwen3:
         assert reasoning == "analysis"
         assert content == "answer"
 
+    def test_1778_implicit_close_before_literal_opener_keeps_reasoning(self):
+        """A real implicit close before answer prose stays authoritative."""
+        reasoning, content = self.parser.extract_reasoning(
+            "reasoning</think>answer <think>literal</think>",
+            enable_thinking=True,
+            prompt_thinking_active=True,
+        )
+        assert reasoning == "reasoning"
+        assert content == "answer <think>literal</think>"
+
     # ---- #575 fast-path coverage (Qwen3 override branch) ----------------
 
     def test_575_qwen3_fast_path_no_tags_enable_thinking_true(self):

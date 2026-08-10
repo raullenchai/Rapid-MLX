@@ -198,20 +198,26 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         # A leading opener (allowing whitespace) remains structural, and a
         # lone closer retains the implicit-reasoning contract.
         start_index = model_output.find(self.start_token)
+        end_index = model_output.find(self.end_token)
+        if end_index != -1 and (start_index == -1 or end_index < start_index):
+            reasoning = model_output[:end_index].strip() or None
+            content = model_output[end_index + len(self.end_token) :].strip() or None
+            return self._promote_tool_calls(reasoning, content)
         if (
             prompt_thinking_active
             and start_index > 0
             and model_output[:start_index].strip()
+            and self.end_token not in model_output[:start_index]
         ):
-            end_index = model_output.find(
+            literal_end_index = model_output.find(
                 self.end_token, start_index + len(self.start_token)
             )
-            if end_index == -1:
+            if literal_end_index == -1:
                 return None, model_output
             content = (
                 model_output[:start_index]
-                + model_output[start_index + len(self.start_token) : end_index]
-                + model_output[end_index + len(self.end_token) :]
+                + model_output[start_index + len(self.start_token) : literal_end_index]
+                + model_output[literal_end_index + len(self.end_token) :]
             )
             return None, content
 
