@@ -404,6 +404,27 @@ final class MCPConnectorsTests {
         #expect(!approval.isGranted("fs__read_file"))
     }
 
+    @Test("A hand-edited command is caught by the launch reconcile and revokes the grant")
+    func handEditRevokesGrantOnReconcile() {
+        let defaults = freshDefaults()
+        defaults.set(true, forKey: MCPToolApprovalStore.grantKey("fs__read_file"))
+        let approval = MCPToolApprovalStore(defaults: defaults)
+
+        // First launch establishes the baseline fingerprint for "fs" = npx.
+        let original = MCPServerConfig(name: "fs", command: "npx")
+        approval.reconcileGrants(against: ["fs": original.executionFingerprint])
+        #expect(approval.isGranted("fs__read_file"), "unchanged code keeps the grant")
+
+        // A relaunch with the same fingerprint keeps it too.
+        approval.reconcileGrants(against: ["fs": original.executionFingerprint])
+        #expect(approval.isGranted("fs__read_file"))
+
+        // Next launch after the config file was hand-edited to a new command.
+        let edited = MCPServerConfig(name: "fs", command: "evil")
+        approval.reconcileGrants(against: ["fs": edited.executionFingerprint])
+        #expect(!approval.isGranted("fs__read_file"))
+    }
+
     @Test("Auto-approve mode skips the prompt entirely")
     func autoApproveSkipsPrompt() async {
         let store = makeApproval()
@@ -747,21 +768,25 @@ final class MCPConnectorsTests {
         #expect(catalog.tools.map { $0.function.name } == ["time__get_current_time"])
     }
 
-    @Test("A tool whose namespaced name exceeds the 64-char function limit is dropped")
-    func overlongToolNameIsNotAdvertised() async {
+    @Test("A tool whose namespaced name isn't a legal function name is dropped")
+    func illegalToolNameIsNotAdvertised() async {
         let (catalog, port) = stubbedCatalog()
         let longName = "srv__" + String(repeating: "x", count: 70)  // 75 > 64
         MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] =
             #"{"servers":[],"error":null,"configured":true}"#
+        // Three tools: legal, too long, and with a space (both illegal in an
+        // OpenAI function name). Only the legal one survives.
         MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
         {"tools":[{"name":"srv__ok","description":"d","server":"srv","parameters":{}},
-                  {"name":"\(longName)","description":"d","server":"srv","parameters":{}}],"count":2}
+                  {"name":"\(longName)","description":"d","server":"srv","parameters":{}},
+                  {"name":"srv__has space","description":"d","server":"srv","parameters":{}}],"count":3}
         """
         await catalog.refresh()
-        // The over-long one can't be a legal OpenAI function name, so it is not
-        // offered rather than advertised as a tool the model can never call.
+        // The illegal ones can't be emitted by the model, so they are not
+        // offered rather than advertised as tools it can never call.
         #expect(catalog.tools.map { $0.function.name } == ["srv__ok"])
         #expect(catalog.serverForTool[longName] == nil)
+        #expect(catalog.serverForTool["srv__has space"] == nil)
     }
 
     @Test("A reload whose tool re-fetch fails reports failure, not success")

@@ -152,6 +152,16 @@ struct RapidApp: App {
         mcpConfigStore.onServerReconfigured = { [weak mcpApprovalStore] serverName in
             mcpApprovalStore?.revokeGrants(forServer: serverName)
         }
+        // The config file is hand-editable, and an edit made while the app was
+        // closed never hits the hook above. Reconcile once at launch against
+        // the loaded connectors' fingerprints so a hand-swapped command drops
+        // its grant before any tool can run.
+        mcpApprovalStore.reconcileGrants(
+            against: Dictionary(
+                mcpConfigStore.servers.map { ($0.name, $0.executionFingerprint) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        )
         _mcpConfig = State(initialValue: mcpConfigStore)
         _mcpCatalog = State(initialValue: mcpCatalog)
         _mcpApproval = State(initialValue: mcpApprovalStore)

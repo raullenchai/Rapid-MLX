@@ -91,6 +91,25 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
         return true
     }
 
+    /// A stable string of this connector's execution identity — transport,
+    /// command, arguments, environment, URL. Two configs with the same
+    /// fingerprint run the same code; a change means consent must be
+    /// re-established. Used to catch hand-edits to the config file, which never
+    /// pass through the in-app edit path. Not cryptographic — only needs to
+    /// change when the execution identity does.
+    var executionFingerprint: String {
+        let envPart = env.sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+        return [
+            transport.rawValue,
+            command ?? "",
+            args.joined(separator: "\u{1}"),
+            envPart,
+            url ?? "",
+        ].joined(separator: "\u{2}")
+    }
+
     /// True when `other` would launch or reach a different program than `self`
     /// — a changed transport, command, arguments, environment, or URL.
     ///

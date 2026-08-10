@@ -79,6 +79,17 @@ final class MCPCatalog {
     /// Called when the child goes away. Keeping a stale tool list across a
     /// server stop would let the chat loop advertise — and try to execute —
     /// tools that no process is behind.
+    /// Whether a namespaced tool name is a legal OpenAI function name:
+    /// `[A-Za-z0-9_-]`, 1–64 characters. Names from a connector are arbitrary,
+    /// so this is the gate that keeps an un-emittable name off the tool list.
+    static func isLegalFunctionName(_ name: String) -> Bool {
+        guard !name.isEmpty, name.count <= 64 else { return false }
+        return name.unicodeScalars.allSatisfy {
+            ($0 >= "a" && $0 <= "z") || ($0 >= "A" && $0 <= "Z")
+                || ($0 >= "0" && $0 <= "9") || $0 == "_" || $0 == "-"
+        }
+    }
+
     func clear() {
         // Invalidate any in-flight refresh/reload: without this bump a slow poll
         // that started before the clear could complete last and restore the
@@ -127,11 +138,14 @@ final class MCPCatalog {
             subsystemError = serversResponse.error
             isConfigured = serversResponse.configured ?? false
             // Drop any tool whose namespaced `server__tool` name can't be a
-            // legal OpenAI function name (64 chars). Capping the server half at
-            // 32 doesn't bound a connector's own tool names, and advertising a
+            // legal OpenAI function name — `[A-Za-z0-9_-]`, at most 64 chars.
+            // Capping the server half at 32 bounds neither the length nor the
+            // characters of a connector's own tool names, and advertising a
             // name the model can't emit — or that 400s on the wire — reads as
             // "that tool silently does nothing". Not advertising it is honest.
-            let usableTools = toolsResponse.tools.filter { $0.name.count <= 64 }
+            let usableTools = toolsResponse.tools.filter {
+                MCPCatalog.isLegalFunctionName($0.name)
+            }
             tools = usableTools.map {
                 ToolDefinition(
                     name: $0.name,
@@ -202,7 +216,17 @@ final class MCPCatalog {
         // `true`: if that fetch fails the tool list is the pre-reload one, and
         // a caller told "reload succeeded" would keep advertising tools a
         // reconfigure may have just removed.
-        return await refresh()
+        let refreshed = await refresh()
+        if !refreshed, generation == mutationGeneration {
+            // The engine reloaded (servers committed above) but we couldn't
+            // read the new tool list. Unlike a transient poll failure, a reload
+            // is a known state change — keeping the pre-reload tools would
+            // advertise ones the reconfigure may have removed, so drop them and
+            // let `fetchError` drive a retry rather than showing stale tools.
+            tools = []
+            serverForTool = [:]
+        }
+        return refreshed
     }
 
     // MARK: - Execute

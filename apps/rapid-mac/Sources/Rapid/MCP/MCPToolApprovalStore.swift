@@ -60,6 +60,13 @@ final class MCPToolApprovalStore {
         "rapid.mcp.approval.tool.\(toolName).v1"
     }
 
+    /// Last-seen execution fingerprint for a server, so a change to what it
+    /// runs — including one made by hand-editing the config file — can be
+    /// detected at launch and its grants revoked.
+    static func fingerprintKey(_ serverName: String) -> String {
+        "rapid.mcp.approval.fingerprint.\(serverName).v1"
+    }
+
     private let defaults: UserDefaults
 
     var mode: Mode {
@@ -71,6 +78,11 @@ final class MCPToolApprovalStore {
 
     private(set) var pendingRequest: PendingApproval?
     private var pendingContinuation: CheckedContinuation<Decision, Never>?
+    /// Identity of the current pending request. A cancellation handler is
+    /// queued onto the main actor and can run after its request was already
+    /// answered and a NEW one installed; without matching on this token, the
+    /// late cancel would resume the wrong (second) request as `.unavailable`.
+    private var pendingToken = 0
 
     /// Tools with a remembered "always allow". Mirrored in memory so the
     /// Settings list can render (and revoke) them without scanning defaults.
@@ -125,6 +137,26 @@ final class MCPToolApprovalStore {
         grantedTools.subtract(affected)
     }
 
+    /// Reconcile remembered grants against the connectors' current execution
+    /// fingerprints, revoking any whose server now runs different code.
+    ///
+    /// The in-app editor already revokes on a change (``MCPConfigStore``), but
+    /// the config file is hand-editable — the ecosystem-standard shape is the
+    /// whole point — and a direct edit never passes through that path. Calling
+    /// this at launch closes the hand-edit gap: a command swapped in the file
+    /// while the app was closed drops the grant before the tool can run.
+    /// `fingerprints` maps server name → ``MCPServerConfig/executionFingerprint``.
+    func reconcileGrants(against fingerprints: [String: String]) {
+        for (serverName, fingerprint) in fingerprints {
+            let key = Self.fingerprintKey(serverName)
+            let stored = defaults.string(forKey: key)
+            if let stored, stored != fingerprint {
+                revokeGrants(forServer: serverName)
+            }
+            defaults.set(fingerprint, forKey: key)
+        }
+    }
+
     // MARK: - Gate
 
     /// Gate one tool call. Returns immediately when already approved,
@@ -140,6 +172,8 @@ final class MCPToolApprovalStore {
         // decline: the user was never shown this call.
         if pendingRequest != nil { return .unavailable }
 
+        let token = pendingToken &+ 1
+        pendingToken = token
         let shortName = Self.shortToolName(toolName)
         // The FULL arguments, display-safe — not a capped preview. The sheet
         // scrolls, so truncating here would only let content past the cutoff be
@@ -167,7 +201,7 @@ final class MCPToolApprovalStore {
             }
         } onCancel: { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.pendingToken == token else { return }
                 if let cont = self.pendingContinuation {
                     self.pendingContinuation = nil
                     self.pendingRequest = nil
