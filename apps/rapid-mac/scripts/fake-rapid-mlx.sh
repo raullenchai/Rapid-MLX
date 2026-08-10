@@ -591,6 +591,7 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Parser           Reasoning")
         print("---------------------  ---------------  ---------")
         print("fake-alias             hermes           qwen3")
+        print("fake-external-alias    hermes           qwen3")
         # A video-generation row, in the tagged section the real engine
         # emits (#1607). It has no tokenizer and cannot answer a chat
         # request, so the desktop must filter it out of every catalog
@@ -618,6 +619,7 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
         print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+        print("(external)             fake-external-alias     2.4 GB")
         # Cached, so the Images tab resolves to it without a download path —
         # ``ImageGenViewModel.resolveAlias`` prefers a cached entry.
         print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")

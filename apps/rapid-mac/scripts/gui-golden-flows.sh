@@ -1670,10 +1670,19 @@ flow_catalog_integrity() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-alias")' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "Model Management inventory was not observed"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-external-alias")' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "external model was not visible in Model Management"
+    jq -e '[.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Delete.fake-external-alias")] | length == 0' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "external model exposed a delete action"
+    jq -e '[.data.ui_elements[]? | select([(.title // ""), (.description // ""), (.help // "")] | join(" ") | test("another app"; "i"))] | length > 0' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "external model was not labelled as owned by another app"
     jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "a video-gen alias reached Model Management"
-    log "  no video-gen alias on either catalog surface"
+    log "  no video-gen alias on either catalog surface; external model is visible and read-only"
     cleanup_persona
 }
 

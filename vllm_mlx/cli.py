@@ -4969,17 +4969,24 @@ def _scan_external_model_dirs(
         except OSError:
             return False
 
-    def _record(directory: str, repo: str) -> None:
+    def _record(directory: str, repo: str, canonical_root: str) -> None:
         real = os.path.realpath(directory)
+        try:
+            if os.path.commonpath((canonical_root, real)) != canonical_root:
+                return
+        except (OSError, ValueError):
+            return
         # Ordered root precedence: the first configured occurrence of a repo
         # wins.  Dedup by both identity and display/launch identifier so two
         # separate roots cannot print duplicate rows or double-count bytes.
         if real in seen_paths or repo in seen_repos:
             return
         try:
-            mtime = os.path.getmtime(directory)
+            if not _complete(real):
+                return
+            mtime = os.path.getmtime(real)
         except OSError:
-            mtime = 0.0
+            return
         # ``_snapshot_size_bytes`` (follows symlinks), not ``_dir_size_bytes``
         # (skips them). The hub scanner must skip links because a snapshot
         # entry is a second name for a blob it already counted; an external
@@ -4988,7 +4995,7 @@ def _scan_external_model_dirs(
         # that occupies gigabytes. Several tools lay models out this way to
         # share weights between runtimes.
         try:
-            size = _snapshot_size_bytes(directory)
+            size = _snapshot_size_bytes(real)
         except OSError:
             # External trees are owned by another process and may disappear,
             # lose permission, or contain a broken link while we scan. One
@@ -5024,8 +5031,8 @@ def _scan_external_model_dirs(
 
             # A model may sit directly at <root>/<name>/ as well as at
             # <root>/<publisher>/<name>/ — accept both.
-            if _contained(pub_dir) and _complete(pub_dir):
-                _record(pub_dir, publisher)
+            if _contained(pub_dir):
+                _record(pub_dir, publisher, canonical_root)
 
             try:
                 second_level = sorted(os.listdir(pub_dir))
@@ -5036,12 +5043,8 @@ def _scan_external_model_dirs(
                 if _external_model_identifier_parts(repo) is None:
                     continue
                 model_dir = os.path.join(pub_dir, name)
-                if (
-                    os.path.isdir(model_dir)
-                    and _contained(model_dir)
-                    and _complete(model_dir)
-                ):
-                    _record(model_dir, repo)
+                if os.path.isdir(model_dir) and _contained(model_dir):
+                    _record(model_dir, repo, canonical_root)
 
     return out
 
