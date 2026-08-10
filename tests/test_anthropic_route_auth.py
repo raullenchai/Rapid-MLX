@@ -326,6 +326,69 @@ def test_anthropic_messages_rejects_mixed_invalid_x_api_key(anthropic_client):
     assert engine.calls == []
 
 
+def test_anthropic_messages_rejects_empty_companion_x_api_key(anthropic_client):
+    """A valid Bearer paired with a *present but empty* ``x-api-key`` header
+    must fail closed: presence of a credential header means it has to be
+    valid, so an empty companion can never satisfy it (#337)."""
+    client = anthropic_client.client
+    engine = anthropic_client.engine
+
+    response = client.post(
+        "/v1/messages",
+        json=_messages_payload(),
+        headers={
+            "Authorization": "Bearer test-secret",
+            "x-api-key": "",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid API key"
+    assert engine.calls == []
+
+
+def test_anthropic_messages_rejects_duplicate_x_api_key_when_one_invalid(
+    anthropic_client,
+):
+    """Multiple ``x-api-key`` headers must *all* match — the ``get`` accessor
+    only saw one value, letting a valid header smuggle an invalid twin past
+    the gate (#337). ``getlist`` closes that by verifying every value."""
+    client = anthropic_client.client
+    engine = anthropic_client.engine
+
+    response = client.post(
+        "/v1/messages",
+        json=_messages_payload(),
+        headers=[
+            (b"x-api-key", b"test-secret"),
+            (b"x-api-key", b"wrong-secret"),
+        ],
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid API key"
+    assert engine.calls == []
+
+
+def test_anthropic_messages_accepts_duplicate_matching_x_api_key(anthropic_client):
+    """Repeating the *same* valid ``x-api-key`` stays accepted — the rule is
+    'every present credential must match,' not 'exactly one header.'"""
+    client = anthropic_client.client
+    engine = anthropic_client.engine
+
+    response = client.post(
+        "/v1/messages",
+        json=_messages_payload(),
+        headers=[
+            (b"x-api-key", b"test-secret"),
+            (b"x-api-key", b"test-secret"),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert len(engine.calls) == 1
+
+
 def test_anthropic_messages_respects_rate_limit(anthropic_client):
     client = anthropic_client.client
     anthropic_client.rate_limiter.enabled = True
