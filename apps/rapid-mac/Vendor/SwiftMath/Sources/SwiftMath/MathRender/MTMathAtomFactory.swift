@@ -158,7 +158,7 @@ public class MTMathAtomFactory {
         "omicron" : MTMathAtom(type: .variable, value: "\u{03BF}"),
         "pi" : MTMathAtom(type: .variable, value: "\u{03C0}"),
         "rho" : MTMathAtom(type: .variable, value: "\u{03C1}"),
-        "varsigma" : MTMathAtom(type: .variable, value: "\u{03C1}"),
+        "varsigma" : MTMathAtom(type: .variable, value: "\u{03C2}"),
         "sigma" : MTMathAtom(type: .variable, value: "\u{03C3}"),
         "tau" : MTMathAtom(type: .variable, value: "\u{03C4}"),
         "upsilon" : MTMathAtom(type: .variable, value: "\u{03C5}"),

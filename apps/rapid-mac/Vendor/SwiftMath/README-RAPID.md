@@ -11,6 +11,7 @@ manually assembled, strictly signed macOS app load fonts from
 root instead.
 
 To audit an update, diff `Sources/SwiftMath` against the upstream tag. Expected
-differences are `MathBundle/SwiftMathResources.swift` plus the two substitutions
-in `MathBundle/MathFont.swift` and the one substitution in
-`MathRender/MTFont.swift`.
+differences are the resource resolver/call-site substitutions plus the bounded
+correctness fixes pinned by `SwiftMathVendorTests`: correct `\\varsigma`, keep
+the CTFont cache inside its synchronization boundary, and honour the macOS
+background-color setter.

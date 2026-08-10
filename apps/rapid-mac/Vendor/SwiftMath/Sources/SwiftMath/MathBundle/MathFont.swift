@@ -167,7 +167,6 @@ private class BundleManager {
             fatalError("\(#function) unable to locate CGFont \(font.fontName) to create CTFont")
         }
         //Note: ctfont creation and caching is now threadsafe.
-        guard threadSafeQueue.sync(execute: { ctFonts[fontSizePair] }) == nil else { return ctFonts[fontSizePair]! }
         return threadSafeQueue.sync(flags: .barrier, execute: {
             if let ctfont = ctFonts[fontSizePair] {
                 return ctfont

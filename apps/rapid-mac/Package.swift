@@ -80,6 +80,11 @@ let package = Package(
             name: "RapidUXTests",
             dependencies: ["Rapid"],
             path: "Tests/RapidUXTests"
+        ),
+        .testTarget(
+            name: "SwiftMathVendorTests",
+            dependencies: ["SwiftMath"],
+            path: "Vendor/SwiftMath/Tests"
         )
         // NOTE (2026-08-05): the RapidTests target is BACK in the manifest,
         // above. It had been excluded on the reasoning that the strip

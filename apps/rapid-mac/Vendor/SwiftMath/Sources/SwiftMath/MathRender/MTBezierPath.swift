@@ -24,12 +24,11 @@ extension MTView {
             MTColor(cgColor: self.layer?.backgroundColor ?? MTColor.clear.cgColor)
         }
         set {
-            self.layer?.backgroundColor = MTColor.clear.cgColor
             self.wantsLayer = true
+            self.layer?.backgroundColor = newValue?.cgColor
         }
     }
     
 }
 
 #endif
-
