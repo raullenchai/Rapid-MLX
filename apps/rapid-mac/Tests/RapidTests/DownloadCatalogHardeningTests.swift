@@ -267,8 +267,13 @@ struct DownloadCatalogHardeningTests {
             """
         )
 
-        let output = await ModelCatalog._testingRunRapidMlx(binary: script, args: ["models"])
-        #expect(output == "1")
+        for subcommand in ["models", "ls", "info"] {
+            let output = await ModelCatalog._testingRunRapidMlx(
+                binary: script,
+                args: [subcommand, "fixture-alias"]
+            )
+            #expect(output == "1", "\(subcommand) probe inherited engine telemetry")
+        }
     }
 
     @Test("ModelCatalog probe environment preserves caller paths but overrides telemetry")

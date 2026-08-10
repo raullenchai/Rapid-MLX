@@ -1835,10 +1835,12 @@ flow_catalog_integrity() {
     done
     [[ "$catalog_ready" == 1 ]] || die "chat catalog inventory was not observed"
 
-    # The catalog is populated by app-owned `models` / `ls` / `info` probes.
+    # This fixture's catalog is populated by app-owned `models` / `ls` probes.
+    # (The Swift subprocess test separately exercises the conditional `info`
+    # sibling probe, which this fixture deliberately has no candidate for.)
     # They are implementation details, not real engine sessions (#1415).
     # The model-menu value above is the completion barrier: ModelCatalog.load
-    # publishes that merged inventory only after its models/ls/info tasks have
+    # publishes that merged inventory only after its models/ls tasks have
     # all returned, so the event log now contains the full initial probe set.
     jq -e -s '[.[] | select(.event == "command")]
               | (map(.subcommand) | index("models") != null)
