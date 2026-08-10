@@ -660,3 +660,58 @@ def test_generations_uses_engine_default_steps(client, monkeypatch, default_step
     resp = client.post("/v1/images/generations", json={"prompt": "a fox"})
     assert resp.status_code == 200
     assert engine.steps_seen == [default_steps]
+
+
+def test_image_alias_skips_the_mllm_routing_preflight(monkeypatch):
+    """An image-gen alias must not run the MLLM-vs-text routing preflight.
+
+    ``_ensure_routing_config`` materializes a checkpoint ``config.json`` so
+    ``resolve_serving_lane`` can tell a hybrid VLM from a text model, and
+    fails fast when it cannot. mflux-layout checkpoints keep every weight and
+    config under ``transformer/`` / ``text_encoder/`` / ``vae/`` and ship no
+    ``config.json`` at the checkpoint root, so that preflight can never
+    succeed for them — which is how ``serve z-image-turbo`` refused a
+    fully-cached 5.5 GB model with an error about hybrid-VLM misrouting, a
+    hazard a diffusion model does not have. A diffusion alias branches
+    straight to ImageEngine and never asks the question, so the preflight
+    must be skipped rather than merely tolerated.
+    """
+    from vllm_mlx import server
+    from vllm_mlx.runtime import image_lane
+
+    def _unmaterializable(name):
+        raise RuntimeError(
+            f"Could not materialize the checkpoint config for {name!r} "
+            "before selecting the serving lane."
+        )
+
+    built: dict[str, object] = {}
+
+    class _LazyImageEngine:
+        def __init__(self, model_name):
+            built["model_name"] = model_name
+
+    monkeypatch.setattr(server, "_ensure_routing_config", _unmaterializable)
+    monkeypatch.setattr(image_lane, "ImageEngine", _LazyImageEngine)
+    monkeypatch.setattr(
+        image_lane, "require_image_runtime_or_exit", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.generation_config.load_generation_config_sampling",
+        lambda *_a, **_kw: {},
+    )
+
+    # ``load_model`` publishes module globals; keep them off sibling tests.
+    saved = {
+        attr: getattr(server, attr, None)
+        for attr in ("_engine", "_model_name", "_model_alias")
+    }
+    try:
+        server.load_model("z-image-turbo")
+        assert built.get("model_name") == "filipstrand/Z-Image-Turbo-mflux-4bit", (
+            "the image alias never reached ImageEngine — the MLLM routing "
+            "preflight ran and killed a lane that has no MLLM question"
+        )
+    finally:
+        for attr, value in saved.items():
+            setattr(server, attr, value)

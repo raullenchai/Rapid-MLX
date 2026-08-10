@@ -1759,8 +1759,24 @@ def load_model(
     # auto mode: an explicit ``--mllm`` (force_mllm) is respected so the
     # operator who insists on the multimodal path gets the engine's own #352
     # error rather than a silent override. #352 dogfood P1-② (0.10.16).
+    #
+    # The generative-media lanes are exempt. An ``image-gen`` / ``video-gen``
+    # alias never reaches ``resolve_serving_lane``'s question at all — it
+    # branches to ImageEngine / VideoEngine below — so the MLLM-vs-text
+    # preflight has nothing to decide for it. Running it anyway is not merely
+    # wasted work: mflux-layout checkpoints keep their weights and configs in
+    # ``transformer/`` / ``text_encoder/`` / ``vae/`` subdirectories and ship
+    # no ``config.json`` at the checkpoint root, so ``_ensure_routing_config``
+    # cannot materialize one and raises. That is how the Images tab's
+    # ``z-image-turbo`` alias could never start: a fully-cached 5.5 GB
+    # checkpoint refused with an error about hybrid-VLM misrouting, a hazard
+    # that does not exist for a diffusion model.
     _auto_text_fallback = False
-    if not force_text and not force_mllm:
+    _is_generative_media = _profile is not None and _profile.modality in (
+        "image-gen",
+        "video-gen",
+    )
+    if not force_text and not force_mllm and not _is_generative_media:
         _ensure_routing_config(model_name)
         _lane_is_mllm, _auto_text_fallback = resolve_serving_lane(
             model_name, force_mllm=force_mllm, force_text=force_text
@@ -2663,6 +2679,7 @@ Examples:
     # was silently dropped — same bug class as #400. The unified rapid-mlx
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
+    from .model_aliases import resolve_profile as _srv_resolve_profile
     from .pflash import resolve_pflash_config as _server_pflash_resolve_config
     from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
@@ -2684,9 +2701,18 @@ Examples:
     # ``_ensure_routing_config`` fail-fast would DENY the very ``--no-mllm``
     # escape hatch its own error message advertises when the config cannot be
     # fetched. Mirror ``load_model()``'s flag-first skip (codex BLOCKING #1178).
+    # Same generative-media exemption as ``load_model`` above: an image-gen /
+    # video-gen alias branches to its own engine and never asks the
+    # MLLM-vs-text question, while an mflux-layout checkpoint has no
+    # root-level config.json for the preflight to materialize.
+    _srv_profile = _srv_resolve_profile(args.model)
+    _srv_generative_media = _srv_profile is not None and _srv_profile.modality in (
+        "image-gen",
+        "video-gen",
+    )
     _srv_force_mllm = getattr(args, "mllm", False)
     _srv_force_text = getattr(args, "no_mllm", False)
-    if not _srv_force_mllm and not _srv_force_text:
+    if not _srv_force_mllm and not _srv_force_text and not _srv_generative_media:
         _ensure_routing_config(args.model)
     _srv_is_mllm, _ = resolve_serving_lane(
         args.model,

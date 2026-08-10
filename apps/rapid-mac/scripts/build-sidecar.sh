@@ -8,7 +8,7 @@
 #
 # Lives in **rapid-desktop**, not vllm-mlx. Sidecar packaging is a
 # rapid-desktop concern — tunables like MACHO_BASELINE_COUNT, extras
-# (mlx-vlm, Pillow), trim rules, and size gates all gate a
+# (mlx-vlm, Pillow, mflux), trim rules, and size gates all gate a
 # rapid-desktop artifact, so they live next to it. Submodule
 # indirection used to put this script in the rapid-mlx repo (v0.6.6 →
 # v0.7.7), and the v0.7.4 slim mechanism notes flagged that as a
@@ -281,6 +281,105 @@ echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader p
     --no-deps \
     'mlx-vlm==0.6.3' \
     'Pillow>=10.0'
+
+# ----- step 2.6: bundle mflux --no-deps (Images tab image-gen lane) ----
+#
+# The Images tab offers the ``[image:gen]`` aliases — flux2-klein-4b and
+# z-image-turbo — and ``ImageGenViewModel.runGenerate`` starts the sidecar
+# on whichever one the user picked. Without mflux the sidecar prints
+# "image generation requires the `rapid-mlx[image]` Python extra" and
+# exits before binding a port, so the app can only say "Couldn't start X.
+# Try again" — advice that fails identically forever, after a 4-6 GB
+# download. That is precisely the dead end #1603 closed for the video
+# aliases, and it shipped unnoticed because the Images golden flow drives
+# a stub server and so cannot observe a missing engine dependency.
+#
+# mflux declares torch (363 MB installed), opencv-python and matplotlib.
+# Bundling torch alone would blow BUNDLE_SIZE_CAP_MB (500) on its own, and
+# none of the three is reachable from the two families we wire:
+#   * every component of Flux2KleinWeightDefinition / ZImageWeightDefinition
+#     takes ComponentDefinition's default ``loading_mode="mlx_native"``,
+#     which loads through ``mx.load``;
+#   * torch is only touched by the "torch_checkpoint" / "torch_convert" /
+#     "torch_bfloat16" modes, which belong to families we do not wire
+#     (fibo, fibo_vlm, depth_pro);
+#   * cv2 lives in flux/variants/controlnet and matplotlib in
+#     flux/variants/concept_attention — neither on our path.
+# The only thing in the way is a module-level ``import torch`` in
+# weight_loader.py that runs on EVERY load; the patch below defers it into
+# the three functions that actually use it. Verified end to end on a
+# bundle with no torch: ``serve flux2-klein-4b`` binds, and
+# /v1/images/generations returns a real 512x512 PNG in ~3 s on an M3 Ultra.
+#
+# Of mflux's other declared deps only three are both missing here and
+# actually imported: platformdirs (cli/defaults/defaults.py, reached from
+# weight_loader), piexif (utils/image_util.py) and toml
+# (utils/version_util.py) — ~620 KB together. filelock is already bundled
+# by rapid-mlx's own install; hf-transfer is declared but never imported.
+# Pin exactly, for the same reason as mlx-vlm above: with --no-deps a range
+# would let the desktop float onto an mflux release whose loader wants a
+# dependency this bundle does not carry.
+echo "==> bundling mflux --no-deps + platformdirs/piexif/toml (Images tab image-gen lane)"
+"$STAGE/python/bin/python3.12" -m pip install \
+    --target "$STAGE/site-packages" \
+    --no-warn-script-location \
+    --no-compile \
+    --no-deps \
+    'mflux==0.18.1' \
+    'platformdirs>=4.0,<5.0' \
+    'piexif>=1.1.3,<2.0' \
+    'toml>=0.10.2,<1.0'
+
+# Defer mflux's module-level torch imports into the three functions that
+# use them. Fails the build when the expected lines are gone: an mflux bump
+# that reshapes weight_loader.py must be re-verified by a human rather than
+# silently shipping an Images tab that dies on every generation.
+"$STAGE/python/bin/python3.12" - "$STAGE/site-packages" <<'PY'
+import pathlib
+import re
+import sys
+
+target = pathlib.Path(sys.argv[1]) / "mflux/models/common/weights/loading/weight_loader.py"
+src = target.read_text()
+
+for eager in ("import torch\n", "from safetensors.torch import load_file as torch_load_file\n"):
+    if eager not in src:
+        raise SystemExit(
+            f"ERR: mflux weight_loader.py no longer has the eager import "
+            f"{eager.strip()!r}. Re-verify the torch-free image path before "
+            f"bumping the mflux pin."
+        )
+    src = src.replace(eager, "", 1)
+
+lazy = (
+    "        import torch\n"
+    "        from safetensors.torch import load_file as torch_load_file\n"
+)
+for fn in ("_load_torch_checkpoint", "_load_torch_convert", "_load_torch_bfloat16"):
+    match = re.search(rf"^    def {fn}\(.*\n", src, re.M)
+    if match is None or not match.group(0).rstrip().endswith(":"):
+        raise SystemExit(
+            f"ERR: mflux weight_loader.py has no single-line def for {fn}(). "
+            f"Re-verify the torch-free image path before bumping the mflux pin."
+        )
+    src = src[: match.end()] + lazy + src[match.end() :]
+
+target.write_text(src)
+print("==> mflux torch imports deferred into the 3 torch-only loading modes")
+PY
+
+# Fail closed: with no torch in the stage, importing mflux's weight loader
+# is itself the proof that the image lane no longer needs a 363 MB
+# dependency. A regression here means every Images-tab generation 500s.
+PYTHONPATH="$STAGE/site-packages" PYTHONNOUSERSITE=1 "$STAGE/python/bin/python3.12" -s - <<'PY'
+import importlib
+import sys
+
+importlib.import_module("mflux.models.common.weights.loading.weight_loader")
+if "torch" in sys.modules:
+    raise SystemExit("ERR: mflux still pulls torch at import time")
+print("==> mflux image lane imports without torch: OK")
+PY
 
 # ``--no-deps`` is intentional for bundle size, but it must not hide version
 # conflicts among distributions that ARE present. Missing optional heavy deps
