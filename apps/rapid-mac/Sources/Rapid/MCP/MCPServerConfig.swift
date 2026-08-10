@@ -76,6 +76,11 @@ struct MCPServerConfig: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// a space is not a legal OpenAI function-name character.
     static func isValidName(_ name: String) -> Bool {
         guard !name.isEmpty, name.count <= maxNameLength else { return false }
+        // `__` is the namespace separator: the engine builds `server__tool` and
+        // both sides split on the FIRST `__`. A name that contains one (e.g.
+        // `my__server`) would be parsed as server `my`, tool `server__…`, and
+        // never dispatch. A single `_` is fine.
+        if name.contains("__") { return false }
         for ch in name.unicodeScalars {
             let ok = (ch >= "a" && ch <= "z")
                 || (ch >= "A" && ch <= "Z")

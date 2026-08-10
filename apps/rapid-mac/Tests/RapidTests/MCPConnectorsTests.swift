@@ -63,6 +63,10 @@ final class MCPConnectorsTests {
         #expect(!MCPServerConfig.isValidName("dots.are.out"))
         #expect(!MCPServerConfig.isValidName(""))
         #expect(!MCPServerConfig.isValidName(String(repeating: "a", count: 33)))
+        // `__` is the namespace separator; a name containing it splits wrong
+        // and the server's tools never dispatch. A single `_` is fine.
+        #expect(!MCPServerConfig.isValidName("my__server"))
+        #expect(MCPServerConfig.isValidName("my_server"))
     }
 
     @Test("A stdio entry needs a command and an SSE entry needs a valid URL")

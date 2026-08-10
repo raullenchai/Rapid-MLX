@@ -179,24 +179,29 @@ final class MCPConfigStore {
         // runs — a new command/URL/args/env, or a rename — any "always allow"
         // remembered against the old name must be dropped, or it would silently
         // authorize the replacement. Enable/timeout edits don't change the code
-        // and keep their grants.
+        // and keep their grants. Decide here, but revoke only AFTER the write
+        // is durable: a failed persist must not strand a connector with its
+        // grants deleted.
         var next = servers
+        var reconfiguredServer: String?
         if let originalName, let idx = next.firstIndex(where: { $0.name == originalName }) {
             if next[idx].runsDifferentCode(from: server) || originalName != server.name {
-                onServerReconfigured?(originalName)
+                reconfiguredServer = originalName
             }
             next[idx] = server
         } else {
             next.append(server)
         }
         try persist(next)
+        if let reconfiguredServer { onServerReconfigured?(reconfiguredServer) }
     }
 
     func remove(named name: String) throws {
-        // A removed server's grants are dead keys; drop them so re-adding the
-        // same name later starts from a clean, unapproved slate.
-        onServerReconfigured?(name)
+        // Persist first: a failed removal must not reset consent for a
+        // connector that is still installed. A removed server's grants are dead
+        // keys, so drop them once the removal is durable.
         try persist(servers.filter { $0.name != name })
+        onServerReconfigured?(name)
     }
 
     func setServerEnabled(_ name: String, _ enabled: Bool) throws {
@@ -219,6 +224,14 @@ final class MCPConfigStore {
                 // The directory holds a file naming local commands to run.
                 // 0700 keeps it out of reach of other accounts on a shared Mac.
                 attributes: [.posixPermissions: 0o700]
+            )
+            // createDirectory does NOT tighten an already-existing directory,
+            // so a `~/.config/rapid-mlx` created earlier at the umask default
+            // (e.g. 0755) would leave the 0600-window argument below false.
+            // Set it explicitly, every time — this is what shields the brief
+            // post-rename window where the file still carries the umask mode.
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: dir.path
             )
             // Atomic so a crash mid-write can't leave the engine reading a
             // truncated config on next launch.

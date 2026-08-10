@@ -40,7 +40,12 @@ struct SettingsConnectorsPanel: View {
     /// MCP config — which is exactly what happens when it was spawned before
     /// connectors were switched on, since `--mcp-config` is read once at spawn.
     private var needsRestart: Bool {
+        // Requires at least one ENABLED server: with none, `launchConfigPath`
+        // intentionally stays nil (nothing to start the subsystem for), so the
+        // child is correctly unconfigured and a restart could never change
+        // that — showing a restart banner it can't clear.
         config.isEnabled
+            && config.servers.contains(where: { $0.enabled })
             && server.launchedChildAlias != nil
             && !catalog.isConfigured
     }
