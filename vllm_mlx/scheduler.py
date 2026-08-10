@@ -6122,6 +6122,36 @@ class Scheduler:
             request_id = self._pending_abort_ids.pop()
             self._do_abort_request(request_id)
 
+    def _reconcile_orphaned_running_requests(self) -> list[str]:
+        """Reap running slots whose engine-side request was already released.
+
+        ``EngineCore._cleanup_request`` removes the canonical ``requests``
+        entry when a streaming consumer disconnects.  The scheduler normally
+        consumes the corresponding deferred abort at the start of the next
+        step.  Production issue #1759 demonstrated that relying on that single
+        edge is not sufficient: after a rare disconnect race, the abort edge
+        can be gone while ``running`` and the BatchGenerator uid remain.  The
+        empty consumer can then be decoded forever and permanently occupies a
+        ``max_num_seqs`` slot.
+
+        After pending aborts have been drained, a running id missing from
+        ``requests`` is impossible for a live request: normal completions are
+        removed from ``running`` on the executor thread *before* engine cleanup,
+        while disconnect cleanup deliberately removes ``requests`` first.  Use
+        that invariant as a narrow executor-thread safety net and route cleanup
+        through the same BatchGenerator-aware abort implementation.
+        """
+        with self._cancel_counter_lock:
+            orphaned = [rid for rid in self.running if rid not in self.requests]
+
+        for request_id in orphaned:
+            logger.warning(
+                "[abort_reconcile] reaping orphaned running request %s",
+                request_id[:12],
+            )
+            self._do_abort_request(request_id)
+        return orphaned
+
     def _do_abort_request(self, request_id: str) -> bool:
         """
         Actually abort a request. Must be called from the executor thread.
@@ -7366,6 +7396,11 @@ class Scheduler:
 
         # Process pending aborts FIRST (in executor thread, safe for MLX)
         self._process_pending_aborts()
+        # #1759: the engine has no consumer for a running request once its
+        # canonical tracking entry is gone.  Reconcile that invariant before
+        # invoking BatchGenerator.next(), otherwise a lost disconnect-abort can
+        # spend this and every later tick decoding a ghost slot.
+        self._reconcile_orphaned_running_requests()
 
         for attempt in range(max_retries + 1):
             try:

@@ -315,6 +315,46 @@ class TestSchedulerBasic:
         assert scheduler.abort_request("known-1") is True
         assert scheduler.abort_request("known-1") is True
 
+    def test_step_reaps_disconnect_orphan_before_next(
+        self, mock_model, mock_tokenizer
+    ):
+        """#1759: engine cleanup without a surviving abort must not leak a slot.
+
+        This is the deterministic form of the production race: the streaming
+        consumer is gone (``requests`` was popped), but the scheduler's running
+        map, uid maps and mlx-lm batch slot remain while the deferred-abort set
+        is empty.  Before the reconciliation guard, ``step()`` called
+        ``BatchGenerator.next()`` forever and ``num_running`` stayed pinned.
+        """
+        scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer)
+        request = Request(
+            request_id="disconnect-orphan",
+            prompt="Hello",
+            sampling_params=SamplingParams(max_tokens=512),
+        )
+        request.status = RequestStatus.RUNNING
+        uid = 73
+
+        # Deliberately do not populate scheduler.requests: this models
+        # EngineCore._cleanup_request having already released the consumer.
+        scheduler.running[request.request_id] = request
+        scheduler.request_id_to_uid[request.request_id] = uid
+        scheduler.uid_to_request_id[uid] = request.request_id
+        scheduler._pending_abort_ids.clear()
+
+        batch = MagicMock()
+        batch.next.side_effect = AssertionError("ghost slot was decoded")
+        scheduler.batch_generator = batch
+
+        scheduler.step()
+
+        batch.remove.assert_called_once_with([uid])
+        batch.next.assert_not_called()
+        assert request.request_id not in scheduler.running
+        assert request.request_id not in scheduler.request_id_to_uid
+        assert uid not in scheduler.uid_to_request_id
+        assert scheduler.get_num_running() == 0
+
     def test_get_stats(self, mock_model, mock_tokenizer):
         """Test getting scheduler stats."""
         scheduler = Scheduler(
