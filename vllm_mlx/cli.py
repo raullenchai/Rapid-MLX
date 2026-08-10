@@ -4872,6 +4872,112 @@ def _scan_hf_cache_models() -> list[tuple[str, int, float]]:
     return out
 
 
+def _external_model_roots() -> list[str]:
+    """Directories to scan for models another MLX runtime downloaded.
+
+    Read from ``RAPID_MLX_EXTRA_MODEL_ROOTS`` (``os.pathsep``-separated,
+    same convention as ``PATH``). Empty by default: scanning a user's
+    disk uninvited is not ours to decide, and a wrong guess costs a slow
+    recursive walk on every ``ls``.
+
+    The desktop app populates this from the folder the user picked in
+    Settings, which is why the env var is the interface rather than a
+    hardcoded list of every MLX tool's default location.
+    """
+    raw = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip()
+    if not raw:
+        return []
+    roots: list[str] = []
+    for part in raw.split(os.pathsep):
+        path = os.path.expanduser(part.strip())
+        if path and os.path.isdir(path):
+            roots.append(os.path.realpath(path))
+    return roots
+
+
+def _scan_external_model_dirs(
+    roots: list[str] | None = None,
+) -> list[tuple[str, int, float]]:
+    """Find MLX-servable models sitting outside the HF hub cache.
+
+    Other MLX runtimes write ``<root>/<publisher>/<repo>/`` rather than
+    the hub's ``models--<org>--<name>/snapshots/<sha>/``, so
+    :func:`_scan_hf_cache_models` cannot see them and a user who already
+    has the weights is asked to download them again — on a machine where
+    disk is usually the scarce resource.
+
+    Returns the same ``(repo, size_bytes, mtime)`` triples as the hub
+    scanner so both feed one renderer.
+
+    What counts as a model is decided by
+    :func:`vllm_mlx._download_gate._snapshot_is_complete`, the same check
+    ``serve`` uses. That matters for two reasons: it mirrors mlx-lm's
+    actual loader glob (``model*.safetensors``), so we never advertise a
+    directory the loader would then refuse; and it excludes GGUF
+    structurally rather than by blacklist — mlx-lm can *export* GGUF but
+    has no load path for it, so listing one would offer a model that
+    fails on start.
+
+    Depth is capped at two levels (``<root>/<a>/<b>``). Every MLX tool
+    lays models out as publisher/repo, and an uncapped walk over a
+    directory the user pointed at could descend into an entire home
+    folder.
+    """
+    from vllm_mlx._download_gate import _snapshot_is_complete
+
+    if roots is None:
+        roots = _external_model_roots()
+
+    out: list[tuple[str, int, float]] = []
+    seen: set[str] = set()
+
+    def _record(directory: str, repo: str) -> None:
+        real = os.path.realpath(directory)
+        if real in seen:
+            return
+        seen.add(real)
+        try:
+            mtime = os.path.getmtime(directory)
+        except OSError:
+            mtime = 0.0
+        out.append((repo, _dir_size_bytes(directory), mtime))
+
+    for root in roots:
+        try:
+            first_level = sorted(os.listdir(root))
+        except OSError:
+            continue
+        for publisher in first_level:
+            if publisher.startswith("."):
+                continue
+            # Skip the hub layout: those belong to the hub scanner, and
+            # listing them twice would double-count disk usage.
+            if publisher.startswith(("models--", "datasets--", "spaces--")):
+                continue
+            pub_dir = os.path.join(root, publisher)
+            if not os.path.isdir(pub_dir):
+                continue
+
+            # A model may sit directly at <root>/<name>/ as well as at
+            # <root>/<publisher>/<name>/ — accept both.
+            if _snapshot_is_complete(pub_dir):
+                _record(pub_dir, publisher)
+                continue
+
+            try:
+                second_level = sorted(os.listdir(pub_dir))
+            except OSError:
+                continue
+            for name in second_level:
+                if name.startswith("."):
+                    continue
+                model_dir = os.path.join(pub_dir, name)
+                if os.path.isdir(model_dir) and _snapshot_is_complete(model_dir):
+                    _record(model_dir, f"{publisher}/{name}")
+
+    return out
+
+
 def _cache_entry_is_runnable(repo: str) -> bool:
     """Whether a cache directory contains a complete runnable snapshot.
 
@@ -4906,6 +5012,14 @@ def _print_cached_models() -> None:
     from vllm_mlx.model_aliases import list_profiles
 
     rows = _scan_hf_cache_models()
+    external_rows = _scan_external_model_dirs()
+    # Repos already in the hub cache win: the hub copy is the one we
+    # manage (and the one ``rm`` can delete), so a model present in both
+    # places must not appear twice.
+    hub_repos = {repo for repo, _, _ in rows}
+    external_rows = [r for r in external_rows if r[0] not in hub_repos]
+    external_repos = {repo for repo, _, _ in external_rows}
+    rows = rows + external_rows
     print()
     if not rows:
         print(
@@ -4943,11 +5057,22 @@ def _print_cached_models() -> None:
     for repo, size, mtime in sorted(rows, key=lambda r: -r[1]):
         total_bytes += size
         alias = hf_to_alias.get(repo, "(unmapped)")
+        # Models found outside the hub cache are listed but never labelled
+        # with an alias, and the desktop parser drops every parenthesized
+        # alias except ``(unmapped)``. That is deliberate: ``rm`` and the
+        # app's delete path both rebuild a target as
+        # ``<hub-root>/models--<repo>``, which is not where these live.
+        # Advertising one as deletable would either miss (nothing at that
+        # path) or, worse, delete an unrelated hub entry that happens to
+        # share the name. Read-only is the honest state — we did not
+        # download them and we cannot manage them.
+        if repo in external_repos:
+            alias = "(external)"
         # Keep partial directories visible for disk cleanup, but never label
         # a known alias as downloaded/runnable. The desktop parser deliberately
         # rejects parenthesized status rows, so this also prevents a 61 MiB
         # metadata stub for a 26B model from receiving a green checkmark.
-        if alias != "(unmapped)" and not _cache_entry_is_runnable(repo):
+        elif alias != "(unmapped)" and not _cache_entry_is_runnable(repo):
             alias = "(incomplete)"
         # Render modified as a human delta: "2 days ago" beats raw epoch.
         if mtime <= 0:

@@ -61,6 +61,15 @@ enum ModelCatalog {
     private static let maxSubprocessStderrBytes = 256 * 1024
     private static let pipeReadChunkBytes = 16 * 1024
 
+    /// Engine env var naming the directories to scan for models another MLX
+    /// runtime downloaded (``os.pathsep``-separated, like ``PATH``).
+    ///
+    /// Kept as a named constant because it is a cross-process contract with
+    /// ``vllm_mlx.cli._external_model_roots`` — a typo on either side fails
+    /// silently as "no models found", which reads as an empty disk rather
+    /// than as a broken lookup.
+    static let extraModelRootsEnvKey = "RAPID_MLX_EXTRA_MODEL_ROOTS"
+
     /// All known aliases plus their installation status. Empty array on
     /// any failure — the caller should fall back to a plain text field.
     /// We deliberately swallow errors here rather than throwing because
@@ -269,7 +278,7 @@ enum ModelCatalog {
         excluded: Set<String>
     ) -> [ModelEntry] {
         var cachedIndex: [String: (hfRepo: String?, size: String?)] = [:]
-        for (alias, hf, size) in cached where !alias.isEmpty && alias != "(unmapped)" {
+        for (alias, hf, size) in cached where !alias.isEmpty && !isStatusAlias(alias) {
             cachedIndex[alias] = (hf, size)
         }
 
@@ -296,7 +305,7 @@ enum ModelCatalog {
         // here on that basis (#1603).
         for (alias, hf, size) in cached
         where !alias.isEmpty
-            && alias != "(unmapped)"
+            && !isStatusAlias(alias)
             && !seenAliases.contains(alias)
             && !excluded.contains(alias) {
             entries.append(ModelEntry(
@@ -307,6 +316,18 @@ enum ModelCatalog {
             ))
         }
         return entries
+    }
+
+    /// Whether the alias column holds a status marker rather than a name.
+    ///
+    /// These rows carry a real repo but must never become a `ModelEntry`:
+    /// an entry is addressed by alias and, once `cached`, is offered for
+    /// deletion — and deletion rebuilds `<hub-root>/models--<repo>`.
+    /// `(external)` (#1718) lives outside that root entirely, so admitting
+    /// one would offer a delete that either silently misses or removes an
+    /// unrelated hub entry of the same name.
+    static func isStatusAlias(_ alias: String) -> Bool {
+        alias.hasPrefix("(") && alias.hasSuffix(")")
     }
 
     /// Runs ``rapid-mlx models`` and returns both the chat-capable rows
@@ -559,7 +580,17 @@ enum ModelCatalog {
             let parts = splitOnMultiSpace(line)
             guard parts.count >= 2 else { continue }
             let alias = parts[0]
-            guard alias == "(unmapped)" || isSafeAlias(alias) else { continue }
+            // ``(unmapped)`` and ``(external)`` are the two status values the
+            // engine may put in the alias column that still carry a real
+            // repo. Every other parenthesized value — ``(incomplete)`` — is
+            // dropped on purpose so a half-downloaded directory never reads
+            // as ready. ``(external)`` marks a model another MLX runtime
+            // downloaded (#1718): usable, but not ours to delete, since the
+            // delete path rebuilds ``<hub-root>/models--<repo>`` and that is
+            // not where it lives.
+            guard alias == "(unmapped)" || alias == "(external)" || isSafeAlias(alias) else {
+                continue
+            }
             let hf = parts.count >= 2 ? sanitizedHuggingFaceRepo(parts[1]) : nil
             let size = parts.count >= 3 ? parts[2] : nil
             entries.append((alias, hf, size))
@@ -657,6 +688,15 @@ enum ModelCatalog {
             if let hubCacheOverride {
                 var env = ProcessInfo.processInfo.environment
                 env["HF_HUB_CACHE"] = hubCacheOverride.path
+                // Issue #1718: the same folder is also handed to the engine
+                // as an extra scan root. The picker sets where we *download*
+                // to and assumes hub-cache layout, so pointing it at a tree
+                // another MLX runtime wrote — those use
+                // ``<root>/<publisher>/<repo>/`` — surfaced nothing, and the
+                // user was asked to re-download weights already on disk.
+                // Passing it both ways means either layout is found without
+                // making the user say which kind of folder they picked.
+                env[extraModelRootsEnvKey] = hubCacheOverride.path
                 task.environment = env
             }
             let stdout = Pipe()

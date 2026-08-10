@@ -645,3 +645,163 @@ def test_scan_hf_cache_models_reports_blob_bytes_not_double(tmp_path, monkeypatc
     rows = cli._scan_hf_cache_models()
     sizes = {repo_id: size for repo_id, size, _mtime in rows}
     assert sizes["acme/Widget-4bit"] == 8192
+
+
+# ---------------------------------------------------------------------------
+# External model discovery (#1718)
+#
+# Other MLX runtimes write ``<root>/<publisher>/<repo>/`` rather than the
+# hub's ``models--<org>--<name>/snapshots/<sha>/``, so a user who already has
+# the weights was asked to download them again.
+# ---------------------------------------------------------------------------
+
+
+def _write_mlx_model(directory, *, shard_name="model.safetensors", size=2048):
+    """Create a directory mlx-lm's loader would accept."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / shard_name).write_bytes(b"x" * size)
+    (directory / "config.json").write_text("{}")
+    return directory
+
+
+def test_external_scan_finds_publisher_repo_layout(tmp_path):
+    """The layout every other MLX runtime uses must be discoverable."""
+    root = tmp_path / "models"
+    _write_mlx_model(root / "mlx-community" / "SomeModel-4bit")
+
+    rows = cli._scan_external_model_dirs([str(root)])
+
+    assert [r[0] for r in rows] == ["mlx-community/SomeModel-4bit"]
+    assert rows[0][1] > 0, "size should be measured"
+
+
+def test_external_scan_accepts_a_model_directly_under_the_root(tmp_path):
+    """Not every tree has a publisher level."""
+    root = tmp_path / "models"
+    _write_mlx_model(root / "SoloModel-4bit")
+
+    rows = cli._scan_external_model_dirs([str(root)])
+
+    assert [r[0] for r in rows] == ["SoloModel-4bit"]
+
+
+def test_external_scan_skips_incomplete_directories(tmp_path):
+    """Config without weights is not servable — offering it would hand the
+    user a model that fails on start."""
+    root = tmp_path / "models"
+    partial = root / "pub" / "NoWeights"
+    partial.mkdir(parents=True)
+    (partial / "config.json").write_text("{}")
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
+def test_external_scan_skips_gguf(tmp_path):
+    """mlx-lm can export GGUF but has no load path for it, so a GGUF store
+    must not appear — see ``_download_gate`` for the one-way note."""
+    root = tmp_path / "models"
+    gguf = root / "TheBloke" / "Model-GGUF"
+    gguf.mkdir(parents=True)
+    (gguf / "model.gguf").write_bytes(b"x" * 4096)
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
+def test_external_scan_skips_hub_layout_directories(tmp_path):
+    """Hub entries belong to the hub scanner; counting them twice would
+    double-report disk usage."""
+    root = tmp_path / "models"
+    _write_mlx_model(root / "models--mlx-community--Dup" / "snapshots" / "abc")
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
+def test_external_scan_does_not_descend_past_two_levels(tmp_path):
+    """An uncapped walk over a user-chosen directory could traverse a whole
+    home folder."""
+    root = tmp_path / "models"
+    _write_mlx_model(root / "a" / "b" / "TooDeep")
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
+def test_external_scan_deduplicates_symlinked_roots(tmp_path):
+    """The same model reachable by two paths is still one model."""
+    root = tmp_path / "models"
+    _write_mlx_model(root / "pub" / "Model")
+    link_root = tmp_path / "link"
+    link_root.symlink_to(root)
+
+    rows = cli._scan_external_model_dirs([str(root), str(link_root)])
+
+    assert len(rows) == 1
+
+
+def test_external_scan_tolerates_missing_and_unreadable_roots(tmp_path):
+    """A root on an unplugged drive must not raise — it should vanish."""
+    assert cli._scan_external_model_dirs([str(tmp_path / "gone")]) == []
+
+
+def test_external_roots_env_is_pathsep_separated(tmp_path, monkeypatch):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", os.pathsep.join([str(a), str(b)]))
+
+    assert cli._external_model_roots() == [
+        os.path.realpath(str(a)),
+        os.path.realpath(str(b)),
+    ]
+
+
+def test_external_roots_default_to_empty(monkeypatch):
+    """Scanning a user's disk uninvited is not ours to decide."""
+    monkeypatch.delenv("RAPID_MLX_EXTRA_MODEL_ROOTS", raising=False)
+
+    assert cli._external_model_roots() == []
+
+
+def test_external_models_render_as_external_not_deletable(
+    tmp_path, monkeypatch, capsys
+):
+    """``rm`` and the desktop delete path both rebuild a target as
+    ``<hub-root>/models--<repo>``, which is not where an external model
+    lives. Labelling one deletable would either miss or delete the wrong
+    thing, so the alias column must mark it read-only."""
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(hub), raising=False
+    )
+    root = tmp_path / "external"
+    _write_mlx_model(root / "mlx-community" / "Outsider-4bit")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+
+    assert "mlx-community/Outsider-4bit" in out
+    assert "(external)" in out
+
+
+def test_hub_copy_wins_when_a_repo_exists_in_both_places(tmp_path, monkeypatch, capsys):
+    """A model present in the hub cache and in an external root is one
+    model, and the hub copy is the one we can manage."""
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    dup = hub / "models--mlx-community--Dup"
+    dup.mkdir()
+    (dup / "blob").write_bytes(b"x" * 4096)
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(hub), raising=False
+    )
+    root = tmp_path / "external"
+    _write_mlx_model(root / "mlx-community" / "Dup")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+
+    assert out.count("mlx-community/Dup") == 1
+    assert "(external)" not in out
