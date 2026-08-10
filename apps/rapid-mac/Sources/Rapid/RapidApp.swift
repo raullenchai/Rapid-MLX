@@ -33,6 +33,9 @@ struct RapidApp: App {
     /// alias. It keeps its own UI state while sharing the resident-model
     /// sidecar with Chat.
     @State private var imageGen: ImageGenViewModel
+    /// Local speech-to-text and text-to-speech workflows. Like Images, this
+    /// shares the one embedded server and swaps models only on explicit work.
+    @State private var audio: AudioViewModel
     /// Self-update poller. GETs a public static manifest on R2 at
     /// `https://dl.rapidmlx.com/latest.json`. See ``UpdateChecker``.
     @State private var updater: UpdateChecker
@@ -201,6 +204,7 @@ struct RapidApp: App {
         AppDelegate.shared.dockPromptStore = dockPrompt
         _chatViewModel = State(initialValue: chat)
         _imageGen = State(initialValue: ImageGenViewModel(server: manager))
+        _audio = State(initialValue: AudioViewModel(server: manager))
         _updater = State(initialValue: updateChecker)
         _installer = State(initialValue: installerInstance)
         _sampling = State(initialValue: samplingConfig)
@@ -228,6 +232,7 @@ struct RapidApp: App {
                 .environment(downloads)
                 .environment(chatViewModel)
                 .environment(imageGen)
+                .environment(audio)
                 .environment(updater)
                 .environment(sampling)
                 .environment(appearance)

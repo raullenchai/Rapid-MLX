@@ -38,6 +38,7 @@ enum ModelDeletion {
     nonisolated static func deleteCachedModel(
         binaryPath: URL?,
         alias: String,
+        knownRepo: String? = nil,
         hubCacheRoot: URL? = nil
     ) async -> Outcome {
         let trimmedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -50,7 +51,13 @@ enum ModelDeletion {
             return .failed(message: "Rapid isn't fully set up. Please restart Rapid-MLX.")
         }
 
-        guard let repo = await cachedRepo(for: trimmedAlias, binary: tool) else {
+        let repo: String?
+        if let known = ModelCatalog.sanitizedHuggingFaceRepo(knownRepo) {
+            repo = known
+        } else {
+            repo = await cachedRepo(for: trimmedAlias, binary: tool)
+        }
+        guard let repo else {
             return .failed(message: "Cached model path could not be verified.")
         }
         // Issue #503: when the caller didn't pin an explicit root, prefer

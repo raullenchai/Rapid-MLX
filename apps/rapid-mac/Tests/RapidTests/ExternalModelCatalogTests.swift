@@ -136,7 +136,7 @@ struct ExternalModelCatalogTests {
         let outcome = await ModelCacheActions.runDeletion(
             for: entry,
             binaryPath: URL(fileURLWithPath: "/bin/echo"),
-            delete: { _, alias in
+            delete: { _, alias, _ in
                 await probe.record(alias)
                 return .freed(bytes: 1, raw: "should not run")
             }

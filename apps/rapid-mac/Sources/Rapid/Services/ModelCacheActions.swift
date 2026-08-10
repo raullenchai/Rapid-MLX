@@ -56,8 +56,8 @@ enum ModelCacheActions {
         /// Alias is on disk, not currently being served.
         case cached
         /// Alias is on disk AND is the active serving alias.
-        /// rapid-mlx has the weights mmap'd; the panel renders
-        /// an "In use" pill (not deletable mid-serve).
+        /// rapid-mlx has the weights mmap'd; deletion must stop the server
+        /// before removing the cache directory.
         case inUse
         /// Alias is not on disk and no download is in flight.
         case notCached
@@ -160,7 +160,10 @@ enum ModelCacheActions {
         let message: String
     }
 
-    static func deletionConfirmation(for entry: ModelEntry) -> DeletionConfirmation {
+    static func deletionConfirmation(
+        for entry: ModelEntry,
+        isServing: Bool = false
+    ) -> DeletionConfirmation {
         let title: String
         if let size = entry.sizeOnDisk {
             title = "Delete \"\(entry.alias)\"? This frees \(size)."
@@ -168,7 +171,8 @@ enum ModelCacheActions {
             title = "Delete \"\(entry.alias)\"?"
         }
         let suffix = entry.sizeOnDisk.map { " Frees \($0)." } ?? ""
-        let message = "Removes this model from your Mac. You can download it again later by selecting it.\(suffix)"
+        let stopPrefix = isServing ? "Stops the currently serving model first. " : ""
+        let message = "\(stopPrefix)Removes this model from your Mac. You can download it again later by selecting it.\(suffix)"
         return DeletionConfirmation(title: title, message: message)
     }
 
@@ -219,8 +223,8 @@ enum ModelCacheActions {
     static func runDeletion(
         for entry: ModelEntry,
         binaryPath: URL?,
-        delete: (URL?, String) async -> ModelDeletion.Outcome = {
-            await ModelDeletion.deleteCachedModel(binaryPath: $0, alias: $1)
+        delete: (URL?, String, String?) async -> ModelDeletion.Outcome = {
+            await ModelDeletion.deleteCachedModel(binaryPath: $0, alias: $1, knownRepo: $2)
         }
     ) async -> RunDeleteOutcome {
         // Defence in depth for #1718. The Settings panel already omits the
@@ -236,7 +240,11 @@ enum ModelCacheActions {
                     + "Rapid can't remove it — delete it where it was installed."
             )
         }
-        let outcome = await delete(binaryPath, entry.alias)
+        // Audio (and image) snapshots list as `(unmapped)`, so pass the
+        // catalog's known repo for non-chat rows; `deleteCachedModel` reverse
+        // maps chat aliases itself when the repo is nil.
+        let knownRepo = entry.kind == .chat ? nil : entry.hfRepo
+        let outcome = await delete(binaryPath, entry.alias, knownRepo)
         switch outcome {
         case .freed(let bytes, _):
             let msg = successMessage(

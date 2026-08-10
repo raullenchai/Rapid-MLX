@@ -39,6 +39,14 @@ import Testing
 @Suite("#1589 — launch auto-start must not outrace first-run onboarding")
 struct LaunchOnboardingOrderingTests {
 
+    @Test("Quickstart cannot interrupt Audio, Images, or Launch")
+    func quickstartOnlyPresentsOnChat() {
+        #expect(ContentView.quickstartCanPresent(in: .chat))
+        #expect(!ContentView.quickstartCanPresent(in: .audio))
+        #expect(!ContentView.quickstartCanPresent(in: .images))
+        #expect(!ContentView.quickstartCanPresent(in: .launch))
+    }
+
     /// Convenience: the launch gate exactly as ``ContentView`` calls it,
     /// for a user sitting at the pre-auto-start ``.idle`` state.
     private func launchDecision(

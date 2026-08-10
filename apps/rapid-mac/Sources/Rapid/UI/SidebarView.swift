@@ -6,6 +6,7 @@ import SwiftUI
 enum SidebarSection: Hashable {
     case chat
     case images
+    case audio
     case launch
 }
 
@@ -114,6 +115,13 @@ struct SidebarView: View {
                 action: { selection = .images }
             )
             .accessibilityIdentifier("Sidebar.Images")
+            row(
+                title: "Audio",
+                systemImage: "waveform",
+                isSelected: selection == .audio,
+                action: { selection = .audio }
+            )
+            .accessibilityIdentifier("Sidebar.Audio")
             row(
                 title: "Launch",
                 systemImage: "paperplane",

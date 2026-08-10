@@ -286,6 +286,32 @@ struct ModelDeletionBoundaryTests {
         #expect(outcome == .failed(message: "That model name isn't valid."))
     }
 
+    @Test("Known non-chat repo can be deleted without re-entering the chat-only catalog")
+    func knownRepoDeletesAudioSnapshot() async throws {
+        let tmp = try makeTmpDir()
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let hub = tmp.appendingPathComponent("hub", isDirectory: true)
+        try FileManager.default.createDirectory(at: hub, withIntermediateDirectories: true)
+
+        let repo = "mlx-community/Kokoro-82M-bf16"
+        let dirName = try #require(ModelDeletion._testingCacheDirectoryName(forRepo: repo))
+        let target = hub.appendingPathComponent(dirName, isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try Data("audio weights".utf8).write(to: target.appendingPathComponent("weights.npz"))
+
+        let outcome = await ModelDeletion.deleteCachedModel(
+            binaryPath: URL(fileURLWithPath: "/bin/echo"),
+            alias: "kokoro",
+            knownRepo: repo,
+            hubCacheRoot: hub
+        )
+        guard case .freed = outcome else {
+            Issue.record("Expected successful audio delete, got \(outcome)")
+            return
+        }
+        #expect(!FileManager.default.fileExists(atPath: target.path))
+    }
+
     private func makeTmpDir() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-model-deletion-\(UUID().uuidString)", isDirectory: true)

@@ -89,6 +89,39 @@ struct SidecarBuildScriptTests {
                 "A post-patch import probe must prove the image lane needs no torch.")
     }
 
+    @Test("Desktop sidecar bundles and smokes both audio lanes")
+    func audioRuntimeIsBundled() throws {
+        let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+        let pyproject = try String(contentsOf: Self.pyprojectURL, encoding: .utf8)
+
+        #expect(pyproject.contains("\naudio-desktop = ["),
+                "The bounded desktop audio dependency group must remain separately installable.")
+        #expect(pyproject.contains(#""mlx-audio>=0.2.9,<0.4.4""#))
+        #expect(pyproject.contains(#""soundfile>=0.12.0""#))
+        #expect(script.contains(#""${RAPID_MLX_SOURCE}[audio-desktop]""#),
+                "The desktop sidecar must install the bounded desktop audio dependency set.")
+        #expect(script.contains("from mlx_audio.stt.utils import load_model"),
+                "The build smoke must import the transcription loader, not only mlx_audio's package root.")
+        #expect(script.contains("from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor"),
+                "The build smoke must prove the processor implementation survives trimming.")
+        #expect(script.contains(#"-not -path "*/transformers/models/whisper/feature_extraction_whisper.py""#),
+                "Whisper's processor fallback cannot work when its feature extractor is trimmed.")
+        #expect(script.contains("from mlx_audio.tts.generate import load_model"),
+                "The build smoke must import the speech loader.")
+        #expect(script.contains("from mlx_audio.tts.models.qwen3_tts import Model"),
+                "The smoke must cover the preset-voice family exposed by the desktop picker.")
+        #expect(script.contains("from scipy import signal"),
+                "The smoke must cover the resampler after SciPy trimming.")
+        #expect(script.contains("TTSEngine.__new__(TTSEngine).to_bytes"),
+                "The smoke must encode a WAV after scipy.io has been trimmed.")
+        #expect(script.contains(#"-not -name qwen3_tts -not -name __pycache__"#),
+                "Only model-family directories outside Qwen3 TTS may be removed.")
+        #expect(!script.contains(#"rm -rf "$STAGE/site-packages/mlx_audio/tts/models""#),
+                "The trim must never remove the complete TTS model directory.")
+        #expect(script.contains(#"MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-174}""#),
+                "The signing baseline must match the measured post-audio bundle.")
+    }
+
     private static var scriptURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -99,5 +132,14 @@ struct SidecarBuildScriptTests {
 
     private static var appBuildScriptURL: URL {
         scriptURL.deletingLastPathComponent().appendingPathComponent("build.sh")
+    }
+
+    private static var pyprojectURL: URL {
+        scriptURL
+            .deletingLastPathComponent() // scripts
+            .deletingLastPathComponent() // rapid-mac
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repository root
+            .appendingPathComponent("pyproject.toml")
     }
 }

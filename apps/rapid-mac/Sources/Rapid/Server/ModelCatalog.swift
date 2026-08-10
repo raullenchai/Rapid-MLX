@@ -1,20 +1,37 @@
 import Foundation
 
 /// What a model is *for*. Drives the capability tabs in Model Management —
-/// chat models and image models are managed side by side but never mixed in
-/// one list (and are picked in different tabs). Video is reserved for when
-/// the video lane surfaces manageable aliases.
+/// chat, image, and audio models are managed side by side but never mixed in
+/// one list (and are picked in different surfaces). Video is reserved for
+/// when the video lane surfaces manageable aliases.
 enum ModelKind: String, Sendable, Hashable, CaseIterable, Identifiable {
-    case chat, image, video
+    case chat, image, audio, video
     var id: String { rawValue }
     /// Tab label in Model Management.
     var tabLabel: String {
         switch self {
         case .chat: return "Chat"
         case .image: return "Image"
+        case .audio: return "Audio"
         case .video: return "Video"
         }
     }
+}
+
+/// The user-facing operation an audio checkpoint can actually perform.
+/// The engine's registry intentionally groups forced alignment under `stt`
+/// and several reference-driven models under `tts`; the desktop needs the
+/// finer distinction so its simple transcription and preset-voice pickers do
+/// not offer models that require inputs those flows do not collect.
+enum AudioModelCapability: String, Sendable, Hashable {
+    case transcription
+    case alignment
+    case speech
+    case voiceCloning
+    case voiceDesign
+
+    var supportsTranscription: Bool { self == .transcription }
+    var supportsPresetSpeech: Bool { self == .speech }
 }
 
 /// One model in the rapid-mlx catalog. The picker UI groups cached vs.
@@ -48,6 +65,11 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// construction site keeps working; the image catalog tags ``.image``.
     var kind: ModelKind = .chat
 
+    /// Audio-only metadata parsed from the engine registry table. `nil` for
+    /// chat/image/video rows.
+    var audioCapability: AudioModelCapability? = nil
+    var audioFamily: String? = nil
+
     var id: String { alias }
 }
 
@@ -67,6 +89,10 @@ enum ModelCatalog {
     static let maxAliasBytes = 128
     static let maxHuggingFaceRepoBytes = 192
     static let maxSubprocessStdoutBytes = 1_048_576
+    /// Tiny Whisper is fast, but its transcription accuracy is below the
+    /// desktop workflow's quality floor. Keep the engine alias available to
+    /// CLI users while omitting it from the GUI catalog.
+    private static let hiddenDesktopAudioAliases: Set<String> = ["whisper-tiny"]
     private static let maxSubprocessStderrBytes = 256 * 1024
     private static let pipeReadChunkBytes = 16 * 1024
 
@@ -466,6 +492,95 @@ enum ModelCatalog {
         }
     }
 
+    /// Audio aliases for Settings and the dedicated Audio surface. Cached
+    /// state is matched by HF repo because `rapid-mlx ls` currently reports
+    /// audio snapshots as `(unmapped)` rather than reverse-mapping the audio
+    /// registry's alias.
+    static func audioEntries(
+        binary: URL,
+        hubCacheOverride: URL? = ModelsFolderPreference.validatedOverrideURL()
+    ) async -> [ModelEntry] {
+        async let modelsOut = runRapidMlx(binary: binary, args: ["models"])
+        async let cachedTask: [(String, String?, String?)] = listCached(
+            binary: binary,
+            hubCacheOverride: hubCacheOverride
+        )
+        let rows = parseAudioRows(await modelsOut).filter {
+            isDesktopAudioAliasVisible($0.alias)
+        }
+        let cachedByRepo = Dictionary(
+            (await cachedTask).compactMap { alias, repo, size -> (String, String?)? in
+                guard let repo else { return nil }
+                return (repo, size)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return rows.map { row in
+            ModelEntry(
+                alias: row.alias,
+                hfRepo: row.hfRepo,
+                sizeOnDisk: row.hfRepo.flatMap { cachedByRepo[$0] } ?? row.size,
+                cached: row.hfRepo.map { cachedByRepo[$0] != nil } ?? false,
+                kind: .audio,
+                audioCapability: audioCapability(
+                    alias: row.alias,
+                    subtype: row.subtype,
+                    family: row.family
+                ),
+                audioFamily: row.family
+            )
+        }
+    }
+
+    static func isDesktopAudioAliasVisible(_ alias: String) -> Bool {
+        !hiddenDesktopAudioAliases.contains(alias)
+    }
+
+    /// Parse rows shaped as:
+    /// `kokoro  338.9 MiB  [audio:tts]  kokoro  mlx-community/Kokoro...`.
+    /// The family column is retained because the registry's broad `stt`/`tts`
+    /// type does not distinguish aligners and reference-driven speech models.
+    static func parseAudioRows(
+        _ output: String
+    ) -> [(alias: String, hfRepo: String?, size: String?, subtype: String, family: String?)] {
+        var rows: [(String, String?, String?, String, String?)] = []
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(rawLine).trimmingCharacters(in: .whitespaces)
+            let fields = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard let alias = fields.first, isSafeAlias(alias),
+                  let tagIdx = fields.firstIndex(where: {
+                      $0.hasPrefix("[audio:") && $0.hasSuffix("]")
+                  }) else { continue }
+            let tag = fields[tagIdx]
+            let subtype = String(tag.dropFirst("[audio:".count).dropLast())
+            guard subtype == "tts" || subtype == "stt" else { continue }
+            let family = tagIdx + 1 < fields.count ? fields[tagIdx + 1] : nil
+            let hfRepo = tagIdx + 2 < fields.count
+                ? sanitizedHuggingFaceRepo(fields[tagIdx + 2])
+                : nil
+            let size = tagIdx > 1 ? fields[1..<tagIdx].joined(separator: " ") : nil
+            rows.append((alias, hfRepo, size, subtype, family))
+        }
+        return rows
+    }
+
+    /// Refine the registry's broad audio type into the operations the desktop
+    /// currently exposes. Kept pure so capability filtering is regression
+    /// tested without starting an audio engine.
+    static func audioCapability(
+        alias: String,
+        subtype: String,
+        family: String?
+    ) -> AudioModelCapability {
+        if subtype == "stt" {
+            return family == "qwen3_aligner" ? .alignment : .transcription
+        }
+        let lower = alias.lowercased()
+        if lower.contains("voicedesign") { return .voiceDesign }
+        if family == "indextts" || lower == "qwen3-tts-clone" { return .voiceCloning }
+        return .speech
+    }
+
     /// Parse ``[image:gen]``-tagged rows into ``(alias, hfRepo, size)``.
     /// Row shape (see cli.py image section):
     /// ``flux-schnell-4bit    8.9 GiB    [image:gen] dhairyashil/FLUX...``.
@@ -561,26 +676,14 @@ enum ModelCatalog {
             if line.hasPrefix("Available models") { continue }
             if line.hasPrefix("Alias") { continue }
             if line.allSatisfy({ $0 == "─" || $0 == "-" || $0.isWhitespace }) { continue }
-            // Drop audio-only aliases (TTS/STT: kokoro, whisper, parakeet,
-            // dia, chatterbox, vibevoice, voxcpm — 26 aliases). The desktop
-            // has no audio-input UI, and the shipped sidecar is built without
-            // the `mlx-audio` dependency, so selecting one and pressing Start
-            // fails the server ("model 'X' is an audio alias and requires the
-            // optional `mlx-audio` dependency … pip install 'rapid-mlx[audio]'")
-            // — an un-actionable dead-end for a desktop user with no terminal
-            // into the bundled engine. `rapid-mlx models` lists them under an
-            // "Audio models (N aliases)" section and tags every row with an
-            // `[audio:tts]` / `[audio:stt]` Kind column. Skip the section
-            // header — which would otherwise leak a phantom "Audio" alias
-            // (its first token passes ``isSafeAlias``) — and skip every tagged
-            // row (matching on the `[audio:` tag is robust to section
-            // ordering and to audio rows ever appearing inline). If the
-            // desktop ever grows a dictation/transcription surface, that is a
-            // separate feature that would re-admit these deliberately; until
-            // then they must not be promoted in any catalog consumer (picker,
-            // Model Management, auto-start).
+            // Audio-only aliases belong to the dedicated Audio surface and
+            // Model Management tab, never the chat picker or chat auto-start.
+            // Skip the section header — whose first token would otherwise
+            // pass ``isSafeAlias`` as a phantom "Audio" model. Tagged rows are
+            // rejected by ``hasNonChatKindTag`` below using a complete Kind
+            // token, so an HF id that merely contains "[audio:" cannot hide an
+            // unrelated chat row.
             if line.hasPrefix("Audio models") { continue }
-            if line.contains("[audio:") { continue }
             // Video-generation aliases, same reasoning and same shape.
             // A ``video-gen`` model has no tokenizer and no
             // ``stream_chat``, so it can never answer a chat request; the
@@ -667,12 +770,14 @@ enum ModelCatalog {
             // Same banner guard as ``parseAvailable`` — `ls` shares the
             // engine's stdout too.
             if isBannerLine(line) { continue }
-            // Multi-space splitting: each column is separated by 2+
-            // spaces.  ``components(separatedBy: doubleSpaces)`` would
-            // need a custom CharacterSet; cheaper to regex.
-            let parts = splitOnMultiSpace(line)
-            guard parts.count >= 2 else { continue }
-            let alias = parts[0]
+            // Alias and HF repo IDs cannot contain whitespace, so parse
+            // those fields as tokens rather than by visual column spacing.
+            // Rich leaves only one space after a repo that fills the column
+            // width (for example Qwen3-TTS CustomVoice). A 2+-space split
+            // would merge that repo with "2.2 GiB" and reject it as invalid.
+            let fields = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            guard fields.count >= 2 else { continue }
+            let alias = fields[0]
             // ``(unmapped)`` and ``(external)`` are the two status values the
             // engine may put in the alias column that still carry a real
             // repo. Every other parenthesized value — ``(incomplete)`` — is
@@ -684,8 +789,15 @@ enum ModelCatalog {
             guard alias == "(unmapped)" || alias == "(external)" || isSafeAlias(alias) else {
                 continue
             }
-            let hf = parts.count >= 2 ? sanitizedHuggingFaceRepo(parts[1]) : nil
-            let size = parts.count >= 3 ? parts[2] : nil
+            let hf = sanitizedHuggingFaceRepo(fields[1])
+            // Size is a two-token cell ("2.2 GiB"); anything shorter means the
+            // row carried no measured size.
+            let size: String?
+            if fields.count >= 4 {
+                size = "\(fields[2]) \(fields[3])"
+            } else {
+                size = fields.count == 3 ? fields[2] : nil
+            }
             entries.append((alias, hf, size))
         }
         return entries

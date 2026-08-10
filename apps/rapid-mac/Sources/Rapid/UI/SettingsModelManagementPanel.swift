@@ -46,7 +46,7 @@ struct SettingsModelManagementPanel: View {
     @State private var lastFreed: String?
 
     @State private var query: String = ""
-    /// Which capability tab is showing (Chat vs Image vs future Video). Model
+    /// Which capability tab is showing (Chat vs Image vs Audio vs future Video). Model
     /// Management manages every kind, but never mixes them in one list.
     @State private var capability: ModelKind = .chat
     @State private var filterMode: ModelCacheActions.FilterMode = .all
@@ -121,8 +121,8 @@ struct SettingsModelManagementPanel: View {
             modelsFolderSection
             preferencesSection
             capabilityTabs
+            controlsRow
             if capability == .chat {
-                controlsRow
                 if showRecommendedSection {
                     recommendedSection
                 }
@@ -172,7 +172,8 @@ struct SettingsModelManagementPanel: View {
         // the wording matches.
         .confirmationDialog(
             ModelCacheActions.deletionConfirmation(
-                for: pendingDeletion ?? ModelEntry(alias: "", hfRepo: nil, sizeOnDisk: nil, cached: false)
+                for: pendingDeletion ?? ModelEntry(alias: "", hfRepo: nil, sizeOnDisk: nil, cached: false),
+                isServing: pendingDeletion?.alias == server.servingAlias
             ).title,
             isPresented: Binding(
                 get: { pendingDeletion != nil },
@@ -181,7 +182,10 @@ struct SettingsModelManagementPanel: View {
             titleVisibility: .visible,
             presenting: pendingDeletion
         ) { entry in
-            Button("Delete from disk", role: .destructive) {
+            Button(
+                entry.alias == server.servingAlias ? "Stop and delete" : "Delete from disk",
+                role: .destructive
+            ) {
                 Task { await deleteAlias(entry) }
                 pendingDeletion = nil
             }
@@ -189,7 +193,10 @@ struct SettingsModelManagementPanel: View {
                 pendingDeletion = nil
             }
         } message: { entry in
-            Text(ModelCacheActions.deletionConfirmation(for: entry).message)
+            Text(ModelCacheActions.deletionConfirmation(
+                for: entry,
+                isServing: entry.alias == server.servingAlias
+            ).message)
         }
     }
 
@@ -393,7 +400,7 @@ struct SettingsModelManagementPanel: View {
         Task { await refreshCatalog() }
     }
 
-    /// Capability tabs — Chat / Image (/ Video, once it has aliases). Only
+    /// Capability tabs — Chat / Image / Audio (/ Video, once it has aliases). Only
     /// shown when there's more than one kind installed, so a chat-only setup
     /// looks exactly as it did before image models existed.
     @ViewBuilder
@@ -897,8 +904,8 @@ struct SettingsModelManagementPanel: View {
             // answer as any other cached row: how much disk it is using.
             // Showing only "Serving" left the one model the user is most
             // likely to be weighing as the single row with no size.
-            // There is still no delete here — the weights are mmap'd
-            // mid-serve — which is what "Serving" says.
+            // Deletion remains available, but its confirmed action stops the
+            // server before touching weights that are currently mmap'd.
             HStack(spacing: ModelTableLayout.cellSpacing) {
                 if let size = Self.onDiskSizeLabel(entry) {
                     Text(size)
@@ -914,6 +921,16 @@ struct SettingsModelManagementPanel: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
+                Button(role: .destructive) {
+                    pendingDeletion = entry
+                } label: {
+                    Image(systemName: "trash").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Stop serving and delete this model from disk.")
+                .accessibilityLabel("Stop serving and delete \(entry.alias) from disk")
+                .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
             }
         case .notCached:
             HStack(spacing: 8) {
@@ -985,10 +1002,10 @@ struct SettingsModelManagementPanel: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.alias) { idx, entry in
-                    if entry.kind == .image {
-                        imageRow(for: entry)
-                    } else {
+                    if entry.kind == .chat {
                         row(for: entry)
+                    } else {
+                        capabilityRow(for: entry)
                     }
                     if idx < entries.count - 1 {
                         Divider().opacity(0.5)
@@ -1057,11 +1074,10 @@ struct SettingsModelManagementPanel: View {
         .accessibilityIdentifier("Settings.ModelManagement.Row.\(entry.alias)")
     }
 
-    /// A leaner row for image models: no tok/s meters (a diffusion model has
-    /// no token throughput), just name · repo · size and the same
-    /// download/delete control the chat rows use.
+    /// A leaner row for image/audio models: no chat tok/s meters, just
+    /// name · capability/repo · size and the same download/delete control.
     @ViewBuilder
-    private func imageRow(for entry: ModelEntry) -> some View {
+    private func capabilityRow(for entry: ModelEntry) -> some View {
         let badge = ModelCacheActions.statusBadge(
             for: entry,
             downloadJob: downloads.jobs[entry.alias],
@@ -1074,6 +1090,11 @@ struct SettingsModelManagementPanel: View {
                     .font(.body.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if entry.kind == .audio, let audioCapability = entry.audioCapability {
+                    Text(audioCapabilityLabel(audioCapability))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
                 if let repo = entry.hfRepo {
                     Text(repo)
                         .font(.caption2)
@@ -1089,6 +1110,16 @@ struct SettingsModelManagementPanel: View {
         .padding(.vertical, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Settings.ModelManagement.Row.\(entry.alias)")
+    }
+
+    private func audioCapabilityLabel(_ capability: AudioModelCapability) -> String {
+        switch capability {
+        case .transcription: return "Speech to text"
+        case .alignment: return "Forced alignment"
+        case .speech: return "Text to speech"
+        case .voiceCloning: return "Voice cloning"
+        case .voiceDesign: return "Voice design"
+        }
     }
 
     @ViewBuilder
@@ -1350,7 +1381,9 @@ struct SettingsModelManagementPanel: View {
         if let hit = await ModelCatalogCache.shared.cached(
             binary: binary, generation: generation
         ) {
-            catalog = hit + (await ModelCatalog.imageEntries(binary: binary))
+            async let image = ModelCatalog.imageEntries(binary: binary)
+            async let audio = ModelCatalog.audioEntries(binary: binary)
+            catalog = hit + (await image) + (await audio)
             reconcileCapability()
             loading = false
             return
@@ -1363,8 +1396,9 @@ struct SettingsModelManagementPanel: View {
         let chat = await ModelCatalogCache.shared.entries(
             binary: binary, generation: generation
         )
-        let image = await ModelCatalog.imageEntries(binary: binary)
-        catalog = chat + image
+        async let image = ModelCatalog.imageEntries(binary: binary)
+        async let audio = ModelCatalog.audioEntries(binary: binary)
+        catalog = chat + (await image) + (await audio)
         reconcileCapability()
     }
 
@@ -1383,6 +1417,13 @@ struct SettingsModelManagementPanel: View {
     private func deleteAlias(_ entry: ModelEntry) async {
         lastError = nil
         lastFreed = nil
+        if server.servingAlias == entry.alias {
+            await server.stop()
+            guard server.servingAlias != entry.alias else {
+                lastError = "Couldn't stop \(entry.alias), so it was not deleted."
+                return
+            }
+        }
         let outcome = await ModelCacheActions.runDeletion(
             for: entry,
             binaryPath: server.binaryPath
@@ -1503,12 +1544,11 @@ enum RecommendedCardLayout {
 /// cell rather than the narrowest.
 ///
 /// It was 84pt, sized when a cached cell held two glyphs and nothing
-/// between them. Now that it also carries the measured size, the biggest
-/// caches on a large Mac ("123.4 GiB") need ~88pt, so the column moves to
-/// 100 and the flexible model-name column gives up 16.
+/// between them. Serving rows now carry measured size, status, and a delete
+/// control, so the column is wide enough for all three without truncation.
 enum ModelTableLayout {
     /// Shared width of the Size column.
-    static let sizeColumnWidth: CGFloat = 100
+    static let sizeColumnWidth: CGFloat = 124
 
     /// Spacing between the glyph, the figure and the button in a cell.
     static let cellSpacing: CGFloat = 6
@@ -1556,11 +1596,12 @@ enum ModelTableLayout {
         RecommendedCardLayout.captionWidth("~" + size) + 8 + glyphWidth
     }
 
-    /// Width a serving cell needs: measured size + the "Serving" label
-    /// that stands in for the (deliberately absent) delete button.
+    /// Width a serving cell needs: measured size + status + stop-and-delete.
     static func inUseCellWidth(size: String) -> CGFloat {
         RecommendedCardLayout.captionWidth(size)
             + cellSpacing
             + RecommendedCardLayout.captionMediumWidth("Serving")
+            + cellSpacing
+            + glyphWidth
     }
 }

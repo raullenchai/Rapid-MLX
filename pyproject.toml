@@ -416,6 +416,17 @@ audio = [
     # Additional multilingual dependencies
     "cn2an>=0.5.0",          # Chinese number conversion
 ]
+# Audio dependencies shipped inside the macOS desktop sidecar. The desktop
+# exposes transcription plus Qwen3 preset-voice speech; it does not expose
+# F5 cloning, Kokoro's language-specific G2P stack, or voice design. Keeping
+# those families in the full [audio] extra avoids making the public engine
+# less capable while preventing the signed app from absorbing llvmlite,
+# spaCy, espeak, and language dictionaries it cannot drive from its UI.
+audio-desktop = [
+    "mlx-audio>=0.2.9,<0.4.4",
+    # vllm_mlx.audio.tts encodes the in-memory result with libsndfile.
+    "soundfile>=0.12.0",
+]
 video = [
     # MLX-native LTX-2.3 T2V/I2V with synchronized audio. 0.1.36 is the
     # first verified release with the split-format LTX-2.3 VAE fixes. The

@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import threading
+import wave
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -967,7 +968,9 @@ class TTSEngine:
         non-wav format. The handler now branches on ``format`` and
         encodes via the appropriate codec:
 
-        * ``wav`` → scipy (always available with the audio extra).
+        * ``wav`` → Python's standard-library ``wave`` writer. Keeping this
+          path independent of SciPy IO lets bounded clients retain only the
+          ``scipy.signal`` resampling closure.
         * ``flac`` / ``ogg`` / ``opus`` → ``soundfile`` (libsndfile
           ≥1.0). Always shipped via ``rapid-mlx[audio]``.
         * ``mp3`` → ``soundfile`` when libsndfile ≥1.1 (the version
@@ -992,10 +995,13 @@ class TTSEngine:
         audio_int16 = (np.clip(audio.audio, -1.0, 1.0) * 32767).astype(np.int16)
 
         if fmt == "wav":
-            import scipy.io.wavfile as wav
-
             buffer = io.BytesIO()
-            wav.write(buffer, audio.sample_rate, audio_int16)
+            channels = 1 if audio_int16.ndim == 1 else audio_int16.shape[1]
+            with wave.open(buffer, "wb") as output:
+                output.setnchannels(channels)
+                output.setsampwidth(2)
+                output.setframerate(audio.sample_rate)
+                output.writeframes(audio_int16.astype("<i2", copy=False).tobytes())
             return buffer.getvalue()
 
         if fmt == "pcm":

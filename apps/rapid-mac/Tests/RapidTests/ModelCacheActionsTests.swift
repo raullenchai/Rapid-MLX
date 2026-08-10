@@ -112,6 +112,13 @@ struct ModelCacheActionsTests {
         #expect(!copy.message.contains("Frees "))
     }
 
+    @Test("deletionConfirmation: serving model explains stop-before-delete")
+    func deletionConfirmationServing() {
+        let e = entry("qwen3-tts-4bit", cached: true, size: "2.2 GiB")
+        let copy = ModelCacheActions.deletionConfirmation(for: e, isServing: true)
+        #expect(copy.message.hasPrefix("Stops the currently serving model first."))
+    }
+
     @Test("deletionConfirmation: matches ModelPickerBar.deletionTitle shape")
     func deletionConfirmationParityWithPicker() {
         // Issue #210 is explicit that the two surfaces present the

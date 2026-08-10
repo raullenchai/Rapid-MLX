@@ -546,9 +546,9 @@ struct ModelSurfaceRedesignTests {
     }
 
     /// The serving row is a cached row too — it owes the same size, and
-    /// the "Serving" label it carries instead of a delete button is wider
-    /// than that button, so it needs its own width check.
-    @Test("size column: a serving cell fits its size next to \"Serving\"")
+    /// the "Serving" label and stop-and-delete button need their own width
+    /// check.
+    @Test("size column: a serving cell fits its size, status, and delete button")
     func inUseCellFitsTheSizeColumn() {
         for size in ["7.9 GiB", "35.2 GiB", "123.4 GiB"] {
             let needed = ModelTableLayout.inUseCellWidth(size: size)

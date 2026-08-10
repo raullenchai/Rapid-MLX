@@ -16,6 +16,7 @@ struct ContentView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(ChatViewModel.self) private var chat
     @Environment(ImageGenViewModel.self) private var imageGen
+    @Environment(AudioViewModel.self) private var audio
     @Environment(SamplingConfig.self) private var sampling
     @Environment(UpdateChecker.self) private var updater
     @Environment(QuickstartCoordinator.self) private var quickstart
@@ -419,6 +420,8 @@ struct ContentView: View {
             mainArea
         case .images:
             ImagesView(viewModel: imageGen, server: server)
+        case .audio:
+            AudioView(viewModel: audio, server: server)
         case .launch:
             LaunchView(
                 server: server,
@@ -493,6 +496,10 @@ struct ContentView: View {
     /// different alias. Eligibility keys on app-owned state only (see
     /// ``QuickstartCoordinator.isEligible``), never the shared HF cache.
     private var quickstartVisible: Bool {
+        // Quickstart is a Chat onboarding surface. Server/model transitions
+        // inside Audio or Images must never interrupt those workflows with a
+        // global onboarding sheet.
+        guard ContentView.quickstartCanPresent(in: section) else { return false }
         guard !quickstartDismissedThisSession else { return false }
         // Telemetry consent comes first. Both surfaces used to be able to fire
         // together (nothing referenced the other's condition) — tolerable when
@@ -522,6 +529,10 @@ struct ContentView: View {
         case .idle, .ready:
             return false
         }
+    }
+
+    static func quickstartCanPresent(in section: SidebarSection) -> Bool {
+        section == .chat
     }
 
     /// True when the Quickstart sheet is up AND owns the pending

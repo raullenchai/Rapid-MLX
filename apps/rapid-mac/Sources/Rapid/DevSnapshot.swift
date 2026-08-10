@@ -47,6 +47,7 @@ enum DevSnapshot {
         // environment (the Images tab). Same rule as ``browseApproval``: a
         // throwaway instance so the view can be evaluated without trapping.
         let imageGen = ImageGenViewModel(server: server)
+        let audio = AudioViewModel(server: server)
 
         // Erase to AnyView so the long environment chain stays cheap to
         // type-check and the render call is monomorphic.
@@ -66,6 +67,7 @@ enum DevSnapshot {
                     .environment(dockPromptStore)
                     .environment(browseApproval)
                     .environment(imageGen)
+                    .environment(audio)
                     .frame(width: width, height: height)
             )
         }

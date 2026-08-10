@@ -86,7 +86,14 @@ COMPILEALL_JOBS="${COMPILEALL_JOBS:-0}"
 # dead weight). No signing-safety implication: we are REMOVING Mach-Os we
 # used to sign, not adding new ones. The embedded-pip and numpy-tests
 # trims in the same pass are pure-Python and Mach-O-neutral.
-MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-70}"
+#
+# Re-locked at 174 on 2026-08-10 after adding the bounded desktop Audio
+# runtime (mlx-audio, SciPy's signal import closure, and libsndfile). This is
+# the measured post-trim count from the pinned Python 3.12 bundle with both
+# STT and Qwen3-TTS smoke imports passing. The non-Qwen TTS implementations
+# and SciPy subpackages outside the signal closure have already been removed
+# before this count is taken.
+MACHO_BASELINE_COUNT="${MACHO_BASELINE_COUNT:-174}"
 # Allow modest drift without blocking — wheel updates sometimes shift
 # 1-2 .so files. Bigger drift means a new dependency, needs review.
 # Kept at 5 across the 51 → 77 baseline rebase to give Pillow and
@@ -246,7 +253,7 @@ fi
     --no-warn-script-location \
     --no-compile \
     --upgrade \
-    "$RAPID_MLX_SOURCE" \
+    "${RAPID_MLX_SOURCE}[audio-desktop]" \
     'transformers>=5.5.0,<5.13'
 
 # ----- step 2.5: bundle mlx-vlm --no-deps + Pillow ---------------------
@@ -495,6 +502,13 @@ find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
 #     transformers/models/* via `-not -path "*/transformers/models/*"`,
 #     so the preserved .py files stay in source form and the
 #     transformers lazy import_structure registry still finds them.
+#
+# The desktop STT lane also needs WhisperFeatureExtractor. mlx-community's
+# MLX Whisper checkpoints intentionally contain weights/config only, so
+# STTEngine attaches a WhisperProcessor from the matching openai/whisper-*
+# repo. Deleting feature_extraction_whisper.py makes that processor fail even
+# when all of its config/tokenizer files are available. Preserve this single
+# audio implementation without retaining every transformers audio family.
 
 echo "==> building multimodal trim allowlist from mlx-vlm bundled models"
 VLM_DIRS=()
@@ -532,17 +546,56 @@ find "$STAGE/site-packages/transformers/models" \
 find "$STAGE/site-packages/transformers/models" \
     "${PRUNE_ARGS[@]}" -o \
     \( -name "image_processing_*.py" -o -name "feature_extraction_*.py" \) \
+    -not -path "*/transformers/models/whisper/feature_extraction_whisper.py" \
     -print -delete
 
 echo "==> trimming numpy dev/test detritus"
 rm -rf \
-    "$STAGE/site-packages/numpy/random/_examples" \
-    "$STAGE/site-packages/numpy/testing/_private/extbuild.py" 2>/dev/null || true
+    "$STAGE/site-packages/numpy/random/_examples" 2>/dev/null || true
 # Sweep every numpy `tests/` package (~9 MB across _core, lib, ma,
 # random, linalg, polynomial, matrixlib, fft, testing, typing, f2py,
 # distutils). numpy never imports its own test suites at runtime, and
 # they carry no Mach-Os (verified: pure .py + data fixtures).
 find "$STAGE/site-packages/numpy" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
+
+# Audio adds SciPy and mlx-audio, whose wheels include ~23 MB of their own
+# unit suites. Runtime never imports those suites. Keep
+# numpy.testing._private.extbuild above, however: SciPy 1.18's Array API
+# compatibility bootstrap clones NumPy's public attributes and imports
+# numpy.testing while `from scipy import signal` initializes.
+find "$STAGE/site-packages/scipy" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
+find "$STAGE/site-packages/mlx_audio" -type d -name tests -prune -exec rm -rf {} + 2>/dev/null || true
+
+# The desktop Audio surface uses scipy.signal for input resampling. Speech WAV
+# output uses the standard-library `wave` writer, so scipy.io is not required.
+# SciPy's
+# signal import closure covers _lib/_external plus constants, fft, integrate,
+# interpolate, linalg, ndimage, optimize, sparse, spatial, special, and stats;
+# the subpackages below remain outside that closure (verified in the bundled
+# interpreter) and are not referenced anywhere in mlx_audio. Removing them
+# saves several MB and their native extensions while keeping the resampler
+# under the build smoke below.
+rm -rf \
+    "$STAGE/site-packages/scipy/cluster" \
+    "$STAGE/site-packages/scipy/datasets" \
+    "$STAGE/site-packages/scipy/differentiate" \
+    "$STAGE/site-packages/scipy/fftpack" \
+    "$STAGE/site-packages/scipy/io" \
+    "$STAGE/site-packages/scipy/misc" \
+    "$STAGE/site-packages/scipy/odr"
+
+# mlx-audio ships implementations for dozens of TTS families. The desktop
+# picker deliberately exposes only Qwen3 CustomVoice: it offers real named
+# preset speakers without the large Kokoro G2P or F5 cloning dependency
+# stacks. Drop the other family implementations so the release stays below
+# the app's 500 MiB envelope; shared TTS utilities and Qwen3's codec modules
+# remain intact.
+if [ -d "$STAGE/site-packages/mlx_audio/tts/models" ]; then
+    find "$STAGE/site-packages/mlx_audio/tts/models" \
+        -mindepth 1 -maxdepth 1 -type d \
+        -not -name qwen3_tts -not -name __pycache__ \
+        -prune -exec rm -rf {} +
+fi
 
 # Pre-compile every .py in the bundled stdlib + site-packages BEFORE
 # we codesign. Otherwise CPython's import machinery writes .pyc files
@@ -807,6 +860,23 @@ else
         exit 3
     }
     echo "    mlx_vlm import: $VLM_OUT"
+
+    # Audio surface smoke. Import both engine lanes and the Qwen3 preset-voice
+    # implementation without loading model weights. A base-only sidecar can
+    # register the routes but exits when an audio alias boots; checking the
+    # actual loader modules here prevents the desktop from shipping controls
+    # that can never complete a request.
+    AUDIO_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
+        PYTHONHOME="$STAGE/python" \
+        PYTHONPATH="$STAGE/site-packages" \
+        PYTHONNOUSERSITE=1 \
+        "$STAGE/python/bin/python3.12" -s -c \
+        'from importlib.metadata import version; import numpy as np; import mlx_audio; from mlx_audio.stt.utils import load_model as load_stt_model; from transformers.models.whisper.feature_extraction_whisper import WhisperFeatureExtractor; from mlx_audio.tts.generate import load_model as load_tts_model; from mlx_audio.tts.models.qwen3_tts import Model as Qwen3TTSModel; from scipy import signal; import soundfile; from vllm_mlx.audio.tts import AudioOutput, TTSEngine; payload = TTSEngine.__new__(TTSEngine).to_bytes(AudioOutput(audio=np.zeros(8, dtype=np.float32), sample_rate=24000, duration=8/24000), format="wav"); assert payload.startswith(b"RIFF"); print("mlx_audio", version("mlx-audio"))' 2>&1)" || {
+        echo "ERR: bundled audio runtime import failed — desktop Audio would be unusable:" >&2
+        echo "$AUDIO_OUT" >&2
+        exit 3
+    }
+    echo "    audio import: $AUDIO_OUT"
 
     # codex r3 B1: capture inside an `if` instead of separate
     # `X=$(...); RC=$?` lines — under `set -e`, a command-substitution

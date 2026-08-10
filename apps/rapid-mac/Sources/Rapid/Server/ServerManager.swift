@@ -379,6 +379,13 @@ final class ServerManager {
 
     private var expectedStop: Bool = false
 
+    /// ``stop()`` normally represents an explicit user request and clears
+    /// the resume alias. Internal model replacement is also an expected
+    /// process exit, but it must preserve that alias while the next model is
+    /// starting; otherwise first-run eligibility briefly becomes true and
+    /// can present Quickstart in the middle of another workflow.
+    private var preservingLastServedAliasDuringStop: Bool = false
+
     /// Issue #270: the current spawn cycle observed at least one
     /// ``.ready`` transition. Drives the auto-respawn decision in
     /// ``handleChildExit`` — a child that crashed BEFORE it ever
@@ -748,7 +755,7 @@ final class ServerManager {
         // the idle/stopped/missing cases just fall through to
         // ``start(alias:)``.
         if child != nil {
-            await stop()
+            await stop(preservingLastServedAlias: true)
         }
         await start(alias: trimmed, hfPath: hfPath)
         // ``start`` also returns without spawning when the pre-load
@@ -1549,6 +1556,13 @@ final class ServerManager {
     /// SIGKILL if still alive. State transitions to `.stopped` on
     /// success.
     func stop() async {
+        await stop(preservingLastServedAlias: false)
+    }
+
+    /// Shared expected-stop path. Model replacement keeps the previous
+    /// known-good alias until the replacement reaches ``.ready`` and writes
+    /// its own alias; a user-facing Stop continues to clear it immediately.
+    private func stop(preservingLastServedAlias: Bool) async {
         // Issue #270: the user clicked Stop. A pending auto-respawn
         // racing them would defeat the click — cancel it AND reset
         // the retry budget so a subsequent user-driven Start gets a
@@ -1560,6 +1574,7 @@ final class ServerManager {
         guard child != nil else { return }
         isOperating = true
         defer { isOperating = false }
+        preservingLastServedAliasDuringStop = preservingLastServedAlias
         await terminateChild(reason: nil)
     }
 
@@ -1786,7 +1801,9 @@ final class ServerManager {
             cancelRuntimeHealthMonitor()
         }
         let wasExpected = expectedStop
+        let preservedLastServedAlias = preservingLastServedAliasDuringStop
         expectedStop = false
+        preservingLastServedAliasDuringStop = false
         child = nil
         // #17: the child owns the secret; the secret is meaningless
         // (and a leak vector) once the child is gone.
@@ -1823,7 +1840,12 @@ final class ServerManager {
             // below) and INTENTIONALLY keep the persisted value so
             // the user can hit Restart against the last-known-good
             // alias without picker re-selection.
-            UserDefaults.standard.removeObject(forKey: Self.lastServedAliasKey)
+            if Self.shouldClearLastServedAlias(
+                expectedStop: wasExpected,
+                preservingLastServedAlias: preservedLastServedAlias
+            ) {
+                UserDefaults.standard.removeObject(forKey: Self.lastServedAliasKey)
+            }
             return
         }
         if process.isProcessGroupAlive {
@@ -1871,6 +1893,14 @@ final class ServerManager {
         ) {
             scheduleAutoRespawn(alias: alias)
         }
+    }
+
+    /// Pure policy used by the child-exit path and its regression tests.
+    nonisolated static func shouldClearLastServedAlias(
+        expectedStop: Bool,
+        preservingLastServedAlias: Bool
+    ) -> Bool {
+        expectedStop && !preservingLastServedAlias
     }
 
     /// Pure decision helper for the auto-respawn budget reset gate in

@@ -101,4 +101,16 @@ struct AutoRestartAndRegenRaceTests {
         #expect(await server.ensureServing(alias: "   ") == false)
     }
 
+    @Test("internal model replacement preserves the resume alias")
+    func modelReplacementPreservesLastServedAlias() {
+        #expect(!ServerManager.shouldClearLastServedAlias(
+            expectedStop: true,
+            preservingLastServedAlias: true
+        ))
+        #expect(ServerManager.shouldClearLastServedAlias(
+            expectedStop: true,
+            preservingLastServedAlias: false
+        ))
+    }
+
 }

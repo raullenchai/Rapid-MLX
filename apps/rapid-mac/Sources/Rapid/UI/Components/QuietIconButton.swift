@@ -21,6 +21,7 @@ struct QuietIconButton: View {
     /// Overrides the resting colour — for transient success states.
     var tint: Color? = nil
     var size: CGFloat = RapidTheme.ControlHeight.small
+    var symbolSize: CGFloat = 11
     var action: () -> Void
 
     @Environment(\.isEnabled) private var isEnabled
@@ -42,7 +43,7 @@ struct QuietIconButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: symbolSize, weight: .medium))
                 .foregroundStyle(foreground)
                 .frame(width: size, height: size)
                 .background(

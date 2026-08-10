@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import io
 import wave
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 
 from vllm_mlx.api.models import AudioMusicRequest, AudioSpeechRequest
 from vllm_mlx.audio.output_format import convert_audio_output
+from vllm_mlx.audio.tts import AudioOutput, TTSEngine
 from vllm_mlx.routes.audio import _convert_music_wav
 
 
@@ -20,6 +22,30 @@ def _wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
         output.setframerate(sample_rate)
         output.writeframes(audio.astype("<i2").tobytes())
     return payload.getvalue()
+
+
+def test_tts_wav_encoding_does_not_require_scipy_io(monkeypatch) -> None:
+    real_import = builtins.__import__
+
+    def reject_scipy_io(name, *args, **kwargs):
+        if name.startswith("scipy.io"):
+            raise ModuleNotFoundError("No module named 'scipy.io'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_scipy_io)
+    audio = AudioOutput(
+        audio=np.array([0.0, 0.5, -0.5], dtype=np.float32),
+        sample_rate=24_000,
+        duration=3 / 24_000,
+    )
+
+    payload = TTSEngine.__new__(TTSEngine).to_bytes(audio, format="wav")
+
+    with wave.open(io.BytesIO(payload), "rb") as result:
+        assert result.getframerate() == 24_000
+        assert result.getnchannels() == 1
+        assert result.getsampwidth() == 2
+        assert result.getnframes() == 3
 
 
 def test_tts_mono_can_be_resampled_and_expanded_to_stereo() -> None:
