@@ -775,3 +775,35 @@ def test_finalize_truncated_all_reasoning_muse():
     )
     assert reasoning == "Thinking hard about the answer"
     assert content == ""
+
+
+def test_clean_output_text_extracts_muse_channels():
+    """``clean_output_text`` must demux muse wire (harmony-precedent
+    branch), not regex-strip it into header mush — its output feeds the
+    non-streaming tool parser and the finalize first-parse."""
+    from vllm_mlx.api.utils import clean_output_text
+
+    raw = (
+        " to=self<|message|>plan the call<|eom|>"
+        "<|start|>assistant to=user<|message|>Done.<|eot|>"
+    )
+    assert clean_output_text(raw) == "Done."
+
+    # Tool-addressed segments pass through as content so the ATEM
+    # block reaches the tool parser.
+    raw_tool = (
+        " to=self<|message|>need weather<|eom|>"
+        "<|start|>assistant to=get_weather<|message|>"
+        '<atem:function_calls><atem:invoke name="get_weather">'
+        '<atem:parameter name="city">Tokyo</atem:parameter>'
+        "</atem:invoke></atem:function_calls><|eot|>"
+    )
+    cleaned = clean_output_text(raw_tool)
+    assert "<atem:invoke" in cleaned
+    assert "to=self" not in cleaned
+    assert "<|message|>" not in cleaned
+
+    # Non-muse text with a literal mid-prose mention is untouched by
+    # the muse branch (generic stripping still applies to the token).
+    prose = "The wire uses <|message|> as a separator."
+    assert "to=" not in clean_output_text(prose)

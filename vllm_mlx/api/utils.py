@@ -39,6 +39,15 @@ SPECIAL_TOKENS_PATTERN = re.compile(
 # If none of these appear in the text, regex can be skipped entirely.
 _SPECIAL_TOKEN_CHARS = frozenset("<[]")
 
+# Muse Glimmer wire detection for ``clean_output_text``. The output is
+# muse-shaped when a recipient header accompanies ``<|message|>``:
+# either the implicit first-segment form (`` to=recipient<|message|>``
+# at the start) or an explicit ``<|start|>assistant`` header. A bare
+# leading ``<|message|>`` (implicit user segment) also counts. Ordinary
+# prose that merely MENTIONS ``<|message|>`` mid-text matches none of
+# these anchored shapes.
+_MUSE_WIRE_PROBE = re.compile(r"^\s?(?:to=\S+\s*)?<\|message\|>|<\|start\|>assistant")
+
 
 def strip_special_tokens(text: str) -> str:
     """Remove special tokens from text with a fast-path bypass.
@@ -595,6 +604,21 @@ def clean_output_text(text: str) -> str:
     if "<|channel|>" in text and "<|message|>" in text:
         text = _clean_gpt_oss_output(text)
         return text
+
+    # Muse Glimmer ATEM recipient-routed wire — extract the content
+    # channels before generic stripping, mirroring the harmony branch
+    # above. The generic SPECIAL_TOKENS_PATTERN would eat the
+    # ``<|start|>/<|message|>/<|eot|>`` markers while leaving the
+    # textual `` to=self`` header bytes and the reasoning bytes behind
+    # as content mush (real-weights mini smoke, 2026-08-10). Muse has
+    # ``<|message|>`` but no ``<|channel|>``, so this branch can only
+    # be reached by non-harmony wire; the recipient-header probe keeps
+    # ordinary prose that merely mentions ``<|message|>`` out.
+    if "<|message|>" in text and _MUSE_WIRE_PROBE.search(text):
+        from ..reasoning.muse_parser import MuseReasoningParser
+
+        _, content = MuseReasoningParser().extract_reasoning(text)
+        return (content or "").strip()
 
     text = SPECIAL_TOKENS_PATTERN.sub("", text)
     text = text.strip()

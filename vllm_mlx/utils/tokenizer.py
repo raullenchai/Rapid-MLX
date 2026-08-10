@@ -1368,6 +1368,14 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
             logger.info("Using default ChatML chat template")
 
         repair_byte_level_decoder(tokenizer)
+        # Union in generation_config EOS ids — this was the ONLY load
+        # path missing the call (the AutoTokenizer paths all have it).
+        # Muse Glimmer surfaced the gap: its tokenizer_config eos is
+        # <|end_of_text|> (200001) but turns end with <|eot|> (200008,
+        # declared only in generation_config.json) — without the union
+        # the model generates past every turn end until max_tokens,
+        # repeating its answer (real-weights mini smoke, 2026-08-10).
+        augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
         logger.info("Tokenizer loaded via fallback successfully")
     else:
         raise ValueError(f"No tokenizer.json found in {model_path}")
