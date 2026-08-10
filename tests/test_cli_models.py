@@ -689,6 +689,16 @@ def test_external_scan_accepts_a_model_directly_under_the_root(tmp_path):
     assert [r[0] for r in rows] == ["SoloModel-4bit"]
 
 
+def test_root_level_model_does_not_hide_nested_model(tmp_path):
+    root = tmp_path / "models"
+    _write_mlx_model(root / "publisher")
+    _write_mlx_model(root / "publisher" / "nested")
+
+    repos = {repo for repo, _, _ in cli._scan_external_model_dirs([str(root)])}
+
+    assert repos == {"publisher", "publisher/nested"}
+
+
 def test_external_scan_skips_incomplete_directories(tmp_path):
     """Config without weights is not servable — offering it would hand the
     user a model that fails on start."""

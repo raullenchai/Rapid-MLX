@@ -5013,7 +5013,6 @@ def _scan_external_model_dirs(
             # <root>/<publisher>/<name>/ — accept both.
             if _contained(pub_dir) and _snapshot_is_complete(pub_dir):
                 _record(pub_dir, publisher)
-                continue
 
             try:
                 second_level = sorted(os.listdir(pub_dir))
@@ -5163,11 +5162,15 @@ def _print_cached_models() -> None:
         )
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
-    # This is the sum of runnable model sizes, not unique physical blocks:
-    # external runtimes may symlink shared weights into multiple model dirs.
-    print(f"  Total model size: {_format_bytes(total_bytes)}")
+    print(f"  Total: {_format_bytes(total_bytes)}")
+    if external_rows:
+        print("  Note: total is logical model size; shared external weights may repeat.")
     print()
-    print("  Tip: `rapid-mlx rm <hf-repo>` to free disk space")
+    if external_rows:
+        print("  Tip: `rapid-mlx rm` only removes Rapid-managed cache entries.")
+        print("       Remove external models in the app that downloaded them.")
+    else:
+        print("  Tip: `rapid-mlx rm <hf-repo>` to free disk space")
     print()
 
 

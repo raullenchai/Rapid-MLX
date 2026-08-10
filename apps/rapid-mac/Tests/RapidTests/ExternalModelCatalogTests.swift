@@ -12,6 +12,11 @@ import Testing
 @Suite("External model rows (#1718)")
 struct ExternalModelCatalogTests {
 
+    private actor DeleteProbe {
+        private(set) var aliases: [String] = []
+        func record(_ alias: String) { aliases.append(alias) }
+    }
+
     private static let listing = """
       Cached models (3 on disk)
       ────────────────────────────────────────────────
@@ -134,18 +139,22 @@ struct ExternalModelCatalogTests {
             cached: true
         )
 
+        let probe = DeleteProbe()
         let outcome = await ModelCacheActions.runDeletion(
             for: entry,
-            binaryPath: URL(fileURLWithPath: "/nonexistent-binary")
+            binaryPath: URL(fileURLWithPath: "/nonexistent-binary"),
+            delete: { _, alias in
+                await probe.record(alias)
+                return .freed(bytes: 1024, raw: "Freed 1.0 KiB")
+            }
         )
 
-        // It fails (no real binary), but NOT with the external refusal —
-        // the guard must not swallow ordinary deletes.
-        guard case .failure(let message) = outcome else {
-            Issue.record("expected the deliberately invalid binary to fail, got \(outcome)")
+        guard case .success(_, let freedBytes) = outcome else {
+            Issue.record("expected injected deletion to succeed, got \(outcome)")
             return
         }
-        #expect(!message.contains("another app"))
+        #expect(freedBytes == 1024)
+        #expect(await probe.aliases == [entry.alias])
     }
 
     @Test("A real alias in the same listing is still admitted")

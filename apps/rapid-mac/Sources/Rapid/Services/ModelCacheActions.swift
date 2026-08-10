@@ -218,7 +218,10 @@ enum ModelCacheActions {
     /// binary fails fast with a recognisable error message.
     static func runDeletion(
         for entry: ModelEntry,
-        binaryPath: URL?
+        binaryPath: URL?,
+        delete: (URL?, String) async -> ModelDeletion.Outcome = {
+            await ModelDeletion.deleteCachedModel(binaryPath: $0, alias: $1)
+        }
     ) async -> RunDeleteOutcome {
         // Defence in depth for #1718. The Settings panel already omits the
         // delete affordance for an external model, but that is a UI
@@ -233,10 +236,7 @@ enum ModelCacheActions {
                     + "Rapid can't remove it — delete it where it was installed."
             )
         }
-        let outcome = await ModelDeletion.deleteCachedModel(
-            binaryPath: binaryPath,
-            alias: entry.alias
-        )
+        let outcome = await delete(binaryPath, entry.alias)
         switch outcome {
         case .freed(let bytes, _):
             let msg = successMessage(
