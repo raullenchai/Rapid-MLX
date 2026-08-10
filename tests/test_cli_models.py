@@ -826,17 +826,33 @@ def test_retired_alias_cannot_be_revived_from_external_root(tmp_path, monkeypatc
         resolve_model("ministral-3b-4bit")
 
 
-def test_external_scan_tolerates_missing_and_unreadable_roots(tmp_path):
+def test_external_scan_tolerates_missing_and_unreadable_roots(tmp_path, monkeypatch):
     """A root on an unplugged drive must not raise — it should vanish."""
     assert cli._scan_external_model_dirs([str(tmp_path / "gone")]) == []
 
     unreadable = tmp_path / "unreadable"
     unreadable.mkdir()
-    unreadable.chmod(0)
-    try:
-        assert cli._scan_external_model_dirs([str(unreadable)]) == []
-    finally:
-        unreadable.chmod(0o700)
+    real_listdir = os.listdir
+
+    def guarded_listdir(path):
+        if os.path.realpath(path) == os.path.realpath(unreadable):
+            raise PermissionError(path)
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", guarded_listdir)
+    assert cli._scan_external_model_dirs([str(unreadable)]) == []
+
+
+def test_external_scan_skips_model_when_size_measurement_races(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    _write_mlx_model(root / "vanishing-model")
+
+    def vanished(_directory):
+        raise FileNotFoundError("weight disappeared during scan")
+
+    monkeypatch.setattr(cli, "_snapshot_size_bytes", vanished)
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
 
 
 def test_external_roots_env_is_pathsep_separated(tmp_path, monkeypatch):

@@ -4970,8 +4970,6 @@ def _scan_external_model_dirs(
         # separate roots cannot print duplicate rows or double-count bytes.
         if real in seen_paths or repo in seen_repos:
             return
-        seen_paths.add(real)
-        seen_repos.add(repo)
         try:
             mtime = os.path.getmtime(directory)
         except OSError:
@@ -4983,7 +4981,16 @@ def _scan_external_model_dirs(
         # model's only representation and skipping it reports 0 B for a model
         # that occupies gigabytes. Several tools lay models out this way to
         # share weights between runtimes.
-        out.append((repo, _snapshot_size_bytes(directory), mtime))
+        try:
+            size = _snapshot_size_bytes(directory)
+        except OSError:
+            # External trees are owned by another process and may disappear,
+            # lose permission, or contain a broken link while we scan. One
+            # racy entry must not take down the entire ``rapid-mlx ls`` view.
+            return
+        seen_paths.add(real)
+        seen_repos.add(repo)
+        out.append((repo, size, mtime))
 
     for root in roots:
         canonical_root = os.path.realpath(root)
