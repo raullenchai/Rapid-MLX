@@ -892,6 +892,14 @@ def test_external_roots_json_preserves_path_separator_in_folder_name(
     assert cli._external_model_roots() == [os.path.realpath(str(root))]
 
 
+def test_external_roots_legacy_path_may_begin_with_bracket(tmp_path, monkeypatch):
+    root = tmp_path / "[models"
+    root.mkdir()
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    assert cli._external_model_roots() == [os.path.realpath(str(root))]
+
+
 def test_resolve_external_model_accepts_desktop_json_roots(tmp_path, monkeypatch):
     import json
 
@@ -910,6 +918,19 @@ def test_registered_alias_prefers_root_level_external_directory(tmp_path, monkey
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
 
     assert resolve_model("qwen3.5-4b-4bit") == os.path.realpath(model)
+
+
+def test_external_resolution_tolerates_completeness_race(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    _write_mlx_model(root / "local-model")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    def vanished(_directory):
+        raise PermissionError("drive unplugged during launch")
+
+    monkeypatch.setattr("vllm_mlx._download_gate._snapshot_is_complete", vanished)
+
+    assert resolve_model("local-model") == "local-model"
 
 
 def test_external_roots_default_to_empty(monkeypatch):

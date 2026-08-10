@@ -695,8 +695,12 @@ def _resolve_external_model_path(name: str) -> str | None:
                     continue
             except ValueError:
                 continue
-            if os.path.isdir(candidate) and _snapshot_is_complete(candidate):
-                return candidate
+            if os.path.isdir(candidate):
+                try:
+                    if _snapshot_is_complete(candidate):
+                        return candidate
+                except OSError:
+                    continue
     return None
 
 
@@ -714,7 +718,9 @@ def _external_model_root_values(raw: str) -> list[str]:
                 return [value for value in decoded if isinstance(value, str)]
         except (TypeError, ValueError):
             pass
-        return []
+        # A legacy path may itself begin with ``[``. Invalid/non-array JSON
+        # therefore falls through to the pathsep protocol instead of
+        # silently erasing a valid configured root.
     return raw.split(os.pathsep)
 
 
