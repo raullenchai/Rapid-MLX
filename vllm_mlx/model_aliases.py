@@ -741,7 +741,13 @@ def _external_model_tree_is_contained(directory: str, roots: list[str]) -> bool:
     if not contained(directory):
         return False
     try:
-        for current, directories, files in os.walk(directory, followlinks=False):
+
+        def inaccessible(error: OSError) -> None:
+            raise error
+
+        for current, directories, files in os.walk(
+            directory, followlinks=False, onerror=inaccessible
+        ):
             for name in (*directories, *files):
                 path = os.path.join(current, name)
                 if os.path.islink(path) and not contained(path):

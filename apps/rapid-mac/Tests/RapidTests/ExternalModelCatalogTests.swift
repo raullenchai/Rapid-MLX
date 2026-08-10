@@ -132,9 +132,14 @@ struct ExternalModelCatalogTests {
             isExternal: true
         )
 
+        let probe = DeleteProbe()
         let outcome = await ModelCacheActions.runDeletion(
             for: entry,
-            binaryPath: URL(fileURLWithPath: "/bin/echo")
+            binaryPath: URL(fileURLWithPath: "/bin/echo"),
+            delete: { _, alias in
+                await probe.record(alias)
+                return .freed(bytes: 1, raw: "should not run")
+            }
         )
 
         guard case .failure(let message) = outcome else {
@@ -142,6 +147,7 @@ struct ExternalModelCatalogTests {
             return
         }
         #expect(message.contains("another app"))
+        #expect(await probe.aliases.isEmpty)
     }
 
     @Test("A normal cached entry is still deletable")

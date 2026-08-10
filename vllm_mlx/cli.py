@@ -5100,10 +5100,11 @@ def _print_cached_models() -> None:
     # like it targets the read-only external row.
     runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
     external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
-    external_row_keys = set(external_rows)
-    rows = rows + external_rows
+    tagged_rows = [(*row, False) for row in rows] + [
+        (*row, True) for row in external_rows
+    ]
     print()
-    if not rows:
+    if not tagged_rows:
         print(
             "  No models cached yet. Run 'rapid-mlx pull <alias>' or "
             "'rapid-mlx chat <alias>' to download one."
@@ -5131,7 +5132,7 @@ def _print_cached_models() -> None:
     width = sum(w for _, w in cols) + 2 * (len(cols) - 1)
     sep = "  " + "─" * width
     header = "  " + "  ".join(f"{name:<{w}}" for name, w in cols)
-    print(f"  Cached models ({len(rows)} on disk)")
+    print(f"  Cached models ({len(tagged_rows)} on disk)")
     print(sep)
     print(header)
     print(sep)
@@ -5140,8 +5141,9 @@ def _print_cached_models() -> None:
     total_bytes = 0
     # Sort by size descending so the biggest-disk-hog row is first — the
     # most useful ordering for "what do I rm to free space?".
-    for repo, size, mtime in sorted(rows, key=lambda r: -r[1]):
-        is_external_row = (repo, size, mtime) in external_row_keys
+    for repo, size, mtime, is_external_row in sorted(
+        tagged_rows, key=lambda row: -row[1]
+    ):
         total_bytes += size
         alias = hf_to_alias.get(repo, "(unmapped)")
         # Models found outside the hub cache are listed but never labelled
