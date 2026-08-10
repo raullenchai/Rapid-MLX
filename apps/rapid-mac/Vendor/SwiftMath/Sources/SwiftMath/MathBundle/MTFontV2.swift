@@ -48,8 +48,6 @@ public final class MTFontV2: MTFont {
     override var mathTable: MTFontMathTable? {
         set { fatalError("\(#function): change to \(font.rawValue) not allowed.") }
         get {
-            guard _mathTab == nil else { return _mathTab }
-            //Note: lazy _mathTab initialization is now threadsafe.
             mtfontV2LockOnMathTable.lock()
             defer { mtfontV2LockOnMathTable.unlock() }
             if _mathTab == nil {

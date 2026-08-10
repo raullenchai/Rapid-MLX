@@ -103,8 +103,6 @@ private class BundleManager {
             throw FontError.initFontError
         }
         
-        cgFonts[mathFont] = defaultCGFont
-        
         /// This does not load the complete math font, it only has about half the glyphs of the full math font.
         /// In particular it does not have the math italic characters which breaks our variable rendering.
         /// So we first load a CGFont from the file and then convert it to a CTFont.
@@ -112,6 +110,7 @@ private class BundleManager {
         guard CTFontManagerRegisterGraphicsFont(defaultCGFont, &errorRef) else {
             throw FontError.registerFailed
         }
+        cgFonts[mathFont] = defaultCGFont
         let postsript  = (defaultCGFont.postScriptName as? String) ?? ""
         let cgfontName = (defaultCGFont.fullName as? String) ?? ""
         let threadName = Thread.isMainThread ? "main" : "global"

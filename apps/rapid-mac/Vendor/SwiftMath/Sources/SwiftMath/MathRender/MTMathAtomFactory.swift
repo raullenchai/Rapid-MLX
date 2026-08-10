@@ -65,6 +65,8 @@ public class MTMathAtomFactory {
     private static let delimValueLock = NSLock()
     static var _delimValueToName = [String: String]()
     public static var delimValueToName: [String: String] {
+        delimValueLock.lock()
+        defer { delimValueLock.unlock() }
         if _delimValueToName.isEmpty {
             var output = [String: String]()
             for (key, value) in Self.delimiters {
@@ -79,12 +81,7 @@ public class MTMathAtomFactory {
                 }
                 output[value] = key
             }
-            // protect lazily loading table in a multi-thread concurrent environment
-            delimValueLock.lock()
-            defer { delimValueLock.unlock() }
-            if _delimValueToName.isEmpty {
-                _delimValueToName = output
-            }
+            _delimValueToName = output
         }
         return _delimValueToName
     }
@@ -107,6 +104,8 @@ public class MTMathAtomFactory {
     private static let accentValueLock = NSLock()
     static var _accentValueToName: [String: String]? = nil
     public static var accentValueToName: [String: String] {
+        accentValueLock.lock()
+        defer { accentValueLock.unlock() }
         if _accentValueToName == nil {
             var output = [String: String]()
 
@@ -122,17 +121,14 @@ public class MTMathAtomFactory {
                 }
                 output[value] = key
             }
-            // protect lazily loading table in a multi-thread concurrent environment
-            accentValueLock.lock()
-            defer { accentValueLock.unlock() }
-            if _accentValueToName == nil {
-                _accentValueToName = output
-            }
+            _accentValueToName = output
         }
         return _accentValueToName!
     }
     
     static var supportedLatexSymbolNames:[String] {
+        textToLatexLock.lock()
+        defer { textToLatexLock.unlock() }
         let commands = MTMathAtomFactory.supportedLatexSymbols
         return commands.keys.map { String($0) }
     }
@@ -458,6 +454,8 @@ public class MTMathAtomFactory {
     static var _textToLatexSymbolName: [String: String]? = nil
     public static var textToLatexSymbolName: [String: String] {
         get {
+            textToLatexLock.lock()
+            defer { textToLatexLock.unlock() }
             if self._textToLatexSymbolName == nil {
                 var output = [String: String]()
                 for (key, atom) in Self.supportedLatexSymbols {
@@ -478,12 +476,7 @@ public class MTMathAtomFactory {
                     }
                     output[atom.nucleus] = key
                 }
-                // protect lazily loading table in a multi-thread concurrent environment
-                textToLatexLock.lock()
-                defer { textToLatexLock.unlock() }
-                if self._textToLatexSymbolName == nil {
-                    self._textToLatexSymbolName = output
-                }
+                self._textToLatexSymbolName = output
             }
             return self._textToLatexSymbolName!
         }
@@ -674,6 +667,8 @@ public class MTMathAtomFactory {
         if let canonicalName = aliases[name] {
             name = canonicalName
         }
+        textToLatexLock.lock()
+        defer { textToLatexLock.unlock() }
         if let atom = supportedLatexSymbols[name] {
             return atom.copy()
         }
@@ -698,11 +693,19 @@ public class MTMathAtomFactory {
      e.g. to define a symbol for "lcm" one can call:
      `MTMathAtomFactory.add(latexSymbol:"lcm", value:MTMathAtomFactory.operatorWithName("lcm", limits: false))` */
     public static func add(latexSymbol name: String, value: MTMathAtom) {
-        let _ = Self.textToLatexSymbolName
-        // above force textToLatexSymbolName to initialise first, _textToLatexSymbolName also initialized.
-        // protect lazily loading table in a multi-thread concurrent environment
         textToLatexLock.lock()
         defer { textToLatexLock.unlock() }
+        if Self._textToLatexSymbolName == nil {
+            var reverse = [String: String]()
+            for (key, atom) in Self.supportedLatexSymbols where !atom.nucleus.isEmpty {
+                let existing = reverse[atom.nucleus]
+                if existing == nil || key.count < existing!.count
+                    || (key.count == existing!.count && key < existing!) {
+                    reverse[atom.nucleus] = key
+                }
+            }
+            Self._textToLatexSymbolName = reverse
+        }
         supportedLatexSymbols[name] = value
         Self._textToLatexSymbolName?[value.nucleus] = name
     }

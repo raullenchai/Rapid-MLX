@@ -779,9 +779,9 @@ public class MTMathTable: MTMathAtom {
     
     override public var finalized: MTMathAtom {
         let table = super.finalized as! MTMathTable
-        for var row in table.cells {
-            for i in 0..<row.count {
-                row[i] = row[i].finalized
+        for row in table.cells.indices {
+            for column in table.cells[row].indices {
+                table.cells[row][column] = table.cells[row][column].finalized
             }
         }
         return table
