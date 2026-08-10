@@ -225,6 +225,41 @@ def test_sanitize_strips_wrapper_and_vision():
     assert model.tie_word_embeddings is False
 
 
+def test_layer_types_value_validation():
+    """A typo'd layer kind must be rejected, not silently treated as
+    full attention with RoPE (codex r2 #2)."""
+    bad = dict(
+        TINY_TEXT,
+        num_hidden_layers=2,
+        layer_types=["sliding_attention", "silding_attention"],
+    )
+    with pytest.raises(ValueError, match="unknown layer_types"):
+        mg.ModelArgs.from_dict({"model_type": "muse_glimmer", "text_config": bad})
+
+
+def test_config_declared_tying_wins_over_shipped_head():
+    """tie_word_embeddings=true in the config must tie even when the
+    export also ships lm_head weights (codex r2 #1)."""
+    tied_cfg = dict(TINY_TEXT, tie_word_embeddings=True)
+    args = mg.ModelArgs.from_dict(
+        {"model_type": "muse_glimmer", "text_config": tied_cfg}
+    )
+    model = mg.Model(args)
+    assert model.tie_word_embeddings is True
+    assert "lm_head" not in dict(model.children())
+    # Stray head weights are dropped so strict loading can't trip.
+    out = model.sanitize(
+        {
+            "language_model.lm_head.weight": 1,
+            "language_model.model.embed_tokens.weight": 2,
+        }
+    )
+    assert sorted(out) == ["model.embed_tokens.weight"]
+    # Tied model runs and produces vocab-sized logits via the table.
+    logits = model(mx.array([[1, 2, 3]]))
+    assert logits.shape == (1, 3, TINY_TEXT["vocab_size"])
+
+
 def test_sanitize_passthrough_and_tied_fallback():
     model = tiny_model()
     bare = {"model.embed_tokens.weight": 1}

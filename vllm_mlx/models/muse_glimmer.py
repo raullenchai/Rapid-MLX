@@ -114,6 +114,12 @@ class TextConfig(BaseModelArgs):
             raise ValueError(
                 f"layer_types has {len(self.layer_types)} entries for {n} layers"
             )
+        unknown = set(self.layer_types) - {_SLIDING, _FULL}
+        if unknown:
+            # A typo would otherwise silently become full attention in
+            # DecoderLayer while still receiving RoPE from the default-
+            # theta derivation — an unintended architecture (codex r2 #2).
+            raise ValueError(f"unknown layer_types entries: {sorted(unknown)}")
         default_theta = float((self.rope_parameters or {}).get("rope_theta", 500000.0))
         if self.layer_rope_theta is None:
             # Sliding layers use RoPE; full-attention layers are NoPE.
@@ -354,10 +360,14 @@ class Model(nn.Module):
         self.model_type = args.model_type
         self.text_args = args.text
         self.model = MuseModel(args.text)
-        self.lm_head = nn.Linear(
-            args.text.hidden_size, args.text.vocab_size, bias=False
-        )
-        self.tie_word_embeddings = False
+        # Honour the config's tying declaration (codex r2 #1); the
+        # released 30B is untied. ``sanitize`` still flips to tied as a
+        # fallback when an untied config ships no head weights.
+        self.tie_word_embeddings = args.text.tie_word_embeddings
+        if not self.tie_word_embeddings:
+            self.lm_head = nn.Linear(
+                args.text.hidden_size, args.text.vocab_size, bias=False
+            )
 
     def __call__(
         self,
@@ -397,8 +407,14 @@ class Model(nn.Module):
             if k.startswith("language_model."):
                 k = k[len("language_model.") :]
             out[k] = v
-        if "lm_head.weight" not in out:
-            # Defensive: a hypothetical tied export reuses the table.
+        if self.tie_word_embeddings:
+            # Config-declared tying: the embedding table IS the head.
+            # Drop any stray head weights so strict loading can't trip
+            # on keys with no matching module (codex r2 #1).
+            out = {k: v for k, v in out.items() if not k.startswith("lm_head.")}
+        elif "lm_head.weight" not in out:
+            # Defensive: an untied config whose export ships no head
+            # weights falls back to tying.
             self.tie_word_embeddings = True
             self.pop("lm_head")
         return out
