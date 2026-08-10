@@ -3798,6 +3798,8 @@ def serve_command(args):
             no_openai_harmony_streaming=getattr(
                 args, "no_openai_harmony_streaming", False
             ),
+            enable_disk_stream=getattr(args, "disk_stream", False),
+            disk_stream_cache_gb=getattr(args, "disk_stream_cache_gb", 1.0),
         )
     except Exception as e:
         # Opt-in telemetry (Phase 2.2 error wiring): record that a model
@@ -4542,7 +4544,24 @@ def bench_command(args):
             # worker the engine later steps on — is what keeps the first batch
             # step from raising "There is no Stream(gpu, N) in current thread"
             # (which aborts every request and reports 0.00 tok/s).
-            model, tokenizer = model_load_executor.submit(load, args.model).result()
+            if getattr(args, "disk_stream", False):
+                # --disk-stream: load lazily (routed-expert weights never
+                # materialized) and patch the MoE blocks to stream them
+                # from disk before this model reaches AsyncEngineCore.
+                # Same helper `serve` uses, run on this SAME mlx-step
+                # worker (#170 stream-ownership requirement above).
+                from .engine.batched import _load_lazy_and_install_disk_stream
+
+                model, tokenizer = model_load_executor.submit(
+                    _load_lazy_and_install_disk_stream,
+                    args.model,
+                    {},
+                    getattr(args, "disk_stream_cache_gb", 1.0),
+                ).result()
+            else:
+                model, tokenizer = model_load_executor.submit(
+                    load, args.model
+                ).result()
         except Exception as e:
             # Opt-in telemetry (Phase 2.2 error wiring): mirror the
             # ``serve`` path — record a bucketed model-load failure
@@ -7934,6 +7953,38 @@ Examples:
             "on a different filesystem (e.g. external drive via HF_HOME)."
         ),
     )
+    # Disk-streaming MoE weight loading (PRD-rapid-mlx-integration.md).
+    # Strictly opt-in: default behavior for every existing invocation is
+    # unchanged. When set, the model loads lazily (routed-expert weights
+    # never materialized) and vllm_mlx.disk_stream_patch.install() patches
+    # its MoE blocks to stream selected experts off disk through a
+    # byte-budgeted LRU cache instead of holding them resident — lets an
+    # operator run a model whose declared min_memory_gb floor
+    # (_check_alias_min_memory above) exceeds this Mac's RAM. Does NOT
+    # suppress that warning: resident components (attention, KV cache,
+    # dense layers, the cache budget itself) still consume real RAM.
+    serve_parser.add_argument(
+        "--disk-stream",
+        action="store_true",
+        default=False,
+        help=(
+            "Stream MoE routed-expert weights from disk instead of holding "
+            "them resident (opt-in). Loads the model lazily and installs "
+            "vllm_mlx.disk_stream_patch on every MoE layer before serving "
+            "starts. Only architectures registered in vllm_mlx.registry "
+            "are supported; an unregistered model_type fails at load time."
+        ),
+    )
+    serve_parser.add_argument(
+        "--disk-stream-cache-gb",
+        type=float,
+        default=1.0,
+        help=(
+            "Byte budget (GB) for the disk-stream expert LRU cache. Only "
+            "used when --disk-stream is set. Default: 1.0 GB, matching "
+            "vllm_mlx.expert_cache.ExpertCache's default."
+        ),
+    )
     serve_parser.add_argument(
         "--host",
         type=str,
@@ -8937,6 +8988,23 @@ Examples:
             "is larger than free disk. Use only if you know the HF cache lives "
             "on a different filesystem (e.g. external drive via HF_HOME)."
         ),
+    )
+    # Disk-streaming MoE weight loading — same opt-in flags as `serve`,
+    # see the `serve_parser` registration above for the full rationale.
+    bench_parser.add_argument(
+        "--disk-stream",
+        action="store_true",
+        default=False,
+        help=(
+            "Stream MoE routed-expert weights from disk instead of holding "
+            "them resident (opt-in). See `rapid-mlx serve --help`."
+        ),
+    )
+    bench_parser.add_argument(
+        "--disk-stream-cache-gb",
+        type=float,
+        default=1.0,
+        help="Byte budget (GB) for the disk-stream expert LRU cache.",
     )
     bench_parser.add_argument(
         "--num-prompts", type=int, default=10, help="Number of prompts"

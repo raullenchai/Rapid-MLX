@@ -33,6 +33,42 @@ logger = logging.getLogger(__name__)
 # an optimistic boundary that the next request cannot reuse.
 _PREFIX_BOUNDARY_REPLAY_TOKENS = 8
 
+def _load_lazy_and_install_disk_stream(
+    model_name: str, tokenizer_config: dict, cache_budget_gb: float
+):
+    """``--disk-stream`` model-load step, run as a single unit on the
+    mlx-step worker (see the ``_start_llm`` call site) so both the lazy
+    ``mlx_lm.load`` and ``disk_stream_patch.install`` touch MLX from the
+    same owning thread (#170 — see the surrounding comments in
+    ``_start_llm``).
+
+    Raises ``vllm_mlx.disk_stream_patch.UnsupportedModelTypeError``
+    immediately (before serving ever starts) if ``model_name``'s
+    ``model_type`` has no registered
+    ``vllm_mlx.registry.StreamingAdapter`` — no silent fallback to
+    resident loading, no downstream crash mid-forward.
+    """
+    from .. import disk_stream_patch
+    from ..utils.tokenizer import _resolve_model_path, load_model_with_fallback
+
+    model, tokenizer, config = load_model_with_fallback(
+        model_name, tokenizer_config, lazy=True, return_config=True
+    )
+    checkpoint_path = _resolve_model_path(model_name)
+    if checkpoint_path is None:
+        raise ValueError(
+            f"--disk-stream: could not resolve a local checkpoint path for "
+            f"{model_name!r}"
+        )
+    disk_stream_patch.install(
+        model,
+        config.get("model_type", ""),
+        checkpoint_path,
+        cache_budget_gb=cache_budget_gb,
+    )
+    return model, tokenizer
+
+
 # Harmony's chat template ends its generation prompt immediately after
 # ``<|start|>assistant`` and expects the model to choose a channel. When
 # thinking is disabled, seed an empty analysis message followed by an open
@@ -786,6 +822,8 @@ class BatchedEngine(BaseEngine):
         no_spec_decode: bool = False,
         force_openai_harmony_streaming: bool = False,
         no_openai_harmony_streaming: bool = False,
+        enable_disk_stream: bool = False,
+        disk_stream_cache_gb: float = 1.0,
     ):
         """
         Initialize the batched engine.
@@ -810,6 +848,15 @@ class BatchedEngine(BaseEngine):
             force_spec_decode / no_spec_decode: Keyword-only. SOP §10
                 routing escape hatches for
                 ``ModelConfig.supports_spec_decode``. Mutually exclusive.
+            enable_disk_stream: Keyword-only. ``--disk-stream`` (PRD-
+                rapid-mlx-integration.md). Loads the model lazily and
+                installs ``vllm_mlx.disk_stream_patch`` on its MoE blocks
+                in ``_start_llm``, before the model is handed to
+                ``AsyncEngineCore``. Strictly opt-in; default False keeps
+                every existing caller's behavior unchanged.
+            disk_stream_cache_gb: Keyword-only. Byte budget (GB) for the
+                disk-stream expert LRU cache. Only used when
+                ``enable_disk_stream`` is True.
         """
         self._model_name = model_name
         # Lazily resolved by ``_muse_wire_model()`` — gates the ATEM
@@ -822,6 +869,8 @@ class BatchedEngine(BaseEngine):
         self._gpu_memory_utilization = gpu_memory_utilization
         self._force_hybrid = force_hybrid
         self._no_hybrid = no_hybrid
+        self._enable_disk_stream = enable_disk_stream
+        self._disk_stream_cache_gb = disk_stream_cache_gb
         self._force_spec_decode = force_spec_decode
         self._no_spec_decode = no_spec_decode
         # #516 — auto-routing escape hatches for the HarmonyStreamingRouter
@@ -1265,16 +1314,38 @@ class BatchedEngine(BaseEngine):
             thread_name_prefix="mlx-step",
             initializer=_init_mlx_step_thread,
         )
-        load_kwargs = {"tokenizer_config": tokenizer_config}
-        if self._scheduler_config is not None and (
-            getattr(self._scheduler_config, "spec_decode", "none") == "dspark"
-        ):
-            load_kwargs["enable_dspark"] = True
-        self._model, self._tokenizer = self._model_load_executor.submit(
-            load_model_with_fallback,
-            self._model_name,
-            **load_kwargs,
-        ).result()
+        # getattr-guarded (not a direct self._enable_disk_stream read):
+        # some tests build a BatchedEngine via object.__new__ and set only
+        # the attributes their scenario needs (see
+        # tests/test_mtp_cli_wiring.py::test_start_llm_calls_apply_mtp_dispatch),
+        # bypassing __init__ entirely. Matches this file's existing
+        # getattr(self._scheduler_config, ...) defensive style.
+        if getattr(self, "_enable_disk_stream", False):
+            # --disk-stream: load lazily (routed-expert MoE weights never
+            # materialized) and install the disk-streaming patch on this
+            # SAME mlx-step worker, before the model is handed to
+            # AsyncEngineCore below. Skips the dspark/MTP load_kwargs
+            # path above — disk-stream and dspark aren't a validated
+            # combination and lazy loading bypasses
+            # load_model_with_fallback's fallback branches entirely (see
+            # its docstring).
+            self._model, self._tokenizer = self._model_load_executor.submit(
+                _load_lazy_and_install_disk_stream,
+                self._model_name,
+                tokenizer_config,
+                getattr(self, "_disk_stream_cache_gb", 1.0),
+            ).result()
+        else:
+            load_kwargs = {"tokenizer_config": tokenizer_config}
+            if self._scheduler_config is not None and (
+                getattr(self._scheduler_config, "spec_decode", "none") == "dspark"
+            ):
+                load_kwargs["enable_dspark"] = True
+            self._model, self._tokenizer = self._model_load_executor.submit(
+                load_model_with_fallback,
+                self._model_name,
+                **load_kwargs,
+            ).result()
 
         # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external
         # assistant / Qwen3.5 baked-in MTP). Runs BEFORE the scheduler is

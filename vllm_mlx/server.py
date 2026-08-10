@@ -1593,6 +1593,8 @@ def load_model(
     no_spec_decode: bool = False,
     force_openai_harmony_streaming: bool = False,
     no_openai_harmony_streaming: bool = False,
+    enable_disk_stream: bool = False,
+    disk_stream_cache_gb: float = 1.0,
 ):
     """
     Load a model (auto-detects MLLM vs LLM).
@@ -1633,6 +1635,12 @@ def load_model(
         force_spec_decode / no_spec_decode: Keyword-only. SOP §10
             escape hatches for ``ModelConfig.supports_spec_decode``
             auto-detection. Mutually exclusive.
+        enable_disk_stream / disk_stream_cache_gb: Keyword-only.
+            ``--disk-stream`` (PRD-rapid-mlx-integration.md). Forwarded
+            to ``BatchedEngine``, which loads lazily and installs
+            ``vllm_mlx.disk_stream_patch`` in ``_start_llm`` before the
+            model reaches ``AsyncEngineCore``. Default False keeps every
+            existing caller's behavior unchanged.
     """
     max_tokens_was_supplied = max_tokens is not None
     if max_tokens is None:
@@ -1973,6 +1981,8 @@ def load_model(
             no_spec_decode=no_spec_decode,
             force_openai_harmony_streaming=force_openai_harmony_streaming,
             no_openai_harmony_streaming=no_openai_harmony_streaming,
+            enable_disk_stream=enable_disk_stream,
+            disk_stream_cache_gb=disk_stream_cache_gb,
         )
         logger.info(f"Model loaded: {model_name}")
 

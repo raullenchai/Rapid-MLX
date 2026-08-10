@@ -893,6 +893,8 @@ def load_model_with_fallback(
     tokenizer_config: dict = None,
     *,
     enable_dspark: bool = False,
+    lazy: bool = False,
+    return_config: bool = False,
 ):
     """
     Load model and tokenizer with fallback for non-standard tokenizers.
@@ -900,9 +902,32 @@ def load_model_with_fallback(
     Args:
         model_name: HuggingFace model name or local path
         tokenizer_config: Optional tokenizer configuration
+        lazy: ``--disk-stream`` path only. When True, skip every
+            *branch-selection* fallback / tokenizer-quirk path below
+            (Gemma 4 native/legacy routing, vendored-arch tokenizer
+            fallback, strict=False retry — all orthogonal to laziness,
+            per PRD-rapid-mlx-integration.md's CLI-wiring decision) and
+            load straight through ``mlx_lm.load(model_name, lazy=True)``
+            so MoE expert weights are never materialized. The
+            architecture-independent *post-load* fixups
+            (``_neutralize_unbundled_template_types`` before the load,
+            ``_try_inject_mtp_post_load`` /
+            ``_apply_chat_template_sidecar`` /
+            ``augment_eos_token_ids_from_generation_config`` /
+            ``repair_byte_level_decoder`` after it) still run — see the
+            ``if lazy:`` block below for why each is safe on a lazily
+            loaded model. ``vllm_mlx.disk_stream_patch.install`` is
+            called by the caller afterward, before the model reaches
+            serving.
+        return_config: When True (only meaningful with ``lazy=True``),
+            also return the model's config dict as a third tuple element
+            (needed to read ``model_type`` for
+            ``disk_stream_patch.install``) — passed straight through to
+            ``mlx_lm.load(..., return_config=True)``.
 
     Returns:
-        Tuple of (model, tokenizer)
+        Tuple of (model, tokenizer), or (model, tokenizer, config) when
+        ``return_config=True``.
     """
     # Publishers who ship one repo per model with a folder per quant
     # (``LiquidAI/LFM2.5-2.6B-MLX`` → ``4bit/``, ``8bit/``, ``bf16/`` …)
@@ -919,6 +944,73 @@ def load_model_with_fallback(
     # or fallback loader runs.  Remote repository ids are intentionally a no-op
     # here; see validate_local_model_file for the containment boundary.
     validate_local_model_file(model_name)
+    if lazy:
+        from mlx_lm import load as _mlx_lm_load
+
+        # #1420 guard: must run BEFORE mlx_lm.load, same as the non-lazy
+        # path (_load_model_with_fallback_impl calls it at :1068-1074,
+        # ahead of any load()). It mutates tokenizer_config, which is
+        # consumed by mlx_lm.load's own internal tokenizer loading
+        # during the call below — running it after load() would be too
+        # late to pre-empt the crashing importlib.import_module() this
+        # guard exists to stop (#1420, unbundled chat_template_type /
+        # tool_parser_type). Reading tokenizer_config.json off disk does
+        # not touch model weights, so it's exactly as valid ahead of a
+        # lazy load as an eager one.
+        tokenizer_config = _neutralize_unbundled_template_types(
+            model_name, tokenizer_config or {}
+        )
+        result = _mlx_lm_load(
+            model_name,
+            tokenizer_config=tokenizer_config,
+            lazy=True,
+            return_config=return_config,
+        )
+        model, tokenizer = result[0], result[1]
+
+        # The four fixups below are pure post-load tokenizer/generation-
+        # config/model-attribute adjustments: each one reads the already-
+        # returned `model`/`tokenizer` objects and `model_name`/on-disk
+        # sidecar files, and mutates `tokenizer` (or `model.mtp`) in
+        # place. None of them materializes or inspects lazily-loaded
+        # weight *tensors* — they don't care whether the checkpoint was
+        # loaded lazily or eagerly — so skipping them for `lazy=True` was
+        # a bug in the original short-circuit, not a deliberate scope
+        # cut (see review-notes.md's blocking finding). Concretely:
+        # `augment_eos_token_ids_from_generation_config`'s own docstring
+        # names Qwen3/Qwen2.5 (151645/151643) as the exact scenario it
+        # exists to fix, and `qwen2_moe` is one of the two registered
+        # --disk-stream architectures (vllm_mlx/registry.py) — without
+        # this call a qwen2_moe checkpoint loaded with --disk-stream
+        # would silently fail to stop at its chat-template terminator
+        # and run to max_tokens instead, the same checkpoint stopping
+        # correctly without the flag.
+        _try_inject_mtp_post_load(model, model_name)
+        if not getattr(tokenizer, "chat_template", None):
+            mp = _resolve_model_path(model_name)
+            if mp is not None:
+                _apply_chat_template_sidecar(mp, tokenizer)
+        augment_eos_token_ids_from_generation_config(tokenizer, model_name)
+        repair_byte_level_decoder(tokenizer)
+
+        # Still legitimately skipped for `lazy=True`: the Gemma-4 native/
+        # legacy routing (`gemma4_family_kind` gate + its own duplicate
+        # augment/chat-template/repair calls), the vendored-arch dispatch
+        # (`_is_vendored_arch_model`), the Nemotron tokenizer fallback
+        # (`_needs_tokenizer_fallback`), and the `except ValueError`
+        # strict=False retry. All four are branch-*selection* logic that
+        # decides which loader to call (`mlx_lm.load` vs. the vendor/
+        # fallback loaders) or how to recover from a `ValueError` those
+        # alternate loaders raise — genuinely orthogonal to whether the
+        # chosen loader materializes weights eagerly or lazily. They are
+        # also unreachable in practice for a --disk-stream load: neither
+        # Gemma 4, nor any vendored architecture, nor Nemotron is a
+        # registered --disk-stream architecture (only `lfm2_moe` and
+        # `qwen2_moe` are, per vllm_mlx/registry.py), so none of these
+        # branches would ever fire for a checkpoint this code path is
+        # actually used for.
+        _post_load_ubc_evict(model_name)
+        return result
     if enable_dspark:
         result = _load_model_with_fallback_impl(
             model_name, tokenizer_config, enable_dspark=True
