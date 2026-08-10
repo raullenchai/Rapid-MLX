@@ -57,6 +57,10 @@ _BLOCK_OPEN = "<atem:function_calls>"
 _BLOCK_CLOSE = "</atem:function_calls>"
 _PARAM_CLOSE = "</atem:parameter>"
 
+_BLOCK_RE = re.compile(
+    re.escape(_BLOCK_OPEN) + r"(?P<body>.*?)" + re.escape(_BLOCK_CLOSE),
+    re.DOTALL,
+)
 _INVOKE_RE = re.compile(
     r'<atem:invoke\s+name="(?P<name>[^"]+)">(?P<body>.*?)</atem:invoke>',
     re.DOTALL,
@@ -211,21 +215,20 @@ class MuseToolParser(ToolParser):
     def reset(self) -> None:
         super().reset()
         self._stream_calls_emitted = 0
+        self._stream_blocks_emitted = 0
 
-    # ------------------------------------------------------------------
-    # Non-streaming
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_block(body: str, request: dict[str, Any] | None) -> list[dict[str, str]]:
+        """Parse the invokes of ONE completed block body.
 
-    def extract_tool_calls(
-        self, model_output: str, request: dict[str, Any] | None = None
-    ) -> ExtractedToolCallInformation:
-        if _BLOCK_OPEN not in model_output:
-            return ExtractedToolCallInformation(
-                False, [], _strip_channel_plumbing(model_output) or None
-            )
-
+        Scoping the invoke scan to completed block bodies (rather than the
+        whole response) is load-bearing: invoke-shaped text OUTSIDE a
+        block — the model quoting an example, documentation in prose —
+        must stay literal content, never become an executable call
+        (codex r1 BLOCKING #2; the #44 injection-surface concern).
+        """
         calls: list[dict[str, str]] = []
-        for match in _INVOKE_RE.finditer(model_output):
+        for match in _INVOKE_RE.finditer(body):
             name = match.group("name")
             props = _schema_properties(name, request)
             declared = declared_parameter_names(name, request)
@@ -240,18 +243,36 @@ class MuseToolParser(ToolParser):
                     "arguments": json.dumps(arguments, ensure_ascii=False),
                 }
             )
+        return calls
 
-        # Content = whatever sits outside the ATEM blocks, channel-clean.
-        outside = re.sub(
-            re.escape(_BLOCK_OPEN) + r".*?" + re.escape(_BLOCK_CLOSE),
-            "",
-            model_output,
-            flags=re.DOTALL,
-        )
+    # ------------------------------------------------------------------
+    # Non-streaming
+    # ------------------------------------------------------------------
+
+    def extract_tool_calls(
+        self, model_output: str, request: dict[str, Any] | None = None
+    ) -> ExtractedToolCallInformation:
+        blocks = list(_BLOCK_RE.finditer(model_output))
+        if not blocks:
+            # No COMPLETED block. A truncated opener stays visible as
+            # content rather than silently dropping bytes.
+            return ExtractedToolCallInformation(
+                False, [], _strip_channel_plumbing(model_output) or None
+            )
+
+        calls = [
+            call
+            for block in blocks
+            for call in self._parse_block(block.group("body"), request)
+        ]
+
+        # Content = whatever sits outside the completed ATEM blocks,
+        # channel-clean.
+        outside = _BLOCK_RE.sub("", model_output)
         content = _strip_channel_plumbing(outside).strip() or None
 
         if not calls:
-            # An opener with no parseable invoke (malformed / truncated):
+            # Completed block(s) with no parseable invoke (malformed):
             # keep the raw text as content rather than dropping bytes.
             return ExtractedToolCallInformation(
                 False, [], _strip_channel_plumbing(model_output) or None
@@ -263,24 +284,46 @@ class MuseToolParser(ToolParser):
     # ------------------------------------------------------------------
 
     @classmethod
-    def _safe_content_prefix(cls, text: str) -> str:
-        """Hold back any tail that could grow into a sentinel."""
-        first_open = text.find(_BLOCK_OPEN)
+    def _visible_content(cls, text: str, *, hold_tail: bool = True) -> str:
+        """Channel-clean content emittable for ``text`` so far.
+
+        Completed ATEM blocks are removed (their calls surface on the
+        tool_calls channel), the region from any UNMATCHED opener on is
+        held, and — when ``hold_tail`` — the usual in-flight holds apply:
+        a growing channel header and partial sentinels. Content between
+        and after blocks therefore streams normally instead of being
+        swallowed once the first opener appears (codex r1 BLOCKING #1).
+
+        Monotonic in ``text`` by construction (each transform only
+        appends to or truncates the tail), which is what lets callers
+        emit ``curr[len(prev):]`` diffs.
+        """
+        work = _BLOCK_RE.sub("", text)
+        first_open = work.find(_BLOCK_OPEN)
         if first_open >= 0:
-            return text[:first_open]
-        # A ``<|start|>`` whose ``<|message|>`` has not arrived is a
-        # channel header still in flight — hold from it so its plain-word
-        # bytes ("assistant to=x") cannot leak once tokens are stripped.
-        pending = text.rfind("<|start|>")
-        if pending >= 0 and "<|message|>" not in text[pending:]:
-            return text[:pending]
-        # Same for the IMPLICIT first-segment header: while the entire
-        # output is still a growing `` to=recipient`` (no ``<|message|>``
-        # yet), classification is impossible and emitting would leak
-        # header bytes as content. Once any non-header shape appears the
-        # rule stops matching and normal emission resumes.
-        if "<|message|>" not in text and re.fullmatch(r"\s?(?:t|to|to=\S*)?", text):
-            return ""
+            work = work[:first_open]
+        elif hold_tail:
+            # A ``<|start|>`` whose ``<|message|>`` has not arrived is a
+            # channel header still in flight — hold from it so its
+            # plain-word bytes ("assistant to=x") cannot leak once
+            # tokens are stripped.
+            pending = work.rfind("<|start|>")
+            if pending >= 0 and "<|message|>" not in work[pending:]:
+                work = work[:pending]
+            # Same for the IMPLICIT first-segment header: while the
+            # entire output is still a growing `` to=recipient`` (no
+            # ``<|message|>`` yet), classification is impossible.
+            # Includes the prefixes of ``to=`` itself (`` t``, `` to``).
+            elif "<|message|>" not in work and re.fullmatch(
+                r"\s?(?:t|to|to=\S*)?", work
+            ):
+                work = ""
+            else:
+                work = cls._hold_partial_sentinel(work)
+        return _strip_channel_plumbing(work)
+
+    @classmethod
+    def _hold_partial_sentinel(cls, text: str) -> str:
         max_hold = 0
         for sentinel in _STREAMING_SENTINELS:
             for length in range(min(len(text), len(sentinel) - 1), 0, -1):
@@ -290,12 +333,20 @@ class MuseToolParser(ToolParser):
         return text if max_hold == 0 else text[: len(text) - max_hold]
 
     def has_pending_tool_call(self, text: str) -> bool:
-        return _BLOCK_OPEN in text or self._safe_content_prefix(text) != text
+        return _BLOCK_OPEN in _BLOCK_RE.sub("", text)
 
     def flush_held_content(self, full_text: str) -> str:
-        if _BLOCK_OPEN in full_text:
-            return ""
-        return full_text[len(self._safe_content_prefix(full_text)) :]
+        """Release held-but-safe bytes at end of stream.
+
+        The difference between the unheld view (partial sentinels
+        released — the stream is over, they can no longer grow into
+        markup) and what the per-delta path already emitted. An
+        UNMATCHED opener's markup stays dropped here; the finalize
+        fallback re-parses the full text if no call ever fired.
+        """
+        emitted = self._visible_content(full_text)
+        final = self._visible_content(full_text, hold_tail=False)
+        return final[len(emitted) :]
 
     def extract_tool_calls_streaming(
         self,
@@ -310,37 +361,43 @@ class MuseToolParser(ToolParser):
         if not hasattr(self, "_stream_calls_emitted"):
             self.reset()
 
-        # A block close just completed — surface any not-yet-emitted calls.
+        # A block close just completed — parse ONLY the newly completed
+        # blocks (already-emitted blocks keep their ids and are never
+        # re-scanned; codex r1 #4).
         prev_closes = previous_text.count(_BLOCK_CLOSE)
         curr_closes = current_text.count(_BLOCK_CLOSE)
         if curr_closes > prev_closes:
-            result = self.extract_tool_calls(current_text, request)
-            if result.tools_called:
-                fresh = result.tool_calls[self._stream_calls_emitted :]
-                if fresh:
-                    offset = self._stream_calls_emitted
-                    self._stream_calls_emitted = len(result.tool_calls)
-                    return {
-                        "tool_calls": [
-                            {
-                                "index": offset + i,
-                                "id": call["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": call["name"],
-                                    "arguments": call["arguments"],
-                                },
-                            }
-                            for i, call in enumerate(fresh)
-                        ]
-                    }
+            blocks = list(_BLOCK_RE.finditer(current_text))
+            new_blocks = blocks[self._stream_blocks_emitted :]
+            self._stream_blocks_emitted = len(blocks)
+            fresh = [
+                call
+                for block in new_blocks
+                for call in self._parse_block(block.group("body"), request)
+            ]
+            if fresh:
+                offset = self._stream_calls_emitted
+                self._stream_calls_emitted += len(fresh)
+                return {
+                    "tool_calls": [
+                        {
+                            "index": offset + i,
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                            },
+                        }
+                        for i, call in enumerate(fresh)
+                    ]
+                }
             return None
 
-        # Inside (or before) a block: emit only channel-clean safe content.
-        if _BLOCK_OPEN in current_text:
-            return None
-        prev_safe = _strip_channel_plumbing(self._safe_content_prefix(previous_text))
-        curr_safe = _strip_channel_plumbing(self._safe_content_prefix(current_text))
+        # Content channel: everything outside completed blocks, held at
+        # any in-flight opener/header/sentinel.
+        prev_safe = self._visible_content(previous_text)
+        curr_safe = self._visible_content(current_text)
         if len(curr_safe) > len(prev_safe):
             return {"content": curr_safe[len(prev_safe) :]}
         return None

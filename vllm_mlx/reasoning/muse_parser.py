@@ -92,14 +92,18 @@ class MuseReasoningParser(ReasoningParser):
         content_parts: list[str] = []
         for recipient, body in _segments(model_output):
             if recipient == "self":
-                reasoning_parts.append(body.strip())
+                reasoning_parts.append(body)
             else:
                 # Tool-addressed segments pass through as content so the
                 # tool parser can extract the ATEM block.
-                content_parts.append(body.strip())
+                content_parts.append(body)
 
-        reasoning = "\n\n".join(p for p in reasoning_parts if p) or None
-        content = "\n\n".join(p for p in content_parts if p) or None
+        # Plain concatenation, no per-segment strip — the streaming path
+        # emits body bytes verbatim, and the two modes must produce the
+        # same API output (codex r1 BLOCKING #3). Only protocol tokens
+        # are removed; the model's own whitespace is content.
+        reasoning = "".join(reasoning_parts) or None
+        content = "".join(content_parts) or None
         return reasoning, content
 
     # ------------------------------------------------------------------

@@ -240,6 +240,53 @@ def test_channel_wrapped_call_extracts_and_strips_plumbing(streaming):
     assert not (content or "").strip()
 
 
+@BOTH_MODES
+def test_content_after_block_survives(streaming):
+    # Codex r1 BLOCKING #1: streaming used to swallow everything after
+    # the first opener; content between/after blocks must reach the wire.
+    text = (
+        "Checking.\n"
+        + _block(_invoke("get_weather", {"city": "Oslo"}))
+        + "\nDone checking."
+    )
+    content, calls = run_tool_extraction(
+        _tool_parser(), _chars(text), streaming=streaming
+    )
+    assert len(calls) == 1
+    combined = content or ""
+    assert "Checking." in combined
+    assert "Done checking." in combined
+
+
+def test_invoke_outside_block_is_literal_content():
+    # Codex r1 BLOCKING #2: invoke-shaped text OUTSIDE a completed block
+    # (the model quoting an example) must never become an executable call.
+    quoted = _invoke("rm_rf", {"path": "/"})
+    text = (
+        "For example you would write:\n"
+        + quoted
+        + "\n"
+        + _block(_invoke("get_weather", {"city": "Oslo"}))
+    )
+    parser = _tool_parser()
+    result = parser.extract_tool_calls(text)
+    assert [c["name"] for c in result.tool_calls] == ["get_weather"]
+    assert "rm_rf" in (result.content or "")
+
+
+@BOTH_MODES
+def test_reasoning_whitespace_parity(streaming):
+    # Codex r1 BLOCKING #3: non-stream used to strip() segment bodies
+    # while streaming preserved them — same input must give the same
+    # output in both modes, whitespace included.
+    text = " to=self<|message|>  padded thought \n<|eom|><|start|>assistant to=user<|message|> spaced answer <|eot|>"
+    reasoning, content = run_reasoning_extraction(
+        _reasoning_parser(), _chars(text), streaming=streaming
+    )
+    assert reasoning == "  padded thought \n"
+    assert content == " spaced answer "
+
+
 def test_truncated_block_keeps_bytes_as_content():
     # An opener with no parseable invoke must not vanish silently.
     parser = _tool_parser()
