@@ -132,6 +132,19 @@ MATRIX_EXEMPT: dict[str, str] = {
         "tests/test_tool_call_streaming_parity.py."
     ),
     "liquid": "alias of lfm",
+    "muse": (
+        "TODO: add mlx-community/Muse-Glimmer-30B-4bit to golden_models "
+        "when the pr_validate boot budget has a slot for the 30B (~18 GB, "
+        "min_memory_gb=24 — feasible, unlike the Ultra-only Hy3/DeepSeek-V4 "
+        "entries). Wire format (ATEM <atem:function_calls> blocks on "
+        "recipient-routed to=<tool> channels) is verified end-to-end another "
+        "way in the meantime: real 2-turn agent loops on a live "
+        "muse-glimmer-30b-4bit boot over /v1/chat/completions, /v1/responses "
+        "(codex), and /v1/messages (claude-code) all round-trip tool calls "
+        "cleanly (2026-08-10), and muse is the 6th family in the "
+        "tests/integrations agent-gate matrix. Class + parser coverage lives "
+        "in tests/test_muse_parsers.py and tests/test_muse_glimmer_model.py."
+    ),
 }
 
 

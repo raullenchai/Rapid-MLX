@@ -663,6 +663,11 @@ async def test_batched_engine_publishes_request_id_into_holder():
     eng._stream_interval = 1
     eng._is_hybrid_model = lambda: False
     eng._create_output_router = lambda: None
+    # The finished-chunk path calls ``_muse_wire_model()`` (ATEM channel
+    # demux gate added in #1802), which reads this lazily-resolved flag that
+    # the real ``__init__`` seeds to None. This ``__new__`` bypass skips
+    # ``__init__``, so pre-seed it: this fake engine is not a muse checkpoint.
+    eng._is_muse_wire = False
 
     # Fake AsyncEngineCore so add_request returns a concrete id and
     # stream_outputs yields one finished chunk.

@@ -177,6 +177,7 @@ _FIDELITY_EXEMPT: dict[str, str] = {
     "meetkai": "alias of functionary",
     "hy3": "alias of hy_v3",
     "hy_v3": "hy3_native, renderer TODO",
+    "muse": "muse_atem: <atem:function_calls> invoke/parameter blocks, renderer TODO",
     "llama": "llama_python_tag, renderer TODO",
     "llama3": "alias of llama",
     "llama4": "alias of llama",
