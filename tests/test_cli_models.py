@@ -805,3 +805,36 @@ def test_hub_copy_wins_when_a_repo_exists_in_both_places(tmp_path, monkeypatch, 
 
     assert out.count("mlx-community/Dup") == 1
     assert "(external)" not in out
+
+
+def test_cached_row_columns_stay_split_for_a_long_repo(tmp_path, monkeypatch, capsys):
+    """The desktop parser splits on runs of 2+ spaces, so every value must
+    be strictly narrower than its column. A 9-char size in a 9-wide field
+    left one literal space and glued size+modified into one token, which
+    the app then failed to parse into bytes."""
+    import re
+
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(hub), raising=False
+    )
+    root = tmp_path / "external"
+    _write_mlx_model(
+        root / "mlx-community" / "LFM2.5-1.2B-Instruct-4bit",
+        size=664_000_000,
+    )
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    cli._print_cached_models()
+    row = next(
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "LFM2.5-1.2B-Instruct-4bit" in line
+    )
+
+    columns = re.split(r"\s{2,}", row.strip())
+    assert len(columns) == 4, f"columns merged: {columns}"
+    # The size column must be parseable on its own, not fused with the
+    # modified time.
+    assert re.fullmatch(r"[\d.]+ [KMGT]iB", columns[2]), columns[2]

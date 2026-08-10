@@ -5039,7 +5039,13 @@ def _print_cached_models() -> None:
     cols = (
         ("Alias", 22),
         ("HF repo", 50),
-        ("Size", 9),
+        # 10, not 9: the desktop parser splits columns on runs of 2+ spaces,
+        # and a 9-character value like "632.7 MiB" exactly fills a 9-wide
+        # field — leaving the single literal space in the format string as
+        # the only separator, so the size and the modified time arrive glued
+        # together as one unparseable token and the footer loses the model's
+        # bytes. Every value must be strictly narrower than its column.
+        ("Size", 10),
         ("Modified", 12),
     )
     width = sum(w for _, w in cols) + len(cols) - 1
@@ -5088,7 +5094,7 @@ def _print_cached_models() -> None:
         # Truncate over-long HF paths so the row doesn't wrap on a
         # narrow terminal; the alias column carries the canonical name.
         repo_disp = repo if len(repo) <= 50 else (repo[:47] + "...")
-        print(f"  {alias:<22} {repo_disp:<50} {_format_bytes(size):<9} {mod:<12}")
+        print(f"  {alias:<22} {repo_disp:<50} {_format_bytes(size):<10} {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
     print()
