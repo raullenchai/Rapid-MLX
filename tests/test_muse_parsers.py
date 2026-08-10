@@ -421,6 +421,68 @@ def test_nullable_list_type_schema_coerces():
     assert json.loads(result.tool_calls[0]["arguments"]) == {"n": 5, "m": None}
 
 
+def test_unmatched_literal_invoke_opener_in_value_still_parses():
+    # Codex r5 #2: an UNMATCHED literal "<atem:invoke" inside a value
+    # must not stop the real block from completing — inside a value the
+    # scanner examines nothing until a boundary-valid closer.
+    parser = _tool_parser()
+    value = "the wire uses <atem:invoke tags for calls"
+    text = _block(_invoke("echo", {"text": value}))
+    result = parser.extract_tool_calls(
+        text, request=_request("echo", {"text": {"type": "string"}})
+    )
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"text": value}
+
+
+def test_unmatched_fake_param_opener_in_value_still_parses():
+    # Codex r5 #3: an unmatched fake parameter opener inside a value
+    # must not make a valid call read as malformed.
+    parser = _tool_parser()
+    value = 'see <atem:parameter name="x"> for details'
+    text = _block(_invoke("echo", {"text": value}))
+    result = parser.extract_tool_calls(
+        text, request=_request("echo", {"text": {"type": "string"}})
+    )
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"text": value}
+
+
+def test_param_without_closer_never_becomes_a_call():
+    # Codex r5 #1: a parameter that never closes must not execute with
+    # a truncated value — the whole structure is unparseable content.
+    parser = _tool_parser()
+    text = (
+        "<atem:function_calls>\n"
+        '<atem:invoke name="rm">\n'
+        '<atem:parameter name="path">/tmp/x\n'
+        "</atem:invoke>\n</atem:function_calls>"
+    )
+    result = parser.extract_tool_calls(text)
+    assert not result.tools_called
+    assert "/tmp/x" in (result.content or "")
+
+
+def test_non_finite_number_stays_raw():
+    # Codex r5 #4: NaN/Infinity/1e309 would make json.dumps emit tokens
+    # that are not valid JSON — keep the raw string for the validator.
+    parser = _tool_parser()
+    text = _block(_invoke("f", {"a": "NaN", "b": "1e309", "c": "2.5"}))
+    result = parser.extract_tool_calls(
+        text,
+        request=_request(
+            "f",
+            {
+                "a": {"type": "number"},
+                "b": {"type": "number"},
+                "c": {"type": "number"},
+            },
+        ),
+    )
+    args = json.loads(result.tool_calls[0]["arguments"])
+    assert args == {"a": "NaN", "b": "1e309", "c": 2.5}
+
+
 def test_truncated_block_keeps_bytes_as_content():
     # An opener with no parseable invoke must not vanish silently.
     parser = _tool_parser()

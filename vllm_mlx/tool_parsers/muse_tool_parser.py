@@ -20,16 +20,25 @@ template (``chat_template.jinja`` on the HF repo):
   request's tool schema, not from the wire.
 * The template itself warns: "The output is not expected to be valid
   XML and is parsed with regular expressions." A string value may
-  therefore contain XML-ish text, including a literal
-  ``</atem:parameter>`` — the same delimiter-ambiguity class as the
-  Qwen3-Coder fixes in #1730. Two defenses here: a parameter's value
-  runs to the LAST closer before the next opener (not the first), and
-  when the request declares the tool's parameter names, an opener whose
-  name is not declared is treated as literal value text
-  (``declared_parameter_names``, same rationale as the qwen scanner).
-* The tool name is duplicated in the channel header (``to=NAME``) and
-  the invoke tag; the invoke tag is authoritative — the header is
-  routing plumbing and is stripped with the other channel tokens.
+  therefore contain arbitrary XML-ish text — literal closers, literal
+  openers, whole fake structures (#1730's bug class, and the #44
+  injection-surface concern).
+
+The defense is a POSITIONAL structural scan, not substring counting: a
+closing tag only closes a structure when the text after it (skipping
+whitespace) is a legal continuation of the grammar — the next opener,
+the enclosing structure's closer, or end of input. Structural tags
+INSIDE a parameter value are never examined, because the scanner is in
+the value state until a boundary-valid closer appears. This is the
+same "canonical closing line" discipline the Qwen3-Coder series
+converged on. The residual ambiguity (a value whose literal text ends
+with a boundary-valid closer sequence) is irreducible on this wire;
+the failure mode is always "unparseable stays visible content", never
+a wrong or truncated executable call.
+
+The tool name is duplicated in the channel header (``to=NAME``) and
+the invoke tag; the invoke tag is authoritative — the header is
+routing plumbing and is stripped with the other channel tokens.
 
 The companion ``MuseReasoningParser`` routes ``to=self`` segments to
 ``reasoning_content`` BEFORE this parser sees the stream, so on the
@@ -41,6 +50,7 @@ blocks. It still strips channel tokens itself so that standalone use
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from collections.abc import Sequence
@@ -56,10 +66,11 @@ from .abstract_tool_parser import (
 _BLOCK_OPEN = "<atem:function_calls>"
 _BLOCK_CLOSE = "</atem:function_calls>"
 _PARAM_CLOSE = "</atem:parameter>"
+_INVOKE_CLOSE = "</atem:invoke>"
 
 _INVOKE_OPEN_RE = re.compile(r'<atem:invoke\s+name="(?P<name>[^"]+)">')
-_INVOKE_CLOSE = "</atem:invoke>"
 _PARAM_OPEN_RE = re.compile(r'<atem:parameter\s+name="(?P<name>[^"]+)">')
+_WS_RE = re.compile(r"[ \t\r\n]*")
 
 # Muse channel plumbing (Harmony-flavored, but a distinct token set:
 # <|eot|>/<|eom|> terminators instead of <|end|>/<|return|>/<|call|>,
@@ -86,87 +97,106 @@ _STREAMING_SENTINELS: tuple[str, ...] = (
     "<|eom|>",
 )
 
+# A completed block: (start_offset, end_offset, invokes) where invokes
+# is [(tool_name, [(param_name, raw_value), ...]), ...].
+_Block = tuple[int, int, list[tuple[str, list[tuple[str, str]]]]]
+
 
 def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-def _completed_blocks(text: str) -> list[tuple[int, int, str]]:
-    """``(start, end, body)`` for each completed ATEM block, in order.
+def _walk_invoke(
+    text: str, opener: re.Match[str]
+) -> tuple[str, list[tuple[str, str]], int] | None:
+    """Walk one invoke starting at ``opener``; None if malformed/incomplete.
 
-    A block's close is the first ``</atem:function_calls>`` at which the
-    body's invoke structure is BALANCED (opens <= closes). A literal
-    block closer inside a parameter value sits between an
-    ``<atem:invoke`` and its ``</atem:invoke>``, leaves the count
-    unbalanced, and is skipped over instead of truncating the real call
-    (codex r3 #1 — the block-level twin of the parameter scan's
-    last-closer rule).
-
-    Prefix-stable: whether a block is complete, and where it closes,
-    depends only on text up to that close — so as a stream grows,
-    already-completed blocks never change. The streaming path's
-    ``_stream_blocks_emitted`` cursor relies on this.
+    Positional grammar walk: after the invoke opener, the only legal
+    tokens (whitespace-separated) are parameter openers and the invoke
+    closer. Inside a parameter value, NOTHING is structural until a
+    ``</atem:parameter>`` whose lookahead is a legal continuation — the
+    next parameter opener, the invoke closer, or end of input. Literal
+    tags inside values are therefore never mistaken for structure
+    (codex r4 #3 / r5 #1–#3), and a parameter that never closes makes
+    the whole invoke unparseable rather than an executable call with a
+    truncated value.
     """
-    blocks: list[tuple[int, int, str]] = []
+    params: list[tuple[str, str]] = []
+    cursor = opener.end()
+    while True:
+        j = _WS_RE.match(text, cursor).end()
+        pm = _PARAM_OPEN_RE.match(text, j)
+        if pm is not None:
+            value_start = pm.end()
+            pos = value_start
+            closed = False
+            while True:
+                idx = text.find(_PARAM_CLOSE, pos)
+                if idx < 0:
+                    break
+                after = idx + len(_PARAM_CLOSE)
+                k = _WS_RE.match(text, after).end()
+                if (
+                    k >= len(text)
+                    or _PARAM_OPEN_RE.match(text, k) is not None
+                    or text.startswith(_INVOKE_CLOSE, k)
+                ):
+                    params.append((pm.group("name"), text[value_start:idx]))
+                    cursor = after
+                    closed = True
+                    break
+                pos = after
+            if not closed:
+                return None
+            continue
+        if text.startswith(_INVOKE_CLOSE, j):
+            return (opener.group("name"), params, j + len(_INVOKE_CLOSE))
+        # Unexpected bytes (or end of input) inside the invoke.
+        return None
+
+
+def _completed_blocks(text: str) -> list[_Block]:
+    """Every completed, structurally valid ATEM block in ``text``.
+
+    Prefix-stable: a completed block's geometry depends only on the
+    bytes up to its close (every lookahead that validated a closer is
+    internal to the block once the block close itself validates), so as
+    a stream grows, already-completed blocks never change. The
+    streaming path's ``_stream_blocks_emitted`` cursor relies on this.
+
+    A block whose interior fails the walk is treated as in-flight /
+    malformed: scanning stops at its opener, and the bytes surface as
+    visible content instead of calls.
+    """
+    blocks: list[_Block] = []
     pos = 0
     while True:
         open_idx = text.find(_BLOCK_OPEN, pos)
         if open_idx < 0:
             break
-        body_start = open_idx + len(_BLOCK_OPEN)
-        search = body_start
-        close_idx = -1
+        invokes: list[tuple[str, list[tuple[str, str]]]] = []
+        cursor = open_idx + len(_BLOCK_OPEN)
+        completed = False
         while True:
-            candidate = text.find(_BLOCK_CLOSE, search)
-            if candidate < 0:
+            j = _WS_RE.match(text, cursor).end()
+            im = _INVOKE_OPEN_RE.match(text, j)
+            if im is not None:
+                walked = _walk_invoke(text, im)
+                if walked is None:
+                    break
+                name, params, end = walked
+                invokes.append((name, params))
+                cursor = end
+                continue
+            if text.startswith(_BLOCK_CLOSE, j):
+                blocks.append((open_idx, j + len(_BLOCK_CLOSE), invokes))
+                pos = j + len(_BLOCK_CLOSE)
+                completed = True
                 break
-            body = text[body_start:candidate]
-            if body.count("<atem:invoke") <= body.count("</atem:invoke>"):
-                close_idx = candidate
-                break
-            search = candidate + len(_BLOCK_CLOSE)
-        if close_idx < 0:
             break
-        end = close_idx + len(_BLOCK_CLOSE)
-        blocks.append((open_idx, end, text[body_start:close_idx]))
-        pos = end
+        if not completed:
+            break
     return blocks
-
-
-def _scan_invokes(body: str) -> list[tuple[str, str]]:
-    """``(name, inner)`` for each invoke in a block body.
-
-    An invoke's close is the first ``</atem:invoke>`` at which the
-    inner PARAMETER structure is balanced — a literal invoke closer
-    inside a parameter value sits between that parameter's opener and
-    closer, leaves the count unbalanced, and is skipped (codex r4 #3;
-    same rule one level down from ``_completed_blocks``). The rule errs
-    toward "unparseable stays content": a truly unbalanced body yields
-    no invoke rather than a wrong call.
-    """
-    out: list[tuple[str, str]] = []
-    pos = 0
-    while True:
-        opener = _INVOKE_OPEN_RE.search(body, pos)
-        if opener is None:
-            break
-        inner_start = opener.end()
-        search = inner_start
-        close_idx = -1
-        while True:
-            candidate = body.find(_INVOKE_CLOSE, search)
-            if candidate < 0:
-                break
-            inner = body[inner_start:candidate]
-            if inner.count("<atem:parameter") <= inner.count("</atem:parameter>"):
-                close_idx = candidate
-                break
-            search = candidate + len(_INVOKE_CLOSE)
-        if close_idx < 0:
-            break
-        out.append((opener.group("name"), body[inner_start:close_idx]))
-        pos = close_idx + len(_INVOKE_CLOSE)
-    return out
 
 
 def _allows_null(cfg: Any) -> bool:
@@ -235,10 +265,12 @@ def _convert_param_value(raw: str, param_name: str, props: dict) -> Any:
     * declared string  -> raw, verbatim (whitespace preserved — the
       template says so explicitly, and #1444's ``_decode_json_like``
       whitespace-eating bug is the cautionary tale);
-    * declared boolean/integer/number -> parsed scalar (raw on failure,
-      so strict schema validation downstream rejects it visibly);
+    * declared boolean/integer/number -> parsed scalar (raw on failure
+      or non-finite floats, so strict schema validation downstream
+      rejects it visibly and ``json.dumps`` never emits NaN/Infinity
+      tokens — codex r4 #1 / r5 #4);
     * declared object/array -> ``json.loads`` (raw on failure);
-    * ``null`` for a nullable non-string -> None;
+    * ``null`` -> None only when the schema explicitly permits null;
     * undeclared/unknown -> JSON only when it unambiguously parses to a
       container (the template only emits JSON for containers); any other
       shape stays a raw string. A bare ``5`` or ``true`` with no schema
@@ -249,10 +281,6 @@ def _convert_param_value(raw: str, param_name: str, props: dict) -> Any:
     if declared == "string":
         return raw
     if raw == "null" and _allows_null(cfg):
-        # Only when the schema PERMITS null (codex r4 #1): a bare
-        # ``null`` against a non-nullable type stays the raw string so
-        # downstream strict validation rejects it visibly instead of
-        # receiving a silently-forged None.
         return None
     if declared == "boolean":
         if raw in ("true", "false"):
@@ -265,9 +293,10 @@ def _convert_param_value(raw: str, param_name: str, props: dict) -> Any:
             return raw
     if declared == "number":
         try:
-            return float(raw)
+            value = float(raw)
         except ValueError:
             return raw
+        return value if math.isfinite(value) else raw
     if declared in ("object", "array"):
         try:
             return json.loads(raw)
@@ -281,41 +310,6 @@ def _convert_param_value(raw: str, param_name: str, props: dict) -> Any:
         except json.JSONDecodeError:
             return raw
     return raw
-
-
-def _scan_parameters(body: str, declared: set[str] | None) -> list[tuple[str, str]]:
-    """Extract ``(name, raw_value)`` pairs from an invoke body.
-
-    A value runs from its opener to the LAST ``</atem:parameter>``
-    before the next accepted opener (or the body end). Combined with
-    the declared-name filter, this survives values that contain a
-    literal closer or an XML-ish fake opener — the wire is genuinely
-    ambiguous there (the template says regex, not XML), and the schema
-    is the only disambiguator, exactly as in the qwen scanner.
-    """
-    openers: list[re.Match[str]] = []
-    seen: set[str] = set()
-    for m in _PARAM_OPEN_RE.finditer(body):
-        name = m.group("name")
-        if declared is not None and name not in declared:
-            continue
-        if name in seen:
-            # The template emits each parameter at most once, so a
-            # SECOND opener with the same name is value text — without
-            # this, a fake opener reusing a declared name would
-            # overwrite the real value (codex r4 #2). Its bytes stay in
-            # the current segment and the last-closer rule keeps them.
-            continue
-        seen.add(name)
-        openers.append(m)
-    params: list[tuple[str, str]] = []
-    for i, m in enumerate(openers):
-        seg_end = openers[i + 1].start() if i + 1 < len(openers) else len(body)
-        segment = body[m.end() : seg_end]
-        close = segment.rfind(_PARAM_CLOSE)
-        value = segment[:close] if close >= 0 else segment
-        params.append((m.group("name"), value))
-    return params
 
 
 def _strip_channel_plumbing(text: str) -> str:
@@ -353,23 +347,28 @@ class MuseToolParser(ToolParser):
         self._content_emitted = 0
 
     @staticmethod
-    def _parse_block(body: str, request: dict[str, Any] | None) -> list[dict[str, str]]:
-        """Parse the invokes of ONE completed block body.
+    def _convert_invokes(
+        invokes: list[tuple[str, list[tuple[str, str]]]],
+        request: dict[str, Any] | None,
+    ) -> list[dict[str, str]]:
+        """Turn structurally captured invokes into wire tool calls.
 
-        Scoping the invoke scan to completed block bodies (rather than the
-        whole response) is load-bearing: invoke-shaped text OUTSIDE a
-        block — the model quoting an example, documentation in prose —
-        must stay literal content, never become an executable call
-        (codex r1 BLOCKING #2; the #44 injection-surface concern).
+        The declared-name filter drops parameters the tool's schema does
+        not declare (#1551's ambiguity class); a duplicated name keeps
+        the FIRST occurrence so later text can never overwrite an
+        already-captured value (codex r4 #2).
         """
         calls: list[dict[str, str]] = []
-        for name, inner in _scan_invokes(body):
+        for name, params in invokes:
             props = _schema_properties(name, request)
             declared = declared_parameter_names(name, request)
-            arguments = {
-                pname: _convert_param_value(raw, pname, props)
-                for pname, raw in _scan_parameters(inner, declared)
-            }
+            arguments: dict[str, Any] = {}
+            for pname, raw in params:
+                if declared is not None and pname not in declared:
+                    continue
+                if pname in arguments:
+                    continue
+                arguments[pname] = _convert_param_value(raw, pname, props)
             calls.append(
                 {
                     "id": _generate_tool_id(),
@@ -388,8 +387,8 @@ class MuseToolParser(ToolParser):
     ) -> ExtractedToolCallInformation:
         calls = [
             call
-            for _, _, body in _completed_blocks(model_output)
-            for call in self._parse_block(body, request)
+            for _, _, invokes in _completed_blocks(model_output)
+            for call in self._convert_invokes(invokes, request)
         ]
         # One content rule for BOTH modes (codex r2 #2, r3 #2): the
         # ``hold_tail=False`` visible view — parseable blocks removed,
@@ -406,28 +405,26 @@ class MuseToolParser(ToolParser):
     def _visible_content(cls, text: str, *, hold_tail: bool = True) -> str:
         """Channel-clean content emittable for ``text`` so far.
 
-        Completed ATEM blocks are removed (their calls surface on the
-        tool_calls channel), the region from any UNMATCHED opener on is
-        held, and — when ``hold_tail`` — the usual in-flight holds apply:
-        a growing channel header and partial sentinels. Content between
-        and after blocks therefore streams normally instead of being
-        swallowed once the first opener appears (codex r1 BLOCKING #1).
+        Completed blocks WITH invokes are removed (their calls surface
+        on the tool_calls channel); a completed block with none is model
+        output the client must see (codex r3 #2). The region from any
+        unconsumed opener on is held while the stream runs, and — when
+        ``hold_tail`` — the usual in-flight holds apply: a growing
+        channel header and partial sentinels. Content between and after
+        blocks therefore streams normally (codex r1 #1).
 
         Monotonic in ``text`` by construction: completed blocks are
         prefix-stable (see ``_completed_blocks``), a parseable block's
-        removal never exposes earlier bytes, and a malformed block's
-        bytes appear in one piece at its close. That is what lets
-        callers emit from an absolute cursor.
+        removal never exposes earlier bytes, and an empty block's bytes
+        appear in one piece at its close. That is what lets callers
+        emit from an absolute cursor.
         """
         blocks = _completed_blocks(text)
         pieces: list[str] = []
         pos = 0
-        for start, end, body in blocks:
+        for start, end, invokes in blocks:
             pieces.append(text[pos:start])
-            if not _scan_invokes(body):
-                # Completed but malformed — no parseable invoke, so the
-                # bytes are model output the client must see (codex r3
-                # #2; non-stream applies the identical rule above).
+            if not invokes:
                 pieces.append(text[start:end])
             pos = end
         tail = text[pos:]
@@ -517,8 +514,8 @@ class MuseToolParser(ToolParser):
             self._stream_blocks_emitted = len(blocks)
             fresh = [
                 call
-                for _, _, body in new_blocks
-                for call in self._parse_block(body, request)
+                for _, _, invokes in new_blocks
+                for call in self._convert_invokes(invokes, request)
             ]
             if fresh:
                 offset = self._stream_calls_emitted
