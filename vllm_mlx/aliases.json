@@ -1815,7 +1815,7 @@
     "subfolder": "4bit",
     "tool_call_parser": "lfm",
     "reasoning_parser": "qwen3",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "supports_spec_decode": false
   },
   "lfm2.5-8b-a1b-4bit": {
