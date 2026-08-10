@@ -4957,13 +4957,18 @@ def _scan_external_model_dirs(
         roots = _external_model_roots()
 
     out: list[tuple[str, int, float]] = []
-    seen: set[str] = set()
+    seen_paths: set[str] = set()
+    seen_repos: set[str] = set()
 
     def _record(directory: str, repo: str) -> None:
         real = os.path.realpath(directory)
-        if real in seen:
+        # Ordered root precedence: the first configured occurrence of a repo
+        # wins.  Dedup by both identity and display/launch identifier so two
+        # separate roots cannot print duplicate rows or double-count bytes.
+        if real in seen_paths or repo in seen_repos:
             return
-        seen.add(real)
+        seen_paths.add(real)
+        seen_repos.add(repo)
         try:
             mtime = os.path.getmtime(directory)
         except OSError:
@@ -5048,11 +5053,18 @@ def _print_cached_models() -> None:
 
     rows = _scan_hf_cache_models()
     external_rows = _scan_external_model_dirs()
-    # Repos already in the hub cache win: the hub copy is the one we
-    # manage (and the one ``rm`` can delete), so a model present in both
-    # places must not appear twice.
-    hub_repos = {repo for repo, _, _ in rows}
-    external_rows = [r for r in external_rows if r[0] not in hub_repos]
+    # A RUNNABLE hub copy wins because it is managed by Rapid.  An incomplete
+    # hub stub must not hide a complete external copy: in that case keep the
+    # external row and suppress the unusable duplicate so the UI can launch
+    # the working local directory without double-counting disk usage.
+    external_repos_all = {repo for repo, _, _ in external_rows}
+    runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
+    rows = [
+        row
+        for row in rows
+        if row[0] not in external_repos_all or row[0] in runnable_hub_repos
+    ]
+    external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
     external_repos = {repo for repo, _, _ in external_rows}
     rows = rows + external_rows
     print()
@@ -5074,18 +5086,16 @@ def _print_cached_models() -> None:
     cols = (
         ("Alias", 22),
         ("HF repo", 50),
-        # 10, not 9: the desktop parser splits columns on runs of 2+ spaces,
-        # and a 9-character value like "632.7 MiB" exactly fills a 9-wide
-        # field — leaving the single literal space in the format string as
-        # the only separator, so the size and the modified time arrive glued
-        # together as one unparseable token and the footer loses the model's
-        # bytes. Every value must be strictly narrower than its column.
+        # Width is presentation only. Rows use an explicit two-space
+        # delimiter below because the desktop parser splits on 2+ spaces;
+        # padding alone cannot guarantee that invariant for a value that
+        # exactly fills (or exceeds) its field.
         ("Size", 10),
         ("Modified", 12),
     )
-    width = sum(w for _, w in cols) + len(cols) - 1
+    width = sum(w for _, w in cols) + 2 * (len(cols) - 1)
     sep = "  " + "─" * width
-    header = "  " + " ".join(f"{name:<{w}}" for name, w in cols)
+    header = "  " + "  ".join(f"{name:<{w}}" for name, w in cols)
     print(f"  Cached models ({len(rows)} on disk)")
     print(sep)
     print(header)
@@ -5129,7 +5139,7 @@ def _print_cached_models() -> None:
         # Truncate over-long HF paths so the row doesn't wrap on a
         # narrow terminal; the alias column carries the canonical name.
         repo_disp = repo if len(repo) <= 50 else (repo[:47] + "...")
-        print(f"  {alias:<22} {repo_disp:<50} {_format_bytes(size):<10} {mod:<12}")
+        print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
     print()

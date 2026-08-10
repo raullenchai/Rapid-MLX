@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from vllm_mlx import cli
-from vllm_mlx.model_aliases import list_profiles
+from vllm_mlx.model_aliases import list_profiles, resolve_model
 
 
 def _capture_models_output() -> str:
@@ -737,6 +737,38 @@ def test_external_scan_deduplicates_symlinked_roots(tmp_path):
     assert len(rows) == 1
 
 
+def test_external_scan_deduplicates_same_repo_across_roots(tmp_path):
+    """First configured root wins when two stores carry the same repo."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _write_mlx_model(first / "pub" / "Model", size=2048)
+    _write_mlx_model(second / "pub" / "Model", size=4096)
+
+    rows = cli._scan_external_model_dirs([str(first), str(second)])
+
+    assert len(rows) == 1
+    assert rows[0][0] == "pub/Model"
+    assert rows[0][1] < 4096
+
+
+def test_external_repo_resolves_to_local_model_directory(tmp_path, monkeypatch):
+    """The discovered identifier must launch in place, never re-download."""
+    root = tmp_path / "models"
+    model = _write_mlx_model(root / "mlx-community" / "Outsider-4bit")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    assert resolve_model("mlx-community/Outsider-4bit") == os.path.realpath(model)
+
+
+def test_external_resolution_rejects_parent_traversal(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    root.mkdir()
+    _write_mlx_model(tmp_path / "escape")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    assert resolve_model("../escape") == "../escape"
+
+
 def test_external_scan_tolerates_missing_and_unreadable_roots(tmp_path):
     """A root on an unplugged drive must not raise — it should vanish."""
     assert cli._scan_external_model_dirs([str(tmp_path / "gone")]) == []
@@ -785,7 +817,9 @@ def test_external_models_render_as_external_not_deletable(
     assert "(external)" in out
 
 
-def test_hub_copy_wins_when_a_repo_exists_in_both_places(tmp_path, monkeypatch, capsys):
+def test_runnable_hub_copy_wins_when_a_repo_exists_in_both_places(
+    tmp_path, monkeypatch, capsys
+):
     """A model present in the hub cache and in an external root is one
     model, and the hub copy is the one we can manage."""
     hub = tmp_path / "hub"
@@ -799,12 +833,39 @@ def test_hub_copy_wins_when_a_repo_exists_in_both_places(tmp_path, monkeypatch, 
     root = tmp_path / "external"
     _write_mlx_model(root / "mlx-community" / "Dup")
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(
+        cli, "_cache_entry_is_runnable", lambda repo: repo.endswith("/Dup")
+    )
 
     cli._print_cached_models()
     out = capsys.readouterr().out
 
     assert out.count("mlx-community/Dup") == 1
     assert "(external)" not in out
+
+
+def test_complete_external_copy_wins_over_incomplete_hub_stub(
+    tmp_path, monkeypatch, capsys
+):
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    stub = hub / "models--mlx-community--Dup"
+    stub.mkdir()
+    (stub / "config.json").write_text("{}")
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(hub), raising=False
+    )
+    root = tmp_path / "external"
+    _write_mlx_model(root / "mlx-community" / "Dup")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: False)
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+
+    assert out.count("mlx-community/Dup") == 1
+    assert "(external)" in out
+    assert "(incomplete)" not in out
 
 
 def test_external_scan_measures_symlinked_weights(tmp_path):
@@ -827,7 +888,9 @@ def test_external_scan_measures_symlinked_weights(tmp_path):
     assert rows[0][1] >= 4096, f"symlinked weights measured as {rows[0][1]} bytes"
 
 
-def test_cached_row_columns_stay_split_for_a_long_repo(tmp_path, monkeypatch, capsys):
+def test_cached_row_columns_stay_split_for_a_full_width_size(
+    tmp_path, monkeypatch, capsys
+):
     """The desktop parser splits on runs of 2+ spaces, so every value must
     be strictly narrower than its column. A 9-char size in a 9-wide field
     left one literal space and glued size+modified into one token, which
@@ -842,9 +905,11 @@ def test_cached_row_columns_stay_split_for_a_long_repo(tmp_path, monkeypatch, ca
     root = tmp_path / "external"
     _write_mlx_model(
         root / "mlx-community" / "LFM2.5-1.2B-Instruct-4bit",
-        size=664_000_000,
+        size=1,
     )
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    # Exactly 10 characters: the old padding-dependent separator collapsed.
+    monkeypatch.setattr(cli, "_snapshot_size_bytes", lambda _path: 1_073_636_966)
 
     cli._print_cached_models()
     row = next(
@@ -858,3 +923,4 @@ def test_cached_row_columns_stay_split_for_a_long_repo(tmp_path, monkeypatch, ca
     # The size column must be parseable on its own, not fused with the
     # modified time.
     assert re.fullmatch(r"[\d.]+ [KMGT]iB", columns[2]), columns[2]
+    assert columns[2] == "1023.9 MiB"

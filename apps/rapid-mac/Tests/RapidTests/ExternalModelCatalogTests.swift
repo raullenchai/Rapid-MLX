@@ -133,4 +133,30 @@ struct ExternalModelCatalogTests {
         // A typo fails silently as "no models found".
         #expect(ModelCatalog.extraModelRootsEnvKey == "RAPID_MLX_EXTRA_MODEL_ROOTS")
     }
+
+    @Test("Selected model root is merged with ambient roots and deduplicated")
+    func rootsAreMerged() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-external-model-root").path
+        let canonical = URL(fileURLWithPath: root)
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        let merged = ModelCatalog.mergedExtraModelRoots(
+            existing: "/first:\(root)",
+            selected: root + "/."
+        )
+
+        #expect(merged == "/first:\(canonical)")
+    }
+
+    @Test("Serve child receives the same external root used for discovery")
+    func serveEnvironmentCarriesExternalRoot() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "test-token",
+            ambient: [ModelCatalog.extraModelRootsEnvKey: "/ambient"],
+            modelsFolderOverride: "/selected"
+        )
+
+        #expect(env[ModelCatalog.extraModelRootsEnvKey] == "/ambient:/selected")
+        #expect(env["HF_HUB_CACHE"] == "/selected")
+    }
 }

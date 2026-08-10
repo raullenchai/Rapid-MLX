@@ -634,20 +634,62 @@ def resolve_subfolder(name: str) -> str | None:
 def resolve_model(name: str) -> str:
     """Resolve a model alias to its full HuggingFace path.
 
-    If name contains '/' it's already a full path — pass through.
     If a local file/directory with the name exists, prefer that.
+    If a configured external-model root contains the repo, serve it in place.
+    If name contains '/' it's already a full Hugging Face path — pass through.
     If name is a retired, known-broken alias, raise before any download or load.
     If name matches an alias, return the mapped HF path.
     Otherwise return unchanged.
     """
-    if "/" in name:
-        return name
     if os.path.exists(name):
+        return name
+    if external := _resolve_external_model_path(name):
+        return external
+    if "/" in name:
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)
     profile = _load().get(name)
     return profile.hf_path if profile is not None else name
+
+
+def _resolve_external_model_path(name: str) -> str | None:
+    """Resolve a discovered external repo back to its canonical directory.
+
+    Discovery renders a stable ``publisher/repo`` identifier for the CLI and
+    desktop UI, but the loader must receive the local directory or it will
+    interpret that identifier as a Hugging Face repo and download the model
+    again.  Search the same ordered roots used by discovery and accept only
+    the one- or two-component layouts that scanner emits.
+
+    ``realpath`` + ``commonpath`` keeps ``..`` and symlinked candidates from
+    escaping the user-nominated root.  Completeness is rechecked at launch so
+    a row that became partial after catalog refresh cannot be served as ready.
+    """
+    parts = name.split("/")
+    if len(parts) not in (1, 2) or any(part in ("", ".", "..") for part in parts):
+        return None
+
+    raw_roots = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "")
+    if not raw_roots:
+        return None
+
+    from ._download_gate import _snapshot_is_complete
+
+    for raw_root in raw_roots.split(os.pathsep):
+        raw_root = raw_root.strip()
+        if not raw_root:
+            continue
+        root = os.path.realpath(os.path.expanduser(raw_root))
+        candidate = os.path.realpath(os.path.join(root, *parts))
+        try:
+            if os.path.commonpath((root, candidate)) != root:
+                continue
+        except ValueError:
+            continue
+        if os.path.isdir(candidate) and _snapshot_is_complete(candidate):
+            return candidate
+    return None
 
 
 def list_aliases() -> dict[str, str]:

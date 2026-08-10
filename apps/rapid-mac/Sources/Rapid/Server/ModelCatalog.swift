@@ -79,6 +79,26 @@ enum ModelCatalog {
     /// than as a broken lookup.
     static let extraModelRootsEnvKey = "RAPID_MLX_EXTRA_MODEL_ROOTS"
 
+    /// Merge an explicit Settings folder with any roots inherited from the
+    /// launcher. Root order is precedence order, so ambient roots stay first
+    /// and the selected folder is appended only when it is not already the
+    /// same canonical directory.
+    static func mergedExtraModelRoots(existing: String?, selected: String?) -> String? {
+        var roots: [String] = []
+        var seen: Set<String> = []
+        let candidates = (existing ?? "").split(separator: ":").map(String.init)
+            + [selected].compactMap { $0 }
+        for candidate in candidates {
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let canonical = URL(fileURLWithPath: trimmed)
+                .standardizedFileURL.resolvingSymlinksInPath().path
+            guard seen.insert(canonical).inserted else { continue }
+            roots.append(canonical)
+        }
+        return roots.isEmpty ? nil : roots.joined(separator: ":")
+    }
+
     /// All known aliases plus their installation status. Empty array on
     /// any failure — the caller should fall back to a plain text field.
     /// We deliberately swallow errors here rather than throwing because
@@ -728,7 +748,10 @@ enum ModelCatalog {
                 // user was asked to re-download weights already on disk.
                 // Passing it both ways means either layout is found without
                 // making the user say which kind of folder they picked.
-                env[extraModelRootsEnvKey] = hubCacheOverride.path
+                env[extraModelRootsEnvKey] = mergedExtraModelRoots(
+                    existing: env[extraModelRootsEnvKey],
+                    selected: hubCacheOverride.path
+                )
                 task.environment = env
             }
             let stdout = Pipe()

@@ -2327,6 +2327,7 @@ final class ServerManager {
         "SSL_CERT_FILE", "SSL_CERT_DIR",
         "__CFBundleIdentifier", "XPC_SERVICE_NAME",
         "HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME",
+        ModelCatalog.extraModelRootsEnvKey,
         "HF_ENDPOINT", "HF_HUB_OFFLINE",
         "HF_HUB_DISABLE_TELEMETRY", "HF_HUB_ENABLE_HF_TRANSFER",
     ]
@@ -2500,6 +2501,15 @@ final class ServerManager {
         // the drop-if-empty behaviour of the allowlist is preserved).
         if let modelsFolderOverride, !modelsFolderOverride.isEmpty {
             env["HF_HUB_CACHE"] = modelsFolderOverride
+            // #1718: discovery prints a stable repo identifier; resolve_model
+            // maps it back to the in-place directory through this ordered root
+            // list. Without forwarding the same root to the serve child, a
+            // selected external row is interpreted as a Hugging Face repo and
+            // downloaded again instead of using the existing weights.
+            env[ModelCatalog.extraModelRootsEnvKey] = ModelCatalog.mergedExtraModelRoots(
+                existing: env[ModelCatalog.extraModelRootsEnvKey],
+                selected: modelsFolderOverride
+            )
         }
 
         // Layer 3: HF Hub overrides with ambient pass-through.
