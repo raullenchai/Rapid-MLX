@@ -135,9 +135,19 @@ class ModelArgs(BaseModelArgs):
     text_config: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        # A future text-only export may flatten the config; accept both.
-        src = self.text_config if self.text_config else {}
-        self.text = TextConfig.from_dict(src)
+        self.text = TextConfig.from_dict(self.text_config or {})
+
+    @classmethod
+    def from_dict(cls, params):
+        # ``BaseModelArgs.from_dict`` filters unknown keys, so a
+        # flattened text-only export (LM shape at the top level, no
+        # nested ``text_config``) would otherwise silently collapse to
+        # the 30B defaults (codex r1 #1). Rebuild the inner config from
+        # the FULL raw dict in that case.
+        args = super().from_dict(params)
+        if not args.text_config:
+            args.text = TextConfig.from_dict(params)
+        return args
 
 
 class RMSNormNoScale(nn.Module):
@@ -293,7 +303,12 @@ class MuseModel(nn.Module):
         self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
         # Index of a representative layer per attention kind, for mask
         # construction (masks depend on the cache's current offset).
-        self.first_full_idx = args.layer_types.index(_FULL)
+        # Either kind may be absent in a tiny/explicit config — e.g. the
+        # default [S,S,S,F] pattern yields no full layer below 4 layers
+        # (codex r1 #2) — so both lookups are guarded.
+        self.first_full_idx = (
+            args.layer_types.index(_FULL) if _FULL in args.layer_types else None
+        )
         self.first_sliding_idx = (
             args.layer_types.index(_SLIDING) if _SLIDING in args.layer_types else None
         )
@@ -315,7 +330,9 @@ class MuseModel(nn.Module):
         if cache is None:
             cache = [None] * len(self.layers)
 
-        full_mask = create_attention_mask(h, cache[self.first_full_idx])
+        full_mask = None
+        if self.first_full_idx is not None:
+            full_mask = create_attention_mask(h, cache[self.first_full_idx])
         sliding_mask = None
         if self.first_sliding_idx is not None:
             sliding_mask = create_attention_mask(

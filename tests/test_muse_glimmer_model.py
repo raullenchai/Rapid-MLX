@@ -123,11 +123,44 @@ def test_layer_pattern_validation():
 
 
 def test_flattened_config_fallback():
-    """A future text-only export may put the LM shape at the top level."""
+    """A flattened text-only export (LM shape at the TOP level, no nested
+    text_config) must not silently collapse to the 30B defaults
+    (codex r1 #1)."""
+    flat = dict(TINY_TEXT, model_type="muse_glimmer")
+    args = mg.ModelArgs.from_dict(flat)
+    assert args.text.hidden_size == TINY_TEXT["hidden_size"]
+    assert args.text.num_hidden_layers == TINY_TEXT["num_hidden_layers"]
+    # The flat model builds and runs.
+    model = mg.Model(args)
+    out = model(mx.array([[1, 2, 3]]))
+    assert out.shape == (1, 3, TINY_TEXT["vocab_size"])
+
+    # Missing shape info entirely -> released 30B defaults.
     args = mg.ModelArgs.from_dict({"model_type": "muse_glimmer", "text_config": {}})
-    # Empty text_config -> released 30B defaults.
     assert args.text.hidden_size == 6656
     assert args.text.num_hidden_layers == 52
+
+
+def test_configs_without_both_layer_kinds():
+    """Explicit all-sliding configs and short default-pattern configs
+    (< 4 layers -> no full-attention layer) must construct and run
+    (codex r1 #2)."""
+    for text_cfg in (
+        dict(TINY_TEXT, num_hidden_layers=2, layer_types=[mg._SLIDING] * 2),
+        dict(TINY_TEXT, num_hidden_layers=3),  # default pattern -> [S,S,S]
+        dict(TINY_TEXT, num_hidden_layers=2, layer_types=[mg._FULL] * 2),
+    ):
+        args = mg.ModelArgs.from_dict(
+            {"model_type": "muse_glimmer", "text_config": text_cfg}
+        )
+        model = mg.Model(args)
+        ids = mx.array([[1, 2, 3, 4]])
+        no_cache = model(ids)
+        assert no_cache.shape == (1, 4, TINY_TEXT["vocab_size"])
+        cache = model.make_cache()
+        steps = [model(ids[:, i : i + 1], cache=cache) for i in range(4)]
+        inc = mx.concatenate(steps, axis=1)
+        assert float(mx.abs(inc - no_cache).max()) < 2e-3
 
 
 def test_forward_softcap_and_cache_parity():
