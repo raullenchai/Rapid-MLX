@@ -16,15 +16,15 @@ struct SwiftMathVendorTests {
 
     @Test("concurrent CTFont cache access stays coherent")
     func concurrentFontCache() {
-        let lock = NSLock()
-        var sizes: [CGFloat] = []
+        let sizes = LockedSizes()
         DispatchQueue.concurrentPerform(iterations: 64) { index in
             let expected = CGFloat(12 + index % 4)
             let font = MathFont.latinModernFont.ctFont(withSize: expected)
-            lock.withLock { sizes.append(CTFontGetSize(font)) }
+            sizes.append(CTFontGetSize(font))
         }
-        #expect(sizes.count == 64)
-        #expect(Set(sizes) == Set([12, 13, 14, 15]))
+        let observed = sizes.snapshot
+        #expect(observed.count == 64)
+        #expect(Set(observed) == Set([12, 13, 14, 15]))
     }
 
     @Test("macOS background setter honours its value")
@@ -37,5 +37,18 @@ struct SwiftMathVendorTests {
 
         view.backgroundColor = nil
         #expect(view.layer?.backgroundColor == nil)
+    }
+}
+
+private final class LockedSizes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [CGFloat] = []
+
+    func append(_ value: CGFloat) {
+        lock.withLock { values.append(value) }
+    }
+
+    var snapshot: [CGFloat] {
+        lock.withLock { values }
     }
 }
