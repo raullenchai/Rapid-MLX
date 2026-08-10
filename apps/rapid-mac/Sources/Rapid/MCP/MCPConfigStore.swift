@@ -90,6 +90,22 @@ final class MCPConfigStore {
         } catch {
             servers = []
             loadError = "Couldn't read \(fileURL.path): \(error.localizedDescription)"
+            return
+        }
+        // Validation is enforced on the write path (``upsert``), but an
+        // imported config — the whole point of the ecosystem-standard shape —
+        // never went through it. The engine accepts any dictionary key as a
+        // name, so an illegal one is forwarded verbatim, becomes `bad name__tool`,
+        // and the model silently can't call it. Surface it here instead of
+        // letting it fail invisibly downstream.
+        let invalid = servers.filter { !MCPServerConfig.isValidName($0.name) }
+        if !invalid.isEmpty {
+            let names = invalid.map { "“\($0.name)”" }.joined(separator: ", ")
+            loadError =
+                "\(invalid.count == 1 ? "Connector" : "Connectors") \(names) "
+                + "\(invalid.count == 1 ? "has" : "have") an invalid name — use up to "
+                + "\(MCPServerConfig.maxNameLength) letters, numbers, dashes or "
+                + "underscores. Its tools won't be callable until renamed."
         }
     }
 
@@ -193,6 +209,13 @@ final class MCPConfigStore {
             // `.atomic` writes via a temp file and renames, which does NOT
             // carry permissions across — set them after the rename, every
             // time, or the mode silently reverts to the default umask.
+            //
+            // There is a brief window between the rename and this chmod where
+            // the file carries the umask default (typically 0644). It is not
+            // reachable: `.atomic`'s temp file is created inside `dir`, and
+            // `dir` is 0700, so no other account can traverse into it to read
+            // the file during that window regardless of the file's own mode.
+            // The 0600 is defence in depth on top of the 0700 directory.
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: fileURL.path

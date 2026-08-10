@@ -110,7 +110,9 @@ def test_tolerant_load_still_raises_on_whole_file_problems():
     # problem, and silently loading zero servers from it would be the same
     # silent failure this feature exists to remove.
     with pytest.raises(ValueError):
-        validate_config({"mcpServers": {"good": _GOOD}, "default_timeout": -1}, tolerant=True)
+        validate_config(
+            {"mcpServers": {"good": _GOOD}, "default_timeout": -1}, tolerant=True
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +191,9 @@ def test_reload_picks_up_a_newly_added_server(client, tmp_path, monkeypatch):
 
     path = _write(tmp_path, {"one": _GOOD})
     asyncio.run(server_module.init_mcp(path))
-    assert {s["name"] for s in client.get("/v1/mcp/servers").json()["servers"]} == {"one"}
+    assert {s["name"] for s in client.get("/v1/mcp/servers").json()["servers"]} == {
+        "one"
+    }
 
     # The desktop app edits the file, then asks the engine to re-read it. This
     # is what makes a connector edit apply without a multi-GB model reload.
@@ -262,7 +266,7 @@ def test_connection_error_carries_the_child_stderr():
             return self._text
 
     client_obj._stderr_file = _Buffer(
-        'Traceback (most recent call last):\n'
+        "Traceback (most recent call last):\n"
         '  File "x.py", line 1\n'
         "ImportError: cannot import name 'McpError'\n"
     )
@@ -297,3 +301,127 @@ def test_reload_without_a_known_config_path_is_a_clean_no_op(client):
     response = client.post("/v1/mcp/reload")
     assert response.status_code == 200
     assert "--mcp-config" in response.json()["error"]
+
+
+# ---------------------------------------------------------------------------
+# Server-side sandbox gate on the execute route
+# ---------------------------------------------------------------------------
+#
+# The desktop app runs the tool loop client-side and reaches the engine only
+# through ``POST /v1/mcp/execute`` — which calls ``manager.execute_tool``
+# directly, NOT through ``ToolExecutor``. Without an explicit check the
+# sandbox wired up in ``_start_mcp`` (default-deny on shell/exec/eval, argument
+# scrubbing, the ``allowed_high_risk_tools`` allowlist) would be inert on that
+# path and the UI approval click would be the only gate.
+
+
+class _RecordingManager:
+    """Minimal stand-in for ``MCPClientManager`` on the execute path."""
+
+    def __init__(self):
+        self.executed: list[str] = []
+
+    def resolve_tool_target(self, full_name: str):
+        server, sep, tool = full_name.partition("__")
+        return (server, tool) if sep else (None, full_name)
+
+    async def execute_tool(self, full_name, arguments, timeout=None):
+        from vllm_mlx.mcp.types import MCPToolResult
+
+        self.executed.append(full_name)
+        return MCPToolResult(
+            tool_name=full_name, content="ran", is_error=False, error_message=None
+        )
+
+
+@pytest.fixture
+def _restore_sandbox():
+    from vllm_mlx.mcp.security import get_sandbox, set_sandbox
+
+    saved = get_sandbox()
+    yield
+    set_sandbox(saved)
+
+
+def test_execute_route_blocks_high_risk_tool_by_default(client, _restore_sandbox):
+    from vllm_mlx.mcp.security import ToolSandbox, set_sandbox
+
+    set_sandbox(ToolSandbox())  # default-deny high-risk, empty allowlist
+    manager = _RecordingManager()
+    server_module._mcp_manager = manager
+    server_module._sync_config()
+
+    body = client.post(
+        "/v1/mcp/execute",
+        json={"tool_name": "fs__shell_exec", "arguments": {}},
+    ).json()
+
+    assert body["is_error"] is True
+    assert "high-risk" in body["error_message"]
+    # The gate has to stop the call, not just annotate it after the fact.
+    assert manager.executed == []
+
+
+def test_execute_route_runs_a_benign_tool(client, _restore_sandbox):
+    from vllm_mlx.mcp.security import ToolSandbox, set_sandbox
+
+    set_sandbox(ToolSandbox())
+    manager = _RecordingManager()
+    server_module._mcp_manager = manager
+    server_module._sync_config()
+
+    body = client.post(
+        "/v1/mcp/execute",
+        json={"tool_name": "fs__read_file", "arguments": {"path": "notes.txt"}},
+    ).json()
+
+    assert body["is_error"] is False
+    assert manager.executed == ["fs__read_file"]
+
+
+def test_execute_route_honors_the_high_risk_allowlist(client, _restore_sandbox):
+    from vllm_mlx.mcp.security import ToolSandbox, set_sandbox
+
+    # The user opted this exact namespaced tool in; the route must let it run.
+    set_sandbox(ToolSandbox(allowed_high_risk_tools={"fs__shell_exec"}))
+    manager = _RecordingManager()
+    server_module._mcp_manager = manager
+    server_module._sync_config()
+
+    body = client.post(
+        "/v1/mcp/execute",
+        json={"tool_name": "fs__shell_exec", "arguments": {}},
+    ).json()
+
+    assert body["is_error"] is False
+    assert manager.executed == ["fs__shell_exec"]
+
+
+# ---------------------------------------------------------------------------
+# Captured-stderr file descriptor is released
+# ---------------------------------------------------------------------------
+
+
+def test_disconnect_closes_the_captured_stderr_file():
+    """Each reload disconnects every client; a leaked temp fd per cycle adds up."""
+    import tempfile
+
+    from vllm_mlx.mcp.client import MCPClient, MCPServerState
+    from vllm_mlx.mcp.types import MCPServerConfig
+
+    cfg = MCPServerConfig(
+        name="s",
+        transport="stdio",
+        command="python3",
+        skip_security_validation=True,
+    )
+    client_obj = MCPClient(cfg)
+    handle = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+    client_obj._stderr_file = handle
+    # Pretend we are connected so ``disconnect`` runs its body.
+    client_obj._state = MCPServerState.CONNECTED
+
+    asyncio.run(client_obj.disconnect())
+
+    assert client_obj._stderr_file is None
+    assert handle.closed

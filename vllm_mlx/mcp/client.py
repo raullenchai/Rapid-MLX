@@ -210,7 +210,10 @@ class MCPClient:
         )
 
         # Create stdio client context. ``errlog`` captures the child's stderr
-        # instead of letting it escape to ours — see ``_stderr_file``.
+        # instead of letting it escape to ours — see ``_stderr_file``. Close any
+        # prior handle first: a reconnect on the same client would otherwise
+        # leak the previous temp file's descriptor.
+        self._close_stderr_file()
         self._stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         self._stdio_client = stdio_client(server_params, errlog=self._stderr_file)
         self._read, self._write = await self._stdio_client.__aenter__()
@@ -297,9 +300,21 @@ class MCPClient:
                 logger.warning(f"Error disconnecting from '{self.name}': {e}")
 
             finally:
+                # Close the captured-stderr temp file, or each reload
+                # (disconnect + reconnect every client) leaks one fd until GC.
+                self._close_stderr_file()
                 self._state = MCPServerState.DISCONNECTED
                 self._tools = []
                 logger.info(f"Disconnected from MCP server '{self.name}'")
+
+    def _close_stderr_file(self) -> None:
+        """Close and drop the captured-stderr temp file if one is open."""
+        if self._stderr_file is not None:
+            try:
+                self._stderr_file.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
+            self._stderr_file = None
 
     async def call_tool(
         self,

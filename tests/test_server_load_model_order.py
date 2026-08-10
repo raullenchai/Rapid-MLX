@@ -664,8 +664,13 @@ async def test_init_mcp_syncs_config_into_cfg(monkeypatch):
 
     mock_config = MagicMock()
     mock_config.allowed_high_risk_tools = []
+    # ``_start_mcp`` now loads tolerantly and reads ``config.rejected``; the
+    # mock has to accept the ``tolerant`` kwarg and expose an iterable.
+    mock_config.rejected = []
 
-    monkeypatch.setattr(mcp_module, "load_mcp_config", lambda _path: mock_config)
+    monkeypatch.setattr(
+        mcp_module, "load_mcp_config", lambda _path, tolerant=False: mock_config
+    )
     monkeypatch.setattr(mcp_module, "MCPClientManager", lambda _cfg: mock_manager)
     monkeypatch.setattr(mcp_module, "ToolExecutor", lambda _mgr: mock_executor)
     monkeypatch.setattr(mcp_module, "set_sandbox", MagicMock())

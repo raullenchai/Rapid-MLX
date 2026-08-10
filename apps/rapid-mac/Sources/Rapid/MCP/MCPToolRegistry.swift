@@ -67,9 +67,23 @@ final class MCPToolRegistry: ToolRegistry {
         !disabledTools.contains(toolName)
     }
 
-    /// Everything the catalog reports, minus what the user switched off.
+    /// The master switch, read from the same defaults ``MCPConfigStore`` writes
+    /// it to. The authoritative connectors-off gate lives HERE, not in the
+    /// catalog: turning the switch off clears the catalog, but the running
+    /// child still has its connectors loaded, so a later ``/healthz`` ready
+    /// transition (`ContentView`) can repopulate the catalog from that live
+    /// child. Gating advertise + dispatch on the switch means "connectors off"
+    /// holds even across that repopulation — the model is never handed a
+    /// connector tool the user turned off, whatever the catalog currently says.
+    private var connectorsEnabled: Bool {
+        defaults.bool(forKey: MCPConfigStore.enabledKey)
+    }
+
+    /// Everything the catalog reports, minus what the user switched off — and
+    /// nothing at all while the master switch is off.
     var definitions: [ToolDefinition] {
-        catalog.tools.filter { !disabledTools.contains($0.function.name) }
+        guard connectorsEnabled else { return [] }
+        return catalog.tools.filter { !disabledTools.contains($0.function.name) }
     }
 
     /// Tools the catalog knows about regardless of the user's switches — the
@@ -79,6 +93,18 @@ final class MCPToolRegistry: ToolRegistry {
 
     func run(_ call: ToolCall) async -> ToolCallResult {
         let name = call.function.name
+
+        // Master switch. The child may still have connectors loaded (they
+        // unload on restart), so refuse execution here rather than trust that
+        // the catalog was cleared — same reasoning as ``definitions``.
+        guard connectorsEnabled else {
+            return ToolCallResult(
+                toolCallID: call.id,
+                content: "Connectors are turned off in Settings → Connectors; '\(name)' was not run.",
+                isError: true,
+                failureKind: .userDeclined
+            )
+        }
 
         // Defence in depth. ``ChatViewModel`` already refuses anything not
         // advertised this round, but this registry is reachable from any

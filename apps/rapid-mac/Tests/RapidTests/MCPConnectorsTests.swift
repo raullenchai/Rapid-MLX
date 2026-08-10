@@ -31,6 +31,16 @@ final class MCPConnectorsTests {
         return d
     }
 
+    /// Fresh defaults with the connectors master switch already on. The
+    /// registry gates advertise + dispatch on that switch, so a test about the
+    /// per-tool or approval gates has to start from "connectors on" or it would
+    /// only ever exercise the master gate.
+    private func enabledDefaults() -> UserDefaults {
+        let d = freshDefaults()
+        d.set(true, forKey: MCPConfigStore.enabledKey)
+        return d
+    }
+
     private func tempConfigURL() -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-mcp-\(UUID().uuidString)", isDirectory: true)
@@ -107,6 +117,24 @@ final class MCPConnectorsTests {
         #expect(remote.url == "https://example.com/mcp")
         // A URL entry must not carry a stale command from an earlier edit.
         #expect(remote.command == nil)
+    }
+
+    @Test("An imported config with an uncallable server name surfaces a load error")
+    func importedInvalidNameSurfacesOnLoad() throws {
+        // Validation is enforced on the write path, but an imported config —
+        // the whole reason for the ecosystem-standard shape — never went
+        // through it. `my.server` is a legal JSON key yet an illegal tool-name
+        // namespace, so the engine would forward it and the model would
+        // silently never call it. The load has to say so.
+        let url = tempConfigURL()
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try Data(#"{"mcpServers":{"my.server":{"command":"npx"}}}"#.utf8).write(to: url)
+
+        let store = MCPConfigStore(defaults: freshDefaults(), fileURL: url)
+        #expect(store.loadError != nil)
+        #expect(store.loadError?.contains("my.server") == true)
     }
 
     @Test("A hand-written entry with no transport decodes as stdio rather than failing")
@@ -351,7 +379,7 @@ final class MCPConnectorsTests {
         let registry = MCPToolRegistry(
             catalog: makeCatalog(),
             approval: makeApproval(),
-            defaults: freshDefaults()
+            defaults: enabledDefaults()
         )
         registry.setToolEnabled("fs__read_file", false)
         #expect(!registry.isToolEnabled("fs__read_file"))
@@ -381,7 +409,7 @@ final class MCPConnectorsTests {
         let registry = MCPToolRegistry(
             catalog: makeCatalog(),
             approval: approval,
-            defaults: freshDefaults()
+            defaults: enabledDefaults()
         )
         async let result = registry.run(
             ToolCall(id: "c1", name: "fs__read_file", arguments: #"{"path":"/etc/passwd"}"#)
@@ -414,6 +442,44 @@ final class MCPConnectorsTests {
         #expect(pending?.argumentsPreview.contains("\u{202E}") == false)
         approval.answer(.deny)
         _ = await decision
+    }
+
+    @Test("The master switch gates advertise + dispatch even with a populated catalog")
+    func masterSwitchGatesConnectorTools() async {
+        // The running child keeps its connectors loaded until it restarts, so a
+        // later `/healthz` ready transition can repopulate the catalog after
+        // the user switched connectors off. The load-bearing gate is on the
+        // registry the chat loop reads — not the catalog it can refill from.
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = """
+        {"servers":[{"name":"fs","state":"connected","transport":"stdio","tools_count":1,"error":null}],
+         "error":null,"configured":true}
+        """
+        MCPStubProtocol.responses[key(port, "/v1/mcp/tools")] = """
+        {"tools":[{"name":"fs__read_file","description":"d","server":"fs","parameters":{}}],"count":1}
+        """
+        await catalog.refresh()
+        #expect(!catalog.tools.isEmpty)
+
+        let defaults = enabledDefaults()
+        let registry = MCPToolRegistry(
+            catalog: catalog, approval: makeApproval(), defaults: defaults
+        )
+        // Connectors on: the populated tool is advertised.
+        #expect(registry.definitions.map { $0.function.name } == ["fs__read_file"])
+
+        // Flip the master switch off. The catalog is still populated (no
+        // restart yet), but the tool must vanish from what the model sees AND
+        // be refused if a call slips through anyway.
+        defaults.set(false, forKey: MCPConfigStore.enabledKey)
+        #expect(registry.definitions.isEmpty)
+
+        let result = await registry.run(
+            ToolCall(id: "c1", name: "fs__read_file", arguments: "{}")
+        )
+        #expect(result.isError)
+        #expect(result.failureKind == .userDeclined)
+        #expect(result.content.contains("Connectors are turned off"))
     }
 
     // MARK: - Composite registry
@@ -557,6 +623,27 @@ final class MCPConnectorsTests {
         #expect(catalog.tools.map { $0.function.name } == ["time__get_current_time"])
     }
 
+    @Test("A reload whose tool re-fetch fails reports failure, not success")
+    func reloadReportsToolRefetchFailure() async {
+        // The reload route answered and reconfigured the engine, but the
+        // follow-up tools fetch failed. Reporting success here would leave the
+        // caller believing the catalog reflects the new config while it still
+        // holds the pre-reload tool list — the stale-advertise trap.
+        let (catalog, port) = stubbedCatalog()
+        MCPStubProtocol.responses[key(port, "/v1/mcp/reload")] = """
+        {"servers":[{"name":"time","state":"connected","transport":"stdio","tools_count":1,"error":null}],
+         "error":null,"configured":true}
+        """
+        MCPStubProtocol.responses[key(port, "/v1/mcp/servers")] = """
+        {"servers":[{"name":"time","state":"connected","transport":"stdio","tools_count":1,"error":null}],
+         "error":null,"configured":true}
+        """
+        MCPStubProtocol.statusCodes[key(port, "/v1/mcp/tools")] = 503
+        let applied = await catalog.reload()
+        #expect(!applied, "a reload that couldn't refresh the tool list is not a success")
+        #expect(catalog.fetchError != nil)
+    }
+
     @Test("A reload against an engine with no reload route reports failure")
     func reloadAgainstOlderEngineIsNotSuccess() async {
         let (catalog, port) = stubbedCatalog()
@@ -604,8 +691,10 @@ final class MCPConnectorsTests {
         #expect(catalog.tools.isEmpty)
         #expect(catalog.serverForTool.isEmpty)
 
+        // Connectors ON so the empty result is attributable to `clear()`, not
+        // to the master gate — otherwise the assertion would hold vacuously.
         let registry = MCPToolRegistry(
-            catalog: catalog, approval: makeApproval(), defaults: freshDefaults()
+            catalog: catalog, approval: makeApproval(), defaults: enabledDefaults()
         )
         #expect(registry.definitions.isEmpty)
     }

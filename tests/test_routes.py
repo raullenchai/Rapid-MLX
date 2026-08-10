@@ -1452,6 +1452,9 @@ class TestMCPRoutes:
 
         mcp = MagicMock()
         mcp.execute_tool = AsyncMock(return_value=result)
+        # The route resolves (server, tool) to gate the call through the
+        # sandbox before dispatch; a benign tool passes and still runs.
+        mcp.resolve_tool_target = MagicMock(return_value=("srv", "test_tool"))
 
         with (
             patch.object(get_config(), "mcp_manager", mcp),

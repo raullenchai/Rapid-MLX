@@ -12,6 +12,7 @@ from ..api.models import (
     MCPToolsResponse,
 )
 from ..config import get_config
+from ..mcp.security import MCPSecurityError, get_sandbox
 from ..middleware.auth import verify_api_key, verify_api_key_or_x_api_key
 
 router = APIRouter()
@@ -144,6 +145,27 @@ async def execute_mcp_tool(request: MCPExecuteRequest) -> MCPExecuteResponse:
         raise HTTPException(
             status_code=503, detail="MCP not configured. Start server with --mcp-config"
         )
+
+    # Server-side sandbox gate. The in-process tool loop runs this through
+    # ``ToolExecutor``; this route does not, so without an explicit check the
+    # default-deny on high-risk tools (shell/exec/eval), the argument-pattern
+    # scrub, and the ``allowed_high_risk_tools`` allowlist wired up in
+    # ``_start_mcp`` would all be inert here and the UI approval click would be
+    # the sole gate (issue #1716). Validate against the SAME (server, tool)
+    # split ``execute_tool`` will dispatch on.
+    server_name, bare_tool = cfg.mcp_manager.resolve_tool_target(request.tool_name)
+    if server_name is not None:
+        try:
+            get_sandbox().validate_tool_execution(
+                bare_tool, server_name, request.arguments
+            )
+        except MCPSecurityError as exc:
+            return MCPExecuteResponse(
+                tool_name=request.tool_name,
+                content=None,
+                is_error=True,
+                error_message=str(exc),
+            )
 
     result = await cfg.mcp_manager.execute_tool(
         request.tool_name,

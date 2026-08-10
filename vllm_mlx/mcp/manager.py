@@ -171,6 +171,23 @@ class MCPClientManager:
         """
         return self._clients.get(server_name)
 
+    def resolve_tool_target(self, full_name: str) -> tuple[str | None, str]:
+        """Resolve ``(server_name, bare_tool_name)`` for a namespaced name.
+
+        Returns ``(None, full_name)`` when no connected server owns the tool.
+        Public so the HTTP execute route can gate a call through the sandbox
+        against the SAME (server, tool) split :meth:`execute_tool` dispatches
+        on — otherwise the route would validate one name and run another.
+        """
+        server_name, tool_name, _ = openai_call_to_mcp(
+            {"function": {"name": full_name, "arguments": "{}"}}
+        )
+        # If no server prefix, try to find the tool by bare name.
+        if not server_name:
+            server_name = self._find_tool_server(full_name)
+            tool_name = full_name
+        return server_name, tool_name
+
     async def execute_tool(
         self,
         full_name: str,
@@ -188,15 +205,7 @@ class MCPClientManager:
         Returns:
             MCPToolResult with the result or error
         """
-        # Parse full name
-        server_name, tool_name, _ = openai_call_to_mcp(
-            {"function": {"name": full_name, "arguments": "{}"}}
-        )
-
-        # If no server prefix, try to find the tool
-        if not server_name:
-            server_name = self._find_tool_server(full_name)
-            tool_name = full_name
+        server_name, tool_name = self.resolve_tool_target(full_name)
 
         if not server_name:
             return MCPToolResult(

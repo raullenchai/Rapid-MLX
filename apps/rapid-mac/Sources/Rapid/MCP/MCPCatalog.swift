@@ -84,10 +84,11 @@ final class MCPCatalog {
     // MARK: - Refresh
 
     /// Re-read `/v1/mcp/servers` and `/v1/mcp/tools`.
-    func refresh() async {
+    @discardableResult
+    func refresh() async -> Bool {
         guard let ep = endpoint() else {
             clear()
-            return
+            return false
         }
         do {
             let serversResponse: ServersResponse = try await get("/v1/mcp/servers", ep)
@@ -116,11 +117,13 @@ final class MCPCatalog {
                 uniquingKeysWith: { first, _ in first }
             )
             fetchError = nil
+            return true
         } catch {
             // Don't wipe the last-known-good list on a transient failure — a
             // dropped poll shouldn't make every connector row flicker away.
             // Say we couldn't check instead.
             fetchError = error.localizedDescription
+            return false
         }
     }
 
@@ -163,9 +166,11 @@ final class MCPCatalog {
             return false
         }
         // Tools come from the second route; the reload response only carries
-        // server rows.
-        await refresh()
-        return true
+        // server rows. Report the refresh outcome rather than a hardcoded
+        // `true`: if that fetch fails the tool list is the pre-reload one, and
+        // a caller told "reload succeeded" would keep advertising tools a
+        // reconfigure may have just removed.
+        return await refresh()
     }
 
     // MARK: - Execute

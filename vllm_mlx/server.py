@@ -240,6 +240,10 @@ _mcp_init_error: str | None = None
 _mcp_config_path: str | None = None
 # Per-server entries dropped by the tolerant config load, with their reasons.
 _mcp_rejected: list = []
+# Serializes concurrent ``reload_mcp`` calls: two overlapping reloads both
+# tearing down and rebuilding the global manager would corrupt each other's
+# state. Created lazily (module import must not touch the event loop).
+_mcp_reload_lock: "asyncio.Lock | None" = None
 
 # Global embedding engine (lazy loaded)
 _embedding_engine = None
@@ -2147,20 +2151,34 @@ async def _start_mcp(config_path: str) -> None:
     for entry in _mcp_rejected:
         logger.warning(f"MCP server '{entry.name}' rejected: {entry.error}")
 
-    _mcp_manager = MCPClientManager(config)
-    await _mcp_manager.start()
+    # Build locally and publish only after a clean start. ``start()`` connects
+    # child processes; if it (or the wiring below) raises with some already up,
+    # stopping the local manager first is what keeps a failed init from
+    # orphaning subprocesses under a discarded, never-published manager.
+    manager = MCPClientManager(config)
+    try:
+        await manager.start()
 
-    # Wire allowed_high_risk_tools from config into the global sandbox so
-    # default-deny on shell/exec/eval tools respects the user's allowlist.
-    set_sandbox(
-        ToolSandbox(
-            allowed_high_risk_tools=set(config.allowed_high_risk_tools),
+        # Wire allowed_high_risk_tools from config into the global sandbox so
+        # default-deny on shell/exec/eval tools respects the user's allowlist.
+        set_sandbox(
+            ToolSandbox(
+                allowed_high_risk_tools=set(config.allowed_high_risk_tools),
+            )
         )
-    )
 
-    _mcp_executor = ToolExecutor(_mcp_manager)
+        executor = ToolExecutor(manager)
+    except Exception:
+        try:
+            await manager.stop()
+        except Exception as stop_err:  # pragma: no cover - defensive
+            logger.warning(f"Error stopping half-started MCP manager: {stop_err}")
+        raise
 
-    logger.info(f"MCP initialized with {len(_mcp_manager.get_all_tools())} tools")
+    _mcp_manager = manager
+    _mcp_executor = executor
+
+    logger.info(f"MCP initialized with {len(manager.get_all_tools())} tools")
 
 
 async def init_mcp(config_path: str):
@@ -2208,36 +2226,49 @@ async def reload_mcp(config_path: str | None = None) -> str | None:
     Returns ``None`` on success, or the error string on failure. The old
     manager is stopped either way — a half-torn-down manager whose child
     processes are still alive is worse than no manager.
+
+    A ``/v1/mcp/execute`` call that captured the old manager just before a
+    reload can still run against it as it is torn down; that resolves to a
+    clean "server not connected" error result (the client reports
+    ``is_connected == False``), not a crash. Concurrent reloads, which WOULD
+    corrupt the shared globals, are serialized by ``_mcp_reload_lock``.
     """
     global _mcp_manager, _mcp_executor, _mcp_init_error, _mcp_config_path
+    global _mcp_reload_lock
 
-    path = config_path or _mcp_config_path
-    if path is None:
-        _mcp_init_error = "No MCP config path known — start the server with --mcp-config"
-        _sync_config()
-        return _mcp_init_error
+    if _mcp_reload_lock is None:
+        _mcp_reload_lock = asyncio.Lock()
 
-    _mcp_config_path = path
+    async with _mcp_reload_lock:
+        path = config_path or _mcp_config_path
+        if path is None:
+            _mcp_init_error = (
+                "No MCP config path known — start the server with --mcp-config"
+            )
+            _sync_config()
+            return _mcp_init_error
 
-    if _mcp_manager is not None:
-        try:
-            await _mcp_manager.stop()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning(f"Error stopping MCP manager during reload: {e}")
-    _mcp_manager = None
-    _mcp_executor = None
+        _mcp_config_path = path
 
-    _mcp_init_error = None
-    try:
-        await _start_mcp(path)
-    except Exception as e:
-        _mcp_init_error = f"Failed to reload MCP: {e}"
-        logger.error(_mcp_init_error)
+        if _mcp_manager is not None:
+            try:
+                await _mcp_manager.stop()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"Error stopping MCP manager during reload: {e}")
         _mcp_manager = None
         _mcp_executor = None
 
-    _sync_config()
-    return _mcp_init_error
+        _mcp_init_error = None
+        try:
+            await _start_mcp(path)
+        except Exception as e:
+            _mcp_init_error = f"Failed to reload MCP: {e}"
+            logger.error(_mcp_init_error)
+            _mcp_manager = None
+            _mcp_executor = None
+
+        _sync_config()
+        return _mcp_init_error
 
 
 # =============================================================================

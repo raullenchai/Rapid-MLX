@@ -343,10 +343,14 @@ struct SettingsConnectorsPanel: View {
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text(MCPToolApprovalStore.shortToolName(name))
+                        // Server-supplied text (tool name, owning server,
+                        // description) is scrubbed the same way the approval
+                        // sheet scrubs it — a bidi or zero-width scalar in a
+                        // server's tool metadata must not visually spoof a row.
+                        Text(BrowseApprovalStore.displaySafe(MCPToolApprovalStore.shortToolName(name)))
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                         if let source = catalog.serverForTool[name] {
-                            Text(source)
+                            Text(BrowseApprovalStore.displaySafe(source))
                                 .font(.system(size: 10, weight: .medium))
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1)
@@ -358,7 +362,7 @@ struct SettingsConnectorsPanel: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Text(def.function.description)
+                    Text(BrowseApprovalStore.displaySafe(def.function.description))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
