@@ -803,7 +803,10 @@ def test_clean_output_text_extracts_muse_channels():
     assert "to=self" not in cleaned
     assert "<|message|>" not in cleaned
 
-    # Non-muse text with a literal mid-prose mention is untouched by
-    # the muse branch (generic stripping still applies to the token).
+    # Non-muse text with a literal mid-prose mention must NOT enter
+    # the muse branch: only the generic token strip applies, the
+    # surrounding prose survives byte-exact (codex r5 #3).
     prose = "The wire uses <|message|> as a separator."
-    assert "to=" not in clean_output_text(prose)
+    assert clean_output_text(prose) == "The wire uses  as a separator."
+    prose2 = "Historically <|start|>assistant marked a header."
+    assert clean_output_text(prose2) == "Historically assistant marked a header."

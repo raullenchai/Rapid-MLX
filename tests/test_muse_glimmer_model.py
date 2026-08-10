@@ -260,14 +260,16 @@ def test_config_declared_tying_wins_over_shipped_head():
     assert logits.shape == (1, 3, TINY_TEXT["vocab_size"])
 
 
-def test_sanitize_passthrough_and_tied_fallback():
+def test_sanitize_passthrough_keeps_untied_head():
+    """Bare (already-stripped) keys pass through, and an untied config
+    missing head weights must NOT silently tie — strict loading should
+    report the incomplete export instead (codex r5 #1)."""
     model = tiny_model()
     bare = {"model.embed_tokens.weight": 1}
     out = model.sanitize(dict(bare))
     assert "model.embed_tokens.weight" in out
-    # No lm_head in the export -> tied embeddings fallback.
-    assert model.tie_word_embeddings is True
-    assert "lm_head" not in dict(model.children())
+    assert model.tie_word_embeddings is False
+    assert "lm_head" in dict(model.children())
 
 
 def test_resolve_serving_lane_muse_text_fallback(monkeypatch, tmp_path):

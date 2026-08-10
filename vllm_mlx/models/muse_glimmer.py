@@ -412,11 +412,11 @@ class Model(nn.Module):
             # Drop any stray head weights so strict loading can't trip
             # on keys with no matching module (codex r2 #1).
             out = {k: v for k, v in out.items() if not k.startswith("lm_head.")}
-        elif "lm_head.weight" not in out:
-            # Defensive: an untied config whose export ships no head
-            # weights falls back to tying.
-            self.tie_word_embeddings = True
-            self.pop("lm_head")
+        # No silent tie fallback for an untied config missing head
+        # weights: that would convert an incomplete/incompatible export
+        # into a model that loads but produces WRONG logits. Strict
+        # weight loading reports the missing ``lm_head.weight`` instead
+        # (codex r5 #1). Tying happens only when the config declares it.
         return out
 
     @property

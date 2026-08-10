@@ -45,8 +45,15 @@ _SPECIAL_TOKEN_CHARS = frozenset("<[]")
 # at the start) or an explicit ``<|start|>assistant`` header. A bare
 # leading ``<|message|>`` (implicit user segment) also counts. Ordinary
 # prose that merely MENTIONS ``<|message|>`` mid-text matches none of
-# these anchored shapes.
-_MUSE_WIRE_PROBE = re.compile(r"^\s?(?:to=\S+\s*)?<\|message\|>|<\|start\|>assistant")
+# these anchored shapes. The explicit form requires the FULL header
+# through ``<|message|>`` — a bare ``<|start|>assistant`` substring in
+# prose must not trigger the branch (codex r5 #2); prose spelling a
+# complete header is indistinguishable from wire by construction, the
+# same residual the harmony branch carries.
+_MUSE_WIRE_PROBE = re.compile(
+    r"^\s?(?:to=\S+\s*)?<\|message\|>"
+    r"|<\|start\|>assistant(?:\s+to=\S+)?\s*<\|message\|>"
+)
 
 
 def strip_special_tokens(text: str) -> str:
