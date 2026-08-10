@@ -598,6 +598,19 @@ def _finalize_content_and_reasoning(
         # set of conditions under which a ``<think>``-family parser routes
         # a no-tag output wholly to reasoning, keeping the non-streaming
         # surface symmetric with the streaming Case-3 path.
+        #
+        # The harmony final-channel answer stays SAFE under this wider
+        # gate: ``first_parse_was_case4`` is captured from the FIRST parse
+        # (before the harmony reasoning-from-raw-text retry — see the
+        # capture site above), and harmony's first parse on the already-
+        # channel-stripped ``cleaned_text`` returns ``(None, None)``, so
+        # ``first_parse_was_case4`` is False for it regardless of either
+        # thinking flag. Among shipped parsers only the R1-Distill family
+        # (and any future ``implicit_reasoning_until_close`` parser with
+        # the same contract) can set ``first_parse_was_case4`` via
+        # ``prompt_thinking_active`` alone — every other ``<think>`` parser
+        # keys its own no-tag Case-4 routing off ``enable_thinking``. See
+        # ``TestHarmonyPromptPrimedAnswerSurvives`` for the regression pin.
         if (enable_thinking is True or prompt_thinking_active is True) and (
             first_parse_was_case4
         ):
