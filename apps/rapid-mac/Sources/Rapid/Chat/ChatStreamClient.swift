@@ -475,11 +475,15 @@ struct ChatStreamClient {
         // Audit P1 — SSE delta coalescing. Per-delta MainActor.run on
         // a fast stream (M3 Ultra rapid-mlx can decode 200+ tok/s)
         // burned a main-actor hop per token. Coalesce content/reasoning
-        // deltas into a single hop per ~16 ms window (one display
-        // frame at 60 Hz) so a 500-token response that previously cost
-        // ~500 hops collapses to ~30 — while the first delta of each
-        // type still surfaces immediately so the typing indicator
-        // appears without perceptible delay.
+        // deltas into a single hop per window so a 500-token response
+        // that previously cost ~500 hops collapses to ~30 — while the
+        // first delta of each type still surfaces immediately so the
+        // typing indicator appears without perceptible delay.
+        //
+        // The window is 16 ms (one display frame at 60 Hz) and widens
+        // with the length already sent, to 250 ms — see
+        // ``SSEDeltaCoalescer/currentWindowNs()`` for why a fixed
+        // window leaves the turn quadratic (#1743).
         //
         // Invariants the coalescer preserves:
         //   * First content/reasoning delta flushes BEFORE any
@@ -1204,7 +1208,6 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
             case .reasoning: reasoningEverFlushed = true
             }
         }
-        mainActorApplications += 1
         // ONE hop for the whole batch, in wire order.
         //
         // Hopping per segment defeats the point of coalescing on an
@@ -1217,6 +1220,12 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         // and order is preserved because the closure runs the array in
         // sequence.
         await MainActor.run {
+            // Counted INSIDE the hop, not beside it. Incrementing once per
+            // flush would measure flushes, and the thing worth measuring is
+            // main-actor applications: restore the per-segment version and a
+            // flush-side counter still reports 1, so the test that watches it
+            // would stay green through the exact regression it exists for.
+            self.mainActorApplications += 1
             for segment in toEmit {
                 switch segment.kind {
                 case .content: onEvent(.content(segment.text))
