@@ -645,6 +645,14 @@ def resolve_model(name: str) -> str:
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)
+    # Preserve the historical resolver hot path exactly unless the external
+    # feature is configured. In particular, ordinary chat/serve resolution
+    # must not introduce a cache/download-gate probe.
+    if not os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "").strip():
+        if "/" in name:
+            return name
+        profile = _load().get(name)
+        return profile.hf_path if profile is not None else name
     if "/" in name:
         if not _managed_hub_model_is_runnable(name):
             if external := _resolve_external_model_path(name):
