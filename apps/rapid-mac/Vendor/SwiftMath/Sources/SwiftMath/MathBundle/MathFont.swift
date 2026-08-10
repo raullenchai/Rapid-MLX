@@ -107,8 +107,11 @@ private class BundleManager {
         /// In particular it does not have the math italic characters which breaks our variable rendering.
         /// So we first load a CGFont from the file and then convert it to a CTFont.
         var errorRef: Unmanaged<CFError>? = nil
-        guard CTFontManagerRegisterGraphicsFont(defaultCGFont, &errorRef) else {
-            throw FontError.registerFailed
+        if !CTFontManagerRegisterGraphicsFont(defaultCGFont, &errorRef) {
+            let errorCode = errorRef.map { CFErrorGetCode($0.takeRetainedValue()) }
+            guard errorCode == CTFontManagerError.alreadyRegistered.rawValue else {
+                throw FontError.registerFailed
+            }
         }
         cgFonts[mathFont] = defaultCGFont
         let postsript  = (defaultCGFont.postScriptName as? String) ?? ""
