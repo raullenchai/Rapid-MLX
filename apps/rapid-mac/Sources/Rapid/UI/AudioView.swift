@@ -95,6 +95,7 @@ struct AudioView: View {
             Button("Open Model Management", systemImage: "square.stack.3d.up") {
                 openModelManagement()
             }
+            .accessibilityIdentifier("Audio.EmptyState.OpenModelManagement")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("Audio.EmptyState")
@@ -356,6 +357,7 @@ struct AudioView: View {
                 controlLabel("Speed")
                 HStack(spacing: RapidTheme.Space.md) {
                     Slider(value: $viewModel.speed, in: 0.5...2, step: 0.05)
+                        .accessibilityIdentifier("Audio.Speech.Speed")
                     Text(viewModel.speed.formatted(.number.precision(.fractionLength(2))) + "x")
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .monospacedDigit()
@@ -446,6 +448,7 @@ struct AudioView: View {
                         Text(modelTitle(entry))
                     }
                 }
+                .accessibilityIdentifier("\(identifier).\(entry.alias)")
             }
         } label: {
             popupControlLabel(

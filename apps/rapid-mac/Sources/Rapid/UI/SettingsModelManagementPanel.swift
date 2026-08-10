@@ -189,6 +189,7 @@ struct SettingsModelManagementPanel: View {
                 Task { await deleteAlias(entry) }
                 pendingDeletion = nil
             }
+            .accessibilityIdentifier("Settings.ModelManagement.ConfirmDelete")
             Button("Keep on disk", role: .cancel) {
                 pendingDeletion = nil
             }
