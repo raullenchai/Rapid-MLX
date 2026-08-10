@@ -48,21 +48,26 @@ fi
 mkdir -p "$OUT"
 rm -f "$OUT"/*.txt
 
-# Conventional license / notice filenames, in priority order. A single package
-# may legitimately split its terms across more than one (e.g. an Apache-2.0
-# LICENSE alongside a required NOTICE), so every one that exists is staged —
-# not just the first.
+# Conventional license / notice filenames. A single package may legitimately
+# split its terms across more than one (e.g. an Apache-2.0 LICENSE alongside a
+# required NOTICE, or a dual-licensed LICENSE-MIT + LICENSE-APACHE), so every
+# one that exists is staged — not just the first.
 LICENSE_FILENAMES=(
-    LICENSE LICENSE.txt LICENSE.md LICENCE
-    COPYING COPYING.txt COPYRIGHT NOTICE
+    LICENSE LICENSE.txt LICENSE.md LICENSE.rst LICENCE
+    LICENSE-MIT LICENSE-APACHE LICENSE-BSD
+    COPYING COPYING.txt COPYING.md COPYRIGHT
+    NOTICE NOTICE.txt NOTICE.md
 )
 
-# Stage every conventional notice file found in a package directory under the
-# given label. Echoes how many it staged; returns non-zero when none is present.
+# Stage every conventional notice file found directly in a package directory
+# under the given label. Echoes how many it staged; returns non-zero when none
+# is present. Symlinks are rejected by stage_license.
 stage_package_licenses() {
     local label="$1" dir="$2" name staged=0
     for name in "${LICENSE_FILENAMES[@]}"; do
-        if [[ -f "$dir/$name" ]]; then
+        # ``-f`` follows symlinks; the ``! -L`` here keeps the loop from feeding
+        # a symlinked notice to stage_license (which also refuses it).
+        if [[ -f "$dir/$name" && ! -L "$dir/$name" ]]; then
             stage_license "$label" "$dir/$name"
             staged=$((staged + 1))
         fi
@@ -72,12 +77,21 @@ stage_package_licenses() {
 }
 
 # Stage one license as ``<label>-<original-filename>.txt`` so provenance is
-# obvious in the shipped Licenses/ folder. Hard-fails when the source is missing.
+# obvious in the shipped Licenses/ folder. Hard-fails when the source is missing
+# or is a symlink: a remote package could point its ``LICENSE`` at a CI secret
+# (an SSH key, an env file) and ``cp`` would dereference it into the signed app.
+# Only a real, regular file is copied.
 stage_license() {
     local label="$1" src="$2"
     if [[ ! -f "$src" ]]; then
         echo "ERR: license for '$label' not found at: $src" >&2
         echo "     A linked dependency must ship its license text (#1596)." >&2
+        exit 1
+    fi
+    if [[ -L "$src" ]]; then
+        echo "ERR: license for '$label' is a symlink, refusing to copy: $src" >&2
+        echo "     A symlinked notice could exfiltrate a file outside the" >&2
+        echo "     checkout into the signed bundle (#1596)." >&2
         exit 1
     fi
     cp "$src" "$OUT/${label}-$(basename "$src").txt"

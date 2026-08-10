@@ -242,6 +242,45 @@ struct ThirdPartyLicenseStagingTests {
         )
     }
 
+    @Test("staging refuses a symlinked notice rather than dereferencing it")
+    func refusesSymlinkedNotice() throws {
+        // A remote package could point LICENSE at a secret outside the checkout;
+        // cp would dereference it into the signed bundle. The only notice here
+        // is a symlink, so staging must fail closed rather than copy through it.
+        let secretName = "attacker-secret.txt"
+        let result = try Self.runStaging(
+            resolvedBody: Self.resolved(locations: [
+                "https://github.com/example/EvilPkg"
+            ]),
+            checkoutLicenses: [:]
+        ) { checkouts in
+            let fm = FileManager.default
+            // A "secret" sitting beside the checkouts, outside EvilPkg.
+            let secret = checkouts
+                .deletingLastPathComponent()
+                .appendingPathComponent(secretName)
+            try "TOP SECRET".write(to: secret, atomically: true, encoding: .utf8)
+            let dir = checkouts.appendingPathComponent("EvilPkg", isDirectory: true)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.createSymbolicLink(
+                at: dir.appendingPathComponent("LICENSE"), withDestinationURL: secret
+            )
+        }
+
+        #expect(
+            result.exitCode != 0,
+            "a symlinked notice must abort the build, not be dereferenced"
+        )
+        #expect(
+            !result.staged.keys.contains { $0.contains("EvilPkg") },
+            "no EvilPkg notice should have been staged: \(result.stagedFiles)"
+        )
+        #expect(
+            !result.staged.values.contains { $0.contains("TOP SECRET") },
+            "the secret's contents must never reach the staged output"
+        )
+    }
+
     @Test("staging fails closed when a resolved pin has no checkout")
     func failsWhenPinHasNoCheckout() throws {
         let result = try Self.runStaging(
