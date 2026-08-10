@@ -58,6 +58,9 @@ ENVIRONMENT:
                    Give the run an empty model cache too. Off by default:
                    the cache is tens of gigabytes and read-mostly, and a
                    cold one turns every launch into a multi-GB download.
+    DOGFOOD_PORT=<49152-65535>
+                   Pin the isolated app to this port. By default the helper
+                   chooses a free high port from the persona's random suffix.
 
 OUTPUT:
     Progress and diagnostics are written to STDERR.
@@ -231,6 +234,41 @@ if [[ ${#SUFFIX} -ne 8 ]]; then
 fi
 NEW_ID="${ORIGINAL_ID}.dogfood-${SUFFIX}"
 
+# The bundle id and HOME isolate preferences and files, but the app's default
+# port window is process-global. Before #1618 a dogfood launch swept :8000-
+# :8009 and could SIGTERM an operator's hand-started rapid-mlx server. Give
+# every persona one high port and disable heuristic launch sweeping entirely;
+# OwnedServerRecord in the throwaway HOME remains the authority for processes
+# this persona actually started.
+if [[ -n "${DOGFOOD_PORT:-}" ]]; then
+    if [[ ! "$DOGFOOD_PORT" =~ ^[0-9]+$ ]] \
+       || (( DOGFOOD_PORT < 49152 || DOGFOOD_PORT > 65535 )); then
+        die "DOGFOOD_PORT must be an integer from 49152 through 65535"
+    fi
+    ISOLATED_PORT="$DOGFOOD_PORT"
+else
+    # This is intentionally a fail-safe check, not a claim that a TCP port can
+    # be reserved across processes: POSIX exposes no way to hand an already
+    # bound socket to the Python/uvicorn sidecar this app launches. A process
+    # could claim the candidate after this probe; in that race the isolated
+    # sidecar gets EADDRINUSE and startup fails visibly. Crucially, sweep stays
+    # disabled, so resolving the race can never mean terminating that owner.
+    # The random 16K-port space makes two generated personas choosing the same
+    # candidate rare; the 128-step probe handles already-bound candidates.
+    port_seed=$((16#$SUFFIX))
+    port_offset=$((port_seed % 16384))
+    ISOLATED_PORT=""
+    for ((attempt = 0; attempt < 128; attempt++)); do
+        candidate=$((49152 + ((port_offset + attempt) % 16384)))
+        if ! lsof -nP -sTCP:LISTEN -ti :"$candidate" 2>/dev/null | grep -q .; then
+            ISOLATED_PORT="$candidate"
+            break
+        fi
+    done
+    [[ -n "$ISOLATED_PORT" ]] \
+        || die "could not find a free isolated port after 128 candidates"
+fi
+
 log "rewriting CFBundleIdentifier -> $NEW_ID"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $NEW_ID" "$PLIST"
 
@@ -342,6 +380,8 @@ cat > "$LAUNCHER" <<LAUNCHEOF
 set -euo pipefail
 export HOME="$HOME_DIR"
 export HF_HOME="$HF_HOME_FOR_RUN"
+export RAPID_DESKTOP_PORT="$ISOLATED_PORT"
+export RAPID_DESKTOP_NO_PORT_SWEEP=1
 # HF_HUB_CACHE wins over HF_HOME wherever both are read (see
 # BundledModel.userHFCacheURL), so an inherited one from the caller's shell
 # would quietly point the run back at their real cache — including under
@@ -356,6 +396,7 @@ log "isolated .app ready: $TARGET_APP"
 log "  new bundle-id: $NEW_ID"
 log "  throwaway HOME: $HOME_DIR"
 log "  model cache:    $HF_HOME_FOR_RUN"
+log "  isolated port:  $ISOLATED_PORT (launch sweep disabled)"
 log "  LAUNCH WITH:   $LAUNCHER &          # NOT 'open -n' — that drops \$HOME"
 log "  cleanup later: defaults delete '$NEW_ID' && rm -rf '$TARGET_ABS'"
 log "  shutdown:      pkill -f '$TARGET_APP'    # path-qualified, do NOT use bare 'pkill -f Rapid'"

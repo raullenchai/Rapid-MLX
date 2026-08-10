@@ -662,10 +662,11 @@ def main():
     # output rather than falling through to the server, so a future
     # ``ModelCatalog`` subcommand can't resurrect the hang.
     if args.subcommand != "serve":
+        _event("command", subcommand=args.subcommand, alias=args.alias, pid=os.getpid())
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
 
-    _event("server_started", alias=args.alias, pid=os.getpid())
+    _event("server_started", alias=args.alias, pid=os.getpid(), port=args.port)
 
     # Match the real server's startup banner shape closely enough
     # that DownloadProgress's "Loading model with" detection fires

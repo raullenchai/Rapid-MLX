@@ -261,6 +261,7 @@ struct QuickstartCompactCard: View {
     let choice: QuickstartModelChoice
     let selected: Bool
     let sizeText: String
+    var isCached: Bool = false
     let onTap: () -> Void
 
     private var accValue: String { ModelMeter.qualityMeter(for: choice.alias).formattedValue }
@@ -339,7 +340,11 @@ struct QuickstartCompactCard: View {
     private var accessibilityText: String {
         var parts = ["\(choice.displayName). \(choice.blurb)"]
         parts.append("Accuracy \(accValue), speed \(spdValue)")
-        if !sizeText.isEmpty { parts.append("download \(sizeText)") }
+        if isCached {
+            parts.append(sizeText.isEmpty ? "on disk" : "on disk \(sizeText)")
+        } else if !sizeText.isEmpty {
+            parts.append("download \(sizeText)")
+        }
         return parts.joined(separator: ". ")
     }
 

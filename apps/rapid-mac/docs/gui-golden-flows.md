@@ -5,7 +5,9 @@ Rapid-MLX Desktop app without loading a real model.
 
 **Journeys** — a user walking a path end to end:
 
-1. fresh install, consent, onboarding, and steady-state shell;
+1. fresh install, consent, onboarding, and steady-state shell; its
+   `cached-quickstart` companion proves a first-run user can select and start
+   an existing chat model without a second download (#1793);
 2. Settings mutation and persistence across an app relaunch;
 3. basic chat, persisted conversation row, and restored transcript;
 4. a deliberately slow stream and semantic **Stop generating** action;

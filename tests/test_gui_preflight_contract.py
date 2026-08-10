@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DRIVER = ROOT / "apps/rapid-mac/scripts/rapid-ax.swift"
 HARNESS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
+DOGFOOD = ROOT / "apps/rapid-mac/scripts/dogfood-isolate.sh"
 
 
 def test_trust_command_checks_permission_reach_and_lock():
@@ -88,6 +89,7 @@ def test_peekaboo_requirement_is_default_deny():
     assert "*) return 0 ;;" in body, "the catch-all must REQUIRE peekaboo"
     peekaboo_free = {
         "chat-restore",
+        "cached-quickstart",
         "restored-tools",
         "tool-loop-budget",
         "chat-depth",
@@ -104,3 +106,33 @@ def test_peekaboo_requirement_is_default_deny():
         for flow in line.split(")", 1)[0].strip().split("|")
     }
     assert named == peekaboo_free
+
+
+def test_dogfood_launcher_isolates_port_and_disables_heuristic_sweep():
+    """A throwaway persona must never reap an operator's real server (#1618)."""
+    source = DOGFOOD.read_text()
+    launcher = source.split('cat > "$LAUNCHER" <<LAUNCHEOF', 1)[1].split(
+        "LAUNCHEOF", 1
+    )[0]
+    assert 'export RAPID_DESKTOP_PORT="$ISOLATED_PORT"' in launcher
+    assert "export RAPID_DESKTOP_NO_PORT_SWEEP=1" in launcher
+    assert "49152" in source and "65535" in source
+
+    # The macOS GoldenFlow is the executable proof: it keeps an
+    # operator-shaped listener on :8000 while launching the persona, then
+    # checks both process survival and the persona's actual bound port.
+    flow = (
+        HARNESS.read_text().split("flow_cached_quickstart() {", 1)[1].split("\n}", 1)[0]
+    )
+    assert "serve operator-owned" in flow
+    assert 'kill -0 "$OPERATOR_SERVER_PID"' in flow
+    assert ".port >= 49152 and .port <= 65535" in flow
+
+
+def test_harness_reaps_its_own_fake_before_relaunch_without_global_sweep():
+    source = HARNESS.read_text()
+    relaunch = source.split("relaunch_persona() {", 1)[1].split("\n}", 1)[0]
+    assert relaunch.index("stop_app") < relaunch.index("cleanup_fake_sidecars")
+    assert relaunch.index("cleanup_fake_sidecars") < relaunch.index(
+        '"$PERSONA/launch.sh"'
+    )

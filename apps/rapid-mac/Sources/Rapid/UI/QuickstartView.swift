@@ -773,6 +773,11 @@ struct QuickstartView: View {
     @Bindable var downloads: DownloadManager
     @Bindable var server: ServerManager
 
+    /// Chat models the shared catalogue has positively identified on disk.
+    /// Quickstart used to ignore this snapshot and offered only a download
+    /// path even when the user's first model was already present (#1793).
+    var cachedModels: [ModelEntry] = []
+
     /// Callback the parent supplies for "Skip for now". The parent
     /// dismisses the Quickstart surface for the current session (without
     /// flipping the persisted flag) so the existing picker becomes visible.
@@ -1025,6 +1030,11 @@ struct QuickstartView: View {
     @ViewBuilder
     private var chooseModelStep: some View {
         let choices = QuickstartCoordinator.onboardingChoices
+        let existing = Array(Self.quickstartCachedModels(cachedModels).prefix(6))
+        let existingAliases = Set(existing.map(\.alias))
+        let starterChoices = choices.filter { $0.isStarter && !existingAliases.contains($0.alias) }
+        let lowMemoryChoices = choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) }
+        let tradeUpChoices = choices.filter { $0.tier == .tradeUp && !existingAliases.contains($0.alias) }
         VStack(alignment: .leading, spacing: 0) {
             OnboardingTopBar(step: 1).padding(.top, 22)
 
@@ -1037,7 +1047,28 @@ struct QuickstartView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(choices.filter { $0.isStarter }) { choice in
+                    if !existing.isEmpty {
+                        Text("ALREADY ON THIS MAC")
+                            .scaledSystemFont(10, weight: .semibold).tracking(1)
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 9)
+
+                        VStack(spacing: 9) {
+                            ForEach(existing) { entry in
+                                let choice = Self.choice(forCachedModel: entry)
+                                QuickstartCompactCard(
+                                    choice: choice,
+                                    selected: coordinator.selection.alias == entry.alias,
+                                    sizeText: entry.sizeOnDisk ?? "",
+                                    isCached: true
+                                ) { coordinator.select(choice) }
+                                .accessibilityIdentifier("Quickstart.CachedModel.\(entry.alias)")
+                            }
+                        }
+                        .padding(.bottom, 16)
+                    }
+
+                    ForEach(starterChoices) { choice in
                         QuickstartRecommendedCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
@@ -1046,32 +1077,36 @@ struct QuickstartView: View {
                         .padding(.bottom, 16)
                     }
 
-                    Text("NEED THE LIGHTEST OPTION?")
-                        .scaledSystemFont(10, weight: .semibold).tracking(1)
-                        .foregroundStyle(.tertiary)
-                        .padding(.bottom, 9)
+                    if !lowMemoryChoices.isEmpty {
+                        Text("NEED THE LIGHTEST OPTION?")
+                            .scaledSystemFont(10, weight: .semibold).tracking(1)
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 9)
 
-                    ForEach(choices.filter { $0.isLowMemory }) { choice in
-                        QuickstartLowMemoryCard(
-                            choice: choice,
-                            selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(for: choice.alias)
-                        ) { coordinator.select(choice) }
-                        .padding(.bottom, 16)
-                    }
-
-                    Text("OR PICK A BIGGER ONE")
-                        .scaledSystemFont(10, weight: .semibold).tracking(1)
-                        .foregroundStyle(.tertiary)
-                        .padding(.bottom, 9)
-
-                    VStack(spacing: 9) {
-                        ForEach(choices.filter { $0.tier == .tradeUp }) { choice in
-                            QuickstartCompactCard(
+                        ForEach(lowMemoryChoices) { choice in
+                            QuickstartLowMemoryCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
                                 sizeText: Self.sizeText(for: choice.alias)
                             ) { coordinator.select(choice) }
+                            .padding(.bottom, 16)
+                        }
+                    }
+
+                    if !tradeUpChoices.isEmpty {
+                        Text("OR PICK A BIGGER ONE")
+                            .scaledSystemFont(10, weight: .semibold).tracking(1)
+                            .foregroundStyle(.tertiary)
+                            .padding(.bottom, 9)
+
+                        VStack(spacing: 9) {
+                            ForEach(tradeUpChoices) { choice in
+                                QuickstartCompactCard(
+                                    choice: choice,
+                                    selected: coordinator.selection.alias == choice.alias,
+                                    sizeText: Self.sizeText(for: choice.alias)
+                                ) { coordinator.select(choice) }
+                            }
                         }
                     }
 
@@ -1090,7 +1125,10 @@ struct QuickstartView: View {
             }
 
             OnboardingWizardFooter(
-                primaryTitle: "Download & start",
+                primaryTitle: Self.canStartWithoutDownload(
+                    alias: coordinator.selection.alias,
+                    cachedModels: cachedModels
+                ) ? "Start existing model" : "Download & start",
                 onBack: { coordinator.backToWelcome() },
                 onPrimary: { startQuickstart() }
             )
@@ -1116,6 +1154,33 @@ struct QuickstartView: View {
             return "~\(Int((gb * 1024).rounded())) MB"
         }
         return String(format: "%.1f GB", gb)
+    }
+
+    /// Stable, bounded presentation for models already on disk. The catalogue
+    /// supplied here is the chat catalogue; retain the kind check defensively
+    /// so a future combined snapshot cannot leak image/video aliases into the
+    /// first-chat path. This returns the complete eligible set because lookup
+    /// correctness must not depend on the UI's six-row presentation bound.
+    static func quickstartCachedModels(_ entries: [ModelEntry]) -> [ModelEntry] {
+        entries.filter { $0.cached && $0.kind == .chat }
+    }
+
+    static func choice(forCachedModel entry: ModelEntry) -> QuickstartModelChoice {
+        QuickstartModelChoice(
+            alias: entry.alias,
+            displayName: entry.alias,
+            hfRepo: entry.hfRepo,
+            blurb: entry.isExternal ? "Already downloaded by another MLX app." : "Already downloaded and ready to start.",
+            tier: .tradeUp
+        )
+    }
+
+    static func canStartWithoutDownload(alias: String, cachedModels: [ModelEntry]) -> Bool {
+        cachedModel(alias: alias, cachedModels: cachedModels) != nil
+    }
+
+    static func cachedModel(alias: String, cachedModels: [ModelEntry]) -> ModelEntry? {
+        quickstartCachedModels(cachedModels).first { $0.alias == alias }
     }
 
     // MARK: - Subviews
@@ -1481,6 +1546,13 @@ struct QuickstartView: View {
     /// Warn-only by design — see ``DiskSpaceProbe`` rationale and the
     /// ``feedback_copy_mature_competitors`` note.
     private func startQuickstart() {
+        if let cached = Self.cachedModel(
+            alias: coordinator.selection.alias,
+            cachedModels: cachedModels
+        ) {
+            startCachedModel(cached)
+            return
+        }
         QuickstartView.applyPreflightDecision(
             decision: DiskSpaceProbe.decide(
                 freeBytes: freeBytesProbe(),
@@ -1489,6 +1561,20 @@ struct QuickstartView: View {
             coordinator: coordinator,
             onKickoff: { kickoffDownload() }
         )
+    }
+
+    /// Cached models skip both the disk-space warning and DownloadManager.
+    /// `ServerManager.start` still owns cache validation, memory guarding and
+    /// the normal ready/failure transitions, so this is a shorter route into
+    /// the same serving lifecycle rather than a second implementation.
+    private func startCachedModel(_ cached: ModelEntry) {
+        coordinator.enterStarting()
+        Task { @MainActor in
+            await server.start(
+                alias: cached.alias,
+                hfPath: cached.hfRepo
+            )
+        }
     }
 
     /// Pure adapter mapping a ``DiskSpaceProbe.Decision`` onto the

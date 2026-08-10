@@ -23,6 +23,7 @@ UPDATE_BASELINES=0
 FLOW="all"
 KEEP=0
 APP_PID=""
+OPERATOR_SERVER_PID=""
 PERSONA=""
 OUT=""
 MAIN_WINDOW_ID=""
@@ -35,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
+Flows: fresh-install, cached-quickstart, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -98,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
+        cached-quickstart|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
         slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
         *) return 0 ;;
     esac
@@ -121,6 +122,19 @@ cleanup_persona() {
         wait "$APP_PID" 2>/dev/null || true
     fi
     APP_PID=""
+    cleanup_fake_sidecars
+    if [[ "$KEEP" == 0 && -n "$BUNDLE_ID" ]]; then
+        defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+    fi
+    if [[ "$KEEP" == 0 && -n "$PERSONA" && -d "$PERSONA" ]]; then
+        rm -rf "$PERSONA"
+    fi
+    PERSONA=""
+    BUNDLE_ID=""
+    PERSONA_ENV=()
+}
+
+cleanup_fake_sidecars() {
     if [[ -n "$OUT" && -f "$OUT/fake-events.jsonl" ]]; then
         # Pair each pid with the alias it was started for, and require the
         # live command to still name THAT alias. A bare `serve fake-alias`
@@ -141,15 +155,14 @@ cleanup_persona() {
                         | "\(.pid)\t\(.alias // "")"' \
                      "$OUT/fake-events.jsonl" 2>/dev/null | sort -u)
     fi
-    if [[ "$KEEP" == 0 && -n "$BUNDLE_ID" ]]; then
-        defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+}
+
+cleanup_operator_server() {
+    if [[ -n "$OPERATOR_SERVER_PID" ]] && kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null; then
+        kill "$OPERATOR_SERVER_PID" 2>/dev/null || true
+        wait "$OPERATOR_SERVER_PID" 2>/dev/null || true
     fi
-    if [[ "$KEEP" == 0 && -n "$PERSONA" && -d "$PERSONA" ]]; then
-        rm -rf "$PERSONA"
-    fi
-    PERSONA=""
-    BUNDLE_ID=""
-    PERSONA_ENV=()
+    OPERATOR_SERVER_PID=""
 }
 
 finish() {
@@ -162,10 +175,11 @@ finish() {
             > "$OUT_ROOT/result.json" 2>/dev/null || true
     fi
     cleanup_persona
+    cleanup_operator_server
 }
 trap finish EXIT
-trap 'cleanup_persona; exit 130' INT
-trap 'cleanup_persona; exit 143' TERM
+trap 'cleanup_persona; cleanup_operator_server; exit 130' INT
+trap 'cleanup_persona; cleanup_operator_server; exit 143' TERM
 
 # The preconditions every flow depends on and none of them can observe:
 # permission to read another process's AX tree, and a session that can actually
@@ -249,6 +263,11 @@ start_persona() {
 
 relaunch_persona() {
     stop_app
+    # A relaunch keeps the persona but starts a fresh app process. Reap only
+    # the fake sidecars this harness recorded before starting it again. Before
+    # #1618 the app's unsafe global port sweep hid this ownership leak by
+    # killing the old fake (and potentially an operator's real server too).
+    cleanup_fake_sidecars
     env RAPID_BIN="$ROOT/scripts/fake-rapid-mlx.sh" \
         FAKE_EVENT_LOG="$OUT/fake-events.jsonl" \
         "${PERSONA_ENV[@]+"${PERSONA_ENV[@]}"}" \
@@ -985,6 +1004,60 @@ flow_fresh_install() {
     baseline fresh-install.steady "$OUT/steady.json"
     pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/final.png" --json > "$OUT/final-image.json"
     cleanup_persona
+}
+
+flow_cached_quickstart() {
+    log "cached Quickstart starts without downloading (#1793)"
+    # Reproduce #1618, not merely its configuration strings: an
+    # operator-owned rapid-mlx-shaped listener is alive on the default port
+    # before the dogfood app launches. The isolated persona must bind its own
+    # high port without sweeping or terminating this process.
+    FAKE_EVENT_LOG="$OUT_ROOT/operator-events.jsonl" \
+        "$ROOT/scripts/fake-rapid-mlx.sh" serve operator-owned \
+        --host 127.0.0.1 --port 8000 > "$OUT_ROOT/operator-server.log" 2>&1 &
+    OPERATOR_SERVER_PID=$!
+    for _ in {1..40}; do
+        curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break
+        sleep 0.1
+    done
+    curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
+        || die "operator-shaped server did not bind :8000 for the isolation repro"
+    kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
+        || die ":8000 was already occupied; cannot establish the owned-server isolation repro"
+
+    start_persona cached-quickstart
+
+    see_main "$OUT/consent.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
+        "$OUT/consent.json" >/dev/null; then
+        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    fi
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/chooser.json"
+    press "$OUT/chooser.json" "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/select-cached.json"
+    see_main "$OUT/selected.json"
+    assert_tree_text "$OUT/selected.json" "Start existing model"
+    press "$OUT/selected.json" Quickstart.Footer.Primary "$OUT/start-existing.json"
+
+    wait_fake_event \
+        ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
+        "cached Quickstart did not start the selected model"
+    jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-alias"
+              and .port >= 49152 and .port <= 65535)' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "isolated persona did not bind its selected high port"
+    kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
+        || die "dogfood launch terminated the operator-owned :8000 server (#1618)"
+    curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
+        || die "operator-owned :8000 server stopped responding after dogfood launch"
+    wait_identifier rapid.chat.compose "$OUT/ready.json"
+    if jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
+        "$OUT/fake-events.jsonl" >/dev/null; then
+        die "cached Quickstart invoked rapid-mlx pull instead of the start-only path"
+    fi
+    cleanup_persona
+    cleanup_operator_server
 }
 
 flow_settings_persistence() {
@@ -2061,6 +2134,7 @@ mkdir -p "$OUT_ROOT"
 require_tools
 case "$FLOW" in
     fresh-install) flow_fresh_install ;;
+    cached-quickstart) flow_cached_quickstart ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
     restored-tools) flow_restored_tools ;;
@@ -2078,6 +2152,7 @@ case "$FLOW" in
     image-generation) flow_image_generation ;;
     all)
         flow_fresh_install
+        flow_cached_quickstart
         flow_settings_persistence
         flow_chat_restore
         flow_restored_tools
