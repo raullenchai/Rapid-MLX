@@ -666,14 +666,13 @@ def _resolve_external_model_path(name: str) -> str | None:
     escaping the user-nominated root.  Completeness is rechecked at launch so
     a row that became partial after catalog refresh cannot be served as ready.
     """
-    # A known Rapid alias may correspond to an external store's canonical
-    # publisher/repo layout. Search by that repo id while preserving the short
-    # alias as the desktop-facing identity.
+    # A root-level store may use the Rapid alias literally, while another
+    # runtime may use the profile's canonical publisher/repo layout. Probe the
+    # displayed identifier first, then that canonical fallback.
     profile = _load().get(name)
-    external_name = profile.hf_path if profile is not None else name
-    parts = _external_model_identifier_parts(external_name)
-    if parts is None:
-        return None
+    external_names = [name]
+    if profile is not None and profile.hf_path != name:
+        external_names.append(profile.hf_path)
 
     raw_roots = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "")
     if not raw_roots:
@@ -686,14 +685,18 @@ def _resolve_external_model_path(name: str) -> str | None:
         if not raw_root:
             continue
         root = os.path.realpath(os.path.expanduser(raw_root))
-        candidate = os.path.realpath(os.path.join(root, *parts))
-        try:
-            if os.path.commonpath((root, candidate)) != root:
+        for external_name in external_names:
+            parts = _external_model_identifier_parts(external_name)
+            if parts is None:
                 continue
-        except ValueError:
-            continue
-        if os.path.isdir(candidate) and _snapshot_is_complete(candidate):
-            return candidate
+            candidate = os.path.realpath(os.path.join(root, *parts))
+            try:
+                if os.path.commonpath((root, candidate)) != root:
+                    continue
+            except ValueError:
+                continue
+            if os.path.isdir(candidate) and _snapshot_is_complete(candidate):
+                return candidate
     return None
 
 

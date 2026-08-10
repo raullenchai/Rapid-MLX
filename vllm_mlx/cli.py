@@ -5163,7 +5163,9 @@ def _print_cached_models() -> None:
         )
         print(f"  {alias:<22}  {repo_disp:<50}  {_format_bytes(size):<10}  {mod:<12}")
     print(sep)
-    print(f"  Total: {_format_bytes(total_bytes)}")
+    # This is the sum of runnable model sizes, not unique physical blocks:
+    # external runtimes may symlink shared weights into multiple model dirs.
+    print(f"  Total model size: {_format_bytes(total_bytes)}")
     print()
     print("  Tip: `rapid-mlx rm <hf-repo>` to free disk space")
     print()
