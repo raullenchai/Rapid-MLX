@@ -82,6 +82,20 @@ struct ExternalModelCatalogTests {
         #expect(entries[0].sizeOnDisk == "2.3 GiB")
     }
 
+    @Test("One external repo is consumed by only one available alias")
+    func externalRepoIsConsumedOnce() {
+        let entries = ModelCatalog.mergeAvailableAndCached(
+            available: [
+                ("preferred-alias", "mlx-community/Shared"),
+                ("legacy-alias", "mlx-community/Shared")
+            ],
+            cached: [("(external)", "mlx-community/Shared", "2.3 GiB")],
+            excluded: []
+        )
+
+        #expect(entries.filter(\.isExternal).map(\.alias) == ["preferred-alias"])
+    }
+
     @Test("A root-level external model matching an alias is not dropped")
     func rootLevelExternalMatchesAlias() {
         let entries = ModelCatalog.mergeAvailableAndCached(

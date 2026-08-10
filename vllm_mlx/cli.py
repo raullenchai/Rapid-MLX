@@ -4963,6 +4963,12 @@ def _scan_external_model_dirs(
     seen_paths: set[str] = set()
     seen_repos: set[str] = set()
 
+    def _complete(directory: str) -> bool:
+        try:
+            return _snapshot_is_complete(directory)
+        except OSError:
+            return False
+
     def _record(directory: str, repo: str) -> None:
         real = os.path.realpath(directory)
         # Ordered root precedence: the first configured occurrence of a repo
@@ -5018,7 +5024,7 @@ def _scan_external_model_dirs(
 
             # A model may sit directly at <root>/<name>/ as well as at
             # <root>/<publisher>/<name>/ — accept both.
-            if _contained(pub_dir) and _snapshot_is_complete(pub_dir):
+            if _contained(pub_dir) and _complete(pub_dir):
                 _record(pub_dir, publisher)
 
             try:
@@ -5033,7 +5039,7 @@ def _scan_external_model_dirs(
                 if (
                     os.path.isdir(model_dir)
                     and _contained(model_dir)
-                    and _snapshot_is_complete(model_dir)
+                    and _complete(model_dir)
                 ):
                     _record(model_dir, repo)
 

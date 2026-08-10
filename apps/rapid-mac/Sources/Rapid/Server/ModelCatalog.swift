@@ -334,8 +334,10 @@ enum ModelCatalog {
             seenAliases.insert(alias)
             let cachedHit = cachedIndex[alias]
             let externalIdentifier: String? = {
-                if externalIndex[alias] != nil { return alias }
-                if let hfHint, externalIndex[hfHint] != nil { return hfHint }
+                if externalIndex[alias] != nil,
+                   !consumedExternal.contains(alias) { return alias }
+                if let hfHint, externalIndex[hfHint] != nil,
+                   !consumedExternal.contains(hfHint) { return hfHint }
                 return nil
             }()
             if let externalIdentifier { consumedExternal.insert(externalIdentifier) }

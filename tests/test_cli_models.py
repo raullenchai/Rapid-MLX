@@ -855,6 +855,18 @@ def test_external_scan_skips_model_when_size_measurement_races(tmp_path, monkeyp
     assert cli._scan_external_model_dirs([str(root)]) == []
 
 
+def test_external_scan_skips_model_when_completeness_probe_races(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    _write_mlx_model(root / "vanishing-model")
+
+    def vanished(_directory):
+        raise PermissionError("directory disappeared during completeness probe")
+
+    monkeypatch.setattr("vllm_mlx._download_gate._snapshot_is_complete", vanished)
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
 def test_external_roots_env_is_pathsep_separated(tmp_path, monkeypatch):
     a = tmp_path / "a"
     b = tmp_path / "b"
