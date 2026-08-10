@@ -288,6 +288,42 @@ def test_metrics_omits_cache_series_when_no_cache_active(metrics_client):
     assert "rapid_mlx_requests_processed_total 0" in body
 
 
+def test_metrics_exposes_mllm_prefix_cache_zero_counters(metrics_client):
+    """An enabled MLLM prefix cache must not disappear at zero traffic.
+
+    ``BatchedEngine.get_stats()`` keeps the MLLM scheduler snapshot nested,
+    including the enabled ``MLLMPrefixCacheManager`` under ``vision_cache``.
+    Prometheus must distinguish that active cache with zero lookups from a
+    deployment where prefix caching is disabled and the series is absent.
+    """
+    stats = {
+        "num_waiting": 0,
+        "num_running": 0,
+        "num_requests_processed": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "steps_executed": 0,
+        "uptime_seconds": 0,
+        "is_mllm": True,
+        "mllm_scheduler": {
+            "vision_cache": {
+                "hits": 0,
+                "misses": 0,
+                "evictions": 0,
+                "tokens_saved": 0,
+            }
+        },
+    }
+    metrics_client.cfg.engine = _fake_engine(stats)
+
+    body = metrics_client.client.get("/metrics").text
+
+    assert "rapid_mlx_prefix_cache_hits_total 0" in body
+    assert "rapid_mlx_prefix_cache_misses_total 0" in body
+    assert "rapid_mlx_prefix_cache_evictions_total 0" in body
+    assert "rapid_mlx_prefix_cache_tokens_saved_total 0" in body
+
+
 def test_metrics_exposes_r7_m1_prefix_cache_cap_and_current_bytes(metrics_client):
     """R7-M1 (dogfood-088 Talia r2): ``rapid_mlx_prefix_cache_cap_bytes``
     and ``rapid_mlx_prefix_cache_current_bytes`` gauges must appear in

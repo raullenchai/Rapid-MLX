@@ -1269,6 +1269,19 @@ def _render_prometheus(cfg: Any) -> str:
             cache_stats = candidate
             break
 
+    # The MLLM lane keeps its enabled ``MLLMPrefixCacheManager`` snapshot
+    # below ``mllm_scheduler.vision_cache`` instead of promoting it to one
+    # of the canonical text-lane keys above.  Treat that specific nested
+    # snapshot as the same prefix-cache counter source.  Do not synthesize
+    # an empty dict when the key is absent: absence still means the cache is
+    # disabled, and its Prometheus series should remain absent accordingly.
+    if cache_stats is None:
+        mllm_stats = stats.get("mllm_scheduler")
+        if isinstance(mllm_stats, dict):
+            mllm_cache_stats = mllm_stats.get("vision_cache")
+            if isinstance(mllm_cache_stats, dict):
+                cache_stats = mllm_cache_stats
+
     if cache_stats is not None:
         # The raw cache counters are reset by ``cache.clear()``; pipe each
         # one through the sticky accumulator so the exposed value never
