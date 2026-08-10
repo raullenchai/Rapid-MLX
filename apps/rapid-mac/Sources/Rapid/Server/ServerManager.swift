@@ -671,8 +671,12 @@ final class ServerManager {
     ) async -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        if replacementGroup == nil,
-           case .ready(let current) = state, current == trimmed {
+        // Replacement policy matters only when loading a different model.
+        // The requested alias is already the active assistant, so asking the
+        // residency endpoint to replace it is redundant and breaks legacy
+        // sidecars: their 404 fallback stops and restarts the model on every
+        // chat send before the request can leave the app.
+        if case .ready(let current) = state, current == trimmed {
             return true
         }
         if replacementGroup == nil, isModelResident(trimmed) { return true }

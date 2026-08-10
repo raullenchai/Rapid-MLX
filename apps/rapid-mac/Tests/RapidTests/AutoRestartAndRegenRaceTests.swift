@@ -64,6 +64,24 @@ struct AutoRestartAndRegenRaceTests {
         }
     }
 
+    @Test("replacement group is also a noop for the already-serving alias")
+    func replacementGroupDoesNotReloadCurrentAlias() async {
+        let server = ServerManager(testingState: .ready(alias: "qwen3.6-27b-4bit"))
+        let ok = await server.ensureServing(
+            alias: "qwen3.6-27b-4bit",
+            hfPath: nil,
+            estimatedMemoryGB: nil,
+            replacementGroup: .assistant
+        )
+
+        #expect(ok == true)
+        guard case .ready(let alias) = server.state else {
+            Issue.record("Expected the current model to remain ready")
+            return
+        }
+        #expect(alias == "qwen3.6-27b-4bit")
+    }
+
     @Test("ensureServing returns false when the binary is missing")
     func ensureServingFailsWithoutBinary() async {
         // The ``.missing`` test seam simulates rapid-mlx not being
