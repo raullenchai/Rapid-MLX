@@ -335,6 +335,54 @@ def test_valid_call_then_literal_opener_released_at_flush():
     assert nonstream.content == "\nsee <atem:function_calls> docs"
 
 
+def test_literal_block_closer_inside_value_does_not_truncate_call():
+    # Codex r3 #1: a value containing the literal BLOCK closer leaves the
+    # invoke structure unbalanced at that point, so the block scan must
+    # extend to the next closer instead of truncating the real call.
+    parser = _tool_parser()
+    value = "docs mention </atem:function_calls> literally"
+    text = _block(_invoke("echo", {"text": value}))
+    result = parser.extract_tool_calls(
+        text, request=_request("echo", {"text": {"type": "string"}})
+    )
+    assert result.tools_called
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"text": value}
+
+
+@BOTH_MODES
+def test_malformed_completed_block_bytes_survive(streaming):
+    # Codex r3 #2: a completed block with no parseable invoke is model
+    # output the client must see — in BOTH modes.
+    text = (
+        "Before <atem:function_calls>\ngarbage, no invoke\n"
+        "</atem:function_calls> after"
+    )
+    content, calls = run_tool_extraction(
+        _tool_parser(), _chars(text), streaming=streaming
+    )
+    assert calls == []
+    combined = content or ""
+    assert "garbage, no invoke" in combined
+    assert "Before " in combined and " after" in combined
+
+
+def test_nullable_list_type_schema_coerces():
+    # Codex r3 #3: {"type": ["integer", "null"]} must behave as integer.
+    parser = _tool_parser()
+    text = _block(_invoke("f", {"n": "5", "m": "null"}))
+    result = parser.extract_tool_calls(
+        text,
+        request=_request(
+            "f",
+            {
+                "n": {"type": ["integer", "null"]},
+                "m": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+            },
+        ),
+    )
+    assert json.loads(result.tool_calls[0]["arguments"]) == {"n": 5, "m": None}
+
+
 def test_truncated_block_keeps_bytes_as_content():
     # An opener with no parseable invoke must not vanish silently.
     parser = _tool_parser()
