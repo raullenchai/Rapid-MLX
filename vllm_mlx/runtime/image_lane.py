@@ -55,11 +55,22 @@ class ImageEngine:
     """
 
     is_image_gen = True
+    is_mllm = False
     _loaded = True
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
         self._engine = ImageGenerationEngine(model_name)
+
+    def get_stats(self) -> dict:
+        """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).
+
+        ``/health`` and other probes call ``engine.get_stats()``
+        unconditionally; without this the image lane raised ``AttributeError``
+        and answered 500 for its whole lifetime (issue #1776). The route-engine
+        contract bans hasattr-guarding the call, so the method lives here.
+        """
+        return {"engine_type": "image"}
 
     @property
     def is_edit(self) -> bool:
