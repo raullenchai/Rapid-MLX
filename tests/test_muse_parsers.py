@@ -509,6 +509,37 @@ def test_reasoning_trailing_partial_sentinel_parity(streaming):
     assert content == "answer <|eo"
 
 
+@BOTH_MODES
+def test_literal_terminator_mid_prose_survives(streaming):
+    # Codex r7 #3/#4: only STRUCTURAL terminators (segment boundary /
+    # end) are plumbing; a literal one mid-prose is model output.
+    text = " to=user<|message|>the <|eot|> token ends a turn<|eot|>"
+    reasoning, content = run_reasoning_extraction(
+        _reasoning_parser(), _chars(text), streaming=streaming
+    )
+    assert reasoning is None
+    assert content == "the <|eot|> token ends a turn"
+
+
+def test_same_delta_content_and_call_keep_wire_order():
+    # Codex r7 #2: content arriving in the same delta as the block
+    # close rides in the SAME response as the calls.
+    parser = _tool_parser()
+    block = _block(_invoke("f", {"a": "1"}))
+    deltas = ["Hi", " there\n" + block]
+    prev = ""
+    outs = []
+    for d in deltas:
+        curr = prev + d
+        out = parser.extract_tool_calls_streaming(prev, curr, d)
+        if out:
+            outs.append(out)
+        prev = curr
+    last = outs[-1]
+    assert last.get("tool_calls") and len(last["tool_calls"]) == 1
+    assert last.get("content") == " there\n"
+
+
 def test_truncated_block_keeps_bytes_as_content():
     # An opener with no parseable invoke must not vanish silently.
     parser = _tool_parser()

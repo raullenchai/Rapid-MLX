@@ -110,7 +110,6 @@ _SELF_SEGMENT_RE = re.compile(
     r"(?:<\|start\|>assistant\s+|^\s?)to=self<\|message\|>.*?(?:<\|eom\|>|<\|eot\|>|$)",
     re.DOTALL,
 )
-_CONTROL_TOKENS = ("<|start|>", "<|message|>", "<|eot|>", "<|eom|>")
 
 # Sentinels whose partial prefixes must be held back from streamed
 # content so per-char streaming doesn't leak ``<``, ``<a``, ``<atem:``…
@@ -366,13 +365,19 @@ def _convert_param_value(raw: str, param_name: str, props: dict) -> Any:
 
 
 def _strip_channel_plumbing(text: str) -> str:
-    """Remove Muse channel tokens and ``to=self`` reasoning segments."""
-    # Reasoning segments first (they carry their own header/terminator).
+    """Remove Muse channel plumbing and ``to=self`` reasoning segments.
+
+    Only STRUCTURAL occurrences are removed: complete headers, and
+    terminators sitting at a segment boundary (directly before the next
+    header, or at end of input). A literal ``<|eot|>`` mid-prose is
+    model output and survives — the #1766/#1779 literal-markup
+    principle (codex r7 #3/#4). Terminator stripping runs BEFORE header
+    removal so the before-a-header lookahead can still see the header.
+    """
     result = _SELF_SEGMENT_RE.sub("", text)
+    result = re.sub(r"(?:<\|eot\|>|<\|eom\|>)+(?=<\|start\|>|\Z)", "", result)
     result = _CHANNEL_HEADER_RE.sub("", result)
     result = _IMPLICIT_HEADER_RE.sub("", result)
-    for token in _CONTROL_TOKENS:
-        result = result.replace(token, "")
     return result
 
 
@@ -512,6 +517,15 @@ class MuseToolParser(ToolParser):
                 tail = ""
             else:
                 tail = cls._hold_partial_sentinel(tail)
+                # A COMPLETE trailing terminator is undecidable while
+                # the stream runs: followed by a header (or end) it is
+                # structural plumbing; followed by prose it is literal
+                # model output. Hold it until the next bytes decide —
+                # emitting now and un-emitting later would break
+                # monotonicity.
+                trailing_term = re.search(r"(?:<\|eot\|>|<\|eom\|>)+$", tail)
+                if trailing_term:
+                    tail = tail[: trailing_term.start()]
         return _strip_channel_plumbing("".join(pieces) + tail)
 
     @classmethod
@@ -558,6 +572,7 @@ class MuseToolParser(ToolParser):
         # so the cursor into its result is safe.
         prev_closes = previous_text.count(_BLOCK_CLOSE)
         curr_closes = current_text.count(_BLOCK_CLOSE)
+        fresh: list[dict[str, str]] = []
         if curr_closes > prev_closes:
             blocks, _ = _scan_text(current_text)
             new_blocks = blocks[self._stream_blocks_emitted :]
@@ -567,32 +582,37 @@ class MuseToolParser(ToolParser):
                 for _, _, invokes in new_blocks
                 for call in self._convert_invokes(invokes, request)
             ]
-            if fresh:
-                offset = self._stream_calls_emitted
-                self._stream_calls_emitted += len(fresh)
-                return {
-                    "tool_calls": [
-                        {
-                            "index": offset + i,
-                            "id": call["id"],
-                            "type": "function",
-                            "function": {
-                                "name": call["name"],
-                                "arguments": call["arguments"],
-                            },
-                        }
-                        for i, call in enumerate(fresh)
-                    ]
-                }
-            return None
 
         # Content channel: everything outside completed blocks, held at
         # any in-flight opener/header/sentinel. Emitted from an absolute
         # cursor, not a prev/curr diff, so bytes that arrived in the same
-        # delta as a block close are not skipped (codex r2 #1).
+        # delta as a block close are not skipped (codex r2 #1) — and
+        # content preceding a close in the SAME delta rides in the same
+        # response as the calls, preserving wire order (codex r7 #2).
+        new_content = None
         visible = self._visible_content(current_text)
         if len(visible) > self._content_emitted:
             new_content = visible[self._content_emitted :]
             self._content_emitted = len(visible)
-            return {"content": new_content}
-        return None
+
+        if not fresh and new_content is None:
+            return None
+        out: dict[str, Any] = {}
+        if new_content:
+            out["content"] = new_content
+        if fresh:
+            offset = self._stream_calls_emitted
+            self._stream_calls_emitted += len(fresh)
+            out["tool_calls"] = [
+                {
+                    "index": offset + i,
+                    "id": call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"],
+                    },
+                }
+                for i, call in enumerate(fresh)
+            ]
+        return out or None

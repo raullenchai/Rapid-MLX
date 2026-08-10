@@ -34,7 +34,6 @@ _HEADER_RE = re.compile(r"<\|start\|>assistant(?:\s+to=(?P<to>\S+?))?\s*<\|messa
 # Implicit first-segment header (prompt ends with ``<|start|>assistant``).
 _IMPLICIT_RE = re.compile(r"^\s?(?:to=(?P<to>\S+?))?\s*<\|message\|>")
 _TERMINATORS = ("<|eot|>", "<|eom|>")
-_CONTROL_TOKENS = ("<|start|>", "<|message|>", "<|eot|>", "<|eom|>")
 
 # Partial-prefix hold set for streaming (bug class #444/#480: per-char
 # streaming must not leak ``<``, ``<|``, ``<|eo``… as visible content).
@@ -72,8 +71,16 @@ def _segments(text: str) -> list[tuple[str, str]]:
 
     cleaned: list[tuple[str, str]] = []
     for recipient, body in segs:
-        for term in _TERMINATORS:
-            body = body.replace(term, "")
+        # Trim terminators only at the segment BOUNDARY (the body end) —
+        # a literal ``<|eot|>`` mid-prose is model output and survives,
+        # per the #1766/#1779 literal-markup principle (codex r7 #3).
+        trimmed = True
+        while trimmed:
+            trimmed = False
+            for term in _TERMINATORS:
+                if body.endswith(term):
+                    body = body[: -len(term)]
+                    trimmed = True
         cleaned.append((recipient, body))
     return cleaned
 
@@ -198,8 +205,19 @@ class MuseReasoningParser(ReasoningParser):
         for i, (recipient, body) in enumerate(segs):
             if hold and i == len(segs) - 1:
                 body = cls._hold_partial_sentinel(body)
-            for token in _CONTROL_TOKENS:
-                body = body.replace(token, "")
+                # A COMPLETE trailing terminator is undecidable while
+                # the stream runs: followed by a header (or stream end)
+                # it is structural and ``_segments`` trims it; followed
+                # by prose it is literal output. Hold until decided —
+                # ``_hold_partial_sentinel`` can re-expose one by
+                # trimming a partial ``<`` that arrived after it.
+                trailing = re.search(r"(?:<\|eot\|>|<\|eom\|>)+$", body)
+                if trailing:
+                    body = body[: trailing.start()]
+            # No blanket control-token deletion here: ``_segments``
+            # already trims boundary terminators, headers never reach a
+            # body, and a literal token mid-prose must survive exactly
+            # as it does on the non-streaming path (codex r7 #3).
             if recipient == "self":
                 reasoning.append(body)
             else:
