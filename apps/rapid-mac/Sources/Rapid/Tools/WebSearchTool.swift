@@ -340,7 +340,13 @@ enum WebSearchTool {
             }
             switch http.statusCode {
             case 200..<300:
-                let results = BraveSearchClient.parseResults(data, cap: resultCap)
+                guard let results = BraveSearchClient.parseResults(data, cap: resultCap) else {
+                    return ToolCallResult(
+                        toolCallID: "",
+                        content: "\(toolName) error: Brave returned an invalid response",
+                        isError: true
+                    )
+                }
                 return formatOutput(query: q, provider: .brave, results: results)
             case 401, 403:
                 // Account-level error — surface clearly so the
@@ -376,7 +382,13 @@ enum WebSearchTool {
             }
             switch http.statusCode {
             case 200..<300:
-                let results = TavilySearchClient.parseResults(data, cap: resultCap)
+                guard let results = TavilySearchClient.parseResults(data, cap: resultCap) else {
+                    return ToolCallResult(
+                        toolCallID: "",
+                        content: "\(toolName) error: Tavily returned an invalid response",
+                        isError: true
+                    )
+                }
                 return formatOutput(query: q, provider: .tavily, results: results)
             case 401, 403:
                 return ToolCallResult(

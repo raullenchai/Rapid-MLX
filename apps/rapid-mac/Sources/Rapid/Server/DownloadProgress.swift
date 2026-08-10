@@ -313,6 +313,13 @@ final class DownloadProgress {
             baselineDiskBytes = bytes
         }
         bytesDownloaded = bytes
+        // The catalog/alias total is only an estimate. Once the filesystem
+        // proves that estimate was too small, keeping it would produce copy
+        // such as "633 MB / 563 MB · 100%". Drop the disproven denominator
+        // until a later measured heartbeat supplies a trustworthy total.
+        if let total = totalBytes, bytes > total {
+            totalBytes = nil
+        }
         hasDiskObservation = true
         lastTickAt = now
         recordRateSample(at: now, bytes: bytes)

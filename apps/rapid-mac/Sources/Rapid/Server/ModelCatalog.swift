@@ -886,27 +886,13 @@ enum ModelCatalog {
             task.arguments = args
             // Issue #503: when the user pointed Rapid at a custom models
             // folder, run the probe with that folder so ``rapid-mlx ls``
-            // enumerates the right directory. Only override when set —
-            // a nil leaves ``task.environment`` unset so the child
-            // inherits the ambient env (default location), preserving
-            // the historical behaviour for every other caller.
-            if let hubCacheOverride {
-                var env = ProcessInfo.processInfo.environment
-                env["HF_HUB_CACHE"] = hubCacheOverride.path
-                // Issue #1718: the same folder is also handed to the engine
-                // as an extra scan root. The picker sets where we *download*
-                // to and assumes hub-cache layout, so pointing it at a tree
-                // another MLX runtime wrote — those use
-                // ``<root>/<publisher>/<repo>/`` — surfaced nothing, and the
-                // user was asked to re-download weights already on disk.
-                // Passing it both ways means either layout is found without
-                // making the user say which kind of folder they picked.
-                env[extraModelRootsEnvKey] = mergedExtraModelRoots(
-                    existing: env[extraModelRootsEnvKey],
-                    selected: hubCacheOverride.path
-                )
-                task.environment = env
-            }
+            // enumerates the right directory. The helper preserves the
+            // ambient environment either way, adding only the optional cache
+            // paths and the #1415 telemetry opt-out for internal probes.
+            task.environment = probeEnvironment(
+                ambient: ProcessInfo.processInfo.environment,
+                hubCacheOverride: hubCacheOverride
+            )
             let stdout = Pipe()
             let stderr = Pipe()
             task.standardOutput = stdout
@@ -1008,6 +994,29 @@ enum ModelCatalog {
 
     static func _testingRunRapidMlx(binary: URL, args: [String]) async -> String {
         await runRapidMlx(binary: binary, args: args)
+    }
+
+    /// Environment for app-owned, read-only catalog probes. These invocations
+    /// are implementation details, not engine sessions: one picker refresh can
+    /// execute `models`, `ls`, and several `info` commands. Letting each emit a
+    /// lifecycle pair inflated usage telemetry and made app shutdown wait on
+    /// probe POSTs (#1415). Override even an ambient opt-in; the real `serve`
+    /// child has its own environment path and keeps telemetry enabled.
+    nonisolated static func probeEnvironment(
+        ambient: [String: String],
+        hubCacheOverride: URL?
+    ) -> [String: String] {
+        var env = ambient
+        env["DO_NOT_TRACK"] = "1"
+        if let hubCacheOverride {
+            env["HF_HUB_CACHE"] = hubCacheOverride.path
+            // Issue #1718: scan both Hugging Face and external-runtime layouts.
+            env[extraModelRootsEnvKey] = mergedExtraModelRoots(
+                existing: env[extraModelRootsEnvKey],
+                selected: hubCacheOverride.path
+            )
+        }
+        return env
     }
 }
 

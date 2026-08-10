@@ -7,6 +7,48 @@ import Testing
 /// logic that previously had no direct unit tests.
 @Suite("Web tools hardening")
 struct WebToolsHardeningTests {
+    // MARK: - #1535 provider schema failures
+
+    @Test("Brave distinguishes malformed JSON from a valid empty result set")
+    func braveParseFailureIsNotEmptySuccess() {
+        #expect(BraveSearchClient.parseResults(Data(#"{"web":{"results":[]}}"#.utf8), cap: 6) == [])
+        #expect(BraveSearchClient.parseResults(Data(#"{}"#.utf8), cap: 6) == [])
+        #expect(BraveSearchClient.parseResults(Data(#"{"web":{"unexpected":[]}}"#.utf8), cap: 6) == nil)
+        #expect(BraveSearchClient.parseResults(Data("not-json".utf8), cap: 6) == nil)
+    }
+
+    @Test("Tavily distinguishes malformed JSON from a valid empty result set")
+    func tavilyParseFailureIsNotEmptySuccess() {
+        #expect(TavilySearchClient.parseResults(Data(#"{"results":[]}"#.utf8), cap: 6) == [])
+        #expect(TavilySearchClient.parseResults(Data(#"{"unexpected":[]}"#.utf8), cap: 6) == nil)
+        #expect(TavilySearchClient.parseResults(Data("not-json".utf8), cap: 6) == nil)
+    }
+
+    // MARK: - #1535 relative browse destinations
+
+    @Test("HTML links and images resolve against the fetched page's final URL")
+    func relativeDestinationsResolveAgainstFinalURL() throws {
+        let base = try #require(URL(string: "https://example.com/articles/entry.html"))
+        let result = HTMLToMarkdown.extract(
+            #"<main><a href="../docs/guide">Guide</a><img src="/assets/chart.png" alt="Chart"></main>"#,
+            baseURL: base
+        )
+        #expect(result.markdown.contains("[Guide](https://example.com/docs/guide)"))
+        #expect(result.markdown.contains("![Chart](https://example.com/assets/chart.png)"))
+    }
+
+    @Test("Resolving relative destinations never revives an unsafe scheme")
+    func relativeResolutionPreservesSchemeSafety() throws {
+        let base = try #require(URL(string: "https://example.com/articles/entry.html"))
+        let result = HTMLToMarkdown.extract(
+            #"<main><a href="javascript:alert(1)">bad</a><a href="next">good</a></main>"#,
+            baseURL: base
+        )
+        #expect(!result.markdown.contains("javascript:"))
+        #expect(result.markdown.contains("bad"))
+        #expect(result.markdown.contains("[good](https://example.com/articles/next)"))
+    }
+
     // MARK: - #4 DuckDuckGo query encoding
 
     @Test("A query with & and # is one opaque q value, not injected parameters")

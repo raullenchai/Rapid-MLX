@@ -699,6 +699,14 @@ struct QuickstartViewSourceGrepTests {
         #expect(QuickstartCoordinator.defaultChoice.hfRepo?.contains("4B") != true)
     }
 
+    @Test("Starter advertises and seeds its curated repository size, not the rounded 1B alias estimate (#1550)")
+    func starterUsesCuratedDownloadSize() {
+        let choice = QuickstartCoordinator.defaultChoice
+        #expect(choice.downloadBytes == 663_397_140)
+        #expect(QuickstartView.sizeText(for: choice) == "~633 MB")
+        #expect(QuickstartView.sizeText(for: choice) != QuickstartView.sizeText(for: choice.alias))
+    }
+
     @Test("Onboarding keeps one explicit, honestly-labelled sub-1B escape hatch")
     func lowMemoryChoiceIsExplicitAndHonest() {
         let choice = QuickstartCoordinator.lowMemoryChoice

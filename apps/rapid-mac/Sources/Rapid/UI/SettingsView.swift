@@ -637,6 +637,8 @@ struct SettingsView: View {
                 }
             }
             .toggleStyle(TrailingSettingsToggleStyle())
+            .accessibilityLabel("Hide Dock icon when closing window")
+            .accessibilityHint("Rapid-MLX remains available from the menu bar.")
             .accessibilityIdentifier("Settings.App.HideDockOnCloseToggle")
             HStack {
                 Spacer()

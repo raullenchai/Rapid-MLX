@@ -110,12 +110,22 @@ def _render_minicpm(name: str, key: str, value: str) -> str:
     return f'<function name="{name}"><param name="{key}">{value}</param></function>'
 
 
+def _render_muse_atem(name: str, key: str, value: str) -> str:
+    return (
+        "<atem:function_calls>\n"
+        f'<atem:invoke name="{name}">\n'
+        f'<atem:parameter name="{key}">{value}</atem:parameter>\n'
+        "</atem:invoke>\n</atem:function_calls>"
+    )
+
+
 RENDERERS = {
     "json_body": _render_json_body,
     "raw_json": _render_raw_json,
     "raw_json_array": _render_raw_json_array,
     "xml_body": _render_xml_body,
     "minicpm_native": _render_minicpm,
+    "muse_atem": _render_muse_atem,
 }
 
 # (parser_name, wire_format) pairs this file exercises. Parser names are the
@@ -138,6 +148,7 @@ COVERED: list[tuple[str, str]] = [
     ("nous", "json_body"),
     ("minicpm", "minicpm_native"),
     ("xlam", "raw_json_array"),
+    ("muse", "muse_atem"),
 ]
 
 # Formats whose escaping rules this file does not model yet. Each entry is a
@@ -234,6 +245,11 @@ _SCANNER_BLIND: dict[tuple[str, str], str] = {
         "minicpm_native",
     ): "parse_tool_calls does not recognise <function name=..><param name=..>; "
     "an unconfigured server gets zero tool calls from MiniCPM models",
+    (
+        "muse",
+        "muse_atem",
+    ): "parse_tool_calls does not recognise Muse ATEM markup; curated Muse "
+    "aliases always select the dedicated parser",
 }
 
 _KEY = "body"

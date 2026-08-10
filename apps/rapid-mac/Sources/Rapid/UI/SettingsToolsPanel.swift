@@ -64,6 +64,8 @@ struct SettingsToolsPanel: View {
                             }
                         }
                         .toggleStyle(TrailingSettingsToggleStyle())
+                        .accessibilityLabel(Self.voiceOverLabel(for: def.function.name))
+                        .accessibilityHint(def.function.description)
                         // Keyed on the TOOL NAME (the wire identifier the
                         // engine and the request body use), not on the row's
                         // display text — the label is the tool's own
@@ -80,6 +82,15 @@ struct SettingsToolsPanel: View {
             get: { !chat.disabledTools.contains(name) },
             set: { chat.setToolEnabled(name, $0) }
         )
+    }
+
+    private static func voiceOverLabel(for toolName: String) -> String {
+        switch toolName {
+        case "web_search": "Web search"
+        case "browse": "Browse pages"
+        case "weather": "Weather"
+        default: toolName.replacingOccurrences(of: "_", with: " ")
+        }
     }
 
     // MARK: - Web search
@@ -235,6 +246,8 @@ struct SettingsToolsPanel: View {
                     }
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityLabel("Approve every page automatically")
+                .accessibilityHint("Skips confirmation for public pages. Private and local addresses remain blocked.")
                 .accessibilityIdentifier("Settings.Tools.Browse.AutoApproveToggle")
             }
         }

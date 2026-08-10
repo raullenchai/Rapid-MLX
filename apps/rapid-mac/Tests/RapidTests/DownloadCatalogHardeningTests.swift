@@ -258,6 +258,44 @@ struct DownloadCatalogHardeningTests {
         #expect(output.utf8.count == ModelCatalog.maxSubprocessStdoutBytes)
     }
 
+    @Test("ModelCatalog internal probes disable engine telemetry")
+    func modelCatalogProbeDisablesTelemetry() async throws {
+        let script = try makeExecutableScript(
+            """
+            #!/bin/sh
+            printf '%s' "${DO_NOT_TRACK-unset}"
+            """
+        )
+
+        for subcommand in ["models", "ls", "info"] {
+            let output = await ModelCatalog._testingRunRapidMlx(
+                binary: script,
+                args: [subcommand, "fixture-alias"]
+            )
+            #expect(output == "1", "\(subcommand) probe inherited engine telemetry")
+        }
+    }
+
+    @Test("ModelCatalog probe environment preserves caller paths but overrides telemetry")
+    func modelCatalogProbeEnvironmentComposition() throws {
+        let selected = URL(fileURLWithPath: "/Volumes/models")
+        let env = ModelCatalog.probeEnvironment(
+            ambient: [
+                "DO_NOT_TRACK": "0",
+                "KEEP_ME": "yes",
+                ModelCatalog.extraModelRootsEnvKey: "[\"/ambient\"]",
+            ],
+            hubCacheOverride: selected
+        )
+
+        #expect(env["DO_NOT_TRACK"] == "1")
+        #expect(env["KEEP_ME"] == "yes")
+        #expect(env["HF_HUB_CACHE"] == selected.path)
+        let encodedRoots = try #require(env[ModelCatalog.extraModelRootsEnvKey])
+        let roots = try JSONDecoder().decode([String].self, from: Data(encodedRoots.utf8))
+        #expect(roots == ["/ambient", "/Volumes/models"])
+    }
+
     @Test("ModelCatalog terminates catalog subprocesses when the async task is cancelled")
     func modelCatalogCancelsSubprocess() async throws {
         let dir = try makeTemporaryDirectory()

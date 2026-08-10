@@ -28,7 +28,7 @@ enum HTMLToMarkdown {
         let markdown: String
     }
 
-    static func extract(_ html: String) -> Result {
+    static func extract(_ html: String, baseURL: URL? = nil) -> Result {
         let capped = html.count > maxInputChars ? String(html.prefix(maxInputChars)) : html
         let title = extractTitle(capped)
         // Raw-text + hidden elements first (their bodies are NOT parsed as HTML,
@@ -41,7 +41,7 @@ enum HTMLToMarkdown {
         // Focus on the main content region when the page marks one; this is what
         // drops most nav / header / footer / sidebar boilerplate.
         let region = mainRegion(cleaned)
-        var tokenizer = Tokenizer(Array(region))
+        var tokenizer = Tokenizer(Array(region), baseURL: baseURL)
         let md = tokenizer.render()
         return Result(title: title, markdown: normalizeWhitespace(md))
     }
@@ -274,13 +274,15 @@ enum HTMLToMarkdown {
 
     private struct Tokenizer {
         let chars: [Character]
+        let baseURL: URL?
         var out = ""
         var inPre = false
         var linkHrefStack: [String] = []
         var listDepth = 0
 
-        init(_ chars: [Character]) {
+        init(_ chars: [Character], baseURL: URL?) {
             self.chars = chars
+            self.baseURL = baseURL
             out.reserveCapacity(chars.count)
         }
 
@@ -365,13 +367,18 @@ enum HTMLToMarkdown {
                     let href = (HTMLToMarkdown.attribute("href", in: tag.attributes) ?? "").trimmingCharacters(in: .whitespaces)
                     // Only linkify safe, real destinations; drop javascript:/data:
                     // and fragment/empty hrefs to plain text.
-                    if isSafeHref(href) { out += "["; linkHrefStack.append(href) }
+                    if let destination = resolvedDestination(href) {
+                        out += "["
+                        linkHrefStack.append(destination)
+                    }
                     else { linkHrefStack.append("") }
                 }
             case "img":
                 let alt = (HTMLToMarkdown.attribute("alt", in: tag.attributes) ?? "").trimmingCharacters(in: .whitespaces)
                 let src = (HTMLToMarkdown.attribute("src", in: tag.attributes) ?? "").trimmingCharacters(in: .whitespaces)
-                if isSafeHref(src) && !alt.isEmpty { out += "![\(alt)](\(src))" }
+                if let destination = resolvedDestination(src), !alt.isEmpty {
+                    out += "![\(alt)](\(destination))"
+                }
                 else if !alt.isEmpty { out += "[image: \(alt)]" }
             default:
                 break   // unknown/inline tag → contributes only its text
@@ -394,6 +401,15 @@ enum HTMLToMarkdown {
                 return false
             }
             return true
+        }
+
+        private func resolvedDestination(_ raw: String) -> String? {
+            guard isSafeHref(raw) else { return nil }
+            guard let baseURL else { return raw }
+            guard let resolved = URL(string: raw, relativeTo: baseURL)?.absoluteURL,
+                  let scheme = resolved.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { return nil }
+            return resolved.absoluteString
         }
     }
 

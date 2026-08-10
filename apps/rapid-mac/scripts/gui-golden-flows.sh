@@ -36,13 +36,13 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
+Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
        browse-all-destination, image-generation, all
 
-chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
+download-progress, chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
 restored-tools, tool-loop-budget and image-generation drive the app through
 the accessibility API alone. They need no peekaboo and no Screen Recording, which is what lets
 them run unattended in CI (see the gui-golden-flows job in
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
+        cached-quickstart|download-progress|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
         slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
         *) return 0 ;;
     esac
@@ -997,6 +997,9 @@ flow_fresh_install() {
         || die "fresh install did not show telemetry consent"
     baseline fresh-install.consent "$OUT/consent-visible.json"
     dismiss_first_run
+    selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
+    [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \
+        || die "#1564: skipping Quickstart selected '$selected_model' instead of the small starter"
     for id in Sidebar.NewChat Sidebar.Launch rapid.chat.compose ChatView.SendOrStopButton ModelPickerBar.ModelMenu; do
         jq -e --arg id "$id" '.data.ui_elements[]? | select(.identifier == $id)' "$OUT/steady.json" >/dev/null \
             || die "post-onboarding shell missing $id"
@@ -1033,8 +1036,16 @@ flow_cached_quickstart() {
         press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
     fi
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Progress")
+            | select(.description == "Setup progress, step 1 of 3")' "$OUT/welcome.json" >/dev/null \
+        || die "Quickstart welcome does not expose honest step progress"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/chooser.json"
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Progress")
+            | select(.description == "Setup progress, step 2 of 3")' "$OUT/chooser.json" >/dev/null \
+        || die "Quickstart chooser does not advance its honest step progress"
     press "$OUT/chooser.json" "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/select-cached.json"
     see_main "$OUT/selected.json"
     assert_tree_text "$OUT/selected.json" "Start existing model"
@@ -1058,6 +1069,44 @@ flow_cached_quickstart() {
     fi
     cleanup_persona
     cleanup_operator_server
+}
+
+flow_download_progress() {
+    log "download progress never shows observed bytes above its total (#1550)"
+    start_persona download-progress FAKE_DOWNLOAD_OVERRUN=1
+
+    see_main "$OUT/consent.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
+        "$OUT/consent.json" >/dev/null; then
+        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    fi
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier Quickstart.Footer.Primary "$OUT/chooser.json"
+    assert_tree_text "$OUT/chooser.json" "~633 MB"
+    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/download-start.json"
+
+    local observed=0
+    for _ in {1..40}; do
+        see_main "$OUT/downloading.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("633 MB downloaded")' \
+            "$OUT/downloading.json" >/dev/null; then
+            observed=1
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "$observed" == 1 ]] \
+        || die "overrun fixture never reached a truthful bytes-downloaded state"
+    if jq -e '(.data.ui_elements | tostring)
+              | test("633 MB[[:space:]]*/[[:space:]]*563 MB")' \
+        "$OUT/downloading.json" >/dev/null; then
+        die "download progress still shows observed bytes above its displayed total"
+    fi
+    jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "download-progress flow never exercised the pull subprocess"
+    cleanup_persona
 }
 
 flow_settings_persistence() {
@@ -1488,6 +1537,25 @@ flow_no_dead_controls() {
             || die "Settings > $category exposes no identified controls of its own"
         log "  $category: $count identified controls"
     done
+
+    local ax_contracts=(
+        "dead-panel-tools.json|Settings.Tools.Toggle.web_search|Web search"
+        "dead-panel-tools.json|Settings.Tools.Toggle.browse|Browse pages"
+        "dead-panel-tools.json|Settings.Tools.Toggle.weather|Weather"
+        "dead-panel-tools.json|Settings.Tools.Browse.AutoApproveToggle|Approve every page automatically"
+        "dead-panel-app.json|Settings.App.HideDockOnCloseToggle|Hide Dock icon when closing window"
+    )
+    local contract file identifier label
+    for contract in "${ax_contracts[@]}"; do
+        IFS='|' read -r file identifier label <<< "$contract"
+        jq -e --arg identifier "$identifier" --arg label "$label" \
+            '.data.ui_elements[]?
+             | select(.identifier == $identifier)
+             | select(.description == $label)' \
+            "$OUT/$file" >/dev/null \
+            || die "$identifier has no readable VoiceOver label"
+    done
+    log "  Settings toggles expose readable VoiceOver labels"
     cleanup_persona
 }
 
@@ -1792,13 +1860,35 @@ flow_catalog_integrity() {
     # not today's registry contents.
     start_persona catalog-integrity
     dismiss_first_run
-    see_main "$OUT/catalog-main.json"
+    local catalog_ready=0
+    for _ in {1..40}; do
+        see_main "$OUT/catalog-main.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "ModelPickerBar.ModelMenu" and .value == "fake-alias")' \
+               "$OUT/catalog-main.json" >/dev/null; then
+            catalog_ready=1
+            break
+        fi
+        sleep 0.25
+    done
+    [[ "$catalog_ready" == 1 ]] || die "chat catalog inventory was not observed"
+
+    # This fixture's catalog is populated by app-owned `models` / `ls` probes.
+    # (The Swift subprocess test separately exercises the conditional `info`
+    # sibling probe, which this fixture deliberately has no candidate for.)
+    # They are implementation details, not real engine sessions (#1415).
+    # The model-menu value above is the completion barrier: ModelCatalog.load
+    # publishes that merged inventory only after its models/ls tasks have
+    # all returned, so the event log now contains the full initial probe set.
+    jq -e -s '[.[] | select(.event == "command")]
+              | (map(.subcommand) | index("models") != null)
+                and (map(.subcommand) | index("ls") != null)
+                and all(.[]; .do_not_track == "1")' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "an internal catalog probe launched with engine telemetry enabled"
 
     jq -e '.data.walk.complete == true' "$OUT/catalog-main.json" >/dev/null \
         || die "could not completely observe the chat catalog"
-    jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.ModelMenu" and .value == "fake-alias")' \
-        "$OUT/catalog-main.json" >/dev/null \
-        || die "chat catalog inventory was not observed"
     jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
         "$OUT/catalog-main.json" >/dev/null \
         || die "a video-gen alias reached the chat surface"
@@ -2135,6 +2225,7 @@ require_tools
 case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     cached-quickstart) flow_cached_quickstart ;;
+    download-progress) flow_download_progress ;;
     settings-persistence) flow_settings_persistence ;;
     chat-restore) flow_chat_restore ;;
     restored-tools) flow_restored_tools ;;
@@ -2153,6 +2244,7 @@ case "$FLOW" in
     all)
         flow_fresh_install
         flow_cached_quickstart
+        flow_download_progress
         flow_settings_persistence
         flow_chat_restore
         flow_restored_tools

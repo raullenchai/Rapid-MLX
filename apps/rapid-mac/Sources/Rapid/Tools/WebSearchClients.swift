@@ -119,13 +119,15 @@ enum BraveSearchClient {
     /// doesn't need to know which backend ran the query.
     ///
     /// Brave returns ``{ "web": { "results": [{ "title", "url",
-    /// "description" }] } }``. We tolerate missing/empty fields
-    /// gracefully — a result row that's missing a title is still
-    /// useful if the URL is present.
-    static func parseResults(_ data: Data, cap: Int) -> [WebSearchTool.Result] {
+    /// "description" }] } }``. Brave legitimately omits the entire `web`
+    /// vertical when it has no web hits, so absent `web` is an empty success;
+    /// a present vertical still requires a valid results array so schema drift
+    /// is distinguishable from emptiness. Fields within a result remain
+    /// optional: a missing title is fine when the URL is present.
+    static func parseResults(_ data: Data, cap: Int) -> [WebSearchTool.Result]? {
         struct Envelope: Decodable {
             struct Web: Decodable {
-                let results: [Item]?
+                let results: [Item]
             }
             struct Item: Decodable {
                 let title: String?
@@ -135,7 +137,7 @@ enum BraveSearchClient {
             let web: Web?
         }
         guard let env = try? JSONDecoder().decode(Envelope.self, from: data) else {
-            return []
+            return nil
         }
         let items = env.web?.results ?? []
         var out: [WebSearchTool.Result] = []
@@ -201,19 +203,19 @@ enum TavilySearchClient {
     /// extract rather than a raw description, which usually reads
     /// better than DDG's HTML scrape but occasionally truncates a
     /// useful fact. We don't second-guess.
-    static func parseResults(_ data: Data, cap: Int) -> [WebSearchTool.Result] {
+    static func parseResults(_ data: Data, cap: Int) -> [WebSearchTool.Result]? {
         struct Envelope: Decodable {
             struct Item: Decodable {
                 let title: String?
                 let url: String?
                 let content: String?
             }
-            let results: [Item]?
+            let results: [Item]
         }
         guard let env = try? JSONDecoder().decode(Envelope.self, from: data) else {
-            return []
+            return nil
         }
-        let items = env.results ?? []
+        let items = env.results
         var out: [WebSearchTool.Result] = []
         for item in items {
             if out.count >= cap { break }

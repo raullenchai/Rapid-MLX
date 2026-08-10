@@ -3,15 +3,15 @@
 
 Two matrices share this harness:
 
-* ``test_agents_matrix.py`` — 11 Tier-1 agents × 5 families (Qwen 3.6,
-  Gemma 4, DeepSeek V4, gpt-oss, Hy3) = 55 cells. The three commercial-CLI
-  cells added in the 0.10.2 pilot (copilot / droid / kimi-code) run as
-  **wire-smoke via the shared OpenAI SDK helper** — driving the actual
-  CLI binaries as subprocesses in <60 s is blocked by vendor OAuth /
-  first-run onboarding flows (documented in the pre-flight verdict at
-  the top of ``README.md``).
-* ``test_frameworks_matrix.py`` — 3 Tier-1 frameworks × 5 families =
-  15 cells.
+* ``test_agents_matrix.py`` — 11 Tier-1 agents × 6 families (Qwen 3.6,
+  Gemma 4, DeepSeek V4, gpt-oss, Hy3, Muse Glimmer) = 66 cells. The three
+  commercial-CLI cells added in the 0.10.2 pilot (copilot / droid /
+  kimi-code) run as **wire-smoke via the shared OpenAI SDK helper** —
+  driving the actual CLI binaries as subprocesses in <60 s is blocked by
+  vendor OAuth / first-run onboarding flows (documented in the pre-flight
+  verdict at the top of ``README.md``).
+* ``test_frameworks_matrix.py`` — 3 Tier-1 frameworks × 6 families =
+  18 cells.
 
 The 5th family (Hy3 / Hunyuan 3, added 0.11.0) is a 295B/21B-active MoE
 whose only SKU (``hy3-preview-4bit``, 166 GB / ~156 GB peak) is Ultra-only
@@ -21,6 +21,18 @@ lives in the weekly Golden Path job, NOT always-on CI. The CI-runnable
 value-add for Hy3 is the offline parser-level integration test in
 ``test_hy3_offline.py``, which drives captured Hy3 wire strings through
 the ``hy_v3`` tool + reasoning parsers without booting the 166 GB model.
+
+The 6th family (Muse Glimmer, added 0.12-window) is Meta's Muse Glimmer
+30B — the ATEM function-calls + recipient-routed-channel wire vendored in
+#1791 (``muse`` tool + reasoning parsers) and #1802 (text backbone). It
+is a **normal always-on cell**, NOT an Ultra-only strict-xfail like Hy3:
+there is no sub-8B Muse SKU, so the 30B itself is the alias, but the
+4-bit checkpoint is only ~18 GB (``min_memory_gb=24``) — per-PR bootable
+on the M3 Ultra in the same footprint class as the gpt-oss 20B cell. Muse
+emits OpenAI-shape ``tool_calls`` and drives real 2-turn agent loops on
+``/v1/chat/completions``, ``/v1/responses``, and ``/v1/messages``
+(verified end-to-end on real 30B weights), so every Muse cell is expected
+to PASS — it carries NO strict-xfail.
 
 Both matrices reuse the same server fixture, cheap-alias-per-family fixture,
 and assertion helpers. The fixtures never boot the server themselves — the
@@ -34,11 +46,12 @@ Environment overrides
 
 * ``RAPID_MLX_BASE_URL`` — where to point clients (default: localhost:8000/v1).
 * ``RAPID_MLX_AGENT_MATRIX_FAMILY`` — restrict matrix to one family
-  (``qwen36`` / ``gemma4`` / ``deepseek`` / ``gptoss`` / ``hy3``). Handy
-  for CI shards, and mandatory in Golden-Path runs so the CI job knows
-  which server alias to boot. ``hy3`` is Ultra-only (166 GB) and its
-  cells are strict-xfail regardless, so this shard is only meaningful in
-  the weekly Golden Path job on real hardware.
+  (``qwen36`` / ``gemma4`` / ``deepseek`` / ``gptoss`` / ``hy3`` /
+  ``muse``). Handy for CI shards, and mandatory in Golden-Path runs so
+  the CI job knows which server alias to boot. ``hy3`` is Ultra-only
+  (166 GB) and its cells are strict-xfail regardless, so that shard is
+  only meaningful in the weekly Golden Path job on real hardware;
+  ``muse`` is always-on (~18 GB, gpt-oss-class footprint).
 * ``RAPID_MLX_MATRIX_STRICT`` — if ``1``, missing-server / model-mismatch
   raise instead of skipping. Off by default so a naive ``pytest`` run stays
   green.
@@ -148,6 +161,28 @@ _FAMILY_ALIASES: dict[str, FamilyAlias] = {
             "hy3-preview-4bit is 166 GB (~156 GB peak), Ultra-only "
             "(min_memory_gb=192). Single-node-infeasible under G11 100 GB "
             "floor; exercised in the weekly Golden Path job, not always-on CI"
+        ),
+    ),
+    "muse": FamilyAlias(
+        family="muse",
+        # 0.12-window Tier-1 6th family — Meta Muse Glimmer 30B, the
+        # ATEM function-calls + recipient-routed-channel wire vendored in
+        # #1791 (parsers) + #1802 (text backbone). Unlike Hy3/DeepSeek-V4
+        # this is a normal always-on cell: the only shipped SKU is the
+        # 30B (there is no smaller Muse), but the 4-bit checkpoint is
+        # ~18 GB / ``min_memory_gb=24`` — comfortably bootable per-PR on
+        # the M3 Ultra alongside operator services (same footprint class
+        # as the gpt-oss 20B cell). No cheap sub-8B stand-in exists, so
+        # the 30B IS the matrix alias. Fully-working family: it emits
+        # OpenAI-shape ``tool_calls`` and drives real 2-turn agent loops
+        # on /v1/chat/completions, /v1/responses, and /v1/messages
+        # (verified end-to-end on real 30B weights), so — like qwen36 /
+        # gemma4 / gptoss — it carries NO strict-xfail.
+        alias="muse-glimmer-30b-4bit",
+        reason=(
+            "Muse Glimmer 30B (ATEM wire, #1791/#1802) — no sub-8B SKU "
+            "exists; the 4bit 30B is ~18 GB / min_memory_gb=24, per-PR "
+            "bootable (gpt-oss-class footprint)"
         ),
     ),
 }
@@ -371,6 +406,14 @@ def family_alias_for_active_server(
         return _FAMILY_ALIASES["gemma4"]
     if mid.startswith("gpt-oss") or "gpt-oss" in mid:
         return _FAMILY_ALIASES["gptoss"]
+    # Muse Glimmer — 0.12-window Tier-1 6th family. Served id resolves to
+    # ``mlx-community/Muse-Glimmer-30B-4bit`` (or ``-bf16``), and the bare
+    # alias is ``muse-glimmer-30b-4bit`` — every real Muse id carries the
+    # ``muse-glimmer`` stem, so match that (and the ``_`` model_type form)
+    # rather than a bare ``muse`` prefix, which would misfire on unrelated
+    # ids like ``museum-*`` and defeat the family-mismatch guard.
+    if "muse-glimmer" in mid or "muse_glimmer" in mid:
+        return _FAMILY_ALIASES["muse"]
     # Hy3 / Hunyuan 3 — 0.11.0 Tier-1 5th family. Only bootable in the
     # weekly Golden Path job on real Ultra hardware (166 GB weights).
     # Served id resolves to ``mlx-community/Hy3-preview-4bit``.

@@ -254,7 +254,16 @@ async def check_rate_limit_or_x_api_key(request: Request):
 
 
 def _verify_api_key_values(*api_keys: str | None) -> bool:
-    """Verify one or more API key values against the configured key."""
+    """Verify one or more API key values against the configured key.
+
+    ``None`` marks a credential header that was *absent* and is skipped. Any
+    header that was *present* — including one carrying an empty value — reaches
+    the comparison below and must match, so a present-but-empty companion
+    ``x-api-key`` fails closed instead of being silently dropped (#337). An
+    empty string can never match a configured (non-empty) key, and
+    ``compare_digest`` returns ``False`` for it without a length short-circuit,
+    so the constant-time discipline is preserved.
+    """
     global _auth_warning_logged
 
     cfg = get_config()
@@ -267,7 +276,7 @@ def _verify_api_key_values(*api_keys: str | None) -> bool:
             _auth_warning_logged = True
         return True
 
-    provided_keys = [api_key for api_key in api_keys if api_key]
+    provided_keys = [api_key for api_key in api_keys if api_key is not None]
     if not provided_keys:
         raise HTTPException(status_code=401, detail="API key required")
     valid = True
@@ -298,4 +307,10 @@ async def verify_api_key_or_x_api_key(
 ):
     """Verify OpenAI Bearer auth or Anthropic x-api-key auth."""
     bearer_key = credentials.credentials if credentials is not None else None
-    return _verify_api_key_values(bearer_key, request.headers.get("x-api-key"))
+    # ``getlist`` so a duplicated ``x-api-key`` header can't smuggle an invalid
+    # value past the gate alongside a valid twin — every present value is
+    # verified, extending the "both must match" rule to multi-valued headers
+    # (#337). An absent header yields ``[]`` (nothing added), while a present
+    # empty header yields ``[""]`` and is checked as a supplied credential.
+    x_api_keys = request.headers.getlist("x-api-key")
+    return _verify_api_key_values(bearer_key, *x_api_keys)

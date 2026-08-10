@@ -2501,10 +2501,14 @@ class BatchedEngine(BaseEngine):
         and erased (codex r6 #1). Resolved once per engine — the
         model_name is fixed for the engine's lifetime.
         """
-        if self._is_muse_wire is None:
-            self._is_muse_wire = (
-                _resolve_hf_model_type(self._model_name) == "muse_glimmer"
-            )
+        if getattr(self, "_is_muse_wire", None) is None:
+            model_name = getattr(self, "_model_name", None)
+            # Partial test/lifecycle fixtures may reach the helper before
+            # model identity is installed. Do not cache that transient
+            # absence as a permanent non-Muse decision.
+            if model_name is None:
+                return False
+            self._is_muse_wire = _resolve_hf_model_type(model_name) == "muse_glimmer"
         return self._is_muse_wire
 
     def _route_tokens_for_channels(

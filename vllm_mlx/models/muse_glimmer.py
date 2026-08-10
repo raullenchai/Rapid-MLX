@@ -61,6 +61,15 @@ from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
+
+# Install the MLX hardware compatibility shim before importing any mlx-lm
+# module. mlx-lm captures its default stream during package import, which is
+# unsafe on the M5 single-stream path; every vendored model follows this
+# ordering contract.
+from .. import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 from mlx_lm.models.base import (
     BaseModelArgs,
     create_attention_mask,

@@ -198,15 +198,17 @@ struct HFCacheByteMonitorTests {
         #expect(progress.progressFraction == 0.31)
     }
 
-    @Test("progressFraction clamps observed bytes/total to [0,1] — stale cache obs can't exceed 100%")
-    func progressFractionClamped() {
+    @Test("progressFraction discards a stale total that observed bytes exceed (#1550)")
+    func progressFractionDiscardsStaleTotal() {
         let progress = DownloadProgress()
         progress.setTotalBytes(1_000_000)
         // The user re-downloaded after expanding the model on disk:
         // catalog total is stale and bytes-on-disk overshoots. The bar
-        // still has to honour 0-1.
+        // must stop presenting the disproven denominator as 100% complete.
         progress.applyDiskObservation(bytes: 3_000_000)
-        #expect(progress.progressFraction == 1.0)
+        #expect(progress.totalBytes == nil)
+        #expect(progress.progressFraction == nil)
+        #expect(progress.progressSubtitle == "2.9 MB downloaded")
     }
 
     @Test("progressFraction nil for idle / preparing / warmingUp without disk observation")

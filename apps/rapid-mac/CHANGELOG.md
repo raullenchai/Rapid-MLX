@@ -13,6 +13,55 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.9] — 2026-08-10
+
+The desktop app can hear and speak now: a new Audio tab turns recordings into
+text and text into speech, in a voice you pick — all on your Mac. Underneath,
+Chat and Images learned to keep more than one model warm at once so switching
+back to a recent one is instant, a new Muse Glimmer model joins the roster, and
+math in chat finally renders as math instead of raw markup. The rest is the app
+smoothing rough edges around updates, the main window, memory prompts, and
+reusing models you already have.
+
+Bundles the **Rapid-MLX 0.12.9** engine.
+
+### Added
+
+- **A new Audio tab: turn recordings into text, and text into speech.** Drop in
+  or record audio and get a transcript back; or type a line, choose a voice, and
+  hear it spoken aloud. Each built-in voice can be previewed before you pick it,
+  and everything runs locally on your Mac — no upload, no account.
+
+- **Chat and Images keep more than one model ready at once.** Within a memory
+  budget you control, the models you have been using stay loaded, so switching
+  back to a recent one responds immediately instead of pausing to reload it.
+  When the budget is tight, the least-recently-used model steps aside on its own.
+
+- **New model: Muse Glimmer 30B.** A native text model with tool-calling and
+  step-by-step reasoning, available in a compact 4-bit build or full precision —
+  no extra runtime needed.
+
+### Fixed
+
+- **Math in chat renders as math in the shipped app.** Equations now display as
+  formatted mathematics rather than the raw LaTeX they briefly showed in
+  downloaded copies.
+
+- **A fresh install reuses models you already downloaded** — both from an earlier
+  Rapid install and from another MLX app on your Mac — so first launch does not
+  re-download gigabytes you already have.
+
+- **Updates and image previews no longer get stuck in a stale state**, the main
+  window closes and reopens cleanly, and overlapping "free up memory?" prompts no
+  longer pile on top of each other.
+
+- **When a model wrongly insists it cannot access real-time information, Chat
+  quietly asks once more** so you still get a real answer instead of a refusal.
+
+- Under the hood: vision models that mix text and images now run through a single
+  ordered lane for stability, and model-status metrics are exposed for
+  diagnostics.
+
 ## [0.12.8] — 2026-08-10
 
 The desktop app makes pictures now: a new Images tab renders locally, and Chat
