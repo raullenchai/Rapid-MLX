@@ -4940,7 +4940,14 @@ def _scan_external_model_dirs(
             mtime = os.path.getmtime(directory)
         except OSError:
             mtime = 0.0
-        out.append((repo, _dir_size_bytes(directory), mtime))
+        # ``_snapshot_size_bytes`` (follows symlinks), not ``_dir_size_bytes``
+        # (skips them). The hub scanner must skip links because a snapshot
+        # entry is a second name for a blob it already counted; an external
+        # tree has no blob/snapshot split, so a symlinked weight file is the
+        # model's only representation and skipping it reports 0 B for a model
+        # that occupies gigabytes. Several tools lay models out this way to
+        # share weights between runtimes.
+        out.append((repo, _snapshot_size_bytes(directory), mtime))
 
     for root in roots:
         try:

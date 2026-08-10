@@ -856,7 +856,12 @@ struct SettingsModelManagementPanel: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
-                        .help("Measured size on disk. Deleting frees this much.")
+                        .help(
+                            entry.isExternal
+                                ? "Measured size on disk. Downloaded by another app — "
+                                    + "Rapid can't delete it."
+                                : "Measured size on disk. Deleting frees this much."
+                        )
                         .accessibilityLabel("On disk, \(size)")
                 } else {
                     // No measurement from ``rapid-mlx ls``. Say "On disk"

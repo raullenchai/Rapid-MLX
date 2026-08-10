@@ -807,6 +807,26 @@ def test_hub_copy_wins_when_a_repo_exists_in_both_places(tmp_path, monkeypatch, 
     assert "(external)" not in out
 
 
+def test_external_scan_measures_symlinked_weights(tmp_path):
+    """A symlinked weight file is the model's only representation in an
+    external tree — skipping links (correct for the hub's blob/snapshot
+    split) would report 0 B for a model occupying gigabytes."""
+    real = tmp_path / "store"
+    real.mkdir()
+    blob = real / "weights.safetensors"
+    blob.write_bytes(b"x" * 4096)
+
+    model = tmp_path / "models" / "pub" / "Linked"
+    model.mkdir(parents=True)
+    (model / "model.safetensors").symlink_to(blob)
+    (model / "config.json").write_text("{}")
+
+    rows = cli._scan_external_model_dirs([str(tmp_path / "models")])
+
+    assert len(rows) == 1
+    assert rows[0][1] >= 4096, f"symlinked weights measured as {rows[0][1]} bytes"
+
+
 def test_cached_row_columns_stay_split_for_a_long_repo(tmp_path, monkeypatch, capsys):
     """The desktop parser splits on runs of 2+ spaces, so every value must
     be strictly narrower than its column. A 9-char size in a 9-wide field
