@@ -91,6 +91,17 @@ struct ExternalModelCatalogTests {
         #expect(entries[0].isExternal)
     }
 
+    @Test("An excluded external identifier cannot re-enter the chat catalog")
+    func excludedExternalStaysExcluded() {
+        let entries = ModelCatalog.mergeAvailableAndCached(
+            available: [],
+            cached: [("(external)", "video-model", "1.0 GiB")],
+            excluded: ["video-model"]
+        )
+
+        #expect(entries.isEmpty)
+    }
+
     /// The safety half: visible, but never deletable.
     @Test("Deleting an external model is refused at the dispatcher")
     func externalDeletionIsRefused() async {
@@ -130,9 +141,11 @@ struct ExternalModelCatalogTests {
 
         // It fails (no real binary), but NOT with the external refusal —
         // the guard must not swallow ordinary deletes.
-        if case .failure(let message) = outcome {
-            #expect(!message.contains("another app"))
+        guard case .failure(let message) = outcome else {
+            Issue.record("expected the deliberately invalid binary to fail, got \(outcome)")
+            return
         }
+        #expect(!message.contains("another app"))
     }
 
     @Test("A real alias in the same listing is still admitted")

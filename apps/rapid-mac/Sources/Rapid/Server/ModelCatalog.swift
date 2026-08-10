@@ -373,7 +373,8 @@ enum ModelCatalog {
         where alias == "(external)" {
             guard let repo = hf,
                   !consumedExternal.contains(repo),
-                  !seenAliases.contains(repo) else { continue }
+                  !seenAliases.contains(repo),
+                  !excluded.contains(repo) else { continue }
             seenAliases.insert(repo)
             entries.append(ModelEntry(
                 alias: repo,

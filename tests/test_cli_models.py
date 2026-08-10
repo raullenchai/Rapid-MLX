@@ -700,6 +700,19 @@ def test_external_scan_skips_incomplete_directories(tmp_path):
     assert cli._scan_external_model_dirs([str(root)]) == []
 
 
+@pytest.mark.parametrize("unsafe_name", ["bad name", "bad\nname", "\x1b[31m", "-option"])
+def test_external_scan_rejects_identifiers_that_can_corrupt_cli_rows(
+    tmp_path, unsafe_name
+):
+    root = tmp_path / "models"
+    model = root / unsafe_name
+    model.mkdir(parents=True)
+    (model / "config.json").write_text("{}")
+    (model / "model.safetensors").write_bytes(b"x")
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+
 def test_external_scan_skips_gguf(tmp_path):
     """mlx-lm can export GGUF but has no load path for it, so a GGUF store
     must not appear — see ``_download_gate`` for the one-way note."""

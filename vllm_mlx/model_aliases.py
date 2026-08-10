@@ -671,8 +671,8 @@ def _resolve_external_model_path(name: str) -> str | None:
     # alias as the desktop-facing identity.
     profile = _load().get(name)
     external_name = profile.hf_path if profile is not None else name
-    parts = external_name.split("/")
-    if len(parts) not in (1, 2) or any(part in ("", ".", "..") for part in parts):
+    parts = _external_model_identifier_parts(external_name)
+    if parts is None:
         return None
 
     raw_roots = os.environ.get("RAPID_MLX_EXTRA_MODEL_ROOTS", "")
@@ -695,6 +695,29 @@ def _resolve_external_model_path(name: str) -> str | None:
         if os.path.isdir(candidate) and _snapshot_is_complete(candidate):
             return candidate
     return None
+
+
+def _external_model_identifier_parts(name: str) -> list[str] | None:
+    """Return safe path/display components for an external model id.
+
+    The identifier crosses a terminal-oriented CLI boundary before Swift
+    parses it.  Restrict it to the same conservative alphabet Hugging Face
+    repository ids use so a directory name cannot inject a row, ANSI escape,
+    or extra whitespace-delimited columns into that protocol.
+    """
+    parts = name.split("/")
+    if len(parts) not in (1, 2):
+        return None
+    for part in parts:
+        if (
+            not part
+            or part in (".", "..")
+            or part.startswith("-")
+            or not part.isascii()
+            or not all(character.isalnum() or character in "._-" for character in part)
+        ):
+            return None
+    return parts
 
 
 def list_aliases() -> dict[str, str]:

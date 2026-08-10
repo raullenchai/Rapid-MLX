@@ -4952,6 +4952,7 @@ def _scan_external_model_dirs(
     folder.
     """
     from vllm_mlx._download_gate import _snapshot_is_complete
+    from vllm_mlx.model_aliases import _external_model_identifier_parts
 
     if roots is None:
         roots = _external_model_roots()
@@ -4996,7 +4997,7 @@ def _scan_external_model_dirs(
         except OSError:
             continue
         for publisher in first_level:
-            if publisher.startswith("."):
+            if _external_model_identifier_parts(publisher) is None:
                 continue
             # Skip the hub layout: those belong to the hub scanner, and
             # listing them twice would double-count disk usage.
@@ -5017,7 +5018,8 @@ def _scan_external_model_dirs(
             except OSError:
                 continue
             for name in second_level:
-                if name.startswith("."):
+                repo = f"{publisher}/{name}"
+                if _external_model_identifier_parts(repo) is None:
                     continue
                 model_dir = os.path.join(pub_dir, name)
                 if (
@@ -5025,7 +5027,7 @@ def _scan_external_model_dirs(
                     and _contained(model_dir)
                     and _snapshot_is_complete(model_dir)
                 ):
-                    _record(model_dir, f"{publisher}/{name}")
+                    _record(model_dir, repo)
 
     return out
 
