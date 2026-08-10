@@ -4954,7 +4954,10 @@ def _scan_external_model_dirs(
     folder.
     """
     from vllm_mlx._download_gate import _snapshot_is_complete
-    from vllm_mlx.model_aliases import _external_model_identifier_parts
+    from vllm_mlx.model_aliases import (
+        _external_model_identifier_parts,
+        _external_model_tree_is_contained,
+    )
 
     if roots is None:
         roots = _external_model_roots()
@@ -4982,7 +4985,9 @@ def _scan_external_model_dirs(
         if real in seen_paths or repo in seen_repos:
             return
         try:
-            if not _complete(real):
+            if not _external_model_tree_is_contained(
+                real, [canonical_root]
+            ) or not _complete(real):
                 return
             mtime = os.path.getmtime(real)
         except OSError:

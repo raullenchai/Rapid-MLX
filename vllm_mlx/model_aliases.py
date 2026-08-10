@@ -715,11 +715,40 @@ def _resolve_external_model_path(name: str) -> str | None:
                 continue
             if os.path.isdir(candidate):
                 try:
-                    if _snapshot_is_complete(candidate):
+                    if _external_model_tree_is_contained(
+                        candidate, [root]
+                    ) and _snapshot_is_complete(candidate):
                         return candidate
                 except OSError:
                     continue
     return None
+
+
+def _external_model_tree_is_contained(directory: str, roots: list[str]) -> bool:
+    """Require every symlink target in an external model to stay trusted."""
+    canonical_roots = [os.path.realpath(root) for root in roots]
+
+    def contained(path: str) -> bool:
+        target = os.path.realpath(path)
+        for root in canonical_roots:
+            try:
+                if os.path.commonpath((root, target)) == root:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    if not contained(directory):
+        return False
+    try:
+        for current, directories, files in os.walk(directory, followlinks=False):
+            for name in (*directories, *files):
+                path = os.path.join(current, name)
+                if os.path.islink(path) and not contained(path):
+                    return False
+    except OSError:
+        return False
+    return True
 
 
 def _external_model_root_values(raw: str) -> list[str]:

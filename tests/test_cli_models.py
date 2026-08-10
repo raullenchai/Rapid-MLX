@@ -1035,20 +1035,38 @@ def test_external_scan_measures_symlinked_weights(tmp_path):
     """A symlinked weight file is the model's only representation in an
     external tree — skipping links (correct for the hub's blob/snapshot
     split) would report 0 B for a model occupying gigabytes."""
-    real = tmp_path / "store"
-    real.mkdir()
+    root = tmp_path / "models"
+    real = root / "blobs"
+    real.mkdir(parents=True)
     blob = real / "weights.safetensors"
     blob.write_bytes(b"x" * 4096)
 
-    model = tmp_path / "models" / "pub" / "Linked"
+    model = root / "pub" / "Linked"
     model.mkdir(parents=True)
     (model / "model.safetensors").symlink_to(blob)
     (model / "config.json").write_text("{}")
 
-    rows = cli._scan_external_model_dirs([str(tmp_path / "models")])
+    rows = cli._scan_external_model_dirs([str(root)])
 
     assert len(rows) == 1
     assert rows[0][1] >= 4096, f"symlinked weights measured as {rows[0][1]} bytes"
+
+
+def test_external_scan_rejects_weight_symlink_outside_selected_root(
+    tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside.safetensors"
+    outside.write_bytes(b"x" * 4096)
+    root = tmp_path / "models"
+    model = root / "pub" / "Escaped"
+    model.mkdir(parents=True)
+    (model / "model.safetensors").symlink_to(outside)
+    (model / "config.json").write_text("{}")
+
+    assert cli._scan_external_model_dirs([str(root)]) == []
+
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+    assert resolve_model("pub/Escaped") == "pub/Escaped"
 
 
 def test_cached_row_columns_stay_split_for_a_full_width_size(
