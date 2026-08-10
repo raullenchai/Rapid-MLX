@@ -287,6 +287,54 @@ def test_reasoning_whitespace_parity(streaming):
     assert content == " spaced answer "
 
 
+def test_close_and_trailing_text_in_one_delta():
+    # Codex r2 #1: a single delta that completes the block AND carries
+    # trailing text must not lose that text — the tool_calls return wins
+    # the delta, and the cursor picks the text up on the next call.
+    parser = _tool_parser()
+    block = _block(_invoke("f", {"a": "1"}))
+    deltas = ["Hi ", block[:-5], block[-5:] + " tail", " end"]
+    contents: list[str] = []
+    calls = 0
+    prev = ""
+    for d in deltas:
+        curr = prev + d
+        out = parser.extract_tool_calls_streaming(prev, curr, d)
+        if out:
+            if out.get("content"):
+                contents.append(out["content"])
+            calls += len(out.get("tool_calls") or [])
+        prev = curr
+    contents.append(parser.flush_held_content(prev))
+    assert calls == 1
+    assert "".join(contents) == "Hi  tail end"
+
+
+def test_valid_call_then_literal_opener_released_at_flush():
+    # Codex r2 #3: after a real call, a trailing literal/truncated opener
+    # can never complete — its bytes are content and must be released at
+    # end of stream, matching the non-streaming path (#1766 principle).
+    parser = _tool_parser()
+    text = _block(_invoke("f", {"a": "1"})) + "\nsee <atem:function_calls> docs"
+    emitted: list[str] = []
+    calls = 0
+    prev = ""
+    for ch in text:
+        curr = prev + ch
+        out = parser.extract_tool_calls_streaming(prev, curr, ch)
+        if out:
+            if out.get("content"):
+                emitted.append(out["content"])
+            calls += len(out.get("tool_calls") or [])
+        prev = curr
+    emitted.append(parser.flush_held_content(prev))
+    assert calls == 1
+    assert "".join(emitted) == "\nsee <atem:function_calls> docs"
+    # And non-stream agrees byte-for-byte.
+    nonstream = _tool_parser().extract_tool_calls(text)
+    assert nonstream.content == "\nsee <atem:function_calls> docs"
+
+
 def test_truncated_block_keeps_bytes_as_content():
     # An opener with no parseable invoke must not vanish silently.
     parser = _tool_parser()

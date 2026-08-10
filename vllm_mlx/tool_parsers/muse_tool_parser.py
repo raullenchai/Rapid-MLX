@@ -216,6 +216,12 @@ class MuseToolParser(ToolParser):
         super().reset()
         self._stream_calls_emitted = 0
         self._stream_blocks_emitted = 0
+        # Chars of the visible-content view already sent to the client.
+        # An absolute cursor (not a prev-vs-curr diff): a delta that both
+        # completes a block AND carries trailing text returns tool_calls
+        # for that call, and the trailing text is picked up on the next
+        # call because the cursor did not advance past it (codex r2 #1).
+        self._content_emitted = 0
 
     @staticmethod
     def _parse_block(body: str, request: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -267,9 +273,10 @@ class MuseToolParser(ToolParser):
         ]
 
         # Content = whatever sits outside the completed ATEM blocks,
-        # channel-clean.
+        # channel-clean. No ``.strip()`` — the streaming path emits these
+        # bytes verbatim and the two modes must agree (codex r2 #2).
         outside = _BLOCK_RE.sub("", model_output)
-        content = _strip_channel_plumbing(outside).strip() or None
+        content = _strip_channel_plumbing(outside) or None
 
         if not calls:
             # Completed block(s) with no parseable invoke (malformed):
@@ -301,7 +308,12 @@ class MuseToolParser(ToolParser):
         work = _BLOCK_RE.sub("", text)
         first_open = work.find(_BLOCK_OPEN)
         if first_open >= 0:
-            work = work[:first_open]
+            if hold_tail:
+                work = work[:first_open]
+            # hold_tail=False (end of stream): the opener can no longer
+            # complete, so its literal bytes are content — matching the
+            # non-streaming path, which keeps unmatched-opener text
+            # (codex r2 #3; the #1766 literal-markup-survives principle).
         elif hold_tail:
             # A ``<|start|>`` whose ``<|message|>`` has not arrived is a
             # channel header still in flight — hold from it so its
@@ -338,15 +350,14 @@ class MuseToolParser(ToolParser):
     def flush_held_content(self, full_text: str) -> str:
         """Release held-but-safe bytes at end of stream.
 
-        The difference between the unheld view (partial sentinels
+        The unheld view (partial sentinels and unmatched-opener text
         released — the stream is over, they can no longer grow into
-        markup) and what the per-delta path already emitted. An
-        UNMATCHED opener's markup stays dropped here; the finalize
-        fallback re-parses the full text if no call ever fired.
+        markup) minus what the per-delta path already emitted, tracked
+        by the ``_content_emitted`` cursor.
         """
-        emitted = self._visible_content(full_text)
         final = self._visible_content(full_text, hold_tail=False)
-        return final[len(emitted) :]
+        cursor = getattr(self, "_content_emitted", 0)
+        return final[cursor:]
 
     def extract_tool_calls_streaming(
         self,
@@ -395,9 +406,12 @@ class MuseToolParser(ToolParser):
             return None
 
         # Content channel: everything outside completed blocks, held at
-        # any in-flight opener/header/sentinel.
-        prev_safe = self._visible_content(previous_text)
-        curr_safe = self._visible_content(current_text)
-        if len(curr_safe) > len(prev_safe):
-            return {"content": curr_safe[len(prev_safe) :]}
+        # any in-flight opener/header/sentinel. Emitted from an absolute
+        # cursor, not a prev/curr diff, so bytes that arrived in the same
+        # delta as a block close are not skipped (codex r2 #1).
+        visible = self._visible_content(current_text)
+        if len(visible) > self._content_emitted:
+            new_content = visible[self._content_emitted :]
+            self._content_emitted = len(visible)
+            return {"content": new_content}
         return None
