@@ -649,3 +649,80 @@ def test_streaming_never_leaks_header_or_terminator_bytes():
         prev = curr
     assert "".join(reasoning_parts) == "thinking"
     assert "".join(content_parts) == "answer"
+
+
+def test_reasoning_parser_survives_thinking_disabled():
+    """The muse parser must stay in the demux path when a request
+    resolves ``enable_thinking=False`` (R12-T2F casual-chat auto-disable).
+
+    Muse's template has no thinking switch — the model always emits
+    channel plumbing. Without ``sanitize_when_thinking_disabled`` the
+    postprocessor bypassed the parser and ``strip_special_tokens`` ate
+    the wire markers while leaking `` to=self`` header bytes into
+    ``delta.content`` (observed on real 30B weights, 2026-08-10 smoke).
+    """
+    parser = _reasoning_parser()
+    assert parser.sanitize_when_thinking_disabled is True
+
+
+def test_postprocessor_demuxes_with_thinking_disabled():
+    """End-to-end postprocessor regression for the mini smoke failure:
+    exact per-token deltas observed from the real 30B checkpoint, with
+    ``enable_thinking=False`` as injected by the casual-chat auto-disable."""
+    from unittest.mock import MagicMock
+
+    from vllm_mlx.service.postprocessor import StreamingPostProcessor
+
+    cfg = MagicMock()
+    cfg.engine = None
+    cfg.reasoning_parser = None
+    cfg.reasoning_parser_name = "muse"
+    cfg.enable_auto_tool_choice = False
+    cfg.tool_call_parser = None
+    cfg.tool_parser_instance = None
+
+    pp = StreamingPostProcessor(cfg, enable_thinking=False)
+    pp.reset()
+
+    deltas = [
+        " to",
+        "=self",
+        "<|message|>",
+        "hi",
+        "\n\n",
+        "We",
+        " need",
+        " to",
+        " respond",
+        ".",
+        "<|eom|>",
+        "<|start|>",
+        "assistant",
+        " to",
+        "=user",
+        "<|message|>",
+        "Hello",
+        "!",
+        "<|eot|>",
+    ]
+    reasoning_parts: list[str] = []
+    content_parts: list[str] = []
+    for i, ch in enumerate(deltas):
+        out = MagicMock()
+        out.new_text = ch
+        out.finished = i == len(deltas) - 1
+        out.channel = None
+        out.finish_reason = "stop" if out.finished else None
+        out.prompt_tokens = 10
+        out.completion_tokens = 5
+        out.tokens = []
+        out.logprobs = None
+        out.tool_calls = None
+        for e in pp.process_chunk(out):
+            if e.type == "content" and e.content:
+                content_parts.append(e.content)
+            if getattr(e, "reasoning", None):
+                reasoning_parts.append(e.reasoning)
+
+    assert "".join(reasoning_parts) == "hi\n\nWe need to respond."
+    assert "".join(content_parts) == "Hello!"
