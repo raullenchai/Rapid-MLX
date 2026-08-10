@@ -630,7 +630,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hide Dock icon when closing window")
                         .font(.callout.weight(.medium))
-                    Text("Closing the window flips Rapid-MLX to the menu bar. Re-open via the menu-bar icon. Turn off to keep the Dock icon visible after closing.")
+                    Text("On close, Rapid-MLX stays available from the menu bar. Turn off to keep the Dock icon visible; disabling takes effect immediately.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -651,16 +651,17 @@ struct SettingsView: View {
 
     /// Bridges the ``DockVisibilityPromptStore`` choice into a
     /// ``Toggle``-shaped binding. Set true → ``.hideAlways``; set
-    /// false → ``.keepAlways``. Both flip the live ``NSApp``
-    /// activation policy via ``applyHide`` so the user sees the
-    /// effect immediately — the Dock icon comes or goes without
-    /// requiring a relaunch.
+    /// false → ``.keepAlways``. Enabling applies on the next close, matching
+    /// the control's label. Disabling restores the Dock icon immediately so
+    /// a currently menu-bar-only app never traps the user in accessory mode.
     private var hideDockOnCloseBinding: Binding<Bool> {
         Binding(
             get: { dockPromptStore.choice == .hideAlways },
             set: { newValue in
                 dockPromptStore.setHideOnClose(newValue)
-                DockVisibilityPromptStore.applyHide(newValue)
+                if !newValue {
+                    DockVisibilityPromptStore.applyHide(false)
+                }
             }
         )
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/env swift
 // Minimal native Accessibility driver for deterministic Rapid GUI journeys.
-// It deliberately exposes only semantic operations: dump, press and set-value.
+// It deliberately exposes only semantic operations: dump, press, set-value,
+// and closing a named native window through its AXCloseButton.
 import ApplicationServices
 import Foundation
 
@@ -109,7 +110,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|set-value|trust> <pid> [identifier] [value]")
+    fail("usage: rapid-ax <dump|press|set-value|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -265,6 +266,22 @@ if let rootChildren = attribute(application, kAXChildrenAttribute as CFString) a
 
 walk(application, depth: 0)
 elementWalkComplete = elementWalkComplete && windowListComplete
+
+if command == "close-window" {
+    guard let wanted else { fail("close-window requires a window title") }
+    guard let window = windowElements.first(where: {
+        string($0, kAXTitleAttribute as CFString) == wanted
+    }) else {
+        fail("window not found: \(wanted)")
+    }
+    guard let closeButton = attribute(window, kAXCloseButtonAttribute as CFString) else {
+        fail("window has no AXCloseButton: \(wanted)")
+    }
+    let result = AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
+    guard result == .success else { fail("AXPress close window \(wanted) failed: \(result.rawValue)") }
+    print("{\"success\":true,\"window\":\"\(wanted)\",\"action\":\"close-window\"}")
+    exit(0)
+}
 
 if command == "dump" {
     let payload: [String: Any] = [

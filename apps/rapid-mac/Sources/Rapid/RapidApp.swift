@@ -453,6 +453,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// survive scene re-mount across hide/show cycles.
     var mainWindowCloseInterceptor: MainWindowCloseInterceptor?
 
+    /// Attach the AppKit-only main-window behaviours once SwiftUI has
+    /// materialised its concrete ``NSWindow``. Repeated accessor callbacks
+    /// are expected; installation is idempotent for the same window and is
+    /// repeated when SwiftUI creates a replacement after a normal close.
+    func attachMainWindow(_ window: NSWindow) {
+        let needsInstall = MainWindowCloseInterceptor.shouldReinstall(
+            currentAttachedWindow: mainWindowCloseInterceptor?.attachedWindow,
+            newWindow: window
+        )
+        guard let visibleFrame = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame else {
+            if needsInstall, let store = dockPromptStore {
+                mainWindowCloseInterceptor = MainWindowCloseInterceptor(window: window, store: store)
+            }
+            return
+        }
+
+        if needsInstall {
+            // Setting the name restores any saved frame synchronously. Clamp
+            // immediately afterwards so a monitor that was unplugged while
+            // the app was closed cannot strand the restored window.
+            window.setFrameAutosaveName("Rapid.MainWindow")
+            window.setFrame(WindowFrameClamp.clamp(frame: window.frame, to: visibleFrame), display: false)
+            if let store = dockPromptStore {
+                mainWindowCloseInterceptor = MainWindowCloseInterceptor(window: window, store: store)
+            }
+        } else if WindowFrameClamp.isStranded(frame: window.frame, in: visibleFrame) {
+            // The onboarding sheet can cause a later AppKit reposition after
+            // the initial autosave restore. Only fight genuinely stranded
+            // frames on repeat callbacks, preserving deliberate edge parking.
+            window.setFrame(WindowFrameClamp.clamp(frame: window.frame, to: visibleFrame), display: true)
+        }
+    }
+
     /// AppKit instantiates the delegate via the SwiftUI adaptor's
     /// `init()`. Returning the shared singleton on `init()` is not
     /// straightforward, so we let AppKit make its own instance and

@@ -38,7 +38,7 @@ Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
-       update-state, no-dead-controls, catalog-integrity,
+       update-state, window-close-prompt, no-dead-controls, catalog-integrity,
        browse-all-destination, image-generation, all
 
 chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         chat-restore|restored-tools|tool-loop-budget|chat-depth) return 1 ;;
-        slow-stream-stop|model-crash-recovery|image-generation) return 1 ;;
+        slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -1332,6 +1332,39 @@ flow_update_state() {
     cleanup_persona
 }
 
+flow_window_close_prompt() {
+    # #1590: the prompt, persistence store and delegate proxy all existed, but
+    # no WindowAccessor ever attached the proxy to the real main NSWindow.
+    start_persona window-close-prompt
+    dismiss_first_run
+
+    # AXPress blocks while NSAlert.runModal is active, so issue the native
+    # close in the background, observe/answer the sheet from a second driver,
+    # then require the original close action to finish successfully.
+    "$AX_DRIVER" close-window "$APP_PID" Rapid-MLX > "$OUT/close-window.json" 2> "$OUT/close-window.err" &
+    local close_pid=$!
+    wait_identifier DockHidePrompt.NoButton "$OUT/dock-prompt.json"
+    jq -e '.data.ui_elements[]? | select(.identifier == "DockHidePrompt.YesButton")' \
+        "$OUT/dock-prompt.json" >/dev/null \
+        || die "first main-window close has no Yes choice"
+    jq -e '.data.ui_elements[]? | select(.identifier == "DockHidePrompt.DontAskCheckbox")' \
+        "$OUT/dock-prompt.json" >/dev/null \
+        || die "first main-window close has no Don.t ask again choice"
+    press "$OUT/dock-prompt.json" DockHidePrompt.NoButton "$OUT/dock-prompt-no.json"
+    wait "$close_pid" || die "native main-window close action failed: $(cat "$OUT/close-window.err")"
+
+    local probe=2
+    for _ in {1..40}; do
+        probe=0
+        ax_window_present Rapid-MLX "$OUT/after-close.json" || probe=$?
+        [[ "$probe" == 1 ]] && break
+        sleep 0.25
+    done
+    [[ "$probe" == 1 ]] || die "No choice did not close the main window normally"
+    log "  first main-window close presents and resolves the Dock prompt"
+    cleanup_persona
+}
+
 flow_no_dead_controls() {
     # Every advertised Settings control must do something observable.
     #
@@ -2009,6 +2042,7 @@ case "$FLOW" in
     model-crash-recovery) flow_model_crash_recovery ;;
     low-memory-choice) flow_low_memory_choice ;;
     update-state) flow_update_state ;;
+    window-close-prompt) flow_window_close_prompt ;;
     no-dead-controls) flow_no_dead_controls ;;
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
@@ -2024,6 +2058,7 @@ case "$FLOW" in
         flow_model_crash_recovery
         flow_low_memory_choice
         flow_update_state
+        flow_window_close_prompt
         flow_no_dead_controls
         flow_catalog_integrity
         flow_browse_all_destination

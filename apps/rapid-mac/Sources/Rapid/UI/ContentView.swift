@@ -95,6 +95,16 @@ struct ContentView: View {
                 .frame(minWidth: 440, minHeight: Self.minWindowHeight)
                 .background(RapidTheme.surfaceCanvas)
         }
+        .background {
+            // Bridge the SwiftUI scene to the AppKit behaviours that need the
+            // concrete main NSWindow: close interception, frame autosave, and
+            // recovery from a display-layout change. This was documented as
+            // the installation point but had never been mounted (#1590).
+            WindowAccessor { window in
+                AppDelegate.shared.attachMainWindow(window)
+            }
+            .frame(width: 0, height: 0)
+        }
         .onChange(of: server.state) { _, newState in
             // #223: clear the download-prompt CTA the moment the server
             // moves out of ``.idle``.

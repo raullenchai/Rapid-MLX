@@ -41,6 +41,10 @@ covered, and each one names the defect it would have caught:
     the Chat composer, renders it in the user turn, and sends typed
     `text` + `image_url` content; the same composer keeps its attachment
     control visible but disabled for a text-only alias and rejects paste/drop.
+13. `window-close-prompt` — the first native main-window close reaches the
+    Dock-visibility prompt, exposes both decisions plus “Don't ask again”, and
+    choosing No completes a normal close. This pins the SwiftUI-to-NSWindow
+    installation seam that #1590 found entirely disconnected.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below
