@@ -580,7 +580,27 @@ def _finalize_content_and_reasoning(
         # same ``(reasoning, None)`` shape but the cleaned_text in
         # that case is the legitimate final-channel answer that
         # MUST survive (codex R2 BLOCKING).
-        if enable_thinking is True and first_parse_was_case4:
+        #
+        # R1-Distill mid-think leak: the gate must ALSO honour
+        # ``prompt_thinking_active``, not just ``enable_thinking is
+        # True``. The R1-Distill chat template UNCONDITIONALLY primes
+        # ``<think>`` in the prompt (it ignores ``enable_thinking``), so
+        # its ``extract_reasoning`` routes a no-tag output to reasoning
+        # on ``prompt_thinking_active`` — the exact signal that produced
+        # ``first_parse_was_case4`` here. When an agentic client attaches
+        # tools (``maybe_auto_disable_thinking_for_tools`` resolves
+        # ``enable_thinking=False``) or pins the flag off explicitly, the
+        # template still primes thinking, so the parser routes the trace
+        # to reasoning but the old ``enable_thinking is True``-only gate
+        # left ``cleaned_text`` populated — shipping the same bytes in
+        # both fields AND suppressing the truncation sentinel (content
+        # was non-empty). The union of the two flags matches the exact
+        # set of conditions under which a ``<think>``-family parser routes
+        # a no-tag output wholly to reasoning, keeping the non-streaming
+        # surface symmetric with the streaming Case-3 path.
+        if (enable_thinking is True or prompt_thinking_active is True) and (
+            first_parse_was_case4
+        ):
             cleaned_text = ""
             # F-041 (2026-06-19): same rationale as the codex r3 P2 plug
             # below for ``first_parse_was_truncated_think`` — when the
