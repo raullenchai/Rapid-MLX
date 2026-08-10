@@ -445,9 +445,25 @@ def _finalize_content_and_reasoning(
         # PR #436's empty-TextBlock fix: that PR rescued ``content``
         # from being clobbered to None; this rescues ``reasoning``.)
         if new_reasoning is None and raw_text and raw_text != text_to_parse:
-            retry_reasoning, _ = extract(raw_text)
+            retry_reasoning, retry_cleaned = extract(raw_text)
             if retry_reasoning is not None:
                 new_reasoning = retry_reasoning
+                # Muse (ATEM recipient-routed wire): unlike harmony,
+                # ``clean_output_text`` has NO channel extraction for
+                # this family — its generic regex strips the
+                # ``<|start|>/<|message|>`` markers and leaves header
+                # mush (`` to=self…``) with the reasoning bytes
+                # DUPLICATED in ``cleaned_text``. When the raw-wire
+                # retry positively identified reasoning, the parser
+                # also demuxed the content channel from the same
+                # bytes, so its content half is authoritative
+                # (``None`` ⇒ all-reasoning ⇒ empty content, matching
+                # the streaming path). Opt-in per parser so the
+                # harmony analysis-rescue semantics (#436 — keep
+                # ``cleaned_text``, the engine already extracted the
+                # final channel) are untouched.
+                if getattr(reasoning_parser, "raw_parse_content_authoritative", False):
+                    new_cleaned = retry_cleaned if retry_cleaned is not None else ""
         reasoning_text = new_reasoning
         # Only overwrite cleaned_text when the parser explicitly
         # produced new content. ``new_cleaned is None`` means the

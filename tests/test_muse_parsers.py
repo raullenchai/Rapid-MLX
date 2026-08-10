@@ -726,3 +726,52 @@ def test_postprocessor_demuxes_with_thinking_disabled():
 
     assert "".join(reasoning_parts) == "hi\n\nWe need to respond."
     assert "".join(content_parts) == "Hello!"
+
+
+def test_finalize_uses_raw_wire_content_for_muse():
+    """Non-streaming counterpart of the demux regression: the route's
+    ``clean_output_text`` strips channel markers WITHOUT extracting
+    channels, so ``_finalize_content_and_reasoning``'s first parse sees
+    markerless mush. The raw-text retry must supply BOTH halves for
+    muse — before the fix the mush (header bytes + duplicated
+    reasoning) shipped as ``content`` (real-weights mini smoke,
+    2026-08-10, non-streaming surface).
+    """
+    from vllm_mlx.api.utils import clean_output_text
+    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+
+    raw = (
+        " to=self<|message|>We need to respond.<|eom|>"
+        "<|start|>assistant to=user<|message|>Hello!<|eot|>"
+    )
+    cleaned = clean_output_text(raw)
+    assert "<|message|>" not in cleaned  # the generic regex ate the wire
+
+    content, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=cleaned,
+        tool_calls=[],
+        reasoning_parser=_reasoning_parser(),
+    )
+    assert reasoning == "We need to respond."
+    assert content == "Hello!"
+
+
+def test_finalize_truncated_all_reasoning_muse():
+    """finish_reason=length mid-reasoning: everything is to=self, no
+    content channel ever opened — content must be empty, not the mush."""
+    from vllm_mlx.api.utils import clean_output_text
+    from vllm_mlx.service.helpers import _finalize_content_and_reasoning
+
+    raw = " to=self<|message|>Thinking hard about the answer"
+    cleaned = clean_output_text(raw)
+
+    content, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=cleaned,
+        tool_calls=[],
+        reasoning_parser=_reasoning_parser(),
+        finish_reason="length",
+    )
+    assert reasoning == "Thinking hard about the answer"
+    assert content == ""

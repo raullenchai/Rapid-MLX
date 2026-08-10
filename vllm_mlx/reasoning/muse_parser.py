@@ -103,6 +103,16 @@ class MuseReasoningParser(ReasoningParser):
     # is honoured by the model, not by us.
     sanitize_when_thinking_disabled = True
 
+    # Non-streaming counterpart (``_finalize_content_and_reasoning``):
+    # ``clean_output_text`` regex-strips the channel markers without
+    # extracting channels, so the first parse (on ``cleaned_text``)
+    # sees markerless mush and the raw-text retry is the ONLY parse
+    # that sees the real wire. This flag makes the retry's content
+    # half authoritative — without it the mush (header bytes + the
+    # reasoning duplicated) ships as ``content`` (observed on real
+    # 30B weights, 2026-08-10 mini smoke, non-streaming surface).
+    raw_parse_content_authoritative = True
+
     def extract_reasoning(
         self,
         model_output: str,
