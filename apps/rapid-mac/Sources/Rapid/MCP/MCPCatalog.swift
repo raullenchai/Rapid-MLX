@@ -80,6 +80,10 @@ final class MCPCatalog {
     /// server stop would let the chat loop advertise — and try to execute —
     /// tools that no process is behind.
     func clear() {
+        // Invalidate any in-flight refresh/reload: without this bump a slow poll
+        // that started before the clear could complete last and restore the
+        // very servers and tools we are wiping because the child went away.
+        mutationGeneration += 1
         servers = []
         tools = []
         serverForTool = [:]

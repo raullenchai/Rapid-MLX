@@ -425,3 +425,35 @@ def test_disconnect_closes_the_captured_stderr_file():
 
     assert client_obj._stderr_file is None
     assert handle.closed
+
+
+def test_failed_connect_closes_the_captured_stderr_file(monkeypatch):
+    """A startup failure never reaches disconnect on its own, so connect() must
+    release the stderr fd itself — otherwise every unstartable server leaks one.
+    """
+    import tempfile
+
+    from vllm_mlx.mcp.client import MCPClient, MCPServerState
+    from vllm_mlx.mcp.types import MCPServerConfig
+
+    cfg = MCPServerConfig(
+        name="s",
+        transport="stdio",
+        command="python3",
+        skip_security_validation=True,
+    )
+    client_obj = MCPClient(cfg)
+    handle = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+
+    async def _boom(self):
+        # Mirror the real path: the stderr file is opened, then the child dies.
+        self._stderr_file = handle
+        raise RuntimeError("child exited during import")
+
+    monkeypatch.setattr(MCPClient, "_connect_stdio", _boom)
+
+    ok = asyncio.run(client_obj.connect())
+    assert ok is False
+    assert client_obj._state == MCPServerState.ERROR
+    assert client_obj._stderr_file is None
+    assert handle.closed

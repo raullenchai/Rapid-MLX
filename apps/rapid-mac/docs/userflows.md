@@ -271,8 +271,9 @@ tool loop stays in `ChatViewModel` and the consent gate can live on screen.
    Off means `--mcp-config` is not passed at all, so the engine has no MCP subsystem — not merely
    zero servers.
 2. **Add** (`…AddButton`) opens `MCPServerEditorSheet` (name, transport stdio/SSE, command/args/env
-   or URL, per-server enable). Server names are validated against `[A-Za-z0-9_-]{1,32}` because the
-   engine namespaces every tool as `server__tool` and that has to stay a legal OpenAI function name.
+   or URL, per-server enable). Server names are validated against `[A-Za-z0-9_-]{1,32}` and must not
+   contain `__`, because the engine namespaces every tool as `server__tool` and splits on the first
+   `__`: the name has to stay a legal OpenAI function name and an unambiguous namespace half.
 3. Each server row has a status dot, a one-line state (`…Row.Status.<name>`: *Connected · N tools*,
    the rejection reason, or *Start a model to connect*), an on/off toggle (`…Row.Toggle.<name>`) and
    an edit/remove menu (`…Row.Menu.<name>`).

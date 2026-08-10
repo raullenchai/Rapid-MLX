@@ -148,7 +148,12 @@ class MCPClient:
 
             except Exception as e:
                 self._state = MCPServerState.ERROR
+                # ``_describe_failure`` reads the captured stderr, so close it
+                # only after. A failed connect never reaches ``disconnect`` on
+                # its own (the manager just sees ``False``), so without this the
+                # temp file's descriptor leaks on every startup failure.
                 self._error = self._describe_failure(e)
+                self._close_stderr_file()
                 logger.error(
                     f"Failed to connect to MCP server '{self.name}': {self._error}"
                 )

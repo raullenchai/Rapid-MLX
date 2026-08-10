@@ -1039,7 +1039,10 @@ private struct MCPToolApprovalSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            Text(request.toolName)
+            // `toolName` is the raw server-supplied name (kept raw on the
+            // request for dispatch and grant keys); scrub it for display so a
+            // bidi/zero-width scalar can't spoof which tool this dialog approves.
+            Text(BrowseApprovalStore.displaySafe(request.toolName))
                 .font(.system(.body, design: .monospaced).weight(.semibold))
                 .textSelection(.enabled)
 

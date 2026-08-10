@@ -849,9 +849,31 @@ final class MCPConnectorsTests {
 /// swift-testing runs tests in parallel, so a path-only key had concurrent
 /// tests overwriting and clearing each other's fixtures. There is
 /// deliberately no `reset()`: a global wipe is precisely what broke them.
+/// A lock-guarded string-keyed map with the same subscript API as a
+/// `Dictionary`. The fixture tables are read from ``URLProtocol/startLoading``
+/// — a URLSession background thread — while the `@MainActor` tests write them,
+/// and a bare `Dictionary` is undefined under that concurrent access (it
+/// crashed the test process). Same `[key]` shape, so call sites are unchanged.
+final class LockedFixtureMap<Value>: @unchecked Sendable {
+    private var store: [String: Value] = [:]
+    private let lock = NSLock()
+    subscript(key: String) -> Value? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return store[key]
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            store[key] = newValue
+        }
+    }
+}
+
 final class MCPStubProtocol: URLProtocol, @unchecked Sendable {
-    nonisolated(unsafe) static var responses: [String: String] = [:]
-    nonisolated(unsafe) static var statusCodes: [String: Int] = [:]
+    static let responses = LockedFixtureMap<String>()
+    static let statusCodes = LockedFixtureMap<Int>()
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
