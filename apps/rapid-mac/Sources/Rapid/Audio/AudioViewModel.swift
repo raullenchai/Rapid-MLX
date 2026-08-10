@@ -103,7 +103,11 @@ final class AudioViewModel {
         errorMessage = nil
         transcription = nil
         defer { isTranscribing = false }
-        guard await server.ensureServing(alias: entry.alias, hfPath: entry.hfRepo) else {
+        guard await server.ensureServing(
+            alias: entry.alias,
+            hfPath: entry.hfRepo,
+            residencyEligible: false
+        ) else {
             errorMessage = "The audio model couldn't start. Audio support may be unavailable in this app build."
             return
         }
@@ -127,7 +131,11 @@ final class AudioViewModel {
         isLoadingVoices = true
         errorMessage = nil
         defer { isLoadingVoices = false }
-        guard await server.ensureServing(alias: entry.alias, hfPath: entry.hfRepo) else {
+        guard await server.ensureServing(
+            alias: entry.alias,
+            hfPath: entry.hfRepo,
+            residencyEligible: false
+        ) else {
             errorMessage = "The speech model couldn't start. Audio support may be unavailable in this app build."
             return false
         }
@@ -165,7 +173,11 @@ final class AudioViewModel {
         errorMessage = nil
         synthesizedAudio = nil
         defer { isSynthesizing = false }
-        guard await server.ensureServing(alias: entry.alias, hfPath: entry.hfRepo) else {
+        guard await server.ensureServing(
+            alias: entry.alias,
+            hfPath: entry.hfRepo,
+            residencyEligible: false
+        ) else {
             errorMessage = "The speech model is no longer running. Load its voices and try again."
             return
         }
@@ -193,7 +205,11 @@ final class AudioViewModel {
         errorMessage = nil
         defer { previewingVoice = nil }
 
-        guard await server.ensureServing(alias: entry.alias, hfPath: entry.hfRepo),
+        guard await server.ensureServing(
+                  alias: entry.alias,
+                  hfPath: entry.hfRepo,
+                  residencyEligible: false
+              ),
               !Task.isCancelled else {
             if !Task.isCancelled {
                 errorMessage = "The speech model is no longer running. Load its voices and try again."

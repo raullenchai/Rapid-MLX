@@ -113,4 +113,29 @@ struct AutoRestartAndRegenRaceTests {
         ))
     }
 
+    @Test("audio aliases skip the in-process residency load and use stop/start")
+    func audioBypassesResidencyLoad() {
+        // The engine's residency loader raises a 500 for the audio (and
+        // video-gen) modality, which is NOT the 404/405 that triggers
+        // ensureServing's stop/start fallback. Audio callers therefore pass
+        // residencyEligible: false and must skip the residency path even when
+        // a non-audio model is already resident (ready + child present).
+        #expect(!ServerManager.residencyLoadApplies(
+            residencyEligible: false,
+            readyWithChild: true
+        ))
+        // Residency-eligible modalities (chat/VLM, image-gen, text-diffusion)
+        // still admit a second engine in-process when one is already running.
+        #expect(ServerManager.residencyLoadApplies(
+            residencyEligible: true,
+            readyWithChild: true
+        ))
+        // No resident process yet: even an eligible model has nothing to load
+        // into, so ensureServing goes straight to start().
+        #expect(!ServerManager.residencyLoadApplies(
+            residencyEligible: true,
+            readyWithChild: false
+        ))
+    }
+
 }

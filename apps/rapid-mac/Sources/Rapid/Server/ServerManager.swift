@@ -676,11 +676,24 @@ final class ServerManager {
     ///   installs the bytes-on-disk progress monitor; without it the
     ///   user watches a featureless spinner for the whole download.
     func ensureServing(alias: String, hfPath: String? = nil) async -> Bool {
+        await ensureServing(alias: alias, hfPath: hfPath, residencyEligible: true)
+    }
+
+    /// Residency-aware convenience. ``residencyEligible`` is non-defaulted so
+    /// this never shadows the two-argument form that ``ReadinessServing``
+    /// requires; audio/video-gen callers pass ``false`` to force a process
+    /// swap instead of the in-process ``/v1/models/load`` path.
+    func ensureServing(
+        alias: String,
+        hfPath: String?,
+        residencyEligible: Bool
+    ) async -> Bool {
         await ensureServing(
             alias: alias,
             hfPath: hfPath,
             estimatedMemoryGB: nil,
-            replacementGroup: nil
+            replacementGroup: nil,
+            residencyEligible: residencyEligible
         )
     }
 
@@ -688,7 +701,8 @@ final class ServerManager {
         alias: String,
         hfPath: String?,
         estimatedMemoryGB: Double?,
-        replacementGroup: ResidentModelReplacementGroup? = nil
+        replacementGroup: ResidentModelReplacementGroup? = nil,
+        residencyEligible: Bool = true
     ) async -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -706,7 +720,14 @@ final class ServerManager {
         // process. Only a 404/405 from an older bundled server falls back to
         // the legacy stop/start path; capacity and load failures stay failures
         // so we never hide a rejected ceiling by unloading the primary model.
-        if case .ready = state, child != nil {
+        //
+        // Audio (and video-gen) aliases opt out via ``residencyEligible: false``:
+        // the engine's residency loader rejects those modalities with a 500,
+        // not a 404/405, so an in-process ``/v1/models/load`` attempt would
+        // surface as a hard failure instead of the process swap they actually
+        // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
+        let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
+        if Self.residencyLoadApplies(residencyEligible: residencyEligible, readyWithChild: readyWithChild) {
             let estimate = estimatedMemoryGB ?? ModelSizing.estimate(alias: trimmed).totalGB
             let result = await residencyClient.load(
                 alias: trimmed,
@@ -1901,6 +1922,22 @@ final class ServerManager {
         preservingLastServedAlias: Bool
     ) -> Bool {
         expectedStop && !preservingLastServedAlias
+    }
+
+    /// Pure gate for the in-process residency-load attempt in
+    /// ``ensureServing``, extracted so its regression test can run without a
+    /// live sidecar. The residency ``/v1/models/load`` path only works for
+    /// modalities the engine can admit as a non-primary resident (chat/VLM,
+    /// image-gen, text-diffusion). Audio and video-gen aliases raise a 500
+    /// there — which does NOT trigger ``ensureServing``'s 404/405 stop/start
+    /// fallback — so their callers pass ``residencyEligible: false`` and this
+    /// returns ``false`` even when a model is already resident, sending them
+    /// straight to the process-replacement path.
+    nonisolated static func residencyLoadApplies(
+        residencyEligible: Bool,
+        readyWithChild: Bool
+    ) -> Bool {
+        residencyEligible && readyWithChild
     }
 
     /// Pure decision helper for the auto-respawn budget reset gate in
