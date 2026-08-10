@@ -2814,6 +2814,32 @@ def _validate_model_name(request_model: str) -> None:
 # ── Tool call parsing ──────────────────────────────────────────────
 
 
+def tool_choice_is_none(request) -> bool:
+    """True when the request set OpenAI ``tool_choice="none"``.
+
+    Parser-agnostic: ``"none"`` is a hard contract that the model will NOT
+    emit a tool call this turn, so the server must surface ZERO
+    ``tool_calls`` regardless of what wire markup a non-compliant model
+    produced. The prompt-level lever (dropping ``tools`` before rendering,
+    ``routes/chat.py``) is best-effort only — a tool-trained model can
+    still echo ``[name({...})]``-style markup it was never shown, and the
+    text parser would otherwise promote it. This gate is the reliable,
+    parser-independent enforcement of the ``"none"`` mode; it fires on
+    both the streaming and non-streaming paths.
+
+    ``request`` may be a pydantic request model (non-streaming) or the
+    plain dict the postprocessor holds (streaming), so both shapes are
+    accepted — mirroring ``_forced_tool_choice_name``.
+    """
+    if request is None:
+        return False
+    if isinstance(request, dict):
+        tc = request.get("tool_choice")
+    else:
+        tc = getattr(request, "tool_choice", None)
+    return isinstance(tc, str) and tc == "none"
+
+
 def _request_declared_tool_names(request_dict: dict | None) -> set[str]:
     """Executable function names after applying tool_choice=none."""
     if not isinstance(request_dict, dict) or request_dict.get("tool_choice") == "none":
@@ -2838,6 +2864,32 @@ def _request_declared_tool_names(request_dict: dict | None) -> set[str]:
 
 
 def _parse_tool_calls_with_parser(
+    output_text: str,
+    request=None,
+    *,
+    structured_tool_calls: list[dict] | None = None,
+) -> tuple[str, list | None]:
+    """Parse tool calls, then honor ``tool_choice="none"`` by dropping them.
+
+    The parser still RUNS under ``"none"`` — that is what strips the wire
+    markup out of ``content`` (the R12 sanitizer invariant: raw
+    ``<tool_call>…</tool_call>`` / ``[name({…})]`` must never leak to the
+    client). What ``"none"`` forbids is *surfacing a call*: the OpenAI
+    contract says the model will not call a tool this turn, so any call it
+    emitted anyway is DROPPED rather than forwarded as a phantom the client
+    cannot execute. Parser-agnostic — covers the text parsers AND the
+    structured harmony/gemma4 channel. The cleaned content (markup removed)
+    is preserved unchanged.
+    """
+    content, tool_calls = _run_tool_parser(
+        output_text, request, structured_tool_calls=structured_tool_calls
+    )
+    if tool_choice_is_none(request):
+        return content, None
+    return content, tool_calls
+
+
+def _run_tool_parser(
     output_text: str,
     request=None,
     *,

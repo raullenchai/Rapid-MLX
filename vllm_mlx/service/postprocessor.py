@@ -385,6 +385,19 @@ class StreamingPostProcessor:
             if callable(reset_parser):
                 reset_parser()
 
+        # ``tool_choice="none"`` forbids tool calls this turn (OpenAI
+        # contract). The tool parser still RUNS — that is what strips wire
+        # markup out of ``content`` (the R12 sanitizer invariant) — but any
+        # call it resolves is DROPPED at the emission points rather than
+        # forwarded as a phantom the client cannot execute. This flag is
+        # read by ``_detect_tool_calls`` (text-parser incremental /
+        # finalize paths) and ``_process_channel_routed`` (harmony/gemma4
+        # structured channel), mirroring the non-streaming
+        # ``_parse_tool_calls_with_parser`` drop.
+        from .helpers import tool_choice_is_none
+
+        self._suppress_tool_calls = tool_choice_is_none(request)
+
         # State
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
@@ -2646,6 +2659,21 @@ class StreamingPostProcessor:
         # round-14 BLOCKING — tool calls whose JSON args contain
         # literal harmony sentinels were corrupted by sentinel-
         # anchored regex parsing).
+        # ``tool_choice="none"`` forbids tool calls this turn (OpenAI
+        # contract). The channel-routed structured path bypasses the text
+        # ``self.tool_parser``, so it needs its own suppression. Drop the
+        # ENTIRE ``tool_call`` channel — completed structured calls AND
+        # partial in-flight deltas — so no call reaches the wire and the raw
+        # channel markup never falls through to ``content`` below. The
+        # engine stamps ``finish_reason="tool_calls"`` when it fires a call;
+        # that is normalized to ``"stop"`` centrally in
+        # ``_compute_finish_reason`` (R11-A: zero calls on the wire must not
+        # terminate as ``tool_calls``), which also covers a separate
+        # finish-only chunk that carries no structured call of its own.
+        if self._suppress_tool_calls and output.channel == "tool_call":
+            if output.finished:
+                return [self._make_finish_event(output)]
+            return []
         engine_tool_calls = getattr(output, "tool_calls", None) or []
         # F-200: when ``tool_choice`` forces a named function, route
         # the channel-routed structured calls through the SHARED
@@ -3995,6 +4023,14 @@ class StreamingPostProcessor:
         self._tool_suppressed_buffer = ""
 
         if "tool_calls" in tool_result:
+            if self._suppress_tool_calls:
+                # ``tool_choice="none"``: the parser has already consumed the
+                # wire markup (so it does NOT leak into content), but the
+                # resolved call must be dropped. Surface only any prose the
+                # same delta carried, and leave ``tool_calls_detected`` False
+                # so ``_compute_finish_reason`` stays honest (no phantom
+                # ``finish_reason="tool_calls"`` with zero calls on the wire).
+                return {"content": tool_result.get("content", "")}
             self.tool_calls_detected = True
             return tool_result
 
@@ -4019,6 +4055,14 @@ class StreamingPostProcessor:
         # only fires UP from ``output.finish_reason``, never DOWN.
         if self._tool_calls_emitted_to_wire > 0:
             return "tool_calls"
+        # ``tool_choice="none"``: no call can ever reach the wire this turn,
+        # so a channel-routed engine's ``finish_reason="tool_calls"`` (stamped
+        # when it fired a structured call the none-gate then dropped) would be
+        # a lie. Normalize it here — the single terminal chokepoint — so it
+        # holds even for a separate finish-only chunk that carried no
+        # structured call of its own (codex #1761).
+        if self._suppress_tool_calls and output.finish_reason == "tool_calls":
+            return "stop"
         return output.finish_reason
 
     def _make_finish_event(self, output: GenerationOutput) -> StreamEvent:
