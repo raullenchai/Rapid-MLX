@@ -357,6 +357,48 @@ class TestSchedulerBasic:
         assert uid not in scheduler.uid_to_request_id
         assert scheduler.get_num_running() == 0
 
+    def test_orphan_candidate_cannot_abort_reused_request_id(
+        self, mock_model, mock_tokenizer
+    ):
+        """A stale cleanup candidate is scoped to one Request identity."""
+        scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer)
+        old = Request("reused-id", "old", SamplingParams())
+        old.status = RequestStatus.RUNNING
+        scheduler.requests[old.request_id] = old
+        scheduler.running[old.request_id] = old
+        scheduler.remove_finished_request(old.request_id)
+
+        new = Request("reused-id", "new", SamplingParams())
+        new.status = RequestStatus.RUNNING
+        scheduler.requests[new.request_id] = new
+        scheduler.running[new.request_id] = new
+        scheduler.batch_generator = MagicMock()
+
+        assert scheduler._reconcile_orphaned_running_requests() == []
+        assert scheduler.running[new.request_id] is new
+        scheduler.batch_generator.remove.assert_not_called()
+
+    def test_reset_removes_running_orphan_missing_from_requests(
+        self, mock_model, mock_tokenizer
+    ):
+        """Reset must tear down ghost slots, not only canonical requests."""
+        scheduler = Scheduler(model=mock_model, tokenizer=mock_tokenizer)
+        orphan = Request("reset-orphan", "old", SamplingParams())
+        orphan.status = RequestStatus.RUNNING
+        uid = 91
+        scheduler.running[orphan.request_id] = orphan
+        scheduler.request_id_to_uid[orphan.request_id] = uid
+        scheduler.uid_to_request_id[uid] = orphan.request_id
+        batch = MagicMock()
+        scheduler.batch_generator = batch
+
+        scheduler.reset()
+
+        batch.remove.assert_called_once_with([uid])
+        assert not scheduler.running
+        assert not scheduler.request_id_to_uid
+        assert not scheduler.uid_to_request_id
+
     def test_get_stats(self, mock_model, mock_tokenizer):
         """Test getting scheduler stats."""
         scheduler = Scheduler(

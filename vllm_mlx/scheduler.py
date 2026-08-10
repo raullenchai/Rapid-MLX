@@ -3063,7 +3063,7 @@ class Scheduler:
         # ``remove_finished_request`` adds an id only when its running slot is
         # still live; normal completions remove ``running`` first.  This avoids
         # an O(batch) reconciliation scan on every decode tick.
-        self._orphaned_running_candidates: set[str] = set()
+        self._orphaned_running_candidates: dict[str, Request] = {}
         # M-01 codex r2 BLOCKING #1: lifetime de-dup set for the
         # cancellation counter. ``_pending_abort_ids`` is the wrong
         # ledger to dedupe against — it's a DEFERRED-ABORT QUEUE that
@@ -5770,7 +5770,7 @@ class Scheduler:
         with self._cancel_counter_lock:
             self._cancelled_request_ids.discard(request.request_id)
             self._disconnect_abort_ids.discard(request.request_id)
-            self._orphaned_running_candidates.discard(request.request_id)
+            self._orphaned_running_candidates.pop(request.request_id, None)
             self.requests[request.request_id] = request
         self.waiting.append(request)
 
@@ -6149,11 +6149,11 @@ class Scheduler:
         """
         with self._cancel_counter_lock:
             candidates = self._orphaned_running_candidates
-            self._orphaned_running_candidates = set()
+            self._orphaned_running_candidates = {}
             orphaned = [
                 rid
-                for rid in candidates
-                if rid in self.running and rid not in self.requests
+                for rid, request in candidates.items()
+                if self.running.get(rid) is request and rid not in self.requests
             ]
 
         for request_id in orphaned:
@@ -7647,8 +7647,8 @@ class Scheduler:
         # False per F-151). The ledgers stay populated indefinitely.
         with self._cancel_counter_lock:
             popped = self.requests.pop(request_id, None)
-            if popped is not None and request_id in self.running:
-                self._orphaned_running_candidates.add(request_id)
+            if popped is not None and self.running.get(request_id) is popped:
+                self._orphaned_running_candidates[request_id] = popped
         return popped
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:
@@ -7843,12 +7843,17 @@ class Scheduler:
         started (correct) or sees the cleared state and no-ops
         (correct: the request is gone, attribution is meaningless).
         """
-        # Drain any pending deferred aborts
-        self._pending_abort_ids.clear()
-        self._orphaned_running_candidates.clear()
+        # Drain both cross-thread cleanup edges under their shared lock.
+        # Snapshot the union before teardown: a disconnect orphan has already
+        # left ``requests`` and would otherwise survive a reset that iterated
+        # only the canonical map.
+        with self._cancel_counter_lock:
+            self._pending_abort_ids.clear()
+            self._orphaned_running_candidates.clear()
+            teardown_ids = list(dict.fromkeys((*self.requests, *self.running)))
 
         # Abort all requests directly (reset is synchronous)
-        for request_id in list(self.requests.keys()):
+        for request_id in teardown_ids:
             self._do_abort_request(request_id)
 
         self.waiting.clear()
