@@ -812,6 +812,10 @@ class BatchedEngine(BaseEngine):
                 ``ModelConfig.supports_spec_decode``. Mutually exclusive.
         """
         self._model_name = model_name
+        # Lazily resolved by ``_muse_wire_model()`` — gates the ATEM
+        # channel demux in ``clean_output_text`` on the SERVING MODEL's
+        # checkpoint model_type, never on output bytes (codex r6 #1).
+        self._is_muse_wire: bool | None = None
         self._trust_remote_code = trust_remote_code
         self._scheduler_config = scheduler_config
         self._stream_interval = stream_interval
@@ -1794,7 +1798,7 @@ class BatchedEngine(BaseEngine):
             # parser sees the complete wire envelope.
             output_text = assistant_text_prefix + (output.output_text or "")
             output.output_text = output_text
-        text = clean_output_text(output.output_text)
+        text = clean_output_text(output.output_text, muse_wire=self._muse_wire_model())
         # Token-level channel extraction via ``OutputRouter`` — the SAME
         # state machine the streaming path already uses
         # (``_stream_with_output_router``). For non-streaming we feed the
@@ -1926,7 +1930,9 @@ class BatchedEngine(BaseEngine):
                 # ``null`` — even when the client asked for
                 # ``logprobs=true, top_logprobs=K``.
                 yield GenerationOutput(
-                    text=clean_output_text(output.output_text),
+                    text=clean_output_text(
+                        output.output_text, muse_wire=self._muse_wire_model()
+                    ),
                     new_text=output.new_text,
                     tokens=output.new_token_ids,
                     prompt_tokens=output.prompt_tokens,
@@ -2025,7 +2031,9 @@ class BatchedEngine(BaseEngine):
         # was already finished.
         try:
             async for output in self._engine.stream_outputs(request_id):
-                text = clean_output_text(output.output_text)
+                text = clean_output_text(
+                    output.output_text, muse_wire=self._muse_wire_model()
+                )
 
                 yield GenerationOutput(
                     text=text,
@@ -2411,6 +2419,22 @@ class BatchedEngine(BaseEngine):
             for message in messages
         ]
         return cleaned, transient_start
+
+    def _muse_wire_model(self) -> bool:
+        """True iff the serving checkpoint's model_type is muse_glimmer.
+
+        Gates the ATEM channel demux in ``clean_output_text`` on model
+        IDENTITY (offline config read, never-raises resolver) rather
+        than on output-byte sniffing, so a non-muse model emitting
+        literal wire-shaped text can never have content misclassified
+        and erased (codex r6 #1). Resolved once per engine — the
+        model_name is fixed for the engine's lifetime.
+        """
+        if self._is_muse_wire is None:
+            self._is_muse_wire = (
+                _resolve_hf_model_type(self._model_name) == "muse_glimmer"
+            )
+        return self._is_muse_wire
 
     def _route_tokens_for_channels(
         self,

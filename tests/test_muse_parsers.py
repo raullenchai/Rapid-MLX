@@ -787,7 +787,11 @@ def test_clean_output_text_extracts_muse_channels():
         " to=self<|message|>plan the call<|eom|>"
         "<|start|>assistant to=user<|message|>Done.<|eot|>"
     )
-    assert clean_output_text(raw) == "Done."
+    assert clean_output_text(raw, muse_wire=True) == "Done."
+    # Without the model-identity gate the branch must NOT engage, even
+    # on structurally perfect wire (codex r6 #1: gate on the serving
+    # model, never on output bytes).
+    assert "to=self" in clean_output_text(raw)
 
     # Tool-addressed segments pass through as content so the ATEM
     # block reaches the tool parser.
@@ -798,7 +802,7 @@ def test_clean_output_text_extracts_muse_channels():
         '<atem:parameter name="city">Tokyo</atem:parameter>'
         "</atem:invoke></atem:function_calls><|eot|>"
     )
-    cleaned = clean_output_text(raw_tool)
+    cleaned = clean_output_text(raw_tool, muse_wire=True)
     assert "<atem:invoke" in cleaned
     assert "to=self" not in cleaned
     assert "<|message|>" not in cleaned
@@ -807,6 +811,9 @@ def test_clean_output_text_extracts_muse_channels():
     # the muse branch: only the generic token strip applies, the
     # surrounding prose survives byte-exact (codex r5 #3).
     prose = "The wire uses <|message|> as a separator."
-    assert clean_output_text(prose) == "The wire uses  as a separator."
+    assert clean_output_text(prose, muse_wire=True) == "The wire uses  as a separator."
     prose2 = "Historically <|start|>assistant marked a header."
-    assert clean_output_text(prose2) == "Historically assistant marked a header."
+    assert (
+        clean_output_text(prose2, muse_wire=True)
+        == "Historically assistant marked a header."
+    )

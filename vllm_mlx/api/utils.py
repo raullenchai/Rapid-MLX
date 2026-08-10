@@ -588,7 +588,7 @@ def _clean_gpt_oss_output(text: str) -> str:
     return cleaned.strip()
 
 
-def clean_output_text(text: str) -> str:
+def clean_output_text(text: str, *, muse_wire: bool = False) -> str:
     """
     Clean model output by removing special tokens.
 
@@ -600,6 +600,11 @@ def clean_output_text(text: str) -> str:
 
     Args:
         text: Raw model output
+        muse_wire: True when the SERVING MODEL is muse_glimmer (resolved
+            from the checkpoint's model_type by the caller, never from
+            output bytes). Gates the ATEM channel demux below so a
+            non-muse model emitting literal wire-shaped text can never
+            have its content misclassified and erased (codex r6 #1).
 
     Returns:
         Cleaned text with special tokens removed
@@ -621,7 +626,7 @@ def clean_output_text(text: str) -> str:
     # ``<|message|>`` but no ``<|channel|>``, so this branch can only
     # be reached by non-harmony wire; the recipient-header probe keeps
     # ordinary prose that merely mentions ``<|message|>`` out.
-    if "<|message|>" in text and _MUSE_WIRE_PROBE.search(text):
+    if muse_wire and "<|message|>" in text and _MUSE_WIRE_PROBE.search(text):
         from ..reasoning.muse_parser import MuseReasoningParser
 
         _, content = MuseReasoningParser().extract_reasoning(text)
