@@ -207,7 +207,7 @@ class StreamingPostProcessor:
     def __init__(
         self,
         cfg: ServerConfig,
-        tools_requested: bool = False,
+        tools_requested: bool | None = None,
         enable_thinking: bool | None = None,
         json_mode: bool = False,
         request: dict | None = None,
@@ -215,6 +215,17 @@ class StreamingPostProcessor:
         line1_gate_engaged: bool = False,
     ):
         self.cfg = cfg
+        if tools_requested is None:
+            # Backward-compatible inference for direct/internal callers that
+            # already pass the request payload but predate this constructor
+            # argument. Fail closed when capability is absent or ambiguous.
+            if isinstance(request, dict):
+                tools_requested = bool(request.get("tools"))
+            else:
+                request_tools = getattr(request, "tools", None)
+                tools_requested = isinstance(request_tools, (list, tuple)) and bool(
+                    request_tools
+                )
         self.tools_requested = tools_requested
         self.json_mode = json_mode
         # LINE① (#558, codex r4 #4): when the reasoning-gated forced tool grammar is
@@ -1436,8 +1447,17 @@ class StreamingPostProcessor:
         if cfg.engine is not None and hasattr(cfg.engine, "_tokenizer"):
             tokenizer = cfg.engine._tokenizer
 
-        # Primary: explicit tool parser configured
-        if cfg.enable_auto_tool_choice and cfg.tool_call_parser:
+        # Primary: explicit tool parser configured for a request that can
+        # actually call a tool.  Parser selection is a server-level setting,
+        # while ``tools_requested`` is the per-request capability boundary.
+        # Instantiating the parser without that boundary makes ordinary prose
+        # containing a wire opener (for example documentation that mentions
+        # ``<tool_call>``) enter the streaming suppression state even though
+        # there is no declared tool the response could invoke.  In that case
+        # the only correct interpretation is content. Direct callers that
+        # omit the flag have it inferred from ``request.tools`` above; an
+        # absent or ambiguous capability fails closed.
+        if tools_requested and cfg.enable_auto_tool_choice and cfg.tool_call_parser:
             try:
                 parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
                 return parser_cls(tokenizer)

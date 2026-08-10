@@ -1969,6 +1969,55 @@ class TestToolParserInit:
         assert pp.tool_parser is not singleton
         assert pp.tool_parser is not None
 
+    def test_configured_parser_is_disabled_without_request_tools(self):
+        """A server parser setting must not reinterpret ordinary prose.
+
+        ``tool_call_parser`` is configured once for the served model, but a
+        request with no ``tools`` has no callable namespace.  Before this
+        guard, Hermes held a literal ``<tool_call>`` opener as an in-flight
+        call and silently dropped it (and the following text) at EOF.
+        """
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="hermes",
+            tool_parser_instance=None,
+        )
+        pp = StreamingPostProcessor(cfg, tools_requested=False)
+        pp.reset()
+
+        assert pp.tool_parser is None
+        events = pp.process_chunk(
+            _make_output("Explain the literal <tool_call> tag.", finished=True)
+        )
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].content == "Explain the literal <tool_call> tag."
+
+    def test_omitted_capability_fails_closed_without_request(self):
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="hermes",
+            tool_parser_instance=None,
+        )
+
+        pp = StreamingPostProcessor(cfg)
+
+        assert pp.tool_parser is None
+
+    def test_omitted_capability_is_inferred_from_request_tools(self):
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_call_parser="hermes",
+            tool_parser_instance=None,
+        )
+
+        pp = StreamingPostProcessor(
+            cfg,
+            request={"tools": [{"type": "function", "function": {"name": "x"}}]},
+        )
+
+        assert pp.tool_parser is not None
+
     def test_init_parser_failure_returns_none(self):
         """Failed tool parser init returns None gracefully."""
         cfg = _make_cfg(
