@@ -183,6 +183,21 @@ final class ChatViewModel {
         tools.definitions.filter { !disabledTools.contains($0.function.name) }
     }
 
+    /// Just the built-in tools, for Settings → Tools.
+    ///
+    /// Issue #1716: since the registry became a ``CompositeToolRegistry``,
+    /// ``tools/definitions`` also carries connector tools. Those get their own
+    /// switch in Settings → Connectors, backed by a different defaults key
+    /// (``MCPToolRegistry``). Listing them in both panels would give one tool
+    /// two independent off switches — flip the wrong one and the tool stays
+    /// live with no indication why. Each surface owns exactly its own set.
+    ///
+    /// Falls back to the whole registry when it isn't a composite, which is
+    /// what unit tests and the dev-snapshot harness construct.
+    var builtinDefinitions: [ToolDefinition] {
+        (tools as? CompositeToolRegistry)?.builtin.definitions ?? tools.definitions
+    }
+
     // MARK: - Conversation history (M3)
 
     /// Snapshot the active conversation into ``conversations`` + disk. A

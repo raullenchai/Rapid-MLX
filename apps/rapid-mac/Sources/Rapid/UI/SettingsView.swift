@@ -75,6 +75,12 @@ struct SettingsView: View {
         /// Built-in tools the model can call: on/off per tool, the
         /// web-search backend + key, and the browse approval mode.
         case tools
+        /// Issue #1716 — MCP connectors: which servers the engine runs, the
+        /// tools they expose, and the per-tool consent record. Separate from
+        /// ``tools`` because the two are different in kind: built-in tools
+        /// ship with the app and are audited by us, connectors are programs
+        /// the user installs and points us at.
+        case connectors
         case appearance
         case privacy
         /// Rapid-MLX Desktop app updates. The .app self-update is the
@@ -86,6 +92,7 @@ struct SettingsView: View {
             switch self {
             case .modelManagement: return "Model Management"
             case .tools: return "Tools"
+            case .connectors: return "Connectors"
             case .appearance: return "Appearance"
             case .privacy: return "Privacy"
             case .app: return "App"
@@ -95,6 +102,7 @@ struct SettingsView: View {
             switch self {
             case .modelManagement: return "externaldrive.fill"
             case .tools: return "wrench.and.screwdriver.fill"
+            case .connectors: return "powerplug.fill"
             case .appearance: return "paintpalette.fill"
             case .privacy: return "lock.shield.fill"
             case .app: return "app.badge.fill"
@@ -353,6 +361,8 @@ struct SettingsView: View {
             SettingsModelManagementPanel()
         case .tools:
             SettingsToolsPanel()
+        case .connectors:
+            SettingsConnectorsPanel()
         case .appearance:
             appearancePanel
         case .privacy:

@@ -60,6 +60,13 @@ struct RapidApp: App {
     /// Per-fetch approval gate for the ``browse`` tool, shared by the tool
     /// runner (which suspends on it) and the SwiftUI approval sheet.
     @State private var browseApproval: BrowseApprovalStore
+    /// MCP connectors (issue #1716) — the config file the engine reads, the
+    /// live state it reports back, the per-tool consent gate, and the registry
+    /// that ties them into the chat loop.
+    @State private var mcpConfig: MCPConfigStore
+    @State private var mcpCatalog: MCPCatalog
+    @State private var mcpApproval: MCPToolApprovalStore
+    @State private var mcpTools: MCPToolRegistry
 
     /// AppKit delegate — installs the menu-bar tray + tears down the
     /// subprocess before the process image dies.
@@ -110,12 +117,40 @@ struct RapidApp: App {
         // so Settings + the approval sheet bind to the same instances.
         let webSearchConfig = WebSearchConfig()
         let browseApprovalStore = BrowseApprovalStore()
-        let toolRegistry = BuiltinToolRegistry(
+        let builtinRegistry = BuiltinToolRegistry(
             browseApproval: browseApprovalStore,
             webSearch: webSearchConfig
         )
         _webSearch = State(initialValue: webSearchConfig)
         _browseApproval = State(initialValue: browseApprovalStore)
+
+        // Issue #1716: MCP connectors. The config store owns the file the
+        // engine child reads; the catalog reads back what that child actually
+        // connected to; the approval store gates every call the model makes.
+        // All three are republished into the environment so Settings and the
+        // approval dialog bind to the same instances the tool runner consults.
+        let mcpConfigStore = MCPConfigStore()
+        let mcpApprovalStore = MCPToolApprovalStore()
+        let mcpCatalog = MCPCatalog { [weak manager] in
+            // Only report an endpoint once the child answered /healthz —
+            // polling a starting server just logs connection refusals, and a
+            // stopped one has no bearer to authenticate with.
+            guard let manager, manager.servingAlias != nil,
+                  let bearer = manager.activeBearer else { return nil }
+            return (host: manager.host, port: manager.activePort, bearer: bearer)
+        }
+        let mcpRegistry = MCPToolRegistry(catalog: mcpCatalog, approval: mcpApprovalStore)
+        let toolRegistry = CompositeToolRegistry(builtin: builtinRegistry, mcp: mcpRegistry)
+        // Resolved at each spawn rather than captured now — see
+        // ``ServerManager/mcpConfigPathProvider``.
+        manager.mcpConfigPathProvider = { [weak mcpConfigStore] in
+            MainActor.assumeIsolated { mcpConfigStore?.launchConfigPath }
+        }
+        _mcpConfig = State(initialValue: mcpConfigStore)
+        _mcpCatalog = State(initialValue: mcpCatalog)
+        _mcpApproval = State(initialValue: mcpApprovalStore)
+        _mcpTools = State(initialValue: mcpRegistry)
+
         let chat = ChatViewModel(tools: toolRegistry, sampling: samplingConfig, server: manager)
         let updateChecker = UpdateChecker()
         let installerInstance = Installer()
@@ -168,6 +203,10 @@ struct RapidApp: App {
                 .environment(dockPromptStore)
                 .environment(webSearch)
                 .environment(browseApproval)
+                .environment(mcpConfig)
+                .environment(mcpCatalog)
+                .environment(mcpApproval)
+                .environment(mcpTools)
                 .task {
                     // DEV-ONLY: render real screens to PNG when
                     // RAPID_DEV_SNAPSHOT_DIR is set, then quit. Inert
@@ -286,6 +325,10 @@ struct RapidApp: App {
                 .environment(dockPromptStore)
                 .environment(webSearch)
                 .environment(browseApproval)
+                .environment(mcpConfig)
+                .environment(mcpCatalog)
+                .environment(mcpApproval)
+                .environment(mcpTools)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 900, height: 720)

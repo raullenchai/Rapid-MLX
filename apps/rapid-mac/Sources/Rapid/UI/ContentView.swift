@@ -20,6 +20,8 @@ struct ContentView: View {
     @Environment(UpdateChecker.self) private var updater
     @Environment(QuickstartCoordinator.self) private var quickstart
     @Environment(BrowseApprovalStore.self) private var browseApproval
+    @Environment(MCPCatalog.self) private var mcpCatalog
+    @Environment(MCPToolApprovalStore.self) private var mcpApproval
     @Environment(\.openWindow) private var openWindow
 
     @State private var alias: String = ""
@@ -113,6 +115,16 @@ struct ContentView: View {
                 if server.downloadProgress.hasObservedGrowth {
                     downloads.markCacheChanged()
                 }
+                // Issue #1716: the child has just published which MCP servers
+                // it connected to. Read it once here rather than polling —
+                // the state only changes on a spawn or an explicit reload,
+                // and both funnel through a point that refreshes.
+                Task { await mcpCatalog.refresh() }
+            } else {
+                // Any non-ready state means no child is answering. Drop the
+                // tool list: keeping it would let the chat loop advertise —
+                // and try to execute — tools with no process behind them.
+                mcpCatalog.clear()
             }
         }
         .onChange(of: alias) { _, newValue in
@@ -266,6 +278,10 @@ struct ContentView: View {
         // the user has turned on auto-approve in Settings (resolved before a
         // request is ever published), so it only appears on a real prompt.
         .modifier(BrowseApprovalDialog(store: browseApproval))
+        // Issue #1716: per-tool consent for MCP connector tools. Same shape as
+        // the browse sheet above — an MCP server is an arbitrary local process,
+        // so "may the model run this" is a decision that belongs on screen.
+        .modifier(MCPToolApprovalDialog(store: mcpApproval))
         // #1589: keyed on the consent decision rather than fire-once, so
         // the launch auto-start that stood down for the modal sheet gets
         // its turn the moment the user answers it. The value only ever
@@ -976,6 +992,99 @@ private struct BrowseApprovalSheet: View {
         // needs to press. "The approval is up" is better asserted by waiting
         // for `ToolApproval.Browse.Allow`, which is the control the user acts
         // on rather than a wrapper around it.
+    }
+}
+
+/// Approval dialog for an MCP connector tool (issue #1716). Mirrors
+/// ``BrowseApprovalDialog``: present while a request is pending, deny on
+/// external dismiss so a suspended tool call can never hang on a sheet the
+/// user has closed.
+private struct MCPToolApprovalDialog: ViewModifier {
+    let store: MCPToolApprovalStore
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(
+            get: { store.pendingRequest != nil },
+            set: { if !$0 && store.pendingRequest != nil { store.answer(.deny) } }
+        )) {
+            if let req = store.pendingRequest {
+                MCPToolApprovalSheet(request: req, store: store)
+            }
+        }
+    }
+}
+
+/// Consent sheet for one connector tool call.
+///
+/// Shows the server, the tool, and the arguments the MODEL chose — all three
+/// matter. A tool name alone ("run `read_file`?") is not a question anyone can
+/// answer: which server's `read_file`, and reading what? The arguments are
+/// rendered display-safe for the same reason the browse sheet renders its URL
+/// that way — a model can hide the real target behind bidi or zero-width
+/// scalars, and the user has to see what the engine will actually receive.
+///
+/// "Always allow" is scoped to THIS tool. That is the difference from the
+/// browse sheet, whose equivalent flips one global mode: a blanket grant
+/// across an open-ended, user-installed tool set is not something to hand out
+/// as a side effect of approving one call.
+private struct MCPToolApprovalSheet: View {
+    let request: MCPToolApprovalStore.PendingApproval
+    let store: MCPToolApprovalStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Run \(request.shortName)?")
+                .font(.headline)
+            Text("The model wants to run a tool from the “\(request.serverName)” connector.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            Text(request.toolName)
+                .font(.system(.body, design: .monospaced).weight(.semibold))
+                .textSelection(.enabled)
+
+            if !request.argumentsPreview.isEmpty {
+                Text("With:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    Text(request.argumentsPreview)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .frame(minHeight: 44, maxHeight: 140)
+                .background(Color(nsColor: .textBackgroundColor))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+
+            Text("Connectors are programs running on this Mac. Only allow tools "
+                + "from servers you set up yourself.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Always allow applies to this tool only. You can review and "
+                + "revoke it in Settings → Connectors.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Don't allow") { store.answer(.deny) }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("ToolApproval.MCP.Deny")
+                Button("Always allow") { store.answer(.alwaysAllowTool) }
+                    .accessibilityIdentifier("ToolApproval.MCP.AlwaysAllow")
+                Button("Allow once") { store.answer(.allowOnce) }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("ToolApproval.MCP.Allow")
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        // No wrapper identifier — see the note on ``BrowseApprovalSheet``.
     }
 }
 

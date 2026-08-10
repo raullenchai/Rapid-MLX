@@ -8,7 +8,7 @@ accessible from routes and middleware via `get_config()`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # A real runtime import, deliberately. It used to drag the whole engine in
@@ -120,6 +120,13 @@ class ServerConfig:
     # --- MCP ---
     mcp_manager: Any = None
     mcp_executor: Any = None
+    # Issue #1716: why MCP is not up, when it is not. Non-None means init or
+    # reload failed; the server itself is unaffected.
+    mcp_init_error: str | None = None
+    # Server entries the tolerant config load dropped, as MCPRejectedServer.
+    mcp_rejected: list = field(default_factory=list)
+    # Path the config was loaded from, so a reload can re-read the same file.
+    mcp_config_path: str | None = None
 
     # --- Embeddings ---
     embedding_engine: Any = None

@@ -232,6 +232,14 @@ _generation_config_sampling: dict[str, float | int] | None = None
 # Global MCP manager
 _mcp_manager = None
 _mcp_executor = None
+# Issue #1716: MCP is optional and must never be able to fail server boot.
+# When init/reload fails these carry the reason (and the path to retry from)
+# out to ``/v1/mcp/servers`` so the desktop app can render something the user
+# can act on instead of an empty connector list.
+_mcp_init_error: str | None = None
+_mcp_config_path: str | None = None
+# Per-server entries dropped by the tolerant config load, with their reasons.
+_mcp_rejected: list = []
 
 # Global embedding engine (lazy loaded)
 _embedding_engine = None
@@ -2099,6 +2107,9 @@ def _sync_config() -> None:
     cfg.pin_system_prompt = _pin_system_prompt
     cfg.pinned_system_prompt_hash = _pinned_system_prompt_hash
     cfg.mcp_executor = _mcp_executor
+    cfg.mcp_init_error = _mcp_init_error
+    cfg.mcp_rejected = _mcp_rejected
+    cfg.mcp_config_path = _mcp_config_path
     cfg.model_registry = _model_registry
     cfg.enable_audio_lane = _enable_audio_lane
 
@@ -2111,46 +2122,122 @@ from .routes.anthropic import _emit_content_pieces  # noqa: F401, E402
 # =============================================================================
 
 
+async def _start_mcp(config_path: str) -> None:
+    """Build a manager/executor pair from ``config_path`` and publish them.
+
+    Raises on failure. Callers decide whether that is fatal —
+    :func:`init_mcp` (boot) does not, :func:`reload_mcp` (explicit user
+    action) reports it back over HTTP.
+    """
+    global _mcp_manager, _mcp_executor, _mcp_rejected
+
+    from vllm_mlx.mcp import (
+        MCPClientManager,
+        ToolExecutor,
+        ToolSandbox,
+        load_mcp_config,
+        set_sandbox,
+    )
+
+    # Issue #1716: tolerant load. A single entry that fails security
+    # validation is dropped and reported through ``/v1/mcp/servers`` rather
+    # than taking every other connector down with it.
+    config = load_mcp_config(config_path, tolerant=True)
+    _mcp_rejected = list(config.rejected)
+    for entry in _mcp_rejected:
+        logger.warning(f"MCP server '{entry.name}' rejected: {entry.error}")
+
+    _mcp_manager = MCPClientManager(config)
+    await _mcp_manager.start()
+
+    # Wire allowed_high_risk_tools from config into the global sandbox so
+    # default-deny on shell/exec/eval tools respects the user's allowlist.
+    set_sandbox(
+        ToolSandbox(
+            allowed_high_risk_tools=set(config.allowed_high_risk_tools),
+        )
+    )
+
+    _mcp_executor = ToolExecutor(_mcp_manager)
+
+    logger.info(f"MCP initialized with {len(_mcp_manager.get_all_tools())} tools")
+
+
 async def init_mcp(config_path: str):
-    """Initialize MCP manager from config file."""
-    global _mcp_manager, _mcp_executor
+    """Initialize MCP manager from config file — never fatal.
+
+    Issue #1716: this used to re-raise, and it runs inside the lifespan
+    startup, so a missing config file or one unstartable server took the
+    WHOLE server down — no chat, no models, no error the desktop app could
+    render. MCP is an optional capability; failing to bring it up must
+    degrade to "no connectors" rather than "no server". The reason is kept in
+    ``_mcp_init_error`` and surfaced on ``/v1/mcp/servers`` so the app can
+    show something actionable.
+    """
+    global _mcp_manager, _mcp_executor, _mcp_init_error, _mcp_config_path
+
+    _mcp_config_path = config_path
+    _mcp_init_error = None
 
     try:
-        from vllm_mlx.mcp import (
-            MCPClientManager,
-            ToolExecutor,
-            ToolSandbox,
-            load_mcp_config,
-            set_sandbox,
-        )
-
-        config = load_mcp_config(config_path)
-        _mcp_manager = MCPClientManager(config)
-        await _mcp_manager.start()
-
-        # Wire allowed_high_risk_tools from config into the global sandbox so
-        # default-deny on shell/exec/eval tools respects the user's allowlist.
-        set_sandbox(
-            ToolSandbox(
-                allowed_high_risk_tools=set(config.allowed_high_risk_tools),
-            )
-        )
-
-        _mcp_executor = ToolExecutor(_mcp_manager)
-
-        logger.info(f"MCP initialized with {len(_mcp_manager.get_all_tools())} tools")
-
-        # Sync the newly-created manager/executor into the ServerConfig
-        # singleton so MCP routes see them. Keeping this inside init_mcp()
-        # means every code path that initializes MCP also publishes it to cfg.
-        _sync_config()
-
+        await _start_mcp(config_path)
     except ImportError:
-        logger.error("MCP SDK not installed. Install with: pip install mcp")
-        raise
+        _mcp_init_error = "MCP SDK not installed. Install with: pip install mcp"
+        logger.error(_mcp_init_error)
+        _mcp_manager = None
+        _mcp_executor = None
     except Exception as e:
-        logger.error(f"Failed to initialize MCP: {e}")
-        raise
+        _mcp_init_error = f"Failed to initialize MCP: {e}"
+        logger.error(_mcp_init_error)
+        _mcp_manager = None
+        _mcp_executor = None
+
+    # Sync whatever we ended up with (including the None/error case) into the
+    # ServerConfig singleton so MCP routes see it. Keeping this inside
+    # init_mcp() means every code path that initializes MCP also publishes it.
+    _sync_config()
+
+
+async def reload_mcp(config_path: str | None = None) -> str | None:
+    """Tear down the running MCP manager and rebuild it from disk.
+
+    Backs ``POST /v1/mcp/reload`` (issue #1716): the desktop app edits
+    ``mcp.json`` and needs the change to take effect without restarting the
+    model, which would mean a multi-GB reload for a one-line config edit.
+
+    Returns ``None`` on success, or the error string on failure. The old
+    manager is stopped either way — a half-torn-down manager whose child
+    processes are still alive is worse than no manager.
+    """
+    global _mcp_manager, _mcp_executor, _mcp_init_error, _mcp_config_path
+
+    path = config_path or _mcp_config_path
+    if path is None:
+        _mcp_init_error = "No MCP config path known — start the server with --mcp-config"
+        _sync_config()
+        return _mcp_init_error
+
+    _mcp_config_path = path
+
+    if _mcp_manager is not None:
+        try:
+            await _mcp_manager.stop()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning(f"Error stopping MCP manager during reload: {e}")
+    _mcp_manager = None
+    _mcp_executor = None
+
+    _mcp_init_error = None
+    try:
+        await _start_mcp(path)
+    except Exception as e:
+        _mcp_init_error = f"Failed to reload MCP: {e}"
+        logger.error(_mcp_init_error)
+        _mcp_manager = None
+        _mcp_executor = None
+
+    _sync_config()
+    return _mcp_init_error
 
 
 # =============================================================================
@@ -2172,6 +2259,7 @@ from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
 from .routes.images import router as _images_router
+from .routes.mcp_routes import admin_router as _mcp_admin_router
 from .routes.mcp_routes import router as _mcp_router
 from .routes.metrics import router as _metrics_router
 from .routes.models import router as _models_router
@@ -2196,6 +2284,9 @@ app.include_router(_video_router)
 app.include_router(_images_router)
 app.include_router(_embeddings_router)
 app.include_router(_mcp_router)
+# ``/v1/mcp/reload`` — separate router so the Bearer-OR-x-api-key gate applies
+# even when ``--api-key`` is unset (mirrors ``_health_admin_router``).
+app.include_router(_mcp_admin_router)
 # Task #292: ``_audio_router`` is registered LAZILY (after model load) by
 # :func:`register_audio_routes_if_enabled` — text-only servers (Bo R13/R14
 # fuzz wave: Qwen3-7B-4bit, etc.) must answer ``/v1/audio/*`` with a

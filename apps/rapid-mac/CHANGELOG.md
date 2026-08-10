@@ -15,6 +15,19 @@ can actually understand.
 
 ### Added
 
+- **Connectors: give the model tools from MCP servers, from Settings.** A new
+  **Settings → Connectors** panel adds, edits and removes MCP servers, shows
+  whether each one connected — and the reason when it didn't — and lists the
+  tools it exposes with an on/off switch each. The first time the model calls
+  one, Rapid asks: **Allow once / Always allow / Don't allow**, showing which
+  connector it came from and exactly what arguments it was given. "Always
+  allow" applies to that one tool, and every remembered answer can be reviewed
+  and reset. Connectors are off by default, edits apply without restarting the
+  model, and a connector that won't start now reports why instead of taking
+  the whole local server down with it. Previously this was command-line only:
+  you had to hand-write `~/.config/rapid-mlx/mcp.json` and had no way to see
+  what connected or what it was doing.
+
 - **A new Images tab generates pictures on your Mac.** Choose an image model,
   follow the readiness prompt to load it, type a prompt and generate. Each
   render joins a filmstrip below the picture; selecting an earlier one brings

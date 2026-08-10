@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .types import MCPConfig, MCPServerConfig, select_server_map
+from .types import MCPConfig, MCPRejectedServer, MCPServerConfig, select_server_map
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,9 @@ CONFIG_ENV_VAR = "RAPID_MLX_MCP_CONFIG"
 CONFIG_ENV_VAR_LEGACY = "VLLM_MLX_MCP_CONFIG"
 
 
-def load_mcp_config(path: str | Path | None = None) -> MCPConfig:
+def load_mcp_config(
+    path: str | Path | None = None, tolerant: bool = False
+) -> MCPConfig:
     """
     Load MCP configuration from file.
 
@@ -51,6 +53,8 @@ def load_mcp_config(path: str | Path | None = None) -> MCPConfig:
 
     Args:
         path: Optional explicit path to config file
+        tolerant: Forwarded to :func:`validate_config` — drop and record bad
+            server entries rather than failing the whole load.
 
     Returns:
         MCPConfig object
@@ -84,7 +88,7 @@ def load_mcp_config(path: str | Path | None = None) -> MCPConfig:
     else:
         data = json.loads(content)
 
-    return validate_config(data)
+    return validate_config(data, tolerant=tolerant)
 
 
 def _find_config_file(
@@ -119,18 +123,28 @@ def _find_config_file(
     return None
 
 
-def validate_config(data: dict[str, Any]) -> MCPConfig:
+def validate_config(data: dict[str, Any], tolerant: bool = False) -> MCPConfig:
     """
     Validate and parse configuration dictionary.
 
     Args:
         data: Raw configuration dictionary
+        tolerant: When True, a server entry that fails to parse or fails
+            security validation is DROPPED and recorded in
+            ``MCPConfig.rejected`` instead of aborting the whole load.
+            Runtime callers (the serving path) want this — issue #1716: one
+            malformed entry taking every other connector down with it is
+            indistinguishable, from the UI, from "MCP is broken". Lint-style
+            callers (``rapid-mlx mcp validate``, tests) want the strict
+            default so a typo is a hard error.
 
     Returns:
         Validated MCPConfig object
 
     Raises:
-        ValueError: If configuration is invalid
+        ValueError: If configuration is invalid. Under ``tolerant`` this is
+            still raised for whole-file problems (non-dict root, bad
+            ``default_timeout``) — only per-server entries are demoted.
     """
     if not isinstance(data, dict):
         raise ValueError("MCP config must be a dictionary")
@@ -145,7 +159,16 @@ def validate_config(data: dict[str, Any]) -> MCPConfig:
     servers_data = select_server_map(data)
 
     servers = {}
+    rejected: list[MCPRejectedServer] = []
     for name, server_data in servers_data.items():
+        # Captured before construction: a rejected entry never becomes an
+        # MCPServerConfig, so this raw value is the only record of what the
+        # user actually declared.
+        declared_transport = "stdio"
+        if isinstance(server_data, dict):
+            raw = server_data.get("transport")
+            if isinstance(raw, str) and raw:
+                declared_transport = raw
         try:
             # Ensure name is set
             if isinstance(server_data, dict):
@@ -155,7 +178,25 @@ def validate_config(data: dict[str, Any]) -> MCPConfig:
             else:
                 raise ValueError(f"Server '{name}' config must be a dictionary")
         except TypeError as e:
+            if tolerant:
+                rejected.append(
+                    MCPRejectedServer(
+                        name,
+                        f"Invalid config for server '{name}': {e}",
+                        declared_transport,
+                    )
+                )
+                logger.error(f"Dropping MCP server '{name}': {e}")
+                continue
             raise ValueError(f"Invalid config for server '{name}': {e}")
+        except ValueError as e:
+            # ``MCPServerConfig.__post_init__`` raises this for a missing
+            # command/url AND for every security-validation rejection.
+            if tolerant:
+                rejected.append(MCPRejectedServer(name, str(e), declared_transport))
+                logger.error(f"Dropping MCP server '{name}': {e}")
+                continue
+            raise
 
     default_timeout = data.get("default_timeout", 30.0)
     if not isinstance(default_timeout, (int, float)) or default_timeout <= 0:
@@ -171,6 +212,7 @@ def validate_config(data: dict[str, Any]) -> MCPConfig:
         servers=servers,
         default_timeout=default_timeout,
         allowed_high_risk_tools=allowed_high_risk_tools,
+        rejected=rejected,
     )
 
 

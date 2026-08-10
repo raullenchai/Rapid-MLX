@@ -161,7 +161,10 @@ final class ServerManager {
     /// inherits that choice; the chat surface derives its default from
     /// ``PortSweep.defaultPort`` via ``ChatStreamClient.loopbackURL(port:)``
     /// and re-targets onto ``activePort`` at first request.
-    private let host: String = "127.0.0.1"
+    /// Loopback only. ``internal`` (was private) so ``MCPCatalog`` can build
+    /// its own requests against the same address the chat stream uses rather
+    /// than hardcoding a second copy of the literal.
+    let host: String = "127.0.0.1"
 
     /// The port the most recent ``start()`` actually bound rapid-mlx
     /// to. Initialised to ``PortSweep.defaultPort`` (8000) so callers
@@ -184,6 +187,17 @@ final class ServerManager {
     /// or in the (rare) RNG-failure case "we refused to start
     /// without auth", which surfaces as ``.crashed`` to the user.
     private(set) var activeBearer: String?
+
+    /// Supplies the `--mcp-config` path for the next spawn, or `nil` to launch
+    /// with the MCP subsystem entirely absent.
+    ///
+    /// Issue #1716. A closure rather than a stored path because the answer
+    /// changes while the app is running (the user adds a connector, or turns
+    /// the master switch off) and is owned by ``MCPConfigStore``, which lives
+    /// in the SwiftUI environment. ``RapidApp`` installs it at construction;
+    /// tests and the dev-snapshot harness leave it nil and get the pre-#1716
+    /// argv verbatim.
+    var mcpConfigPathProvider: (() -> String?)?
 
     /// Health-check budget — interpreted as a **stall window** since
     /// v0.7.13, not a wall-clock-from-launch cap. The deadline slides
@@ -1121,7 +1135,12 @@ final class ServerManager {
             alias: trimmedAlias,
             host: host,
             port: activePort,
-            extraFlags: extraFlags
+            extraFlags: extraFlags,
+            // Issue #1716: resolved at spawn, not at construction — the user
+            // can add their first connector long after the app launched, and
+            // a path captured in ``init`` would still be nil on the next
+            // start. Nil whenever connectors are off or empty.
+            mcpConfigPath: mcpConfigPathProvider?()
         )
 
         // Issue #503: resolve the user's "Models folder" preference for
@@ -2225,7 +2244,8 @@ final class ServerManager {
         alias: String,
         host: String,
         port: Int,
-        extraFlags: [String] = []
+        extraFlags: [String] = [],
+        mcpConfigPath: String? = nil
     ) -> [String] {
         // Defense in depth: ``start(alias:)`` already calls
         // ``isValidAlias`` before reaching here, but a future caller
@@ -2255,6 +2275,17 @@ final class ServerManager {
         // when the alias is the recommended pick for THIS Mac's RAM — so a
         // hand-picked model on a larger Mac keeps its full capabilities.
         args.append(contentsOf: extraFlags)
+        // Issue #1716: point the child at the connector config the app owns
+        // (``MCPConfigStore``). Only non-nil when the user has turned
+        // connectors on AND has at least one enabled server — MCP spawns
+        // arbitrary local processes, so the subsystem stays entirely absent
+        // until it is asked for.
+        //
+        // Safe after ``--cors-origins`` for the same reason ``extraFlags`` is:
+        // the leading ``--`` terminates that flag's ``nargs="+"`` collection.
+        if let mcpConfigPath, !mcpConfigPath.isEmpty {
+            args.append(contentsOf: ["--mcp-config", mcpConfigPath])
+        }
         return args
     }
 

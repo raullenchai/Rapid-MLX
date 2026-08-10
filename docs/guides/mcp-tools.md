@@ -127,9 +127,39 @@ if message.get("tool_calls"):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/mcp/status` | GET | Check MCP status |
+| `/v1/mcp/status` | GET | Check MCP status (alias of `/v1/mcp/servers`) |
+| `/v1/mcp/servers` | GET | Per-server connection state, tool counts, and errors |
 | `/v1/mcp/tools` | GET | List available tools |
 | `/v1/mcp/execute` | POST | Execute a tool |
+| `/v1/mcp/reload` | POST | Re-read the config file and rebuild every connection |
+
+`/v1/mcp/servers` (and its `/v1/mcp/status` alias) also carry two top-level
+fields alongside `servers`:
+
+* `error` — why MCP is not running, when it is not. An empty `servers` list
+  with `error: null` means "configured and healthy, zero servers"; with an
+  `error` it means MCP could not start at all. Bringing MCP up is **not**
+  fatal to the server: a missing config file or an unstartable server leaves
+  the rest of the API working and reports the reason here.
+* `configured` — whether a config path is known at all, so a client can tell
+  "no `--mcp-config` was passed" from "config present but broken".
+
+A server entry that fails security validation is dropped rather than failing
+the whole config load, and is listed with `state: "error"` and the validator's
+reason — so a typo in one entry does not silently remove the others.
+
+`POST /v1/mcp/reload` re-reads the same config path the server was started
+with and reconnects everything, so a config edit applies without restarting
+the model. It sits on the same auth gate as the other control-plane routes
+(`Authorization: Bearer` or `x-api-key`) because it spawns whatever local
+programs the config names. A reload that fails still returns 200 with the
+reason in `error` — a connector that won't start is a normal, fixable state,
+and the per-server rows are still worth rendering.
+
+> **Desktop app.** Rapid-MLX Desktop drives all of the above from
+> **Settings → Connectors** — add/edit servers, see connection state, switch
+> individual tools off, and approve each tool the first time the model calls
+> it. You do not need to write `mcp.json` by hand there.
 
 ## Example MCP Servers
 

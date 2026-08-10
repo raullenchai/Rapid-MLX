@@ -2503,6 +2503,14 @@ class MCPServersResponse(BaseModel):
     """Response for listing MCP servers."""
 
     servers: list[MCPServerInfo]
+    #: Issue #1716: why MCP is not running, when it is not. Distinguishes
+    #: "configured, all servers healthy, zero servers listed" from "MCP could
+    #: not start at all" — which look identical on an empty ``servers`` list
+    #: and need very different things said to the user.
+    error: str | None = None
+    #: True once a config path is known, whether or not it loaded. Lets a
+    #: client tell "no --mcp-config was passed" from "config present but bad".
+    configured: bool = False
 
 
 class MCPExecuteRequest(BaseModel):

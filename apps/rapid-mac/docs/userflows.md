@@ -253,23 +253,60 @@ First run has **two distinct surfaces**, shown in order:
 
 ---
 
-## Flow 12 — Connectors (MCP)  *(NEW — v0.10.4)*
+## Flow 12 — Connectors (MCP)  *(REBUILT — issue #1716)*
 
-**Trigger.** **Settings → Connectors** (`SettingsConnectorsPanel.swift:23`).
+**Trigger.** **Settings → Connectors** (`SettingsConnectorsPanel.swift`).
+
+**Architecture.** The engine hosts the MCP connections (`vllm_mlx/mcp/*`); the app owns
+the config, the visibility and the consent. The app writes
+`~/.config/rapid-mlx/mcp.json`, passes `--mcp-config` at spawn, reads state back over
+`GET /v1/mcp/servers` + `/v1/mcp/tools`, and executes an approved call through
+`POST /v1/mcp/execute`. The engine deliberately does **not** inject MCP tools into
+`/v1/chat/completions` (`MCPClientManager.get_merged_tools` exists and is uncalled), so the
+tool loop stays in `ChatViewModel` and the consent gate can live on screen.
 
 **Expected.**
 
 1. A master **Enable connectors** toggle (`Settings.Connectors.MasterToggle`, opt-in, default off).
-2. **Add** (`…AddButton`) opens `MCPServerEditorSheet` (name, transport stdio/URL, command/args/env, per-server enable, consent-env). Config persists to `~/.config/rapid-mlx/mcp.json`; the engine reads it at launch, so a **Restart to apply** banner (`…RestartButton`) appears if a model is already running.
-3. Each server row has an on/off toggle (`…Row.Toggle.<name>`), a menu (`…Row.Menu.<name>`), live status, and a review-needed affordance (`…Row.Review.<name>` / `…ReviewNeededBanner`).
-4. At inference time, the first call to each connector tool raises the **per-tool approval** dialog — `ToolApprovalDialog` (`ContentView.swift:2135`): "Run \<tool\>?" with **Allow once / Always allow / Don't allow** (`MCPToolApprovalStore.Decision`).
-5. A blanket **Auto-approve all tool calls** (yolo) switch (`…AutoApproveToggle`) plus **Reset** of remembered grants (`…ResetApprovals`) live in the approval-mode card.
+   Off means `--mcp-config` is not passed at all, so the engine has no MCP subsystem — not merely
+   zero servers.
+2. **Add** (`…AddButton`) opens `MCPServerEditorSheet` (name, transport stdio/SSE, command/args/env
+   or URL, per-server enable). Server names are validated against `[A-Za-z0-9_-]{1,32}` because the
+   engine namespaces every tool as `server__tool` and that has to stay a legal OpenAI function name.
+3. Each server row has a status dot, a one-line state (`…Row.Status.<name>`: *Connected · N tools*,
+   the rejection reason, or *Start a model to connect*), an on/off toggle (`…Row.Toggle.<name>`) and
+   an edit/remove menu (`…Row.Menu.<name>`).
+4. Saving calls `POST /v1/mcp/reload`, so an edit applies **without restarting the model**. Only a
+   change to the master toggle needs a restart (the flag is read once at spawn) — that raises the
+   **Restart to apply** banner (`…RestartButton`). A reload that fails raises the same banner rather
+   than silently swallowing the edit.
+5. Connected tools are listed with per-tool switches (`Settings.Connectors.Tool.Toggle.<name>`), each
+   tagged with its source server. A disabled tool is stripped from the request body AND refused at
+   dispatch.
+6. At inference time, the first call to each connector tool raises `MCPToolApprovalSheet`
+   (`ContentView.swift`): "Run \<tool\>?" with the server, the namespaced name, the display-safe
+   arguments, and **Allow once / Always allow / Don't allow**
+   (`ToolApproval.MCP.{Allow,AlwaysAllow,Deny}`). **Always allow** is scoped to that one tool.
+7. A blanket **Auto-approve all tool calls** switch (`…AutoApproveToggle`) plus **Reset** of
+   remembered grants (`…ResetApprovals`) live in the approvals card.
+8. A misbehaving connector cannot take the chat surface down: `init_mcp` is non-fatal and one bad
+   config entry is dropped-and-reported rather than failing the whole load.
 
-**Touches.** `UI/SettingsConnectorsPanel.swift`, `UI/MCPServerEditorSheet.swift`, `UI/ContentView.swift` (`ToolApprovalDialog`), `MCP/*` (`MCPClient`, `MCPConfig`, `MCPConfigStore`, `MCPConsentStore`, `MCPLaunchGate`, `MCPServerConfig`, `MCPToolApprovalStore`, `MCPToolRegistry`, `CompositeToolRegistry`).
+**Touches.** `UI/SettingsConnectorsPanel.swift`, `UI/MCPServerEditorSheet.swift`,
+`UI/ContentView.swift` (`MCPToolApprovalDialog` / `MCPToolApprovalSheet`), `MCP/*`
+(`MCPServerConfig`, `MCPConfigStore`, `MCPCatalog`, `MCPToolApprovalStore`, `MCPToolRegistry`,
+`CompositeToolRegistry`), `Server/ServerManager.swift` (`serveArguments`,
+`mcpConfigPathProvider`), and engine-side `vllm_mlx/server.py` (`init_mcp`, `reload_mcp`),
+`vllm_mlx/routes/mcp_routes.py`, `vllm_mlx/mcp/config.py` (tolerant load).
 
-**Last smoke result.** Definitions current to v0.10.6; re-smoke pending. Config round-trip covered by MCP unit tests; approval-dialog click is a `confirmationDialog` (no AXIdentifier) — manual/local only.
+**Last smoke result.** Unit-covered by `MCPConnectorsTests.swift` (config round-trip, name
+validation, launch-flag gating, approval semantics, dispatch refusal) and
+`tests/test_mcp_resilience.py` (non-fatal init, per-entry isolation, reload). End-to-end
+connector smoke pending.
 
-**Known issues.** The approval dialog uses `confirmationDialog` and carries no `.accessibilityIdentifier`, so it can't be driven by the AXIdentifier walkthrough — manual verification only.
+**Known issues.** The approval sheet's three buttons carry AXIdentifiers, but the sheet is only
+reachable when a real connector is configured and a model actually calls one of its tools — the
+golden-flow harness has no fixture connector, so that step is manual for now.
 
 ---
 
@@ -289,13 +326,17 @@ First run has **two distinct surfaces**, shown in order:
 
 **Known issues.** Sandbox + connector approval prompts are `confirmationDialog`/`alert` (no AXIdentifier) — manual verification only.
 
-> **Stale — these two flows describe surfaces that are not in the tree.**
-> `ToolApprovalDialog` and `MCPToolApprovalStore` resolve to **zero** files under
-> `apps/rapid-mac/Sources/`, and the cited `ContentView.swift:2135` is past the end of a
-> 1182-line file. This app's only tool-approval prompt today is the `browse` per-fetch
-> sheet inventoried at the end of this document. Left in place rather than deleted
-> because the connector/permissions *product* intent is still wanted; the identifiers,
-> file references and "known issues" above must not be trusted until it is rebuilt.
+> **Stale — Flow 13 describes a surface that is not in the tree.**
+> `SettingsPermissionsPanel` and `Tools/SandboxManager.*` resolve to **zero** files under
+> `apps/rapid-mac/Sources/`; this build ships no filesystem or shell tools and no sandbox,
+> so the permissions matrix and the folder-approval prompt above do not exist. Left in place
+> rather than deleted because the *product* intent is still wanted; the identifiers, file
+> references and "known issues" in Flow 13 must not be trusted until it is rebuilt.
+>
+> Flow 12 was in the same state and **was** rebuilt (issue #1716) — its references above are
+> current. Note that Flow 13's claim that connector approvals can be reset from
+> Settings → Permissions is not how it landed: that reset lives in Settings → Connectors
+> (`Settings.Connectors.ResetApprovals`).
 
 ---
 
@@ -347,7 +388,8 @@ First run has **two distinct surfaces**, shown in order:
 - **Footer** — `ContentView.swift`: `Footer.DesktopVersionPill` (:1975).
 - **Settings** — `SettingsView.swift`: `Settings.QuickAsk.LaunchAtLogin` (:569), `Settings.WebSearch.{KeyField,ClearButton,SaveButton}.<providerID>`, `Settings.App.{HideDockOnCloseToggle,ResetDockOnboardingCTA,UpdateHeadline,UpdateCTA,UpToDate,Checking,Unknown,RecheckCTA}`. `SettingsModelManagementPanel.swift`: `Settings.Models.{ShowAllModelsToggle,AutoStartOnLaunchToggle}`.
 - **Model Management** (prefix `Settings.ModelManagement.`) — `SettingsModelManagementPanel.swift`: `FolderPath`, `FolderUnavailable`, `ChooseFolder`, `UseDefaultFolder`, `Search`, `SortMenu`, `Filter`, `RecommendedHeader`, `Recommended.<role>`, `Footer`, `MeterLegend`, `Favorite.<alias>`, `Delete.<alias>`, `Download.<alias>`, `Cancel.<alias>`, `Retry.<alias>`, `Row.<alias>`, `Status.<text>`, plus `Recommended.{Delete,Download,Cancel,Retry}.<alias>`.
-- **Connectors** (prefix `Settings.Connectors.`) — `SettingsConnectorsPanel.swift`: `MasterToggle`, `AutoApproveToggle`, `ResetApprovals`, `RestartButton`, `ReviewNeededBanner`, `AddButton`, `Row.Toggle.<name>`, `Row.Menu.<name>`, `Row.Review.<name>`. `MCPServerEditorSheet.swift` (prefix `Settings.Connectors.Editor.`): `Name`, `Transport`, `Command`, `URL`, `Enabled`, `AddArgument`, `AddEnv`, `Allow`, `ConsentEnv`.
+- **Connectors** (prefix `Settings.Connectors.`) — `SettingsConnectorsPanel.swift`: `MasterToggle`, `AutoApproveToggle`, `ResetApprovals`, `RestartButton`, `SubsystemError`, `AddButton`, `ConfirmRemove`, `CancelRemove`, `Row.Status.<name>`, `Row.Toggle.<name>`, `Row.Menu.<name>`, `Row.Edit.<name>`, `Row.Remove.<name>`, `Tool.Toggle.<name>`. `MCPServerEditorSheet.swift` (prefix `Settings.Connectors.Editor.`): `Name`, `Transport`, `Command`, `URL`, `Enabled`, `AddArgument`, `AddEnv`, `Allow`, `Cancel`. Pinned by `AccessibilityIdentifierInventoryTests`.
+- **MCP tool approval sheet** — `ContentView.swift`: `ToolApproval.MCP.Allow`, `ToolApproval.MCP.AlwaysAllow`, `ToolApproval.MCP.Deny`.
 - **Permissions** — `SettingsPermissionsPanel.swift`: `Settings.Permissions.MasterToggle` (:113), `Settings.Permissions.ResetConnectorApprovals` (:190), per-category dynamic rows (:244).
 - **Banners / misc** — `FailedReplaceBanner` (`FailedReplaceBanner.swift:90`), `StaleSessionAliasBanner{,.Dismiss}`, `SessionLoadFailureBanner{,.ShowInFinder,.Dismiss}`, `PoppedConversation.CloseUnavailableWindow` (`PoppedConversationView.swift:88`).
 
@@ -357,7 +399,7 @@ First run has **two distinct surfaces**, shown in order:
 - **Message actions** — `ChatView.swift`: `ChatView.Message.{Copy,Edit,Retry,CancelEdit,SaveEdit}.<message UUID>`.
 - **Tool approval** — `ContentView.swift`: `ToolApproval.Browse.{Allow,Deny}` (the per-fetch `browse` approval). The enclosing sheet is deliberately **unnamed**: an accessibility modifier on a container that is not its own accessibility element applies to the elements it contains, so naming the wrapper risks stamping it over the two buttons. Wait for `ToolApproval.Browse.Allow` to assert the prompt is up.
 
-**No identifier (can't be AX-driven):** nothing on the current surface is known to be unreachable. The note that used to sit here named the MCP `ToolApprovalDialog` and a sandbox approval prompt — neither exists in `apps/rapid-mac`; this app's tool approval is the `browse` sheet listed above. `confirmationDialog`/`alert` buttons were the remaining doubt, and they were measured on a build of the current tree: the presented dialog is an `AXSheet` whose `AXButton` children do carry the identifiers declared at the call site.
+**No identifier (can't be AX-driven):** nothing on the current surface is known to be unreachable. The note that used to sit here named the MCP `ToolApprovalDialog` and a sandbox approval prompt — the MCP one now exists (issue #1716, `MCPToolApprovalSheet`) and carries identifiers; the sandbox prompt still does not exist in `apps/rapid-mac`. Reaching the MCP sheet from a golden flow needs a configured connector that the model actually calls, which the harness has no fixture for — the *control* is addressable, the *route to it* is manual. `confirmationDialog`/`alert` buttons were the remaining doubt, and they were measured on a build of the current tree: the presented dialog is an `AXSheet` whose `AXButton` children do carry the identifiers declared at the call site.
 
 **Keeping this inventory from rotting.** The list above used to grow only when someone remembered to add an identifier. It is now defended by a CI gate: `scripts/check_rapid_mac_ax_identifiers.py` (job `accessibility-identifiers` in `.github/workflows/rapid-mac-ci.yml`) fails any PR that *adds* an interactive control under `apps/rapid-mac/Sources/` without `.accessibilityIdentifier(...)`. A control that genuinely cannot carry one opts out with a reasoned, greppable `// ax-exempt: <why>` marker on the control's line or the line above — no such control is known on the current surface (the `confirmationDialog`/`alert` doubt was measured and closed, see above), so `rg ax-exempt apps/rapid-mac` finding nothing is correct. The gate is scoped to added lines, so the *existing* gaps below are not blocked by it; `--audit` enumerates them. See `docs/gui-golden-flows.md` § "The identifier gate".
 

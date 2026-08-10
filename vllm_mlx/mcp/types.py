@@ -141,6 +141,26 @@ class MCPServerConfig:
 
 
 @dataclass
+class MCPRejectedServer:
+    """A server entry that failed to parse or failed security validation.
+
+    Issue #1716: one bad entry used to abort the whole config load, which
+    read to the user as "all my connectors vanished". Tolerant loading keeps
+    the good entries and records the bad ones here so the reason survives all
+    the way to the UI instead of only reaching the server log.
+    """
+
+    name: str
+    error: str
+    #: Transport as DECLARED in the config, not as validated — the entry never
+    #: became an ``MCPServerConfig``, so this is the raw string the user wrote.
+    #: Reported as-is so the error row doesn't claim a transport the user
+    #: didn't choose; unparseable/absent falls back to the stdio default the
+    #: loader would itself have applied.
+    transport: str = "stdio"
+
+
+@dataclass
 class MCPConfig:
     """Root configuration for MCP client."""
 
@@ -150,6 +170,9 @@ class MCPConfig:
     # exec, system, run_command, subprocess) are blocked by default. Add the
     # full namespaced tool name (e.g. "filesystem__execute") here to opt-in.
     allowed_high_risk_tools: list[str] = field(default_factory=list)
+    # Entries dropped by a tolerant load. Empty under strict loading, which
+    # raises instead.
+    rejected: list[MCPRejectedServer] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MCPConfig":

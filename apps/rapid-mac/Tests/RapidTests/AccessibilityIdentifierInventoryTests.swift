@@ -93,6 +93,72 @@ struct AccessibilityIdentifierInventoryTests {
         )
     }
 
+    // MARK: - Settings → Connectors (issue #1716)
+
+    /// The connector surface is where a user authorises a program on their Mac
+    /// to be driven by a model, so every control on it has to be reachable by
+    /// the golden-flow harness — not just the happy-path ones.
+    @Test("Settings → Connectors names every control it offers")
+    func settingsConnectorsPanelIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Settings.Connectors.MasterToggle""#,
+                #""Settings.Connectors.AddButton""#,
+                #""Settings.Connectors.SubsystemError""#,
+                #""Settings.Connectors.RestartButton""#,
+                #""Settings.Connectors.ConfirmRemove""#,
+                #""Settings.Connectors.CancelRemove""#,
+                // Per-server rows, keyed on the server's name — which is also
+                // the namespace half of every tool it exposes, not display text.
+                #""Settings.Connectors.Row.Status.\(entry.name)""#,
+                #""Settings.Connectors.Row.Toggle.\(entry.name)""#,
+                #""Settings.Connectors.Row.Menu.\(entry.name)""#,
+                #""Settings.Connectors.Row.Edit.\(entry.name)""#,
+                #""Settings.Connectors.Row.Remove.\(entry.name)""#,
+                // Per-tool switch, keyed on the namespaced wire name.
+                #""Settings.Connectors.Tool.Toggle.\(name)""#,
+                #""Settings.Connectors.AutoApproveToggle""#,
+                #""Settings.Connectors.ResetApprovals""#,
+            ],
+            in: "Sources/Rapid/UI/SettingsConnectorsPanel.swift",
+            surface: "Settings → Connectors"
+        )
+    }
+
+    @Test("The connector editor sheet names every field")
+    func mcpServerEditorSheetIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Settings.Connectors.Editor.Name""#,
+                #""Settings.Connectors.Editor.Transport""#,
+                #""Settings.Connectors.Editor.Command""#,
+                #""Settings.Connectors.Editor.URL""#,
+                #""Settings.Connectors.Editor.AddArgument""#,
+                #""Settings.Connectors.Editor.AddEnv""#,
+                #""Settings.Connectors.Editor.Enabled""#,
+                #""Settings.Connectors.Editor.Allow""#,
+                #""Settings.Connectors.Editor.Cancel""#,
+            ],
+            in: "Sources/Rapid/UI/MCPServerEditorSheet.swift",
+            surface: "Settings → Connectors → editor"
+        )
+    }
+
+    /// The consent prompt is the last thing standing between a model and a
+    /// program on the user's Mac. Its three buttons must be addressable.
+    @Test("The MCP tool approval sheet names its three decisions")
+    func mcpApprovalSheetIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""ToolApproval.MCP.Deny""#,
+                #""ToolApproval.MCP.AlwaysAllow""#,
+                #""ToolApproval.MCP.Allow""#,
+            ],
+            in: "Sources/Rapid/UI/ContentView.swift",
+            surface: "MCP tool approval sheet"
+        )
+    }
+
     /// Behaviour guard for the constraint the identifiers ride on: a settings
     /// switch must stay a REAL `Toggle` with the native `.switch` style, so it
     /// keeps reporting `AXCheckBox` with a value that tracks state and flips

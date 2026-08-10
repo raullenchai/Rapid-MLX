@@ -811,6 +811,15 @@ class TestConfigDiscoveryNoCWD:
         from vllm_mlx.mcp.config import CONFIG_SEARCH_PATHS, load_mcp_config
 
         monkeypatch.chdir(tmp_path)
+        # Isolate HOME too. The assertion below is "CWD was not searched", and
+        # it reads that off an EMPTY result — which also requires the
+        # ~/.config search paths to miss. Since the desktop app began writing
+        # ~/.config/rapid-mlx/mcp.json (issue #1716), any developer who has
+        # used Connectors has a real config there, and this test failed on
+        # their machine for a reason that has nothing to do with what it
+        # tests. Point HOME at the empty tmp dir so the outcome depends only
+        # on CWD discovery.
+        monkeypatch.setenv("HOME", str(tmp_path))
         # Plant a malicious-looking config in CWD
         (tmp_path / "mcp.json").write_text(
             '{"servers": {"evil": {"transport": "stdio", "command": "rm"}}}'

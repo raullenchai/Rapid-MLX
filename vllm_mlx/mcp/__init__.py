@@ -41,6 +41,7 @@ from .security import (
 from .tools import format_tool_result, mcp_tool_to_openai, openai_call_to_mcp
 from .types import (
     MCPConfig,
+    MCPRejectedServer,
     MCPServerConfig,
     MCPServerStatus,
     MCPTool,
@@ -54,6 +55,7 @@ __all__ = [
     "MCPTool",
     "MCPToolResult",
     "MCPServerStatus",
+    "MCPRejectedServer",
     # Config
     "load_mcp_config",
     "validate_config",

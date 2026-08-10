@@ -5,6 +5,7 @@ MCP client for connecting to individual MCP servers.
 
 import asyncio
 import logging
+import tempfile
 import time
 from typing import Any
 
@@ -62,6 +63,17 @@ class MCPClient:
         self._error: str | None = None
         self._last_connected: float | None = None
         self._lock = asyncio.Lock()
+        # Issue #1716: the stdio child's stderr. The MCP SDK's ``stdio_client``
+        # defaults ``errlog`` to our own stderr, so a server that dies on
+        # startup wrote its traceback somewhere the user never sees and the
+        # row reported only "Connection closed" — true, and useless. Capturing
+        # it lets the failure name its own cause.
+        #
+        # A real temp FILE, not ``io.StringIO``: the SDK hands ``errlog``
+        # to ``anyio.open_process(stderr=...)``, which needs an actual file
+        # descriptor. A StringIO gets as far as ``fileno()`` and raises —
+        # turning every connection error into the word "fileno".
+        self._stderr_file: tempfile.TemporaryFile | None = None  # type: ignore[valid-type]
 
     @property
     def name(self) -> str:
@@ -136,9 +148,44 @@ class MCPClient:
 
             except Exception as e:
                 self._state = MCPServerState.ERROR
-                self._error = str(e)
-                logger.error(f"Failed to connect to MCP server '{self.name}': {e}")
+                self._error = self._describe_failure(e)
+                logger.error(
+                    f"Failed to connect to MCP server '{self.name}': {self._error}"
+                )
                 return False
+
+    #: How much of the child's stderr to append to a connection error. Enough
+    #: for a Python traceback's final line, short enough for a settings row.
+    _STDERR_TAIL_CHARS = 400
+
+    def _describe_failure(self, exc: Exception) -> str:
+        """Build the error string the UI shows for a failed connection.
+
+        Issue #1716: the exception alone is frequently content-free. A stdio
+        server that dies during import raises ``ClosedResourceError`` here,
+        which renders as "Connection closed" — accurate, and useless to
+        someone trying to fix it. The reason is in the child's stderr, which
+        ``_connect_stdio`` now captures. Appending its tail turns the row from
+        "it didn't work" into the actual ImportError / missing-module /
+        bad-argument line the user needs.
+        """
+        base = str(exc) or type(exc).__name__
+        tail = ""
+        if self._stderr_file is not None:
+            try:
+                self._stderr_file.seek(0)
+                tail = self._stderr_file.read().strip()
+            except Exception:  # pragma: no cover - defensive
+                tail = ""
+        if not tail:
+            return base
+        # Last non-empty line: for a traceback that's the exception line, which
+        # is the one that names the cause.
+        last = tail.splitlines()[-1].strip()
+        if len(last) > self._STDERR_TAIL_CHARS:
+            last = last[: self._STDERR_TAIL_CHARS] + "…"
+        # Don't repeat ourselves when the exception already said it.
+        return last if last in base else f"{base} — {last}"
 
     async def _connect_stdio(self):
         """Connect via stdio transport."""
@@ -162,8 +209,10 @@ class MCPClient:
             env=self.config.env,
         )
 
-        # Create stdio client context
-        self._stdio_client = stdio_client(server_params)
+        # Create stdio client context. ``errlog`` captures the child's stderr
+        # instead of letting it escape to ours — see ``_stderr_file``.
+        self._stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        self._stdio_client = stdio_client(server_params, errlog=self._stderr_file)
         self._read, self._write = await self._stdio_client.__aenter__()
 
         # Create session

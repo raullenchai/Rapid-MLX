@@ -47,7 +47,7 @@ struct SettingsToolsPanel: View {
             )
             card {
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(chat.tools.definitions, id: \.function.name) { def in
+                    ForEach(chat.builtinDefinitions, id: \.function.name) { def in
                         Toggle(isOn: toolBinding(def.function.name)) {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: Self.glyph(for: def.function.name))
