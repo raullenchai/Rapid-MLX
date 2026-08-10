@@ -367,6 +367,7 @@ Run one journey or retain its isolated persona for diagnosis:
 ./scripts/gui-golden-flows.sh --flow slow-stream-stop
 ./scripts/gui-golden-flows.sh --flow low-memory-choice
 ./scripts/gui-golden-flows.sh --flow chat-restore --keep
+./scripts/gui-golden-flows.sh --flow math-rendering
 ./scripts/gui-golden-flows.sh --flow browse-all-destination
 ./scripts/gui-golden-flows.sh --flow no-dead-controls
 ```

@@ -20,9 +20,21 @@ let package = Package(
         // friendly Swift port of iosMath (pure-Swift, no WKWebView/JS),
         // embedded via ``NSViewRepresentable`` and stitched into the
         // render path by ``LaTeXSegmenter``.
-        .package(url: "https://github.com/mgriebling/SwiftMath", from: "1.7.0")
+        // SwiftMath is vendored below because its upstream `Bundle.module`
+        // lookups cannot resolve resources from a manually assembled `.app`.
+        // The tiny local patch first resolves the signed app resource bundle,
+        // while retaining `Bundle.module` for `swift run` and unit tests.
     ],
     targets: [
+        .target(
+            name: "SwiftMath",
+            path: "Vendor/SwiftMath/Sources/SwiftMath",
+            resources: [.copy("mathFonts.bundle")],
+            // Match upstream's Swift tools 5.7 compilation mode. Rapid's
+            // Swift 6 isolation rules apply at the UI boundary instead of
+            // rewriting a vendored renderer in the resource-fix PR.
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         // Issue #24: signal-safe arena + handler in pure C. Swift
         // static-property reads compile to ``_swift_beginAccess``
         // runtime calls (Swift 6 exclusivity tracking) — async-
@@ -38,7 +50,7 @@ let package = Package(
             name: "Rapid",
             dependencies: [
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
-                .product(name: "SwiftMath", package: "SwiftMath"),
+                "SwiftMath",
                 "RapidCrashHandler"
             ],
             path: "Sources/Rapid",

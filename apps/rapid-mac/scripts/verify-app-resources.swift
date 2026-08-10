@@ -1,6 +1,7 @@
 #!/usr/bin/env swift
 import Foundation
 import AppKit
+import CoreGraphics
 
 // Promoted from the ad-hoc /tmp/probe_cheetah.swift used to verify v0.5.10's
 // fix for the v0.5.9 ship-blocker (SPM Bundle.module accessor fatalError'd
@@ -91,6 +92,25 @@ if packageSrc.contains("Localizable.xcstrings") {
         FileHandle.standardError.write(Data("FAIL: Localizable.xcstrings NOT found or unreadable in bundle\n".utf8))
         ok = false
     }
+}
+
+// SwiftMath must resolve from the assembled app itself. A development build
+// can silently fall back to an absolute `.build` checkout, which is precisely
+// why the missing shipped resource escaped earlier validation.
+if let fontsURL = bundle.url(forResource: "mathFonts", withExtension: "bundle"),
+   let fonts = Bundle(url: fontsURL),
+   let fontURL = fonts.url(forResource: "latinmodern-math", withExtension: "otf"),
+   let tableURL = fonts.url(forResource: "latinmodern-math", withExtension: "plist"),
+   let provider = CGDataProvider(url: fontURL as CFURL),
+   CGFont(provider) != nil,
+   let table = NSDictionary(contentsOf: tableURL),
+   (table["version"] as? String) == "1.3",
+   fonts.url(forResource: "OFL", withExtension: "txt") != nil,
+   fonts.url(forResource: "GUST-FONT-LICENSE", withExtension: "txt") != nil {
+    print("OK: SwiftMath fonts and licence notices at \(fontsURL.path)")
+} else {
+    FileHandle.standardError.write(Data("FAIL: SwiftMath font bundle is missing, invalid, or lacks licence notices\n".utf8))
+    ok = false
 }
 
 exit(ok ? 0 : 1)

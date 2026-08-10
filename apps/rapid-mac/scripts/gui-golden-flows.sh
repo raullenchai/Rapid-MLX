@@ -35,7 +35,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth,
+Flows: fresh-install, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -98,7 +98,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        chat-restore|restored-tools|tool-loop-budget|chat-depth) return 1 ;;
+        chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
         slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
         *) return 0 ;;
     esac
@@ -1062,6 +1062,25 @@ flow_chat_restore() {
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
     wait_send_idle "$OUT/chat-restored-settled.json"
     baseline chat-restore.transcript-restored "$OUT/chat-restored-settled.json"
+    cleanup_persona
+}
+
+flow_math_rendering() {
+    # Artifact-level coverage for #1504/#1576. The fake emits display math;
+    # MathView exposes `Math:` only after SwiftMath parsed and hosted it, while
+    # the safe fallback exposes `Unrenderable math:`. This therefore catches
+    # both a missing font bundle and a parser/resource regression in the real
+    # assembled app.
+    start_persona math-rendering
+    dismiss_first_run
+    start_model
+    send_prompt "shape:math show me the Gaussian integral" math
+    wait_send_idle "$OUT/math-settled.json"
+    assert_tree_text "$OUT/math-settled.json" "Math: \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}"
+    if jq -e '(.data.ui_elements | tostring) | contains("Unrenderable math:")' \
+        "$OUT/math-settled.json" >/dev/null; then
+        die "SwiftMath took the literal-source fallback in the assembled app"
+    fi
     cleanup_persona
 }
 
@@ -2047,6 +2066,7 @@ case "$FLOW" in
     restored-tools) flow_restored_tools ;;
     tool-loop-budget) flow_tool_loop_budget ;;
     chat-depth) flow_chat_depth ;;
+    math-rendering) flow_math_rendering ;;
     slow-stream-stop) flow_slow_stream_stop ;;
     model-crash-recovery) flow_model_crash_recovery ;;
     low-memory-choice) flow_low_memory_choice ;;
@@ -2063,6 +2083,7 @@ case "$FLOW" in
         flow_restored_tools
         flow_tool_loop_budget
         flow_chat_depth
+        flow_math_rendering
         flow_slow_stream_stop
         flow_model_crash_recovery
         flow_low_memory_choice

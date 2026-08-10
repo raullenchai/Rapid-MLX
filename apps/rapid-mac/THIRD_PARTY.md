@@ -36,7 +36,12 @@ time of writing. Run that command for the exact revisions in your build.
   Block-level markdown rendering for assistant messages.
 
 * **SwiftMath** — Computer Inspirations — MIT License
-  `from: "1.7.0"` (resolved 1.7.3)
+  Vendored from 1.7.3 (`fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7`)
+  under `Vendor/SwiftMath` with a resource-resolution patch for the assembled
+  macOS app. The complete upstream MIT text is kept at
+  `Vendor/SwiftMath/LICENSE`. The bundled math fonts retain their upstream
+  `LICENSE`, `OFL.txt`, and `GUST-FONT-LICENSE.txt` notices alongside the font
+  files in `Contents/Resources/mathFonts.bundle`.
   https://github.com/mgriebling/SwiftMath
   LaTeX rendering for math/STEM model responses.
 

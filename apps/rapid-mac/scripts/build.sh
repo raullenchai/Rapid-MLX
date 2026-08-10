@@ -124,6 +124,18 @@ else
     echo "warning: benchmark-scores.json missing — picker hover tooltip will show dashed bars only" >&2
 fi
 
+# SwiftMath's upstream resource accessor looks beside `Contents/`, a location
+# that makes a strict app signature invalid. Our vendored resolver loads this
+# nested bundle through Bundle.main instead. Keep the full upstream bundle so
+# every public MathFont case remains usable and its font licences travel with
+# the corresponding binaries.
+SWIFTMATH_FONTS="$ROOT/Vendor/SwiftMath/Sources/SwiftMath/mathFonts.bundle"
+if [[ ! -d "$SWIFTMATH_FONTS" ]]; then
+    echo "ERR: vendored SwiftMath font bundle missing: $SWIFTMATH_FONTS" >&2
+    exit 1
+fi
+cp -R "$SWIFTMATH_FONTS" "$CONTENTS/Resources/mathFonts.bundle"
+
 # App accent colour. AppKit paints NSMenu highlights, checkboxes and focus
 # rings with the app's accent colour, and nothing in SwiftUI reaches those:
 # ``.tint()`` styles SwiftUI's own views only, so without this the ··· row

@@ -74,62 +74,13 @@ struct MathView: View {
         return list != nil && error == nil
     }
 
-    /// Is SwiftMath's resource bundle reachable? When it is not, touching ANY
-    /// SwiftMath type kills the process — so this must be answered without
-    /// touching one.
+    /// Is the signed app's SwiftMath resource bundle usable? This deliberately
+    /// checks `Bundle.main`, not SwiftPM's development-only resource accessor:
+    /// the assembled app must stand on its own after the build checkout is
+    /// removed. The vendored SwiftMath resolver uses this same app-bundle path
+    /// first and retains `Bundle.module` only for `swift run` and tests.
     ///
-    /// SwiftMath resolves its math fonts through ``Bundle.module``, whose
-    /// SPM-generated accessor probes exactly two paths and then gives up:
-    ///
-    /// ```swift
-    /// let mainPath  = Bundle.main.bundleURL/"SwiftMath_SwiftMath.bundle"
-    /// let buildPath = "<absolute .build path baked in at COMPILE time>"
-    /// guard let bundle = Bundle(path: mainPath) ?? Bundle(path: buildPath)
-    /// else { Swift.fatalError("could not load resource bundle: …") }
-    /// ```
-    ///
-    /// In a shipped ``.app`` both miss. ``mainPath`` resolves to
-    /// ``<App>.app/SwiftMath_SwiftMath.bundle`` — the .app's TOP level, beside
-    /// ``Contents/``, not inside it — and the bundle cannot be placed there:
-    /// ``codesign --verify --deep --strict`` reports "unsealed contents present
-    /// in the bundle root" and ``spctl`` rejects the app (a symlink from the
-    /// root fails too, as "a sealed resource is missing or invalid"). This is
-    /// the same wall ``scripts/build.sh`` documents for ``Rapid_Rapid.bundle``,
-    /// whose fix — stop using ``Bundle.module`` — is not available to us for a
-    /// third-party dependency. ``buildPath`` is an absolute path on whatever
-    /// machine produced the binary, so it never exists on a user's Mac.
-    ///
-    /// The accessor's answer to both missing is ``Swift.fatalError``, which no
-    /// `try` can catch and no fallback branch can survive: the app hard-crashes
-    /// with a macOS crash dialog the first time a reply contains math. That is
-    /// the reported bug — a plain "2 + 2 = 4" is enough.
-    ///
-    /// Why it stayed hidden: on a machine that built the app, ``buildPath``
-    /// still exists, so SwiftMath resolves fine and the crash reproduces only
-    /// from a shipped DMG on someone else's Mac.
-    ///
-    /// Probing ``mainPath`` (and only ``mainPath``) is deliberate: it is the one
-    /// path a user's machine can satisfy, and it is checkable without loading
-    /// anything. The compile-time ``buildPath`` is intentionally NOT probed —
-    /// we cannot know it from here, and trusting it is what made the crash
-    /// invisible in the first place.
-    ///
-    /// Measured behaviour of this predicate:
-    ///
-    /// | context                                  | bundleURL         | value |
-    /// |------------------------------------------|-------------------|-------|
-    /// | dev raw binary (`.build/release/Rapid`)  | `.build/release/` | true  |
-    /// | assembled `.app` (dev machine or user's) | `<App>.app`       | false |
-    ///
-    /// So `swift run` still renders math, while every assembled `.app` — the
-    /// only artifact a user ever runs — degrades to the literal-source branch
-    /// instead of dying. That is a deliberate stop-the-bleeding trade, not the
-    /// end state: it trades "math renders, app crashes" for "math shows as
-    /// readable LaTeX source". Restoring real rendering in a shipped app needs
-    /// SwiftMath's three ``Bundle.module`` call sites to resolve somewhere the
-    /// code signature permits, which the dependency offers no hook for —
-    /// tracked separately.
-    /// The check walks SwiftMath's own resource chain rather than merely
+    /// The check walks SwiftMath's resource chain rather than merely
     /// testing that something exists at the path. `fileExists(atPath:)` is
     /// true for a regular file, a broken symlink target, or a directory that
     /// was copied incompletely — and in every one of those cases SwiftMath
@@ -140,7 +91,7 @@ struct MathView: View {
     ///
     /// Mirrors, in order, what SwiftMath does for its default font
     /// (`MathFont.latinModernFont` → `"latinmodern-math"`): open the outer
-    /// bundle, find `mathFonts.bundle` inside it, open that, then require both
+    /// `mathFonts.bundle`, then require both
     /// the `.otf` (`registerCGFont`) and the `.plist` (`registerMathTable`).
     /// All of it is plain Foundation — no SwiftMath type is touched.
     /// Resource *contents* are validated, not just their names. A truncated
@@ -155,10 +106,7 @@ struct MathView: View {
     /// Cost is one ~1 MB font read, once per process (`static let`), on the
     /// first message containing math — not per render.
     private static let mathFontsAvailable: Bool = {
-        let outerURL = Bundle.main.bundleURL
-            .appendingPathComponent("SwiftMath_SwiftMath.bundle")
-        guard let outer = Bundle(url: outerURL),
-              let fontsURL = outer.url(forResource: "mathFonts", withExtension: "bundle"),
+        guard let fontsURL = Bundle.main.url(forResource: "mathFonts", withExtension: "bundle"),
               let fonts = Bundle(url: fontsURL),
               let fontPath = fonts.path(forResource: "latinmodern-math", ofType: "otf"),
               let tableURL = fonts.url(forResource: "latinmodern-math", withExtension: "plist"),
