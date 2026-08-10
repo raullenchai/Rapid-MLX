@@ -51,7 +51,7 @@ enum AboutPanel {
         let view = AboutView(
             version: bundleShortVersion(),
             build: bundleBuildNumber(),
-            engine: engineIdentity(binaryPath: server.binaryPath),
+            engine: engineIdentity(resolution: server.binaryResolution),
             website: website,
             repoURL: repoURL,
             privacyURL: privacyURL
@@ -106,38 +106,13 @@ enum AboutPanel {
     /// dogfood session from silently attributing its behaviour to the wrong
     /// engine (#1712).
     static func engineIdentity(
-        binaryPath: URL?,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        bundleResourceURL: URL? = Bundle.main.resourceURL,
-        applicationSupportURL: URL? = nil
+        resolution: ServerLocator.Resolution?
     ) -> EngineIdentity? {
-        guard let binaryPath else { return nil }
-        let supportURL = applicationSupportURL ??
-            ApplicationSupportLocator.applicationSupportRoot(environment: environment)
-        let source = ServerLocator.classify(
-            resolved: binaryPath,
-            environment: environment,
-            bundleResourceURL: bundleResourceURL,
-            applicationSupportURL: supportURL
-        )
-        // Managed launchers may be symlinks. `find()` resolves the executable
-        // target, but VERSION belongs to the slot root, not necessarily the
-        // target checkout; read the same metadata path version selection used.
-        let versionBinary: URL
-        switch source {
-        case .runtimeOverride:
-            versionBinary = supportURL
-                .appendingPathComponent("runtime-override/rapid-mlx/bin/rapid-mlx")
-        case .bundled:
-            versionBinary = bundleResourceURL?
-                .appendingPathComponent("rapid-mlx/bin/rapid-mlx") ?? binaryPath
-        case .rapidBin, .unknown:
-            versionBinary = binaryPath
-        }
+        guard let resolution else { return nil }
         return EngineIdentity(
-            version: ServerLocator.sidecarVersion(forBinary: versionBinary),
-            source: source,
-            path: binaryPath.path
+            version: resolution.version,
+            source: resolution.source,
+            path: resolution.binary.path
         )
     }
 }

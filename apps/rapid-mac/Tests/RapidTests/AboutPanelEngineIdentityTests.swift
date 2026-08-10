@@ -10,12 +10,12 @@ struct AboutPanelEngineIdentityTests {
         let fixture = try Fixture()
         defer { fixture.remove() }
 
-        let identity = AboutPanel.engineIdentity(
-            binaryPath: fixture.runtimeBinary,
+        let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
             applicationSupportURL: fixture.applicationSupport
         )
+        let identity = AboutPanel.engineIdentity(resolution: resolution)
 
         #expect(identity?.source == .runtimeOverride)
         #expect(identity?.version == "99.0.0")
@@ -26,15 +26,15 @@ struct AboutPanelEngineIdentityTests {
 
     @Test("A bundled engine is labelled without an override warning")
     func bundledIdentity() throws {
-        let fixture = try Fixture()
+        let fixture = try Fixture(runtimeVersion: "0.11.0")
         defer { fixture.remove() }
 
-        let identity = AboutPanel.engineIdentity(
-            binaryPath: fixture.bundledBinary,
+        let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
             applicationSupportURL: fixture.applicationSupport
         )
+        let identity = AboutPanel.engineIdentity(resolution: resolution)
 
         #expect(identity?.source == .bundled)
         #expect(identity?.version == "0.12.7")
@@ -47,13 +47,13 @@ struct AboutPanelEngineIdentityTests {
         let fixture = try Fixture(symlinkRuntime: true)
         defer { fixture.remove() }
 
-        let resolved = fixture.runtimeBinary.resolvingSymlinksInPath()
-        let identity = AboutPanel.engineIdentity(
-            binaryPath: resolved,
+        let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
             applicationSupportURL: fixture.applicationSupport
         )
+        let identity = AboutPanel.engineIdentity(resolution: resolution)
+        let resolved = fixture.runtimeBinary.resolvingSymlinksInPath()
 
         #expect(identity?.source == .runtimeOverride)
         #expect(identity?.version == "99.0.0")
@@ -62,24 +62,25 @@ struct AboutPanelEngineIdentityTests {
 
     @Test("No resolved binary produces no misleading engine identity")
     func missingIdentity() {
-        #expect(AboutPanel.engineIdentity(binaryPath: nil) == nil)
+        #expect(AboutPanel.engineIdentity(resolution: nil) == nil)
     }
 
-    @Test("Shared symlink targets do not invent managed-slot provenance")
-    func ambiguousManagedTarget() throws {
+    @Test("Shared symlink targets preserve the slot that won version selection")
+    func sharedManagedTarget() throws {
         let fixture = try Fixture(sharedManagedTarget: true)
         defer { fixture.remove() }
 
-        let identity = AboutPanel.engineIdentity(
-            binaryPath: fixture.runtimeBinary.resolvingSymlinksInPath(),
+        let resolution = ServerLocator.locate(
             environment: [:],
             bundleResourceURL: fixture.bundleResources,
             applicationSupportURL: fixture.applicationSupport
         )
+        let identity = AboutPanel.engineIdentity(resolution: resolution)
 
-        #expect(identity?.source == .unknown)
-        #expect(identity?.summary == "Engine 0.1.0 · Unknown origin")
-        #expect(identity?.isOverride == false)
+        #expect(identity?.source == .runtimeOverride)
+        #expect(identity?.version == "99.0.0")
+        #expect(identity?.summary == "Engine 99.0.0 · App-managed override")
+        #expect(identity?.isOverride == true)
     }
 }
 
@@ -90,7 +91,11 @@ private struct Fixture {
     let runtimeBinary: URL
     let bundledBinary: URL
 
-    init(symlinkRuntime: Bool = false, sharedManagedTarget: Bool = false) throws {
+    init(
+        runtimeVersion: String = "99.0.0",
+        symlinkRuntime: Bool = false,
+        sharedManagedTarget: Bool = false
+    ) throws {
         let fm = FileManager.default
         root = fm.temporaryDirectory
             .appendingPathComponent("rapid-about-engine-\(UUID().uuidString)", isDirectory: true)
@@ -110,6 +115,8 @@ private struct Fixture {
                 )
                 try fm.createSymbolicLink(at: binary, withDestinationURL: target)
             }
+            try Self.writeVersion(runtimeVersion, forBinary: runtimeBinary)
+            try Self.writeVersion("0.12.7", forBinary: bundledBinary)
         } else if symlinkRuntime {
             let target = root.appendingPathComponent("checkout/bin/rapid-mlx")
             try Self.writeSidecar(binary: target, version: "0.1.0")
@@ -119,12 +126,10 @@ private struct Fixture {
             )
             try fm.createSymbolicLink(at: runtimeBinary, withDestinationURL: target)
             let runtimeRoot = runtimeBinary.deletingLastPathComponent().deletingLastPathComponent()
-            try Data("99.0.0\n".utf8).write(
-                to: runtimeRoot.appendingPathComponent("VERSION"),
-                options: .atomic
-            )
+            try Data("\(runtimeVersion)\n".utf8).write(
+                to: runtimeRoot.appendingPathComponent("VERSION"), options: .atomic)
         } else {
-            try Self.writeSidecar(binary: runtimeBinary, version: "99.0.0")
+            try Self.writeSidecar(binary: runtimeBinary, version: runtimeVersion)
         }
         if !sharedManagedTarget {
             try Self.writeSidecar(binary: bundledBinary, version: "0.12.7")
@@ -143,10 +148,12 @@ private struct Fixture {
         )
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: binary, options: .atomic)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+        try writeVersion(version, forBinary: binary)
+    }
+
+    private static func writeVersion(_ version: String, forBinary binary: URL) throws {
         let root = binary.deletingLastPathComponent().deletingLastPathComponent()
         try Data("\(version)\n".utf8).write(
-            to: root.appendingPathComponent("VERSION"),
-            options: .atomic
-        )
+            to: root.appendingPathComponent("VERSION"), options: .atomic)
     }
 }
