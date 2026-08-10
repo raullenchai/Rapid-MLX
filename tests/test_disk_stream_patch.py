@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import gc
 import inspect
-import json
 from pathlib import Path
 
 import pytest
@@ -59,12 +58,35 @@ HF_REPO = "mlx-community/LFM2.5-8B-A1B-MLX-4bit"
 PROMPT = "Explain what a mixture-of-experts model is in one paragraph."
 SEED = 1234
 NUM_TOKENS = 32
-BASELINE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / ".scratch"
-    / "moe-disk-stream"
-    / "baseline_output.json"
-)
+
+
+def _eager_baseline(hf_repo: str) -> tuple[list[int], float]:
+    """Generate the comparison on this host, then release resident weights."""
+    import mlx.core as mx
+    from mlx_lm import load, stream_generate
+    from mlx_lm.sample_utils import make_sampler
+
+    mx.reset_peak_memory()
+    model, tokenizer = load(hf_repo)
+    mx.random.seed(SEED)
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": PROMPT}], add_generation_prompt=True
+    )
+    token_ids = [
+        response.token
+        for response in stream_generate(
+            model,
+            tokenizer,
+            prompt,
+            max_tokens=NUM_TOKENS,
+            sampler=make_sampler(temp=0.0),
+        )
+    ]
+    peak_gb = mx.get_peak_memory() / 1e9
+    del model, tokenizer
+    gc.collect()
+    mx.clear_cache()
+    return token_ids, peak_gb
 
 
 def test_install_unregistered_model_type_raises_immediately():
@@ -235,19 +257,7 @@ def test_install_streams_lfm25_token_exact_with_lower_peak_memory():
             "test reuses the spike's already-downloaded checkpoint and "
             "never downloads one itself"
         )
-    if not BASELINE_PATH.is_file():
-        pytest.skip(f"spike baseline not found at {BASELINE_PATH}")
-
-    baseline = json.loads(BASELINE_PATH.read_text())
-    assert baseline["prompt"] == PROMPT
-    assert baseline["seed"] == SEED
-    assert baseline["num_tokens_requested"] == NUM_TOKENS
-    # Baseline was generated via mlx_lm.sample_utils.make_sampler(temp=0.0)
-    # (verified against .scratch/moe-disk-stream/scripts/01_baseline_harness.py)
-    # -- greedy decoding, deterministic regardless of seed. Prompt/seed/
-    # token-count above match this test's run, so the recorded token_ids
-    # are a valid non-streaming comparison point without loading a second
-    # full model instance in-process.
+    baseline_token_ids, baseline_peak_gb = _eager_baseline(HF_REPO)
 
     import mlx.core as mx
     from mlx_lm import load, stream_generate
@@ -284,11 +294,9 @@ def test_install_streams_lfm25_token_exact_with_lower_peak_memory():
             token_ids.append(response.token)
 
         streaming_peak_gb = mx.get_peak_memory() / 1e9
-        baseline_peak_gb = baseline["peak_memory_gb_mx_get_peak_memory"]
-
-        assert token_ids == baseline["token_ids"], (
+        assert token_ids == baseline_token_ids, (
             "streaming generation must be token-exact vs. the non-streaming "
-            f"baseline. streaming={token_ids} baseline={baseline['token_ids']}"
+            f"baseline. streaming={token_ids} baseline={baseline_token_ids}"
         )
         assert streaming_peak_gb < baseline_peak_gb, (
             f"streaming peak memory ({streaming_peak_gb:.4f} GB) must be "
@@ -322,12 +330,6 @@ def test_install_streams_lfm25_token_exact_with_lower_peak_memory():
 # ---------------------------------------------------------------------------
 
 QWEN_HF_REPO = "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit"
-QWEN_BASELINE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / ".scratch"
-    / "moe-disk-stream"
-    / "baseline_output_qwen_moe.json"
-)
 
 
 def _local_qwen2_moe_checkpoint_dir() -> Path | None:
@@ -363,13 +365,7 @@ def test_install_streams_qwen2_moe_token_exact_with_lower_peak_memory():
             "test reuses the spike's already-downloaded checkpoint and "
             "never downloads one itself"
         )
-    if not QWEN_BASELINE_PATH.is_file():
-        pytest.skip(f"spike baseline not found at {QWEN_BASELINE_PATH}")
-
-    baseline = json.loads(QWEN_BASELINE_PATH.read_text())
-    assert baseline["prompt"] == PROMPT
-    assert baseline["seed"] == SEED
-    assert baseline["num_tokens_requested"] == NUM_TOKENS
+    baseline_token_ids, baseline_peak_gb = _eager_baseline(QWEN_HF_REPO)
 
     import mlx.core as mx
     from mlx_lm import load, stream_generate
@@ -407,11 +403,9 @@ def test_install_streams_qwen2_moe_token_exact_with_lower_peak_memory():
             token_ids.append(response.token)
 
         streaming_peak_gb = mx.get_peak_memory() / 1e9
-        baseline_peak_gb = baseline["peak_memory_gb_mx_get_peak_memory"]
-
-        assert token_ids == baseline["token_ids"], (
+        assert token_ids == baseline_token_ids, (
             "streaming generation must be token-exact vs. the non-streaming "
-            f"baseline. streaming={token_ids} baseline={baseline['token_ids']}"
+            f"baseline. streaming={token_ids} baseline={baseline_token_ids}"
         )
         assert streaming_peak_gb < baseline_peak_gb, (
             f"streaming peak memory ({streaming_peak_gb:.4f} GB) must be "
