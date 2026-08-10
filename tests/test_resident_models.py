@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.runtime.model_registry import ModelEntry, ModelRegistry
 from vllm_mlx.runtime.resident_models import (
+    ResidentModelBusyError,
     ResidentModelCapacityError,
     ResidentModelManager,
 )
@@ -200,6 +201,24 @@ async def test_replacing_assistant_promotes_target_and_keeps_image_resident():
         "chat-new",
         "image",
     }
+
+
+@pytest.mark.asyncio
+async def test_failed_assistant_replacement_rolls_back_newly_loaded_model():
+    manager, registry, loaded, _ = manager_fixture(limit_gib=20)
+    registry.get_engine("chat").running = 1
+
+    with pytest.raises(ResidentModelBusyError, match="active request"):
+        await manager.load(
+            "chat-new",
+            estimated_bytes=4 * GIB,
+            replace_group="assistant",
+        )
+
+    assert "chat" in registry
+    assert "chat-new" not in registry
+    assert loaded["chat-new"].stopped is True
+    assert {item["id"] for item in manager.snapshot()["models"]} == {"chat"}
 
 
 @pytest.mark.asyncio

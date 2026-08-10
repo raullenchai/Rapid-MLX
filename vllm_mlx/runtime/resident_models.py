@@ -381,7 +381,10 @@ class ResidentModelManager:
                 await self._evict_for_locked(0, exclude={record.model_id})
                 if replace_group is not None:
                     await self._replace_group_locked(record, replace_group)
-            except ResidentModelCapacityError:
+            except BaseException:
+                # Once the loader returns, this manager owns the engine.  A
+                # later admission/replacement failure must not leave a model
+                # resident even though the control-plane request was rejected.
                 await self._evict_locked(record, reason="load_rollback", count=False)
                 raise
             return record
