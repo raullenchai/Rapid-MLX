@@ -2432,9 +2432,12 @@ class BatchedEngine(BaseEngine):
         """
         if getattr(self, "_is_muse_wire", None) is None:
             model_name = getattr(self, "_model_name", None)
-            self._is_muse_wire = bool(
-                model_name and _resolve_hf_model_type(model_name) == "muse_glimmer"
-            )
+            # Partial test/lifecycle fixtures may reach the helper before
+            # model identity is installed. Do not cache that transient
+            # absence as a permanent non-Muse decision.
+            if model_name is None:
+                return False
+            self._is_muse_wire = _resolve_hf_model_type(model_name) == "muse_glimmer"
         return self._is_muse_wire
 
     def _route_tokens_for_channels(

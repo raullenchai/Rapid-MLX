@@ -728,6 +728,19 @@ def test_postprocessor_demuxes_with_thinking_disabled():
     assert "".join(content_parts) == "Hello!"
 
 
+def test_muse_wire_detection_does_not_cache_missing_model_identity(monkeypatch):
+    from vllm_mlx.engine import batched
+
+    engine = batched.BatchedEngine.__new__(batched.BatchedEngine)
+    assert engine._muse_wire_model() is False
+    assert not hasattr(engine, "_is_muse_wire")
+
+    engine._model_name = "fixture/muse"
+    monkeypatch.setattr(batched, "_resolve_hf_model_type", lambda _: "muse_glimmer")
+    assert engine._muse_wire_model() is True
+    assert engine._is_muse_wire is True
+
+
 def test_finalize_uses_raw_wire_content_for_muse():
     """Non-streaming counterpart of the demux regression: the route's
     ``clean_output_text`` strips channel markers WITHOUT extracting
