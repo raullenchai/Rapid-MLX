@@ -4972,6 +4972,13 @@ def _scan_external_model_dirs(
         except OSError:
             return False
 
+    def _root_has_symlink(directory: str) -> bool:
+        try:
+            with os.scandir(directory) as entries:
+                return any(entry.is_symlink() for entry in entries)
+        except OSError:
+            return True
+
     def _record(directory: str, repo: str, canonical_root: str) -> None:
         real = os.path.realpath(directory)
         try:
@@ -4988,20 +4995,15 @@ def _scan_external_model_dirs(
             # The loader probe is root-only and bounded. Run it before the
             # recursive symlink audit/size walk so a broad selected folder
             # does not turn every ordinary directory into a deep traversal.
-            if not _complete(real):
+            if _root_has_symlink(real) or not _complete(real):
                 return
             if not _external_model_tree_is_contained(real, [canonical_root]):
                 return
             mtime = os.path.getmtime(real)
         except OSError:
             return
-        # ``_snapshot_size_bytes`` (follows symlinks), not ``_dir_size_bytes``
-        # (skips them). The hub scanner must skip links because a snapshot
-        # entry is a second name for a blob it already counted; an external
-        # tree has no blob/snapshot split, so a symlinked weight file is the
-        # model's only representation and skipping it reports 0 B for a model
-        # that occupies gigabytes. Several tools lay models out this way to
-        # share weights between runtimes.
+        # The containment audit above rejects symlinks, so this recursive size
+        # walk cannot be redirected outside the selected root after preflight.
         try:
             size = _snapshot_size_bytes(real)
         except OSError:

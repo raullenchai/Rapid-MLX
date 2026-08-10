@@ -733,7 +733,12 @@ def _resolve_external_model_path(name: str) -> str | None:
 
 
 def _external_model_tree_is_contained(directory: str, roots: list[str]) -> bool:
-    """Require every symlink target in an external model to stay trusted."""
+    """Require a readable, symlink-free external model tree.
+
+    A target-containment preflight is inherently racy because another runtime
+    can swap a link after audit and before mlx-lm opens it. Rejecting links is
+    the only portable way to keep the selected roots a real trust boundary.
+    """
     canonical_roots = [os.path.realpath(root) for root in roots]
 
     def contained(path: str) -> bool:
@@ -758,7 +763,7 @@ def _external_model_tree_is_contained(directory: str, roots: list[str]) -> bool:
         ):
             for name in (*directories, *files):
                 path = os.path.join(current, name)
-                if os.path.islink(path) and not contained(path):
+                if os.path.islink(path):
                     return False
     except OSError:
         return False

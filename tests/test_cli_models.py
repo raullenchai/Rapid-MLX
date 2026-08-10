@@ -1031,10 +1031,7 @@ def test_complete_external_copy_keeps_incomplete_hub_stub_visible_for_cleanup(
     assert "(unmapped)" in out
 
 
-def test_external_scan_measures_symlinked_weights(tmp_path):
-    """A symlinked weight file is the model's only representation in an
-    external tree — skipping links (correct for the hub's blob/snapshot
-    split) would report 0 B for a model occupying gigabytes."""
+def test_external_scan_rejects_symlinked_weights_even_within_root(tmp_path):
     root = tmp_path / "models"
     real = root / "blobs"
     real.mkdir(parents=True)
@@ -1046,10 +1043,7 @@ def test_external_scan_measures_symlinked_weights(tmp_path):
     (model / "model.safetensors").symlink_to(blob)
     (model / "config.json").write_text("{}")
 
-    rows = cli._scan_external_model_dirs([str(root)])
-
-    assert len(rows) == 1
-    assert rows[0][1] >= 4096, f"symlinked weights measured as {rows[0][1]} bytes"
+    assert cli._scan_external_model_dirs([str(root)]) == []
 
 
 def test_external_scan_rejects_weight_symlink_outside_selected_root(
