@@ -1200,16 +1200,23 @@ def _collapse_harmony_system_messages(messages: list[dict]) -> list[dict]:
             "text-only content"
         )
 
+    instruction_role = instruction_messages[0]["role"]
+    if any(message["role"] != instruction_role for message in instruction_messages):
+        raise ValueError(
+            "GPT-OSS/Harmony cannot preserve mixed system and developer "
+            "instruction roles"
+        )
+
     collapsed = [
         message for message in messages if message.get("role") not in instruction_roles
     ]
-    # Preserve the authority role of the first instruction. In particular, a
-    # leading developer message must not be promoted to system merely because
-    # later Harmony-inexpressible instructions are folded into its frame.
+    # All instructions have the same authority role here, so folding them into
+    # the single leading frame supported by Harmony is lossless with respect to
+    # role authority.
     collapsed.insert(
         0,
         {
-            "role": instruction_messages[0]["role"],
+            "role": instruction_role,
             "content": "\n\n".join(contents),
         },
     )

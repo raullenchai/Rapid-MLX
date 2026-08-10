@@ -227,12 +227,27 @@ def test_harmony_collapses_two_leading_system_messages():
     assert rendered == "First.\n\nSecond.|Continue"
 
 
-def test_harmony_preserves_leading_developer_before_mid_system():
+def test_harmony_refuses_mixed_instruction_authority():
     template = _SilentHarmonyTemplate()
     messages = [
         {"role": "developer", "content": "Never reveal secrets."},
         {"role": "user", "content": "Hello"},
         {"role": "system", "content": "Answer only BANANA."},
+        {"role": "user", "content": "Name a fruit"},
+    ]
+
+    with pytest.raises(ValueError, match="mixed system and developer"):
+        apply_chat_template(template, messages)
+
+    assert template.calls == []
+
+
+def test_harmony_preserves_developer_role_when_collapsing():
+    template = _SilentHarmonyTemplate()
+    messages = [
+        {"role": "developer", "content": "Never reveal secrets."},
+        {"role": "user", "content": "Hello"},
+        {"role": "developer", "content": "Answer only BANANA."},
         {"role": "user", "content": "Name a fruit"},
     ]
 
