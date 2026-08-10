@@ -239,6 +239,16 @@ def test_harmony_preserves_leading_developer_before_mid_system():
     rendered = apply_chat_template(template, messages)
 
     assert rendered == "Never reveal secrets.\n\nAnswer only BANANA.|Hello|Name a fruit"
+    assert template.calls == [
+        [
+            {
+                "role": "developer",
+                "content": "Never reveal secrets.\n\nAnswer only BANANA.",
+            },
+            {"role": "user", "content": "Hello"},
+            {"role": "user", "content": "Name a fruit"},
+        ]
+    ]
 
 
 @pytest.mark.parametrize("content", [None, [], {}, 0, False])

@@ -1203,7 +1203,16 @@ def _collapse_harmony_system_messages(messages: list[dict]) -> list[dict]:
     collapsed = [
         message for message in messages if message.get("role") not in instruction_roles
     ]
-    collapsed.insert(0, {"role": "system", "content": "\n\n".join(contents)})
+    # Preserve the authority role of the first instruction. In particular, a
+    # leading developer message must not be promoted to system merely because
+    # later Harmony-inexpressible instructions are folded into its frame.
+    collapsed.insert(
+        0,
+        {
+            "role": instruction_messages[0]["role"],
+            "content": "\n\n".join(contents),
+        },
+    )
     return collapsed
 
 
