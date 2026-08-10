@@ -159,7 +159,7 @@ class TestDiskSpaceCheck:
         statvfs.assert_not_called()
 
     def test_partial_mflux_cache_counts_only_missing_files(self, tmp_path):
-        """A partial component cache still gates on the missing weights."""
+        """A partial component cache requires space only for missing weights."""
         cached_transformer = tmp_path / "transformer.safetensors"
         cached_transformer.write_bytes(b"present")
         info = SimpleNamespace(
@@ -189,8 +189,10 @@ class TestDiskSpaceCheck:
                 "huggingface_hub.try_to_load_from_cache",
                 side_effect=cache_lookup,
             ),
-            patch("os.statvfs", return_value=_fake_statvfs(int(2 * 1024**3))),
-            pytest.raises(SystemExit),
+            # 3 GB fits the missing 2.5 GB shard plus headroom, but not the
+            # full 5.5 GB repository. Counting the cached transformer would
+            # therefore make this call raise SystemExit.
+            patch("os.statvfs", return_value=_fake_statvfs(int(3 * 1024**3))),
         ):
             _check_disk_space("filipstrand/Z-Image-Turbo-mflux-4bit")
 
