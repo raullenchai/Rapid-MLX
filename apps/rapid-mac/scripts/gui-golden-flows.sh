@@ -1822,22 +1822,33 @@ flow_catalog_integrity() {
     # not today's registry contents.
     start_persona catalog-integrity
     dismiss_first_run
-    see_main "$OUT/catalog-main.json"
+    local catalog_ready=0
+    for _ in {1..40}; do
+        see_main "$OUT/catalog-main.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "ModelPickerBar.ModelMenu" and .value == "fake-alias")' \
+               "$OUT/catalog-main.json" >/dev/null; then
+            catalog_ready=1
+            break
+        fi
+        sleep 0.25
+    done
+    [[ "$catalog_ready" == 1 ]] || die "chat catalog inventory was not observed"
 
     # The catalog is populated by app-owned `models` / `ls` / `info` probes.
     # They are implementation details, not real engine sessions (#1415).
-    wait_fake_event '.event == "command"' \
-        "the catalog did not invoke the fake CLI probes"
+    # The model-menu value above is the completion barrier: ModelCatalog.load
+    # publishes that merged inventory only after its models/ls/info tasks have
+    # all returned, so the event log now contains the full initial probe set.
     jq -e -s '[.[] | select(.event == "command")]
-              | length > 0 and all(.[]; .do_not_track == "1")' \
+              | (map(.subcommand) | index("models") != null)
+                and (map(.subcommand) | index("ls") != null)
+                and all(.[]; .do_not_track == "1")' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "an internal catalog probe launched with engine telemetry enabled"
 
     jq -e '.data.walk.complete == true' "$OUT/catalog-main.json" >/dev/null \
         || die "could not completely observe the chat catalog"
-    jq -e '.data.ui_elements[]? | select(.identifier == "ModelPickerBar.ModelMenu" and .value == "fake-alias")' \
-        "$OUT/catalog-main.json" >/dev/null \
-        || die "chat catalog inventory was not observed"
     jq -e '[.data.ui_elements[]? | select([(.identifier // ""), (.value // ""), (.title // ""), (.description // "")] | map(tostring) | join(" ") | test("fake-video-alias"))] | length == 0' \
         "$OUT/catalog-main.json" >/dev/null \
         || die "a video-gen alias reached the chat surface"
