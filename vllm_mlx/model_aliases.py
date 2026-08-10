@@ -643,12 +643,12 @@ def resolve_model(name: str) -> str:
     """
     if os.path.exists(name):
         return name
+    if reason := _RETIRED_MODEL_ALIASES.get(name):
+        raise RetiredModelAliasError(reason)
     if external := _resolve_external_model_path(name):
         return external
     if "/" in name:
         return name
-    if reason := _RETIRED_MODEL_ALIASES.get(name):
-        raise RetiredModelAliasError(reason)
     profile = _load().get(name)
     return profile.hf_path if profile is not None else name
 

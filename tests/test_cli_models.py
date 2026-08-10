@@ -11,7 +11,11 @@ from unittest.mock import patch
 import pytest
 
 from vllm_mlx import cli
-from vllm_mlx.model_aliases import list_profiles, resolve_model
+from vllm_mlx.model_aliases import (
+    RetiredModelAliasError,
+    list_profiles,
+    resolve_model,
+)
 
 
 def _capture_models_output() -> str:
@@ -786,6 +790,15 @@ def test_external_resolution_rejects_parent_traversal(tmp_path, monkeypatch):
     monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
 
     assert resolve_model("../escape") == "../escape"
+
+
+def test_retired_alias_cannot_be_revived_from_external_root(tmp_path, monkeypatch):
+    root = tmp_path / "models"
+    _write_mlx_model(root / "ministral-3b-4bit")
+    monkeypatch.setenv("RAPID_MLX_EXTRA_MODEL_ROOTS", str(root))
+
+    with pytest.raises(RetiredModelAliasError):
+        resolve_model("ministral-3b-4bit")
 
 
 def test_external_scan_tolerates_missing_and_unreadable_roots(tmp_path):
