@@ -13,6 +13,16 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.8] — 2026-08-10
+
+The desktop app makes pictures now: a new Images tab renders locally, and Chat
+can read images you attach. Everything else is the engine and app catching the
+rough edges — the Images tab that could not actually generate in a downloaded
+copy, a chat speed number that disagreed with itself, and a handful of
+server-side correctness fixes underneath.
+
+Bundles the **Rapid-MLX 0.12.8** engine.
+
 ### Added
 
 - **A new Images tab generates pictures on your Mac.** Choose an image model,
@@ -55,6 +65,12 @@ can actually understand.
   which always shows.
 
 ### Fixed
+
+- **The Images tab actually makes an image in the installed app.** In a
+  downloaded copy the picture engine was missing, so loading an image model
+  failed to start and nothing could render — the tab was broken the first time
+  it would ever reach anyone. The engine now ships inside the app, and both
+  built-in image models produce pictures from `/Applications`.
 
 - **The chat's tok/s is now the model's actual writing speed.** It timed the
   whole turn, including the time the model spent reading your prompt before
