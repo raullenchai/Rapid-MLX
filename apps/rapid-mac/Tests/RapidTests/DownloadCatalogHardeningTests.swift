@@ -291,7 +291,9 @@ struct DownloadCatalogHardeningTests {
         #expect(env["DO_NOT_TRACK"] == "1")
         #expect(env["KEEP_ME"] == "yes")
         #expect(env["HF_HUB_CACHE"] == selected.path)
-        #expect(env[ModelCatalog.extraModelRootsEnvKey] == "[\"/ambient\",\"/Volumes/models\"]")
+        let encodedRoots = try #require(env[ModelCatalog.extraModelRootsEnvKey])
+        let roots = try JSONDecoder().decode([String].self, from: Data(encodedRoots.utf8))
+        #expect(roots == ["/ambient", "/Volumes/models"])
     }
 
     @Test("ModelCatalog terminates catalog subprocesses when the async task is cancelled")
