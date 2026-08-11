@@ -168,19 +168,10 @@ struct ModelPickerBar: View {
     ///   1. The user's last-picked alias (if it's still in the catalog,
     ///      handled by the caller via ``@AppStorage`` before this
     ///      function is consulted).
-    ///   2. **RAM-bucketed canonical alias** (#163) if it's in the
-    ///      catalog *and* ``ModelSizing`` doesn't classify it as
-    ///      ``.tooBig`` on this hardware. This is the alias the landing
-    ///      page promises for this Mac's RAM bracket; honouring it here
-    ///      keeps the marketing surface and the in-app default in
-    ///      lock-step *except* when the bracket boundary lands on a
-    ///      Mac that the footprint estimator says will swap or OOM —
-    ///      e.g. the 27B-4bit bracket starts at 25 GB but our
-    ///      ``ModelSizing`` estimate (weights + KV reserve + Python
-    ///      overhead) says 32 GB is `.tooBig` for it. Codex r1
-    ///      BLOCKING (#165). In that case we fall through to step 3
-    ///      rather than ship a default that will crash the app on
-    ///      first launch.
+    ///   2. The RAM tier's measured smart pick (#163), if it is present
+    ///      in the catalog. ``RAMBucketedDefault`` owns the fit contract;
+    ///      this call site must not second-guess the curated tier with a
+    ///      separate size heuristic.
     ///   3. Top general recommendation for this Mac.
     ///   4. First cached entry.
     ///   5. First catalog entry.

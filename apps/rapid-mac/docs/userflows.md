@@ -10,7 +10,11 @@ Every entry has the same shape:
 - **Last smoke result** — verified, blocked, or known-issue, with date
 - **Known issues** — open bugs filed against this flow
 
-> **Refresh note (2026-07-21).** Flow *definitions* below were reconciled against `main` through **v0.10.6**. The last *full manual* smoke pass predates that (2026-06-13, v0.6.x); items marked "re-smoke pending" have current definitions but need a fresh local pass. A partial v0.10.6 dogfood ran 2026-07-21 (launch + engine chat via the sidecar HTTP API + New chat + model load + clean quit) — those results are dated inline.
+> **Contract refresh (2026-08-11).** Flow definitions were reconciled against
+> `main` through **v0.12.9**. Verification dates below remain historical evidence;
+> they do not imply that an older build defines today's surface. The deterministic
+> GUI journeys live in `scripts/gui-golden-flows.sh` and run in CI; flows that still
+> require a physical keyboard or an external service say so explicitly.
 
 The smoke pass that backs the "Last smoke result" column runs against a fresh `Rapid-MLX Desktop.app` built by `scripts/build.sh` and driven by `scripts/walkthrough.sh` (F1–F10 via **AppleScript AXIdentifier** clicks — see the identifier inventory near the end) plus `scripts/release-smoke.sh` for structural launch. Flows that depend on real keyboard or pointer input require macOS Accessibility permission for the terminal hosting the harness, plus a real hardware key on the items that exercise the global Carbon hotkey.
 
@@ -103,13 +107,26 @@ First run has **two distinct surfaces**, shown in order:
 **Expected.**
 
 1. The Settings window opens at its last-left size (restored from `NSWindow Frame Settings`).
-2. The category rail is a **native, arrow-key-navigable list with VoiceOver semantics** (v0.10.6). It shows **5 tabs** driven by `ForEach(Category.allCases)` (`SettingsView.Category`, `SettingsView.swift`), in declaration order: **Model Management, Tools, Appearance, Privacy, App**. The standalone **Models** tab was folded into **Model Management** (2026-08-07), which is now the default selection on open. New tabs added after `.app` MUST extend the enum in declaration order — the arrow-key walk depends on it. New tabs added after `.app` MUST extend this list in declaration order — the manual walk depends on it.
-3. Clicking a tab swaps the body; each tab persists to `UserDefaults` / `Keychain` synchronously on every edit. Notables: the **Max Tokens** slider actually caps response length (fixed v0.8.19); the engine/sidecar path lives in **App / Inference Engine**, not the bottom bar (moved v0.8.10); chat-history backup restore lives in **Storage** (v0.8.20).
+2. The category rail is a native, arrow-key-navigable list with VoiceOver
+   semantics. `ForEach(Category.allCases)` renders exactly six categories, in
+   declaration order: **Model Management, Tools, Connectors, Appearance, Privacy,
+   App**. Model Management is the default. The former stand-alone Models tab was
+   folded into it; there is no Permissions, Web Search, Sampling, Quick Ask,
+   Keyboard, or Storage category in this app.
+3. Clicking a category swaps the body. Model preferences and tool enablement use
+   `UserDefaults`; provider secrets use Keychain; connector configuration is
+   persisted by `MCPConfigStore`. Web-search provider settings and browse approval
+   mode are subsections of **Tools**. Updates and the inference-engine path are in
+   **App**.
 4. `Cmd+W` closes Settings without quitting the app.
 
-**Touches.** `UI/SettingsView.swift`, `UI/SettingsModelManagementPanel.swift`, `UI/SettingsConnectorsPanel.swift`, `UI/SettingsPermissionsPanel.swift`, `UI/SettingsRouter.swift`, `QuickAsk/QuickAskShortcutsView.swift`, `Tools/KeychainStore.swift`.
+**Touches.** `UI/SettingsView.swift`, `UI/SettingsModelManagementPanel.swift`,
+`UI/SettingsToolsPanel.swift`, `UI/SettingsConnectorsPanel.swift`,
+`Tools/KeychainStore.swift`, `MCP/MCPConfigStore.swift`.
 
-**Last smoke result.** Persistence layer verified 2026-06-13; tab list reconciled to the 5 real `Category.allCases` entries on 2026-08-07 (Models folded into Model Management). Tab-switch click test **requires manual local verification** (SwiftUI `.onTapGesture` doesn't fire on synthetic clicks — 3-B).
+**Last smoke result.** The six-category contract is pinned by Swift tests and the
+settings GoldenFlow. Persistence paths have focused unit coverage. Physical
+keyboard traversal remains a manual-local check.
 
 **Known issues.** Inherits 3-A / 3-B.
 
@@ -121,7 +138,12 @@ First run has **two distinct surfaces**, shown in order:
 
 **Expected.**
 
-1. The picker enumerates cached models via `ModelCatalog`, with a dedicated **Quickstart** section (v0.7.21). Recommended picks are vetted per **role (Default / Speed / Quality / Coding) × RAM bucket** (v0.10.1); models that can't reliably call tools hide their Tools switch and are labeled **"no tools"** in the picker.
+1. The picker enumerates cached models via `ModelCatalog`, with a dedicated
+   **Quickstart** row followed by **Recommended for your N GB Mac**. Each RAM tier
+   has one measured smart pick and, where available, one faster/lighter
+   alternative. The remaining catalog is split into runnable **All models** and
+   **Not fit for this Mac** sections; it no longer exposes the retired
+   Default/Speed/Quality/Coding/Vision role matrix.
 2. Selecting an alias updates `ContentView.alias` and persists in the active session's `alias`.
 3. **Start** → `ServerManager.start(alias:)`; the pill transitions `idle → starting → ready(alias)` over ~5–15 s. AutoStart prefers a cached runnable model over a RAM-bucketed default that would trigger a fresh large download (v0.8.14).
 4. The child rapid-mlx process spawns as a process-group leader (`posix_spawn` + `POSIX_SPAWN_SETPGROUP`); shutdown sends `kill(-pgid, SIGTERM)` then `SIGKILL`. An idle-state sidecar crash surfaces and auto-respawns, bounded by a respawn budget so crash loops can't run away; **Stop** reliably stops even mid-respawn (v0.7.14 / v0.7.15).
@@ -311,33 +333,41 @@ golden-flow harness has no fixture connector, so that step is manual for now.
 
 ---
 
-## Flow 13 — Actions & Permissions (built-in tools)  *(NEW — v0.10.5)*
+## Flow 13 — Built-in web tools and browse approval
 
-**Trigger.** A tool-capable model asks to act; gating is configured at **Settings → Permissions** (`SettingsPermissionsPanel.swift`).
+**Trigger.** Enable tools under **Settings → Tools**, then let a tool-capable
+model call `web_search`, `browse`, or `weather`.
 
 **Expected.**
 
-1. Built-in capabilities: read/list/create/edit files (read vs. edit gated separately), run shell commands in a **no-network sandbox**, and browse web pages.
-2. **Settings → Permissions** decides per-capability what runs without asking; everything is **off by default**, with one **Auto-approve everything** master switch (`Settings.Permissions.MasterToggle`) and a per-category matrix (dynamic `accessibilityID` rows). Connector approvals can be reset here too (`Settings.Permissions.ResetConnectorApprovals`).
-3. Filesystem access raises the sandbox approval prompt (`ContentView.swift:872`, "Allow this folder / Allow once / Deny" via `SandboxManager`). File prompts show the **real target path** and grants are scoped to the **asking conversation** (v0.10.6).
+1. The three built-in tools are individually enabled or disabled. A disabled
+   tool is omitted from the request and refused again at dispatch.
+2. `web_search` uses DuckDuckGo, Brave, or Tavily as selected under Tools;
+   provider keys are stored in Keychain. `weather` uses Open-Meteo and needs no
+   approval.
+3. `browse` accepts only HTTP(S), rejects private/loopback/reserved destinations
+   before prompting, and shows the display-safe host and complete URL in a
+   per-fetch approval sheet (`ToolApproval.Browse.{Allow,Deny}`). Redirects are
+   checked and approved under the same policy.
+4. **Approve every page automatically** changes browse from per-fetch approval
+   to a persisted blanket mode. This does not approve MCP tools; connector grants
+   remain per tool under **Settings → Connectors**.
+5. The app ships no filesystem tools, shell execution, permissions matrix, or
+   filesystem sandbox. Those capabilities must not be inferred from the engine
+   or from the retired rapid-desktop contract.
 
-**Touches.** `UI/SettingsPermissionsPanel.swift`, `UI/ContentView.swift` (sandbox dialog), `Tools/SandboxManager.*`, the built-in tool implementations, `CompositeToolRegistry.swift`.
+**Touches.** `UI/SettingsToolsPanel.swift`, `UI/ContentView.swift`
+(`BrowseApprovalSheet`), `Tools/BuiltinToolRegistry.swift`,
+`Tools/BrowseApprovalStore.swift`, `Tools/BrowseSSRFGuard.swift`,
+`Tools/{WebSearchTool,BrowseTool,WeatherTool}.swift`.
 
-**Last smoke result.** Definitions current to v0.10.6; re-smoke pending.
+**Last smoke result.** Enable/disable, provider persistence, SSRF refusal, approval
+decisions, redirects, and cancellation are unit-covered; the built-in-tools
+GoldenFlow exercises the rendered settings and chat path.
 
-**Known issues.** Sandbox + connector approval prompts are `confirmationDialog`/`alert` (no AXIdentifier) — manual verification only.
-
-> **Stale — Flow 13 describes a surface that is not in the tree.**
-> `SettingsPermissionsPanel` and `Tools/SandboxManager.*` resolve to **zero** files under
-> `apps/rapid-mac/Sources/`; this build ships no filesystem or shell tools and no sandbox,
-> so the permissions matrix and the folder-approval prompt above do not exist. Left in place
-> rather than deleted because the *product* intent is still wanted; the identifiers, file
-> references and "known issues" in Flow 13 must not be trusted until it is rebuilt.
->
-> Flow 12 was in the same state and **was** rebuilt (issue #1716) — its references above are
-> current. Note that Flow 13's claim that connector approvals can be reset from
-> Settings → Permissions is not how it landed: that reset lives in Settings → Connectors
-> (`Settings.Connectors.ResetApprovals`).
+**Known issues.** DNS rebinding and pagination/result-bound hardening remain in
+#1535. A deliberately declined or failed result can still be mischaracterised by
+weak models; investigation is tracked in #1582.
 
 ---
 
@@ -391,7 +421,6 @@ golden-flow harness has no fixture connector, so that step is manual for now.
 - **Model Management** (prefix `Settings.ModelManagement.`) — `SettingsModelManagementPanel.swift`: `FolderPath`, `FolderUnavailable`, `ChooseFolder`, `UseDefaultFolder`, `Search`, `SortMenu`, `Filter`, `RecommendedHeader`, `Recommended.<role>`, `Footer`, `MeterLegend`, `Favorite.<alias>`, `Delete.<alias>`, `Download.<alias>`, `Cancel.<alias>`, `Retry.<alias>`, `Row.<alias>`, `Status.<text>`, plus `Recommended.{Delete,Download,Cancel,Retry}.<alias>`.
 - **Connectors** (prefix `Settings.Connectors.`) — `SettingsConnectorsPanel.swift`: `MasterToggle`, `AutoApproveToggle`, `ResetApprovals`, `RestartButton`, `SubsystemError`, `AddButton`, `ConfirmRemove`, `CancelRemove`, `Row.Status.<name>`, `Row.Toggle.<name>`, `Row.Menu.<name>`, `Row.Edit.<name>`, `Row.Remove.<name>`, `Tool.Toggle.<name>`. `MCPServerEditorSheet.swift` (prefix `Settings.Connectors.Editor.`): `Name`, `Transport`, `Command`, `URL`, `Enabled`, `AddArgument`, `AddEnv`, `Allow`, `Cancel`. Pinned by `AccessibilityIdentifierInventoryTests`.
 - **MCP tool approval sheet** — `ContentView.swift`: `ToolApproval.MCP.Allow`, `ToolApproval.MCP.AlwaysAllow`, `ToolApproval.MCP.Deny`.
-- **Permissions** — `SettingsPermissionsPanel.swift`: `Settings.Permissions.MasterToggle` (:113), `Settings.Permissions.ResetConnectorApprovals` (:190), per-category dynamic rows (:244).
 - **Banners / misc** — `FailedReplaceBanner` (`FailedReplaceBanner.swift:90`), `StaleSessionAliasBanner{,.Dismiss}`, `SessionLoadFailureBanner{,.ShowInFinder,.Dismiss}`, `PoppedConversation.CloseUnavailableWindow` (`PoppedConversationView.swift:88`).
 
 - **Settings → Tools** — `SettingsToolsPanel.swift`: `Settings.Tools.Toggle.<tool>` (`web_search`, `browse`, `weather`), `Settings.Tools.WebSearch.Backend` (the radio group) + `Settings.Tools.WebSearch.Backend.<duckduckgo|brave|tavily>`, `Settings.Tools.WebSearch.KeyField.<provider>`, `Settings.Tools.WebSearch.SaveKey.<provider>`, `Settings.Tools.WebSearch.KeyDashboardLink.<provider>` (the "Get a <provider> key" link — only rendered for a provider that has a dashboard URL, which is why it was missed on the first pass), `Settings.Tools.Browse.AutoApproveToggle`.
@@ -400,7 +429,11 @@ golden-flow harness has no fixture connector, so that step is manual for now.
 - **Message actions** — `ChatView.swift`: `ChatView.Message.{Copy,Edit,Retry,CancelEdit,SaveEdit}.<message UUID>`.
 - **Tool approval** — `ContentView.swift`: `ToolApproval.Browse.{Allow,Deny}` (the per-fetch `browse` approval). The enclosing sheet is deliberately **unnamed**: an accessibility modifier on a container that is not its own accessibility element applies to the elements it contains, so naming the wrapper risks stamping it over the two buttons. Wait for `ToolApproval.Browse.Allow` to assert the prompt is up.
 
-**No identifier (can't be AX-driven):** nothing on the current surface is known to be unreachable. The note that used to sit here named the MCP `ToolApprovalDialog` and a sandbox approval prompt — the MCP one now exists (issue #1716, `MCPToolApprovalSheet`) and carries identifiers; the sandbox prompt still does not exist in `apps/rapid-mac`. Reaching the MCP sheet from a golden flow needs a configured connector that the model actually calls, which the harness has no fixture for — the *control* is addressable, the *route to it* is manual. `confirmationDialog`/`alert` buttons were the remaining doubt, and they were measured on a build of the current tree: the presented dialog is an `AXSheet` whose `AXButton` children do carry the identifiers declared at the call site.
+**No identifier (can't be AX-driven):** nothing on the current surface is known
+to be unreachable. Both browse and MCP approval sheets carry identifiers. The
+app has no sandbox approval prompt because it ships no filesystem or shell tools.
+Reaching the MCP sheet still requires a configured connector that actually calls
+a tool; its controls are addressable even when that external fixture is absent.
 
 **Keeping this inventory from rotting.** The list above used to grow only when someone remembered to add an identifier. It is now defended by a CI gate: `scripts/check_rapid_mac_ax_identifiers.py` (job `accessibility-identifiers` in `.github/workflows/rapid-mac-ci.yml`) fails any PR that *adds* an interactive control under `apps/rapid-mac/Sources/` without `.accessibilityIdentifier(...)`. A control that genuinely cannot carry one opts out with a reasoned, greppable `// ax-exempt: <why>` marker on the control's line or the line above — no such control is known on the current surface (the `confirmationDialog`/`alert` doubt was measured and closed, see above), so `rg ax-exempt apps/rapid-mac` finding nothing is correct. The gate is scoped to added lines, so the *existing* gaps below are not blocked by it; `--audit` enumerates them. See `docs/gui-golden-flows.md` § "The identifier gate".
 
@@ -424,6 +457,11 @@ Three "verified" levels, kept distinct so a reviewer doesn't conflate them:
 
 - **3-A residual — SwiftUI `Window` scene AX bridge still returns the `AXApplication` instead of the `AppKitWindow`.** `setActivationPolicy(.regular)` + `AXEnhancedUserInterface = true` lands the floor; the deeper bridge (real `AXWindow` with navigable `AXTextArea` / `AXButton` children) still needs custom `NSAccessibilityElement` wrappers. P2 — affects VoiceOver, not sighted keyboard+mouse users. **This gates whether `walkthrough.sh`'s `first button … whose AXIdentifier is …` lookups actually resolve** — verify on a fresh v0.10.6 run before trusting the AXIdentifier walk (an older note recorded these lookups returning empty; confirm current state).
 - **3-B residual — no harness-driven UI test from SSH.** Run the walk on a local login GUI session; cliclick for focus, AXIdentifier `click` for buttons, real keystrokes for submit. cliclick coordinate clicks do NOT fire SwiftUI handlers (re-confirmed v0.10.6).
-- ~~**Approval dialogs lack identifiers.**~~ Closed. The two surfaces this named (`ToolApprovalDialog`, the sandbox prompt) do not exist in `apps/rapid-mac`; the app's tool approval is the `browse` per-fetch sheet, which now carries `ToolApproval.Browse.{Allow,Deny}`. The underlying worry — that a `confirmationDialog`/`alert` cannot carry an identifier — was tested rather than assumed, and the AppKit alert bridge does forward them (see the identifier inventory above).
-- **Re-smoke the v0.10.x additions.** F10–F15 (Model Management, custom folder, Connectors, Permissions, in-chat controls, delete/undo/search) have current definitions but no full manual pass yet — walk each once on a local Mac and stamp the date.
+- ~~**Approval dialogs lack identifiers.**~~ Closed. The shipped browse and MCP
+  approval sheets carry the identifiers listed above. The retired contract's
+  sandbox prompt never existed in this app because filesystem and shell tools do
+  not ship here.
+- **Manual-only checks.** Physical global-hotkey delivery and local-login keyboard
+  traversal cannot be proven by the unattended AX lane. Keep their dated manual
+  evidence separate from CI GoldenFlow results.
 - **Compose editor doc drift fixed.** `ComposeTextEditor` is the `NSViewRepresentable`; the `NSTextView` subclass it hosts is `AutosizingTextView`. Keep this straight in future edits.
