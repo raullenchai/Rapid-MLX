@@ -1122,9 +1122,30 @@ class MLLMScheduler:
         if self.batch_generator is not None and self.running:
             try:
                 responses = self.batch_generator.next()
-            except (ValueError, RuntimeError) as e:
-                # Oversized prompt or other unrecoverable error — fail all
-                # running requests instead of retrying forever.
+            except Exception as e:
+                # Any generation-step failure — fail all running requests
+                # instead of retrying forever.
+                #
+                # #1367: this arm previously caught only
+                # ``(ValueError, RuntimeError)``. A checkpoint whose
+                # mlx-vlm model class drifts from the batch generator's
+                # call convention raises ``TypeError`` from the forward
+                # pass (the reported repro: ``Model.__call__() missing 1
+                # required positional argument: 'mask'`` on
+                # ``ministral-3b``). ``TypeError`` is neither of those,
+                # so it escaped this handler, propagated through
+                # ``_process_loop``'s outer ``except Exception``, and the
+                # loop logged + retried the SAME poisoned batch every
+                # step (~565 identical lines in one 90 s client request)
+                # while the waiting request's queue never received an
+                # output or the ``None`` sentinel — an unbounded silent
+                # hang. Same class as the F-061 image-decode ``OSError``
+                # (see ``tests/test_mllm_corrupt_image.py``), which was
+                # patched at its source; catching every exception here is
+                # the general fix, so future call-convention drift fails
+                # closed instead of hanging. ``BaseException``
+                # (KeyboardInterrupt/SystemExit/GeneratorExit) still
+                # propagates for clean interpreter teardown.
                 err_msg = str(e)
                 logger.error(f"Batch generation failed: {err_msg}")
                 error_ids = set(self.running.keys())
@@ -1491,6 +1512,14 @@ class MLLMScheduler:
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
+                    # Last-resort backstop for step-orchestration bugs
+                    # (scheduling / response distribution), NOT the
+                    # generation path: ``_step_no_queue`` now fails the
+                    # running batch closed on any ``batch_generator.next()``
+                    # exception (see #1367 above), so a poisoned batch can
+                    # no longer reach this arm to be retried forever. An
+                    # exception that still lands here is unexpected; log and
+                    # continue rather than tear the whole scheduler down.
                     logger.error(f"Error in MLLM process loop: {e}")
                     await asyncio.sleep(0.1)
         finally:
