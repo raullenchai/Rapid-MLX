@@ -91,6 +91,7 @@ def test_peekaboo_requirement_is_default_deny():
         "chat-restore",
         "cached-quickstart",
         "download-progress",
+        "settings-persistence",
         "restored-tools",
         "tool-loop-budget",
         "chat-depth",
