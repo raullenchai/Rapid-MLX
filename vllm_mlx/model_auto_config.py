@@ -405,6 +405,21 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="muse",
         ),
     ),
+    # inclusionAI Ling 3.0 / 2.6 (bailing_hybrid — vendored KDA+MLA MoE
+    # backbone, PR pending). Wire: GLM-4.7-style <arg_key>/<arg_value>
+    # tool envelope (verified against the chat template rendering) and
+    # standard <think> reasoning with the template pre-injecting the
+    # opener on the generation prompt ("detailed thinking on").
+    # KDA linear-attention layers produce ArraysCache -> hybrid lane.
+    (
+        re.compile(r"(?:^|/)ling[-_.]?[23]", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="glm47",
+            reasoning_parser="qwen3",
+            is_hybrid=True,
+            supports_spec_decode=False,
+        ),
+    ),
     # Gemma 4 (native tool format)
     (
         re.compile(r"gemma[-_]?4", re.IGNORECASE),
