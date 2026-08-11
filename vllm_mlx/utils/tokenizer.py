@@ -710,6 +710,38 @@ def _register_vendored_archs() -> None:
         else:
             _VENDORED_MODEL_TYPES.add("muse_glimmer")
 
+    if "mlx_lm.models.bailing_hybrid" not in sys.modules:
+        # inclusionAI Ling 3.0 family (tiny/flash) + Ling 2.6 — vendored
+        # KDA+MLA hybrid backbone (see ``vllm_mlx/models/bailing_hybrid.py``
+        # for the why + sync policy). Defers to native mlx-lm support the
+        # moment upstream ships it (mlx-lm PR #1227 lineage), same probe
+        # as ``hy_v3`` above.
+        import importlib.util as _importlib_util
+
+        _bailing_native_spec = None
+        try:
+            _bailing_native_spec = _importlib_util.find_spec(
+                "mlx_lm.models.bailing_hybrid"
+            )
+        except (ImportError, ValueError):
+            _bailing_native_spec = None
+
+        if _bailing_native_spec is None:
+            try:
+                from ..models import bailing_hybrid as _bailing
+
+                sys.modules.setdefault("mlx_lm.models.bailing_hybrid", _bailing)
+            except Exception as e:
+                logger.warning(
+                    "bailing_hybrid vendored module failed to register — "
+                    "inclusionAI/Ling-3.0-* will not load until resolved: %s",
+                    e,
+                )
+            else:
+                _VENDORED_MODEL_TYPES.add("bailing_hybrid")
+        else:
+            _VENDORED_MODEL_TYPES.add("bailing_hybrid")
+
 
 def _is_vendored_arch_model(model_name: str) -> bool:
     """Return True if model's config.json declares a model_type we vendor."""
