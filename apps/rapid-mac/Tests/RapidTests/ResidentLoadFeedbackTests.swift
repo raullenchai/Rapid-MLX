@@ -160,7 +160,7 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
         let body: Data
         let status: Int
         if let rejectOnlyAlias = rejectOnlyAlias {
-            if alias(from: request) == rejectOnlyAlias {
+            if Self.alias(from: request) == rejectOnlyAlias {
                 status = 422
                 body = Data("{\"detail\": \"\(Self.rejectionDetail)\"}".utf8)
             } else {
