@@ -8,7 +8,8 @@ import Observation
 @MainActor
 @Observable
 final class ImageGenViewModel {
-    /// Aspect ratio as three friendly buttons rather than a "512×512" string.
+    /// Aspect ratio stays independent from output resolution so changing one
+    /// never silently resets the other.
     enum Aspect: String, CaseIterable, Identifiable {
         case square, portrait, landscape
         var id: String { rawValue }
@@ -19,13 +20,32 @@ final class ImageGenViewModel {
             case .landscape: return "4:3"
             }
         }
-        var size: String {
+        func dimensions(for resolution: Resolution) -> (width: Int, height: Int) {
             switch self {
-            case .square: return "1024x1024"
-            case .portrait: return "768x1024"
-            case .landscape: return "1024x768"
+            case .square: return (resolution.longEdge, resolution.longEdge)
+            case .portrait: return (resolution.longEdge * 3 / 4, resolution.longEdge)
+            case .landscape: return (resolution.longEdge, resolution.longEdge * 3 / 4)
             }
         }
+
+        func size(for resolution: Resolution) -> String {
+            let dimensions = dimensions(for: resolution)
+            return "\(dimensions.width)x\(dimensions.height)"
+        }
+    }
+
+    /// Long-edge output presets. Every aspect maps these values to dimensions
+    /// accepted by the server (256...2048 and a multiple of 16).
+    enum Resolution: Int, CaseIterable, Identifiable {
+        case compact = 512
+        case balanced = 768
+        case detailed = 1024
+        case large = 1280
+        case high = 1536
+        case maximum = 2048
+
+        var id: Int { rawValue }
+        var longEdge: Int { rawValue }
     }
 
     /// The two phases of a render, shown very differently: a reassuring
@@ -43,6 +63,15 @@ final class ImageGenViewModel {
     // MARK: - Composed input
     var prompt: String = ""
     var aspect: Aspect = .square
+    var resolution: Resolution = .detailed
+
+    var outputSize: String {
+        aspect.size(for: resolution)
+    }
+
+    var outputSizeLabel: String {
+        outputSize.replacingOccurrences(of: "x", with: " × ")
+    }
 
     // MARK: - Catalog
     /// Every installed/available image model (the ``[image:gen]`` rows). The
@@ -192,7 +221,7 @@ final class ImageGenViewModel {
             let poll = self.startPolling(model: self.selectedAlias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.generate(
-                prompt: trimmed, model: self.selectedAlias, size: self.aspect.size,
+                prompt: trimmed, model: self.selectedAlias, size: self.outputSize,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
             if let first = images.first {
@@ -229,7 +258,7 @@ final class ImageGenViewModel {
             defer { poll.cancel() }
             let images = try await self.client.edit(
                 imagePNG: source.pngData, prompt: trimmed, model: self.selectedAlias,
-                size: self.aspect.size, count: 1, seed: nil, port: port, bearer: bearer
+                size: self.outputSize, count: 1, seed: nil, port: port, bearer: bearer
             )
             if let first = images.first {
                 self.results.insert(contentsOf: images, at: 0)

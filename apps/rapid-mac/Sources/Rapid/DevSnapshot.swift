@@ -193,6 +193,9 @@ enum DevSnapshot {
         render(contentView(width: 640, height: 560), to: "\(dir)/content-min.png")
         // Images tab (empty state — no results, catalog not yet resolved).
         render(imagesView(width: 700, height: 640), to: "\(dir)/images-empty.png")
+        // Narrow composer: the canvas controls wrap to the two-row
+        // ViewThatFits layout, which only this width exercises.
+        render(imagesView(width: 420, height: 640), to: "\(dir)/images-narrow.png")
         renderHosted(imagesView(width: 700, height: 640),
                      size: CGSize(width: 700, height: 640),
                      appearance: .darkAqua, to: "\(dir)/images-dark.png")

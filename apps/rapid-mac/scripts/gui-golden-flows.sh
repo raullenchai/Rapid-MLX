@@ -2113,6 +2113,8 @@ flow_image_generation() {
         || die "Images.ModelPicker never resolved to $FAKE_IMAGE_ALIAS — the tab has no model to render with"
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/ig-empty.json" >/dev/null \
         || die "Images.Aspect is missing — no way to choose an aspect ratio"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Resolution")' "$OUT/ig-empty.json" >/dev/null \
+        || die "Images.Resolution is missing — no way to choose an output resolution"
 
     # 3. Load the model. rapid-mlx serves one model per process, so opening the
     #    tab cannot silently inherit a ready server: the readiness gate holds
