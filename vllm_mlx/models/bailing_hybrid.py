@@ -180,45 +180,43 @@ def _kda_gate(
     return -a[..., None] * nn.softplus(f)
 
 
-def _kda_recurrence(
+def _kda_update(
     q: mx.array,
     k: mx.array,
     v: mx.array,
-    g: mx.array,
+    g_log: mx.array,
     beta: mx.array,
-    state: mx.array,
+    state: mx.array | None,
 ) -> tuple[mx.array, mx.array]:
-    """Naive KDA (delta rule with per-channel decay) recurrence.
+    """Run the KDA delta-rule recurrence via mlx-lm's fused gated-delta
+    path (the same Metal kernel / ops pair qwen3-next and kimi_linear
+    ship on), with our precomputed safe-gate decay.
 
-    Mirrors fla ``naive_recurrent_kda``: per step t
-
-        h *= exp(g_t)[:, :, None]          (decay keys)
-        v_t -= (h * k_t[..., None]).sum(-2) (delta correction)
-        v_t *= beta_t
-        h += k_t[..., None] * v_t[..., None, :].swap
-        o_t = (h * q_t[..., None]).sum(-2)
-
-    Shapes: q/k/v/g [B, T, H, D]; beta [B, T, H]; state [B, H, D, D]
-    (keys dim first, values dim last). float32 state for stability —
-    same as the fla kernel and mlx-lm's gated_delta path.
+    ``gated_delta_ops``/``gated_delta_kernel`` take the decay as a
+    MULTIPLIER (``compute_g`` returns ``exp(...)``), vectorized per
+    channel ``[B, T, H, Dk]`` — so the log-space safe gate is
+    exponentiated here. A per-token Python loop over the full prompt
+    (the naive fla reference) is prohibitively slow at 131K context
+    (codex r1 #1); the kernel path chunks the recurrence on Metal.
     """
-    B, T, H, D = q.shape
-    out = mx.zeros((B, T, H, D), dtype=mx.float32)
-    q = q.astype(mx.float32)
-    k = k.astype(mx.float32)
-    v = v.astype(mx.float32)
-    beta = beta.astype(mx.float32)
-    outs = []
-    for t in range(T):
-        state = state * mx.exp(g[:, t])[..., None]
-        kt = k[:, t]  # [B, H, D]
-        vt = v[:, t]
-        v_delta = (state * kt[..., None]).sum(axis=-2)  # [B, H, Dv]
-        vt = (vt - v_delta) * beta[:, t][..., None]
-        state = state + kt[..., None] * vt[..., None, :]
-        outs.append((state * q[:, t][..., None]).sum(axis=-2))
-    out = mx.stack(outs, axis=1)
-    return out, state
+    from mlx_lm.models.gated_delta import gated_delta_kernel, gated_delta_ops
+
+    g = mx.exp(g_log)
+    if state is None:
+        B = q.shape[0]
+        state = mx.zeros((B, v.shape[-2], v.shape[-1], k.shape[-1]), dtype=mx.float32)
+    # The Metal kernel tiles Dk in 32-lane strips (``n_per_t = Dk/32``);
+    # head dims below 32 would generate a zero-length array and fail the
+    # metallib build. Production checkpoints use head_dim 128; tiny test
+    # configs take the ops path.
+    use_kernel = (
+        gated_delta_kernel is not None
+        and k.shape[-1] % 32 == 0
+        and mx.default_device() == mx.gpu
+        and mx.metal.is_available()
+    )
+    fn = gated_delta_kernel if use_kernel else gated_delta_ops
+    return fn(q, k, v, g, beta, state, None)
 
 
 class BailingKDA(nn.Module):
@@ -310,12 +308,7 @@ class BailingKDA(nn.Module):
         )
         beta = mx.sigmoid(self.b_proj(x).astype(mx.float32))
 
-        if ssm_state is None:
-            ssm_state = mx.zeros(
-                (B, self.num_heads, self.head_dim, self.head_dim),
-                dtype=mx.float32,
-            )
-        out, ssm_state = _kda_recurrence(q, k, v, g, beta, ssm_state)
+        out, ssm_state = _kda_update(q, k, v, g, beta, ssm_state)
         if cache is not None:
             cache[3] = ssm_state
 
@@ -368,9 +361,18 @@ class BailingMLA(nn.Module):
             )
         # Checkpoint names the output projection ``dense``.
         self.dense = nn.Linear(self.num_heads * self.v_head_dim, hidden, bias=bias)
+        # rope_interleave=True (Ling 3.0) is MLX's ``traditional`` layout
+        # (consecutive-pair rotation); wire the flag instead of pinning
+        # it, and refuse silently-wrong serving for scaled-rope exports
+        # we have not verified (codex r1 #3).
+        if args.rope_scaling:
+            raise NotImplementedError(
+                "bailing_hybrid: rope_scaling is not supported by the "
+                f"vendored backbone yet (got {args.rope_scaling!r})"
+            )
         self.rope = nn.RoPE(
             self.qk_rope_head_dim,
-            traditional=True,
+            traditional=bool(args.rope_interleave),
             base=args.rope_theta,
         )
 

@@ -177,10 +177,17 @@ def test_detect_model_config_routes_ling():
         assert cfg.reasoning_parser == "qwen3"
         assert cfg.is_hybrid is True
 
-    # Nearby names must not match.
-    for name in ("mlx-community/gemma-4-26b-a4b-it-4bit", "sterling-3b"):
-        cfg = detect_model_config(name)
-        assert cfg is None or cfg.tool_call_parser != "glm47" or "ling" not in name
+    # Nearby names must not be routed to the Ling configuration
+    # (codex r1 #2: the old disjunction was vacuously true).
+    cfg = detect_model_config("mlx-community/gemma-4-26b-a4b-it-4bit")
+    assert cfg is not None and cfg.tool_call_parser == "gemma4"
+    # "sterling" contains the substring "ling" but not at a boundary the
+    # pattern accepts.
+    cfg = detect_model_config("sterling-3b")
+    assert cfg is None or cfg.tool_call_parser != "glm47"
+    assert detect_model_config("acme/sterling-3b") is None or (
+        detect_model_config("acme/sterling-3b").tool_call_parser != "glm47"
+    )
 
 
 def test_glm47_parser_handles_bailing_wire():
