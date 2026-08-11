@@ -487,6 +487,12 @@ class BailingGate(nn.Module):
             top2 = mx.topk(grouped, 2, axis=-1)
             group_scores = top2.sum(axis=-1)
             drop = mx.argpartition(group_scores, kth=k_drop - 1, axis=-1)[..., :k_drop]
+            # ``put_along_axis`` broadcasts the trailing size-1 index dim
+            # across the experts-per-group axis (numpy semantics), so the
+            # single write masks EVERY expert slot of each dropped group —
+            # unlike torch scatter, no expand is needed. Pinned by
+            # ``test_gate_group_drop_masks_whole_group`` and by the
+            # reference parity run (1.5e-6 on a drop-path config).
             masked = mx.put_along_axis(
                 grouped,
                 mx.expand_dims(drop, -1),

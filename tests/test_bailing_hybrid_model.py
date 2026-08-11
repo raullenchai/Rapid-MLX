@@ -226,3 +226,44 @@ def test_short_conv_kernel_one_state():
     assert state.shape == (1, 0, 4)
     out2, state2 = conv(mx.ones((1, 1, 4)), state)
     assert out2.shape == (1, 1, 4) and state2.shape == (1, 0, 4)
+
+
+def test_gate_group_drop_masks_whole_group():
+    """Group dropping must mask EVERY expert slot of a dropped group,
+    not just slot 0 (codex r4 asked; mx.put_along_axis broadcasts the
+    trailing size-1 index dim, so the implementation is correct — this
+    test pins that semantic against regressions)."""
+    args = bh.ModelArgs.from_dict(
+        dict(
+            TINY,
+            num_experts=8,
+            n_group=2,
+            topk_group=1,
+            num_experts_per_tok=2,
+            norm_topk_prob=False,
+            routed_scaling_factor=1.0,
+            moe_router_enable_expert_bias=True,
+        )
+    )
+    gate = bh.BailingGate(args)
+    # Bias group 1 (experts 4-7) far above group 0, EXCEPT expert 5,
+    # which gets the single highest bias overall. If masking only hit
+    # slot 0 of the dropped group, expert 5 (slot 1 of group 0's
+    # competitor... construct: make group 0 the DROPPED group but give
+    # its slot-1 expert (index 1) the highest selection score. A
+    # correct whole-group mask never selects expert 1.
+    import numpy as np
+
+    bias = np.zeros(8, dtype=np.float32)
+    bias[4:8] = 10.0  # group 1 wins the group competition
+    bias[1] = 100.0  # slot 1 of dropped group 0: highest single score
+    # But group score = sum of top-2 per group: group0 = 100 + ~0,
+    # group1 = 20. Make group1 still win: raise its two best.
+    bias[4] = 60.0
+    bias[5] = 60.0  # group1 top-2 sum = 120 > group0's ~100
+    gate.expert_bias = mx.array(bias)
+    gate.weight = mx.zeros_like(gate.weight)
+
+    idx, _ = gate(mx.zeros((1, 3, TINY["hidden_size"])))
+    chosen = set(np.array(idx).flatten().tolist())
+    assert chosen <= {4, 5, 6, 7}, chosen  # nothing from dropped group 0
