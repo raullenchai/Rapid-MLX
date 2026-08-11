@@ -78,8 +78,17 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         # Multi-character units only. A bare "B" would swallow "Sub-1B
         # models", where the B is a parameter count, not a byte count.
+        #
+        # The spelled-out units (…"gigabytes") are how VoiceOver reads the
+        # footer memory gauge — "12.3 gigabytes used out of 32 gigabytes" — so
+        # both the used reading AND the machine's total collapse here. Without
+        # them the total (an integer, no decimal) slips past every rule and a
+        # baseline written on a 32 GB Mac can never match a 7 GB runner.
         re.compile(
-            r"\b\d+(?:[.,]\d+)?\s*(?:KB|MB|GB|TB|PB|KiB|MiB|GiB|TiB|bytes?)\b",
+            r"\b\d+(?:[.,]\d+)?\s*"
+            r"(?:KB|MB|GB|TB|PB|KiB|MiB|GiB|TiB"
+            r"|kilobytes?|megabytes?|gigabytes?|terabytes?|petabytes?"
+            r"|bytes?)\b",
         ),
         "<size>",
     ),
@@ -170,6 +179,42 @@ def is_window_control(record: dict) -> bool:
         "Hide Sidebar",
         "Show Sidebar",
     }
+
+
+# The footer's GPU gauge has no stable cross-machine shape. Apple Silicon
+# publishes a live utilisation reading (``AXUnknown desc="GPU 47 percent"``);
+# Intel Macs and sandboxed apps can't probe AGXAccelerator at all and instead
+# publish a static "unavailable" note (``AXStaticText help="GPU probe
+# unavailable — …" value=text``). SAME footer item, different role, different
+# attribute, different text. Its reading is live state, not structure — exactly
+# like the CPU and memory gauges beside it — so collapse the whole element to
+# one token. Otherwise a baseline written on either machine turns the other red
+# on the GPU line alone, which is precisely how the golden flows regressed.
+#
+# The two exact shapes SystemPills.swift publishes, each keyed to the attribute
+# it lands in and full-matched end to end. The live reading is an
+# accessibilityLabel ("GPU <int> percent", an AXDescription); the note is a
+# .help string that names AGXAccelerator (an AXHelp). Full-matching both — and
+# never a bare "GPU " prefix or loose substring — means an unrelated control
+# ("GPU 47 percent limit", "GPU probe unavailable settings", a "GPU settings"
+# button) keeps its own structure, so a real regression there still fails.
+_GPU_READING = re.compile(r"GPU \d+ percent")
+_GPU_UNAVAILABLE = re.compile(r"GPU probe unavailable\b.*AGXAccelerator.*", re.DOTALL)
+
+
+def is_gpu_telemetry(record: dict) -> bool:
+    """True for the footer GPU utilisation readout, in either platform shape.
+
+    Keyed to the exact (role, attribute) pair each shape uses and full-matched,
+    so only the gauge itself is collapsed. A gauge whose role ever changes stops
+    matching and surfaces as a visible golden-flow diff, never a silent rewrite.
+    """
+    role = record.get("role")
+    if role == "AXUnknown":
+        return bool(_GPU_READING.fullmatch(record.get("description") or ""))
+    if role == "AXStaticText":
+        return bool(_GPU_UNAVAILABLE.fullmatch(record.get("help") or ""))
+    return False
 
 
 class Node:
@@ -272,6 +317,12 @@ def quote(text: str) -> str:
 
 def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
     record = node.record
+    if is_gpu_telemetry(record):
+        # One canonical line for both platform shapes (see is_gpu_telemetry).
+        parts = ["AXUnknown", 'desc="GPU <gpu>"']
+        if "enabled" in record:
+            parts.append(f"enabled={str(bool(record['enabled'])).lower()}")
+        return " ".join(parts)
     raw_role = record.get("role", "AXUnknown")
     parts = [_ROLE_EQUIVALENTS.get(raw_role, raw_role)]
     subrole = record.get("subrole")

@@ -174,6 +174,90 @@ def test_no_committed_baseline_pins_a_title_beside_a_description(baseline: Path)
     )
 
 
+def test_gpu_gauge_normalizes_identically_across_machines():
+    """Apple Silicon reads a live GPU %, Intel/sandboxed says "unavailable".
+
+    Same footer item, different role + attribute + text. A baseline generated
+    on one turns the other red on the GPU line unless the normalizer collapses
+    both to one token — the exact regression these flows hit.
+    """
+    apple_silicon = _render(
+        {"role": "AXUnknown", "description": "GPU 47 percent", "enabled": True}
+    )
+    intel_sandboxed = _render(
+        {
+            "role": "AXStaticText",
+            "help": (
+                "GPU probe unavailable — Intel Macs and sandboxed apps don't "
+                "expose AGXAccelerator utilisation."
+            ),
+            "value": "text",
+            "enabled": True,
+        }
+    )
+    assert apple_silicon == intel_sandboxed
+    assert "percent" not in apple_silicon
+    assert "AGXAccelerator" not in intel_sandboxed
+
+
+def test_gpu_canonicalization_does_not_swallow_unrelated_controls():
+    """The gauge is matched on its exact wording, not a bare "GPU " prefix.
+
+    A control that merely starts with "GPU" — a settings row, a menu item —
+    keeps its own structure, so a real regression there still fails the gate.
+    """
+    # A gauge-shaped button keeps its own structure — the role guard rejects it
+    # even though its text starts like the live reading.
+    rendered = _render(
+        {
+            "role": "AXButton",
+            "identifier": "Settings.Category.gpu",
+            "description": "GPU settings",
+            "enabled": True,
+        }
+    )
+    assert 'desc="GPU settings"' in rendered
+    assert "<gpu>" not in rendered
+    assert 'id="Settings.Category.gpu"' in rendered
+
+    # Neither guard alone suffices: each of these clears the role check but the
+    # full-match rejects the text, so a "GPU 47 percent settings" reading, a
+    # "GPU probe unavailable options" note, or an incidental AGXAccelerator
+    # mention is never mistaken for the gauge.
+    for record in (
+        {"role": "AXUnknown", "description": "GPU 47 percent settings"},
+        {"role": "AXStaticText", "help": "GPU probe unavailable options"},
+        {
+            "role": "AXStaticText",
+            "help": "Enable AGXAccelerator logging in the developer menu",
+        },
+    ):
+        rendered = _render({**record, "enabled": True})
+        assert "<gpu>" not in rendered, rendered
+
+
+def test_memory_gauge_total_is_machine_independent():
+    """The footer memory readout names the machine's total RAM. A 32 GB Mac and
+    a 7 GB runner must still normalize to the same line."""
+    big = _render(
+        {
+            "role": "AXUnknown",
+            "description": "Memory normal: 12.3 gigabytes used out of 32 gigabytes",
+            "enabled": True,
+        }
+    )
+    small = _render(
+        {
+            "role": "AXUnknown",
+            "description": "Memory normal: 4.1 gigabytes used out of 7 gigabytes",
+            "enabled": True,
+        }
+    )
+    assert big == small
+    # Neither the used reading nor the total survives as a literal number.
+    assert "32" not in big and "7" not in big
+
+
 def test_window_ordering_ignores_a_title_the_baseline_hides():
     """Sorting must use what is rendered, or two OSes order windows differently
     while rendering identical lines."""
