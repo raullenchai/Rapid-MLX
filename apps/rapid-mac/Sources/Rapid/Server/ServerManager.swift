@@ -256,6 +256,22 @@ final class ServerManager {
         residentLoadFailures[alias]
     }
 
+    /// Per-alias monotonically-increasing attempt generation. Guards the
+    /// *return-time* failure writes/clears so that, for the SAME alias, only
+    /// the attempt that began most recently may record its outcome.
+    ///
+    /// ``ensureServing`` is an `async` ``@MainActor`` method: two calls for
+    /// the same alias can interleave across the ``await residencyClient.load``
+    /// hop. Without this, an OLDER attempt that returns after a NEWER one can
+    /// clobber the newer result — an old rejection overwriting a newer
+    /// success, or an old success clearing a newer rejection. Each attempt
+    /// captures the token it minted up front; when it resumes it writes only
+    /// if that token is still the latest issued for its alias. The
+    /// ``residentLoadFailures`` dictionary alone cannot express this — it
+    /// fixes cross-*alias* clobbering but not cross-attempt clobbering within
+    /// one alias (#1838 follow-up).
+    private var residentLoadAttemptTokens: [String: UUID] = [:]
+
     /// True while a start or stop is in flight. The UI disables both
     /// buttons during this window so a second click cannot race the
     /// first into spawning a duplicate child.
@@ -854,6 +870,12 @@ final class ServerManager {
         // resident branch) means an early-return path can never leave the old
         // banner up once the user asked to load the model again (#1838).
         residentLoadFailures[trimmed] = nil
+        // This attempt becomes the NEWEST for its alias. When its async load
+        // returns it may only write/clear the failure if it is still the
+        // newest — a concurrently-issued, later attempt owns the slot from
+        // here on (#1838 follow-up).
+        let attemptToken = UUID()
+        residentLoadAttemptTokens[trimmed] = attemptToken
 
         // A healthy sidecar can admit another engine without replacing the
         // process. Only a 404/405 from an older bundled server falls back to
@@ -895,8 +917,14 @@ final class ServerManager {
                     state = .ready(alias: trimmed)
                 }
                 // A successful in-process load confirms the model is fine, so
-                // drop any (possibly concurrent) rejection recorded for it.
-                residentLoadFailures[trimmed] = nil
+                // drop any (possibly concurrent) rejection recorded for it —
+                // but only if THIS attempt is still the newest for the alias.
+                // An older attempt resuming after a newer one already
+                // succeeded must not wipe a newer attempt's outcome
+                // (#1838 follow-up).
+                if residentLoadAttemptTokens[trimmed] == attemptToken {
+                    residentLoadFailures[trimmed] = nil
+                }
                 return true
             case .unsupported:
                 break
@@ -906,10 +934,15 @@ final class ServerManager {
                 // serialized/token-bearing `detail` never reaches the surface
                 // unsanitized, while keeping the engine's actionable reason
                 // verbatim otherwise (audit P1 parity with `appendLogLines`).
-                residentLoadFailures[trimmed] = ResidentLoadFailure(
-                    alias: trimmed,
-                    message: LogScrubber.scrub(message)
-                )
+                // Only the newest attempt may publish a rejection: a stale
+                // attempt's failure must not overwrite a newer attempt's
+                // success for the same alias (#1838 follow-up).
+                if residentLoadAttemptTokens[trimmed] == attemptToken {
+                    residentLoadFailures[trimmed] = ResidentLoadFailure(
+                        alias: trimmed,
+                        message: LogScrubber.scrub(message)
+                    )
+                }
                 return false
             }
         }

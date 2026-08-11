@@ -45,12 +45,26 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
     /// answer 200 (success).
     nonisolated(unsafe) static var rejectLoad = true
 
+    /// Controllable in-order gate for the same-alias concurrency test. When
+    /// ``gateAlias`` is set, the FIRST ``/v1/models/load`` whose target
+    /// matches it blocks in ``startLoading`` (on the URL loading thread, NOT
+    /// the main actor) until the test signals ``gateSemaphore``. Every later
+    /// load for that alias passes straight through. This lets a test make an
+    /// OLDER ``ensureServing`` attempt return AFTER a NEWER one, which the
+    /// per-alias ``residentLoadFailures`` dictionary alone cannot express.
+    nonisolated(unsafe) static var gateAlias: String?
+    nonisolated(unsafe) static var gateSemaphore: DispatchSemaphore?
+    nonisolated(unsafe) static var gateHasHeldOne = false
+
     /// Restore the defaults so one test can never observe another test's
     /// leftover configuration — the leak that made the previous global-slot
     /// tests flaky under parallel execution.
     static func reset() {
         rejectLoad = true
         rejectOnlyAlias = nil
+        gateAlias = nil
+        gateSemaphore = nil
+        gateHasHeldOne = false
     }
 
     static func session() -> URLSession {
@@ -67,6 +81,14 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
         let status: Int
         if request.httpMethod == "POST", request.url?.path == "/v1/models/load" {
             let requestedAlias = Self.alias(from: request)
+            // Hold only the FIRST load for the gated alias until the test
+            // releases it, so a second, newer attempt can complete while the
+            // first is still in flight — recreating the exact interleaving
+            // where an older attempt returns last (#1838 follow-up).
+            if let ga = Self.gateAlias, requestedAlias == ga, !Self.gateHasHeldOne {
+                Self.gateHasHeldOne = true
+                Self.gateSemaphore?.wait()
+            }
             if let rejectOnlyAlias = Self.rejectOnlyAlias {
                 if requestedAlias == rejectOnlyAlias {
                     status = 422
@@ -231,6 +253,106 @@ struct ResidentLoadFeedbackTests {
         #expect(server.residentLoadFailure(for: "llama-3.2-3b") == nil)
         #expect(server.residentLoadFailure(for: "flux2-klein-4b") != nil,
                 "loading a different, succeeding model must not wipe A's rejection")
+    }
+
+    /// The same-alias ordering guarantee the per-alias dictionary cannot
+    /// provide by itself. ``ensureServing`` is an ``@MainActor`` async method,
+    /// so two attempts for the SAME alias can interleave across the
+    /// ``await residencyClient.load`` hop: an attempt that STARTED earlier may
+    /// RETURN later. Without the per-alias attempt token, that older
+    /// rejection would overwrite the newer success and the UI would show an
+    /// expired failure even though the latest load succeeded.
+    ///
+    /// The stub's in-order gate holds the FIRST load for the alias in flight
+    /// (on the URL loading thread, never the main actor) while a second,
+    /// newer attempt completes first — reproducing exactly the interleaving
+    /// where latest-attempt-wins must hold.
+    @Test("An older rejection cannot clobber a newer success for the same alias")
+    func olderRejectionDoesNotClobberNewerSuccess() async throws {
+        defer { ResidentLoadRejectProtocol.reset() }
+        let server = makeServer()
+        let alias = "flux2-klein-4b"
+
+        let gate = DispatchSemaphore(value: 0)
+        ResidentLoadRejectProtocol.rejectLoad = true // older attempt, when released, rejects
+        ResidentLoadRejectProtocol.gateAlias = alias
+        ResidentLoadRejectProtocol.gateSemaphore = gate
+
+        // Attempt 1 (older): mints the first token, clears the failure, and
+        // blocks inside the load until the gate releases it.
+        let attempt1: Task<Bool, Never> = Task { @MainActor in
+            await server.ensureServing(alias: alias, hfPath: nil)
+        }
+        #expect(await pollUntil { ResidentLoadRejectProtocol.gateHasHeldOne },
+                "the first load never reached the gate")
+
+        // Attempt 2 (newer) succeeds and takes over the alias's slot.
+        ResidentLoadRejectProtocol.rejectLoad = false
+        let attempt2Result = await server.ensureServing(alias: alias, hfPath: nil)
+        #expect(attempt2Result == true)
+        #expect(server.residentLoadFailure(for: alias) == nil,
+                "the newer success leaves no rejection in its own slot")
+
+        // Release attempt 1 so it resumes as a REJECTION — but it is no
+        // longer the newest attempt, so its stale rejection must be ignored.
+        ResidentLoadRejectProtocol.rejectLoad = true
+        gate.signal()
+        let attempt1Result = await attempt1.value
+        #expect(attempt1Result == false)
+        #expect(server.residentLoadFailure(for: alias) == nil,
+                "an older attempt's rejection must not clobber the newer success")
+    }
+
+    /// The mirror image: an older attempt's SUCCESS must not clear a newer
+    /// attempt's rejection. The per-alias dictionary allows an old success to
+    /// wipe a fresh failure unless the return-time write is also guarded by
+    /// which attempt is newest (#1838 follow-up).
+    @Test("An older success cannot clear a newer rejection for the same alias")
+    func olderSuccessDoesNotClearNewerRejection() async throws {
+        defer { ResidentLoadRejectProtocol.reset() }
+        let server = makeServer()
+        let alias = "flux2-klein-4b"
+
+        let gate = DispatchSemaphore(value: 0)
+        ResidentLoadRejectProtocol.rejectLoad = false // older attempt, when released, succeeds
+        ResidentLoadRejectProtocol.gateAlias = alias
+        ResidentLoadRejectProtocol.gateSemaphore = gate
+
+        let attempt1: Task<Bool, Never> = Task { @MainActor in
+            await server.ensureServing(alias: alias, hfPath: nil)
+        }
+        #expect(await pollUntil { ResidentLoadRejectProtocol.gateHasHeldOne },
+                "the first load never reached the gate")
+
+        // Attempt 2 (newer) is rejected and takes over the alias's slot.
+        ResidentLoadRejectProtocol.rejectLoad = true
+        let attempt2Result = await server.ensureServing(alias: alias, hfPath: nil)
+        #expect(attempt2Result == false)
+        #expect(server.residentLoadFailure(for: alias) != nil,
+                "the newer rejection is recorded")
+
+        // Release attempt 1 so it resumes as SUCCESS — but it is not newest,
+        // so its success must not wipe the newer rejection.
+        ResidentLoadRejectProtocol.rejectLoad = false
+        gate.signal()
+        let attempt1Result = await attempt1.value
+        #expect(attempt1Result == true)
+        #expect(server.residentLoadFailure(for: alias) != nil,
+                "an older attempt's success must not clear the newer rejection")
+    }
+
+    /// Poll a condition while yielding the main actor, bounded so a stuck
+    /// condition fails the test rather than hanging it.
+    private func pollUntil(
+        _ condition: @escaping () -> Bool,
+        timeout: TimeInterval = 3
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
     }
 
     /// Build a ``ServerManager`` in the resident-ready state with the stub
