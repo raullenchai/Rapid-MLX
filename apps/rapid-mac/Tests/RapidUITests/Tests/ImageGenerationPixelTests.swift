@@ -23,8 +23,8 @@ final class ImageGenerationPixelTests: XCTestCase {
         // durable channel shared with the AX GoldenFlow harness.
         let fakeConfig: [String: String] = [
             "FAKE_EVENT_LOG": eventLog.path,
-            "FAKE_IMAGE_STEPS": "4",
-            "FAKE_IMAGE_STEP_MS": "100",
+            "FAKE_IMAGE_STEPS": "8",
+            "FAKE_IMAGE_STEP_MS": "300",
         ]
         let fakeConfigData = try JSONSerialization.data(withJSONObject: fakeConfig)
         try fakeConfigData.write(to: testHome.appendingPathComponent(".rapid-golden-fake.json"))
@@ -36,8 +36,8 @@ final class ImageGenerationPixelTests: XCTestCase {
             "CFFIXED_USER_HOME": testHome.path,
             "RAPID_BIN": fakeSidecar,
             "FAKE_EVENT_LOG": eventLog.path,
-            "FAKE_IMAGE_STEPS": "4",
-            "FAKE_IMAGE_STEP_MS": "100",
+            "FAKE_IMAGE_STEPS": "8",
+            "FAKE_IMAGE_STEP_MS": "300",
         ]
         app.launch()
         defer { app.terminate() }
