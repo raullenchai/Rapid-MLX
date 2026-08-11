@@ -100,7 +100,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
-        slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
+        slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -2326,6 +2326,68 @@ flow_image_generation() {
     baseline image-generation.generated "$OUT/ig-revisited.json"
     log "  image-generation OK"
 }
+flow_resident_load_rejected() {
+    start_persona resident-load-rejected FAKE_REJECT_IMAGE_LOAD=1
+
+    dismiss_first_run
+
+    # 1. Bring the CHAT model up first so the sidecar is running and the served
+    #    alias is resident - the precondition for the in-process load.
+    wait_identifier Readiness.Action "$OUT/rlr-chat-readiness.json" \
+        || die "no chat readiness action to bring the resident chat model up"
+    press "$OUT/rlr-chat-readiness.json" Readiness.Action "$OUT/rlr-chat-start.json" \
+        || die "chat Readiness.Action is not pressable - could not start the resident chat model"
+    # Match the ALIAS, not merely "a server started": the fake must be serving
+    # the chat alias so the residency snapshot reports it resident.
+    wait_fake_event \
+        ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
+        "the chat model never started - no resident sidecar to reject against"
+    # Let the app observe residency so the Images load takes the in-process path.
+    sleep 1
+
+    # 2. Go to Images and ask it to load its model.
+    see_main "$OUT/rlr-ig-chat.json"
+    press "$OUT/rlr-ig-chat.json" Sidebar.Images "$OUT/rlr-ig-open.json" \
+        || die "Sidebar.Images is not pressable - the Images tab is unreachable"
+    wait_identifier Images.EmptyState "$OUT/rlr-ig-empty.json"
+
+    # 3. The readiness action routes through ensureServing and hits the
+    #    in-process /v1/models/load endpoint, not a process restart.
+    wait_identifier Readiness.Action "$OUT/rlr-ig-readiness.json" \
+        || die "Images readiness has no action to load its model"
+    press "$OUT/rlr-ig-readiness.json" Readiness.Action "$OUT/rlr-ig-start.json" \
+        || die "Images Readiness.Action is not pressable - the load button is dead"
+
+    # 4. The wire must show the load was ATTEMPTED in-process and REJECTED.
+    wait_fake_event '.event == "model_load"' \
+        "the Images action never issued an in-process /v1/models/load"
+    wait_fake_event '.event == "model_load_rejected"' \
+        "the fake did not reject the in-process image load (FAKE_REJECT_IMAGE_LOAD not applied)"
+
+    # 5. The rejection's actionable reason must be VISIBLE on the Images
+    #    surface (the readiness banner), not only in the log drawer.
+    local i shown=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/rlr-shown.json"
+        if jq -e '[.data.ui_elements[]?]
+                  | map((.title // "") + " " + (.value // "") + " " + (.description // "") + " " + (.help // ""))
+                  | join(" ") | test("rapid-mlx\\[image\\]")' \
+               "$OUT/rlr-shown.json" >/dev/null 2>&1; then
+            shown=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$shown" == 1 ]] \
+        || die "the engine's rejection reason never appeared on the Images surface - it was swallowed into the log (#1838)"
+
+    # 6. The surface offers a recovery action, not a dead button.
+    jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
+        "$OUT/rlr-shown.json" >/dev/null \
+        || die "the Images readiness banner did not offer a recovery action after the rejection"
+
+    log "  resident-load-rejected OK"
+}
+
 
 if [[ -d "$OUT_ROOT" && -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
     RESULT_WRITTEN=1
@@ -2352,6 +2414,7 @@ case "$FLOW" in
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
     image-generation) flow_image_generation ;;
+    resident-load-rejected) flow_resident_load_rejected ;;
     all)
         flow_fresh_install
         flow_cached_quickstart
@@ -2371,6 +2434,7 @@ case "$FLOW" in
         flow_catalog_integrity
         flow_browse_all_destination
         flow_image_generation
+        flow_resident_load_rejected
         ;;
     *) die "unknown flow: $FLOW" ;;
 esac

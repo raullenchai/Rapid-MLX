@@ -258,6 +258,21 @@ def _tool_call_delta(call_id):
 FAKE_IMAGE_ALIAS = "fake-image-alias"
 FAKE_IMAGE_REPO = "fake-org/fake-image-repo"
 
+# The alias currently being served by THIS process. Set in ``main`` for the
+# ``serve`` branch so the ``/v1/models/residency`` snapshot can report a
+# resident model — which is what keeps ``ServerManager`` on the in-process
+# ``/v1/models/load`` path instead of the legacy stop/start fallback when the
+# GUI asks for a second model while the sidecar is already running (#1838).
+SERVED_ALIAS = ""
+
+# The engine's own, actionable rejection reason. Kept out of the snapshot so a
+# stock persona never changes residency shape; a flow opts in with
+# ``FAKE_REJECT_IMAGE_LOAD=1`` to exercise the rejected non-404/405 load path.
+FAKE_REJECTION_DETAIL = (
+    "image generation requires the 'rapid-mlx[image]' Python extra "
+    "(pip install 'rapid-mlx[image]')"
+)
+
 
 def _one_pixel_png(rgb):
     """A real, decodable 1x1 truecolour PNG."""
@@ -364,6 +379,9 @@ class Handler(BaseHTTPRequestHandler):
                 ]
             })
             return
+        if self.path == "/v1/models/residency":
+            self._json(200, self._residency_snapshot())
+            return
         if self.path == "/v1/images/progress":
             # Polled every few hundred ms while a render is in flight. Answer
             # it even when nothing is running: the client treats a transport
@@ -371,6 +389,84 @@ class Handler(BaseHTTPRequestHandler):
             # indistinguishable from the daemon being down.
             self._json(200, RENDERS.snapshot())
             return
+        self._json(404, {"error": "not_found"})
+
+    def _residency_snapshot(self):
+        """``GET /v1/models/residency`` — the served alias as the sole
+        resident model. This is what makes ``ServerManager`` take the
+        in-process ``/v1/models/load`` path when the user asks for a second
+        model while the sidecar is already up (#1838)."""
+        if not SERVED_ALIAS:
+            return {
+                "memory_limit_bytes": 0,
+                "memory_used_bytes": 0,
+                "memory_available_bytes": 0,
+                "idle_ttl_seconds": 1800,
+                "loads_total": 0,
+                "evictions_total": 0,
+                "models": [],
+            }
+        return {
+            "memory_limit_bytes": 34359738368,
+            "memory_used_bytes": 10737418240,
+            "memory_available_bytes": 23622320128,
+            "idle_ttl_seconds": 1800,
+            "loads_total": 1,
+            "evictions_total": 0,
+            "models": [{
+                "id": SERVED_ALIAS,
+                "model_path": "fake-org/fake-repo",
+                "aliases": [SERVED_ALIAS],
+                "modality": "text",
+                "state": "resident",
+                "pinned": True,
+                "primary": True,
+                "active_requests": 0,
+                "estimated_bytes": 1,
+                "measured_bytes": None,
+                "idle_seconds": 0.0,
+            }],
+        }
+
+    def _models_load(self):
+        """``POST /v1/models/load`` — the in-process residency load the GUI
+        uses to admit a second engine while the sidecar is already running.
+
+        This is where #1838's silent-failure scenario lives: when the engine
+        cannot serve the requested model (e.g. a stock bundle with no
+        ``[image]`` extra), ``load`` must be answered with a non-2xx,
+        non-404/405 response whose ``detail`` carries the actionable reason.
+        ``ServerManager`` maps that to ``.rejected(detail)`` and, after this
+        fix, publishes it so the initiating surface shows it instead of
+        dropping it into the log.
+
+        The flow opts into the rejection with ``FAKE_REJECT_IMAGE_LOAD=1``;
+        every other persona keeps the legacy 404 (unsupported) path so their
+        stop/start fallback is unchanged.
+        """
+        length = int(self.headers.get("content-length", "0") or "0")
+        body = {}
+        if length:
+            try:
+                body = json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                body = {}
+        target = body.get("model") if isinstance(body.get("model"), str) else ""
+        _event("model_load", alias=target)
+        if _setting("FAKE_REJECT_IMAGE_LOAD") == "1" and target == FAKE_IMAGE_ALIAS:
+            # The engine refuses to admit this model (missing Python extra).
+            # Mirror the real server's rejection envelope so
+            # ``ServerResidencyClient.load`` lands on ``.rejected(detail)``.
+            _event("model_load_rejected", alias=target)
+            self._json(422, {"detail": FAKE_REJECTION_DETAIL})
+            return
+        if target == SERVED_ALIAS:
+            # Already resident — idempotent success.
+            self._json(200, self._residency_snapshot()["models"][0])
+            return
+        # Unknown target → the legacy 404 the app treats as "no residency
+        # support here", falling back to its stop/start path. Preserves the
+        # behaviour every other persona depends on.
         self._json(404, {"error": "not_found"})
 
     def _images_generate(self):
@@ -433,6 +529,9 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
+        if self.path == "/v1/models/load":
+            self._models_load()
+            return
         if self.path == "/v1/images/generations":
             self._images_generate()
             return
@@ -688,6 +787,13 @@ def main():
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)
 
+    # The residency snapshot reports the served alias as resident, which is
+    # what keeps the GUI on the in-process /v1/models/load path (#1838).
+    # The assignment must use ``global``: the handler methods read the
+    # module-level name, and without ``global`` this would only create a local
+    # that shadows it, leaving the snapshot permanently empty.
+    global SERVED_ALIAS
+    SERVED_ALIAS = args.alias
     _event("server_started", alias=args.alias, pid=os.getpid(), port=args.port)
 
     # Match the real server's startup banner shape closely enough

@@ -258,18 +258,34 @@ struct ContentView: View {
             cacheState: cacheState(for: alias),
             sizeText: sizeText(for: alias),
             progress: progressSnapshot,
-            failure: chat.lastError.map {
-                ModelReadiness.Failure(
-                    message: $0,
-                    kind: chat.lastFailureKind,
-                    // The alias the failure is ABOUT — not the one
-                    // currently selected. Passing `alias` here is what
-                    // let a failure follow the user onto whatever model
-                    // they picked next.
-                    alias: chat.lastFailureAlias
-                )
-            }
+            failure: readinessFailure
         )
+    }
+
+    /// The failure to present on the initiating surface, if any.
+    ///
+    /// A resident-load rejection published by ``ServerManager`` (#1838) is the
+    /// freshest, most specific signal about whether the selected model can
+    /// load — the engine's own rejection reason, not flattened to a generic
+    /// "couldn't start". It wins over a turn-level ``chat`` failure so a
+    /// banner-initiated load that the engine rejects shows its reason here on
+    /// the chat surface, not only in the log pane. When no load was rejected,
+    /// fall back to the chat failure exactly as before.
+    private var readinessFailure: ModelReadiness.Failure? {
+        if let load = server.lastResidentLoadFailure {
+            return ModelReadiness.Failure(message: load.message, alias: load.alias)
+        }
+        return chat.lastError.map {
+            ModelReadiness.Failure(
+                message: $0,
+                kind: chat.lastFailureKind,
+                // The alias the failure is ABOUT — not the one
+                // currently selected. Passing `alias` here is what
+                // let a failure follow the user onto whatever model
+                // they picked next.
+                alias: chat.lastFailureAlias
+            )
+        }
     }
 
     /// Progress is only read while the server is actually starting.

@@ -232,6 +232,15 @@ final class ServerManager {
     /// Bounded to `logBufferCapacity` entries.
     private(set) var logLines: [String] = []
 
+    /// The most recent in-process residency load that the engine rejected, or
+    /// `nil` when there has been no rejection since the last successful load.
+    ///
+    /// This is *published* (an `@Observable` property), not log-only: the
+    /// surface that initiated the load reads it and presents the engine's
+    /// reason verbatim, so a rejected resident load is an actionable message
+    /// instead of a silent no-op (#1838).
+    private(set) var lastResidentLoadFailure: ResidentLoadFailure?
+
     /// True while a start or stop is in flight. The UI disables both
     /// buttons during this window so a second click cannot race the
     /// first into spawning a duplicate child.
@@ -653,6 +662,15 @@ final class ServerManager {
         self.state = newState
     }
 
+    /// Issue #1838 test seam — swap in a ``ServerResidencyClient`` whose
+    /// transport reads from a ``URLProtocol`` stub, so a test can drive the
+    /// in-process resident-load path and observe the published rejection
+    /// without a live sidecar. Production code never calls this; the client
+    /// is created fresh in ``init``.
+    internal func _testSetResidencyClient(_ client: ServerResidencyClient) {
+        self.residencyClient = client
+    }
+
     /// Issue #270 test seam — observe the current auto-respawn attempt
     /// counter so the auto-respawn-retry-cap test can assert how many
     /// times ``runScheduledAutoRespawn`` actually incremented it.
@@ -826,6 +844,10 @@ final class ServerManager {
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
         if Self.residencyLoadApplies(residencyEligible: residencyEligible, readyWithChild: readyWithChild) {
+            // A fresh attempt supersedes a stale failure so the surface does
+            // not keep showing last round's rejection while this load is in
+            // flight (or about to succeed).
+            lastResidentLoadFailure = nil
             let estimate = estimatedMemoryGB ?? ModelSizing.estimate(alias: trimmed).totalGB
             let result = await residencyClient.load(
                 alias: trimmed,
@@ -853,11 +875,20 @@ final class ServerManager {
                 if replacementGroup != nil {
                     state = .ready(alias: trimmed)
                 }
+                lastResidentLoadFailure = nil
                 return true
             case .unsupported:
                 break
             case .rejected(let message):
                 appendLogLines(["Resident model load declined: \(message)"])
+                // Mirror the same redaction the log pane applies so a
+                // serialized/token-bearing `detail` never reaches the surface
+                // unsanitized, while keeping the engine's actionable reason
+                // verbatim otherwise (audit P1 parity with `appendLogLines`).
+                lastResidentLoadFailure = ResidentLoadFailure(
+                    alias: trimmed,
+                    message: LogScrubber.scrub(message)
+                )
                 return false
             }
         }

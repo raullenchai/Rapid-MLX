@@ -304,7 +304,7 @@ jobs:
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
       #
-      # These five drive the app through `rapid-ax` alone (see
+      # These six drive the app through `rapid-ax` alone (see
       # `flow_requires_peekaboo` in the harness). Most other flows shell out to
       # peekaboo — a third-party install whose bridge socket comes from the
       # Peekaboo app rather than its CLI, with its own permission surface. The
@@ -343,6 +343,11 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow window-close-prompt
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/window-close-prompt
+
+      - name: 'Golden flow: resident-load-rejected'
+        run: ./scripts/gui-golden-flows.sh --flow resident-load-rejected
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/resident-load-rejected
 
       # The harness stops at the FIRST mismatched baseline and the job stops at
       # the first failing flow, so one red run reveals exactly one line. With 5
