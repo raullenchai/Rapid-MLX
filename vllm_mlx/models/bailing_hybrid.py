@@ -155,7 +155,7 @@ class ShortConv1d(nn.Module):
 
 def _kda_gate(
     f: mx.array,
-    A_log: mx.array,
+    A_log: mx.array,  # noqa: N803 — the checkpoint's parameter name
     dt_bias: mx.array,
     *,
     safe_gate: bool,
@@ -599,8 +599,8 @@ class Model(nn.Module):
             k: v for k, v in weights.items() if ".mtp_" not in k and "mtp." not in k
         }
         n_layers = self.args.num_hidden_layers
-        for l in range(n_layers):
-            prefix = f"model.layers.{l}"
+        for li in range(n_layers):
+            prefix = f"model.layers.{li}"
             if f"{prefix}.mlp.experts.0.gate_proj.weight" not in weights and (
                 f"{prefix}.mlp.experts.0.gate_proj.scales" not in weights
             ):
