@@ -286,12 +286,14 @@ jobs:
       # which closes the one gap AX structurally cannot: prove two gallery
       # records actually draw different pixels rather than the same bitmap.
       - name: 'XCUITest: image-generation pixels'
+        id: xcui
+        continue-on-error: true
         env:
           RAPID_XCUI_RESULT_BUNDLE: ${{ runner.temp }}/RapidUITests.xcresult
         run: ./scripts/run-xcui-tests.sh
 
       - name: Upload XCUITest evidence
-        if: failure()
+        if: steps.xcui.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: rapid-xcui-evidence
@@ -341,6 +343,20 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow window-close-prompt
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/window-close-prompt
+
+      # The XCUITest is allowed to fail temporarily only so the established AX
+      # journeys still execute and retain their independent evidence. Restore
+      # the blocking verdict after those flows; a red native journey remains a
+      # red GUI job and can never land.
+      - name: Require native XCUITest
+        if: always()
+        env:
+          XCUI_OUTCOME: ${{ steps.xcui.outcome }}
+        run: |
+          if [[ "$XCUI_OUTCOME" != success ]]; then
+            echo "::error::Native XCUITest failed ($XCUI_OUTCOME)"
+            exit 1
+          fi
 
       # The harness stops at the FIRST mismatched baseline and the job stops at
       # the first failing flow, so one red run reveals exactly one line. With 5

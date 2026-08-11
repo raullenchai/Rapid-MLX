@@ -1,6 +1,7 @@
 import AppKit
 import XCTest
 
+@MainActor
 final class ImageGenerationPixelTests: XCTestCase {
     private var app: XCUIApplication!
     private var testHome: URL!
