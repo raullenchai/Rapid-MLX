@@ -7459,6 +7459,7 @@ class Scheduler:
                     # cache-miss prefill is approaching the unified-memory cap.
                     self._apply_adaptive_prefill_size()
                     raw_next = self.batch_generator.next()
+                    self._materialize_active_recurrent_cache()
                     output.has_work = True
 
                     # mlx-lm 0.31+ returns (prompt_responses, generation_responses) tuple
@@ -7588,6 +7589,46 @@ class Scheduler:
                 pass
 
         return output
+
+    def _materialize_active_recurrent_cache(self) -> int:
+        """Detach lazy recurrent-cache updates from prior decode steps.
+
+        MLX cache implementations such as ``ArraysCache`` update recurrent
+        state functionally.  Without an evaluation barrier, the live batch
+        keeps the head of a graph that references every earlier decode step.
+        The byte footprint can stay flat while Metal's live buffer-handle
+        count grows until its 499000-resource ceiling is reached (#1827).
+
+        Dense KV caches use in-place writes and do not need this per-token
+        synchronization.  Gate on an affirmative non-trimmable layer and
+        evaluate the complete cache state only for hybrid batches.
+        """
+        batch_generator = self.batch_generator
+        if batch_generator is None:
+            return 0
+        generation_batch = getattr(batch_generator, "_generation_batch", None)
+        if generation_batch is None:
+            generation_batch = getattr(batch_generator, "active_batch", None)
+        cache = getattr(generation_batch, "prompt_cache", None)
+        if not cache:
+            return 0
+
+        has_recurrent_state = False
+        states = []
+        for layer in cache:
+            is_trimmable = getattr(layer, "is_trimmable", None)
+            if callable(is_trimmable):
+                try:
+                    has_recurrent_state |= not bool(is_trimmable())
+                except Exception:
+                    pass
+            state = getattr(layer, "state", None)
+            if state is not None:
+                states.append(state)
+        if not has_recurrent_state or not states:
+            return 0
+        mx.eval(states)
+        return len(states)
 
     def get_request(self, request_id: str) -> Request | None:
         """Get a request by ID."""
