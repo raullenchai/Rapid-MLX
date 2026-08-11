@@ -2351,6 +2351,33 @@ flow_resident_load_rejected() {
         || die "Sidebar.Images is not pressable - the Images tab is unreachable"
     wait_identifier Images.EmptyState "$OUT/rlr-ig-empty.json"
 
+    # 2.5 The picker must resolve to the image model BEFORE we press the
+    #     readiness action. ``refreshCatalog`` shells out to ``rapid-mlx
+    #     models`` and ``ls`` from a `.task`, so the tab renders with an
+    #     unresolved picker ("Choose a model") for as long as those two
+    #     subprocesses take; while unresolved, ``selectedAlias`` is empty and
+    #     readiness resolves to ``.noModel``, whose action is ``.chooseModel``
+    #     and renders NO ``Readiness.Action`` -- or, mid-window, a button whose
+    #     load does not name the image model. Pressing too early therefore
+    #     falls out of the resident ``/v1/models/load`` path entirely and the
+    #     rejection never reaches the wire. ``image-generation`` does the same
+    #     wait for the same reason; mirror it so this flow's press is
+    #     deterministic (#1838).
+    local i resolved=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/rlr-ig-empty.json"
+        if jq -e --arg alias "$FAKE_IMAGE_ALIAS" \
+               '.data.ui_elements[]? | select(.identifier == "Images.ModelPicker")
+                | select((.help // "") | contains($alias))' "$OUT/rlr-ig-empty.json" >/dev/null; then
+            resolved=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$resolved" == 1 ]] \
+        || die "Images.ModelPicker never resolved to $FAKE_IMAGE_ALIAS - the Images tab has no model to load"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/rlr-ig-empty.json" >/dev/null \
+        || die "Images.Aspect is missing - the picker did not finish resolving"
+
     # 3. The readiness action routes through ensureServing and hits the
     #    in-process /v1/models/load endpoint, not a process restart.
     wait_identifier Readiness.Action "$OUT/rlr-ig-readiness.json" \
