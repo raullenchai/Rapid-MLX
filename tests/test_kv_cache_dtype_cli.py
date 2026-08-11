@@ -45,11 +45,16 @@ def test_serve_help_advertises_kv_cache_dtype_flag_with_choices():
     assert "--kv-cache-dtype {bf16,int8,int4}" in text
 
 
-def test_serve_help_advertises_int4_as_default():
-    """The R15 #300 contract — int4 is the *default*, not just a choice."""
+def test_serve_help_advertises_bf16_as_default():
+    """#1853 — bf16 is the *default*, not just a choice.
+
+    The R15 #300 int4 default was reverted: the live-cache
+    dequant-on-read implementation makes quantized KV O(context)
+    slower per decode step (-27% at 16k), so quantization is opt-in.
+    """
     text = _serve_help()
-    # The flag's help string explicitly carries ``default: int4``.
-    assert "default: int4" in text
+    # The flag's help string explicitly carries ``default: bf16``.
+    assert "default: bf16" in text
 
 
 def test_serve_help_advertises_reasoning_flag():

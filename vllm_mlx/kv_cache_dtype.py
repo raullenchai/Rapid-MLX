@@ -1,19 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
 """KV-cache dtype resolution (R15 task #300).
 
-Apple Silicon decode is memory-bandwidth-bound: a 4×-smaller KV cache
-gives 4× less bandwidth on every decode step. The mlx-lm
-``QuantizedKVCache`` is the production knob for that; this module
-centralizes the policy for *when* to flip it on by default.
+This module centralizes the policy for when the mlx-lm
+``QuantizedKVCache`` is used for the live KV cache.
 
 Three user-facing dtypes:
 
 * ``bf16`` — full-precision KV cache (mlx-lm ``KVCache`` /
-  ``RotatingKVCache``). Safe everywhere.
+  ``RotatingKVCache``). Safe everywhere. The default (#1853).
 * ``int8`` — 8-bit ``QuantizedKVCache``. 97-98% quality retention on most
   workloads, used as the reasoning/code profile.
-* ``int4`` — 4-bit ``QuantizedKVCache``. Biggest bandwidth win, default
-  for new installs on non-safelisted architectures.
+* ``int4`` — 4-bit ``QuantizedKVCache``. Smallest KV footprint.
+
+The R15 rollout defaulted to int4 on the theory that Apple Silicon
+decode is memory-bandwidth-bound, so a 4×-smaller KV cache should
+speed up every decode step. The live serve path
+(``QuantizedBatchKVCache``, #1197) implements quantization as
+dequant-on-read — it materializes full-precision K/V every decode
+step — so the bandwidth win never materializes and per-token cost
+GROWS with context instead: measured on qwen3.5-4b at 16k context,
+bf16 134.6 tok/s vs int4 98.2 (-27%) vs int8 86.1 (-36%); the
+short-context numbers that motivated the int4 default (#910,
+292-token prompts) could not see this. Until the read path uses a
+fused quantized-attention kernel, quantized KV is a memory/quality
+trade-off the operator must opt into, not a free speedup (#1853).
 
 Auto-downgrade safelist (forces ``bf16``):
 
@@ -40,7 +50,7 @@ logger = logging.getLogger(__name__)
 # ``dtype="int4"`` works without parsing.
 KV_CACHE_DTYPES = ("bf16", "int8", "int4")
 
-DEFAULT_KV_CACHE_DTYPE = "int4"
+DEFAULT_KV_CACHE_DTYPE = "bf16"
 REASONING_KV_CACHE_DTYPE = "int8"
 
 # ---------------------------------------------------------------------------
@@ -305,16 +315,14 @@ def resolve_kv_cache_dtype(
     # Pass-through for the safe-to-use cases. Reason text varies so the
     # operator can distinguish "default kicked in" from "I asked for it
     # explicitly".
-    if requested == DEFAULT_KV_CACHE_DTYPE:
-        reason = (
-            f"Defaulting to {DEFAULT_KV_CACHE_DTYPE} (memory-bandwidth-bound "
-            f"on M-series); model={model_name or hf_path or 'unknown'} not "
-            f"in safelist"
-        )
-    elif requested == "bf16":
-        reason = "bf16 selected (no QuantizedKVCache wrap)"
+    if requested == "bf16":
+        reason = "bf16 selected (default; no QuantizedKVCache wrap)"
     else:
-        reason = f"{requested} selected (operator override)"
+        reason = (
+            f"{requested} selected (operator override; dequant-on-read "
+            f"costs O(context) per decode step — #1853); "
+            f"model={model_name or hf_path or 'unknown'} not in safelist"
+        )
 
     return KVCacheDtypeDecision(
         dtype=requested,

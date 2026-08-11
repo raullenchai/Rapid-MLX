@@ -23,10 +23,18 @@ from vllm_mlx.kv_cache_dtype import (
 # ---------------------------------------------------------------------------
 
 
-def test_default_is_int4():
-    """Locks the R15 #300 contract — int4 is the new default."""
-    assert DEFAULT_KV_CACHE_DTYPE == "int4"
-    assert "int4" in KV_CACHE_DTYPES
+def test_default_is_bf16():
+    """Locks the #1853 contract — bf16 is the default, quant is opt-in.
+
+    The R15 #300 int4 default assumed a bandwidth win, but the live
+    serve path (QuantizedBatchKVCache, dequant-on-read) materializes
+    full-precision K/V every decode step: measured 16k decode was
+    int4 98.2 tok/s vs bf16 134.6 on qwen3.5-4b. Anyone flipping the
+    default back to a quantized dtype must first land a fused
+    quantized-attention read path and re-run the long-context bench.
+    """
+    assert DEFAULT_KV_CACHE_DTYPE == "bf16"
+    assert "bf16" in KV_CACHE_DTYPES
 
 
 def test_reasoning_default_is_int8():
@@ -329,11 +337,20 @@ def test_reasoning_wins_over_safelist():
 # ---------------------------------------------------------------------------
 
 
-def test_default_int4_reason_mentions_bandwidth():
+def test_bf16_default_reason_marks_it_as_default():
+    decision = resolve_kv_cache_dtype("bf16", model_name="qwen3-4b-4bit")
+    # Operators should be able to see from the startup log that the
+    # default (not a downgrade) produced bf16.
+    assert "default" in decision.reason
+    assert decision.downgraded is False
+
+
+def test_int4_override_reason_cites_decode_cost():
     decision = resolve_kv_cache_dtype("int4", model_name="qwen3-4b-4bit")
-    # Operators should be able to grep "memory-bandwidth-bound" out of
-    # logs to verify the default kicked in for the right reason.
-    assert "memory-bandwidth-bound" in decision.reason
+    # Opting into quantized KV must leave a breadcrumb in the log that
+    # the operator accepted the O(context) dequant-on-read decode cost.
+    assert "#1853" in decision.reason
+    assert decision.downgraded is False
 
 
 def test_safelist_reason_mentions_sliding_window_for_gemma3():

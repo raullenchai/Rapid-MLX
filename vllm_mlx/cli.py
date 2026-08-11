@@ -8282,32 +8282,33 @@ Examples:
         ),
     )
     # KV cache quantization options
-    # ``--kv-cache-dtype`` (R15 task #300) is the canonical knob: int4 is
-    # the new default because Apple Silicon decode is memory-bandwidth-
-    # bound and a 4×-smaller KV cache cuts bandwidth proportionally
-    # (mlx#3134 UMA discussion, Feb 2026 — Phi-3.5-mini +1.1%
-    # throughput, 3.2× more context room on Qwen2.5-14B). The
-    # safelist in :mod:`vllm_mlx.kv_cache_dtype` auto-downgrades
-    # sliding-window (Gemma 3, GPT-OSS) and MLA (DeepSeek V3+,
-    # Kimi-K2.5) families to bf16 where int4 breaks decode quality.
-    # ``--reasoning`` pins to int8 for AIME-class hard math where
-    # sub-4-bit drops -20pt on thinking variants.
-    #
-    # Qwen3.5-9B-4bit bench (M3, 292-tok prompt, 5×400-tok decode median):
-    # int4 113.6 tok/s / 119 ms TTFT / 5388 MB RSS vs bf16 113.7 tok/s /
-    # 120 ms TTFT / 5392 MB RSS — int4 is a free swap at this size; the
-    # +1.1 % / 3.2× headroom land at multi-k contexts (PR #910 comment).
+    # ``--kv-cache-dtype`` (R15 task #300) is the canonical knob. Default
+    # is bf16 (#1853): the R15 int4 default was justified by "4×-smaller
+    # KV cuts decode bandwidth proportionally", but the live serve path
+    # (QuantizedBatchKVCache, #1197) implements quantization as
+    # dequant-on-read — it MATERIALIZES full-precision K/V on every
+    # decode step, so per-token cost grows with context instead of
+    # shrinking. Measured on qwen3.5-4b, 16k context, N=2 (parity
+    # server, disk checkpoints off): bf16 134.6 tok/s, int4 98.2
+    # (-27%), int8 86.1 (-36%); at 128-ctx: bf16 167, int4 161,
+    # int8 160. The #910 numbers that motivated the int4 default were
+    # short-context (292-tok prompt), where the regression is invisible.
+    # int4/int8 remain available as explicit opt-ins for
+    # memory-constrained hosts (KV is 4×/2× smaller); ``--reasoning``
+    # still pins to int8.
     serve_parser.add_argument(
         "--kv-cache-dtype",
         type=str,
-        default="int4",
+        default="bf16",
         choices=["bf16", "int8", "int4"],
         help=(
-            "KV cache dtype (R15 #300, default: int4). Apple Silicon decode "
-            "is memory-bandwidth-bound; int4 yields ~4× less bandwidth per "
-            "decode step with 97-98%% quality retention. Sliding-window "
-            "(Gemma 3, GPT-OSS) and MLA (DeepSeek V3+, Kimi K2.5) models "
-            "auto-downgrade to bf16. Use --reasoning for AIME / hard math."
+            "KV cache dtype (R15 #300, default: bf16). int8/int4 shrink the "
+            "KV cache 2x/4x for memory-constrained hosts, but the live-cache "
+            "dequant-on-read costs O(context) per decode step — measured "
+            "-27%% (int4) / -36%% (int8) at 16k context (#1853). "
+            "Sliding-window (Gemma 3, GPT-OSS) and MLA (DeepSeek V3+, "
+            "Kimi K2.5) models auto-downgrade to bf16. Use --reasoning "
+            "for AIME / hard math."
         ),
     )
     serve_parser.add_argument(
