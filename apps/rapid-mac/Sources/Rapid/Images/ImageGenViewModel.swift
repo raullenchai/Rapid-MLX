@@ -201,6 +201,10 @@ final class ImageGenViewModel {
 
     private func runGenerate() async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Snapshot at submission: the composer stays enabled through the
+        // (possibly minutes-long) warm-up await, so a later aspect/resolution
+        // change must not retarget the in-flight request.
+        let size = outputSize
         guard !trimmed.isEmpty, !selectedAlias.isEmpty else { return }
         await withRequest {
             let selected = self.imageModels.first { $0.alias == self.selectedAlias }
@@ -221,7 +225,7 @@ final class ImageGenViewModel {
             let poll = self.startPolling(model: self.selectedAlias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.generate(
-                prompt: trimmed, model: self.selectedAlias, size: self.outputSize,
+                prompt: trimmed, model: self.selectedAlias, size: size,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
             if let first = images.first {
@@ -237,6 +241,8 @@ final class ImageGenViewModel {
 
     private func runEdit(source: GeneratedImage) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Same snapshot rule as ``runGenerate``.
+        let size = outputSize
         guard !trimmed.isEmpty, !selectedAlias.isEmpty else { return }
         await withRequest {
             let selected = self.imageModels.first { $0.alias == self.selectedAlias }
@@ -258,7 +264,7 @@ final class ImageGenViewModel {
             defer { poll.cancel() }
             let images = try await self.client.edit(
                 imagePNG: source.pngData, prompt: trimmed, model: self.selectedAlias,
-                size: self.outputSize, count: 1, seed: nil, port: port, bearer: bearer
+                size: size, count: 1, seed: nil, port: port, bearer: bearer
             )
             if let first = images.first {
                 self.results.insert(contentsOf: images, at: 0)

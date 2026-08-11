@@ -512,6 +512,7 @@ struct ImagesView: View {
                     }
                 }
                 .accessibilityIdentifier("Images.Resolution.\(resolution.rawValue)")
+                .accessibilityAddTraits(viewModel.resolution == resolution ? .isSelected : [])
             }
         } label: {
             HStack(spacing: 5) {

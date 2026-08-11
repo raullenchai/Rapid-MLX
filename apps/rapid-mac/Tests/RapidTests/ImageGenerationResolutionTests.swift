@@ -45,6 +45,13 @@ struct ImageGenerationResolutionTests {
         }
     }
 
+    @Test("A fresh view model still defaults to the pre-existing 1024x1024")
+    @MainActor
+    func defaultOutputSize() {
+        let viewModel = ImageGenViewModel(server: ServerManager())
+        #expect(viewModel.outputSize == "1024x1024")
+    }
+
     @Test("Generated dimensions satisfy the image API contract")
     func dimensionsAreSupported() {
         for resolution in ImageGenViewModel.Resolution.allCases {
