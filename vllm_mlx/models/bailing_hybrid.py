@@ -245,7 +245,12 @@ class BailingKDA(nn.Module):
             self.f_proj = nn.Linear(hidden, self.proj_dim, bias=False)
             self.g_proj = nn.Linear(hidden, self.proj_dim, bias=False)
         else:
-            # Ling-2.6 / flash variants use LoRA pairs.
+            # Ling-2.6 / flash variants use LoRA pairs. The bottleneck is
+            # head_dim BY DESIGN — the authoritative reference hard-codes
+            # it the same way (modeling_bailing_moe_v3.BailingMoeV3
+            # KimiDeltaAttention: ``f_a_proj = Linear(hidden_size,
+            # head_dim)``) and no bailing config revision publishes a
+            # separate f/g LoRA-rank field to wire.
             self.f_a_proj = nn.Linear(hidden, self.head_dim, bias=False)
             self.f_b_proj = nn.Linear(self.head_dim, self.proj_dim, bias=False)
             self.g_a_proj = nn.Linear(hidden, self.head_dim, bias=False)
