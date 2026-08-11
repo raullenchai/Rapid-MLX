@@ -148,11 +148,37 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
 
     /// The `model` field of the `POST /v1/models/load` body, so the stub can
     /// reject one specific alias while letting others succeed.
+    ///
+    /// ``URLSession`` hands a ``URLProtocol`` the request body as an input
+    /// stream, coalescing ``URLRequest.httpBody`` into
+    /// ``URLRequest.httpBodyStream`` (and niling ``httpBody``), so the alias
+    /// must be read from whichever representation carries the bytes — reading
+    /// only ``httpBody`` would silently see ``nil`` and never match the gated
+    /// alias (the reason the per-alias branch returned 200 instead of 422).
     private static func alias(from request: URLRequest) -> String? {
-        guard let httpBody = request.httpBody,
-              let object = try? JSONSerialization.jsonObject(with: httpBody) as? [String: Any]
+        guard let body = Self.bodyData(from: request),
+              let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
         else { return nil }
         return object["model"] as? String
+    }
+
+    private static func bodyData(from request: URLRequest) -> Data? {
+        if let httpBody = request.httpBody {
+            return httpBody
+        }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 4096
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let count = stream.read(buffer, maxLength: bufferSize)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data
     }
 
     private static let successLoadBody = Data(#"""
