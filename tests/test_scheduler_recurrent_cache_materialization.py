@@ -30,6 +30,11 @@ class _Layer:
         self.head = _Node(self.head)
 
 
+class _UnclassifiableLayer(_Layer):
+    def is_trimmable(self):
+        raise RuntimeError("unknown cache classification")
+
+
 class _Batch:
     def __init__(self, cache):
         self.prompt_cache = cache
@@ -97,6 +102,18 @@ def test_dense_batch_does_not_pay_per_token_eval(monkeypatch):
 
     assert scheduler._materialize_active_recurrent_cache() == 0
     assert evaluations == []
+
+
+def test_unknown_cache_classification_fails_safe_to_materialization(monkeypatch):
+    unknown = _UnclassifiableLayer(trimmable=True)
+    scheduler = _scheduler_with([unknown])
+    evaluations = []
+    monkeypatch.setattr(
+        scheduler_module.mx, "eval", lambda value: evaluations.append(value)
+    )
+
+    assert scheduler._materialize_active_recurrent_cache() == 1
+    assert evaluations == [[[unknown.head]]]
 
 
 def test_legacy_active_batch_surface_is_covered(monkeypatch):

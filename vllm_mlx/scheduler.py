@@ -7621,7 +7621,11 @@ class Scheduler:
                 try:
                     has_recurrent_state |= not bool(is_trimmable())
                 except Exception:
-                    pass
+                    # Classification is a safety gate: treating an unknown
+                    # cache as dense would silently disable the only barrier
+                    # preventing an unbounded lazy-state graph.  An extra eval
+                    # is safe; skipping one for a recurrent cache is not.
+                    has_recurrent_state = True
             state = getattr(layer, "state", None)
             if state is not None:
                 states.append(state)
