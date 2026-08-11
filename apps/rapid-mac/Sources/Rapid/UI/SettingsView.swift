@@ -238,7 +238,11 @@ struct SettingsView: View {
     /// Width of the category rail. Fixed, like every macOS settings
     /// sidebar — at the 720pt window floor this still leaves 519pt of
     /// detail, which is more than the widest panel needs.
-    static let railWidth: CGFloat = 200
+    // `nonisolated`: read by the nonisolated layout arithmetic below. An
+    // immutable Sendable constant is isolation-free on every compiler; the
+    // CI toolchain (stricter default isolation than the local one) otherwise
+    // rejects the reads.
+    nonisolated static let railWidth: CGFloat = 200
 
     /// Width below which the detail column is "compact" and panels
     /// should shed optional columns rather than clip them.
@@ -248,7 +252,7 @@ struct SettingsView: View {
     /// gaps before the model name gets a single point. Under ~520pt of
     /// content the name is squeezed to nothing, so that is where the
     /// meters have to go.
-    static let compactContentWidth: CGFloat = 520
+    nonisolated static let compactContentWidth: CGFloat = 520
 
     /// The width a panel's content column actually gets inside a window
     /// `windowWidth` points wide.
