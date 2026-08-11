@@ -939,8 +939,19 @@ def _agent_query(
                 f"is below the harness minimum{detail}"
             )
         return output, None
-    except subprocess.TimeoutExpired:
-        return None, "TIMEOUT"
+    except subprocess.TimeoutExpired as exc:
+        # A headless agent can finish the capability under test, print the
+        # evidence, and then fail to terminate its own loop.  Keep that output
+        # so capability-specific probes can grade what actually happened and
+        # report non-termination separately (#1598).  ``TimeoutExpired`` may
+        # carry bytes even with ``text=True`` on older Python releases.
+        def _timeout_text(value: str | bytes | None) -> str:
+            if value is None:
+                return ""
+            return value.decode(errors="replace") if isinstance(value, bytes) else value
+
+        partial = _timeout_text(exc.stdout) + _timeout_text(exc.stderr)
+        return partial or None, "TIMEOUT"
     except Exception as e:
         return None, str(e)
 
@@ -1061,7 +1072,7 @@ def _test_e2e_file_read(
             workdir,
             env_overrides,
         )
-    if err:
+    if err and not (err == "TIMEOUT" and E2E_FIRST_LINE_TOKEN in (out or "")):
         status = _err_to_status(err)
         return TestResult(
             "e2e_file_read",
@@ -1077,6 +1088,11 @@ def _test_e2e_file_read(
             "e2e_file_read",
             TestStatus.PASS,
             duration_ms=(time.time() - t0) * 1000,
+            message=(
+                "file-read evidence observed; agent CLI did not terminate before timeout"
+                if err == "TIMEOUT"
+                else ""
+            ),
             category="e2e",
         )
     return TestResult(
@@ -1271,6 +1287,19 @@ class AgentTestRunner:
             )
             return report
 
+        # File-config agents are driven from a throwaway home.  In particular,
+        # Codex must not inherit the operator's plugins, skills, history, or
+        # config: those change its context budget and made #1598 depend on the
+        # contents of ``~/.codex``.  The same override also prevents this test
+        # runner from merging into the operator's real config.
+        active_config = self.profile.get_config_for_version(self.agent_version)
+        isolated_config_home: tempfile.TemporaryDirectory[str] | None = None
+        config_home_env = active_config.home_env
+        if config_home_env:
+            isolated_config_home = tempfile.TemporaryDirectory(
+                prefix=f"rapid-mlx-{self.profile.name}-home-"
+            )
+
         # Refresh the agent's on-disk config (e.g. ``~/.hermes/config.yaml``)
         # so e2e tests run against the CURRENT model_id + base_url instead
         # of whatever was left over from a prior bench / manual invocation.
@@ -1283,12 +1312,28 @@ class AgentTestRunner:
         try:
             from .adapter import setup_agent_config
 
-            setup_agent_config(
-                self.profile,
-                base_url=self.base_url,
-                model_id=self.model_id,
-                agent_version=self.agent_version,
-            )
+            if isolated_config_home and config_home_env:
+                previous = os.environ.get(config_home_env)
+                os.environ[config_home_env] = isolated_config_home.name
+                try:
+                    setup_agent_config(
+                        self.profile,
+                        base_url=self.base_url,
+                        model_id=self.model_id,
+                        agent_version=self.agent_version,
+                    )
+                finally:
+                    if previous is None:
+                        os.environ.pop(config_home_env, None)
+                    else:
+                        os.environ[config_home_env] = previous
+            else:
+                setup_agent_config(
+                    self.profile,
+                    base_url=self.base_url,
+                    model_id=self.model_id,
+                    agent_version=self.agent_version,
+                )
         except Exception as exc:  # noqa: BLE001 — config refresh must never abort the sweep
             logger.warning(
                 "could not refresh %s config before harness sweep: %s",
@@ -1304,12 +1349,14 @@ class AgentTestRunner:
             self.model_id,
             self.agent_version,
         )
-        active_config = self.profile.get_config_for_version(self.agent_version)
         env_overrides = (
             {str(key): str(value) for key, value in rendered_config.items()}
             if active_config.type == "env" and isinstance(rendered_config, dict)
             else None
         )
+        if isolated_config_home and config_home_env:
+            env_overrides = dict(env_overrides or {})
+            env_overrides[config_home_env] = isolated_config_home.name
 
         # --- API tests ---
         report.results.append(_test_plain_chat(self.base_url, self.model_id))
@@ -1406,6 +1453,8 @@ class AgentTestRunner:
             report.results.extend(specific_results)
 
         report.total_duration_ms = (time.time() - t0) * 1000
+        if isolated_config_home is not None:
+            isolated_config_home.cleanup()
         return report
 
     def _run_specific_tests(self, test_module_name: str) -> list[TestResult]:

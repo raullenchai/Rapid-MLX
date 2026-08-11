@@ -65,8 +65,13 @@ struct ContentView: View {
         // picker lives inline in the compose box (see ChatView) and the
         // model comes up on first send (implicit lifecycle). macOS gives us
         // the sidebar-collapse toggle in the toolbar for free.
-        NavigationSplitView {
-            SidebarView(
+        VStack(spacing: 0) {
+            // #1588: this recovery path existed since the app was introduced
+            // but was never mounted, so a failed Finder replacement was
+            // detected and then silently discarded.
+            FailedReplaceBanner()
+            NavigationSplitView {
+                SidebarView(
                 selection: $section,
                 chat: chat,
                 onNewChat: {
@@ -89,16 +94,27 @@ struct ContentView: View {
                 ideal: SidebarView.columnIdealWidth,
                 max: SidebarView.columnMaxWidth
             )
-        } detail: {
-            detailArea
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } detail: {
+                detailArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Detail floor drops 520 → 440 alongside the narrower
                 // rail: at the 640pt window floor the old pair
                 // (190 sidebar + 520 detail) over-committed the window
                 // by 70pt, which is what forced horizontal clipping
                 // instead of graceful compression.
                 .frame(minWidth: 440, minHeight: Self.minWindowHeight)
-                .background(RapidTheme.surfaceCanvas)
+                    .background(RapidTheme.surfaceCanvas)
+            }
+            // Background pulls are process-wide, not chat-only.  Keep their
+            // progress visible whichever sidebar destination is selected.
+            DownloadStrip(downloads: downloads)
+            if showLogs {
+                LogDrawer(server: server)
+                    .frame(minHeight: 100, idealHeight: 150, maxHeight: 220)
+                    .accessibilityIdentifier("ContentView.LogDrawer")
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            statusFooter
         }
         .background {
             // Bridge the SwiftUI scene to the AppKit behaviours that need the
@@ -690,7 +706,9 @@ struct ContentView: View {
             .buttonStyle(.borderless)
             .help(showLogs ? "Hide logs" : "Show logs")
             .accessibilityLabel(showLogs ? "Hide logs" : "Show logs")
+            .accessibilityIdentifier("ContentView.ToggleLogs")
             Spacer()
+            ServerStatusPill(state: server.state)
             TokensPerSecondPill(messages: chat.messages)
             CPUPill()
             GPUPill()

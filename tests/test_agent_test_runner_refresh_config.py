@@ -18,6 +18,8 @@ before any test runs. This test pins that contract.
 
 from __future__ import annotations
 
+import os
+from dataclasses import replace
 from unittest.mock import patch
 
 from vllm_mlx.agents.base import (
@@ -151,3 +153,41 @@ def test_run_refreshes_config_when_server_is_available():
         "with the runner's current model_id — the v0.7.26 bug was that it "
         "wasn't called at all, leaving stale config from the prior bench."
     )
+
+
+def test_file_config_agent_uses_an_isolated_home_for_setup_and_e2e(monkeypatch):
+    """#1598: the gate must not inherit or overwrite the operator's Codex home."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    profile = _make_profile("codex", "yaml")
+    profile = replace(
+        profile,
+        config=replace(profile.config, home_env="CODEX_HOME"),
+        testing=AgentTestingSpec(binary="codex", query_cmd="codex {query}"),
+    )
+    observed: dict[str, str] = {}
+
+    def _capture_setup(*_args, **_kwargs):
+        observed["setup_home"] = os.environ["CODEX_HOME"]
+        return "ok"
+
+    def _capture_e2e(*_args, env_overrides=None, **_kwargs):
+        observed["child_home"] = env_overrides["CODEX_HOME"]
+        return TestResult("e2e_chat", TestStatus.PASS)
+
+    from vllm_mlx.agents.testing import TestResult, TestStatus
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
+        patch("vllm_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "vllm_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+        patch("vllm_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
+    ):
+        AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
+
+    assert observed["setup_home"] == observed["child_home"]
+    assert "rapid-mlx-codex-home-" in observed["child_home"]
+    assert "CODEX_HOME" not in os.environ

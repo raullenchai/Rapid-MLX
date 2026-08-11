@@ -1236,6 +1236,32 @@ flow_chat_restore() {
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
     wait_send_idle "$OUT/chat-restored-settled.json"
     baseline chat-restore.transcript-restored "$OUT/chat-restored-settled.json"
+
+    # #1588: these controls existed for months without ever being mounted.
+    # Drive the assembled app so a future refactor cannot quietly orphan them
+    # again while their unit tests stay green.
+    jq -e '.data.ui_elements[]? | select(.identifier == "ContentView.ToggleLogs")' \
+        "$OUT/chat-restored-settled.json" >/dev/null \
+        || die "the status footer/log affordance is not mounted"
+    press "$OUT/chat-restored-settled.json" ContentView.ToggleLogs "$OUT/logs-open-press.json" \
+        || die "the mounted log toggle is not pressable"
+    wait_identifier ContentView.LogDrawer "$OUT/logs-open.json"
+    press "$OUT/logs-open.json" ContentView.ToggleLogs "$OUT/logs-close-press.json" \
+        || die "the mounted log drawer cannot be closed"
+    local select_text_id
+    select_text_id="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+        | select(startswith("ChatView.Message.SelectText."))' \
+        "$OUT/logs-close-press.json" | head -1)"
+    [[ -n "$select_text_id" ]] || die "completed transcript exposes no Select text action"
+    press "$OUT/logs-close-press.json" "$select_text_id" "$OUT/select-text-press.json" \
+        || die "Select text action is not pressable"
+    for _ in {1..40}; do
+        see_main "$OUT/select-text-sheet.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("Selection here crosses paragraphs")' \
+            "$OUT/select-text-sheet.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    assert_tree_text "$OUT/select-text-sheet.json" "Selection here crosses paragraphs"
     cleanup_persona
 }
 

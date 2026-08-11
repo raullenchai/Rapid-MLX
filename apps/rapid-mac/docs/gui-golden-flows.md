@@ -69,6 +69,10 @@ covered, and each one names the defect it would have caught:
     Dock-visibility prompt, exposes both decisions plus “Don't ask again”, and
     choosing No completes a normal close. This pins the SwiftUI-to-NSWindow
     installation seam that #1590 found entirely disconnected.
+14. `chat-restore` also exercises the formerly unmounted #1588 recovery and
+    utility surface: the status-footer log toggle opens and closes the real
+    drawer, and a restored assistant message opens the cross-paragraph
+    “Select text” sheet.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below

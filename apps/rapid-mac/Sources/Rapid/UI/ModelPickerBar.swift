@@ -42,9 +42,8 @@ import SwiftUI
 /// top instead of being buried mid-alphabet. Kept as ONE list (no
 /// separate "Cached" section, so no alias renders twice). No size
 /// suffix, no fit suffix. Rows are
-/// fully clickable regardless of fit; the ``.tooBig`` safety check
-/// now lives at the Start CTA via a confirmation alert (see
-/// ``handleStartTap`` / ``pendingTooBigStart``).
+/// fully clickable regardless of fit. Chat owns model lifecycle now;
+/// this component only owns selection and model details.
 struct ModelPickerBar: View {
     @Bindable var server: ServerManager
     /// v0.5.7: side-car downloader so right-clicking an UN-cached
@@ -146,16 +145,9 @@ struct ModelPickerBar: View {
     @State private var deleting: String?
     @State private var catalogRefreshGeneration: UInt = 0
 
-    /// v0.6.9: alias the user just clicked Start on whose
-    /// ``ModelSizing.classify`` returned ``.tooBig``. Non-nil drives a
-    /// confirmation alert before the spawn proceeds, so a one-click
-    /// Start can't land a 65 GB alias on an 18 GB Mac and freeze the
-    /// machine. Cleared on confirm-or-cancel.
-    ///
-    /// Only the Start click path consults this — model SELECTION (a
-    /// tap on a picker row) intentionally remains silent so the user
-    /// can browse without hitting an alert on every swap. The alert
-    /// fires exactly once, when the user commits via Start.
+    // Retained for the legacy lifecycle helpers below, which remain as pure
+    // compatibility seams for their existing unit tests. No mounted control
+    // writes this state now that chat owns model startup (#1588).
     @State private var pendingTooBigStart: String?
 
     /// v0.5.2: how long the freed-bytes toast stays visible before
@@ -185,9 +177,7 @@ struct ModelPickerBar: View {
         // the picker breadcrumb reads the RAM-bucketed default
         // (e.g. ``qwen3.5-9b-4bit`` on an 18 GB Mac), and a stray
         // Start CTA click would race a second concurrent download.
-        // The Start CTA itself is also disabled via ``canStart``
-        // for the same gate; this branch closes the visual half of
-        // the 3-way mismatch.
+        // This branch closes the visual half of the 3-way mismatch.
         if ModelPickerBar.isQuickstartInFlight(phase: quickstart?.phase),
            catalog.contains(where: { $0.alias == quickstartTargetAlias }) {
             return quickstartTargetAlias
@@ -365,35 +355,6 @@ struct ModelPickerBar: View {
         } message: { entry in
             Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.sizeOnDisk.map { " Frees \($0)." } ?? "")")
         }
-        // v0.6.9: ``.tooBig`` Start guard. Without this, a user on a
-        // small Mac who picks a 65 GB quant from the "All models"
-        // alphabetical section can click "Download & start" and
-        // (after a multi-minute pull) swap-thrash or OOM the host.
-        // The alert intercepts at click-time, surfaces the estimated
-        // footprint vs. available RAM, and forces an explicit
-        // "Start anyway" before the spawn proceeds. Per spec
-        // (feedback_codex_review_max_2_rounds.md), Cancel is the
-        // default Return-bound action; "Start anyway" is destructive.
-        .alert(
-            tooBigAlertTitle,
-            isPresented: Binding(
-                get: { pendingTooBigStart != nil },
-                set: { if !$0 { pendingTooBigStart = nil } }
-            ),
-            presenting: pendingTooBigStart
-        ) { aliasToStart in
-            Button("Cancel", role: .cancel) {
-                pendingTooBigStart = nil
-            }
-            Button("Start anyway", role: .destructive) {
-                let confirmed = aliasToStart
-                pendingTooBigStart = nil
-                let hfPath = catalog.first(where: { $0.alias == confirmed })?.hfRepo
-                Task { await server.start(alias: confirmed, hfPath: hfPath) }
-            }
-        } message: { aliasToStart in
-            Text(tooBigAlertMessage(for: aliasToStart))
-        }
         // v0.5.2: brief toast at the top of the picker after a
         // successful (or failed) deletion. Auto-dismisses after a
         // few seconds so it doesn't linger across the next picker
@@ -415,43 +376,15 @@ struct ModelPickerBar: View {
         .rapidAnimation(RapidMotion.standard, value: deletionToast)
     }
 
-    /// The control strip. In ``composerStyle`` it collapses to just the
-    /// picker chip (the composer owns send/stop; the model comes up on
-    /// first send). Otherwise it's the full picker + info + status +
-    /// Start/Stop strip.
-    @ViewBuilder
+    /// The picker and its details affordance.  The app has only ever mounted
+    /// this view inside the composer; lifecycle actions live in the readiness
+    /// banner and composer, so the old standalone Start/Stop branch was a
+    /// second, unreachable implementation of the same flow (#1588).
     private var controlRow: some View {
-        if composerStyle {
+        HStack(spacing: RapidTheme.Space.xs) {
             modelPicker
                 .fixedSize()
-        } else {
-            HStack(spacing: 10) {
-                modelPicker
-                    .frame(
-                        minWidth: titlebarStyle ? 150 : 220,
-                        maxWidth: titlebarStyle ? 190 : 300
-                    )
-
-                infoButton
-
-                Spacer(minLength: titlebarStyle ? 8 : 16)
-
-                stateBadge
-
-                startStopButtons
-            }
-            .padding(.horizontal, titlebarStyle ? 0 : 16)
-            .padding(.vertical, titlebarStyle ? 0 : 10)
-            // v0.5 (Phase 6): a standard toolbar height so the picker,
-            // info button, status pill, and Start button sit on one
-            // comfortable baseline instead of being squeezed into a thin
-            // strip under the titlebar.
-            .frame(minHeight: titlebarStyle ? 30 : 46)
-            .background {
-                if !titlebarStyle {
-                    Rectangle().fill(.bar)
-                }
-            }
+            infoButton
         }
     }
 
@@ -1392,88 +1325,6 @@ struct ModelPickerBar: View {
         return "questionmark.circle"
     }
 
-    /// v1.0: the pill chrome (dot + tint + shape) moved to the shared
-    /// ``ServerStatusPill`` so lifecycle → colour is defined once. This
-    /// wrapper keeps the picker's own richer label (which folds in the
-    /// alias and the collapse rules in ``displayedStateLabel``) and its
-    /// progress tooltip, both of which the shared pill deliberately
-    /// does not carry.
-    private var stateBadge: some View {
-        HStack(spacing: 6) {
-            PulsingStateDot(color: stateColor, isAnimating: isAnimatedState)
-            // ONE word — no numbers. Dogfood round 2 of the progress
-            // dedup: even the "12% · 1 min left" summary here read as
-            // a second download indicator next to the chat banner's
-            // full read-out, and since the #459 routing change the
-            // chat (and its banner) is ALWAYS mounted during
-            // ``.starting``, so any number in the pill is redundant by
-            // construction. The pulsing dot carries "alive", the word
-            // carries "what", the banner carries "how far", and the
-            // summary stays reachable on hover via the tooltip below.
-            // (This retires the v0.4.36 always-show-subtitle rule and
-            // the v0.7.12 truncation dance — both solved problems the
-            // banner now owns. Upstream #583/#591's titlebar collapse
-            // survives inside ``displayedStateLabel``.)
-            Text(displayedStateLabel)
-                .font(.callout)
-                .foregroundStyle(.primary)
-        }
-        .help(pillTooltip)
-        // v0.5: present the server state as a subtle status pill so
-        // "rapid-mlx not found" / "Ready · …" reads like a polished
-        // toolbar badge rather than raw status text. The fill is the
-        // state colour at low alpha — calm, but still colour-coded.
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(stateColor.opacity(0.10))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(stateColor.opacity(0.18), lineWidth: 0.5)
-        )
-    }
-
-    /// Format ``server.startedAt`` as a compact mm:ss / s elapsed
-    /// string. Returns "" when no start is in flight — the badge then
-    /// renders the subtitle alone.
-    private func elapsedString() -> String {
-        guard let started = server.startedAt else { return "" }
-        let seconds = Int(Date().timeIntervalSince(started))
-        guard seconds >= 0 else { return "" }
-        if seconds < 60 {
-            return "\(seconds)s elapsed"
-        }
-        let m = seconds / 60
-        let s = seconds % 60
-        return String(format: "%d:%02d elapsed", m, s)
-    }
-
-    /// Subtitle line below "Starting <alias>" that reflects what
-    /// rapid-mlx is actually doing right now. Returns ``nil`` when
-    /// the server isn't starting or the parser hasn't produced any
-    /// signal yet (in which case the existing pulse dot does the
-    /// "we're working" job).
-    private var progressSubtitle: String? {
-        Self.progressSubtitle(
-            state: server.state,
-            activity: server.downloadProgress.startupActivity,
-            fraction: server.downloadProgress.progressFraction,
-            eta: server.downloadProgress.etaText
-        )
-    }
-
-    /// Hover tooltip on the pill: the summary that used to render as a
-    /// visible second row ("12% · 1 min left"), plus the elapsed
-    /// clock. Reachable, not shouting — the chat banner is the visible
-    /// detail surface.
-    private var pillTooltip: String {
-        guard let sub = progressSubtitle else { return stateLabel }
-        let elapsed = elapsedString()
-        return elapsed.isEmpty ? sub : "\(sub) · \(elapsed)"
-    }
-
     /// Pure derivation of the subtitle from server state + observed
     /// startup activity. Extracted so unit tests can pin the copy
     /// without standing up a real ``ServerManager``.
@@ -1514,18 +1365,6 @@ struct ModelPickerBar: View {
             if let eta { return "\(pct)% · \(eta)" }
             return "\(pct)%"
         }
-    }
-
-    /// 0…1 fraction for the linear progress bar, or ``nil`` for
-    /// indeterminate phases (loading shaders has no numeric % from
-    /// rapid-mlx). Returning ``nil`` hides the bar without
-    /// collapsing the layout.
-    /// True for ``starting`` — drives the dot's gentle pulse so the
-    /// user gets at-a-glance feedback that the model is still loading
-    /// (not just frozen at "Starting qwen3.5-4b" forever).
-    private var isAnimatedState: Bool {
-        if case .starting = server.state { return true }
-        return false
     }
 
     private var startStopButtons: some View {
