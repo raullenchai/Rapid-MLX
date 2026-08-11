@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$ROOT/Tests/RapidUITests/RapidUITests.xcodeproj"
 APP="$ROOT/build/Rapid-MLX Desktop.app"
+RESULT_BUNDLE="${RAPID_XCUI_RESULT_BUNDLE:-$ROOT/build/RapidUITests-$(date +%s)-$$.xcresult}"
 
 [[ -d "$APP" ]] || { echo "error: build the app first: $APP" >&2; exit 1; }
 command -v xcodebuild >/dev/null || {
@@ -24,5 +25,5 @@ xcodebuild test \
     -project "$PROJECT" \
     -scheme RapidUITests \
     -destination 'platform=macOS' \
-    -resultBundlePath "${RAPID_XCUI_RESULT_BUNDLE:-$ROOT/build/RapidUITests.xcresult}" \
+    -resultBundlePath "$RESULT_BUNDLE" \
     CODE_SIGNING_ALLOWED=NO

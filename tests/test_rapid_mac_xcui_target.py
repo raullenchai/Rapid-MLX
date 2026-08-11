@@ -25,6 +25,10 @@ def test_pixel_assertion_uses_element_screenshots_and_crops_chrome():
     assert 'element("Images.Gallery.Thumb.2", in: app)' in source
     assert "newest.screenshot()" in source
     assert "older.screenshot()" in source
+    assert 'element("Images.Result.Save", in: app)' in source
+    assert "waitForNonExistence" in source
+    assert "XCTUnwrap" in source
+    assert "XCTSkip" not in source
     assert "source.cropping(to: rect)" in source
     assert "XCTAssertGreaterThan(" in source
 
@@ -41,3 +45,4 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert '"RAPID_BIN"' in source
     assert "fake-rapid-mlx.sh" in source
     assert "isExecutableFile" in source
+    assert "RapidUITests-$(date +%s)-$$.xcresult" in runner

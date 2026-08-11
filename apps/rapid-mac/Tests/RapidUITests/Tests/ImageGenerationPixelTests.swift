@@ -56,6 +56,8 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 30) { generate.isEnabled })
         generate.click()
 
+        let save = element("Images.Result.Save", in: app)
+        XCTAssertTrue(save.waitForExistence(timeout: 30))
         let first = element("Images.Gallery.Thumb.1", in: app)
         XCTAssertTrue(first.waitForExistence(timeout: 30))
 
@@ -64,6 +66,8 @@ final class ImageGenerationPixelTests: XCTestCase {
         prompt.typeText("the same cheetah, at night")
         XCTAssertTrue(waitUntil(timeout: 10) { generate.isEnabled })
         generate.click()
+        XCTAssertTrue(save.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(save.waitForExistence(timeout: 30))
 
         let newest = element("Images.Gallery.Thumb.1", in: app)
         let older = element("Images.Gallery.Thumb.2", in: app)
@@ -110,9 +114,11 @@ final class ImageGenerationPixelTests: XCTestCase {
     /// the selected/unselected stroke and button chrome, leaving the pixels
     /// the user perceives as the generated image.
     private func centerMeanRGB(_ png: Data) throws -> [CGFloat] {
-        guard let image = NSImage(data: png),
-              let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        else { throw XCTSkip("XCTest returned an undecodable screenshot") }
+        let image = try XCTUnwrap(NSImage(data: png), "XCTest returned an undecodable screenshot")
+        let source = try XCTUnwrap(
+            image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+            "XCTest returned a screenshot without a CGImage"
+        )
         let insetX = source.width / 5
         let insetY = source.height / 5
         let rect = CGRect(
@@ -120,9 +126,10 @@ final class ImageGenerationPixelTests: XCTestCase {
             width: source.width - 2 * insetX,
             height: source.height - 2 * insetY
         )
-        guard let cropped = source.cropping(to: rect) else {
-            throw XCTSkip("thumbnail screenshot was too small to crop")
-        }
+        let cropped = try XCTUnwrap(
+            source.cropping(to: rect),
+            "thumbnail screenshot was too small to crop"
+        )
         let rep = NSBitmapImageRep(cgImage: cropped)
         var totals = [CGFloat](repeating: 0, count: 3)
         var count: CGFloat = 0
