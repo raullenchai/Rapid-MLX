@@ -30,6 +30,8 @@ def test_pixel_assertion_uses_element_screenshots_and_crops_chrome():
     assert "XCTUnwrap" in source
     assert "XCTSkip" not in source
     assert "source.cropping(to: rect)" in source
+    assert "centerRGBSamples" in source
+    assert "meanSquaredDistance.squareRoot()" in source
     assert "XCTAssertGreaterThan(" in source
 
 
@@ -41,7 +43,8 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
 
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
-    assert 'XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")' in source
+    assert "XCUIApplication(url: appURL)" in source
+    assert 'appendingPathComponent("build/Rapid-MLX Desktop.app")' in source
     assert source.count('"CFFIXED_USER_HOME": testHome.path') == 2
     assert '"RAPID_BIN"' in source
     assert "fake-rapid-mlx.sh" in source

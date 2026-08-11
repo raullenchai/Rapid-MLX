@@ -22,14 +22,16 @@ final class ImageGenerationPixelTests: XCTestCase {
         try defaults.run()
         defaults.waitUntilExit()
 
-        let app = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")
         let rapidMacRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // RapidUITests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // rapid-mac
         let fakeSidecar = rapidMacRoot.appendingPathComponent("scripts/fake-rapid-mlx.sh").path
+        let appURL = rapidMacRoot.appendingPathComponent("build/Rapid-MLX Desktop.app")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
+        let app = XCUIApplication(url: appURL)
         app.launchEnvironment = [
             "HOME": testHome.path,
             "CFFIXED_USER_HOME": testHome.path,
@@ -80,14 +82,15 @@ final class ImageGenerationPixelTests: XCTestCase {
         add(XCTAttachment(screenshot: newestShot))
         add(XCTAttachment(screenshot: olderShot))
 
-        let newestRGB = try centerMeanRGB(newestShot.pngRepresentation)
-        let olderRGB = try centerMeanRGB(olderShot.pngRepresentation)
-        let distance = zip(newestRGB, olderRGB)
+        let newestPixels = try centerRGBSamples(newestShot.pngRepresentation)
+        let olderPixels = try centerRGBSamples(olderShot.pngRepresentation)
+        XCTAssertEqual(newestPixels.count, olderPixels.count)
+        let meanSquaredDistance = zip(newestPixels, olderPixels)
             .map { Double($0.0) - Double($0.1) }
             .map { $0 * $0 }
-            .reduce(0, +).squareRoot()
+            .reduce(0, +) / Double(newestPixels.count)
         XCTAssertGreaterThan(
-            distance, 20,
+            meanSquaredDistance.squareRoot(), 10,
             "The two records exist but their rendered thumbnail interiors are indistinguishable"
         )
     }
@@ -115,7 +118,7 @@ final class ImageGenerationPixelTests: XCTestCase {
     /// Compare only the central 60% of each element screenshot. This removes
     /// the selected/unselected stroke and button chrome, leaving the pixels
     /// the user perceives as the generated image.
-    private func centerMeanRGB(_ png: Data) throws -> [CGFloat] {
+    private func centerRGBSamples(_ png: Data) throws -> [CGFloat] {
         let image = try XCTUnwrap(NSImage(data: png), "XCTest returned an undecodable screenshot")
         let source = try XCTUnwrap(
             image.cgImage(forProposedRect: nil, context: nil, hints: nil),
@@ -133,18 +136,17 @@ final class ImageGenerationPixelTests: XCTestCase {
             "thumbnail screenshot was too small to crop"
         )
         let rep = NSBitmapImageRep(cgImage: cropped)
-        var totals = [CGFloat](repeating: 0, count: 3)
-        var count: CGFloat = 0
+        var samples: [CGFloat] = []
+        samples.reserveCapacity((rep.pixelsWide / 2) * (rep.pixelsHigh / 2) * 3)
         for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
             for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
                 guard let color = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                totals[0] += color.redComponent
-                totals[1] += color.greenComponent
-                totals[2] += color.blueComponent
-                count += 1
+                samples.append(color.redComponent * 255)
+                samples.append(color.greenComponent * 255)
+                samples.append(color.blueComponent * 255)
             }
         }
-        XCTAssertGreaterThan(count, 0)
-        return totals.map { $0 / count * 255 }
+        XCTAssertFalse(samples.isEmpty)
+        return samples
     }
 }
