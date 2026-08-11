@@ -37,6 +37,7 @@ struct SettingsVisualFoundationTests {
         "Sources/Rapid/UI/SettingsToolsPanel.swift",
         "Sources/Rapid/UI/SettingsConnectorsPanel.swift",
         "Sources/Rapid/UI/SettingsModelManagementPanel.swift",
+        "Sources/Rapid/UI/SettingsPerformancePanel.swift",
         "Sources/Rapid/UI/MCPServerEditorSheet.swift",
     ]
 

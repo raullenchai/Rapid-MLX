@@ -1136,7 +1136,17 @@ flow_settings_persistence() {
     open_settings
     wait_settings_stable "$OUT/settings-root.json"
     baseline settings-persistence.settings-root "$OUT/settings-root.json"
-    press "$OUT/settings-root.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
+    # #1717: prove the new Performance destination is mounted in the real app
+    # and exposes its honest empty state before any model has launched. Keep
+    # this semantic (rather than pixel-only) so an empty placeholder cannot
+    # silently replace the panel while unrelated Settings baselines stay green.
+    press "$OUT/settings-root.json" Settings.Category.performance "$OUT/settings-performance-open.json"
+    wait_settings_stable "$OUT/performance-empty.json" Settings.Performance.NoModel
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.Performance.Panel")' \
+        "$OUT/performance-empty.json" >/dev/null || die "Performance settings panel did not mount"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.Performance.NoModel" and (.description | contains("Start a model")))' \
+        "$OUT/performance-empty.json" >/dev/null || die "Performance settings did not explain that a model must be started"
+    press "$OUT/performance-empty.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     wait_settings_stable "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle
     # GoldenFlow coverage for the recommendation SSOT: the running GUI must
     # render exactly the smart + fast aliases selected from the same JSON the

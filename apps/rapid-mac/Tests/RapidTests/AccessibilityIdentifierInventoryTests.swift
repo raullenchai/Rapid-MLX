@@ -63,6 +63,33 @@ struct AccessibilityIdentifierInventoryTests {
 
     // MARK: - Settings → Tools
 
+    @Test("Settings → Performance names its panel and every control")
+    func settingsPerformancePanelIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Settings.Performance.Panel""#,
+                #""Settings.Performance.NoModel""#,
+                #""Settings.Performance.RestartNotice""#,
+                #""Settings.Performance.KVMode""#,
+                #""Settings.Performance.PrefixCache""#,
+                #""Settings.Performance.CacheBudget""#,
+                #""Settings.Performance.CacheBudgetAutomatic""#,
+                #""Settings.Performance.Reset""#,
+            ],
+            in: "Sources/Rapid/UI/SettingsPerformancePanel.swift",
+            surface: "Settings → Performance"
+        )
+        let source = try strippedSource("Sources/Rapid/UI/SettingsPerformancePanel.swift")
+        for id in ["Settings.Performance.Prefix.Default",
+                   "Settings.Performance.Prefix.On",
+                   "Settings.Performance.Prefix.Off"] {
+            #expect(
+                source.contains("identifier:\"\(id)\""),
+                "Settings → Performance: segmented option \(id) is no longer addressable."
+            )
+        }
+    }
+
     /// The whole panel shipped with ZERO identifiers: the three tool switches,
     /// the web-search backend radio group, and the browsing auto-approve
     /// switch all had correct AX roles and no name.

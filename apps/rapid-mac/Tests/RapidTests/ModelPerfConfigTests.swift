@@ -223,6 +223,20 @@ struct ModelPerfConfigTests {
         #expect(merged == ["--no-mllm", "--kv-cache-dtype", "int8"])
     }
 
+    @Test("A failed or mismatched restart is never reported as applied")
+    func restartAcknowledgementRequiresTheSameReadyModel() {
+        #expect(SettingsPerformancePanel.restartApplied(
+            state: .ready(alias: "Qwen3.6-35B-4bit"), alias: "qwen3.6-35b-4bit"
+        ))
+        #expect(!SettingsPerformancePanel.restartApplied(
+            state: .ready(alias: "gemma-4-26b-4bit"), alias: "qwen3.6-35b-4bit"
+        ))
+        #expect(!SettingsPerformancePanel.restartApplied(
+            state: .crashed(alias: "qwen3.6-35b-4bit", message: "spawn failed"),
+            alias: "qwen3.6-35b-4bit"
+        ))
+    }
+
     // MARK: - Helpers
 
     private func makeDefaults() -> UserDefaults {

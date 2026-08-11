@@ -48,8 +48,12 @@ struct SettingsPerformancePanel: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+                SectionHeader(
+                    "Performance",
+                    subtitle: "These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts.",
+                    emphasis: .page
+                )
                 if let alias = targetAlias {
                     if needsRestart { restartBanner(alias: alias) }
                     kvSection(alias: alias)
@@ -59,14 +63,13 @@ struct SettingsPerformancePanel: View {
                     noModelNotice
                 }
                 if let error = perf.loadError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout)
-                        .foregroundStyle(RapidTheme.amberDeep)
+                    InlineNotice(message: error, tone: .error)
                 }
             }
-            .padding(20)
+            .padding(RapidTheme.Space.xl)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .accessibilityIdentifier("Settings.Performance.Panel")
         .task(id: server.launchedChildAlias) {
             // Snapshot what the child was spawned with so ``needsRestart`` can
             // compare against it rather than against "has any override", which
@@ -77,50 +80,31 @@ struct SettingsPerformancePanel: View {
 
     // MARK: - Sections
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Performance")
-                .font(.title3.weight(.semibold))
-            Text("These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
     private var noModelNotice: some View {
-        Label(
-            "Start a model to configure its performance settings.",
-            systemImage: "info.circle"
+        InlineNotice(
+            message: "Start a model to configure its performance settings.",
+            tone: .info
         )
-        .font(.callout)
-        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("Settings.Performance.NoModel")
     }
 
     private func restartBanner(alias: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .foregroundStyle(RapidTheme.amberDeep)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Restart \(alias) to apply")
-                    .font(.callout.weight(.medium))
-                Text("The running model was started with the previous settings.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            Button(isRestarting ? "Restarting…" : "Restart") { restart(alias: alias) }
-                .disabled(isRestarting)
-        }
-        .padding(12)
-        .background(RapidTheme.amberTint, in: RoundedRectangle(cornerRadius: RapidTheme.cardRadius))
+        InlineNotice(
+            message: "Restart \(alias) to apply. The running model was started with the previous settings.",
+            tone: .warning,
+            actionTitle: isRestarting ? "Restarting…" : "Restart",
+            action: { restart(alias: alias) }
+        )
+        .disabled(isRestarting)
+        .accessibilityIdentifier("Settings.Performance.RestartNotice")
     }
 
     private func kvSection(alias: String) -> some View {
-        card {
+        SettingsSection(
+            "KV cache precision",
+            subtitle: "How the model's attention cache is stored. Lower precision means less memory and faster long-context decoding."
+        ) {
             VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("KV cache precision", subtitle: "How the model's attention cache is stored. Lower precision means less memory and faster long-context decoding.")
-
                 // One picker, not two. The engine resolves --kv-cache-dtype
                 // only when TurboQuant is off, so independent controls could
                 // show a dtype the engine silently ignored.
@@ -132,13 +116,15 @@ struct SettingsPerformancePanel: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.radioGroup)
+                .accessibilityLabel("KV cache precision")
+                .accessibilityIdentifier("Settings.Performance.KVMode")
 
                 if let mode = perf.config(forAlias: alias).kvCacheMode {
                     tradeOffLine(mode.tradeOff, warns: mode.canChangeOutput)
                     if mode.isSubjectToArchitectureDowngrade {
                         Text("Sliding-window (Gemma, GPT-OSS) and MLA (DeepSeek, Kimi) models fall back to full precision regardless of this setting.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(RapidFont.caption)
+                            .foregroundStyle(RapidTheme.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
@@ -149,25 +135,28 @@ struct SettingsPerformancePanel: View {
     }
 
     private func prefixSection(alias: String) -> some View {
-        card {
+        SettingsSection(
+            "Prefix cache",
+            subtitle: "Reuses computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts."
+        ) {
             VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("Prefix cache", subtitle: "Reuses the computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts.")
-
-                Picker("", selection: prefixBinding(alias: alias)) {
-                    Text("Engine default").tag(Bool?.none)
-                    Text("On").tag(Bool?.some(true))
-                    Text("Off").tag(Bool?.some(false))
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 280)
+                RapidSegmentedControl(
+                    selection: prefixBinding(alias: alias),
+                    options: [
+                        .init(value: Bool?.none, title: "Engine default", identifier: "Settings.Performance.Prefix.Default"),
+                        .init(value: Bool?.some(true), title: "On", identifier: "Settings.Performance.Prefix.On"),
+                        .init(value: Bool?.some(false), title: "Off", identifier: "Settings.Performance.Prefix.Off"),
+                    ],
+                    accessibilityLabel: "Prefix cache"
+                )
+                .accessibilityIdentifier("Settings.Performance.PrefixCache")
 
                 tradeOffLine(
                     "Costs memory, never changes output. Turning it off is mainly useful for measuring what it buys you.",
                     warns: false
                 )
 
-                Divider().padding(.vertical, 2)
+                SettingsRowDivider()
 
                 cacheBudgetRow(alias: alias)
             }
@@ -179,11 +168,11 @@ struct SettingsPerformancePanel: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Cache budget")
-                    .font(.callout.weight(.medium))
+                    .font(RapidFont.bodyEmphasis)
                 Spacer()
                 Text(config.cacheMemoryMB.map { "\($0) MB" } ?? "Automatic")
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.metric)
+                    .foregroundStyle(RapidTheme.textSecondary)
             }
             HStack(spacing: 12) {
                 Slider(
@@ -192,9 +181,12 @@ struct SettingsPerformancePanel: View {
                         ... Double(ModelPerfConfig.cacheMemoryMBRange.upperBound),
                     step: 256
                 )
+                .accessibilityLabel("Cache budget")
+                .accessibilityIdentifier("Settings.Performance.CacheBudget")
                 if config.cacheMemoryMB != nil {
                     Button("Automatic") { update(alias: alias) { $0.cacheMemoryMB = nil } }
-                        .buttonStyle(.link)
+                        .buttonStyle(.rapidTertiary)
+                        .accessibilityIdentifier("Settings.Performance.CacheBudgetAutomatic")
                 }
             }
             tradeOffLine(
@@ -209,36 +201,15 @@ struct SettingsPerformancePanel: View {
             Text(perf.hasOverride(forAlias: alias)
                  ? "Customized for \(alias)."
                  : "\(alias) is using measured defaults.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.textSecondary)
             Spacer()
             Button("Reset to measured defaults") {
                 perf.resetToDefaults(forAlias: alias)
             }
+            .buttonStyle(.rapidSecondaryCompact)
             .disabled(!perf.hasOverride(forAlias: alias))
-        }
-    }
-
-    // MARK: - Building blocks
-
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RapidTheme.card, in: RoundedRectangle(cornerRadius: RapidTheme.cardRadius))
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
-    }
-
-    private func sectionTitle(_ title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.callout.weight(.semibold))
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("Settings.Performance.Reset")
         }
     }
 
@@ -248,13 +219,13 @@ struct SettingsPerformancePanel: View {
     private func tradeOffLine(_ text: String, warns: Bool) -> some View {
         Label {
             Text(text)
-                .font(.caption)
-                .foregroundStyle(warns ? RapidTheme.amberDeep : .secondary)
+                .font(RapidFont.caption)
+                .foregroundStyle(warns ? RapidTheme.statusWarning : RapidTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: warns ? "exclamationmark.triangle.fill" : "info.circle")
-                .font(.caption)
-                .foregroundStyle(warns ? RapidTheme.amberDeep : .secondary)
+                .font(RapidFont.caption)
+                .foregroundStyle(warns ? RapidTheme.statusWarning : RapidTheme.textSecondary)
         }
     }
 
@@ -295,8 +266,22 @@ struct SettingsPerformancePanel: View {
         Task {
             await server.stop()
             await server.start(alias: alias)
-            launchedFlags = perf.launchFlags(forAlias: alias)
+            // Only acknowledge the new argv after the replacement child is
+            // actually ready. A failed restart must keep the notice visible;
+            // otherwise Settings claims an override was applied when no
+            // serving process has it (#1717).
+            if Self.restartApplied(state: server.state, alias: alias) {
+                launchedFlags = perf.launchFlags(forAlias: alias)
+            }
             isRestarting = false
         }
+    }
+
+    /// A restart counts as applied only when the replacement child reached
+    /// ready for the same model. In particular, `.crashed` and `.idle` must
+    /// leave the notice up so Settings never reports argv that no process has.
+    static func restartApplied(state: ServerState, alias: String) -> Bool {
+        guard case .ready(let readyAlias) = state else { return false }
+        return readyAlias.caseInsensitiveCompare(alias) == .orderedSame
     }
 }
