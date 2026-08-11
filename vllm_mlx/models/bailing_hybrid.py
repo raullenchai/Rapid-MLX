@@ -345,6 +345,10 @@ class BailingMLA(nn.Module):
         hidden = args.hidden_size
         bias = args.use_qkv_bias
         if self.q_lora_rank is None:
+            # bias=False BY REFERENCE: the authoritative torch modeling
+            # hard-codes the direct q_proj without bias (use_qkv_bias
+            # applies only to the LoRA a-projections and kv_a/dense) —
+            # mirroring it exactly, not an omission.
             self.q_proj = nn.Linear(
                 hidden, self.num_heads * self.qk_head_dim, bias=False
             )
