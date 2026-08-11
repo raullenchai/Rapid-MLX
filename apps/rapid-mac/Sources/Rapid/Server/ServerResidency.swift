@@ -12,6 +12,7 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
     let estimatedBytes: UInt64
     let measuredBytes: UInt64?
     let idleSeconds: Double
+    var performance: ResidentPerformanceStatus? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -25,6 +26,7 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
         case estimatedBytes = "estimated_bytes"
         case measuredBytes = "measured_bytes"
         case idleSeconds = "idle_seconds"
+        case performance
     }
 
     func matches(_ alias: String) -> Bool {
@@ -48,6 +50,43 @@ struct ResidentModelStatus: Codable, Sendable, Equatable, Identifiable {
     /// its first request materializes the weights. Never present that partial
     /// delta as smaller than the admission reservation.
     var displayBytes: UInt64 { max(estimatedBytes, measuredBytes ?? 0) }
+}
+
+struct ResidentPerformanceStatus: Codable, Sendable, Equatable {
+    let kvCacheDtype: String?
+    let kvCacheTurboquant: String?
+    let prefixCacheEnabled: Bool?
+    let cacheMemoryMB: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case kvCacheDtype = "kv_cache_dtype"
+        case kvCacheTurboquant = "kv_cache_turboquant"
+        case prefixCacheEnabled = "prefix_cache_enabled"
+        case cacheMemoryMB = "cache_memory_mb"
+    }
+
+    init(config: ModelPerfConfig) {
+        switch config.kvCacheMode {
+        case .bf16, .int8, .int4:
+            kvCacheDtype = config.kvCacheMode?.rawValue
+            kvCacheTurboquant = nil
+        case .turboquantV4:
+            kvCacheDtype = nil
+            kvCacheTurboquant = "v4"
+        case .turboquantK8V4:
+            kvCacheDtype = nil
+            kvCacheTurboquant = "k8v4"
+        case nil:
+            kvCacheDtype = nil
+            kvCacheTurboquant = nil
+        }
+        prefixCacheEnabled = config.prefixCacheEnabled
+        cacheMemoryMB = config.cacheMemoryMB
+    }
+
+    func matches(_ config: ModelPerfConfig) -> Bool {
+        self == ResidentPerformanceStatus(config: config)
+    }
 }
 
 struct ModelResidencySnapshot: Codable, Sendable, Equatable {
@@ -101,6 +140,8 @@ struct ServerResidencyClient {
         let estimated_size_gb: Double
         let pin: Bool
         let replace_group: String?
+        let performance: ResidentPerformanceStatus?
+        let reload_if_changed: Bool
     }
 
     private struct ErrorEnvelope: Decodable {
@@ -139,6 +180,8 @@ struct ServerResidencyClient {
         hfPath: String?,
         estimatedSizeGB: Double,
         replaceGroup: ResidentModelReplacementGroup? = nil,
+        performance: ModelPerfConfig? = nil,
+        reloadIfChanged: Bool = false,
         port: Int,
         bearer: String?
     ) async -> ResidentModelLoadResult {
@@ -151,7 +194,9 @@ struct ServerResidencyClient {
                 model_path: hfPath,
                 estimated_size_gb: estimatedSizeGB,
                 pin: false,
-                replace_group: replaceGroup?.rawValue
+                replace_group: replaceGroup?.rawValue,
+                performance: performance.map(ResidentPerformanceStatus.init),
+                reload_if_changed: reloadIfChanged
             )
         )
         do {

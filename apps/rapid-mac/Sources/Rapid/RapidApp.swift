@@ -182,6 +182,20 @@ struct RapidApp: App {
         manager.perfLaunchFlagsProvider = { [weak perfConfigStore] alias in
             MainActor.assumeIsolated { perfConfigStore?.launchFlags(forAlias: alias) ?? [] }
         }
+        manager.perfConfigProvider = { [weak perfConfigStore] alias in
+            MainActor.assumeIsolated {
+                let recommended = RAMBucketedDefault.launchFlags(
+                    forAlias: alias,
+                    physicalRAMGB: MacHardware.detect().physicalRAMGB
+                )
+                let merged = ServerManager.mergedPerformanceFlags(
+                    recommended: recommended,
+                    userOverrides: perfConfigStore?.launchFlags(forAlias: alias) ?? []
+                )
+                let value = ModelPerfConfig(launchFlags: merged)
+                return value.isEmpty ? nil : value
+            }
+        }
         _perfConfig = State(initialValue: perfConfigStore)
 
         let chat = ChatViewModel(tools: toolRegistry, sampling: samplingConfig, server: manager)

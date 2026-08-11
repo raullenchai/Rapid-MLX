@@ -2,18 +2,40 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..config import get_config
 from ..middleware.auth import verify_api_key
+from ..model_aliases import resolve_profile
 from ..runtime.resident_models import (
     ResidentModelBusyError,
     ResidentModelCapacityError,
     ResidentModelError,
+    ResidentPerformanceConfig,
+    resolve_resident_performance,
 )
 
 router = APIRouter(dependencies=[Depends(verify_api_key)])
+
+
+class ModelPerformanceRequest(BaseModel):
+    kv_cache_dtype: Literal["bf16", "int8", "int4"] | None = None
+    kv_cache_turboquant: Literal["v4", "k8v4"] | None = None
+    prefix_cache_enabled: bool | None = None
+    cache_memory_mb: int | None = Field(default=None, ge=256, le=32768)
+
+    @model_validator(mode="after")
+    def one_kv_mode(self):
+        if self.kv_cache_dtype is not None and self.kv_cache_turboquant is not None:
+            raise ValueError("KV dtype and TurboQuant are mutually exclusive")
+        return self
+
+    def runtime_value(self) -> ResidentPerformanceConfig | None:
+        value = ResidentPerformanceConfig(**self.model_dump())
+        return None if value.is_empty else value
 
 
 class ModelLoadRequest(BaseModel):
@@ -22,6 +44,8 @@ class ModelLoadRequest(BaseModel):
     estimated_size_gb: float | None = Field(default=None, gt=0, le=1024)
     pin: bool = False
     replace_group: str | None = Field(default=None, pattern="^(assistant)$")
+    performance: ModelPerformanceRequest | None = None
+    reload_if_changed: bool = False
 
 
 class ModelPinRequest(BaseModel):
@@ -64,13 +88,43 @@ async def load_resident_model(request: ModelLoadRequest):
         else None
     )
     try:
+        performance = (
+            request.performance.runtime_value() if request.performance else None
+        )
+        profile = resolve_profile(request.model) or (
+            resolve_profile(request.model_path) if request.model_path else None
+        )
+        if (
+            performance is not None
+            and profile is not None
+            and profile.modality
+            in {
+                "image-gen",
+                "text-diffusion",
+                "video-gen",
+                "audio",
+            }
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Performance overrides are only supported for text models.",
+            )
+        performance = resolve_resident_performance(
+            performance,
+            model_name=request.model,
+            model_path=request.model_path,
+        )
         record = await manager.load(
             request.model,
             model_path=request.model_path,
             estimated_bytes=estimated_bytes,
             pin=request.pin,
             replace_group=request.replace_group,
+            performance=performance,
+            reload_if_changed=request.reload_if_changed,
         )
+    except HTTPException:
+        raise
     except ResidentModelCapacityError as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
     except ResidentModelError as exc:

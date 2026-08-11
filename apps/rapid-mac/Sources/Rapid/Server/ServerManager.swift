@@ -321,6 +321,12 @@ final class ServerManager {
     /// keep the pre-#1717 argv verbatim.
     var perfLaunchFlagsProvider: ((String) -> [String])?
 
+    /// Typed counterpart used by the in-process residency control plane.
+    /// Launch argv remains for cold starts; dynamic loads must receive the
+    /// same per-model opinion or Settings would silently work only for the
+    /// first model in the sidecar (#1717 + #1788).
+    var perfConfigProvider: ((String) -> ModelPerfConfig?)?
+
     /// Health-check budget — interpreted as a **stall window** since
     /// v0.7.13, not a wall-clock-from-launch cap. The deadline slides
     /// forward every time ``downloadProgress`` reports forward motion
@@ -826,6 +832,7 @@ final class ServerManager {
                 hfPath: hfPath,
                 estimatedSizeGB: estimate,
                 replaceGroup: replacementGroup,
+                performance: perfConfigProvider?(trimmed),
                 port: activePort,
                 bearer: activeBearer
             )
@@ -898,6 +905,33 @@ final class ServerManager {
             await awaitStartupSettled(alias: trimmed)
         }
         return isServing(trimmed)
+    }
+
+    /// Rebuild only the named resident engine with its current performance
+    /// config. The sidecar and sibling residents stay alive; this is the
+    /// multi-model-safe replacement for Settings' former process-wide stop.
+    func reloadResidentPerformance(
+        alias: String,
+        hfPath: String? = nil,
+        estimatedMemoryGB: Double? = nil
+    ) async -> ResidentModelLoadResult {
+        let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, child != nil, isModelResident(trimmed) else {
+            return .rejected("That model is not currently resident. Its settings will apply the next time it loads.")
+        }
+        let result = await residencyClient.load(
+            alias: trimmed,
+            hfPath: hfPath,
+            estimatedSizeGB: estimatedMemoryGB ?? ModelSizing.estimate(alias: trimmed).totalGB,
+            performance: perfConfigProvider?(trimmed),
+            reloadIfChanged: true,
+            port: activePort,
+            bearer: activeBearer
+        )
+        if case .loaded = result {
+            await refreshResidency()
+        }
+        return result
     }
 
     /// True when the child is serving exactly this alias.

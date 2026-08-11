@@ -27,7 +27,12 @@ struct ModelResidencyTests {
                 "active_requests": 0,
                 "estimated_bytes": 6335076761,
                 "measured_bytes": 5905580032,
-                "idle_seconds": 12.5
+                "idle_seconds": 12.5,
+                "performance": {
+                  "kv_cache_turboquant": "k8v4",
+                  "prefix_cache_enabled": true,
+                  "cache_memory_mb": 4096
+                }
               }]
             }
             """#.utf8
@@ -44,6 +49,13 @@ struct ModelResidencyTests {
         #expect(snapshot.contains("flux2-klein-4b"))
         #expect(snapshot.contains("flux-klein"))
         #expect(snapshot.contains("Runware/FLUX.2-klein-4B"))
+        #expect(snapshot.models.first?.performance == ResidentPerformanceStatus(
+            config: ModelPerfConfig(
+                kvCacheMode: .turboquantK8V4,
+                prefixCacheEnabled: true,
+                cacheMemoryMB: 4096
+            )
+        ))
     }
 
     @Test("Resident rows prefer the catalog alias over the HF path")
@@ -114,6 +126,41 @@ struct ModelResidencyTests {
         #expect(ModelSizing.residentMemoryCeilingGB(on: mockMac(ramGB: 4)) == 4)
     }
 
+    @Test("Residency load sends typed performance config and reload intent")
+    func loadRequestCarriesPerformance() async throws {
+        ResidencyLoadCaptureProtocol.capturedBody = nil
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ResidencyLoadCaptureProtocol.self]
+        var client = ServerResidencyClient()
+        client.session = URLSession(configuration: configuration)
+
+        let result = await client.load(
+            alias: "qwen3.5-4b-4bit",
+            hfPath: "mlx-community/Qwen3.5-4B-MLX-4bit",
+            estimatedSizeGB: 4,
+            performance: ModelPerfConfig(
+                kvCacheMode: .turboquantK8V4,
+                prefixCacheEnabled: false,
+                cacheMemoryMB: 4096
+            ),
+            reloadIfChanged: true,
+            port: 8000,
+            bearer: "secret"
+        )
+        guard case .loaded = result else {
+            Issue.record("Expected the stubbed residency load to succeed")
+            return
+        }
+        let body = try #require(ResidencyLoadCaptureProtocol.capturedBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let performance = try #require(json["performance"] as? [String: Any])
+        #expect(json["reload_if_changed"] as? Bool == true)
+        #expect(performance["kv_cache_dtype"] == nil)
+        #expect(performance["kv_cache_turboquant"] as? String == "k8v4")
+        #expect(performance["prefix_cache_enabled"] as? Bool == false)
+        #expect(performance["cache_memory_mb"] as? Int == 4096)
+    }
+
     @Test("Image residency estimate uses catalog bytes plus runtime margin")
     func imageEstimateUsesDownloadSize() {
         let estimate = ModelSizing.residentEstimateGB(
@@ -163,5 +210,41 @@ struct ModelResidencyTests {
             physicalRAMBytes: UInt64(ramGB) * UInt64(1 << 30),
             memoryBandwidthGBs: 150
         )
+    }
+}
+
+private final class ResidencyLoadCaptureProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var capturedBody: Data?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.capturedBody = request.httpBody ?? Self.readBodyStream(request.httpBodyStream)
+        let payload = #"{"id":"qwen3.5-4b-4bit","model_path":"mlx-community/Qwen3.5-4B-MLX-4bit","aliases":[],"modality":"text","state":"resident","pinned":true,"primary":true,"active_requests":0,"estimated_bytes":1,"measured_bytes":null,"idle_seconds":0,"performance":{"kv_cache_turboquant":"k8v4","prefix_cache_enabled":false,"cache_memory_mb":4096}}"#.data(using: .utf8)!
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func readBodyStream(_ stream: InputStream?) -> Data? {
+        guard let stream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = buffer.withUnsafeMutableBufferPointer { pointer in
+                stream.read(pointer.baseAddress!, maxLength: pointer.count)
+            }
+            if count > 0 { data.append(buffer, count: count) }
+            if count == 0 { return data }
+            if count < 0 { return nil }
+        }
     }
 }

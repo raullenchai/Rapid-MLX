@@ -16,30 +16,63 @@ import SwiftUI
 ///   * **Per model.** Settings attach to the alias, because the right KV
 ///     setting for a 4B dense model is not the right one for a 35B MoE.
 ///   * **One line of cost per control**, from ``KVCacheMode/tradeOff``.
-///   * **Restart stated before the click**, not after: these are `serve`
-///     launch flags, so a change only reaches a running model on respawn.
+///   * **Reload stated before the click**, not after: these are engine
+///     construction settings, so a resident model must be rebuilt to apply.
 struct SettingsPerformancePanel: View {
     @Environment(ModelPerfConfigStore.self) private var perf
     @Environment(ServerManager.self) private var server
+    @Environment(DownloadManager.self) private var downloads
 
-    /// True while the Restart button is cycling the child.
-    @State private var isRestarting: Bool = false
+    /// True while the target resident model is being rebuilt.
+    @State private var isReloading: Bool = false
+    @State private var catalog: [ModelEntry] = []
+    @State private var selectedAlias: String?
+    @State private var applyError: String?
 
     /// The alias this panel edits. The running model when there is one,
     /// otherwise the last one served — editing "whatever runs next" with no
     /// name attached is how a user ends up surprised about which model they
     /// changed.
     private var targetAlias: String? {
-        server.servingAlias ?? server.launchedChildAlias
+        selectedAlias ?? server.servingAlias ?? server.launchedChildAlias
+    }
+
+    private var modelChoices: [ModelEntry] {
+        var byAlias = Dictionary(uniqueKeysWithValues: catalog
+            .filter { $0.kind == .chat }
+            .map { ($0.alias.lowercased(), $0) })
+        for alias in perf.configuredAliases where byAlias[alias.lowercased()] == nil {
+            byAlias[alias.lowercased()] = ModelEntry(
+                alias: alias, hfRepo: nil, sizeOnDisk: nil, cached: false
+            )
+        }
+        return byAlias.values.sorted {
+            $0.alias.localizedCaseInsensitiveCompare($1.alias) == .orderedAscending
+        }
     }
 
     /// Whether the running child was launched before the current settings, so
     /// its argv predates them. Derived, never stored — the same reasoning as
     /// ``SettingsConnectorsPanel``: `@State` dies with the view while the
     /// condition it described is still true.
-    private var needsRestart: Bool {
-        guard let alias = targetAlias, server.launchedChildAlias != nil else { return false }
+    private var needsReload: Bool {
+        guard let alias = targetAlias, server.isModelResident(alias) else { return false }
+        if let resident = server.residency.models.first(where: { $0.matches(alias) }),
+           let applied = resident.performance {
+            return !applied.matches(effectiveConfig(for: alias))
+        }
+        guard server.launchedChildAlias != nil else { return false }
         return perf.launchFlags(forAlias: alias) != launchedFlags
+    }
+
+    private func effectiveConfig(for alias: String) -> ModelPerfConfig {
+        ModelPerfConfig(launchFlags: ServerManager.mergedPerformanceFlags(
+            recommended: RAMBucketedDefault.launchFlags(
+                forAlias: alias,
+                physicalRAMGB: MacHardware.detect().physicalRAMGB
+            ),
+            userOverrides: perf.launchFlags(forAlias: alias)
+        ))
     }
 
     /// Flags the running child was actually spawned with, for the alias in
@@ -54,8 +87,9 @@ struct SettingsPerformancePanel: View {
                     subtitle: "These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts.",
                     emphasis: .page
                 )
+                modelSection
                 if let alias = targetAlias {
-                    if needsRestart { restartBanner(alias: alias) }
+                    if needsReload { reloadBanner(alias: alias) }
                     kvSection(alias: alias)
                     prefixSection(alias: alias)
                     footer(alias: alias)
@@ -65,20 +99,59 @@ struct SettingsPerformancePanel: View {
                 if let error = perf.loadError {
                     InlineNotice(message: error, tone: .error)
                 }
+                if let applyError {
+                    InlineNotice(message: applyError, tone: .error)
+                }
             }
             .padding(RapidTheme.Space.xl)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Settings.Performance.Panel")
         .task(id: server.launchedChildAlias) {
-            // Snapshot what the child was spawned with so ``needsRestart`` can
-            // compare against it rather than against "has any override", which
-            // would keep the banner up forever after a restart.
+            // Snapshot what the original child was spawned with so the legacy
+            // primary-record fallback can compare stored opinion with reality.
             launchedFlags = targetAlias.map { perf.launchFlags(forAlias: $0) } ?? []
+        }
+        .task(id: downloads.cacheGeneration) {
+            guard let binary = server.binaryPath else { return }
+            catalog = await ModelCatalogCache.shared.entries(
+                binary: binary, generation: downloads.cacheGeneration
+            )
+            if selectedAlias == nil {
+                selectedAlias = server.servingAlias
+                    ?? server.launchedChildAlias
+                    ?? modelChoices.first(where: { $0.cached })?.alias
+                    ?? modelChoices.first?.alias
+            }
+        }
+        .onChange(of: selectedAlias) { _, alias in
+            launchedFlags = alias.map { perf.launchFlags(forAlias: $0) } ?? []
+            applyError = nil
         }
     }
 
     // MARK: - Sections
+
+    private var modelSection: some View {
+        SettingsSection(
+            "Model",
+            subtitle: "Choose which model owns these settings. It does not need to be running."
+        ) {
+            if modelChoices.isEmpty {
+                Text("No chat models are available yet.")
+                    .font(RapidFont.body)
+                    .foregroundStyle(RapidTheme.textSecondary)
+            } else {
+                Picker("Model", selection: $selectedAlias) {
+                    ForEach(modelChoices) { entry in
+                        Text(entry.cached ? entry.alias : "\(entry.alias) · not downloaded")
+                            .tag(Optional(entry.alias))
+                    }
+                }
+                .accessibilityIdentifier("Settings.Performance.ModelPicker")
+            }
+        }
+    }
 
     private var noModelNotice: some View {
         InlineNotice(
@@ -88,14 +161,14 @@ struct SettingsPerformancePanel: View {
         .accessibilityIdentifier("Settings.Performance.NoModel")
     }
 
-    private func restartBanner(alias: String) -> some View {
+    private func reloadBanner(alias: String) -> some View {
         InlineNotice(
-            message: "Restart \(alias) to apply. The running model was started with the previous settings.",
+            message: "Reload \(alias) to apply. Other resident models will stay available.",
             tone: .warning,
-            actionTitle: isRestarting ? "Restarting…" : "Restart",
-            action: { restart(alias: alias) }
+            actionTitle: isReloading ? "Reloading…" : "Reload model",
+            action: { reload(alias: alias) }
         )
-        .disabled(isRestarting)
+        .disabled(isReloading)
         .accessibilityIdentifier("Settings.Performance.RestartNotice")
     }
 
@@ -197,19 +270,35 @@ struct SettingsPerformancePanel: View {
     }
 
     private func footer(alias: String) -> some View {
-        HStack {
-            Text(perf.hasOverride(forAlias: alias)
-                 ? "Customized for \(alias)."
-                 : "\(alias) is using measured defaults.")
+        let measured = !ModelPerfConfig(
+            launchFlags: RAMBucketedDefault.launchFlags(
+                forAlias: alias,
+                physicalRAMGB: MacHardware.detect().physicalRAMGB
+            )
+        ).isEmpty
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            HStack {
+                Text(perf.hasOverride(forAlias: alias)
+                     ? "Customized for \(alias)."
+                     : measured
+                        ? "\(alias) will use its measured defaults."
+                        : "\(alias) will use the engine defaults; no measured profile is published for it.")
                 .font(RapidFont.caption)
                 .foregroundStyle(RapidTheme.textSecondary)
-            Spacer()
-            Button("Reset to measured defaults") {
-                perf.resetToDefaults(forAlias: alias)
+                Spacer()
+                Button(measured ? "Reset to measured defaults" : "Reset to engine defaults") {
+                    perf.resetToDefaults(forAlias: alias)
+                }
+                .buttonStyle(.rapidSecondaryCompact)
+                .disabled(!perf.hasOverride(forAlias: alias))
+                .accessibilityIdentifier("Settings.Performance.Reset")
             }
-            .buttonStyle(.rapidSecondaryCompact)
-            .disabled(!perf.hasOverride(forAlias: alias))
-            .accessibilityIdentifier("Settings.Performance.Reset")
+            if !server.isModelResident(alias) {
+                Text("Saved. These settings will apply the next time this model loads.")
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .accessibilityIdentifier("Settings.Performance.AppliesNextLoad")
+            }
         }
     }
 
@@ -261,27 +350,24 @@ struct SettingsPerformancePanel: View {
         perf.setConfig(config, forAlias: alias)
     }
 
-    private func restart(alias: String) {
-        isRestarting = true
+    private func reload(alias: String) {
+        isReloading = true
+        applyError = nil
         Task {
-            await server.stop()
-            await server.start(alias: alias)
-            // Only acknowledge the new argv after the replacement child is
-            // actually ready. A failed restart must keep the notice visible;
-            // otherwise Settings claims an override was applied when no
-            // serving process has it (#1717).
-            if Self.restartApplied(state: server.state, alias: alias) {
+            let entry = modelChoices.first { $0.alias.caseInsensitiveCompare(alias) == .orderedSame }
+            let result = await server.reloadResidentPerformance(
+                alias: alias,
+                hfPath: entry?.hfRepo
+            )
+            if case .loaded = result {
                 launchedFlags = perf.launchFlags(forAlias: alias)
+            } else if case .rejected(let message) = result {
+                applyError = message
+            } else {
+                applyError = "This bundled model server cannot reload one resident model."
             }
-            isRestarting = false
+            isReloading = false
         }
     }
 
-    /// A restart counts as applied only when the replacement child reached
-    /// ready for the same model. In particular, `.crashed` and `.idle` must
-    /// leave the notice up so Settings never reports argv that no process has.
-    static func restartApplied(state: ServerState, alias: String) -> Bool {
-        guard case .ready(let readyAlias) = state else { return false }
-        return readyAlias.caseInsensitiveCompare(alias) == .orderedSame
-    }
 }

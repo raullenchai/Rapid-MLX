@@ -110,6 +110,19 @@ struct ModelPerfConfigTests {
         #expect(mode.launchFlags == expected)
     }
 
+    @Test("Resolved launch flags round-trip into the residency config")
+    func resolvedFlagsRoundTrip() {
+        let config = ModelPerfConfig(launchFlags: [
+            "--no-mllm", "--kv-cache-turboquant", "k8v4",
+            "--disable-prefix-cache", "--cache-memory-mb", "4096",
+        ])
+        #expect(config == ModelPerfConfig(
+            kvCacheMode: .turboquantK8V4,
+            prefixCacheEnabled: false,
+            cacheMemoryMB: 4096
+        ))
+    }
+
     @Test("The deprecated --kv-cache-quantization spelling is never emitted")
     func legacyQuantizationFlagIsNeverEmitted() {
         // The engine documents it as "[deprecated alias of --kv-cache-dtype
@@ -221,20 +234,6 @@ struct ModelPerfConfigTests {
             userOverrides: ["--kv-cache-dtype", "int8"]
         )
         #expect(merged == ["--no-mllm", "--kv-cache-dtype", "int8"])
-    }
-
-    @Test("A failed or mismatched restart is never reported as applied")
-    func restartAcknowledgementRequiresTheSameReadyModel() {
-        #expect(SettingsPerformancePanel.restartApplied(
-            state: .ready(alias: "Qwen3.6-35B-4bit"), alias: "qwen3.6-35b-4bit"
-        ))
-        #expect(!SettingsPerformancePanel.restartApplied(
-            state: .ready(alias: "gemma-4-26b-4bit"), alias: "qwen3.6-35b-4bit"
-        ))
-        #expect(!SettingsPerformancePanel.restartApplied(
-            state: .crashed(alias: "qwen3.6-35b-4bit", message: "spawn failed"),
-            alias: "qwen3.6-35b-4bit"
-        ))
     }
 
     // MARK: - Helpers

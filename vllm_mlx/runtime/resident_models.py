@@ -33,6 +33,110 @@ class ResidentModelBusyError(ResidentModelError):
     """A model cannot be removed while it owns active work."""
 
 
+@dataclass(frozen=True)
+class ResidentPerformanceConfig:
+    """Audited scheduler overrides attached to one resident text model.
+
+    ``None`` fields mean no operator opinion. Keeping this import-light value
+    in the lifecycle layer lets the FastAPI request model and desktop client
+    share a typed contract without making residency depend on CLI argv.
+    """
+
+    kv_cache_dtype: str | None = None
+    kv_cache_turboquant: str | None = None
+    prefix_cache_enabled: bool | None = None
+    cache_memory_mb: int | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return all(
+            value is None
+            for value in (
+                self.kv_cache_dtype,
+                self.kv_cache_turboquant,
+                self.prefix_cache_enabled,
+                self.cache_memory_mb,
+            )
+        )
+
+    def payload(self) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in {
+                "kv_cache_dtype": self.kv_cache_dtype,
+                "kv_cache_turboquant": self.kv_cache_turboquant,
+                "prefix_cache_enabled": self.prefix_cache_enabled,
+                "cache_memory_mb": self.cache_memory_mb,
+            }.items()
+            if value is not None
+        }
+
+
+def resident_scheduler_kwargs(
+    performance: ResidentPerformanceConfig | None,
+) -> dict[str, object]:
+    """Translate the control-plane value into ``SchedulerConfig`` fields."""
+
+    if performance is None:
+        return {}
+    result: dict[str, object] = {}
+    if performance.kv_cache_dtype is not None:
+        from ..kv_cache_dtype import dtype_to_quantization_bits
+
+        quantized, bits = dtype_to_quantization_bits(performance.kv_cache_dtype)
+        result.update(
+            kv_cache_dtype=performance.kv_cache_dtype,
+            kv_cache_quantization=quantized,
+            kv_cache_quantization_bits=bits,
+        )
+    if performance.kv_cache_turboquant is not None:
+        result.update(
+            kv_cache_turboquant=True,
+            kv_cache_turboquant_mode=performance.kv_cache_turboquant,
+        )
+    if performance.prefix_cache_enabled is not None:
+        result["enable_prefix_cache"] = performance.prefix_cache_enabled
+    if performance.cache_memory_mb is not None:
+        result["cache_memory_mb"] = performance.cache_memory_mb
+    return result
+
+
+def resolve_resident_performance(
+    performance: ResidentPerformanceConfig | None,
+    *,
+    model_name: str,
+    model_path: str | None,
+) -> ResidentPerformanceConfig | None:
+    """Apply the same audited KV-cache eligibility gate as CLI startup."""
+
+    if performance is None or performance.kv_cache_dtype is None:
+        return performance
+
+    # Keep startup and runtime residency on one gate. Importing lazily avoids
+    # pulling the CLI dependency graph into the lifecycle module at import time.
+    from ..cli import _gather_kv_cache_dtype_inputs
+    from ..kv_cache_dtype import log_kv_cache_decision, resolve_kv_cache_dtype
+
+    lookup_name = model_path or model_name
+    hf_config, alias_metadata = _gather_kv_cache_dtype_inputs(lookup_name)
+    decision = resolve_kv_cache_dtype(
+        performance.kv_cache_dtype,
+        model_name=model_name,
+        hf_path=model_path or (alias_metadata or {}).get("hf_path"),
+        hf_config=hf_config,
+        alias_metadata=alias_metadata,
+    )
+    log_kv_cache_decision(decision, model_name=model_name)
+    if decision.dtype == performance.kv_cache_dtype:
+        return performance
+    return ResidentPerformanceConfig(
+        kv_cache_dtype=decision.dtype,
+        kv_cache_turboquant=performance.kv_cache_turboquant,
+        prefix_cache_enabled=performance.prefix_cache_enabled,
+        cache_memory_mb=performance.cache_memory_mb,
+    )
+
+
 @dataclass
 class ResidencyRecord:
     """Mutable lifecycle metadata kept outside the route-facing registry entry."""
@@ -46,13 +150,16 @@ class ResidencyRecord:
     active_requests: int = 0
     state: str = "resident"
     measured_bytes: int = 0
+    performance: ResidentPerformanceConfig | None = None
 
     @property
     def model_id(self) -> str:
         return self.entry.model_name
 
 
-Loader = Callable[[str, str | None], Awaitable[ModelEntry]]
+Loader = Callable[
+    [str, str | None, ResidentPerformanceConfig | None], Awaitable[ModelEntry]
+]
 PrimaryChanged = Callable[[ModelEntry], None]
 
 
@@ -342,6 +449,8 @@ class ResidentModelManager:
         estimated_bytes: int | None = None,
         pin: bool = False,
         replace_group: str | None = None,
+        performance: ResidentPerformanceConfig | None = None,
+        reload_if_changed: bool = False,
     ) -> ResidencyRecord:
         model_name = model_name.strip()
         if not model_name:
@@ -352,6 +461,8 @@ class ResidentModelManager:
             canonical = self._canonical(model_name)
             if canonical is not None:
                 record = self._records[canonical]
+                if reload_if_changed and record.performance != performance:
+                    record = await self._reload_locked(record, performance)
                 record.last_used_at = self._clock()
                 if pin:
                     record.pinned = True
@@ -361,7 +472,7 @@ class ResidentModelManager:
 
             await self._evict_for_locked(estimate, exclude={model_name})
             before = self._read_memory()
-            entry = await self.loader(model_name, model_path)
+            entry = await self.loader(model_name, model_path, performance)
             now = self._clock()
             after = self._read_memory()
             delta = max(0, after - before) if before and after else 0
@@ -372,6 +483,7 @@ class ResidentModelManager:
                 loaded_at=now,
                 last_used_at=now,
                 pinned=pin,
+                performance=performance,
             )
             self.registry.add(entry)
             self._index_record(record)
@@ -388,6 +500,88 @@ class ResidentModelManager:
                 await self._evict_locked(record, reason="load_rollback", count=False)
                 raise
             return record
+
+    async def _reload_locked(
+        self,
+        record: ResidencyRecord,
+        performance: ResidentPerformanceConfig | None,
+    ) -> ResidencyRecord:
+        """Replace one idle engine without restarting or disturbing siblings."""
+
+        if record.active_requests or not _engine_is_idle(record.entry.engine):
+            raise ResidentModelBusyError("model is serving an active request")
+
+        model_name = record.model_id
+        model_path = record.entry.model_path
+        estimate = record.estimated_bytes
+        pinned = record.pinned
+        primary = record.primary
+
+        self.registry.remove(model_name)
+        self._drop_record(model_name)
+        try:
+            stop = getattr(record.entry.engine, "stop", None)
+            if callable(stop):
+                result = stop()
+                if asyncio.iscoroutine(result):
+                    await result
+        except BaseException:
+            # A failed stop must not also make the still-existing engine
+            # disappear from routing and residency accounting.
+            self.registry.add(record.entry, is_default=primary)
+            self._index_record(record)
+            raise
+        _release_allocator_cache()
+
+        before = self._read_memory()
+        try:
+            entry = await self.loader(model_name, model_path, performance)
+        except BaseException as reload_error:
+            # The old engine has already released its Metal allocations so the
+            # replacement can fit under the same budget. Best-effort restore
+            # the last known-good config; never let a rejected Settings change
+            # silently take every route for the primary model down.
+            try:
+                restored_entry = await self.loader(
+                    model_name, model_path, record.performance
+                )
+                restored = ResidencyRecord(
+                    entry=restored_entry,
+                    estimated_bytes=estimate,
+                    loaded_at=self._clock(),
+                    last_used_at=self._clock(),
+                    pinned=pinned,
+                    primary=primary,
+                    performance=record.performance,
+                )
+                self.registry.add(restored_entry, is_default=primary)
+                self._index_record(restored)
+                if primary and self._on_primary_changed is not None:
+                    self._on_primary_changed(restored_entry)
+            except BaseException:
+                logger.exception(
+                    "Failed to restore resident model %r after reload failure",
+                    model_name,
+                )
+            raise reload_error
+        after = self._read_memory()
+        now = self._clock()
+        replacement = ResidencyRecord(
+            entry=entry,
+            estimated_bytes=estimate,
+            measured_bytes=max(0, after - before) if before and after else 0,
+            loaded_at=now,
+            last_used_at=now,
+            pinned=pinned,
+            primary=primary,
+            performance=performance,
+        )
+        self.registry.add(entry, is_default=primary)
+        self._index_record(replacement)
+        self.loads_total += 1
+        if primary and self._on_primary_changed is not None:
+            self._on_primary_changed(entry)
+        return replacement
 
     async def _replace_group_locked(self, target: ResidencyRecord, group: str) -> None:
         """Make ``target`` the sole unpinned model in a lifecycle group.
@@ -513,6 +707,9 @@ class ResidentModelManager:
                     "estimated_bytes": record.estimated_bytes,
                     "measured_bytes": record.measured_bytes or None,
                     "idle_seconds": max(0.0, now - record.last_used_at),
+                    "performance": (
+                        record.performance.payload() if record.performance else None
+                    ),
                 }
             )
         usage = self._accounted_usage()

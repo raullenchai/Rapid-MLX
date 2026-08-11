@@ -88,6 +88,38 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
         return flags
     }
 
+    /// Decode the audited subset from an already-resolved argv fragment.
+    /// This is how residency receives the same measured recommendation +
+    /// user override that a cold ``serve`` spawn receives.
+    init(launchFlags: [String]) {
+        self.init()
+        var index = 0
+        while index < launchFlags.count {
+            let flag = launchFlags[index]
+            let value = index + 1 < launchFlags.count ? launchFlags[index + 1] : nil
+            switch flag {
+            case "--kv-cache-dtype":
+                if let value { kvCacheMode = KVCacheMode(rawValue: value) }
+                index += 2
+            case "--kv-cache-turboquant":
+                if value == "v4" { kvCacheMode = .turboquantV4 }
+                if value == "k8v4" { kvCacheMode = .turboquantK8V4 }
+                index += 2
+            case "--enable-prefix-cache":
+                prefixCacheEnabled = true
+                index += 1
+            case "--disable-prefix-cache":
+                prefixCacheEnabled = false
+                index += 1
+            case "--cache-memory-mb":
+                if let value, let parsed = Int(value) { cacheMemoryMB = parsed }
+                index += 2
+            default:
+                index += 1
+            }
+        }
+    }
+
     /// Flag names this config can emit. Used by ``ServerManager`` to drop the
     /// RAM-tier recommendation's value for a knob the user has an explicit
     /// opinion about, so the two never both land on argv.

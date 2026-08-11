@@ -2112,7 +2112,9 @@ def load_model(
 
 
 async def _load_dynamic_resident_model(
-    model_name: str, model_path: str | None
+    model_name: str,
+    model_path: str | None,
+    performance=None,
 ) -> ModelEntry:
     """Construct and start one non-primary engine for the residency manager."""
 
@@ -2150,10 +2152,14 @@ async def _load_dynamic_resident_model(
             f"runtime residency loading is not available for modality {modality!r}"
         )
     else:
+        from .runtime.resident_models import resident_scheduler_kwargs
+        from .scheduler import SchedulerConfig
+
         engine = BatchedEngine(
             model_name=resolved_path,
             force_text=bool(profile is not None and profile.is_text_only),
             gpu_memory_utilization=_resident_gpu_memory_utilization,
+            scheduler_config=SchedulerConfig(**resident_scheduler_kwargs(performance)),
         )
         await engine.start()
         try:

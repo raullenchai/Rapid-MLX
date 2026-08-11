@@ -70,11 +70,13 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Settings.Performance.Panel""#,
                 #""Settings.Performance.NoModel""#,
                 #""Settings.Performance.RestartNotice""#,
+                #""Settings.Performance.ModelPicker""#,
                 #""Settings.Performance.KVMode""#,
                 #""Settings.Performance.PrefixCache""#,
                 #""Settings.Performance.CacheBudget""#,
                 #""Settings.Performance.CacheBudgetAutomatic""#,
                 #""Settings.Performance.Reset""#,
+                #""Settings.Performance.AppliesNextLoad""#,
             ],
             in: "Sources/Rapid/UI/SettingsPerformancePanel.swift",
             surface: "Settings → Performance"

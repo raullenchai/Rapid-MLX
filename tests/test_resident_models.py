@@ -9,9 +9,33 @@ from vllm_mlx.runtime.resident_models import (
     ResidentModelBusyError,
     ResidentModelCapacityError,
     ResidentModelManager,
+    ResidentPerformanceConfig,
+    resident_scheduler_kwargs,
 )
 
 GIB = 1024**3
+
+
+def test_resident_performance_maps_to_the_scheduler_contract():
+    assert resident_scheduler_kwargs(
+        ResidentPerformanceConfig(
+            kv_cache_dtype="int4",
+            prefix_cache_enabled=False,
+            cache_memory_mb=4096,
+        )
+    ) == {
+        "kv_cache_dtype": "int4",
+        "kv_cache_quantization": True,
+        "kv_cache_quantization_bits": 4,
+        "enable_prefix_cache": False,
+        "cache_memory_mb": 4096,
+    }
+    assert resident_scheduler_kwargs(
+        ResidentPerformanceConfig(kv_cache_turboquant="k8v4")
+    ) == {
+        "kv_cache_turboquant": True,
+        "kv_cache_turboquant_mode": "k8v4",
+    }
 
 
 class FakeEngine:
@@ -54,7 +78,7 @@ def manager_fixture(*, limit_gib=10, ttl=0):
     registry.add(primary, is_default=True)
     loaded: dict[str, FakeEngine] = {}
 
-    async def loader(name: str, path: str | None):
+    async def loader(name: str, path: str | None, performance=None):
         engine = FakeEngine()
         loaded[name] = engine
         return ModelEntry(
@@ -83,7 +107,7 @@ async def test_accounting_reserves_lazy_model_estimates_and_tracks_larger_actual
     registry.add(primary, is_default=True)
     process_usage = [1 * GIB]
 
-    async def loader(name: str, path: str | None):
+    async def loader(name: str, path: str | None, performance=None):
         return entry(name)
 
     manager = ResidentModelManager(
@@ -163,7 +187,7 @@ async def test_replacing_assistant_promotes_target_and_keeps_image_resident():
     loaded: dict[str, FakeEngine] = {}
     promoted: list[str] = []
 
-    async def loader(name: str, path: str | None):
+    async def loader(name: str, path: str | None, performance=None):
         engine = FakeImageEngine() if name == "image" else FakeEngine()
         loaded[name] = engine
         return ModelEntry(
@@ -222,6 +246,90 @@ async def test_failed_assistant_replacement_rolls_back_newly_loaded_model():
 
 
 @pytest.mark.asyncio
+async def test_per_model_performance_reload_replaces_only_the_target_engine():
+    manager, registry, loaded, _ = manager_fixture(limit_gib=20)
+    await manager.load("image", estimated_bytes=3 * GIB)
+    image_engine = loaded["image"]
+    old_chat_engine = registry.get_engine("chat")
+    config = ResidentPerformanceConfig(
+        kv_cache_dtype="int8",
+        prefix_cache_enabled=False,
+        cache_memory_mb=2048,
+    )
+
+    reloaded = await manager.load(
+        "chat",
+        performance=config,
+        reload_if_changed=True,
+    )
+
+    assert reloaded.performance == config
+    assert old_chat_engine.stopped is True
+    assert registry.get_engine("chat") is not old_chat_engine
+    assert loaded["image"] is image_engine
+    assert image_engine.stopped is False
+    assert {item["id"] for item in manager.snapshot()["models"]} == {
+        "chat",
+        "image",
+    }
+    chat = next(item for item in manager.snapshot()["models"] if item["id"] == "chat")
+    assert chat["performance"] == {
+        "kv_cache_dtype": "int8",
+        "prefix_cache_enabled": False,
+        "cache_memory_mb": 2048,
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_performance_reload_restores_the_last_known_good_engine():
+    registry = ModelRegistry()
+    primary = entry("chat")
+    registry.add(primary, is_default=True)
+    calls: list[ResidentPerformanceConfig | None] = []
+
+    async def loader(name: str, path: str | None, performance=None):
+        calls.append(performance)
+        if performance == ResidentPerformanceConfig(kv_cache_dtype="int4"):
+            raise RuntimeError("new config failed")
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    with pytest.raises(RuntimeError, match="new config failed"):
+        await manager.load(
+            "chat",
+            performance=ResidentPerformanceConfig(kv_cache_dtype="int4"),
+            reload_if_changed=True,
+        )
+
+    assert calls == [ResidentPerformanceConfig(kv_cache_dtype="int4"), None]
+    assert "chat" in registry
+    assert registry.get_engine("chat") is not primary.engine
+    assert manager.snapshot()["models"][0]["performance"] is None
+
+
+@pytest.mark.asyncio
+async def test_failed_stop_keeps_the_existing_engine_registered():
+    manager, registry, _, _ = manager_fixture(limit_gib=20)
+    old_engine = registry.get_engine("chat")
+
+    async def failed_stop():
+        raise RuntimeError("stop failed")
+
+    old_engine.stop = failed_stop
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await manager.load(
+            "chat",
+            performance=ResidentPerformanceConfig(kv_cache_dtype="int8"),
+            reload_if_changed=True,
+        )
+
+    assert registry.get_engine("chat") is old_engine
+    assert manager.snapshot()["models"][0]["id"] == "chat"
+
+
+@pytest.mark.asyncio
 async def test_soak_load_evict_cycles_stay_inside_ceiling():
     manager, registry, loaded, clock = manager_fixture(limit_gib=8)
 
@@ -275,3 +383,83 @@ def test_residency_control_plane_load_pin_status_and_unload(monkeypatch):
         )
         assert client.delete("/v1/models/image").status_code == 204
         assert "image" not in registry
+
+
+def test_residency_control_plane_validates_and_forwards_performance(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm_mlx.routes.residency import router
+
+    manager, registry, loaded, _ = manager_fixture(limit_gib=20)
+    monkeypatch.setattr(
+        "vllm_mlx.routes.residency.get_config",
+        lambda: SimpleNamespace(residency_manager=manager),
+    )
+    app = FastAPI()
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/models/load",
+            json={
+                "model": "chat",
+                "reload_if_changed": True,
+                "performance": {
+                    "kv_cache_turboquant": "k8v4",
+                    "prefix_cache_enabled": True,
+                    "cache_memory_mb": 4096,
+                },
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["performance"] == {
+            "kv_cache_turboquant": "k8v4",
+            "prefix_cache_enabled": True,
+            "cache_memory_mb": 4096,
+        }
+        assert registry.get_engine("chat") is loaded["chat"]
+
+        conflict = client.post(
+            "/v1/models/load",
+            json={
+                "model": "chat",
+                "performance": {
+                    "kv_cache_dtype": "int4",
+                    "kv_cache_turboquant": "v4",
+                },
+            },
+        )
+        assert conflict.status_code == 422
+
+        monkeypatch.setattr(
+            "vllm_mlx.routes.residency.resolve_profile",
+            lambda _name: SimpleNamespace(modality="image-gen"),
+        )
+        image_override = client.post(
+            "/v1/models/load",
+            json={
+                "model": "image",
+                "performance": {"prefix_cache_enabled": True},
+            },
+        )
+        assert image_override.status_code == 422
+        assert "only supported for text" in image_override.json()["detail"]
+
+
+def test_resident_performance_uses_cli_kv_safety_gate(monkeypatch):
+    from vllm_mlx.runtime.resident_models import resolve_resident_performance
+
+    monkeypatch.setattr(
+        "vllm_mlx.cli._gather_kv_cache_dtype_inputs",
+        lambda _name: ({"sliding_window": 4096}, None),
+    )
+    resolved = resolve_resident_performance(
+        ResidentPerformanceConfig(kv_cache_dtype="int4", cache_memory_mb=2048),
+        model_name="example/sliding-model",
+        model_path=None,
+    )
+
+    assert resolved == ResidentPerformanceConfig(
+        kv_cache_dtype="bf16",
+        cache_memory_mb=2048,
+    )

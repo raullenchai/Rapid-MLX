@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|download-progress|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
+        cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
         slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt) return 1 ;;
         *) return 0 ;;
     esac
@@ -1136,17 +1136,19 @@ flow_settings_persistence() {
     open_settings
     wait_settings_stable "$OUT/settings-root.json"
     baseline settings-persistence.settings-root "$OUT/settings-root.json"
-    # #1717: prove the new Performance destination is mounted in the real app
-    # and exposes its honest empty state before any model has launched. Keep
-    # this semantic (rather than pixel-only) so an empty placeholder cannot
-    # silently replace the panel while unrelated Settings baselines stay green.
+    # #1717: configure a chosen model before it runs. This proves the panel is
+    # not coupled to the current child, its model selector is addressable, and
+    # a real control mutation reaches the honest "next load" state.
     press "$OUT/settings-root.json" Settings.Category.performance "$OUT/settings-performance-open.json"
-    wait_settings_stable "$OUT/performance-empty.json" Settings.Performance.NoModel
+    wait_settings_stable "$OUT/performance-open.json" Settings.Performance.ModelPicker
     jq -e '.data.ui_elements[]? | select(.identifier == "Settings.Performance.Panel")' \
-        "$OUT/performance-empty.json" >/dev/null || die "Performance settings panel did not mount"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.Performance.NoModel" and (.description | contains("Start a model")))' \
-        "$OUT/performance-empty.json" >/dev/null || die "Performance settings did not explain that a model must be started"
-    press "$OUT/performance-empty.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
+        "$OUT/performance-open.json" >/dev/null || die "Performance settings panel did not mount"
+    press "$OUT/performance-open.json" Settings.Performance.Prefix.Off "$OUT/performance-prefix-off.json"
+    wait_settings_stable "$OUT/performance-saved.json" Settings.Performance.AppliesNextLoad
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.Performance.AppliesNextLoad" and (.value | contains("next time")))' \
+        "$OUT/performance-saved.json" >/dev/null || die "Performance settings did not explain deferred application"
+    baseline settings-persistence.performance-saved "$OUT/performance-saved.json"
+    press "$OUT/performance-saved.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     wait_settings_stable "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle
     # GoldenFlow coverage for the recommendation SSOT: the running GUI must
     # render exactly the smart + fast aliases selected from the same JSON the
