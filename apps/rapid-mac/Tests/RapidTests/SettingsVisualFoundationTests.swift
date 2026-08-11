@@ -17,6 +17,11 @@ import Testing
 /// produce, so a value inside a comment or a doc-string cannot pass or
 /// fail one by accident.
 @Suite("Settings visual foundation (UI-1)")
+@MainActor
+// The whole suite runs on the main actor: several tests construct SwiftUI
+// style/metric types whose initializers the CI toolchain (stricter default
+// isolation than the local one) treats as MainActor-isolated. Individual
+// @MainActor markers below become redundant but stay harmless.
 struct SettingsVisualFoundationTests {
 
     private static var packageRoot: URL {
