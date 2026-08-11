@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 MAC = ROOT / "apps" / "rapid-mac"
 
@@ -7,13 +9,25 @@ MAC = ROOT / "apps" / "rapid-mac"
 def test_xcui_target_is_checked_in_and_runs_in_gui_ci():
     project = MAC / "Tests/RapidUITests/RapidUITests.xcodeproj/project.pbxproj"
     source = MAC / "Tests/RapidUITests/Tests/ImageGenerationPixelTests.swift"
-    workflow = (ROOT / ".github/workflows/rapid-mac-ci.yml").read_text()
+    workflow_path = ROOT / ".github/workflows/rapid-mac-ci.yml"
+    workflow = workflow_path.read_text()
+    gui_steps = yaml.safe_load(workflow)["jobs"]["gui-golden-flows"]["steps"]
+    named_steps = {step.get("name"): (index, step) for index, step in enumerate(gui_steps)}
 
     assert project.is_file()
     assert "com.apple.product-type.bundle.ui-testing" in project.read_text()
     assert source.is_file()
     assert "./scripts/run-xcui-tests.sh" in workflow
     assert "RapidUITests.xcresult" in workflow
+    xcui_index, xcui = named_steps["XCUITest: image-generation pixels"]
+    upload_index, upload = named_steps["Upload XCUITest evidence"]
+    verdict_index, verdict = named_steps["Require native XCUITest"]
+    assert xcui["id"] == "xcui"
+    assert xcui["continue-on-error"] is True
+    assert upload["if"] == "steps.xcui.outcome == 'failure'"
+    assert verdict["if"] == "always()"
+    assert "steps.xcui.outcome" in verdict["env"]["XCUI_OUTCOME"]
+    assert xcui_index < upload_index < verdict_index
 
 
 def test_pixel_assertion_uses_element_screenshots_and_crops_chrome():
@@ -51,7 +65,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "lsregister" in runner
     assert "XCUIApplication(url: appURL)" in source
     assert 'appendingPathComponent("build/Rapid-MLX Desktop.app")' in source
-    assert source.count('"CFFIXED_USER_HOME": testHome.path') == 2
+    assert source.count('"CFFIXED_USER_HOME": testHome.path') == 1
     assert '"RAPID_BIN"' in source
     assert "fake-rapid-mlx.sh" in source
     assert "isExecutableFile" in source

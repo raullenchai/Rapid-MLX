@@ -10,18 +10,6 @@ final class ImageGenerationPixelTests: XCTestCase {
         try FileManager.default.createDirectory(at: testHome, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: testHome) }
 
-        // The CI runner is disposable, but clearing the app domain makes local
-        // full-Xcode runs deterministic too. HOME isolates sessions and owned
-        // server records; CFPreferences needs the explicit domain reset.
-        let defaults = Process()
-        defaults.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-        defaults.arguments = ["delete", "com.rapidmlx.rapid"]
-        defaults.environment = ProcessInfo.processInfo.environment.merging([
-            "CFFIXED_USER_HOME": testHome.path,
-        ]) { _, isolated in isolated }
-        try defaults.run()
-        defaults.waitUntilExit()
-
         let rapidMacRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // RapidUITests
@@ -93,6 +81,10 @@ final class ImageGenerationPixelTests: XCTestCase {
         let older = element("Images.Gallery.Thumb.2", in: app)
         XCTAssertTrue(older.waitForExistence(timeout: 30))
 
+        // Capture each record while it has the same selected styling. The
+        // center crop already removes the stroke, and equalizing selection
+        // also prevents any future interior selection treatment from being
+        // mistaken for different generated pixels.
         older.click()
         let olderShot = older.screenshot()
         newest.click()
