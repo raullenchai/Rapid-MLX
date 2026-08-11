@@ -8,7 +8,7 @@ APP="$ROOT/build/Rapid-MLX Desktop.app"
 RESULT_BUNDLE="${RAPID_XCUI_RESULT_BUNDLE:-$ROOT/build/RapidUITests-$(date +%s)-$$.xcresult}"
 
 [[ -d "$APP" ]] || { echo "error: build the app first: $APP" >&2; exit 1; }
-command -v xcodebuild >/dev/null || {
+xcodebuild -version >/dev/null 2>&1 || {
     echo "error: full Xcode is required for XCUITest (Command Line Tools are insufficient)" >&2
     exit 1
 }

@@ -64,6 +64,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
 
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
+    assert "xcodebuild -version" in runner
     assert "XCUIApplication(url: appURL)" in source
     assert 'appendingPathComponent("build/Rapid-MLX Desktop.app")' in source
     assert source.count('"CFFIXED_USER_HOME": testHome.path') == 1
