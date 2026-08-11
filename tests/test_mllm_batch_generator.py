@@ -1347,33 +1347,37 @@ def test_run_vision_encoding_no_vision_cache_for_unsupported_model():
 
 
 class _CachingBehaviorModel:
-    """Model stub that mimics mlx-vlm's ``get_input_embeddings`` caching dance:
-    on a ``vision_cache`` miss it "encodes" (bumps ``encode_count``) and stores
-    the projected features; on a hit it skips. Lets a test assert that rapid's
-    wiring actually dedups the vision encoder across repeated images end to end
-    — not just that the kwargs are forwarded."""
+    """Model stub that mirrors mlx-vlm's real forward contract: ``__call__``
+    binds ``pixel_values`` as a named arg (as rapid passes it via kwargs) and
+    delegates to ``get_input_embeddings``, forwarding the remaining kwargs —
+    exactly like gemma-4. The cache lookup + "encode" (``encode_count`` bump)
+    happens INSIDE ``get_input_embeddings`` on a miss, so the test proves the
+    real forwarding path, not a shortcut in ``__call__``."""
 
     def __init__(self):
         self.encode_count = 0
         self.language_model = object()
 
     def get_input_embeddings(self, input_ids=None, pixel_values=None, **kwargs):
-        # Contract markers so _model_supports_vision_feature_cache enables the
-        # feature: names both vision_cache and _image_key in the body.
-        _ = kwargs.get("vision_cache")
-        _ = kwargs.get("_image_key")
-        return None
-
-    def __call__(self, input_ids, cache=None, **kwargs):
+        # Mirror gemma-4: read the quoted contract keys "vision_cache" /
+        # "_image_key" from kwargs; on a miss, "encode" (count) and store.
         vision_cache = kwargs.get("vision_cache")
         image_key = kwargs.get("_image_key")
+        if pixel_values is None:
+            return None
         if vision_cache is not None and image_key is not None:
             if vision_cache.get(image_key) is None:
                 self.encode_count += 1
                 vision_cache.put(image_key, mx.zeros((1, 4)))
         else:
-            # No cache wired in → the encoder always runs (pre-fix behaviour).
+            # No cache forwarded → the encoder always runs (pre-fix behaviour).
             self.encode_count += 1
+        return None
+
+    def __call__(self, input_ids, pixel_values=None, cache=None, **kwargs):
+        # ``pixel_values`` is bound from rapid's kwargs; forward the rest
+        # (incl. vision_cache/_image_key) into get_input_embeddings.
+        self.get_input_embeddings(input_ids, pixel_values, **kwargs)
         return mx.zeros((1, 1, 8))
 
 
@@ -1407,11 +1411,15 @@ def test_repeated_image_skips_encoder_distinct_image_reencodes():
 
 
 class _NoContractCachingModel(_CachingBehaviorModel):
-    """Same counting ``__call__`` as ``_CachingBehaviorModel`` but its
-    ``get_input_embeddings`` omits the contract markers, so it is NOT detected
-    as cache-capable."""
+    """Same delegating ``__call__`` as ``_CachingBehaviorModel`` but its
+    ``get_input_embeddings`` omits the quoted contract markers, so the gate
+    does NOT detect it as cache-capable. It still counts an encode per call
+    (there is no cache to consult), which is exactly the pre-fix behaviour the
+    negative control asserts."""
 
     def get_input_embeddings(self, input_ids=None, pixel_values=None, **kwargs):
+        if pixel_values is not None:
+            self.encode_count += 1
         return None
 
 

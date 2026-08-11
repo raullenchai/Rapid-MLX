@@ -75,31 +75,37 @@ def _model_supports_vision_feature_cache(model: nn.Module) -> bool:
     change, no wasted key hashing). Future mlx-vlm versions that wire more
     families into the contract are picked up automatically.
 
-    Two conditions, both required:
-      1. ``get_input_embeddings`` accepts ``**kwargs`` — so forwarding the two
-         extra kwargs can NEVER raise ``TypeError`` even on a false-positive
-         source match (an unrelated ``**kwargs`` method just ignores them).
-      2. Its body names BOTH contract kwargs (``vision_cache`` AND
-         ``_image_key``) — a lone docstring/comment mention of one word is not
-         enough to conclude the method consumes the cache.
+    Three conditions, all required:
+      1. Both ``__call__`` (where ``_run_vision_encoding`` actually passes the
+         kwargs) AND ``get_input_embeddings`` (where ``__call__`` forwards them)
+         accept ``**kwargs`` — so injecting the two extra kwargs can NEVER
+         raise ``TypeError`` on either hop, even on a false-positive match.
+      2. ``get_input_embeddings``'s body references BOTH contract kwargs as
+         *quoted* keys (``"vision_cache"`` AND ``"_image_key"``) — the form
+         ``kwargs.get("vision_cache")`` / ``_scatter(..., "_image_key")`` uses.
+         Matching the quoted form (not the bare word) keeps a prose mention in
+         a docstring or comment from being mistaken for real consumption.
     """
-    fn = getattr(type(model), "get_input_embeddings", None)
-    if fn is None:
+    embed = getattr(type(model), "get_input_embeddings", None)
+    call = getattr(type(model), "__call__", None)
+    if embed is None or call is None:
         return False
+    if not (_accepts_var_kwargs(embed) and _accepts_var_kwargs(call)):
+        return False
+    try:
+        src = inspect.getsource(embed)
+    except (OSError, TypeError):
+        return False
+    return '"vision_cache"' in src and '"_image_key"' in src
+
+
+def _accepts_var_kwargs(fn) -> bool:
+    """Whether ``fn``'s signature has a ``**kwargs`` parameter."""
     try:
         sig = inspect.signature(fn)
     except (ValueError, TypeError):
         return False
-    accepts_var_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-    )
-    if not accepts_var_kwargs:
-        return False
-    try:
-        src = inspect.getsource(fn)
-    except (OSError, TypeError):
-        return False
-    return "vision_cache" in src and "_image_key" in src
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def _attention_mask_is_droppable(mask) -> bool:
@@ -169,16 +175,17 @@ class MLLMBatchRequest:
     # once preprocessing has run.
     num_prompt_tokens: int = 0
 
-    # Content hash of this request's images, keyed into the vision-feature
-    # cache so a repeated image reuses its projected features and skips the
-    # vision encoder on the next request (#1854). None when the request has
-    # no images or the model does not support feature caching.
-    vision_feature_key: str | None = None
-
     # Vision state (populated after initial VLM forward pass)
     vision_encoded: bool = False
     cross_attention_states: Any | None = None  # For models that use cross-attention
     encoder_outputs: Any | None = None  # For encoder-decoder models
+
+    # Content hash of this request's images, keyed into the vision-feature
+    # cache so a repeated image reuses its projected features and skips the
+    # vision encoder on the next request (#1854). None when the request has
+    # no images or the model does not support feature caching. Appended last so
+    # inserting it never shifts the meaning of any positional constructor arg.
+    vision_feature_key: str | None = None
 
 
 @dataclass
