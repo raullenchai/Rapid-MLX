@@ -2406,7 +2406,7 @@ flow_resident_load_rejected() {
     for ((i=0; i<80; i++)); do
         see_main "$OUT/rlr-shown.json"
         if jq -e '[.data.ui_elements[]?]
-                  | map((.title // "") + " " + (.value // "") + " " + (.description // "") + " " + (.help // ""))
+                  | map(((.title // "") | tostring) + " " + ((.value // "") | tostring) + " " + ((.description // "") | tostring) + " " + ((.help // "") | tostring))
                   | join(" ") | test("rapid-mlx\\[image\\]")' \
                "$OUT/rlr-shown.json" >/dev/null 2>&1; then
             shown=1; break
