@@ -31,6 +31,16 @@ def test_popup_roles_are_stable_across_macos_versions(ax_baseline):
     assert ax_baseline.render_node(menu, ()).startswith("AXPopUpButton ")
 
 
+def test_live_percentage_in_description_is_scrubbed(ax_baseline):
+    cpu = ax_baseline.Node(
+        {"role": "AXUnknown", "description": "CPU 99 percent", "enabled": True}
+    )
+
+    assert ax_baseline.render_node(cpu, ()) == (
+        'AXUnknown desc="CPU <percent>" enabled=true'
+    )
+
+
 @pytest.mark.parametrize("description", ["Hide Sidebar", "Show Sidebar"])
 def test_system_sidebar_button_subtree_is_ignored(ax_baseline, description):
     button = ax_baseline.Node(

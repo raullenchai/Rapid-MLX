@@ -1248,12 +1248,23 @@ flow_chat_restore() {
     wait_identifier ContentView.LogDrawer "$OUT/logs-open.json"
     press "$OUT/logs-open.json" ContentView.ToggleLogs "$OUT/logs-close-press.json" \
         || die "the mounted log drawer cannot be closed"
+    # `press` records the action response, not a fresh accessibility tree.
+    # Wait for the drawer transition and inspect the settled main window.
+    for _ in {1..40}; do
+        see_main "$OUT/logs-closed.json"
+        if ! jq -e '.data.ui_elements[]? | select(.identifier == "ContentView.LogDrawer")' \
+            "$OUT/logs-closed.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    jq -e '.data.ui_elements[]? | select(.identifier == "ContentView.ToggleLogs")' \
+        "$OUT/logs-closed.json" >/dev/null \
+        || die "the status footer disappeared after closing logs"
     local select_text_id
     select_text_id="$(jq -r '.data.ui_elements[]? | (.identifier // "")
         | select(startswith("ChatView.Message.SelectText."))' \
-        "$OUT/logs-close-press.json" | head -1)"
+        "$OUT/logs-closed.json" | head -1)"
     [[ -n "$select_text_id" ]] || die "completed transcript exposes no Select text action"
-    press "$OUT/logs-close-press.json" "$select_text_id" "$OUT/select-text-press.json" \
+    press "$OUT/logs-closed.json" "$select_text_id" "$OUT/select-text-press.json" \
         || die "Select text action is not pressable"
     for _ in {1..40}; do
         see_main "$OUT/select-text-sheet.json"

@@ -19,18 +19,29 @@ AXApplication title="Rapid-MLX"
             AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
               AXStaticText value=text enabled=true
               AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+              AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
               AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
               AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
               AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
               AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+              AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
               AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddPhotos" desc="Add photos" help="This model doesn't support images" enabled=false
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+          AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
+      AXButton desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
+      AXUnknown desc="Server status" enabled=true
+      AXUnknown desc="Tokens per second: no data yet" enabled=true
+      AXUnknown desc="CPU <percent>" enabled=true
+      AXStaticText help="GPU probe unavailable — Intel Macs and sandboxed apps don't expose AGXAccelerator utilisation." value=text enabled=true
+      AXUnknown desc="Memory normal: <version> gigabytes used out of 7 gigabytes" enabled=true
+      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> · up to date" help="Rapid-MLX <version> is the latest release. Click to open Settings → App." enabled=true
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true
     AXButton subrole=AXCloseButton enabled=true
