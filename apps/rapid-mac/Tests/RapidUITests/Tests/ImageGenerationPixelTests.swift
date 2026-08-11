@@ -17,9 +17,19 @@ final class ImageGenerationPixelTests: XCTestCase {
             .deletingLastPathComponent() // rapid-mac
         let fakeSidecar = rapidMacRoot.appendingPathComponent("scripts/fake-rapid-mlx.sh").path
         let appURL = rapidMacRoot.appendingPathComponent("build/Rapid-MLX Desktop.app")
+        let eventLog = testHome.appendingPathComponent("fake-events.jsonl")
+        // ServerManager deliberately sanitizes arbitrary FAKE_* variables
+        // before spawning a sidecar. The fake's checked-in config file is the
+        // durable channel shared with the AX GoldenFlow harness.
+        let fakeConfig: [String: String] = [
+            "FAKE_EVENT_LOG": eventLog.path,
+            "FAKE_IMAGE_STEPS": "4",
+            "FAKE_IMAGE_STEP_MS": "100",
+        ]
+        let fakeConfigData = try JSONSerialization.data(withJSONObject: fakeConfig)
+        try fakeConfigData.write(to: testHome.appendingPathComponent(".rapid-golden-fake.json"))
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
         XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
-        let eventLog = testHome.appendingPathComponent("fake-events.jsonl")
         let app = XCUIApplication(url: appURL)
         app.launchEnvironment = [
             "HOME": testHome.path,
