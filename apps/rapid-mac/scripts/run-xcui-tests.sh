@@ -20,7 +20,6 @@ command -v xcodebuild >/dev/null || {
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 "$LSREGISTER" -f "$APP"
 
-export RAPID_XCUI_FAKE_BIN="$ROOT/scripts/fake-rapid-mlx.sh"
 xcodebuild test \
     -project "$PROJECT" \
     -scheme RapidUITests \

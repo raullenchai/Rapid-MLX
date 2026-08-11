@@ -39,4 +39,5 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "lsregister" in runner
     assert 'XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")' in source
     assert '"RAPID_BIN"' in source
-    assert "fake-rapid-mlx.sh" in runner
+    assert "fake-rapid-mlx.sh" in source
+    assert "isExecutableFile" in source

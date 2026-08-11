@@ -19,9 +19,16 @@ final class ImageGenerationPixelTests: XCTestCase {
         defaults.waitUntilExit()
 
         let app = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")
+        let rapidMacRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // RapidUITests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // rapid-mac
+        let fakeSidecar = rapidMacRoot.appendingPathComponent("scripts/fake-rapid-mlx.sh").path
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
         app.launchEnvironment = [
             "HOME": testHome.path,
-            "RAPID_BIN": ProcessInfo.processInfo.environment["RAPID_XCUI_FAKE_BIN"]!,
+            "RAPID_BIN": fakeSidecar,
             "FAKE_EVENT_LOG": testHome.appendingPathComponent("fake-events.jsonl").path,
             "FAKE_IMAGE_STEPS": "4",
             "FAKE_IMAGE_STEP_MS": "100",
