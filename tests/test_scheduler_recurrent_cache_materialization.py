@@ -150,7 +150,7 @@ def test_legacy_active_batch_surface_is_covered(monkeypatch):
     assert evaluations == [[[recurrent.head]]]
 
 
-def test_step_runs_barrier_after_advance_before_response_handling(monkeypatch):
+def test_step_bounds_barrier_interval_and_preserves_event_order(monkeypatch):
     events = []
     response = object()
 
@@ -188,6 +188,10 @@ def test_step_runs_barrier_after_advance_before_response_handling(monkeypatch):
     monkeypatch.setattr(scheduler, "_process_batch_responses", process)
     monkeypatch.setattr(scheduler, "_cleanup_finished", lambda finished: None)
 
-    scheduler.step()
+    for _ in range(9):
+        scheduler.step()
 
-    assert events == ["next", "barrier", "responses"]
+    assert events[:3] == ["next", "barrier", "responses"]
+    assert events[-3:] == ["next", "barrier", "responses"]
+    assert events.count("barrier") == 2
+    assert events.count("next") == events.count("responses") == 9

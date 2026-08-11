@@ -67,6 +67,11 @@ from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
 
+# Functional hybrid cache updates retain their prior lazy graph until an eval
+# barrier. Eight steps bounds that graph to a few hundred live Metal handles on
+# current 40-layer families while amortizing the synchronization cost.
+_RECURRENT_CACHE_MATERIALIZE_INTERVAL = 8
+
 
 def _pflash_compressed(request: Request) -> bool:
     """Whether PFlash replaced this request's prompt with a compressed
@@ -7459,7 +7464,12 @@ class Scheduler:
                     # cache-miss prefill is approaching the unified-memory cap.
                     self._apply_adaptive_prefill_size()
                     raw_next = self.batch_generator.next()
-                    self._materialize_active_recurrent_cache()
+                    # Bound functional recurrent-state graphs without forcing
+                    # a host synchronization on every token. Step zero arms
+                    # the barrier for a newly-created scheduler; thereafter a
+                    # live chain can retain at most eight decode updates.
+                    if self._step_count % _RECURRENT_CACHE_MATERIALIZE_INTERVAL == 0:
+                        self._materialize_active_recurrent_cache()
                     output.has_work = True
 
                     # mlx-lm 0.31+ returns (prompt_responses, generation_responses) tuple
@@ -7599,8 +7609,10 @@ class Scheduler:
         The byte footprint can stay flat while Metal's live buffer-handle
         count grows until its 499000-resource ceiling is reached (#1827).
 
-        Dense KV caches use in-place writes and do not need this per-token
-        synchronization. Evaluate only the non-trimmable/unknown layer states:
+        The caller runs this barrier on the first decode step and every eight
+        steps thereafter. That keeps graph depth O(1) while avoiding a costly
+        host synchronization on every token. Dense KV caches use in-place
+        writes and do not need it. Evaluate only non-trimmable/unknown states:
         materializing dense KV layers too would add an unnecessary per-token
         synchronization cost to hybrid models.
         """
