@@ -7989,13 +7989,20 @@ def _parse_args_with_share_passthrough(
     return args
 
 
-def main():
+def _resolve_cli_version() -> str:
     from importlib.metadata import version as pkg_version
 
     try:
-        _version = pkg_version("rapid-mlx")
+        return pkg_version("rapid-mlx")
     except Exception:
-        _version = "dev"
+        return "dev"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the full CLI parser (extracted from ``main`` so tests
+    can assert effective flag defaults on the parsed namespace instead
+    of scraping source or help text)."""
+    _version = _resolve_cli_version()
 
     parser = argparse.ArgumentParser(
         description="Rapid-MLX: AI inference for Apple Silicon",
@@ -8407,12 +8414,13 @@ Examples:
         default=0,
         help=(
             "Token interval at which the scheduler snapshots KV state to "
-            "~/.cache/rapid-mlx/kv_checkpoints/ for resume / shared-prefix "
-            "reload (R15 #296). 0 (default) disables. Each snapshot blocks "
-            "decode for O(context), so enable only when checkpoint reuse "
-            "is worth that stall (#1853). Pairs with the "
-            "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
-            "for the oldest-first disk-cap eviction policy."
+            "~/.cache/rapid-mlx/kv_checkpoints/ (R15 #296). 0 (default) "
+            "disables. Write-only today: no engine path reloads the "
+            "snapshots yet, and each one blocks decode for O(context) — "
+            "enable only for external tooling that consumes the files "
+            "(#1853). Pairs with the RAPID_MLX_KV_CHECKPOINT_MAX_BYTES "
+            "env var (default 20 GiB) for the oldest-first disk-cap "
+            "eviction policy."
         ),
     )
     serve_parser.add_argument(
@@ -9689,6 +9697,19 @@ Examples:
     from vllm_mlx.launch.cli import register as _register_launch
 
     _register_launch(subparsers)
+
+    return parser
+
+
+def main():
+    parser = build_parser()
+    _version = _resolve_cli_version()
+    # The subcommand help printer below needs the subparsers action;
+    # recover it from the parser rather than keeping it as a shared
+    # local across the build/parse split.
+    subparsers = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
 
     # Shell tab completion via argcomplete. Must fire before parse_args:
     # when the shell completion handler invokes us with the

@@ -360,30 +360,14 @@ def test_disk_checkpoint_default_is_opt_in():
 
 
 def test_disk_checkpoint_cli_default_is_opt_in():
-    """The serve CLI flag must default to 0 as well (#1853).
+    """The serve CLI must parse to interval 0 by default (#1853).
 
-    The parser is built inline in ``cli.main`` (no importable
-    factory), so pin the ``add_argument`` block's default in source:
-    a CLI default that silently diverges from SchedulerConfig's 0
-    re-enables the decode stall for every ``rapid-mlx serve`` user
-    while this file's config-level test stays green.
+    Asserts the EFFECTIVE default on the parsed namespace (not source
+    or help text), so a stray ``set_defaults`` or a re-added parser
+    default cannot silently re-enable the decode stall for every
+    ``rapid-mlx serve`` user while a config-level test stays green.
     """
-    import inspect
-    import re
+    from vllm_mlx.cli import build_parser
 
-    import vllm_mlx.cli as cli_mod
-
-    src = inspect.getsource(cli_mod)
-    # Scope the match to this add_argument call: stop at the first
-    # ``help=`` so a dropped default cannot let ``.*?`` skip ahead and
-    # capture an unrelated later flag's ``default=`` (codex nit).
-    m = re.search(
-        r'"--kv-disk-checkpoint-interval",[^)]*?default=(\d+)\s*,[^)]*?help=',
-        src,
-        flags=re.DOTALL,
-    )
-    assert m, "--kv-disk-checkpoint-interval add_argument block not found"
-    assert m.group(1) == "0", (
-        f"--kv-disk-checkpoint-interval CLI default must be 0 (opt-in, "
-        f"#1853); found {m.group(1)}"
-    )
+    args = build_parser().parse_args(["serve", "some/model"])
+    assert args.kv_disk_checkpoint_interval == 0

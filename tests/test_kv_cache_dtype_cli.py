@@ -45,6 +45,15 @@ def test_serve_help_advertises_kv_cache_dtype_flag_with_choices():
     assert "--kv-cache-dtype {bf16,int8,int4}" in text
 
 
+def test_serve_parses_bf16_as_effective_default():
+    """The parsed namespace must carry bf16 when the flag is omitted
+    (#1853) — locks the effective default, not just the help text."""
+    from vllm_mlx.cli import build_parser
+
+    args = build_parser().parse_args(["serve", "some/model"])
+    assert args.kv_cache_dtype == "bf16"
+
+
 def test_serve_help_advertises_bf16_as_default():
     """#1853 — bf16 is the *default*, not just a choice.
 
