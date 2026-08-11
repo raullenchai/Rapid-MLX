@@ -42,6 +42,7 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "build/Rapid-MLX Desktop.app" in runner
     assert "lsregister" in runner
     assert 'XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")' in source
+    assert source.count('"CFFIXED_USER_HOME": testHome.path') == 2
     assert '"RAPID_BIN"' in source
     assert "fake-rapid-mlx.sh" in source
     assert "isExecutableFile" in source

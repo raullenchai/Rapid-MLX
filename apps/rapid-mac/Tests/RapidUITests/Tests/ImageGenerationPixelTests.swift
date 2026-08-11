@@ -15,6 +15,9 @@ final class ImageGenerationPixelTests: XCTestCase {
         let defaults = Process()
         defaults.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
         defaults.arguments = ["delete", "com.rapidmlx.rapid"]
+        defaults.environment = ProcessInfo.processInfo.environment.merging([
+            "CFFIXED_USER_HOME": testHome.path,
+        ]) { _, isolated in isolated }
         try defaults.run()
         defaults.waitUntilExit()
 
@@ -28,6 +31,7 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
         app.launchEnvironment = [
             "HOME": testHome.path,
+            "CFFIXED_USER_HOME": testHome.path,
             "RAPID_BIN": fakeSidecar,
             "FAKE_EVENT_LOG": testHome.appendingPathComponent("fake-events.jsonl").path,
             "FAKE_IMAGE_STEPS": "4",
