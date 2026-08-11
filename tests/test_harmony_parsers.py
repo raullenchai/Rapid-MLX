@@ -1292,6 +1292,9 @@ class TestServeLogLevelFlags:
         # Assert against the real parser (the flag moved from ``main``
         # into ``build_parser`` when the two split for #1853's
         # effective-default tests; source-scraping ``main`` went stale).
+        # Building the parser registers the share subcommand, which
+        # imports ``websockets`` — absent from the no-MLX CI lane.
+        pytest.importorskip("websockets")
         from vllm_mlx.cli import build_parser
 
         args = build_parser().parse_args(["serve", "m", "--log-level", "DEBUG"])

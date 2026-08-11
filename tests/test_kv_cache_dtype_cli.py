@@ -12,6 +12,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 from vllm_mlx import cli
 
 
@@ -48,6 +50,9 @@ def test_serve_help_advertises_kv_cache_dtype_flag_with_choices():
 def test_serve_parses_bf16_as_effective_default():
     """The parsed namespace must carry bf16 when the flag is omitted
     (#1853) — locks the effective default, not just the help text."""
+    # build_parser registers the share subcommand → imports websockets,
+    # absent from the no-MLX CI lane.
+    pytest.importorskip("websockets")
     from vllm_mlx.cli import build_parser
 
     args = build_parser().parse_args(["serve", "some/model"])

@@ -367,6 +367,7 @@ def test_disk_checkpoint_cli_default_is_opt_in():
     default cannot silently re-enable the decode stall for every
     ``rapid-mlx serve`` user while a config-level test stays green.
     """
+    pytest.importorskip("websockets")  # share subcommand import, no-MLX lane
     from vllm_mlx.cli import build_parser
 
     args = build_parser().parse_args(["serve", "some/model"])
