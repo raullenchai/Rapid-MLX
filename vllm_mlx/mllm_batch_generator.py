@@ -39,6 +39,7 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E4
 
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
+from .request import ClientRequestError  # noqa: E402
 from .vision_embedding_cache import (  # noqa: E402
     VisionEmbeddingCache,
     compute_images_hash,
@@ -786,14 +787,14 @@ class MLLMBatchGenerator:
         all_images = []
 
         if request.images:
-            from .models.mllm import process_image_input
+            from .models.mllm import FileSizeExceededError, process_image_input
 
             # Pre-PR: undecodable / unreachable image was logged at WARN
             # and silently dropped from ``all_images``, so the model
             # would caption a non-existent image and confidently
             # hallucinate ("a vibrant red jellyfish" for a 404'd URL).
-            # Fail loud with ValueError so MLLMScheduler._step's narrow
-            # ``except (ValueError, RuntimeError)`` cleans up the
+            # Fail loud with a typed, bounded public diagnostic so the
+            # scheduler cleans up the
             # request (finish_reason="error") instead of the generic
             # ``except Exception`` in _process_loop swallowing the
             # error and hanging the client.
@@ -801,13 +802,19 @@ class MLLMBatchGenerator:
                 try:
                     path = process_image_input(img)
                     all_images.append(path)
-                except Exception as e:
-                    raise ValueError(f"Failed to process image: {e}") from e
+                except FileSizeExceededError as e:
+                    raise ClientRequestError(f"Failed to process image: {e}") from e
+                except (OSError, ValueError) as e:
+                    raise ClientRequestError(
+                        "Failed to process image: could not load the image; "
+                        "check that its URL or encoded data is valid"
+                    ) from e
 
         if request.videos:
             from .models.mllm import (
                 DEFAULT_FPS,
                 MAX_FRAMES,
+                FileSizeExceededError,
                 extract_video_frames_smart,
                 process_video_input,
                 save_frames_to_temp,
@@ -830,11 +837,16 @@ class MLLMBatchGenerator:
                     )
                     frame_paths = save_frames_to_temp(frames)
                     all_images.extend(frame_paths)
-                except Exception as e:
+                except FileSizeExceededError as e:
+                    raise ClientRequestError(f"Failed to process video: {e}") from e
+                except (OSError, ValueError) as e:
                     # Same rationale as the image branch above: silent
-                    # drop hallucinates; ValueError so the scheduler
-                    # cleans up the request properly.
-                    raise ValueError(f"Failed to process video: {e}") from e
+                    # drop hallucinates; the typed error lets the scheduler
+                    # clean up the request without exposing decoder internals.
+                    raise ClientRequestError(
+                        "Failed to process video: could not load or decode the video; "
+                        "check that its URL or encoded data is valid"
+                    ) from e
 
         # Key this request's images into the vision-feature cache by content
         # hash (robust to the per-request temp-file paths ``all_images`` holds).
@@ -884,9 +896,8 @@ class MLLMBatchGenerator:
         #
         # Pre-filter with PIL here so the request fails fast with a
         # canonical ``Failed to process image: image too small …``
-        # ``ValueError`` — the same marker the
-        # ``except (OSError, ValueError)`` block below uses, so
-        # ``is_client_error`` fires and routes map it to HTTP 400.
+        # ``ClientRequestError``. Its explicit type tells the scheduler and
+        # route that this bounded diagnostic may cross the F-131 boundary.
         if all_images:
             from PIL import Image as _PILImage
 
@@ -900,7 +911,7 @@ class MLLMBatchGenerator:
                     # try/except below; don't double-report here.
                     continue
                 if min(_w, _h) < _MIN_DIM:
-                    raise ValueError(
+                    raise ClientRequestError(
                         f"Failed to process image: image too small "
                         f"(min dimension must be >= {_MIN_DIM}, "
                         f"got {_w}x{_h})"
@@ -931,11 +942,10 @@ class MLLMBatchGenerator:
         #     ``content=null`` and ``prompt_tokens=0`` (F-062).
         #
         # Normalize every image-decode failure to the canonical
-        # ``Failed to process image: …`` ``ValueError`` so:
+        # ``Failed to process image: …`` ``ClientRequestError`` so:
         #   * ``_step_no_queue``'s ``except (ValueError, RuntimeError)``
         #     catches it (no infinite retry),
-        #   * ``is_client_error`` fires on the ``"Failed to process
-        #     image"`` substring (clean ``error`` field), and
+        #   * its explicit type produces a clean public ``error`` field, and
         #   * ``routes/chat.py`` / ``routes/anthropic.py`` /
         #     ``routes/responses.py`` map the marker to HTTP 400 with
         #     an actionable message.
@@ -956,14 +966,14 @@ class MLLMBatchGenerator:
                 image_token_index=image_token_index,
             )
         except (OSError, ValueError) as e:
-            # Already-canonical messages (the ``process_image_input``
-            # branch above raises ``ValueError("Failed to process image:
-            # …")``) pass through unchanged; everything else gets the
-            # canonical prefix so downstream matchers fire.
-            msg = str(e)
-            if msg.startswith("Failed to process image"):
-                raise
-            raise ValueError(f"Failed to process image: {msg}") from e
+            # Do not reflect decoder text: PIL / mlx-vlm messages can contain
+            # server-side temporary paths. Keep the public diagnostic useful
+            # and bounded while preserving the original exception as cause for
+            # logs and observability.
+            raise ClientRequestError(
+                "Failed to process image: image data could not be decoded; "
+                "use a valid PNG, JPEG, GIF, or WebP image"
+            ) from e
 
         request.input_ids = inputs.get("input_ids")
         request.pixel_values = inputs.get("pixel_values")
@@ -1233,7 +1243,7 @@ class MLLMBatchGenerator:
         # be rejected just because ``prefill_step_size`` defaults to 8192.
         _cap_help = _prefill_cap_violation(requests, self.prefill_step_size)
         if _cap_help is not None:
-            raise ValueError(_cap_help)
+            raise ClientRequestError(_cap_help)
 
         # Run vision encoding for each request with its own KVCache.
         # Vision encoding cannot be batched because each request may have

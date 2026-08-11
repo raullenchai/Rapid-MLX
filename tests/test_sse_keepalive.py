@@ -613,8 +613,10 @@ def test_disconnect_guard_surfaces_client_actionable_error_message():
     """
 
     async def _generator():
+        from vllm_mlx.request import ClientRequestError
+
         yield 'data: {"role":"assistant"}\n\n'
-        raise ValueError(
+        raise ClientRequestError(
             "Vision-request prompt tokens (20000) exceeds the per-batch cap "
             "(8192 = prefill_step_size 8192 × 1 vision request(s)). "
             "For image inputs, downscale the image."
@@ -657,3 +659,23 @@ def test_disconnect_guard_still_masks_genuine_engine_fault():
     assert "TextEncodeInput" not in err["message"], (
         f"raw Python exception detail must not leak; got {err['message']!r}"
     )
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_disconnect_guard_does_not_trust_actionable_substrings(error_type):
+    """F-131: marker text cannot promote an arbitrary exception to public."""
+
+    async def _generator():
+        yield 'data: {"role":"assistant"}\n\n'
+        raise error_type(
+            "Failed to process image: /Users/private/internal-secret-token"
+        )
+
+    chunks = _collect_disconnect_guard_chunks(_generator())
+    error_frame = [c for c in chunks if '"error"' in c][-1]
+    payload = json.loads(error_frame.replace("data: ", "", 1).strip())
+    assert payload["error"] == {
+        "message": "Internal error during streaming",
+        "type": "internal_error",
+    }
+    assert "internal-secret-token" not in str(chunks)

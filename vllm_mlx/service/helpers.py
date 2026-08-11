@@ -3769,32 +3769,6 @@ def _force_abort_request(engine, request_id_holder) -> bool:
     return False
 
 
-_CLIENT_ACTIONABLE_STREAM_MARKERS = (
-    "exceeds the per-batch cap",
-    "Failed to process image",
-    "Failed to process video",
-    "Chat template error",
-)
-
-
-def _stream_error_is_client_actionable(message: str) -> bool:
-    """Whether a mid-stream generator exception carries a client-correctable
-    request error whose real message should be surfaced instead of masked.
-
-    Mirrors the markers the non-streaming chat route maps to HTTP 400
-    (#457 image/video fetch, #682 per-batch prefill cap, chat-template
-    errors). On the streaming path the SSE response has already started by
-    the time these surface mid-stream, so they cannot be turned into a 400
-    status; instead ``_disconnect_guard`` emits the real message with the
-    OpenAI ``invalid_request_error`` type so the caller sees the actionable
-    guidance rather than a generic "Internal error during streaming" (#1849).
-    Returns ``False`` for any other (genuine engine) fault, which keeps the
-    F-131 sanitisation intact for raw Python exception messages / class
-    names.
-    """
-    return any(marker in message for marker in _CLIENT_ACTIONABLE_STREAM_MARKERS)
-
-
 async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
@@ -4023,10 +3997,9 @@ async def _disconnect_guard(
                 # surface from this entry point. The full exception is
                 # logged above with ``exc_info`` so operators retain
                 # the diagnostic detail server-side.
-                # #1849: some exceptions are *client-actionable* request
-                # rejections whose real message must reach the caller —
-                # e.g. the MLLM per-batch-prefill cap ("exceeds the
-                # per-batch cap") or a failed image/video fetch. The
+                # #1849: explicit ``ClientRequestError`` exceptions are
+                # client-actionable rejections whose bounded message must
+                # reach the caller (MLLM prefill cap, bad image/video). The
                 # non-streaming route already maps these to HTTP 400 with
                 # the real message; but on the streaming path the SSE
                 # response has already started (headers + role chunk were
@@ -4034,12 +4007,13 @@ async def _disconnect_guard(
                 # generic masking would otherwise swallow the actionable
                 # message and hand the client a misleading 200 with
                 # "Internal error during streaming" — exactly the shape
-                # #1849 reports. Surface the real message for those
-                # known client-error markers (OpenAI ``invalid_request_error``
-                # type) while keeping F-131's sanitisation for every other
-                # (genuine engine) fault so a raw Python class name /
-                # traceback can never leak through the SSE payload.
-                if _stream_error_is_client_actionable(str(exc)):
+                # #1849 reports. Trust the explicit carrier type, never a
+                # message substring: arbitrary internal exceptions may contain
+                # caller text or local paths. Every other fault remains under
+                # F-131's generic sanitisation.
+                from ..request import ClientRequestError
+
+                if isinstance(exc, ClientRequestError):
                     _sse_type = "invalid_request_error"
                     _sse_message = str(exc)
                 else:

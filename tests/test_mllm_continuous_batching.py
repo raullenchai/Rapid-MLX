@@ -2097,6 +2097,34 @@ class TestMLLMSchedulerErrorPropagation:
                 pass
 
     @pytest.mark.asyncio
+    async def test_stream_outputs_preserves_explicit_client_error_type(self):
+        """Only scheduler-vetted public errors cross the route trust boundary."""
+        import asyncio
+
+        from vllm_mlx.mllm_scheduler import MLLMScheduler
+        from vllm_mlx.request import ClientRequestError, RequestOutput
+
+        sched = MLLMScheduler.__new__(MLLMScheduler)
+        sched.output_queues = {}
+        req_id = "req-explicit-client-error"
+        queue: asyncio.Queue = asyncio.Queue()
+        sched.output_queues[req_id] = queue
+        await queue.put(
+            RequestOutput(
+                request_id=req_id,
+                output_text="",
+                finished=True,
+                error="Failed to process image: image too small",
+                error_kind="invalid_request",
+                finish_reason="error",
+            )
+        )
+
+        with pytest.raises(ClientRequestError, match="image too small"):
+            async for _ in sched.stream_outputs(req_id):
+                pass
+
+    @pytest.mark.asyncio
     async def test_stream_outputs_yields_normally_when_no_error(self):
         """Non-error outputs MUST continue to flow through stream_outputs
         unchanged — the error check is additive, not a behavior swap."""
