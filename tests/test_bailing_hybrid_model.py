@@ -185,6 +185,11 @@ def test_detect_model_config_routes_ling():
     # pattern accepts.
     cfg = detect_model_config("sterling-3b")
     assert cfg is None or cfg.tool_call_parser != "glm47"
+    # Version forms outside 3.0 / 2.6 are unknown Ling models — never
+    # claim parser/hybrid support for them (codex r5).
+    for name in ("acme/ling-3b", "acme/ling-20b", "acme/Ling-3.1-nano"):
+        cfg = detect_model_config(name)
+        assert cfg is None or cfg.tool_call_parser != "glm47", name
     assert detect_model_config("acme/sterling-3b") is None or (
         detect_model_config("acme/sterling-3b").tool_call_parser != "glm47"
     )

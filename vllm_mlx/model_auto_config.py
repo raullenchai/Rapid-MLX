@@ -412,7 +412,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # opener on the generation prompt ("detailed thinking on").
     # KDA linear-attention layers produce ArraysCache -> hybrid lane.
     (
-        re.compile(r"(?:^|/)ling[-_.]?[23]", re.IGNORECASE),
+        re.compile(r"(?:^|/)ling[-_.]?(?:3[._-]0|2[._-]6)(?![0-9])", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="glm47",
             reasoning_parser="qwen3",
