@@ -28,8 +28,8 @@ AXApplication title="Rapid-MLX"
       AXUnknown desc="Server status" enabled=true
       AXUnknown desc="Tokens per second: no data yet" enabled=true
       AXUnknown desc="CPU <percent>" enabled=true
-      AXUnknown desc="GPU <percent>" enabled=true
-      AXUnknown desc="Memory tight: <version> gigabytes used out of 18 gigabytes" enabled=true
+      AXUnknown desc="GPU <gpu>" enabled=true
+      AXUnknown desc="Memory normal: <size> used out of <size>" enabled=true
       AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> · up to date" help="Rapid-MLX <version> is the latest release. Click to open Settings → App." enabled=true
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true

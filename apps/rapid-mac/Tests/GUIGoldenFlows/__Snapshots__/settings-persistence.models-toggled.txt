@@ -21,7 +21,16 @@ AXApplication title="Rapid-MLX"
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddPhotos" desc="Add photos" help="This model doesn't support images" enabled=false
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+          AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
+      AXButton desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
+      AXUnknown desc="Server status" enabled=true
+      AXUnknown desc="Tokens per second: no data yet" enabled=true
+      AXUnknown desc="CPU <percent>" enabled=true
+      AXUnknown desc="GPU <gpu>" enabled=true
+      AXUnknown desc="Memory normal: <size> used out of <size>" enabled=true
+      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> · up to date" help="Rapid-MLX <version> is the latest release. Click to open Settings → App." enabled=true
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true
     AXButton subrole=AXCloseButton enabled=true
@@ -40,6 +49,12 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.tools" desc="Tools" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
+              AXButton id="Settings.Category.connectors" desc="Connectors" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.performance" desc="Performance" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
               AXButton id="Settings.Category.appearance" desc="Appearance" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
@@ -49,30 +64,29 @@ AXApplication title="Rapid-MLX"
               AXButton id="Settings.Category.app" desc="App" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
+        AXHeading desc="Model Management, Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space." enabled=true
+        AXHeading desc="Models folder" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText id="Settings.ModelManagement.FolderPath" value=text enabled=true
         AXButton id="Settings.ModelManagement.ChooseFolder" desc="Choose…" enabled=true
         AXStaticText value=text enabled=true
+        AXHeading desc="Disk overview" enabled=true
         AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXCheckBox subrole=AXSwitch id="Settings.Models.ShowAllModelsToggle" desc="Show small models in the picker" help="Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat." value=bool:true enabled=true
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXCheckBox subrole=AXSwitch id="Settings.Models.AutoStartOnLaunchToggle" desc="Auto-start model on launch" help="When off, opening Rapid-MLX will not load a model until you start one manually from the picker." value=bool:true enabled=true
-        AXRadioGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
-          AXRadioButton subrole=AXSegment desc="Chat models" value=bool:true enabled=true
-          AXRadioButton subrole=AXSegment desc="Image models" value=bool:false enabled=true
+        AXStaticText id="Settings.ModelManagement.StorageSummary" value=text enabled=true
+        AXStaticText id="Settings.ModelManagement.LargestModel" value=text enabled=true
+        AXHeading desc="Preferences" enabled=true
+        AXCheckBox subrole=AXToggle id="Settings.Models.ShowAllModelsToggle" desc="Show small models in the picker" help="Sub-1B models are hidden by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat." value=bool:true enabled=true
+        AXCheckBox subrole=AXToggle id="Settings.Models.AutoStartOnLaunchToggle" desc="Auto-start model on launch" help="When off, opening Rapid-MLX will not load a model until you start one manually from the picker." value=bool:true enabled=true
+        AXGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
+          AXButton desc="Chat models" enabled=true
+          AXButton desc="Image models" enabled=true
         AXTextField id="Settings.ModelManagement.Search" value=empty enabled=true
         AXPopUpButton id="Settings.ModelManagement.SortMenu" title="Sort" enabled=true
-        AXRadioGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true
-          AXRadioButton subrole=AXSegment desc="All" value=bool:true enabled=true
-          AXRadioButton subrole=AXSegment desc="Cached" value=bool:false enabled=true
-          AXRadioButton subrole=AXSegment desc="Not cached" value=bool:false enabled=true
-        AXStaticText id="Settings.ModelManagement.RecommendedHeader" value=text enabled=true
+        AXGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true
+          AXButton desc="All" enabled=true
+          AXButton desc="Cached" enabled=true
+          AXButton desc="Not cached" enabled=true
+        AXHeading id="Settings.ModelManagement.RecommendedHeader" desc="Recommended for your <size> · <chip>" enabled=true
         AXGroup id="Settings.ModelManagement.Recommended.primary" enabled=true
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
@@ -95,7 +109,14 @@ AXApplication title="Rapid-MLX"
           AXUnknown desc="Accuracy: untested" enabled=true
           AXUnknown desc="Speed: untested" enabled=true
           AXStaticText help="Measured size on disk. Deleting frees this much." value=text enabled=true
-          AXButton id="Settings.ModelManagement.Delete.<model>" desc="Delete <model> from disk" enabled=true
+          AXButton id="Settings.ModelManagement.Delete.<model>" desc="Delete <model> from disk" help="Delete from disk" enabled=true
+        AXGroup id="Settings.ModelManagement.Row.<model>" enabled=true
+          AXButton id="Settings.ModelManagement.Favorite.<model>" desc="Pin fake-external-alias" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXUnknown desc="Accuracy: untested" enabled=true
+          AXUnknown desc="Speed: untested" enabled=true
+          AXStaticText help="Measured size on disk. Downloaded by another app — Rapid can't delete it." value=text enabled=true
         AXStaticText id="Settings.ModelManagement.Footer" value=text enabled=true
         AXScrollBar value=number enabled=true
           AXValueIndicator value=number

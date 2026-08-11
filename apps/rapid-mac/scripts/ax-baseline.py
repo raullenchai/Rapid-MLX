@@ -109,6 +109,18 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"\bv?\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z.]+)?\b"),
         "<version>",
     ),
+    # Apple-silicon marketing name, as the model-management header prints it
+    # ("Recommended for your <size> · M2 Pro"). It is the machine's chip, so a
+    # baseline written on an M2 Pro can never match an M1/M3/M4 runner — the
+    # same portability trap as the RAM total beside it. Scoped to that header
+    # (matched after the size rule has already run) so a stray "M2" in a model
+    # name or user text elsewhere keeps its own value.
+    (
+        re.compile(
+            r"(Recommended for your\b[^·]*·\s*)M[1-9]\d?(?:\s+(?:Pro|Max|Ultra))?\b"
+        ),
+        r"\1<chip>",
+    ),
     # Conversation-list date headings. The transcript a flow just created is
     # filed under "Today" — until the run straddles local midnight, at which
     # point the same unchanged UI reports "Yesterday" and every baseline

@@ -258,6 +258,40 @@ def test_memory_gauge_total_is_machine_independent():
     assert "32" not in big and "7" not in big
 
 
+def test_recommended_header_chip_is_machine_independent():
+    """The model-management header names the machine's Apple-silicon chip. An
+    M2 Pro dev machine and an M1/M4 runner must normalize to the same line."""
+
+    def header(chip: str) -> str:
+        return _render(
+            {
+                "role": "AXHeading",
+                "identifier": "Settings.ModelManagement.RecommendedHeader",
+                "description": f"Recommended for your 32 GB · {chip}",
+                "enabled": True,
+            }
+        )
+
+    m2pro = header("M2 Pro")
+    m1 = header("M1")
+    m4max = header("M4 Max")
+    assert m2pro == m1 == m4max
+    assert "M2" not in m2pro and "M4" not in m4max
+    assert "<chip>" in m2pro
+
+    # Scoped to the header: an "M2" living in a model name or elsewhere is not
+    # a chip and keeps its own value.
+    elsewhere = _render(
+        {
+            "role": "AXStaticText",
+            "identifier": "Settings.ModelManagement.Row.<model>",
+            "description": "llama-M2 · 4-bit",
+            "enabled": True,
+        }
+    )
+    assert "M2" in elsewhere and "<chip>" not in elsewhere
+
+
 def test_window_ordering_ignores_a_title_the_baseline_hides():
     """Sorting must use what is rendered, or two OSes order windows differently
     while rendering identical lines."""
