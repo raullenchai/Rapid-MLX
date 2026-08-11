@@ -13,6 +13,13 @@ AXApplication title="Rapid-MLX"
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
             AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="golden crash marker" enabled=true
+          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
+          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXScrollArea
