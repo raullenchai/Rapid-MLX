@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import inspect
+from types import SimpleNamespace
 
 from vllm_mlx import scheduler as scheduler_module
 from vllm_mlx.scheduler import Scheduler
@@ -149,10 +149,44 @@ def test_legacy_active_batch_surface_is_covered(monkeypatch):
     assert evaluations == [[[recurrent.head]]]
 
 
-def test_step_wires_barrier_immediately_after_batch_advance():
-    source = inspect.getsource(Scheduler.step)
-    advance = source.index("raw_next = self.batch_generator.next()")
-    barrier = source.index("self._materialize_active_recurrent_cache()")
-    response_handling = source.index("if isinstance(raw_next, tuple):")
+def test_step_runs_barrier_after_advance_before_response_handling(monkeypatch):
+    events = []
+    response = object()
 
-    assert advance < barrier < response_handling
+    class _StepGenerator:
+        def next(self):
+            events.append("next")
+            return [response]
+
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.batch_generator = _StepGenerator()
+    scheduler.running = {"request": object()}
+    scheduler.finished_req_ids = set()
+    scheduler._stateful_tombstones = set()
+    scheduler._clear_cache_interval = 32
+    scheduler._step_count = 0
+    scheduler._memory_log_interval = 256
+    scheduler.config = SimpleNamespace()
+
+    monkeypatch.setattr(scheduler, "_process_pending_aborts", lambda: None)
+    monkeypatch.setattr(scheduler, "_reconcile_orphaned_running_requests", lambda: [])
+    monkeypatch.setattr(scheduler, "_schedule_waiting", lambda: [])
+    monkeypatch.setattr(scheduler, "_realign_guard_armed", lambda: False)
+    monkeypatch.setattr(scheduler, "_apply_adaptive_prefill_size", lambda: None)
+    monkeypatch.setattr(
+        scheduler,
+        "_materialize_active_recurrent_cache",
+        lambda: events.append("barrier"),
+    )
+
+    def process(responses):
+        assert responses == [response]
+        events.append("responses")
+        return [], set()
+
+    monkeypatch.setattr(scheduler, "_process_batch_responses", process)
+    monkeypatch.setattr(scheduler, "_cleanup_finished", lambda finished: None)
+
+    scheduler.step()
+
+    assert events == ["next", "barrier", "responses"]
