@@ -470,6 +470,7 @@ vllm-mlx-bench = "vllm_mlx.benchmark:main"
 [tool.setuptools.package-data]
 vllm_mlx = [
     "aliases.json",
+    "model_recommendations.json",
     "audio/aliases.json",
     # Download-size manifest (hf_path -> footprint bytes) powering the Size
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.

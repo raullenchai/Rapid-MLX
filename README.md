@@ -233,7 +233,7 @@ Also compatible with OpenAI-compatible clients that allow direct local endpoints
 
 ## Choose Your Model
 
-The installer's RAM detector picks a sensible default. If you want to shop the full catalog: `rapid-mlx models` lists every alias, `rapid-mlx info <alias>` shows the per-alias profile (parser, MoE / hybrid flags, KV codec eligibility, speculative-decoding gates).
+The installer and desktop app use the same RAM-tier recommendation catalog. Run `rapid-mlx recipe` to see its Smart and Fast picks for this Mac (`--max-ram 32` simulates another tier; `--json` is machine-readable). If you want to shop the full catalog: `rapid-mlx models` lists every alias, `rapid-mlx info <alias>` shows the per-alias profile (parser, MoE / hybrid flags, KV codec eligibility, speculative-decoding gates).
 
 This table is the same one the desktop app's picker reads, and the installer
 prints the matching line for your Mac — a CI test parses both files and fails

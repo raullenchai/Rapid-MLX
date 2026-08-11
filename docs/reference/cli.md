@@ -8,6 +8,7 @@
 | `rapid-mlx chat` | Interactive chat REPL with a model |
 | `rapid-mlx bench` | Run performance benchmarks |
 | `rapid-mlx models` | List available model aliases |
+| `rapid-mlx recipe` | Recommend the Smart and Fast models for this Mac's RAM |
 | `rapid-mlx info` | Show the per-model profile for an alias or repo |
 | `rapid-mlx pull` | Download a model into the HuggingFace cache |
 | `rapid-mlx rm` | Remove a cached model |

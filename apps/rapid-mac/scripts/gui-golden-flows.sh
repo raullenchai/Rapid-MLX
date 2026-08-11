@@ -1138,6 +1138,38 @@ flow_settings_persistence() {
     baseline settings-persistence.settings-root "$OUT/settings-root.json"
     press "$OUT/settings-root.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     wait_settings_stable "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle
+    # GoldenFlow coverage for the recommendation SSOT: the running GUI must
+    # render exactly the smart + fast aliases selected from the same JSON the
+    # CLI consumes. This catches a missing app resource, a decoder drift, and a
+    # third recommendation accidentally creeping back into a tier.
+    local recommendation_json="$ROOT/../../vllm_mlx/model_recommendations.json"
+    local ram_bytes
+    ram_bytes="$(sysctl -n hw.memsize)"
+    local expected_recommendations
+    expected_recommendations="$(python3 - "$recommendation_json" "$ram_bytes" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+ram_gb = int(sys.argv[2]) / (1 << 30)
+tier = payload["tiers"][0]
+for candidate in payload["tiers"]:
+    if ram_gb >= candidate["floor_gb"]:
+        tier = candidate
+print("\n".join(pick["alias"] for pick in tier["picks"]))
+PY
+)"
+    local expected_smart expected_fast
+    expected_smart="$(printf '%s\n' "$expected_recommendations" | sed -n '1p')"
+    expected_fast="$(printf '%s\n' "$expected_recommendations" | sed -n '2p')"
+    [[ -n "$expected_smart" && -n "$expected_fast" && "$(printf '%s\n' "$expected_recommendations" | sed -n '3p')" == "" ]] \
+        || die "recommendation SSOT did not select exactly two aliases"
+    jq -e --arg alias "$expected_smart" \
+        '.data.ui_elements[]? | select(.identifier == ("Settings.ModelManagement.Recommended.Download." + $alias))' \
+        "$OUT/models-before.json" >/dev/null || die "GUI did not render SSOT smart recommendation $expected_smart"
+    jq -e --arg alias "$expected_fast" \
+        '.data.ui_elements[]? | select(.identifier == ("Settings.ModelManagement.Recommended.Download." + $alias))' \
+        "$OUT/models-before.json" >/dev/null || die "GUI did not render SSOT fast recommendation $expected_fast"
+    [[ "$(jq '[.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Recommended.primary" or .identifier == "Settings.ModelManagement.Recommended.alt")] | length' "$OUT/models-before.json")" -eq 2 ]] \
+        || die "GUI recommendation section did not render exactly smart + fast cards"
     baseline settings-persistence.models-idle "$OUT/models-before.json"
     local preference_key="rapid.picker.show_all_models.v1"
     press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
