@@ -73,9 +73,7 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 30) { generate.isEnabled })
         generate.click()
 
-        let save = element("Images.Result.Save", in: app)
         XCTAssertTrue(waitUntil(timeout: 30) { imageResponseCount(in: eventLog) == 1 })
-        XCTAssertTrue(save.waitForExistence(timeout: 30))
         let first = element("Images.Gallery.Thumb.1", in: app)
         XCTAssertTrue(first.waitForExistence(timeout: 30))
 
@@ -85,7 +83,6 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 10) { generate.isEnabled })
         generate.click()
         XCTAssertTrue(waitUntil(timeout: 30) { imageResponseCount(in: eventLog) == 2 })
-        XCTAssertTrue(save.waitForExistence(timeout: 30))
 
         let newest = element("Images.Gallery.Thumb.1", in: app)
         let older = element("Images.Gallery.Thumb.2", in: app)

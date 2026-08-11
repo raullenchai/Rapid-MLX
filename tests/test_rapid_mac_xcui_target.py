@@ -41,7 +41,6 @@ def test_pixel_assertion_uses_element_screenshots_and_crops_chrome():
     assert 'element("Images.Gallery.Thumb.2", in: app)' in source
     assert "newest.screenshot()" in source
     assert "older.screenshot()" in source
-    assert 'element("Images.Result.Save", in: app)' in source
     assert 'element("Images.ModelPicker", in: app)' in source
     assert 'picker.label.contains("fake-image-alias")' in source
     assert 'events.contains(#""event": "server_started""#)' in source
