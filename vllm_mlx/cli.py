@@ -5258,6 +5258,57 @@ def _print_cached_models() -> None:
     print()
 
 
+def recipe_command(args) -> None:
+    """Recommend exactly two curated models for this Mac's RAM tier."""
+    import json
+
+    from vllm_mlx.model_aliases import resolve_profile
+    from vllm_mlx.recommendations import physical_ram_gb, recommendation_payload
+
+    ram_gb = (
+        float(args.max_ram)
+        if getattr(args, "max_ram", None) is not None
+        else physical_ram_gb()
+    )
+    if ram_gb <= 0:
+        raise SystemExit("Could not detect physical RAM. Pass --max-ram GB explicitly.")
+    payload = recommendation_payload(ram_gb)
+    cached_repos = {repo.casefold() for repo, _, _ in _scan_hf_cache_models()}
+    for pick in payload["picks"]:
+        try:
+            profile = resolve_profile(pick["alias"])
+            hf_path = profile.hf_path if profile is not None else None
+        except ValueError:
+            hf_path = None
+        pick["hf_path"] = hf_path
+        pick["cached"] = bool(hf_path and hf_path.casefold() in cached_repos)
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    print(
+        f"Recommended for this {payload['physical_ram_gb']:.1f} GB Mac "
+        f"({payload['tier_floor_gb']} GB tier)"
+    )
+    labels = {"smart": "Smart", "fast": "Fast"}
+    for index, pick in enumerate(payload["picks"], start=1):
+        stats = [f"{pick['footprint_gb']:.1f} GB"]
+        if pick.get("caveat"):
+            stats.append(pick["caveat"])
+        else:
+            stats.append(f"{pick['capability_pct']}% capability")
+        if pick.get("tokens_per_sec") is not None:
+            stats.append(f"~{round(pick['tokens_per_sec'])} tok/s")
+        cache_badge = " · cached" if pick["cached"] else ""
+        print(f"\n{index}. {labels[pick['role']]} — {pick['alias']}{cache_badge}")
+        print(f"   {' · '.join(stats)}")
+        command = f"rapid-mlx serve {pick['alias']}"
+        if pick["launch_flags"]:
+            command += " " + " ".join(pick["launch_flags"])
+        print(f"   {command}")
+
+
 def models_command(args):
     """List available model aliases with their per-model profile capabilities.
 
@@ -9252,6 +9303,19 @@ Examples:
         help="Only list models that are downloaded to the local HuggingFace "
         "cache (alias, HF repo, size on disk, last modified).",
     )
+    recipe_parser = subparsers.add_parser(
+        "recipe", help="Recommend the smart and fast models for this Mac"
+    )
+    recipe_parser.add_argument(
+        "--max-ram",
+        type=float,
+        default=None,
+        metavar="GB",
+        help="Use this RAM size instead of auto-detecting the current Mac",
+    )
+    recipe_parser.add_argument(
+        "--json", action="store_true", help="Print the recommendation as JSON"
+    )
     subparsers.add_parser(
         "ls",
         help="List models in the local HuggingFace cache (alias for `models --cached`)",
@@ -10009,6 +10073,8 @@ Examples:
         bench_command(args)
     elif args.command == "models":
         models_command(args)
+    elif args.command == "recipe":
+        recipe_command(args)
     elif args.command == "ls":
         # `ls` is a top-level alias for `models --cached`. Synthesize the
         # missing flag so models_command's branch fires without having to

@@ -9,9 +9,8 @@
 // free script is the CI-runnable verification of the recommendation
 // contract: run `swift apps/rapid-mac/scripts/verify-recommendation-tiers.swift`.
 //
-// It re-declares the pure logic from RAMBucketedDefault + ServerManager.
-// serveArguments. Keep it in sync with those sources; RAMBucketedDefaultTests
-// pins the same contract for the future in-target suite.
+// It decodes the same repository-wide JSON SSOT as RAMBucketedDefault and the
+// Python CLI, then exercises the desktop-specific selection contracts.
 //
 
 import Foundation
@@ -19,49 +18,38 @@ import Foundation
 // Faithful copies of the pure logic under test (RapidTests is excluded
 // from Package.swift, so this standalone script is the real verification).
 
-struct Pick: Equatable {
+struct Pick: Equatable, Decodable {
+    let role: String
     let alias: String
     let footprintGB: Double
     let capabilityPct: Int
     let tokensPerSec: Double?
     let launchFlags: [String]
-    var caveat: String? = nil
+    let caveat: String?
+    enum CodingKeys: String, CodingKey {
+        case role, alias, caveat
+        case footprintGB = "footprint_gb"
+        case capabilityPct = "capability_pct"
+        case tokensPerSec = "tokens_per_sec"
+        case launchFlags = "launch_flags"
+    }
 }
-struct Tier: Equatable {
+struct Tier: Equatable, Decodable {
     let floorGB: Double
-    let primary: Pick
-    let alt: Pick?
-    var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
+    let picks: [Pick]
+    var primary: Pick { picks[0] }
+    var alt: Pick? { picks.count > 1 ? picks[1] : nil }
+    enum CodingKeys: String, CodingKey {
+        case floorGB = "floor_gb"
+        case picks
+    }
 }
-let qwen4Pick = Pick(alias: "qwen3.5-4b-4bit", footprintGB: 6.0, capabilityPct: 78,
-                     tokensPerSec: 60.7, launchFlags: [])
-let qwen9Pick = Pick(alias: "qwen3.5-9b-4bit", footprintGB: 8.7, capabilityPct: 82,
-                     tokensPerSec: 35.7, launchFlags: [])
-let lfm1Pick = Pick(alias: "lfm2.5-1b-4bit", footprintGB: 1.9, capabilityPct: 47,
-                    tokensPerSec: 208.4, launchFlags: [], caveat: "Basic chat")
-let lfm26Pick = Pick(alias: "lfm2.5-2.6b-4bit", footprintGB: 3.0, capabilityPct: 64,
-                     tokensPerSec: 93.5, launchFlags: [], caveat: "Not for coding")
-let bonsaiPick = Pick(alias: "bonsai-27b-2bit", footprintGB: 13.0, capabilityPct: 86,
-                      tokensPerSec: 17.5, launchFlags: [])
-let gemma26Pick = Pick(alias: "gemma-4-26b-4bit", footprintGB: 17.0, capabilityPct: 87,
-                       tokensPerSec: 49.5,
-                       launchFlags: ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"])
-let qwen35bFastPick = Pick(alias: "qwen3.6-35b-4bit", footprintGB: 20.0, capabilityPct: 87,
-                           tokensPerSec: 60.0, launchFlags: [])
-let tiers: [Tier] = [
-    Tier(floorGB: 8, primary: lfm26Pick, alt: lfm1Pick),
-    Tier(floorGB: 16, primary: qwen4Pick, alt: lfm1Pick),
-    Tier(floorGB: 18, primary: qwen9Pick, alt: qwen4Pick),
-    Tier(floorGB: 24, primary: bonsaiPick, alt: qwen4Pick),
-    Tier(floorGB: 32, primary: gemma26Pick, alt: qwen4Pick),
-    Tier(floorGB: 48, primary: gemma26Pick, alt: qwen35bFastPick),
-    Tier(floorGB: 64,
-         primary: Pick(alias: "qwen3.6-35b-8bit", footprintGB: 37.7, capabilityPct: 87, tokensPerSec: nil, launchFlags: []),
-         alt: qwen35bFastPick),
-    Tier(floorGB: 96,
-         primary: Pick(alias: "qwen3.5-122b-mxfp4", footprintGB: 65.0, capabilityPct: 88, tokensPerSec: nil, launchFlags: []),
-         alt: qwen35bFastPick),
-]
+struct Payload: Decodable { let tiers: [Tier] }
+let sourceURL = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent()
+    .deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("vllm_mlx/model_recommendations.json")
+let tiers = try JSONDecoder().decode(Payload.self, from: Data(contentsOf: sourceURL)).tiers
 // Mirror SettingsModelManagementPanel.pickStatsLine / ModelPickerBar
 // tagline: a caveat replaces the capability %, speed leads, caveat trails.
 func pickStatsLine(_ pick: Pick) -> String {

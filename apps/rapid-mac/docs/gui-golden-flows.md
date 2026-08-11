@@ -1,5 +1,19 @@
 # AX-first GUI golden flows
 
+The AX suite remains the broad semantic regression net. A native XCUITest
+target now complements it under `Tests/RapidUITests`: its first migrated
+journey is `image-generation`, where XCTest captures each thumbnail itself,
+crops away selection chrome, and proves the two rendered interiors differ.
+That pixel assertion is intentionally impossible in an `AXUIElement` dump.
+Run it with full Xcode after building the app:
+
+```bash
+./scripts/run-xcui-tests.sh
+```
+
+The target is additive; do not remove an AX journey until its semantic and
+structural assertions have equivalent native coverage.
+
 `scripts/gui-golden-flows.sh` runs the release journeys against a built
 Rapid-MLX Desktop app without loading a real model.
 
@@ -37,6 +51,9 @@ covered, and each one names the defect it would have caught:
     `[image:gen]` in their own section (mirroring `[video:gen]`), and the
     chat catalog's `hasNonChatKindTag` drops `image` alongside `audio`/`video`,
     so a 24 GB FLUX/Qwen-Image checkpoint can never surface in the chat picker.
+    The same flow opens Model Management and pins its always-visible disk
+    overview, including the largest app-managed model; read-only external
+    runtime entries remain visible but are excluded from that calculation.
 
 11. `image-generation` — a journey, not an invariant (listed here to keep the
     numbering stable): the Images tab turns a text prompt into a picture and
@@ -52,6 +69,10 @@ covered, and each one names the defect it would have caught:
     Dock-visibility prompt, exposes both decisions plus “Don't ask again”, and
     choosing No completes a normal close. This pins the SwiftUI-to-NSWindow
     installation seam that #1590 found entirely disconnected.
+14. `chat-restore` also exercises the formerly unmounted #1588 recovery and
+    utility surface: the status-footer log toggle opens and closes the real
+    drawer, and a restored assistant message opens the cross-paragraph
+    “Select text” sheet.
 
 The distinction matters. A journey answers *"can someone do this?"*; an
 invariant answers *"is this still true everywhere?"*. The three defects below
@@ -184,6 +205,10 @@ configured tokens (`background-color`, `@font-face`, `.PHONY`, `filter-out`),
 split across SSE chunks. The AX contract proves the source survives intact in
 separate rendered code blocks; `SyntaxHighlighterTests` owns the colour-run
 assertion because foreground colours are not exposed by `AXUIElement`.
+Its comparison response must also expose the native macOS SwiftUI `Table`
+shape (`AXOutline` with `AXRow`, `AXCell`, titled `AXColumn` children), not
+merely six sibling text nodes, so VoiceOver retains table navigation and
+header association (#1689).
 
 ### Low-memory recovery
 

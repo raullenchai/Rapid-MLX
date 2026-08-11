@@ -1767,6 +1767,8 @@ You have access to tools that fetch real-time information. When you use one of t
 
 7. If the search result only contains homepages or snippets that do not support a concrete answer, call web_search again with a more specific subject/date query. Do not merely offer to search and do not ask permission to use a tool that is already available.
 
+8. If a tool result is an error, refusal, or user decline, state the reason written in that result. Never replace it with a different explanation, and never claim the tool lacks a capability unless the result itself says so.
+
 These rules apply to every tool, not just web search.
 """
 

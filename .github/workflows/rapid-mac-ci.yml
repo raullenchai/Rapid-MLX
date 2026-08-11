@@ -281,6 +281,25 @@ jobs:
           RAPID_BUILD_CONFIG: debug
         run: ./scripts/build.sh
 
+      # #1719 — the first native XCUITest journey complements (and does not
+      # replace) the AX flows below. XCTest can capture an individual element,
+      # which closes the one gap AX structurally cannot: prove two gallery
+      # records actually draw different pixels rather than the same bitmap.
+      - name: 'XCUITest: image-generation pixels'
+        id: xcui
+        continue-on-error: true
+        env:
+          RAPID_XCUI_RESULT_BUNDLE: ${{ runner.temp }}/RapidUITests.xcresult
+        run: ./scripts/run-xcui-tests.sh
+
+      - name: Upload XCUITest evidence
+        if: steps.xcui.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-xcui-evidence
+          path: ${{ runner.temp }}/RapidUITests.xcresult
+          if-no-files-found: ignore
+
       # One step per flow so a red check names the journey that broke rather
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
@@ -371,3 +390,17 @@ jobs:
             ${{ runner.temp }}/golden
             ${{ runner.temp }}/os-baselines
           retention-days: 7
+
+      # The XCUITest is allowed to fail temporarily only so the established AX
+      # journeys still execute and retain their independent evidence. Restore
+      # the blocking verdict after AX diagnostics: placing it last keeps an
+      # XCUITest-only failure from needlessly regenerating every AX baseline.
+      - name: Require native XCUITest
+        if: always()
+        env:
+          XCUI_OUTCOME: ${{ steps.xcui.outcome }}
+        run: |
+          if [[ "$XCUI_OUTCOME" != success ]]; then
+            echo "::error::Native XCUITest failed ($XCUI_OUTCOME)"
+            exit 1
+          fi

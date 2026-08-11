@@ -406,9 +406,14 @@ def test_subprocess_sighup_default_disposition_dumps_and_terminates():
         import logging, os, signal, sys, time
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
                             format="%(levelname)s %(name)s: %(message)s")
-        # Confirm we start from SIG_DFL — this is the production
-        # baseline for SIGHUP under uvicorn.
-        assert signal.getsignal(signal.SIGHUP) == signal.SIG_DFL
+        # Establish the production baseline explicitly: uvicorn does not
+        # install a SIGHUP handler, so SIGHUP starts at SIG_DFL. We SET it
+        # rather than ASSERT it — a SIG_IGN leaked by an earlier test in the
+        # parent pytest process is inherited across exec (POSIX: SIG_IGN
+        # survives execve, unlike caught handlers) and would otherwise fail
+        # this unrelated precondition, a full-suite ordering flake. The real
+        # contract is proven below: observability keeps SIGHUP terminating.
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
         from vllm_mlx._signal_observability import install_signal_observability
         assert install_signal_observability() is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()

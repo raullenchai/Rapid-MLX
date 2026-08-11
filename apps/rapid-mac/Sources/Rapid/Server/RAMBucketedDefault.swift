@@ -1,5 +1,7 @@
 import Foundation
 
+private final class RecommendationBundleFinder: NSObject {}
+
 /// Pure RAM tier → curated model recommendation for "what should this
 /// Mac run". Replaces the old 6-bucket × 5-role matrix (Default / Speed /
 /// Quality / Coding / Vision) with a much simpler table: per RAM tier, a
@@ -92,122 +94,109 @@ enum RAMBucketedDefault {
         var picks: [Pick] { alt.map { [primary, $0] } ?? [primary] }
     }
 
-    /// Conservative general-purpose laptop picks. Both have verified tool
-    /// calling and stay within the same footprint budget enforced at launch.
-    private static let qwen4Pick = Pick(
-        alias: "qwen3.5-4b-4bit", footprintGB: 6.0, capabilityPct: 78,
-        tokensPerSec: 60.7, launchFlags: [])
+    /// Decoded from the repository-wide SSOT used by both Rapid Desktop and
+    /// ``rapid-mlx recipe``. A missing or malformed table is a packaging error:
+    /// silently inventing a fallback would recreate the cross-surface drift this
+    /// catalog exists to prevent.
+    static let tiers: [Tier] = loadTiers()
 
-    private static let qwen9Pick = Pick(
-        alias: "qwen3.5-9b-4bit", footprintGB: 8.7, capabilityPct: 82,
-        tokensPerSec: 35.7, launchFlags: [])
+    private struct Payload: Decodable {
+        let schemaVersion: Int
+        let tiers: [RawTier]
 
-    /// Latest release-eval mean: Tool 47, Code 50, Reasoning 40, General 50
-    /// = 46.75, rounded to 47. The Basic chat caveat remains user-facing.
-    private static let lfm1Pick = Pick(
-        alias: "lfm2.5-1b-4bit", footprintGB: 1.9, capabilityPct: 47,
-        tokensPerSec: 208.4, launchFlags: [], caveat: "Basic chat")
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version"
+            case tiers
+        }
+    }
 
-    /// The 8 GB tier's smarter pick: LFM2.5-2.6B, a 2.6 B dense model whose
-    /// 30 layers are 22 short-convolution blocks and just 8 GQA. Those 8
-    /// attention layers are why it belongs here — the KV cache costs
-    /// ~16 KB/token, so a 32 K conversation adds only ~0.5 GB on top of
-    /// 1.6 GB of weights. On an M2 Pro it peaks at 3.0 GB on the standard
-    /// 8K prompt, decodes at
-    /// 93.5 tok/s on the short prompt, and prefills at 473 tok/s at 8K.
-    ///
-    /// It carries a caveat rather than a capability %, and the caveat is
-    /// Liquid's own: they publish this model as "not recommended for
-    /// agentic coding and knowledge-heavy tasks". It is post-trained for
-    /// tool use and instruction following, and on those it beats models
-    /// ~4x its size — but our users drive coding agents, and putting a
-    /// bare "64%" on this card would invite exactly the use Liquid warns
-    /// against. ``capabilityPct`` is never rendered for a caveat pick; the
-    /// 64 below is the mean of the latest local tool, coding, reasoning,
-    /// and general release-eval suites; the caveat remains more useful than
-    /// presenting that small-suite composite as a universal quality score.
-    private static let lfm26Pick = Pick(
-        alias: "lfm2.5-2.6b-4bit", footprintGB: 3.0, capabilityPct: 64,
-        tokensPerSec: 93.5, launchFlags: [], caveat: "Not for coding")
+    private struct RawTier: Decodable {
+        let floorGB: Double
+        let picks: [RawPick]
 
-    /// Latest release-eval mean: Tool 93, Code 90, Reasoning 70, General 90
-    /// = 85.75, rounded to 86.
-    private static let bonsaiPick = Pick(
-        alias: "bonsai-27b-2bit", footprintGB: 13.0, capabilityPct: 86,
-        tokensPerSec: 17.5, launchFlags: [])
+        enum CodingKeys: String, CodingKey {
+            case floorGB = "floor_gb"
+            case picks
+        }
+    }
 
-    private static let gemma26Pick = Pick(
-        alias: "gemma-4-26b-4bit", footprintGB: 17.0, capabilityPct: 87,
-        tokensPerSec: 49.5,
-        launchFlags: ["--no-mllm", "--kv-cache-dtype", "bf16", "--cache-memory-mb", "512"])
+    private struct RawPick: Decodable {
+        let role: String
+        let alias: String
+        let footprintGB: Double
+        let capabilityPct: Int
+        let tokensPerSec: Double?
+        let launchFlags: [String]
+        let caveat: String?
 
-    /// Existing reviewed fast/light pick for the unmeasured 48/64/96 GB tiers.
-    private static let qwen35bFastPick = Pick(
-        alias: "qwen3.6-35b-4bit", footprintGB: 20.0, capabilityPct: 87,
-        tokensPerSec: 60.0, launchFlags: [])
+        enum CodingKeys: String, CodingKey {
+            case role, alias, caveat
+            case footprintGB = "footprint_gb"
+            case capabilityPct = "capability_pct"
+            case tokensPerSec = "tokens_per_sec"
+            case launchFlags = "launch_flags"
+        }
 
-    /// Source of truth — ascending by ``floorGB``. A recommendation change
-    /// is a one-line edit here, verified by ``RAMBucketedDefaultTests`` and
-    /// the standalone ``scripts/verify-recommendation-tiers.swift`` contract
-    /// check against the bundled ``aliases.json``.
-    static let tiers: [Tier] = [
-        // 8 GB was a hole, not a tier. These Macs clamped up to the 16 GB
-        // picks, then ``isRecommendedPick``'s floor guard correctly refused
-        // to exempt them from the ``.tooBig`` gate — so launch auto-start
-        // rejected the only thing it was offered and fell through to
-        // ``SafeDefaultFallback``. The user's first run was a model the app
-        // had just told them not to run. Nothing in the catalog fit until
-        // LFM2.5-2.6B: 3.21 GB standard-8K peak leaves room for macOS on
-        // an 8 GB machine; LFM 1B supplies the even lighter fast choice.
-        Tier(floorGB: 8, primary: lfm26Pick, alt: lfm1Pick),
-        Tier(
-            floorGB: 16,
-            primary: qwen4Pick,
-            alt: lfm1Pick
-        ),
-        // 18 GB gets the verified 9B general-purpose model plus the 4B fast
-        // option. Do not promote bonsai-27b-2bit here: its 13 GB standard
-        // 8K peak leaves too little headroom at the 18 GB tier floor.
-        Tier(
-            floorGB: 18,
-            primary: qwen9Pick,
-            alt: qwen4Pick
-        ),
-        Tier(
-            floorGB: 24,
-            primary: bonsaiPick,
-            alt: qwen4Pick
-        ),
-        Tier(
-            floorGB: 32,
-            primary: gemma26Pick,
-            alt: qwen4Pick
-        ),
-        Tier(
-            floorGB: 48,
-            primary: gemma26Pick,
-            alt: qwen35bFastPick
-        ),
-        // 64 GB smart pick is the 8-bit of the same Qwen3.6-35B whose 4-bit
-        // is the fast alt. Its capability is floored at the 4-bit's measured
-        // 87 % — an 8-bit quant is strictly higher-fidelity than its own
-        // 4-bit, so it must never DISPLAY below it (an earlier 85 % estimate
-        // made the "Best pick" read as weaker than its "Faster" alt). We
-        // pin equality, not a fabricated margin: the 8-bit's edge is
-        // quantization fidelity on long / hard prompts, which the blended
-        // bench doesn't fully resolve, and the alt exists precisely for
-        // users who'd rather trade that fidelity for the 4-bit's speed.
-        Tier(
-            floorGB: 64,
-            primary: Pick(alias: "qwen3.6-35b-8bit", footprintGB: 37.7, capabilityPct: 87, tokensPerSec: nil, launchFlags: []),
-            alt: qwen35bFastPick
-        ),
-        Tier(
-            floorGB: 96,
-            primary: Pick(alias: "qwen3.5-122b-mxfp4", footprintGB: 65.0, capabilityPct: 88, tokensPerSec: nil, launchFlags: []),
-            alt: qwen35bFastPick
-        ),
-    ]
+        var pick: Pick {
+            Pick(alias: alias, footprintGB: footprintGB,
+                 capabilityPct: capabilityPct, tokensPerSec: tokensPerSec,
+                 launchFlags: launchFlags, caveat: caveat)
+        }
+    }
+
+    private static func loadTiers() -> [Tier] {
+        guard let url = recommendationResourceURL(),
+              let data = try? Data(contentsOf: url),
+              let payload = try? JSONDecoder().decode(Payload.self, from: data),
+              payload.schemaVersion == 1 else {
+            fatalError("model_recommendations.json is missing or invalid")
+        }
+        precondition(!payload.tiers.isEmpty, "recommendation catalog must contain tiers")
+        var previousFloor = -Double.infinity
+        return payload.tiers.map { raw in
+            precondition(raw.floorGB > previousFloor,
+                         "recommendation tiers must be sorted by RAM floor")
+            previousFloor = raw.floorGB
+            precondition(raw.picks.count == 2 && raw.picks.map(\.role) == ["smart", "fast"],
+                         "every RAM tier must contain smart + fast picks")
+            return Tier(floorGB: raw.floorGB, primary: raw.picks[0].pick,
+                        alt: raw.picks[1].pick)
+        }
+    }
+
+    private static func recommendationResourceURL() -> URL? {
+        if let url = Bundle.main.url(forResource: "model_recommendations", withExtension: "json") {
+            return url
+        }
+        let anchor = Bundle(for: RecommendationBundleFinder.self).bundleURL.deletingLastPathComponent()
+        if let bundle = Bundle(url: anchor.appendingPathComponent("Rapid_Rapid.bundle")),
+           let url = bundle.url(forResource: "model_recommendations", withExtension: "json") {
+            return url
+        }
+        // SwiftPM tests run from a source checkout. Keep the source fallback
+        // pointed at the Python package's canonical file; it is deliberately
+        // not a second copied table.
+        let sourceCandidate = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Server
+            .deletingLastPathComponent() // Rapid
+            .deletingLastPathComponent() // Sources
+            .deletingLastPathComponent() // rapid-mac
+            .deletingLastPathComponent() // apps
+            .appendingPathComponent("vllm_mlx/model_recommendations.json")
+        if FileManager.default.fileExists(atPath: sourceCandidate.path) {
+            return sourceCandidate
+        }
+        // Some SwiftPM invocations preserve a relative #filePath. Walk upward
+        // from their working directory instead of resolving that relative path
+        // against an already-nested package directory.
+        var directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        for _ in 0..<6 {
+            let candidate = directory.appendingPathComponent("vllm_mlx/model_recommendations.json")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            directory.deleteLastPathComponent()
+        }
+        return nil
+    }
 
     /// The tier a Mac with ``physicalRAMGB`` lands in: the highest floor
     /// ≤ RAM. A sub-16 GB Mac clamps to the smallest tier.

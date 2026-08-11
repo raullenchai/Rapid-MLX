@@ -67,6 +67,11 @@ from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
 
+# Functional hybrid cache updates retain their prior lazy graph until an eval
+# barrier. Eight steps bounds that graph to a few hundred live Metal handles on
+# current 40-layer families while amortizing the synchronization cost.
+_RECURRENT_CACHE_MATERIALIZE_INTERVAL = 8
+
 
 def _pflash_compressed(request: Request) -> bool:
     """Whether PFlash replaced this request's prompt with a compressed
@@ -7459,6 +7464,12 @@ class Scheduler:
                     # cache-miss prefill is approaching the unified-memory cap.
                     self._apply_adaptive_prefill_size()
                     raw_next = self.batch_generator.next()
+                    # Bound functional recurrent-state graphs without forcing
+                    # a host synchronization on every token. Step zero arms
+                    # the barrier for a newly-created scheduler; thereafter a
+                    # live chain can retain at most eight decode updates.
+                    if self._step_count % _RECURRENT_CACHE_MATERIALIZE_INTERVAL == 0:
+                        self._materialize_active_recurrent_cache()
                     output.has_work = True
 
                     # mlx-lm 0.31+ returns (prompt_responses, generation_responses) tuple
@@ -7588,6 +7599,58 @@ class Scheduler:
                 pass
 
         return output
+
+    def _materialize_active_recurrent_cache(self) -> int:
+        """Detach lazy recurrent-cache updates from prior decode steps.
+
+        MLX cache implementations such as ``ArraysCache`` update recurrent
+        state functionally.  Without an evaluation barrier, the live batch
+        keeps the head of a graph that references every earlier decode step.
+        The byte footprint can stay flat while Metal's live buffer-handle
+        count grows until its 499000-resource ceiling is reached (#1827).
+
+        The caller runs this barrier on the first decode step and every eight
+        steps thereafter. That keeps graph depth O(1) while avoiding a costly
+        host synchronization on every token. Dense KV caches use in-place
+        writes and do not need it. Evaluate only non-trimmable/unknown states:
+        materializing dense KV layers too would add an unnecessary per-token
+        synchronization cost to hybrid models.
+        """
+        batch_generator = self.batch_generator
+        if batch_generator is None:
+            return 0
+        generation_batch = getattr(batch_generator, "_generation_batch", None)
+        if generation_batch is None:
+            generation_batch = getattr(batch_generator, "active_batch", None)
+        cache = getattr(generation_batch, "prompt_cache", None)
+        if not cache:
+            return 0
+
+        states = []
+        for layer in cache:
+            is_trimmable = getattr(layer, "is_trimmable", None)
+            if callable(is_trimmable):
+                try:
+                    materialize = not bool(is_trimmable())
+                except Exception:
+                    # Classification is a safety gate: treating an unknown
+                    # cache as dense would silently disable the only barrier
+                    # preventing an unbounded lazy-state graph.  An extra eval
+                    # is safe; skipping one for a recurrent cache is not.
+                    materialize = True
+            else:
+                # Supported modern dense caches affirmatively implement this
+                # method. Missing/non-callable classification is unknown, so
+                # retain the same safety-first behavior as a raised classifier.
+                materialize = True
+            if materialize:
+                state = getattr(layer, "state", None)
+                if state is not None:
+                    states.append(state)
+        if not states:
+            return 0
+        mx.eval(states)
+        return len(states)
 
     def get_request(self, request_id: str) -> Request | None:
         """Get a request by ID."""

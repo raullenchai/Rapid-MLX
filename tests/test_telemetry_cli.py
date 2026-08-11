@@ -125,6 +125,8 @@ def test_preview_shows_request_event_with_degenerate_flag(fake_home):
     assert r.returncode == 0, r.stderr
     assert '"event": "request"' in r.stdout
     assert '"output_degenerate": false' in r.stdout
+    assert '"completion_empty": false' in r.stdout
+    assert '"completion_abnormally_short": false' in r.stdout
     # Only bucketed numbers + booleans — no raw-text field ever surfaces.
     for forbidden in ('"prompt"', '"prompt_text"', '"completion"', '"messages"'):
         assert forbidden not in r.stdout, f"{forbidden} leaked into preview"

@@ -58,7 +58,12 @@ struct SettingsConnectorsPanel: View {
 
     var body: some View {
         @Bindable var config = config
-        return VStack(alignment: .leading, spacing: 20) {
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
+                "Connectors",
+                subtitle: "Connect the model to MCP servers — programs on this Mac that expose tools like file access, databases or search. Off by default: a connector is a program that runs on your machine and that the model can invoke.",
+                emphasis: .page
+            )
             masterSection
             if config.isEnabled {
                 serversSection
@@ -106,20 +111,12 @@ struct SettingsConnectorsPanel: View {
 
     private var masterSection: some View {
         @Bindable var config = config
-        return VStack(alignment: .leading, spacing: 8) {
-            header(
-                "Connectors",
-                "Connect the model to MCP servers — programs on this Mac that expose tools like file access, databases or search. Off by default: a connector is a program that runs on your machine and that the model can invoke."
-            )
-            card {
+        return SettingsSection {
                 Toggle(isOn: $config.isEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Enable connectors")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("The local server only loads connectors when this is on.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    SettingsRowLabel(
+                        title: "Enable connectors",
+                        description: "The local server only loads connectors when this is on."
+                    )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityIdentifier("Settings.Connectors.MasterToggle")
@@ -138,26 +135,15 @@ struct SettingsConnectorsPanel: View {
                         catalog.clear()
                     }
                 }
-            }
         }
     }
 
     // MARK: - Servers
 
     private var serversSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                header(
-                    "Servers",
-                    "Each server runs as its own program and exposes a set of tools."
-                )
-                Spacer()
-                Button("Add…") { editing = EditorTarget(original: nil) }
-                    .accessibilityIdentifier("Settings.Connectors.AddButton")
-            }
-
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             if let why = config.loadError {
-                banner(why, systemImage: "exclamationmark.triangle.fill", tone: .orange)
+                InlineNotice(message: why, tone: .warning)
             }
             // The restart case owns its own banner. Suppressing the engine's
             // string here is deliberate: when the child has no config path the
@@ -168,29 +154,31 @@ struct SettingsConnectorsPanel: View {
             if needsRestart {
                 restartBanner
             } else if let why = catalog.subsystemError {
-                banner(
-                    "Connectors couldn't start: \(why)",
-                    systemImage: "exclamationmark.triangle.fill",
-                    tone: .orange
+                InlineNotice(
+                    message: "Connectors couldn't start: \(why)",
+                    tone: .warning
                 )
                 .accessibilityIdentifier("Settings.Connectors.SubsystemError")
             }
             if let why = actionError {
-                banner(why, systemImage: "exclamationmark.triangle.fill", tone: .red)
+                InlineNotice(message: why, tone: .error)
             }
 
-            card {
+            SettingsSection("Servers", subtitle: "Each server runs as its own program and exposes a set of tools.") {
+                Button("Add…") { editing = EditorTarget(original: nil) }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .accessibilityIdentifier("Settings.Connectors.AddButton")
+            } content: {
                 if config.servers.isEmpty {
                     Text("No connectors yet. Add one to give the model tools beyond the built-ins.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.body)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(config.servers.enumerated()), id: \.element.name) { idx, entry in
-                            if idx > 0 { Divider().padding(.vertical, 10) }
-                            serverRow(entry)
-                        }
+                    ForEach(Array(config.servers.enumerated()), id: \.element.name) { idx, entry in
+                        if idx > 0 { SettingsRowDivider() }
+                        serverRow(entry)
                     }
                 }
             }
@@ -200,24 +188,29 @@ struct SettingsConnectorsPanel: View {
     @ViewBuilder
     private func serverRow(_ entry: MCPServerConfig) -> some View {
         let status = catalog.servers.first { $0.name == entry.name }
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
             statusDot(for: entry, status: status)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 3) {
+                .padding(.top, RapidTheme.Space.xs)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(entry.name)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(RapidFont.code)
+                    .foregroundStyle(RapidTheme.textPrimary)
                 Text(entry.summaryLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(statusLine(for: entry, status: status))
-                    .font(.caption)
-                    .foregroundStyle(status?.error != nil ? .orange : .secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(
+                        status?.error != nil
+                            ? RapidTheme.statusWarning
+                            : RapidTheme.textSecondary
+                    )
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("Settings.Connectors.Row.Status.\(entry.name)")
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Toggle("", isOn: Binding(
                 get: { entry.enabled },
                 set: { setEnabled(entry, $0) }
@@ -236,19 +229,28 @@ struct SettingsConnectorsPanel: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+            .foregroundStyle(RapidTheme.utilityActionLabel)
+            .accessibilityLabel("Connector actions")
             .accessibilityIdentifier("Settings.Connectors.Row.Menu.\(entry.name)")
         }
     }
 
+    /// The row's state, as one dot. Every colour is a status token —
+    /// these were `.orange` / `.green` / `.secondary` literals, which put
+    /// a second, slightly different amber and a second green on a window
+    /// that already had one of each.
     @ViewBuilder
     private func statusDot(for entry: MCPServerConfig, status: MCPCatalog.ServerStatus?) -> some View {
         let color: Color = {
-            if !entry.enabled { return .secondary }
-            guard let status else { return .secondary }
-            if status.error != nil || status.state == "error" { return .orange }
-            return status.isConnected ? .green : .secondary
+            if !entry.enabled { return RapidTheme.statusIdle }
+            guard let status else { return RapidTheme.statusIdle }
+            if status.error != nil || status.state == "error" { return RapidTheme.statusWarning }
+            return status.isConnected ? RapidTheme.statusReady : RapidTheme.statusIdle
         }()
-        Circle().fill(color).frame(width: 8, height: 8)
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+            .accessibilityHidden(true)
     }
 
     /// One line saying what this server is doing right now — the question the
@@ -283,24 +285,39 @@ struct SettingsConnectorsPanel: View {
     /// app's job — and the earlier version of this banner did exactly that,
     /// alongside an engine message about a command-line flag.
     private var restartBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
+        // Same shape and copy; the container is now the shared notice
+        // rather than a local `Color.orange.opacity(0.12)` rectangle, and
+        // the button carries a real tier. It keeps a two-line body (the
+        // shared notice takes one message), so it composes the notice's
+        // tokens rather than the notice itself.
+        HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
             Image(systemName: "arrow.clockwise.circle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 6) {
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(RapidTheme.statusWarning)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                 Text("Restart the model to finish turning connectors on.")
-                    .font(.callout)
+                    .font(RapidFont.bodyEmphasis)
+                    .foregroundStyle(RapidTheme.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("The running model started before connectors were enabled, so it isn't loading them yet. Restarting takes a moment and keeps your conversation.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button(isRestarting ? "Restarting…" : "Restart") { restartModel() }
+                .buttonStyle(.rapidSecondaryCompact)
+                .fixedSize()
                 .disabled(isRestarting || server.isOperating)
                 .accessibilityIdentifier("Settings.Connectors.RestartButton")
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+        .padding(.horizontal, RapidTheme.Space.md)
+        .padding(.vertical, RapidTheme.Space.sm)
+        .background(
+            RoundedRectangle(cornerRadius: RapidTheme.Radius.button, style: .continuous)
+                .fill(RapidTheme.statusWarningTint)
+        )
     }
 
     /// Stop-then-start the current alias so the child is respawned WITH
@@ -323,17 +340,14 @@ struct SettingsConnectorsPanel: View {
     // MARK: - Tools
 
     private var toolsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header(
-                "Tools",
-                "What the connected servers expose. Turn one off and it is never offered to the model — and never runs, even if the model asks for it by name."
-            )
-            card {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(registry.allKnownTools, id: \.function.name) { def in
-                        toolRow(def)
-                    }
-                }
+        SettingsSection(
+            "Tools",
+            subtitle: "What the connected servers expose. Turn one off and it is never offered to the model — and never runs, even if the model asks for it by name."
+        ) {
+            let tools = registry.allKnownTools
+            ForEach(Array(tools.enumerated()), id: \.element.function.name) { index, def in
+                if index > 0 { SettingsRowDivider() }
+                toolRow(def)
             }
         }
     }
@@ -345,36 +359,40 @@ struct SettingsConnectorsPanel: View {
             get: { registry.isToolEnabled(name) },
             set: { registry.setToolEnabled(name, $0) }
         )) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                 Image(systemName: "wrench.and.screwdriver")
-                    .foregroundStyle(RapidTheme.brand)
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
+                    .foregroundStyle(RapidTheme.utilityActionLabel)
+                    .frame(width: RapidTheme.Layout.iconSlot)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                    HStack(spacing: RapidTheme.Space.xs) {
                         // Server-supplied text (tool name, owning server,
                         // description) is scrubbed the same way the approval
                         // sheet scrubs it — a bidi or zero-width scalar in a
                         // server's tool metadata must not visually spoof a row.
                         Text(BrowseApprovalStore.displaySafe(MCPToolApprovalStore.shortToolName(name)))
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .font(RapidFont.code)
+                            .foregroundStyle(RapidTheme.textPrimary)
                         if let source = catalog.serverForTool[name] {
                             Text(BrowseApprovalStore.displaySafe(source))
-                                .font(.system(size: 10, weight: .medium))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Capsule().fill(RapidTheme.brand.opacity(0.15)))
+                                .font(RapidFont.caption)
+                                .foregroundStyle(RapidTheme.textSecondary)
+                                .padding(.horizontal, RapidTheme.Space.xs)
+                                .padding(.vertical, RapidTheme.Space.xxs)
+                                .background(Capsule().fill(RapidTheme.hoverFill))
                         }
                         if approval.grantedTools.contains(name) {
                             Text("always allowed")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
+                                .font(RapidFont.caption)
+                                .foregroundStyle(RapidTheme.textTertiary)
                         }
                     }
                     Text(BrowseApprovalStore.displaySafe(def.function.description))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .toggleStyle(TrailingSettingsToggleStyle())
@@ -385,47 +403,34 @@ struct SettingsConnectorsPanel: View {
 
     private var approvalSection: some View {
         @Bindable var approval = approval
-        return VStack(alignment: .leading, spacing: 8) {
-            header(
-                "Approvals",
-                "The first time the model calls a connector tool, Rapid asks. Your answer is remembered per tool."
-            )
-            card {
-                VStack(alignment: .leading, spacing: 14) {
-                    Toggle(isOn: Binding(
-                        get: { approval.mode == .autoApproveAll },
-                        set: { approval.mode = $0 ? .autoApproveAll : .ask }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Auto-approve all tool calls")
-                                .font(.system(size: 12, weight: .medium))
-                            Text("Skips every prompt, including for connectors added later. For unattended use only.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .toggleStyle(TrailingSettingsToggleStyle())
-                    .accessibilityIdentifier("Settings.Connectors.AutoApproveToggle")
+        return SettingsSection(
+            "Approvals",
+            subtitle: "The first time the model calls a connector tool, Rapid asks. Your answer is remembered per tool."
+        ) {
+            Toggle(isOn: Binding(
+                get: { approval.mode == .autoApproveAll },
+                set: { approval.mode = $0 ? .autoApproveAll : .ask }
+            )) {
+                SettingsRowLabel(
+                    title: "Auto-approve all tool calls",
+                    description: "Skips every prompt, including for connectors added later. For unattended use only."
+                )
+            }
+            .toggleStyle(TrailingSettingsToggleStyle())
+            .accessibilityIdentifier("Settings.Connectors.AutoApproveToggle")
 
-                    Divider()
+            SettingsRowDivider()
 
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(approval.grantedTools.isEmpty
-                                ? "No tools are permanently allowed."
-                                : "\(approval.grantedTools.count) tool\(approval.grantedTools.count == 1 ? "" : "s") permanently allowed.")
-                                .font(.callout)
-                            Text("Resetting makes Rapid ask again the next time each one is called.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Reset") { approval.resetGrants() }
-                            .disabled(approval.grantedTools.isEmpty)
-                            .accessibilityIdentifier("Settings.Connectors.ResetApprovals")
-                    }
-                }
+            SettingsRow(
+                title: approval.grantedTools.isEmpty
+                    ? "No tools are permanently allowed."
+                    : "\(approval.grantedTools.count) tool\(approval.grantedTools.count == 1 ? "" : "s") permanently allowed.",
+                description: "Resetting makes Rapid ask again the next time each one is called."
+            ) {
+                Button("Reset") { approval.resetGrants() }
+                    .buttonStyle(.rapidSecondaryCompact)
+                    .disabled(approval.grantedTools.isEmpty)
+                    .accessibilityIdentifier("Settings.Connectors.ResetApprovals")
             }
         }
     }
@@ -478,46 +483,12 @@ struct SettingsConnectorsPanel: View {
         Task { await catalog.reload() }
     }
 
-    // MARK: - Chrome
-
-    private func header(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Text(subtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func banner(_ text: String, systemImage: String, tone: Color) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: systemImage).foregroundStyle(tone)
-            Text(text)
-                .font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(tone.opacity(0.12)))
-    }
-
-    @ViewBuilder
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
-    }
+    // NOTE: private ``header(_:_:)``, ``banner(_:systemImage:tone:)`` and
+    // ``card(_:)`` helpers lived here — the third copy of the card/header
+    // pair, plus a local banner that took a raw ``Color`` and washed it
+    // to 12%. All three are now ``SectionHeader`` / ``SettingsSection`` /
+    // ``InlineNotice``, which is what moved this panel's four banner call
+    // sites off `Color.orange` and `Color.red` onto the status tokens.
 }
 
 extension MCPServerConfig {

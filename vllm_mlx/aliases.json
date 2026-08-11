@@ -1208,6 +1208,16 @@
     "supports_spec_decode": false,
     "min_memory_gb": 96
   },
+  "ling-3.0-tiny-4bit": {
+    "hf_path": "rapid-mlx/Ling-3.0-tiny-MLX-4bit",
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_hybrid_explicit": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "min_memory_gb": 8
+  },
   "qwen3-vl-8b-4bit": {
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
     "tool_call_parser": "hermes",

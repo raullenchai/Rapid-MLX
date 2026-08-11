@@ -38,17 +38,13 @@ enum MenuBarStatus {
         }
     }
 
-    /// Whether the tray glyph should render as a monochrome *template*
-    /// image. A template glyph is recoloured by AppKit to match the
-    /// menu bar's own light/dark appearance — the "adapts to the bar"
-    /// behaviour we want in the normal state. When a newer version is
-    /// waiting we keep a solid amber fill instead (non-template) so the
-    /// "look at me" affordance survives, mirroring the old tray's
-    /// accent-orange tint. Pure so both branches are unit-testable —
-    /// the rendered image can't be introspected at runtime.
-    static func glyphIsTemplate(hasUpdate: Bool) -> Bool {
-        !hasUpdate
-    }
+    // NOTE: a ``glyphIsTemplate(hasUpdate:)`` helper used to live here,
+    // encoding "the tray glyph goes non-template amber when an update is
+    // waiting". The tray mark is now unconditionally a template (see
+    // ``MenuBarController/trayGlyph``) so macOS owns its colour, and the
+    // update signal is carried by the "Update available — vX.Y.Z" row in
+    // ``menuItems`` below. The helper had no remaining branch to
+    // describe, so it was removed rather than left returning a constant.
 
     // MARK: - Menu model
 

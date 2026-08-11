@@ -18,6 +18,7 @@ mlx-free: pure parsing, no engine import, runs on the Linux CI leg.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -26,7 +27,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
-APP_TIERS = REPO / "apps/rapid-mac/Sources/Rapid/Server/RAMBucketedDefault.swift"
+RECOMMENDATIONS = REPO / "vllm_mlx/model_recommendations.json"
 README = REPO / "README.md"
 
 
@@ -66,43 +67,12 @@ def _parse_install_sh() -> list[tuple[int, str, list[str]]]:
 
 
 def _parse_app_tiers() -> list[tuple[int, str, list[str]]]:
-    """``[(floor_gb, primary_alias, flags)]`` from RAMBucketedDefault."""
-    text = APP_TIERS.read_text()
-    body = re.search(r"static let tiers: \[Tier\] = \[(.*?)\n    \]", text, re.DOTALL)
-    assert body, "tiers array not found in RAMBucketedDefault.swift"
-
-    # Named picks declared above the array (lfm26Pick, lfm2FastPick, …).
-    named: dict[str, tuple[str, list[str]]] = {}
-    for m in re.finditer(
-        r"static let (\w+) = Pick\(\s*alias: \"([^\"]+)\".*?launchFlags: \[([^\]]*)\]",
-        text,
-        re.DOTALL,
-    ):
-        named[m.group(1)] = (m.group(2), re.findall(r'"([^"]+)"', m.group(3)))
-
-    tiers: list[tuple[int, str, list[str]]] = []
-    for chunk in re.finditer(
-        r"Tier\(\s*floorGB: (\d+),\s*primary: (.*?)(?:,\s*alt:|\s*\))",
-        body.group(1),
-        re.DOTALL,
-    ):
-        floor = int(chunk.group(1))
-        primary = chunk.group(2)
-        inline = re.search(
-            r"Pick\(\s*alias: \"([^\"]+)\".*?launchFlags: \[([^\]]*)\]",
-            primary,
-            re.DOTALL,
-        )
-        if inline:
-            tiers.append(
-                (floor, inline.group(1), re.findall(r'"([^"]+)"', inline.group(2)))
-            )
-        else:
-            key = primary.strip().rstrip(",").strip()
-            assert key in named, f"unknown named pick {key!r}"
-            alias, flags = named[key]
-            tiers.append((floor, alias, flags))
-    return tiers
+    """``[(floor_gb, primary_alias, flags)]`` from the shared SSOT."""
+    payload = json.loads(RECOMMENDATIONS.read_text())
+    return [
+        (tier["floor_gb"], tier["picks"][0]["alias"], tier["picks"][0]["launch_flags"])
+        for tier in payload["tiers"]
+    ]
 
 
 def test_both_tables_parse():

@@ -17,6 +17,54 @@ script modules themselves don't take a runtime ``import pytest``
 dependency (pytest is dev-only; codex R3 closure)."""
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_parser_state_after_each_test():
+    """Keep the process-global parser state hermetic across tests.
+
+    Effective parser resolution reads TWO process-global sources (see
+    ``vllm_mlx/routes/models.py`` ``effective_parsers_for``): the
+    ``ServerConfig`` singleton (``cfg.tool_call_parser``) AND the
+    ``vllm_mlx.server`` module-level ``_tool_call_parser`` fallback. Several
+    suites mutate either one directly and never restore it:
+
+    * ``test_orphan_tool_validation`` / ``test_r12_reasoning_sanitizer_required``
+      do ``reset_config(); cfg.tool_call_parser = "hermes"``.
+    * ``test_capabilities_field`` does ``server._tool_call_parser = "hermes"``
+      by *direct assignment* (not ``monkeypatch``), so nothing restores it.
+
+    Either leak bleeds into a later test that reads the resolved parser under a
+    given collection order — most visibly
+    ``test_routes.py::TestModelsRoutes::test_retrieve_unknown_id_keeps_baseline_shape``,
+    whose unknown-id baseline expects the resolved ``tool_call_parser`` to be
+    ``None``. Pinning ``cfg.tool_call_parser=None`` in that test is not enough:
+    resolution then falls through to the ``server`` module global. That was a
+    real order-dependent flake (green in isolation, red in the full suite).
+
+    Reset BOTH sources to their module defaults after every test. Both resets
+    are cheap, and every suite that needs specific parser state sets it up at
+    the start of each test (or via ``monkeypatch``), so a teardown reset is
+    compatible.
+    """
+    yield
+
+    # Reset only the parser state a test actually loaded. Guarding on
+    # ``sys.modules`` (a) skips work for a module no test imported — it cannot
+    # have leaked — and (b) avoids importing ``vllm_mlx.server`` here, which
+    # pulls ``uvicorn``: the lightweight "no-MLX" CI test job does not install
+    # it, so an unconditional import ERRORs every test's teardown.
+    import sys
+
+    _config_mod = sys.modules.get("vllm_mlx.config.server_config")
+    if _config_mod is not None:
+        _config_mod.reset_config()
+
+    _server = sys.modules.get("vllm_mlx.server")
+    if _server is not None:
+        _server._tool_call_parser = None
+        _server._reasoning_parser = None
+        _server._reasoning_parser_name = None
+
+
 def pytest_addoption(parser):
     """Add custom command line options."""
     parser.addoption(

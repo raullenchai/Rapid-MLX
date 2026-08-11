@@ -458,6 +458,35 @@ def test_output_degenerate_true_when_caller_flags_it(opted_in, stub_queue):
     assert isinstance(r["output_degenerate"], bool)
 
 
+@pytest.mark.parametrize(
+    "completion_tokens,empty,short",
+    [(0, True, False), (1, False, True), (8, False, True), (9, False, False)],
+)
+def test_completion_health_signals_are_disjoint_booleans(
+    opted_in, stub_queue, completion_tokens, empty, short
+):
+    """The collector can distinguish empty from unusually short output while
+    exact token counts remain local and the coarse public bucket is unchanged."""
+    from vllm_mlx.telemetry import emit
+
+    emit.request(
+        endpoint="/v1/chat/completions",
+        model_alias="qwen3.5-9b-4bit",
+        stream=False,
+        tool_call_used=False,
+        prompt_tokens=10,
+        completion_tokens=completion_tokens,
+        ttft_ms=100.0,
+        tps=50.0,
+        status=200,
+    )
+    request = stub_queue[-1]["request"]
+    assert request["completion_empty"] is empty
+    assert request["completion_abnormally_short"] is short
+    assert isinstance(request["completion_empty"], bool)
+    assert isinstance(request["completion_abnormally_short"], bool)
+
+
 def test_error_category_and_phase_normalised_to_allowlist(opted_in, stub_queue):
     """Round 3 codex review: ``category`` + ``phase`` were stored
     verbatim. Same escape hatch as ``endpoint`` — a future caller

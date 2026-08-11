@@ -124,6 +124,17 @@ else
     echo "warning: benchmark-scores.json missing — picker hover tooltip will show dashed bars only" >&2
 fi
 
+# The recommendation catalog is owned by the Python package so the CLI and
+# desktop app consume one physical source file. Copy that SSOT into the shipped
+# app; SwiftPM source-checkout tests load it directly from ../../vllm_mlx.
+RECOMMENDATIONS_SRC="$ROOT/../../vllm_mlx/model_recommendations.json"
+if [[ -f "$RECOMMENDATIONS_SRC" ]]; then
+    cp "$RECOMMENDATIONS_SRC" "$CONTENTS/Resources/model_recommendations.json"
+else
+    echo "ERR: shared model_recommendations.json missing" >&2
+    exit 1
+fi
+
 # SwiftMath's upstream resource accessor looks beside `Contents/`, a location
 # that makes a strict app signature invalid. Our vendored resolver loads this
 # nested bundle through Bundle.main instead. Keep the full upstream bundle so

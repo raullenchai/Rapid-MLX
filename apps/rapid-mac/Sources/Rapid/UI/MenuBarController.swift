@@ -32,7 +32,7 @@ final class MenuBarController: NSObject {
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        configureButton(hasUpdate: Self.hasAvailableUpdate())
+        configureButton()
         menu.delegate = self
         // Take full ownership of item enablement. With AppKit's default
         // auto-enabling, any item that has a target/action is forced
@@ -44,10 +44,11 @@ final class MenuBarController: NSObject {
         // Pre-populate so the very first click before ``menuNeedsUpdate``
         // fires doesn't show an empty rectangle.
         rebuildMenu()
-        // The status line + update row rebuild lazily on click, but the
-        // glyph tint is visible WITHOUT opening the menu, so observe the
-        // update state and repaint the glyph the moment it flips.
-        startObservingUpdateState()
+        // No glyph observer: the mark is a state-free template (see
+        // ``trayGlyph``), so nothing about it changes while the app runs.
+        // Update availability is reported by the menu's own
+        // "Update available — vX.Y.Z" row, which ``menuNeedsUpdate``
+        // rebuilds on every open.
     }
 
     // MARK: - Tray glyph
@@ -56,96 +57,64 @@ final class MenuBarController: NSObject {
         AppDelegate.shared.updater?.availableUpdate != nil
     }
 
-    private func configureButton(hasUpdate: Bool) {
+    private func configureButton() {
         guard let button = statusItem.button else { return }
-        button.image = Self.trayGlyph(hasUpdate: hasUpdate)
-        // Brand name, not "menu bar item" jargon — this is the accessible
-        // label VoiceOver reads and the hover tooltip the user sees.
-        button.toolTip = "Rapid-MLX"
+        button.image = Self.trayGlyph()
+        // Brand name, not "menu bar item" jargon — this is the hover
+        // tooltip the user sees.
+        button.toolTip = Self.accessibilityTitle
+        // ``toolTip`` alone is not a reliable AX title for an
+        // ``NSStatusBarButton`` whose label is a pure image, so name the
+        // control explicitly. Both the image's description and the
+        // button's title are set: VoiceOver reads the button, and the
+        // image description is what an AX walker sees if it descends.
+        button.setAccessibilityTitle(Self.accessibilityTitle)
+        button.image?.accessibilityDescription = Self.accessibilityTitle
     }
 
-    /// Render the brand cheetah into a menu-bar image so the tray icon
-    /// matches the app icon the user recognises — an Ollama-style
-    /// coloured mascot in the tray, the single source of truth being the
-    /// same vendored ``cheetah.png`` the in-app brand marks use.
+    /// Spoken/hover name for the status item. One constant so the
+    /// tooltip and the accessibility title can never drift apart.
+    static let accessibilityTitle = "Rapid-MLX"
+
+    /// The tray mark: the official Rapid-MLX `R`, as a **template**.
     ///
-    /// Issue #502 forced the tray onto ``NSStatusItem``; earlier
-    /// iterations shipped a lightning ``bolt.fill`` because a naively
-    /// shrunk cheetah read as a muddy blob and a code-drawn mark
-    /// rasterised transparent. Two things fix that here:
-    ///   * Render from the high-res master (``cheetah.png``, 440×390)
-    ///     with ``.high`` interpolation via a resolution-independent
-    ///     ``NSImage`` drawing handler, so AppKit redraws crisply at the
-    ///     bar's native backing scale instead of upscaling a tiny crop.
-    ///   * Keep it COLOURED (``isTemplate = false``). Template rendering
-    ///     would flatten the mascot to an unrecognisable silhouette.
+    /// Replaces the full-colour cheetah, which carried far too much
+    /// detail for an 18pt slot — at menu-bar size the mascot resolved to
+    /// a muddy amber smudge, and being non-template it ignored the bar's
+    /// appearance entirely (a light-mode bar, a dark-mode bar and an
+    /// open menu all got the same coloured bitmap).
     ///
-    /// A waiting update is signalled by a small amber dot in the corner
-    /// rather than tinting the whole glyph (which would erase the
-    /// mascot). If the asset can't be resolved (corrupted .app) a
-    /// visible SF Symbol keeps the status item from collapsing to an
-    /// invisible slot.
-    static func trayGlyph(hasUpdate: Bool) -> NSImage {
-        // Menu-bar content height in points; the drawing handler is
-        // resolution-independent so AppKit fills it at 2x on Retina.
-        let height: CGFloat = 18
-        guard let source = CheetahLogo.load(forSize: 128) else {
-            let fallback = NSImage(
-                systemSymbolName: "hare.fill",
-                accessibilityDescription: "Rapid-MLX"
-            ) ?? NSImage(size: NSSize(width: height, height: height))
-            // Corrupted .app (asset missing): still signal a waiting
-            // update by tinting the fallback amber, mirroring the
-            // coloured-cheetah path's dot so the cue is never lost.
-            if hasUpdate {
-                let tinted = NSImage(size: fallback.size)
-                tinted.lockFocus()
-                NSColor.systemOrange.set()
-                let r = NSRect(origin: .zero, size: fallback.size)
-                fallback.draw(in: r)
-                r.fill(using: .sourceAtop)
-                tinted.unlockFocus()
-                tinted.isTemplate = false
-                return tinted
-            }
-            fallback.isTemplate = true
-            return fallback
+    /// ``RapidRMark`` draws the brand's own vector geometry and tags the
+    /// result ``isTemplate``, which hands colour back to macOS: black on
+    /// a light bar, white on a dark one, white again while the menu is
+    /// open or the bar sits on a tinted desktop. See ``RapidRMark`` for
+    /// why the menu-bar variant is the `R` alone rather than the full
+    /// lockup.
+    ///
+    /// Deliberately carries NO status: no amber "update waiting" dot, no
+    /// Ready/Starting/Failed tint. A template image cannot express those
+    /// (AppKit repaints every pixel), and lifecycle state belongs in the
+    /// menu — where ``MenuBarStatus/menuItems`` already puts it, as a
+    /// status line plus an "Update available — vX.Y.Z" row.
+    ///
+    /// The SF Symbol fallback covers a corrupted build whose geometry
+    /// fails to parse; it is also a template, so the two paths behave
+    /// identically as far as the bar is concerned.
+    static func trayGlyph() -> NSImage {
+        if let mark = RapidRMark.menuBarTemplateImage() {
+            return mark
         }
-        let aspect = source.size.height > 0 ? source.size.width / source.size.height : 1
-        let target = NSSize(width: (height * aspect).rounded(), height: height)
-        let image = NSImage(size: target, flipped: false) { rect in
-            NSGraphicsContext.current?.imageInterpolation = .high
-            source.draw(
-                in: rect, from: .zero, operation: .sourceOver, fraction: 1.0
+        let fallback = NSImage(
+            systemSymbolName: "bolt.fill",
+            accessibilityDescription: accessibilityTitle
+        ) ?? NSImage(
+            size: NSSize(
+                width: RapidRMark.menuBarGlyphHeight,
+                height: RapidRMark.menuBarGlyphHeight
             )
-            if hasUpdate {
-                let d = rect.height * 0.42
-                let dot = NSRect(
-                    x: rect.maxX - d, y: rect.maxY - d, width: d, height: d
-                )
-                NSColor.systemOrange.setFill()
-                NSBezierPath(ovalIn: dot).fill()
-            }
-            return true
-        }
-        image.isTemplate = false
-        return image
-    }
-
-    /// Re-render the glyph whenever an update becomes available (or is
-    /// cleared). ``withObservationTracking``'s ``onChange`` fires exactly
-    /// once per observed read, so it re-arms on the next main-actor tick,
-    /// mirroring ``QuickAskWindowController.startTracking``.
-    private func startObservingUpdateState() {
-        withObservationTracking {
-            _ = AppDelegate.shared.updater?.availableUpdate
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.configureButton(hasUpdate: MenuBarController.hasAvailableUpdate())
-                self.startObservingUpdateState()
-            }
-        }
+        )
+        fallback.isTemplate = true
+        return fallback
     }
 
     // MARK: - Menu construction

@@ -99,6 +99,13 @@ class RequestPayload:
     # zero completion-token bucket) so this stays a clean "non-empty content
     # looks like garbage" signal.
     output_degenerate: bool = False
+    # v2.3 additions (#1250). Exact token counts remain local; these two
+    # booleans make empty and abnormally-short completions observable without
+    # narrowing the coarse token bucket (which would increase fingerprinting
+    # risk). ``completion_abnormally_short`` excludes empty completions so the
+    # collector can alert on the two failure modes independently.
+    completion_empty: bool = False
+    completion_abnormally_short: bool = False
 
 
 @dataclass(frozen=True)
@@ -221,6 +228,8 @@ def sample_request_preview_payload(
             status=200,
             caller_agent=normalize_caller_agent("claude-code/1.0"),
             output_degenerate=False,
+            completion_empty=False,
+            completion_abnormally_short=False,
         ),
     )
 

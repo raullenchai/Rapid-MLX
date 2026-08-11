@@ -591,12 +591,6 @@ PYEOF
 # subtree — a preview, a tooltip, an off-screen copy — answer for the
 # transcript.
 #
-# What this deliberately does NOT claim: that the table is a table. The app
-# exposes markdown tables as plain sibling AXStaticTexts with no AXTable role,
-# so a renderer that stripped the pipes and stacked the six cells as ordinary
-# paragraphs is indistinguishable from a real table at the AX layer. That is a
-# gap in what the app publishes, not something an assertion here can close —
-# tracked in #1689.
 assert_rendered_shapes() {
     local transcript="$1" scratch="$2"
     # These two hold anywhere in the transcript: no source syntax survives,
@@ -626,6 +620,19 @@ assert_rendered_shapes() {
     assistant_message_only "$transcript" 3 "$m3"
     assert_rendered_as_separate_nodes "$m3" "table cells" \
         "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
+    # AppKit exposes a native SwiftUI Table as AXOutline on macOS, with real
+    # row/cell/column children and titled column headers. Pin the whole shape;
+    # six loose AXStaticTexts cannot satisfy this contract (#1689).
+    jq -e '[.data.ui_elements[]?] as $e
+            | any($e[]; .role == "AXOutline" and .description == "Markdown table")
+              and ([ $e[] | select(.role == "AXRow") ] | length >= 2)
+              and ([ $e[] | select(.role == "AXCell") ] | length >= 6)
+              and ([ $e[] | select(.role == "AXColumn") ] | length >= 3)
+              and ([ $e[] | select(.title == "model") ] | length > 0)
+              and ([ $e[] | select(.title == "size") ] | length > 0)
+              and ([ $e[] | select(.title == "speed") ] | length > 0)' \
+        "$m3" >/dev/null \
+        || die "markdown comparison has no navigable table semantics in the AX tree (#1689)"
     assert_tree_text "$m3" "Both fit comfortably in 16 GB."
 
     assistant_message_only "$transcript" 4 "$m4"
@@ -1131,6 +1138,38 @@ flow_settings_persistence() {
     baseline settings-persistence.settings-root "$OUT/settings-root.json"
     press "$OUT/settings-root.json" Settings.Category.modelManagement "$OUT/settings-models-open.json"
     wait_settings_stable "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle
+    # GoldenFlow coverage for the recommendation SSOT: the running GUI must
+    # render exactly the smart + fast aliases selected from the same JSON the
+    # CLI consumes. This catches a missing app resource, a decoder drift, and a
+    # third recommendation accidentally creeping back into a tier.
+    local recommendation_json="$ROOT/../../vllm_mlx/model_recommendations.json"
+    local ram_bytes
+    ram_bytes="$(sysctl -n hw.memsize)"
+    local expected_recommendations
+    expected_recommendations="$(python3 - "$recommendation_json" "$ram_bytes" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+ram_gb = int(sys.argv[2]) / (1 << 30)
+tier = payload["tiers"][0]
+for candidate in payload["tiers"]:
+    if ram_gb >= candidate["floor_gb"]:
+        tier = candidate
+print("\n".join(pick["alias"] for pick in tier["picks"]))
+PY
+)"
+    local expected_smart expected_fast
+    expected_smart="$(printf '%s\n' "$expected_recommendations" | sed -n '1p')"
+    expected_fast="$(printf '%s\n' "$expected_recommendations" | sed -n '2p')"
+    [[ -n "$expected_smart" && -n "$expected_fast" && "$(printf '%s\n' "$expected_recommendations" | sed -n '3p')" == "" ]] \
+        || die "recommendation SSOT did not select exactly two aliases"
+    jq -e --arg alias "$expected_smart" \
+        '.data.ui_elements[]? | select(.identifier == ("Settings.ModelManagement.Recommended.Download." + $alias))' \
+        "$OUT/models-before.json" >/dev/null || die "GUI did not render SSOT smart recommendation $expected_smart"
+    jq -e --arg alias "$expected_fast" \
+        '.data.ui_elements[]? | select(.identifier == ("Settings.ModelManagement.Recommended.Download." + $alias))' \
+        "$OUT/models-before.json" >/dev/null || die "GUI did not render SSOT fast recommendation $expected_fast"
+    [[ "$(jq '[.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Recommended.primary" or .identifier == "Settings.ModelManagement.Recommended.alt")] | length' "$OUT/models-before.json")" -eq 2 ]] \
+        || die "GUI recommendation section did not render exactly smart + fast cards"
     baseline settings-persistence.models-idle "$OUT/models-before.json"
     local preference_key="rapid.picker.show_all_models.v1"
     press "$OUT/models-before.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle.json"
@@ -1197,6 +1236,43 @@ flow_chat_restore() {
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
     wait_send_idle "$OUT/chat-restored-settled.json"
     baseline chat-restore.transcript-restored "$OUT/chat-restored-settled.json"
+
+    # #1588: these controls existed for months without ever being mounted.
+    # Drive the assembled app so a future refactor cannot quietly orphan them
+    # again while their unit tests stay green.
+    jq -e '.data.ui_elements[]? | select(.identifier == "ContentView.ToggleLogs")' \
+        "$OUT/chat-restored-settled.json" >/dev/null \
+        || die "the status footer/log affordance is not mounted"
+    press "$OUT/chat-restored-settled.json" ContentView.ToggleLogs "$OUT/logs-open-press.json" \
+        || die "the mounted log toggle is not pressable"
+    wait_identifier ContentView.LogDrawer "$OUT/logs-open.json"
+    press "$OUT/logs-open.json" ContentView.ToggleLogs "$OUT/logs-close-press.json" \
+        || die "the mounted log drawer cannot be closed"
+    # `press` records the action response, not a fresh accessibility tree.
+    # Wait for the drawer transition and inspect the settled main window.
+    for _ in {1..40}; do
+        see_main "$OUT/logs-closed.json"
+        if ! jq -e '.data.ui_elements[]? | select(.identifier == "ContentView.LogDrawer")' \
+            "$OUT/logs-closed.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    jq -e '.data.ui_elements[]? | select(.identifier == "ContentView.ToggleLogs")' \
+        "$OUT/logs-closed.json" >/dev/null \
+        || die "the status footer disappeared after closing logs"
+    local select_text_id
+    select_text_id="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+        | select(startswith("ChatView.Message.SelectText."))' \
+        "$OUT/logs-closed.json" | head -1)"
+    [[ -n "$select_text_id" ]] || die "completed transcript exposes no Select text action"
+    press "$OUT/logs-closed.json" "$select_text_id" "$OUT/select-text-press.json" \
+        || die "Select text action is not pressable"
+    for _ in {1..40}; do
+        see_main "$OUT/select-text-sheet.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("Selection here crosses paragraphs")' \
+            "$OUT/select-text-sheet.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    assert_tree_text "$OUT/select-text-sheet.json" "Selection here crosses paragraphs"
     cleanup_persona
 }
 
@@ -1919,6 +1995,14 @@ flow_catalog_integrity() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-external-alias")' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "external model was not visible in Model Management"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.StorageSummary")' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "Model Management disk overview was not visible"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.LargestModel")
+              | [(.title // ""), (.value // ""), (.description // "")]
+              | join(" ") | contains("fake-image-alias")' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "disk overview did not identify the largest managed model"
     jq -e '[.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Delete.fake-external-alias")] | length == 0' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "external model exposed a delete action"
@@ -2029,6 +2113,8 @@ flow_image_generation() {
         || die "Images.ModelPicker never resolved to $FAKE_IMAGE_ALIAS — the tab has no model to render with"
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/ig-empty.json" >/dev/null \
         || die "Images.Aspect is missing — no way to choose an aspect ratio"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Resolution")' "$OUT/ig-empty.json" >/dev/null \
+        || die "Images.Resolution is missing — no way to choose an output resolution"
 
     # 3. Load the model. rapid-mlx serves one model per process, so opening the
     #    tab cannot silently inherit a ready server: the readiness gate holds

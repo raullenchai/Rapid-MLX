@@ -272,3 +272,19 @@ def test_gate_group_drop_masks_whole_group():
     idx, _ = gate(mx.zeros((1, 3, TINY["hidden_size"])))
     chosen = set(np.array(idx).flatten().tolist())
     assert chosen <= {4, 5, 6, 7}, chosen  # nothing from dropped group 0
+
+
+def test_alias_pins_ling_configuration():
+    import json
+    from pathlib import Path
+
+    aliases = json.loads(
+        (Path(__file__).parent.parent / "vllm_mlx" / "aliases.json").read_text()
+    )
+    entry = aliases["ling-3.0-tiny-4bit"]
+    assert entry["hf_path"] == "rapid-mlx/Ling-3.0-tiny-MLX-4bit"
+    assert entry["tool_call_parser"] == "glm47"
+    assert entry["reasoning_parser"] == "qwen3"
+    assert entry["is_hybrid"] is True
+    assert entry["is_hybrid_explicit"] is True
+    assert entry["is_moe"] is True

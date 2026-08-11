@@ -84,6 +84,9 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
         "<size>",
     ),
     (re.compile(r"~?\s*\d+(?:\.\d+)?\s*(?:tok/s|tokens/s|t/s)"), "<rate>"),
+    # Footer telemetry is live state, not structure. Once #1588 mounted the
+    # footer, consecutive dumps legitimately observed CPU 89%, 99%, and 100%.
+    (re.compile(r"\b\d+(?:\.\d+)?\s*percent\b"), "<percent>"),
     (
         re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|µs|us|ns|s|min|h)\b"),
         "<duration>",

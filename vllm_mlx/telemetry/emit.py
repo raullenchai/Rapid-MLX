@@ -477,6 +477,11 @@ def _normalize_endpoint(raw: str) -> str:
     return path if path in _ALLOWED_ENDPOINTS else "other"
 
 
+# A non-empty response this small is rarely a useful chat completion, while a
+# boolean avoids exporting its exact token count.
+_ABNORMALLY_SHORT_COMPLETION_MAX_TOKENS = 8
+
+
 @_safe
 def request(
     *,
@@ -522,6 +527,10 @@ def request(
         "status": int(status),
         "caller_agent": normalize_caller_agent(caller_agent),
         "output_degenerate": bool(output_degenerate),
+        "completion_empty": completion_tokens == 0,
+        "completion_abnormally_short": (
+            0 < completion_tokens <= _ABNORMALLY_SHORT_COMPLETION_MAX_TOKENS
+        ),
     }
     get_queue().enqueue(payload)
 

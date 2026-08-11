@@ -130,9 +130,7 @@ struct SettingsView: View {
                     Button {
                         selection.selected = cat
                     } label: {
-                        Label(cat.title, systemImage: cat.iconName)
-                            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-                            .contentShape(Rectangle())
+                        categoryRowContent(cat, isSelected: selection.selected == cat)
                     }
                     .buttonStyle(.pressable)
                     .listRowBackground(
@@ -155,7 +153,8 @@ struct SettingsView: View {
                 }
             }
             .listStyle(.sidebar)
-            .frame(width: 200)
+            .frame(width: SettingsView.railWidth)
+            .background(RapidTheme.surfaceSidebar)
             .focusable()
             // #579: keep the rail keyboard-focusable for ↑/↓ nav but drop
             // the system focus ring that painted a blue box around the whole
@@ -174,23 +173,112 @@ struct SettingsView: View {
             }
         }
 
+        /// One rail row: glyph and title, both wearing the SAME colour.
+        ///
+        /// Deliberately an explicit `HStack`, not a `Label`. A `Label`
+        /// inside `List(.sidebar)` hands its icon to the list style,
+        /// which paints it with the sidebar's own item colour — so a
+        /// `.foregroundStyle` on the row reached the title and left the
+        /// glyph white. The selected row therefore read as an amber word
+        /// beside a white icon, which is not a state any other list in
+        /// the app produces.
+        ///
+        /// ``symbolRenderingMode(.monochrome)`` is the second half: some
+        /// of these glyphs (`paintpalette.fill` especially) have
+        /// multicolour variants that ignore a foreground style entirely
+        /// unless the rendering mode is pinned.
+        @ViewBuilder
+        private func categoryRowContent(_ cat: Category, isSelected: Bool) -> some View {
+            let tint = isSelected ? RapidTheme.brandPrimaryDeep : RapidTheme.textPrimary
+            HStack(spacing: RapidTheme.Space.sm) {
+                Image(systemName: cat.iconName)
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: RapidTheme.Layout.iconSlot, alignment: .center)
+                Text(cat.title)
+                    .font(RapidFont.body)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    // Reserve the selected weight so the row does not
+                    // reflow as the selection moves.
+                    .background(
+                        Text(cat.title)
+                            .font(RapidFont.body)
+                            .fontWeight(.semibold)
+                            .hidden()
+                    )
+                    .lineLimit(1)
+            }
+            .foregroundStyle(tint)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: RapidTheme.ControlHeight.row,
+                alignment: .leading
+            )
+            .contentShape(Rectangle())
+        }
+
         @ViewBuilder
         private func categoryRowBackground(isSelected: Bool, isHovered: Bool) -> some View {
             if isSelected {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(RapidTheme.brandTint)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .fill(RapidTheme.brandPrimaryTint)
+                    .padding(.horizontal, RapidTheme.Space.xs)
+                    .padding(.vertical, RapidTheme.Space.xxs)
             } else if isHovered {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(0.055))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
+                    .fill(RapidTheme.hoverFill)
+                    .padding(.horizontal, RapidTheme.Space.xs)
+                    .padding(.vertical, RapidTheme.Space.xxs)
             } else {
                 Color.clear
             }
         }
     }
+
+    /// Width of the category rail. Fixed, like every macOS settings
+    /// sidebar — at the 720pt window floor this still leaves 519pt of
+    /// detail, which is more than the widest panel needs.
+    // `nonisolated`: read by the nonisolated layout arithmetic below. An
+    // immutable Sendable constant is isolation-free on every compiler; the
+    // CI toolchain (stricter default isolation than the local one) otherwise
+    // rejects the reads.
+    nonisolated static let railWidth: CGFloat = 200
+
+    /// Width below which the detail column is "compact" and panels
+    /// should shed optional columns rather than clip them.
+    ///
+    /// Derived, not guessed: Model Management's table commits a 158pt
+    /// meters column plus a 124pt size column plus ~90pt of glyphs and
+    /// gaps before the model name gets a single point. Under ~520pt of
+    /// content the name is squeezed to nothing, so that is where the
+    /// meters have to go.
+    nonisolated static let compactContentWidth: CGFloat = 520
+
+    /// The width a panel's content column actually gets inside a window
+    /// `windowWidth` points wide.
+    ///
+    /// Pure, and `static`, because the responsive contract is a claim
+    /// about arithmetic — "nothing this window commits to is wider than
+    /// the window" — and that claim should be checkable without
+    /// rendering anything. ``SettingsResponsiveLayoutTests`` walks the
+    /// supported sizes through this and the table's committed widths.
+    nonisolated static func contentColumnWidth(forWindowWidth windowWidth: CGFloat) -> CGFloat {
+        // rail + the 1pt divider between rail and detail
+        let detail = windowWidth - railWidth - 1
+        let available = detail - RapidTheme.Space.xl * 2
+        return max(0, min(available, RapidTheme.Layout.pageMaxWidth))
+    }
+
+    /// Whether a window that wide puts panels into their compact layout.
+    nonisolated static func isCompact(forWindowWidth windowWidth: CGFloat) -> Bool {
+        contentColumnWidth(forWindowWidth: windowWidth) < compactContentWidth
+    }
+
+    /// The narrowest window Settings supports. Paired with
+    /// ``minWindowHeight`` on the shell's `.frame(minWidth:minHeight:)`,
+    /// and re-used by the tests so the floor is stated once.
+    static let minWindowWidth: CGFloat = 720
+    static let minWindowHeight: CGFloat = 480
 
     private struct DetailCanvas<Content: View>: View {
         let selection: CategorySelection
@@ -206,13 +294,22 @@ struct SettingsView: View {
 
         var body: some View {
             let selected = selection.selected
-            ScrollView {
-                content(selected)
-                    .frame(maxWidth: 600, alignment: .leading)
-                    .padding(28)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            // The column reads its own width and publishes a compact
+            // flag, so a panel adapts to the space it actually has
+            // instead of to a guess about the window. Long pages scroll;
+            // nothing is solved by raising the window floor.
+            GeometryReader { proxy in
+                let available = proxy.size.width - RapidTheme.Space.xl * 2
+                let column = max(0, min(available, RapidTheme.Layout.pageMaxWidth))
+                ScrollView {
+                    content(selected)
+                        .frame(maxWidth: column, alignment: .leading)
+                        .padding(RapidTheme.Space.xl)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .environment(\.settingsContentIsCompact, column < SettingsView.compactContentWidth)
             }
-            .background(RapidTheme.canvas)
+            .background(RapidTheme.surfaceCanvas)
         }
     }
 
@@ -287,7 +384,7 @@ struct SettingsView: View {
                 detailPanel(for: category)
             }
         }
-        .frame(minWidth: 720, minHeight: 480)
+        .frame(minWidth: Self.minWindowWidth, minHeight: Self.minWindowHeight)
         .safeAreaInset(edge: .top, spacing: 0) {
             if router.quickstartCatalogReturnPending {
                 VStack(spacing: 0) {
@@ -378,12 +475,13 @@ struct SettingsView: View {
     /// Light / Dark force the override and persist across launches.
     private var appearancePanel: some View {
         @Bindable var a = appearance
-        return VStack(alignment: .leading, spacing: 16) {
-            sectionHeader(
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
                 "Appearance",
-                "Override the system theme. Auto follows your macOS setting; Light and Dark force the app to stay there regardless of system changes."
+                subtitle: "Override the system theme. Auto follows your macOS setting; Light and Dark force the app to stay there regardless of system changes.",
+                emphasis: .page
             )
-            settingsCard {
+            SettingsSection {
                 Picker("Theme", selection: $a.mode) {
                     ForEach(AppearanceMode.allCases) { mode in
                         Text(mode.displayName)
@@ -400,25 +498,19 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var privacyPanel: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Privacy")
-                    .font(.title2.weight(.semibold))
-                Text("Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous usage data is sent only after you opt in.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
+                "Privacy",
+                subtitle: "Rapid-MLX is local-first. Prompts, attachments, and model responses never leave your Mac. Anonymous usage data is sent only after you opt in.",
+                emphasis: .page
+            )
 
+            SettingsSection {
             Toggle(isOn: telemetryEnabledBinding) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Send anonymous usage data")
-                        .font(.callout.weight(.medium))
-                    Text("Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. Never prompts, responses, attachments, keys, account details, or unredacted user paths.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                SettingsRowLabel(
+                    title: "Send anonymous usage data",
+                    description: "Versions, Mac hardware tier, public model and feature names, coarse performance, redacted crash diagnostics, and error categories. Never prompts, responses, attachments, keys, account details, or unredacted user paths."
+                )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityIdentifier("Settings.Privacy.TelemetryToggle")
@@ -444,13 +536,12 @@ struct SettingsView: View {
                 telemetryEnabled = TelemetryConfig.isEnabled
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Where the data goes")
-                    .font(.callout.weight(.medium))
-                Text("telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            SettingsRowDivider()
+
+            SettingsRowLabel(
+                title: "Where the data goes",
+                description: "telemetry.rapidmlx.com — a Cloudflare Worker that strips client IPs before writing to storage. Source is open at github.com/raullenchai/rapidmlx.com under telemetry-worker/."
+            )
             }
 
             // All three point at documents that exist in the repository. Two
@@ -467,7 +558,7 @@ struct SettingsView: View {
             // visible label: "License (EULA)" is the kind of string that gets
             // reworded, and ``RepositoryLinkTargetsTests`` already pins the
             // destinations, so the document is the stable half.
-            HStack(spacing: 12) {
+            HStack(spacing: RapidTheme.Space.lg) {
                 Link("Privacy policy",
                      destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/PRIVACY.md")!)
                     .accessibilityIdentifier("Settings.Privacy.Link.PrivacyPolicy")
@@ -478,7 +569,12 @@ struct SettingsView: View {
                      destination: URL(string: "https://github.com/raullenchai/Rapid-MLX/blob/main/apps/rapid-mac/THIRD_PARTY.md")!)
                     .accessibilityIdentifier("Settings.Privacy.Link.Credits")
             }
-            .font(.callout)
+            .font(RapidFont.body)
+            // `.foregroundStyle`, not `.tint`: a SwiftUI ``Link`` paints
+            // itself with the system link colour and ignores the ambient
+            // tint, so these three rendered in macOS blue while every
+            // other link in the app used the steel-blue link token.
+            .foregroundStyle(RapidTheme.linkLabel)
 
             Spacer(minLength: 0)
         }
@@ -532,17 +628,13 @@ struct SettingsView: View {
     ///     change and want to confirm.
     @ViewBuilder
     private var appPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Rapid-MLX")
-                    .font(.title2.weight(.semibold))
-                Text("Self-update for Rapid-MLX. New releases bundle the latest models, performance improvements, and bug fixes.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Divider()
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
+                "Rapid-MLX",
+                subtitle: "Self-update for Rapid-MLX. New releases bundle the latest models, performance improvements, and bug fixes.",
+                emphasis: .page
+            )
+            SettingsSection("Version") {
                 versionRow(
                     label: "Installed",
                     value: "v\(appUpdater.currentVersion)",
@@ -561,6 +653,7 @@ struct SettingsView: View {
                 // so bypassed that judgement. Gate it on the same predicate.
                 if let release = appUpdater.latest,
                    !UpdateChecker.isNewer(appUpdater.currentVersion, than: release.version) {
+                    SettingsRowDivider()
                     versionRow(
                         label: "Latest release",
                         value: "v\(release.version)",
@@ -568,24 +661,23 @@ struct SettingsView: View {
                     )
                 }
             }
-            Divider()
-            appUpdateActionRow
-            if let release = appUpdater.availableUpdate,
-               !release.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                appReleaseNotesPanel(notes: release.notes)
-            }
-            if let err = appUpdater.lastError {
-                HStack(spacing: 6) {
-                    Image(systemName: "wifi.exclamationmark")
-                        .foregroundStyle(.orange)
-                    Text("Last check failed: \(err)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+            SettingsSection("Updates") {
+                appUpdateActionRow
+                if let release = appUpdater.availableUpdate,
+                   !release.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    SettingsRowDivider()
+                    appReleaseNotesPanel(notes: release.notes)
                 }
             }
-            Divider()
+            if let err = appUpdater.lastError {
+                InlineNotice(
+                    message: "Last check failed: \(err)",
+                    tone: .warning
+                )
+            }
+
             diagnosticsSection
-            Divider()
             dockVisibilitySection
         }
     }
@@ -596,17 +688,23 @@ struct SettingsView: View {
     /// tail) so a bug report arrives actionable instead of "it broke".
     @ViewBuilder
     private var diagnosticsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionHeader(
-                "Diagnostics",
-                "Save a support report to share if something goes wrong. Includes your app version, Mac model, and recent logs — no prompts, files, or personal data."
-            )
-            Button {
-                DiagnosticsBundle.exportViaSavePanel(server: server)
-            } label: {
-                Label("Export diagnostics…", systemImage: "stethoscope")
+        // Copy is unchanged from before the migration: the explanation
+        // moves into the section subtitle (where every other panel puts
+        // it) and the button keeps its exact original label.
+        SettingsSection(
+            "Diagnostics",
+            subtitle: "Save a support report to share if something goes wrong. Includes your app version, Mac model, and recent logs — no prompts, files, or personal data."
+        ) {
+            HStack {
+                Button {
+                    DiagnosticsBundle.exportViaSavePanel(server: server)
+                } label: {
+                    Label("Export diagnostics…", systemImage: "stethoscope")
+                }
+                .buttonStyle(.rapidSecondaryCompact)
+                .accessibilityIdentifier("Settings.App.ExportDiagnostics")
+                Spacer(minLength: 0)
             }
-            .accessibilityIdentifier("Settings.App.ExportDiagnostics")
         }
     }
 
@@ -617,35 +715,31 @@ struct SettingsView: View {
     /// prompt back so a curious user can re-see it.
     @ViewBuilder
     private var dockVisibilitySection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Window")
-                    .font(.title3.weight(.semibold))
-                Text("Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        SettingsSection(
+            "Window",
+            subtitle: "Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible."
+        ) {
             Toggle(isOn: hideDockOnCloseBinding) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Hide Dock icon when closing window")
-                        .font(.callout.weight(.medium))
-                    Text("On close, Rapid-MLX stays available from the menu bar. Turn off to keep the Dock icon visible; disabling takes effect immediately.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                SettingsRowLabel(
+                    title: "Hide Dock icon when closing window",
+                    description: "On close, Rapid-MLX stays available from the menu bar. Turn off to keep the Dock icon visible; disabling takes effect immediately."
+                )
             }
             .toggleStyle(TrailingSettingsToggleStyle())
             .accessibilityLabel("Hide Dock icon when closing window")
             .accessibilityHint("Rapid-MLX remains available from the menu bar.")
             .accessibilityIdentifier("Settings.App.HideDockOnCloseToggle")
+
+            SettingsRowDivider()
+
             HStack {
-                Spacer()
+                Spacer(minLength: 0)
+                // Label unchanged; only the button tier and the
+                // container around it moved onto the shared system.
                 Button("Reset onboarding alerts") {
                     dockPromptStore.resetOnboarding()
                 }
-                .controlSize(.small)
+                .buttonStyle(.rapidSecondaryCompact)
                 .accessibilityIdentifier("Settings.App.ResetDockOnboardingCTA")
             }
         }
@@ -771,17 +865,21 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var appUpdateActionRow: some View {
-        HStack(spacing: 12) {
+        // `.top` rather than centre: at the 720pt floor the status
+        // sentences wrap to two lines, and a centred trailing button
+        // then drifts down the row as the text grows. Anchoring to the
+        // first line keeps the control still while the text reflows.
+        HStack(alignment: .top, spacing: RapidTheme.Space.md) {
             switch appUpdateStatus {
             case .available(let version):
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .foregroundStyle(RapidTheme.brand)
-                    Text("Update available — v\(version)")
-                        .font(.callout.weight(.semibold))
-                        .accessibilityIdentifier("Settings.App.UpdateHeadline")
-                }
-                Spacer()
+                statusLine(
+                    symbol: "arrow.up.circle.fill",
+                    tint: RapidTheme.statusWorking,
+                    text: "Update available — v\(version)",
+                    emphasised: true,
+                    identifier: "Settings.App.UpdateHeadline"
+                )
+                Spacer(minLength: RapidTheme.Space.sm)
                 // Codex r1 P2 (CTA never disabled): the CTA only
                 // opens the existing update-install scene — leaving
                 // it tappable while ``appInstaller.isRunning`` lets
@@ -797,60 +895,82 @@ struct SettingsView: View {
                         Label("Update Rapid-MLX", systemImage: "arrow.down.circle.fill")
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.rapidPrimary)
                 .accessibilityIdentifier("Settings.App.UpdateCTA")
             case .upToDate(let version):
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text("Up to date — v\(version) is the latest release.")
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .accessibilityIdentifier("Settings.App.UpToDate")
-                }
-                Spacer()
+                statusLine(
+                    symbol: "checkmark.circle.fill",
+                    tint: RapidTheme.statusReady,
+                    text: "Up to date — v\(version) is the latest release.",
+                    identifier: "Settings.App.UpToDate"
+                )
+                Spacer(minLength: RapidTheme.Space.sm)
                 appUpdateRecheckButton
             case .checking:
-                HStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.sm) {
                     ProgressView()
                         .controlSize(.small)
                     Text("Checking for updates…")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.body)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("Settings.App.Checking")
                 }
-                Spacer()
+                Spacer(minLength: RapidTheme.Space.sm)
                 appUpdateRecheckButton
             case .aheadOfManifest(let current, _):
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                    Text("Up to date — v\(current).")
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .accessibilityIdentifier("Settings.App.AheadOfManifest")
-                }
-                Spacer()
+                statusLine(
+                    symbol: "checkmark.circle",
+                    tint: RapidTheme.textSecondary,
+                    text: "Up to date — v\(current).",
+                    identifier: "Settings.App.AheadOfManifest"
+                )
+                Spacer(minLength: RapidTheme.Space.sm)
                 // No re-check button. The poll already succeeded; the feed is
                 // simply behind this build, and pressing it again returns the
                 // same answer. An action that provably cannot change anything
                 // is worse than no action — it invites the user to keep
                 // trying and reads as if something is wrong.
             case .unknown(let reason):
-                HStack(spacing: 6) {
-                    Image(systemName: "questionmark.circle")
-                        .foregroundStyle(.secondary)
-                    Text(reason == nil
+                statusLine(
+                    symbol: "questionmark.circle",
+                    tint: RapidTheme.textSecondary,
+                    text: reason == nil
                         ? "Update status unknown — press Check for updates."
-                        : "Update status unknown — last check failed.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("Settings.App.Unknown")
-                }
-                Spacer()
+                        : "Update status unknown — last check failed.",
+                    secondary: true,
+                    identifier: "Settings.App.Unknown"
+                )
+                Spacer(minLength: RapidTheme.Space.sm)
                 appUpdateRecheckButton
             }
+        }
+    }
+
+    /// One "glyph + sentence" status line, shared by the four update
+    /// states that render one. They were four near-identical `HStack`s
+    /// with four hand-picked colours (`RapidTheme.brand`, `.green`,
+    /// `.secondary`, `.secondary`); folding them into one helper is what
+    /// makes "status colours are semantic" enforceable rather than
+    /// aspirational.
+    @ViewBuilder
+    private func statusLine(
+        symbol: String,
+        tint: Color,
+        text: String,
+        emphasised: Bool = false,
+        secondary: Bool = false,
+        identifier: String
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.sm) {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+                .accessibilityHidden(true)
+            Text(text)
+                .font(emphasised ? RapidFont.bodyEmphasis : RapidFont.body)
+                .foregroundStyle(secondary ? RapidTheme.textSecondary : RapidTheme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(identifier)
         }
     }
 
@@ -868,7 +988,7 @@ struct SettingsView: View {
                 Label("Check for updates", systemImage: "arrow.clockwise")
             }
         }
-        .controlSize(.small)
+        .buttonStyle(.rapidSecondaryCompact)
         .disabled(appUpdater.checking)
         .accessibilityIdentifier("Settings.App.RecheckCTA")
     }
@@ -878,23 +998,25 @@ struct SettingsView: View {
     /// render an inline scroll-bounded preview so the user can see
     /// "what's new" without opening another window.
     private func appReleaseNotesPanel(notes: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Release notes")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            SectionHeader("Release notes")
             ScrollView(.vertical, showsIndicators: true) {
                 Text(notes)
                     .scaledSystemFont(12)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+                    .padding(RapidTheme.Space.sm)
             }
             .frame(maxHeight: 140)
+            // Recessed, not a second card: notes are inset INTO the
+            // Updates section, so they use the code/inset ground rather
+            // than another raised surface on top of a raised surface.
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.secondary.opacity(0.08))
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                    .fill(RapidTheme.surfaceCode)
             )
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Open the in-app installer window — same window the
@@ -911,86 +1033,38 @@ struct SettingsView: View {
         }
     }
 
+    /// A label/value pair inside the Version section.
+    ///
+    /// The label column is a shared constant rather than a literal so the
+    /// two rows line up, and it is a `maxWidth` rather than a hard
+    /// `width`: at the 720pt floor a fixed 120pt label column plus a
+    /// long version string was the row most likely to overrun.
     private func versionRow(label: String, value: String, monospaced: Bool) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: RapidTheme.Space.md) {
             Text(label)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 120, alignment: .leading)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .frame(maxWidth: 120, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
             Text(value)
-                .font(monospaced
-                    ? .system(size: 12, design: .monospaced)
-                    : .system(size: 12))
+                .font(monospaced ? RapidFont.metric : RapidFont.secondary)
+                .foregroundStyle(RapidTheme.textPrimary)
                 .textSelection(.enabled)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer()
+            Spacer(minLength: 0)
         }
     }
 
-    // MARK: - Shared layout (v0.5 card refresh)
-
-    /// Section header: a title + an optional descriptive subtitle,
-    /// rendered above a card. Keeps the heading typography consistent
-    /// across every panel and softer than a bare ``.title2`` slammed
-    /// onto the content.
-    @ViewBuilder
-    private func sectionHeader(_ title: String, _ subtitle: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-            if let subtitle {
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// Rounded "card" container for a group of settings controls. A
-    /// near-white fill on a light canvas, a hairline border, and a
-    /// generous inset — the Linear / Apple-System-Settings look the
-    /// v0.5 refresh targets. Every panel routes its controls through
-    /// this so the Settings window reads as a set of calm cards.
-    @ViewBuilder
-    private func settingsCard<Content: View>(
-        padding: CGFloat = 16,
-        @ViewBuilder _ content: () -> Content
-    ) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(padding)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
-    }
-
-    /// Same glyph mapping as the compose-bar popover. Kept here
-    /// in duplicate (rather than refactored to a shared helper)
-    /// because v0.4.1 is the only commit they live side by side
-    /// in — the compose popover may collapse into a "quick
-    /// status" indicator in v0.5 once Settings is the canonical
-    /// surface, at which point the duplicate goes away.
-    private func glyph(for name: String) -> String {
-        switch name {
-        case "read_file", "list_directory": return "folder"
-        case "write_file": return "square.and.pencil"
-        case "edit_file": return "pencil.and.list.clipboard"
-        case "run_command": return "terminal"
-        case "web_search": return "magnifyingglass"
-        case "calculator": return "function"
-        case "weather": return "cloud.sun"
-        case "current_datetime": return "clock"
-        default: return "wrench.and.screwdriver"
-        }
-    }
+    // NOTE: three private helpers used to sit here and were removed by
+    // the UI-1 migration:
+    //
+    //   * ``sectionHeader(_:_:)`` and ``settingsCard(padding:_:)`` — one
+    //     of four copies of the same two helpers across the Settings
+    //     panels. Both are now ``SectionHeader`` + ``SettingsSection``.
+    //   * ``glyph(for:)`` — dead since the tools list moved to
+    //     ``SettingsToolsPanel`` (which has its own, live copy). It
+    //     mapped eight tool names, five of which no longer exist.
 }
 
 /// AppKit-backed because AXPress on a SwiftUI button in a secondary Window can

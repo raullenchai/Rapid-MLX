@@ -22,9 +22,26 @@ struct SettingsToolsPanel: View {
     @State private var keyDraftEdited: Bool = false
     @State private var saveFeedback: SettingsView.WebSearchKeySaveFeedback?
     @State private var feedbackGeneration: Int = 0
+    /// Which tool rows have their technical detail open. Session state:
+    /// a disclosure is a reading aid, not a preference, so it
+    /// deliberately does not persist.
+    @State private var expandedTools: Set<String>
+
+    /// - Parameter initiallyExpanded: seam for the dev snapshot harness,
+    ///   which has to capture the disclosure OPEN and cannot drive
+    ///   private `@State` from outside. Production always uses the
+    ///   default (all rows collapsed).
+    init(initiallyExpanded: Set<String> = []) {
+        _expandedTools = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
+                "Tools",
+                subtitle: "Tools the model can call during a chat. Turn one off and it is never offered — and never runs, even if the model asks for it by name.",
+                emphasis: .page
+            )
             toolsSection
             webSearchSection
             browseSection
@@ -40,40 +57,165 @@ struct SettingsToolsPanel: View {
     // MARK: - Available tools
 
     private var toolsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header(
-                "Tools",
-                "Tools the model can call during a chat. Turn one off and it is never offered — and never runs, even if the model asks for it by name."
-            )
-            card {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(chat.builtinDefinitions, id: \.function.name) { def in
-                        Toggle(isOn: toolBinding(def.function.name)) {
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: Self.glyph(for: def.function.name))
-                                    .foregroundStyle(RapidTheme.brand)
-                                    .frame(width: 18)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(def.function.name)
-                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                    Text(def.function.description)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }
-                        .toggleStyle(TrailingSettingsToggleStyle())
-                        .accessibilityLabel(Self.voiceOverLabel(for: def.function.name))
-                        .accessibilityHint(def.function.description)
-                        // Keyed on the TOOL NAME (the wire identifier the
-                        // engine and the request body use), not on the row's
-                        // display text — the label is the tool's own
-                        // description and would drift with copy edits.
-                        .accessibilityIdentifier("Settings.Tools.Toggle.\(def.function.name)")
-                    }
+        SettingsSection("Available tools") {
+            let definitions = chat.builtinDefinitions
+            ForEach(Array(definitions.enumerated()), id: \.element.function.name) { index, def in
+                if index > 0 { SettingsRowDivider() }
+                toolRow(def)
+            }
+        }
+    }
+
+    /// One built-in tool.
+    ///
+    /// The row leads with a HUMAN name, not the wire identifier. Before
+    /// this it was headed `web_search` in a monospaced face — an
+    /// implementation detail presented as a title — followed by the
+    /// model-facing prompt text, which runs to seven lines for `browse`
+    /// and reads as documentation rather than as a setting.
+    ///
+    /// So: a display name, a one-line summary of what turning it off
+    /// costs, and the full engine-facing description behind a
+    /// disclosure. Nothing is deleted — the technical text is exactly
+    /// the string the model receives, and the wire identifier is shown
+    /// alongside it, because a user debugging a prompt needs both.
+    @ViewBuilder
+    private func toolRow(_ def: ToolDefinition) -> some View {
+        let name = def.function.name
+        let isExpanded = expandedTools.contains(name)
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            Toggle(isOn: toolBinding(name)) {
+                HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
+                    Image(systemName: Self.glyph(for: name))
+                        // Utility glyph, not a call to action: neutral,
+                        // where it used to be one of the app's most
+                        // repeated steel-blue accents.
+                        .symbolRenderingMode(.monochrome)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(RapidTheme.utilityActionLabel)
+                        .frame(width: RapidTheme.Layout.iconSlot)
+                        .accessibilityHidden(true)
+                    SettingsRowLabel(
+                        title: Self.displayName(for: name),
+                        description: Self.summary(for: name, fallback: def.function.description)
+                    )
                 }
             }
+            .toggleStyle(TrailingSettingsToggleStyle())
+            // Keyed on the TOOL NAME (the wire identifier the
+            // engine and the request body use), not on the row's
+            // display text — the label is the tool's own
+            // description and would drift with copy edits.
+            // Upstream (#1822) gave every tool toggle a spoken name and a
+            // hint; both are preserved verbatim through the UI-1
+            // migration. ``voiceOverLabel`` stays its own function rather
+            // than being folded into ``displayName``: they are separate
+            // strings upstream, and quietly re-capitalising a VoiceOver
+            // label is not this PR's call to make.
+            .accessibilityLabel(Self.voiceOverLabel(for: def.function.name))
+            .accessibilityHint(def.function.description)
+            // Spelled with `def.function.name` rather than the local
+            // `name` binding: identical at runtime, but
+            // ``AccessibilityIdentifierInventoryTests`` pins the source
+            // SHAPE so a future edit cannot quietly swap the per-item
+            // key for display text.
+            .accessibilityIdentifier("Settings.Tools.Toggle.\(def.function.name)")
+
+            disclosure(for: def, isExpanded: isExpanded)
+                // Indent to the text column so the disclosure lines up
+                // under the summary it expands, not under the glyph.
+                .padding(.leading, RapidTheme.Layout.iconSlot + RapidTheme.Space.sm)
+        }
+    }
+
+    /// The "Details" disclosure: a compact chevron affordance, and the
+    /// engine-facing text when open.
+    @ViewBuilder
+    private func disclosure(for def: ToolDefinition, isExpanded: Bool) -> some View {
+        let name = def.function.name
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            Button {
+                if isExpanded {
+                    expandedTools.remove(name)
+                } else {
+                    expandedTools.insert(name)
+                }
+            } label: {
+                HStack(spacing: RapidTheme.Space.xs) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text("Details")
+                        .font(RapidFont.caption)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(RapidTheme.utilityActionLabel)
+            .rapidAnimation(RapidMotion.quick, value: isExpanded)
+            .accessibilityLabel("Details for \(Self.displayName(for: name))")
+            .accessibilityAddTraits(isExpanded ? [.isButton, .isSelected] : .isButton)
+            .accessibilityHint(isExpanded ? "Collapse" : "Expand")
+            .accessibilityIdentifier("Settings.Tools.Details.\(name)")
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
+                    Text(def.function.description)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // The wire identifier, where a user debugging a
+                    // prompt can still find it — just not as the title.
+                    Text(name)
+                        .font(RapidFont.code)
+                        .foregroundStyle(RapidTheme.textTertiary)
+                        .textSelection(.enabled)
+                }
+                .padding(RapidTheme.Space.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                        .fill(RapidTheme.surfaceCode)
+                )
+                .accessibilityIdentifier("Settings.Tools.DetailsBody.\(name)")
+            }
+        }
+    }
+
+    // MARK: - Presentation of tool identity
+    //
+    // Display names and summaries are PRESENTATION ONLY. The wire
+    // identifiers (`web_search`, `browse`, `weather`) are what the
+    // registry, the request body, the disabled-tool set, the dispatch
+    // guard and every accessibility identifier still use — none of that
+    // is touched by anything below.
+
+
+    /// Human name for a built-in tool. Falls back to the raw identifier
+    /// so a tool added to the registry without an entry here still shows
+    /// something true rather than nothing.
+    static func displayName(for toolName: String) -> String {
+        switch toolName {
+        case "web_search": return "Web Search"
+        case "browse":     return "Browse Web Page"
+        case "weather":    return "Weather"
+        default:           return toolName
+        }
+    }
+
+    /// One line on what the tool does, in the user's terms. The engine's
+    /// own description is written FOR THE MODEL — it carries pagination
+    /// offsets and calling conventions — so it stays in the disclosure.
+    static func summary(for toolName: String, fallback: String) -> String {
+        switch toolName {
+        case "web_search":
+            return "Looks up current information on the web when a question needs it."
+        case "browse":
+            return "Opens a web page you or the model names and reads it. You approve each page."
+        case "weather":
+            return "Gets the current weather for a place you name."
+        default:
+            return fallback
         }
     }
 
@@ -97,16 +239,30 @@ struct SettingsToolsPanel: View {
 
     private var webSearchSection: some View {
         @Bindable var config = webSearch
-        return VStack(alignment: .leading, spacing: 8) {
-            header(
-                "Web search",
-                "Which backend `web_search` queries. DuckDuckGo needs no account but is rate-limited; the keyed backends are more reliable."
-            )
-            card {
-                VStack(alignment: .leading, spacing: 14) {
+        return SettingsSection(
+            "Web search",
+            subtitle: "Which backend `web_search` queries. DuckDuckGo needs no account but is rate-limited; the keyed backends are more reliable."
+        ) {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                    // Native macOS radio group, kept native: radios are
+                    // exactly the control class the platform should own,
+                    // and rebuilding one would cost the arrow-key group
+                    // navigation SwiftUI gives for free.
+                    //
+                    // Three things ARE ours: the body type (it defaulted
+                    // to the system size, which read a step larger than
+                    // every other choice in Settings), `.controlSize`
+                    // (the radios rendered at the regular size, notably
+                    // bigger than the compact switches beside them), and
+                    // `.tint(nil)` so the selected dot uses the system
+                    // control accent instead of inheriting brand amber —
+                    // amber is the SELECTION colour for rows and
+                    // segments, and putting it inside a radio too made
+                    // three different amber affordances on one card.
                     Picker("Backend", selection: $config.provider) {
                         ForEach(WebSearchProvider.allCases) { provider in
                             Text(provider.displayName)
+                                .font(RapidFont.body)
                                 .tag(provider)
                                 // Per-radio identifier keyed on the provider's
                                 // stable raw value (duckduckgo / brave /
@@ -119,36 +275,44 @@ struct SettingsToolsPanel: View {
                     }
                     .pickerStyle(.radioGroup)
                     .labelsHidden()
+                    .controlSize(.small)
+                    .tint(nil)
                     .accessibilityIdentifier("Settings.Tools.WebSearch.Backend")
                     .onChange(of: config.provider) { _, _ in
                         resetKeyDraft()
                     }
 
                     Text(config.provider.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     if config.provider.requiresKey {
+                        SettingsRowDivider()
                         keyField(for: config.provider)
                     }
                 }
-            }
         }
     }
 
     @ViewBuilder
     private func keyField(for provider: WebSearchProvider) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            HStack(spacing: RapidTheme.Space.sm) {
                 SecureField("API key", text: $keyDraft)
+                    // Native field, shared metrics: a secure field is one
+                    // of the controls macOS should keep owning, so the
+                    // only thing standardised here is its height.
                     .textFieldStyle(.roundedBorder)
+                    .font(RapidFont.body)
+                    .frame(minHeight: RapidTheme.ControlHeight.small)
                     .onChange(of: keyDraft) { _, _ in keyDraftEdited = true }
                     .onSubmit { commitKey(for: provider) }
                     .accessibilityIdentifier(
                         "Settings.Tools.WebSearch.KeyField.\(provider.id)"
                     )
                 Button("Save") { commitKey(for: provider) }
+                    .buttonStyle(.rapidSecondaryCompact)
                     .disabled(!keyDraftEdited)
                     .accessibilityIdentifier(
                         "Settings.Tools.WebSearch.SaveKey.\(provider.id)"
@@ -156,7 +320,9 @@ struct SettingsToolsPanel: View {
             }
             if let url = provider.keyDashboardURL {
                 Link("Get a \(provider.displayName) key", destination: url)
-                    .font(.caption)
+                    .font(RapidFont.caption)
+                    // See the Privacy links: ``Link`` ignores the tint.
+                    .foregroundStyle(RapidTheme.linkLabel)
                     // Keyed on the provider, not the label: "Get a Brave key"
                     // is display copy and will be reworded.
                     .accessibilityIdentifier(
@@ -165,18 +331,26 @@ struct SettingsToolsPanel: View {
             }
             if let feedback = saveFeedback {
                 Text(Self.feedbackCopy(feedback))
-                    .font(.caption)
-                    .foregroundStyle(Self.isFailure(feedback) ? RapidTheme.statusError : .secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(
+                        Self.isFailure(feedback)
+                            ? RapidTheme.statusError
+                            : RapidTheme.textSecondary
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
             } else if webSearch.cachedKeyState(for: provider).hasKey {
                 Text("A key is stored for \(provider.displayName).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("No key stored — searches fall back to DuckDuckGo until you save one.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { resetKeyDraft() }
     }
 
@@ -229,27 +403,20 @@ struct SettingsToolsPanel: View {
     // MARK: - Browsing
 
     private var browseSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header(
-                "Browsing",
-                "`browse` fetches a page and hands its text to the model. The model picks the URL, so by default you approve each destination first."
-            )
-            card {
-                Toggle(isOn: browseAutoApproveBinding) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Approve every page automatically")
-                            .font(.callout.weight(.medium))
-                        Text("Skips the confirmation for unattended use. Private and local addresses stay blocked either way.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .toggleStyle(TrailingSettingsToggleStyle())
-                .accessibilityLabel("Approve every page automatically")
-                .accessibilityHint("Skips confirmation for public pages. Private and local addresses remain blocked.")
-                .accessibilityIdentifier("Settings.Tools.Browse.AutoApproveToggle")
+        SettingsSection(
+            "Browsing",
+            subtitle: "`browse` fetches a page and hands its text to the model. The model picks the URL, so by default you approve each destination first."
+        ) {
+            Toggle(isOn: browseAutoApproveBinding) {
+                SettingsRowLabel(
+                    title: "Approve every page automatically",
+                    description: "Skips the confirmation for unattended use. Private and local addresses stay blocked either way."
+                )
             }
+            .toggleStyle(TrailingSettingsToggleStyle())
+            .accessibilityLabel("Approve every page automatically")
+            .accessibilityHint("Skips confirmation for public pages. Private and local addresses remain blocked.")
+            .accessibilityIdentifier("Settings.Tools.Browse.AutoApproveToggle")
         }
     }
 
@@ -262,33 +429,9 @@ struct SettingsToolsPanel: View {
 
     // MARK: - Shared layout
 
-    @ViewBuilder
-    private func header(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-            Text(subtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        content()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
-    }
+    // NOTE: private ``header(_:_:)`` and ``card(_:)`` helpers lived here
+    // and were the second of four copies of the same pair. Both are now
+    // ``SectionHeader`` + ``SettingsSection``.
 
     static func glyph(for name: String) -> String {
         switch name {

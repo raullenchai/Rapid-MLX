@@ -69,16 +69,23 @@ struct MCPServerEditorSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(original == nil ? "Add connector" : "Edit “\(original?.name ?? "")”")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+            SectionHeader(
+                original == nil ? "Add connector" : "Edit “\(original?.name ?? "")”",
+                emphasis: .section
+            )
 
+            // The form itself stays native ``.formStyle(.grouped)``:
+            // macOS owns field/picker/toggle layout here and does it
+            // better than a hand-rolled grid would. Only the typography
+            // of the help lines and the footer's button tiers move onto
+            // the shared system.
             Form {
                 TextField("Name", text: $name)
                     .accessibilityIdentifier("Settings.Connectors.Editor.Name")
                 Text("Letters, numbers, dashes and underscores. Becomes the prefix on every tool this connector exposes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
 
                 Picker("Type", selection: $transport) {
                     ForEach(MCPServerConfig.Transport.allCases, id: \.self) { t in
@@ -92,40 +99,40 @@ struct MCPServerEditorSheet: View {
                     TextField("Command", text: $command)
                         .accessibilityIdentifier("Settings.Connectors.Editor.Command")
                     Text("For example `uvx` or `npx`. Rapid's engine only runs commands on its allowlist.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                         Text("Arguments — one per line")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $argsText)
-                            .font(.system(.callout, design: .monospaced))
-                            .frame(height: 64)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                            .accessibilityIdentifier("Settings.Connectors.Editor.AddArgument")
+                            .font(RapidFont.caption)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                        codeEditor(
+                            text: $argsText, height: 64,
+                            axIdentifier: "Settings.Connectors.Editor.AddArgument"
+                        )
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                         Text("Environment — one KEY=value per line")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $envText)
-                            .font(.system(.callout, design: .monospaced))
-                            .frame(height: 52)
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
-                            .accessibilityIdentifier("Settings.Connectors.Editor.AddEnv")
+                            .font(RapidFont.caption)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                        codeEditor(
+                            text: $envText, height: 56,
+                            axIdentifier: "Settings.Connectors.Editor.AddEnv"
+                        )
                     }
 
                 case .sse:
                     TextField("URL", text: $url)
                         .accessibilityIdentifier("Settings.Connectors.Editor.URL")
                     Text("An http:// or https:// endpoint speaking MCP over SSE.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                 }
 
                 Toggle("Enabled", isOn: $enabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
                     .accessibilityIdentifier("Settings.Connectors.Editor.Enabled")
             }
             .formStyle(.grouped)
@@ -133,25 +140,60 @@ struct MCPServerEditorSheet: View {
             if let why = draft.validationError, !name.isEmpty || !command.isEmpty || !url.isEmpty {
                 // Held back until the user has typed something — an empty form
                 // that scolds you before you start is noise, not guidance.
-                Label(why, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
+                InlineNotice(message: why, tone: .warning)
             }
 
-            HStack {
+            // Cancel and Save are now the SAME height (both regular, 32):
+            // `.rapidPrimary` used to default to 36 and the pair stepped.
+            // A disabled Save keeps the amber fill at ``disabledOpacity``
+            // rather than going grey, so it stays findable and its label
+            // stays readable while it explains nothing can be saved yet.
+            HStack(spacing: RapidTheme.Space.sm) {
                 Spacer()
                 Button("Cancel", action: onCancel)
+                    .buttonStyle(.rapidSecondary)
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("Settings.Connectors.Editor.Cancel")
                 Button("Save") { onSave(draft) }
+                    .buttonStyle(.rapidPrimary)
                     .keyboardShortcut(.defaultAction)
                     .disabled(draft.validationError != nil)
                     .accessibilityIdentifier("Settings.Connectors.Editor.Allow")
             }
         }
-        .padding(20)
-        .frame(width: 480)
+        .padding(RapidTheme.Space.xl)
+        .frame(width: 520)
+        .background(RapidTheme.surfaceOverlay)
+    }
+
+    /// A multi-line code field with a ground of its own.
+    ///
+    /// A bare ``TextEditor`` draws no background, so in Dark Mode the
+    /// Arguments and Environment boxes were an outline around the sheet
+    /// colour — they read as empty space, not as fields you can type in.
+    /// ``surfaceCode`` is the same recessed ground inline code uses
+    /// everywhere else in the app.
+    @ViewBuilder
+    private func codeEditor(
+        text: Binding<String>, height: CGFloat, axIdentifier: String
+    ) -> some View {
+        // The identifier is applied to the ``TextEditor`` itself (not at the
+        // call site) so the AX-identifier gate sees the control carry it and
+        // the AX driver lands on the editable field, not a wrapper.
+        TextEditor(text: text)
+            .accessibilityIdentifier(axIdentifier)
+            .font(RapidFont.code)
+            .scrollContentBackground(.hidden)
+            .padding(RapidTheme.Space.xs)
+            .frame(height: height)
+            .background(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                    .fill(RapidTheme.surfaceCode)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: RapidTheme.Radius.code, style: .continuous)
+                    .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
+            )
     }
 
     /// Non-empty, whitespace-trimmed lines. `static` so the parsing can be

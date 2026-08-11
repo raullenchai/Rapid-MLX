@@ -48,14 +48,15 @@ Phase 1 has **no event call sites** — `is_enabled()` exists, but
 nothing calls it to actually emit. The package compiles, has tests,
 and ships dark.
 
-### 2.2 Server (`~/work/Rapid-MLX-telemetry-worker/`) — Phase 1 complete, deploy blocked
+### 2.2 Server (`~/work/Rapid-MLX-telemetry-worker/`) — deployed
 
 | Component | State |
 |---|---|
 | Worker handler `src/index.js` (165 LOC) | POST `/v1/events`, validates `schema_version == 1`, body cap 256 KB, batch cap 100 events, 50ms CPU cap, stamps `received_at`. Writes one NDJSON object per batch to R2 key `events/YYYY/MM/DD/HH/<rand12>.ndjson`. |
 | Privacy invariants pinned by `test/worker.test.js` | (1) does not read `CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP` / UA; (2) does not forward any request header to R2; (3) rejects `schema_version != 1`; (4) "do not log bodies" is code-review-only. |
-| `wrangler.toml` | `r2_buckets.binding = "EVENTS"`, `bucket_name = "rapid-mlx-telemetry-events"`, `[observability] enabled = true`. |
-| Deploy state | **Blocked**. Per memory `project_telemetry_worker_deploy_blocked.md`: existing OAuth token lacks R2 + Workers scopes. Either re-auth `wrangler login` interactively in user shell, or mint a scoped API token (Workers Scripts:Edit, Account R2:Edit). |
+| `wrangler.toml` | `r2_buckets.binding = "EVENTS"`, hourly cron at `:17`, a 500-object scan cap, and observability enabled. |
+| Release-health canary (#1250) | The cron aggregates request/error events by `rapid_mlx_version`, compares the newest version with the three preceding versions, and evaluates empty, abnormally-short, degenerate/repetitive, and error rates. It requires both an absolute floor and a 3× baseline deviation with at least 50 samples. Alert state in R2 suppresses duplicate version/metric notifications for 24 hours. |
+| Deploy state | Worker version `88f56627-8218-4d26-92d9-6ddd25339e69` deployed 2026-08-11; both the workers.dev URL and `telemetry.rapidmlx.com/healthz` return schema v1 healthy. `ALERT_WEBHOOK` remains an operator-provided Wrangler secret; without it detections are emitted to structured Worker logs. |
 
 ### 2.3 rapidmlx.com infrastructure — already serves *other* workloads
 
@@ -212,31 +213,20 @@ it can attach to `rapidmlx.com` cleanly:
    add an explicit allowlist mirroring the `rapidserver` worker's
    atomic CORS-replace pattern (`gotcha_worker_cors_atomic_replace`).
 
-### 4.2 Token / OAuth unblock
+### 4.2 Release-health alert destination
 
-The original blocker is fully captured in memory
-`project_telemetry_worker_deploy_blocked.md`. Two paths:
+The Worker is deployed and its hourly Cron Trigger is active. Set the
+notification destination interactively so the secret never enters shell
+history or Git:
 
-**Path A — interactive re-auth (recommended, low blast radius):**
 ```bash
-# In a regular user terminal, NOT inside claude-code (see memory
-# gotcha_wrangler_oauth_claude_code — claude-code's bash strips
-# Authorization headers):
 cd ~/work/Rapid-MLX-telemetry-worker
-npx wrangler login       # browser opens, grants Workers + R2
-npx wrangler r2 bucket create rapid-mlx-telemetry-events --location enam
-npx wrangler deploy
+npx wrangler secret put ALERT_WEBHOOK
 ```
 
-**Path B — long-lived scoped API token:**
-Mint at https://dash.cloudflare.com/profile/api-tokens with:
-- Account · Workers Scripts · Edit
-- Account · Workers R2 Storage · Edit
-- Zone · `rapidmlx.com` · Workers Routes · Edit
-- Zone · `rapidmlx.com` · DNS · Edit (only if Workers Custom Domains
-  fails to mint the placeholder, which would surprise me)
-
-Export `CLOUDFLARE_API_TOKEN=…` and `npx wrangler deploy`.
+The payload contains a Slack-compatible `text` field plus a structured
+`alerts` array keyed by `version` and `metric`. Until this secret is set,
+detections remain visible in Worker logs rather than being silently dropped.
 
 ### 4.3 Operational dashboard
 

@@ -6,25 +6,23 @@ import Testing
 /// a pinned order:
 ///
 ///   ┌── Quickstart ──────────────────────────────────────┐
-///   │  bonsai-1.7b-2bit · Smallest model — fastest first │ ← RAM-blind, persists post-dismiss
+///   │  lfm2.5-1b-4bit · Smallest model — fastest first   │ ← RAM-blind during first run
 ///   ├── Recommended for your <RAM> GB Mac ───────────────┤
-///   │  Default | Speed | Quality | Coding | Vision       │ ← RAM-aware, role-anchored
+///   │  Recommended <smart pick> · Faster <light pick>     │ ← RAM-tier measured pair
 ///   ├── All models (alphabetical) ───────────────────────┤
 ///   │  alpha … omega                                     │ ← dedup: Quickstart alias excluded
 ///   ├── Not fit for this Mac ────────────────────────────┤
 ///   │  oversized aliases remain downloadable            │
 ///   └────────────────────────────────────────────────────┘
 ///
-/// The Quickstart section is a NEW row landed in F-LWT-1 (the 0.6B
-/// swap PR). It exists so a user who skipped Quickstart can still
-/// one-click install the demo model from the picker — independent
-/// of the RAM-aware Recommended Default and the long-tail All
-/// models list.
+/// The Quickstart section exists while first-run choice is still eligible,
+/// so a user can one-click install the small coherent starter independently
+/// of the RAM-aware smart/fast recommendations and the long-tail list.
 ///
 /// The pinned section order matters because:
 ///   * Quickstart goes FIRST so a first-time browser sees the
 ///     smallest / fastest install as the top recommendation,
-///     matching the Quickstart card's promise.
+///     matching the Quickstart card's promise while first-run is eligible.
 ///   * Recommended goes SECOND because it's RAM-aware (different
 ///     advice on a 16 GB Mac vs a 64 GB Mac).
 ///   * All models contains runnable long-tail choices.

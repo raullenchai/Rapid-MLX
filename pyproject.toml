@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.12.9"
+version = "0.12.10"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -470,6 +470,7 @@ vllm-mlx-bench = "vllm_mlx.benchmark:main"
 [tool.setuptools.package-data]
 vllm_mlx = [
     "aliases.json",
+    "model_recommendations.json",
     "audio/aliases.json",
     # Download-size manifest (hf_path -> footprint bytes) powering the Size
     # column in `rapid-mlx models` and the size line in `rapid-mlx info`.

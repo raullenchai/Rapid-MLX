@@ -133,8 +133,6 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Settings.Connectors.Editor.Transport""#,
                 #""Settings.Connectors.Editor.Command""#,
                 #""Settings.Connectors.Editor.URL""#,
-                #""Settings.Connectors.Editor.AddArgument""#,
-                #""Settings.Connectors.Editor.AddEnv""#,
                 #""Settings.Connectors.Editor.Enabled""#,
                 #""Settings.Connectors.Editor.Allow""#,
                 #""Settings.Connectors.Editor.Cancel""#,
@@ -142,6 +140,26 @@ struct AccessibilityIdentifierInventoryTests {
             in: "Sources/Rapid/UI/MCPServerEditorSheet.swift",
             surface: "Settings → Connectors → editor"
         )
+        // The two code editors route their identifier through the shared
+        // `codeEditor(text:height:axIdentifier:)` builder so the modifier
+        // lands on the `TextEditor` itself (the AX-identifier gate checks
+        // the control, and a wrapper-level duplicate would give the AX
+        // driver two hits). Pin the literal at the call sites instead —
+        // the identifier STRINGS are unchanged, so golden flows are
+        // unaffected.
+        let sheet = try strippedSource("Sources/Rapid/UI/MCPServerEditorSheet.swift")
+        for id in ["Settings.Connectors.Editor.AddArgument",
+                   "Settings.Connectors.Editor.AddEnv"] {
+            #expect(
+                sheet.contains(#"axIdentifier:"\#(id)""#),
+                """
+                Settings → Connectors → editor: MCPServerEditorSheet.swift no \
+                longer passes \(id) into codeEditor(text:height:axIdentifier:). \
+                Golden flows address this field by AXIdentifier — update \
+                scripts/gui-golden-flows.sh and this inventory together.
+                """
+            )
+        }
     }
 
     /// The consent prompt is the last thing standing between a model and a
@@ -168,8 +186,18 @@ struct AccessibilityIdentifierInventoryTests {
     @Test("TrailingSettingsToggleStyle still renders a native switch Toggle")
     func trailingToggleStyleKeepsNativeSemantics() throws {
         let stripped = try strippedSource("Sources/Rapid/UI/SettingsControlStyles.swift")
+        // The invariant is that a REAL `Toggle` bound to the
+        // configuration is what draws the switch — not that the Toggle
+        // is the syntactic root of `makeBody`. UI-1's refinement pass
+        // wraps it in an `HStack` to hold the label column and the
+        // trailing gutter, which is layout around the control and does
+        // not touch its semantics: the switch is still a `Toggle`, still
+        // `.switch`, and still carries its own AXCheckBox role and
+        // value. The `.accessibilityRepresentation` assertion below is
+        // the one that actually catches a regression to #1608's
+        // hand-rolled row, and it is unchanged.
         #expect(
-            stripped.contains("returnToggle(isOn:binding){"),
+            stripped.contains("Toggle(isOn:binding){"),
             "TrailingSettingsToggleStyle must wrap a real Toggle — a hand-rolled row loses the AXCheckBox role and its value."
         )
         #expect(

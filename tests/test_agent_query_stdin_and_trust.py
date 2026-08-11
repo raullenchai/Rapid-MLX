@@ -204,6 +204,20 @@ def test_workspace_carries_the_file_the_file_read_test_asks_for():
         assert text.count(E2E_FIRST_LINE) == 1
 
 
+def test_file_read_passes_on_evidence_even_when_agent_does_not_terminate():
+    """#1598: capability evidence and CLI termination are separate signals."""
+    script = (
+        "import sys, time; "
+        f"sys.stdout.write({E2E_FIRST_LINE!r}); sys.stdout.flush(); time.sleep(30)"
+    )
+    cmd = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+    result = _test_e2e_file_read(sys.executable, cmd, timeout=1)
+
+    assert result.status is TestStatus.PASS, result.message
+    assert "did not terminate" in result.message
+
+
 def test_workspace_is_removed_afterwards():
     """A gate that leaves a directory per run per agent is a slow disk leak."""
     with _e2e_workspace() as workdir:

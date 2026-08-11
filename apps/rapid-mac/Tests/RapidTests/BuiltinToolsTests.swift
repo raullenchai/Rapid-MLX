@@ -152,6 +152,8 @@ final class BuiltinToolsTests {
         #expect(withResult.count == 1)
         #expect(withResult.first?.role == .system)
         #expect(withResult.first?.content == ChatViewModel.toolGuidancePreamble)
+        #expect(withResult.first?.content.contains("state the reason written in that result") == true)
+        #expect(withResult.first?.content.contains("never claim the tool lacks a capability") == true)
     }
 
     @Test("A tool merely being advertised does not summon the preamble (#1549)")

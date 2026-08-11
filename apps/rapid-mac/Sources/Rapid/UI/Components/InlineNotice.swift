@@ -17,6 +17,11 @@ struct InlineNotice: View {
         case info
         case warning
         case error
+        /// Something finished and freed/saved something. Added for the
+        /// Settings migration, which had two hand-rolled green banners
+        /// ("Freed 4.2 GB", "Saved to your Keychain") drawing their own
+        /// container out of `RapidTheme.green.opacity(0.08)`.
+        case success
 
         /// v1.0.2: ``info`` is AMBER, not steel blue.
         ///
@@ -25,11 +30,18 @@ struct InlineNotice: View {
         /// blue survives only for genuine links
         /// (``RapidTheme.linkLabel``), which is what "rare supporting
         /// colour" has to mean if it is to mean anything.
+        ///
+        /// ``warning`` now reads its colour from ``statusWarning``
+        /// rather than naming the brand token directly. Same amber
+        /// today; the difference is that "warning" is now a meaning the
+        /// theme owns, so the five Settings call sites that reached for
+        /// `Color.orange` have somewhere correct to go.
         var tint: Color {
             switch self {
             case .info:    return RapidTheme.brandPrimaryDeep
-            case .warning: return RapidTheme.brandPrimaryDeep
+            case .warning: return RapidTheme.statusWarning
             case .error:   return RapidTheme.statusError
+            case .success: return RapidTheme.statusReady
             }
         }
 
@@ -38,8 +50,9 @@ struct InlineNotice: View {
         var background: Color {
             switch self {
             case .info:    return RapidTheme.brandPrimaryTint
-            case .warning: return RapidTheme.brandPrimaryTint
+            case .warning: return RapidTheme.statusWarningTint
             case .error:   return RapidTheme.statusErrorTint
+            case .success: return RapidTheme.statusReadyTint
             }
         }
 
@@ -48,6 +61,7 @@ struct InlineNotice: View {
             case .info:    return "info.circle.fill"
             case .warning: return "exclamationmark.triangle.fill"
             case .error:   return "exclamationmark.octagon.fill"
+            case .success: return "checkmark.circle.fill"
             }
         }
     }

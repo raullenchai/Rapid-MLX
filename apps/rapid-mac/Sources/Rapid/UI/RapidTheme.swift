@@ -126,14 +126,11 @@ enum RapidTheme {
                           : NSColor.white
     }))
 
-    /// Sidebar surface — a faintly blue-tinted off-white that reads as
-    /// a distinct, calm rail next to the warm chat ``canvas`` (subtle
-    /// separation without a hard divider). Dark mode is a hair off the
-    /// canvas so the rail still reads as its own plane.
-    static let sidebarSurface = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
-        appearance.isDark ? NSColor(deviceRed: 0x18/255.0, green: 0x1A/255.0, blue: 0x1F/255.0, alpha: 1.0)
-                          : NSColor(deviceRed: 0xF3/255.0, green: 0xF5/255.0, blue: 0xF9/255.0, alpha: 1.0)
-    }))
+    // NOTE: a ``sidebarSurface`` token (cool #F3F5F9) used to sit here.
+    // It was superseded by ``surfaceSidebar`` in the v1.0 layer below —
+    // the cool grey read as a blue slab beside the warm canvas — and had
+    // no consumers left, so it was removed rather than kept as a second,
+    // divergent name for the same plane.
 
     /// Hairline border around cards / inputs (`--line-soft`). A defined
     /// but quiet warm-gray edge in light mode (pairs with the warm
@@ -307,9 +304,25 @@ enum RapidTheme {
     /// #EFA23A lands around 2.0:1 — below every WCAG threshold — and is
     /// exactly the low-contrast default this phase was asked to remove.
     /// Graphite on amber measures ~9:1.
+    ///
+    /// It is appearance-INDEPENDENT on purpose. The amber fill is the
+    /// same in Light and Dark (see ``amber``), so the ink on it must be
+    /// too: flipping to white in Dark would recreate the 2:1 pairing on
+    /// exactly the surface this token exists to protect.
     static let onBrandPrimary = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
         NSColor(deviceRed: 0x24/255.0, green: 0x1A/255.0, blue: 0x08/255.0, alpha: 1.0)
     }))
+
+    /// The canonical name for "ink on an amber-filled control".
+    ///
+    /// Same value as ``onBrandPrimary``, which predates it and is still
+    /// what the action tokens below are defined in terms of. This is the
+    /// name new call sites should reach for: every amber-filled surface
+    /// in the app — primary buttons, selected segmented items, selected
+    /// filter chips — reads its foreground from here, so there is one
+    /// place to look when asking "why is that text dark?" and no reason
+    /// for anybody to write `.foregroundStyle(.white)` on amber again.
+    static let brandOnAccent = onBrandPrimary
 
     /// The secondary brand colour — steel blue. Data, links, secondary
     /// icons, engineering detail. Aliases the legacy ``brand`` token.
@@ -396,6 +409,53 @@ enum RapidTheme {
                           : NSColor(deviceRed: 0xFB/255.0, green: 0xEC/255.0, blue: 0xEA/255.0, alpha: 1.0)
     }))
 
+    /// Needs-attention-but-not-broken: a drive that went away, a config
+    /// edit that has not been applied, a connector that did not come up.
+    ///
+    /// Amber, deliberately the same family as ``statusWorking`` — the
+    /// product only has one "look here" hue and inventing a second
+    /// (system orange, as five Settings call sites did) put two
+    /// near-identical ambers on the same window. It is a SEPARATE token
+    /// from the brand one because the meanings are separate: if warning
+    /// ever needs to diverge from brand amber, it moves here and no call
+    /// site changes.
+    static let statusWarning = brandPrimaryDeep
+
+    /// Tinted backing for a warning surface.
+    static let statusWarningTint = brandPrimaryTint
+
+    /// Tinted backing for a success surface (a completed delete, a saved
+    /// key). Pairs with ``statusReady`` the way ``statusErrorTint``
+    /// pairs with ``statusError``.
+    static let statusReadyTint = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x18/255.0, green: 0x2A/255.0, blue: 0x22/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xEC/255.0, green: 0xF5/255.0, blue: 0xF0/255.0, alpha: 1.0)
+    }))
+
+    // MARK: Text
+    //
+    // Named text roles so a view says what a string IS rather than how
+    // dim it should look. They resolve to the system's dynamic label
+    // colours — which already track appearance, increased contrast, and
+    // the vibrancy of whatever surface they sit on — so this is about
+    // giving the roles a shared home, not about repainting text.
+
+    /// Default reading colour: row labels, values, body copy.
+    static let textPrimary = Color.primary
+
+    /// Supporting copy — a row's explanatory line, a section subtitle,
+    /// a caption. Never used for a control's own label.
+    static let textSecondary = Color.secondary
+
+    /// The quietest tier: legends, footers, and counts that must not
+    /// compete with the content they describe.
+    static let textTertiary = Color(nsColor: .tertiaryLabelColor)
+
+    /// Text belonging to a control that is switched off. Distinct from
+    /// ``textTertiary``: this one means "unavailable", not "quiet", and
+    /// pairs with ``disabledOpacity`` on the control around it.
+    static let textDisabled = Color(nsColor: .disabledControlTextColor)
+
     // MARK: Actions
 
     /// Fill for the single highest-emphasis action on a surface.
@@ -413,7 +473,18 @@ enum RapidTheme {
     /// Fill for a destructive action.
     static let destructiveActionFill = statusError
     /// Label on ``destructiveActionFill``.
-    static let destructiveActionLabel = Color.white
+    ///
+    /// Adaptive, because the fill is: ``statusError`` is a deep brick
+    /// (#C0392B) in Light, where white measures ~5.9:1, but a much
+    /// lighter coral (#FF6B5E) in Dark, where white falls to ~2.4:1 —
+    /// the same failure mode as white-on-amber, on the one button whose
+    /// label a user most needs to read before pressing. Dark mode
+    /// therefore takes near-black ink, which measures ~7:1 on that
+    /// coral.
+    static let destructiveActionLabel = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x24/255.0, green: 0x0C/255.0, blue: 0x0A/255.0, alpha: 1.0)
+                          : NSColor.white
+    }))
     /// A quiet, borderless action — present but not competing.
     static let quietActionLabel = Color.secondary
 
@@ -464,11 +535,14 @@ enum RapidTheme {
 
     // MARK: - Spacing
     //
-    // One rhythm for the whole app: 4 / 8 / 12 / 16 / 24 / 32. Page
+    // One rhythm for the whole app: 2 / 4 / 8 / 12 / 16 / 24 / 32. Page
     // margins, section gaps, and control padding all come from here so
     // they can never drift apart per-view.
 
     enum Space {
+        /// 2 — a label and the line directly under it; the tightest gap
+        /// that still reads as two lines rather than one block.
+        static let xxs: CGFloat = 2
         /// 4 — icon-to-label, tight glyph gaps.
         static let xs: CGFloat = 4
         /// 8 — inside a control, between related chips.
@@ -504,6 +578,10 @@ enum RapidTheme {
         static let button: CGFloat = 8
         /// Selectable rows — sidebar, lists, menu rows.
         static let row: CGFloat = 8
+        /// A segment inside a segmented control. One step tighter than
+        /// ``row`` so the selected segment reads as sitting INSIDE its
+        /// track rather than as a free-floating pill.
+        static let segment: CGFloat = 6
         /// Chat bubbles. Deliberately the one soft shape left.
         static let bubble: CGFloat = 14
         /// Inset code / endpoint blocks. Tighter than the card that
@@ -528,6 +606,11 @@ enum RapidTheme {
         static let large: CGFloat = 36
         /// 30 — sidebar / list row height.
         static let row: CGFloat = 30
+        /// 30 — segmented controls. macOS's own segmented control is
+        /// 28–32pt at the regular control size; the pre-refinement
+        /// ``.pickerStyle(.segmented)`` rendered nearer 40 because it
+        /// inherited the scene tint and the panel's larger type.
+        static let segmented: CGFloat = 30
     }
 
     // MARK: - Layout
@@ -605,10 +688,25 @@ enum ModelDisplayName {
 enum RapidFont {
     /// Window / toolbar title.
     static let windowTitle = Font.system(size: 15, weight: .semibold)
-    /// The one big title on a page. Chat empty state, page headers.
+    /// The one big title on a page. Chat empty state, page headers,
+    /// the title at the top of a Settings category.
     static let pageTitle = Font.system(size: 20, weight: .semibold)
-    /// A section label above a group of rows.
-    static let sectionTitle = Font.system(size: 11, weight: .semibold)
+    /// A titled division WITHIN a page — "Models folder", "Web search",
+    /// "Approvals". The tier between ``pageTitle`` and ``groupLabel``.
+    ///
+    /// This is the role Settings was missing, and its absence is why the
+    /// window carried four heading sizes: panels reached for `.title2`
+    /// (22pt) or `.title3` (17pt) because the ramp offered nothing
+    /// between a 20pt page title and an 11pt group label. 15pt semibold
+    /// sits a clear step under ``pageTitle`` without shouting.
+    static let sectionTitle = Font.system(size: 15, weight: .semibold)
+    /// The quiet organisational label directly above a group of rows.
+    /// Structural, not announcing — it should recede behind the content
+    /// it files.
+    ///
+    /// Formerly named ``sectionTitle``; renamed when the real section
+    /// tier above was added, because two roles cannot share one name.
+    static let groupLabel = Font.system(size: 11, weight: .semibold)
     /// Default body copy and row labels.
     static let body = Font.system(size: 13)
     /// Emphasised body — a row's primary label.

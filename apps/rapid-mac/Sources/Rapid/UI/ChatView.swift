@@ -755,16 +755,22 @@ private struct MessageRow: View {
     @State private var isEditing: Bool = false
     @State private var editDraft: String = ""
     @State private var copiedRecently: Bool = false
+    @State private var selectTextPresented: Bool = false
     @FocusState private var editFieldFocused: Bool
 
     var body: some View {
-        switch message.role {
-        case .user:
-            userBubble
-        case .assistant:
-            assistantBlock
-        default:
-            systemNote
+        Group {
+            switch message.role {
+            case .user:
+                userBubble
+            case .assistant:
+                assistantBlock
+            default:
+                systemNote
+            }
+        }
+        .sheet(isPresented: $selectTextPresented) {
+            SelectTextSheet(text: SelectTextSheet.selectableText(for: selectableText))
         }
     }
 
@@ -890,6 +896,7 @@ private struct MessageRow: View {
                 .accessibilityIdentifier(actionIdentifier("SaveEdit"))
             } else {
                 copyButton(text: message.content, label: "Copy message")
+                selectTextButton(text: message.content)
                 QuietIconButton(
                     symbol: "pencil",
                     label: "Edit message",
@@ -935,6 +942,19 @@ private struct MessageRow: View {
             guard !Task.isCancelled else { return }
             copiedRecently = false
         }
+    }
+
+    @ViewBuilder
+    private func selectTextButton(text: String) -> some View {
+        QuietIconButton(
+            symbol: "text.cursor",
+            label: "Select text",
+            size: RapidTheme.ControlHeight.mini
+        ) {
+            selectTextPresented = true
+        }
+        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        .accessibilityIdentifier(actionIdentifier("SelectText"))
     }
 
     // MARK: Assistant
@@ -1014,6 +1034,7 @@ private struct MessageRow: View {
     private var assistantActions: some View {
         HStack(spacing: 2) {
             copyButton(text: assistantCopyText, label: "Copy response")
+            selectTextButton(text: assistantCopyText)
             QuietIconButton(
                 symbol: "arrow.clockwise",
                 label: "Retry response",
@@ -1054,6 +1075,11 @@ private struct MessageRow: View {
         message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? message.reasoning
             : message.content
+    }
+
+
+    private var selectableText: String {
+        message.role == .assistant ? assistantCopyText : message.content
     }
 
     private var reasoningDisclosure: some View {
@@ -1898,6 +1924,9 @@ extension MarkdownUI.Theme {
             .markdownMargin(top: 8, bottom: 8)
         }
         .table { config in
+            let accessibilityTable = MarkdownTableAccessibility.parse(
+                config.content.renderMarkdown()
+            )
             config.label
                 // ``fixedSize`` vertically: without it a cell whose text
                 // wraps gets its height clipped to one line, because the
@@ -1905,6 +1934,11 @@ extension MarkdownUI.Theme {
                 .fixedSize(horizontal: false, vertical: true)
                 .markdownTableBorderStyle(.init(color: .secondary.opacity(0.4)))
                 .markdownMargin(top: 8, bottom: 8)
+                .accessibilityRepresentation {
+                    if let accessibilityTable {
+                        AccessibleMarkdownTable(model: accessibilityTable)
+                    }
+                }
         }
         // 2026-08: the theme set a table BORDER but never a cell style, so
         // MarkdownUI fell back to ``Theme.tableCell``'s default — the bare

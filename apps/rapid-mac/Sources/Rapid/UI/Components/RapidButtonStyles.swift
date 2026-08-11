@@ -44,7 +44,16 @@ struct RapidPrimaryButtonStyle: ButtonStyle {
     var expands: Bool
     var height: CGFloat
 
-    init(expands: Bool = false, height: CGFloat = RapidTheme.ControlHeight.large) {
+    /// Default height is ``ControlHeight/medium`` (32) — the SAME
+    /// regular-command height as ``RapidSecondaryButtonStyle`` and
+    /// ``RapidDestructiveButtonStyle``.
+    ///
+    /// It was ``large`` (36), which meant "regular command button" had
+    /// two heights depending on tier: a Cancel/Save pair in a sheet came
+    /// out 32/36 and visibly stepped. Emphasis is carried by the FILL,
+    /// not by being 4pt taller. The hero, full-width case keeps 36 via
+    /// ``rapidPrimaryWide``.
+    init(expands: Bool = false, height: CGFloat = RapidTheme.ControlHeight.medium) {
         self.expands = expands
         self.height = height
     }
@@ -246,8 +255,17 @@ private struct RapidButtonSurface: View {
 extension ButtonStyle where Self == RapidPrimaryButtonStyle {
     /// The single high-emphasis action on a surface. Amber, graphite label.
     static var rapidPrimary: RapidPrimaryButtonStyle { .init() }
-    /// Full-width primary — cards, sheets, onboarding footers.
-    static var rapidPrimaryWide: RapidPrimaryButtonStyle { .init(expands: true) }
+    /// Full-width primary — cards, sheets, onboarding footers. Keeps the
+    /// 36pt hero height: a CTA that spans a card is the one place the
+    /// extra weight is doing work.
+    static var rapidPrimaryWide: RapidPrimaryButtonStyle {
+        .init(expands: true, height: RapidTheme.ControlHeight.large)
+    }
+    /// 28pt filled action for dense rows — pairs with
+    /// ``rapidSecondaryCompact`` on the same baseline.
+    static var rapidPrimaryCompact: RapidPrimaryButtonStyle {
+        .init(height: RapidTheme.ControlHeight.small)
+    }
 }
 
 extension ButtonStyle where Self == RapidSecondaryButtonStyle {
@@ -276,4 +294,8 @@ extension ButtonStyle where Self == RapidTertiaryButtonStyle {
 extension ButtonStyle where Self == RapidDestructiveButtonStyle {
     /// Stop / Delete.
     static var rapidDestructive: RapidDestructiveButtonStyle { .init() }
+    /// 28pt destructive action for dense rows.
+    static var rapidDestructiveCompact: RapidDestructiveButtonStyle {
+        .init(height: RapidTheme.ControlHeight.small)
+    }
 }

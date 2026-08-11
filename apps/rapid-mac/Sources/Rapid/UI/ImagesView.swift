@@ -215,7 +215,7 @@ struct ImagesView: View {
                         if denoising {
                             Text("\(step) / \(total)")
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.primary.opacity(0.76))
                                 .monospacedDigit()
                         }
                         Button { viewModel.cancel() } label: {
@@ -236,8 +236,8 @@ struct ImagesView: View {
 
                     HStack {
                         Text(String(format: "%.1fs", max(0, elapsed)))
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(Color.primary.opacity(0.76))
                             .monospacedDigit()
                         Spacer()
                         // ETA from the denoise-phase clock, not total elapsed —
@@ -247,17 +247,17 @@ struct ImagesView: View {
                         Text(denoising
                              ? (etaText(step: step, total: total, elapsed: denoiseElapsed) ?? "finishing…")
                              : "First run — only happens once")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.primary.opacity(0.76))
                     }
                 }
                 .padding(18)
                 .frame(width: 340)
-                .background(.ultraThinMaterial,
+                .background(RapidTheme.surfaceOverlay,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                        .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
                 )
                 .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
             }
@@ -416,15 +416,31 @@ struct ImagesView: View {
         .padding(.bottom, RapidTheme.Space.lg)
     }
 
-    /// Bottom row of the compose box: aspect on the left, then the inline
-    /// model picker + submit clustered on the right — the same
+    /// Bottom row of the compose box: canvas controls on the left, then the
+    /// inline model picker + submit clustered on the right — the same
     /// `model ▾  ⬆` grouping ChatView uses.
     private var composerControls: some View {
-        HStack(spacing: RapidTheme.Space.sm) {
-            aspectPicker
-            Spacer(minLength: 0)
-            modelPicker
-            sendOrStopButton
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: RapidTheme.Space.sm) {
+                aspectPicker
+                resolutionPicker
+                Spacer(minLength: 0)
+                modelPicker
+                sendOrStopButton
+            }
+
+            VStack(spacing: RapidTheme.Space.xs) {
+                HStack(spacing: RapidTheme.Space.sm) {
+                    aspectPicker
+                    resolutionPicker
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: RapidTheme.Space.sm) {
+                    Spacer(minLength: 0)
+                    modelPicker
+                    sendOrStopButton
+                }
+            }
         }
     }
 
@@ -476,6 +492,54 @@ struct ImagesView: View {
             }
         }
         .accessibilityIdentifier("Images.Aspect")
+    }
+
+    /// Output dimensions are explicit rather than hidden inside the aspect
+    /// buttons. The menu keeps the compact composer row stable while still
+    /// showing the exact width and height each preset will send to the server.
+    private var resolutionPicker: some View {
+        Menu {
+            ForEach(ImageGenViewModel.Resolution.allCases) { resolution in
+                let size = viewModel.aspect.size(for: resolution)
+                    .replacingOccurrences(of: "x", with: " × ")
+                Button {
+                    viewModel.resolution = resolution
+                } label: {
+                    if viewModel.resolution == resolution {
+                        Label(size, systemImage: "checkmark")
+                    } else {
+                        Text(size)
+                    }
+                }
+                .accessibilityIdentifier("Images.Resolution.\(resolution.rawValue)")
+                .accessibilityAddTraits(viewModel.resolution == resolution ? .isSelected : [])
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "ruler")
+                    .font(.system(size: 11, weight: .medium))
+                    .accessibilityHidden(true)
+                Text(viewModel.outputSizeLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .monospacedDigit()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(Color.secondary)
+            .padding(.horizontal, 7)
+            .frame(height: RapidTheme.ControlHeight.small)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Output resolution: \(viewModel.outputSizeLabel)")
+        .accessibilityLabel("Output resolution")
+        .accessibilityValue(viewModel.outputSizeLabel)
+        .accessibilityIdentifier("Images.Resolution")
     }
 
     /// The inline model picker — same composer-embedded chip as chat
