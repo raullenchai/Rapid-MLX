@@ -19,15 +19,15 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.12.9</string>
+	<string>0.12.10</string>
 	<key>CFBundleVersion</key>
-	<string>153</string>
+	<string>154</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
 	<key>NSAccentColorName</key>
 	<string>AccentColor</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 	<key>NSNetworkVolumesUsageDescription</key>
 	<string>Rapid needs access when you choose a network drive for model storage or approve a file tool there. Click Allow to continue.</string>
 	<key>NSRemovableVolumesUsageDescription</key>

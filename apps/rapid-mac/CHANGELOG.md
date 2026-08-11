@@ -13,6 +13,47 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.10] — 2026-08-11
+
+Settings got a full visual refresh: every category now shares one design —
+consistent cards, buttons, switches, and spacing, in both Light and Dark —
+and tools and connectors introduce themselves with plain names and short
+descriptions instead of wire identifiers. The menu bar now shows the official
+Rapid "R" mark, drawn the native way so macOS keeps it crisp in Light, Dark,
+and while the menu is open. Update availability lives in the menu's
+"Update available" row and in Settings → App.
+
+### Added
+
+- A new model in the catalog: Ling 3.0 tiny, a fast hybrid model that runs
+  in about 5 GB of memory.
+- Very large mixture-of-experts models can now stream their expert weights
+  from disk instead of holding everything in memory (`--disk-stream` for
+  advanced setups).
+
+### Changed
+
+- Settings: unified visual system across Model Management, Tools,
+  Connectors, Appearance, Privacy, and App — amber selection, consistent
+  card padding and control heights, native switches and forms, and layouts
+  that adapt down to small windows.
+- The Audio tab's mode selector uses the same segmented control as
+  Settings, fixing the hard-to-read white-on-amber selection.
+- Model recommendations now share one RAM-tier source, so Chat and
+  first-run suggestions agree about what fits on your Mac.
+- Cached-model defaults prefer the best model you already have, not just
+  the most recent one.
+
+### Fixed
+
+- Downloads report honest progress and failures instead of optimistic
+  placeholders, and built-in web tools are harder to misuse.
+- First-launch no longer probes the model catalog before you've picked
+  anything, and onboarding language is clearer.
+- The storage overview adds up correctly, and Markdown tables read
+  properly with VoiceOver.
+- Third-party license texts ship inside the app bundle as required.
+
 ## [0.12.9] — 2026-08-10
 
 The desktop app can hear and speak now: a new Audio tab turns recordings into
