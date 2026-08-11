@@ -116,8 +116,10 @@ struct SettingsModelManagementPanel: View {
         }
     }
 
+    @Environment(\.settingsContentIsCompact) private var isCompact
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             header
             modelsFolderSection
             storageOverviewSection
@@ -137,10 +139,20 @@ struct SettingsModelManagementPanel: View {
                 allModelsSection
             }
             if let lastError {
-                errorBanner(lastError)
+                InlineNotice(
+                    message: lastError,
+                    tone: .error,
+                    actionTitle: "Dismiss",
+                    action: { self.lastError = nil }
+                )
             }
             if let lastFreed {
-                freedBanner(lastFreed)
+                InlineNotice(
+                    message: lastFreed,
+                    tone: .success,
+                    actionTitle: "Dismiss",
+                    action: { self.lastFreed = nil }
+                )
             }
         }
         // Loading, empty, and catalog branches are deliberately exclusive.
@@ -208,14 +220,11 @@ struct SettingsModelManagementPanel: View {
 
     @ViewBuilder
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Model Management")
-                .font(.title3.weight(.semibold))
-            Text("Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        SectionHeader(
+            "Model Management",
+            subtitle: "Manage the on-disk model cache. Download what you need in the background; delete what you don't to reclaim space.",
+            emphasis: .page
+        )
     }
 
     // MARK: - Models folder (issue #503)
@@ -229,69 +238,53 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private var modelsFolderSection: some View {
         let unavailable = ModelsFolderPreference.customFolderUnavailable()
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Models folder")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+        SettingsSection("Models folder") {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
                     Image(systemName: customFolderPath == nil ? "internaldrive" : "externaldrive")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RapidTheme.utilityActionLabel)
+                        .frame(width: RapidTheme.Layout.iconSlot)
                         .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                         Text(customFolderPath == nil ? "Default location" : "Custom folder")
-                            .font(.callout.weight(.medium))
+                            .font(RapidFont.bodyEmphasis)
+                            .foregroundStyle(RapidTheme.textPrimary)
                         Text(effectiveFolderDisplayPath)
-                            .scaledSystemFont(11, design: .monospaced)
-                            .foregroundStyle(.secondary)
+                            .font(RapidFont.code)
+                            .foregroundStyle(RapidTheme.textSecondary)
                             .textSelection(.enabled)
                             .lineLimit(2)
                             .truncationMode(.middle)
                             .accessibilityIdentifier("Settings.ModelManagement.FolderPath")
                     }
-                    Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if unavailable {
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text("Your chosen models folder isn't available right now — the drive may be unplugged. Rapid is using its default location until it's back.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    InlineNotice(
+                        message: "Your chosen models folder isn't available right now — the drive may be unplugged. Rapid is using its default location until it's back.",
+                        tone: .warning
+                    )
                     .accessibilityIdentifier("Settings.ModelManagement.FolderUnavailable")
                 }
 
-                HStack(spacing: 10) {
+                HStack(spacing: RapidTheme.Space.sm) {
                     Button("Choose…") { chooseModelsFolder() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(.rapidSecondaryCompact)
                         .accessibilityIdentifier("Settings.ModelManagement.ChooseFolder")
                     if customFolderPath != nil {
                         Button("Use default") { resetModelsFolder() }
-                            .buttonStyle(.borderless)
-                            .controlSize(.small)
+                            .buttonStyle(.rapidTertiary)
                             .accessibilityIdentifier("Settings.ModelManagement.UseDefaultFolder")
                     }
                     Spacer(minLength: 0)
                 }
 
                 Text("Point Rapid at a folder where it already keeps downloaded models — for example on an external drive. New models download here; ones you already have stay where they are. Models downloaded by other apps in other formats won't appear here. New location takes effect the next time a model loads or downloads.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
         }
     }
 
@@ -306,20 +299,12 @@ struct SettingsModelManagementPanel: View {
     /// divider so they read as a pair without two floating boxes.
     @ViewBuilder
     private var preferencesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Preferences")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 0) {
+        SettingsSection("Preferences") {
                 Toggle(isOn: $showAllModels) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Show small (<1B) models in the picker")
-                            .font(.callout.weight(.medium))
-                        Text("Sub-1B models (qwen3-0.6b-*) are hidden from the model picker by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat. Turn on to see every model, including the tiny ones.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    SettingsRowLabel(
+                        title: "Show small (<1B) models in the picker",
+                        description: "Sub-1B models (qwen3-0.6b-*) are hidden from the model picker by default — they hallucinate within 1-2 turns and are intended for unit tests, not chat. Turn on to see every model, including the tiny ones."
+                    )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityLabel("Show small models in the picker")
@@ -330,35 +315,19 @@ struct SettingsModelManagementPanel: View {
                 // VoiceOver/automation client that already targets it.
                 .accessibilityIdentifier("Settings.Models.ShowAllModelsToggle")
 
-                Divider()
-                    .padding(.vertical, 12)
+                SettingsRowDivider()
 
                 Toggle(isOn: $autoStartOnLaunch) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Auto-start model on launch")
-                            .font(.callout.weight(.medium))
-                        Text("On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Nothing loads while first-run setup is still open. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    SettingsRowLabel(
+                        title: "Auto-start model on launch",
+                        description: "On launch, Rapid-MLX loads your last-used model into memory so the chat is interactive immediately. Nothing loads while first-run setup is still open. Turn off if you sometimes open Rapid-MLX just to browse past conversations — you can still start a model manually by picking one in the message box and sending."
+                    )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
                 .accessibilityLabel("Auto-start model on launch")
                 .accessibilityHint("When off, opening Rapid-MLX will not load a model until you start one manually from the picker.")
                 // Stable AX hook kept as `Settings.Models.*` across the move.
                 .accessibilityIdentifier("Settings.Models.AutoStartOnLaunchToggle")
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
         }
     }
 
@@ -393,51 +362,44 @@ struct SettingsModelManagementPanel: View {
         let managed = catalog.filter { !$0.isExternal }
         let usage = ModelCacheActions.aggregateOnDiskBytes(managed)
         let largest = ModelCacheActions.largestManagedEntry(managed)
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Disk overview")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Models", systemImage: "internaldrive")
-                        .font(.callout.weight(.medium))
-                    Spacer()
-                    Text(ModelCacheActions.storageSummary(
-                        usage: usage,
-                        freeBytes: modelsVolumeFreeBytes
-                    ))
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("Settings.ModelManagement.StorageSummary")
-                }
-                if let largest {
-                    Divider()
-                    HStack {
-                        Text("Largest")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(largest.alias)
-                            .font(.caption.weight(.medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Text(largest.sizeOnDisk ?? "")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityIdentifier("Settings.ModelManagement.LargestModel")
-                }
+        // Upstream (#1822) added this card in the pre-migration idiom —
+        // `.callout` type, the legacy 12pt `cardRadius`, a local 12pt
+        // inset. Same content and the same identifiers, moved onto the
+        // shared section so it does not ship as the one un-migrated card
+        // in the window.
+        return SettingsSection("Disk overview") {
+            HStack(spacing: RapidTheme.Space.md) {
+                Label("Models", systemImage: "internaldrive")
+                    .font(RapidFont.bodyEmphasis)
+                    .foregroundStyle(RapidTheme.textPrimary)
+                Spacer(minLength: RapidTheme.Space.sm)
+                Text(ModelCacheActions.storageSummary(
+                    usage: usage,
+                    freeBytes: modelsVolumeFreeBytes
+                ))
+                .font(RapidFont.metric)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .accessibilityIdentifier("Settings.ModelManagement.StorageSummary")
             }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
+            if let largest {
+                SettingsRowDivider()
+                HStack(spacing: RapidTheme.Space.sm) {
+                    Text("Largest")
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                    Text(largest.alias)
+                        .font(RapidFont.bodyEmphasis)
+                        .foregroundStyle(RapidTheme.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: RapidTheme.Space.sm)
+                    Text(largest.sizeOnDisk ?? "")
+                        .font(RapidFont.metric)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("Settings.ModelManagement.LargestModel")
+            }
         }
     }
 
@@ -479,48 +441,51 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private var capabilityTabs: some View {
         if availableKinds.count > 1 {
-            Picker("Model type", selection: $capability) {
-                ForEach(availableKinds) { kind in
-                    Text("\(kind.tabLabel) models").tag(kind)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            RapidSegmentedControl(
+                selection: $capability,
+                options: availableKinds.map {
+                    .init(value: $0, title: "\($0.tabLabel) models")
+                },
+                accessibilityLabel: "Model type"
+            )
             .accessibilityIdentifier("Settings.ModelManagement.CapabilityTabs")
         }
     }
 
     @ViewBuilder
     private var controlsRow: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
+        VStack(spacing: RapidTheme.Space.sm) {
+            HStack(spacing: RapidTheme.Space.sm) {
+                HStack(spacing: RapidTheme.Space.xs) {
                     Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(RapidTheme.utilityActionLabel)
                         .accessibilityHidden(true)
                     TextField("Search models", text: $query)
                         .textFieldStyle(.plain)
+                        .font(RapidFont.body)
                         .accessibilityIdentifier("Settings.ModelManagement.Search")
                     if !query.isEmpty {
-                        Button {
+                        QuietIconButton(
+                            symbol: "xmark.circle.fill",
+                            label: "Clear search",
+                            size: RapidTheme.ControlHeight.mini
+                        ) {
                             query = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear search")
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.horizontal, RapidTheme.Space.sm)
+                .frame(height: RapidTheme.ControlHeight.medium)
+                // The one input treatment: same radius and border the
+                // composer uses, instead of a local 7pt capsule over a
+                // hand-mixed `Color.secondary.opacity(0.08)`.
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.secondary.opacity(0.08))
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                        .fill(RapidTheme.surfaceRaised)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(RapidTheme.hairline, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                        .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
                 )
                 .frame(maxWidth: .infinity)
 
@@ -538,19 +503,27 @@ struct SettingsModelManagementPanel: View {
                     }
                 } label: {
                     Label("Sort", systemImage: "arrow.up.arrow.down")
-                        .font(.caption.weight(.medium))
+                        .font(RapidFont.body)
                 }
                 .menuStyle(.borderlessButton)
-                .frame(maxWidth: 80)
+                .fixedSize()
+                // `.tint(nil)` as well as `.foregroundStyle`: the scene
+                // applies `.tint(brandAmber)` app-wide, and a borderless
+                // Menu's label reads the TINT, not the foreground style —
+                // so without this the Sort control rendered amber and read
+                // as the page's primary action rather than a utility next
+                // to the search field.
+                .tint(nil)
+                .foregroundStyle(RapidTheme.utilityActionLabel)
                 .accessibilityIdentifier("Settings.ModelManagement.SortMenu")
             }
-            Picker("Filter", selection: $filterMode) {
-                ForEach(ModelCacheActions.FilterMode.allCases) { mode in
-                    Text(mode.displayLabel).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            RapidSegmentedControl(
+                selection: $filterMode,
+                options: ModelCacheActions.FilterMode.allCases.map {
+                    .init(value: $0, title: $0.displayLabel)
+                },
+                accessibilityLabel: "Filter"
+            )
             .accessibilityIdentifier("Settings.ModelManagement.Filter")
         }
     }
@@ -589,11 +562,8 @@ struct SettingsModelManagementPanel: View {
 
     @ViewBuilder
     private var recommendedSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("Recommended for your \(hardware.shortDescription)")
-                .font(.caption.weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            SectionHeader("Recommended for your \(hardware.shortDescription)")
                 .accessibilityIdentifier("Settings.ModelManagement.RecommendedHeader")
             ForEach(recommendedPicks, id: \.pick.alias) { entry in
                 recommendedCard(pick: entry.pick, isPrimary: entry.isPrimary)
@@ -624,21 +594,23 @@ struct SettingsModelManagementPanel: View {
             // table below still pills the same alias as RECOMMENDED.
             Label(isPrimary ? "Best pick" : "Faster",
                   systemImage: isPrimary ? "star.fill" : "hare.fill")
-                .font(.caption.weight(.bold))
+                .font(RapidFont.caption)
+                .foregroundStyle(isPrimary ? RapidTheme.brandPrimaryDeep : RapidTheme.textSecondary)
                 .labelStyle(.titleAndIcon)
                 .frame(width: RecommendedCardLayout.markerColumnWidth, alignment: .leading)
 
             BrandIcon(alias: alias)
 
             VStack(alignment: .leading, spacing: 7) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                     Text(modelSubtitle(alias))
-                        .font(.body.weight(.semibold))
+                        .font(RapidFont.bodyEmphasis)
+                        .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text(Self.pickStatsLine(pick))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -665,20 +637,23 @@ struct SettingsModelManagementPanel: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(minWidth: RecommendedCardLayout.actionColumnWidth, alignment: .trailing)
         }
-        .padding(13)
+        .padding(SettingsCardMetrics.inset(isCompact: isCompact))
+        // The featured card is distinguished by the product's selection
+        // pair — amber tint and an amber edge — not by a steel-blue tint
+        // and a drop shadow. The shadow is gone: the tint plus the border
+        // already separate this tier from the flush table below it, and a
+        // shadow was the only one of its kind on the page.
         .background(
-            RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                .fill(isPrimary ? RapidTheme.brandTint : RapidTheme.card)
+            RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
+                .fill(isPrimary ? RapidTheme.brandPrimaryTint : RapidTheme.surfaceRaised)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                .stroke(isPrimary ? RapidTheme.brand.opacity(0.35) : RapidTheme.hairline, lineWidth: 1)
+            RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
+                .strokeBorder(
+                    isPrimary ? RapidTheme.brandPrimary.opacity(0.35) : RapidTheme.hairline,
+                    lineWidth: 1
+                )
         )
-        // #552 (§12 depth): lift the recommended cards above the flush
-        // All-models table below them so the tier reads as a raised, more
-        // important surface. Same light shadow the onboarding wizard's
-        // centred card carries (QuickstartView).
-        .shadow(color: Color.black.opacity(0.10), radius: 6, x: 0, y: 3)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Settings.ModelManagement.Recommended.\(isPrimary ? "primary" : "alt")")
     }
@@ -741,12 +716,16 @@ struct SettingsModelManagementPanel: View {
             visibleCount: entries.count,
             totalCount: kindEntries.count
         )
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             ModelsTableHeading(heading: heading)
             // The meter legend + Quality·Speed column belong to CHAT rows only
             // — image models have no tok/s benchmark, so their tab shows a
-            // leaner row (name · repo · size · download).
-            if capability == .chat {
+            // leaner row (name · repo · size · download). They also need
+            // room: under ``compactContentWidth`` the 158pt meters column
+            // squeezes the model name to nothing, so the meters stand down
+            // and the name keeps the width. Nothing actionable is hidden —
+            // the meters are read-only.
+            if capability == .chat && showsMeters {
                 meterLegend
                 columnHeader
             }
@@ -755,9 +734,9 @@ struct SettingsModelManagementPanel: View {
                 ModelCacheActions.aggregateOnDiskBytes(kindEntries)
             ) {
                 Text(footer)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .padding(.top, RapidTheme.Space.xxs)
                     .accessibilityIdentifier("Settings.ModelManagement.Footer")
             }
         }
@@ -772,25 +751,24 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private var meterLegend: some View {
         Text("Quality = published benchmark, labelled per row (Accuracy / Code / Tool / Instructions) · Speed = measured tokens/sec on this class of Mac · Untested = no compatible result recorded yet.")
-            .scaledSystemFont(10)
-            .foregroundStyle(.tertiary)
+            .font(RapidFont.caption)
+            .foregroundStyle(RapidTheme.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("Settings.ModelManagement.MeterLegend")
     }
 
     @ViewBuilder
     private var columnHeader: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: RapidTheme.Space.sm) {
             Spacer().frame(width: 15)
             Spacer().frame(width: 30)
             Text("Model").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Quality · Speed").frame(width: 158, alignment: .leading)
+            Text("Quality · Speed").frame(width: ModelTableLayout.metersColumnWidth, alignment: .leading)
             Text("Size").frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
         }
-        .scaledSystemFont(10, weight: .semibold)
-        .foregroundStyle(.tertiary)
-        .textCase(.uppercase)
-        .padding(.horizontal, 14)
+        .font(RapidFont.groupLabel)
+        .foregroundStyle(RapidTheme.textTertiary)
+        .padding(.horizontal, RapidTheme.Space.lg)
     }
 
     // MARK: - Shared meters
@@ -875,7 +853,7 @@ struct SettingsModelManagementPanel: View {
         } label: {
             Image(systemName: isFav ? "star.fill" : "star")
                 .font(.system(size: 13))
-                .foregroundStyle(isFav ? RapidTheme.amber : Color.secondary.opacity(0.45))
+                .foregroundStyle(isFav ? RapidTheme.brandPrimaryDeep : RapidTheme.textTertiary)
         }
         .buttonStyle(.plain)
         .frame(width: 15)
@@ -894,9 +872,9 @@ struct SettingsModelManagementPanel: View {
     @ViewBuilder
     private func rowBadge(for alias: String) -> some View {
         if let badge = recommendedBadgeByAlias[alias] {
-            badgePill(badge, color: RapidTheme.brand)
+            badgePill(badge, color: RapidTheme.brandPrimaryDeep)
         } else if ModelBrandStyle.modelType(forAlias: alias) == .vision {
-            badgePill("VISION", color: Self.visionColor)
+            badgePill("VISION", color: RapidTheme.textSecondary)
         }
         ForEach(ModelCacheActions.retentionBadges(
             alias: alias,
@@ -917,7 +895,11 @@ struct SettingsModelManagementPanel: View {
             .background(Capsule().fill(color.opacity(0.14)))
     }
 
-    private static let visionColor = Color(red: 0x8E / 255.0, green: 0x44 / 255.0, blue: 0xEF / 255.0)
+    // NOTE: a hard-coded purple ``visionColor`` used to live here. It was
+    // the only violet in the product and carried no meaning the palette
+    // owns — "this model takes images" is a capability, not a status — so
+    // the VISION pill now uses the neutral secondary text colour and is
+    // distinguished by its word, not by a unique hue.
 
     /// Right-hand "Size" column: cached → check + delete; serving →
     /// label; not-cached → size + download; downloading → cancel;
@@ -934,13 +916,13 @@ struct SettingsModelManagementPanel: View {
             // sort ordered the table by exactly that number.
             HStack(spacing: ModelTableLayout.cellSpacing) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(RapidTheme.green)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.statusReady)
                     .accessibilityHidden(true)
                 if let size = Self.onDiskSizeLabel(entry) {
                     Text(size)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help(
@@ -955,8 +937,8 @@ struct SettingsModelManagementPanel: View {
                     // and stop — substituting the alias-derived estimate
                     // here would quote a guess as a measurement.
                     Text("On disk")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                 }
@@ -968,14 +950,18 @@ struct SettingsModelManagementPanel: View {
                 // not download it, so it is not ours to remove — same
                 // reasoning as the absent delete on a serving model below.
                 if !entry.isExternal {
-                    Button(role: .destructive) {
+                    // Destructive, and now visibly so: the shared quiet
+                    // icon button turns red under the pointer instead of
+                    // staying the same grey as the copy glyph beside it.
+                    QuietIconButton(
+                        symbol: "trash",
+                        label: "Delete \(entry.alias) from disk",
+                        help: "Delete from disk",
+                        tint: RapidTheme.statusError,
+                        size: RapidTheme.ControlHeight.mini
+                    ) {
                         pendingDeletion = entry
-                    } label: {
-                        Image(systemName: "trash").font(.system(size: 11))
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Delete \(entry.alias) from disk")
                     .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
                 }
             }
@@ -989,58 +975,58 @@ struct SettingsModelManagementPanel: View {
             HStack(spacing: ModelTableLayout.cellSpacing) {
                 if let size = Self.onDiskSizeLabel(entry) {
                     Text(size)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Measured size on disk. Stop this model before deleting it.")
                         .accessibilityLabel("On disk, \(size)")
                 }
                 Text("Serving")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.statusReady)
                     .lineLimit(1)
                     .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
-                Button(role: .destructive) {
+                QuietIconButton(
+                    symbol: "trash",
+                    label: "Stop serving and delete \(entry.alias) from disk",
+                    help: "Stop serving and delete this model from disk.",
+                    tint: RapidTheme.statusError,
+                    size: RapidTheme.ControlHeight.mini
+                ) {
                     pendingDeletion = entry
-                } label: {
-                    Image(systemName: "trash").font(.system(size: 11))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Stop serving and delete this model from disk.")
-                .accessibilityLabel("Stop serving and delete \(entry.alias) from disk")
                 .accessibilityIdentifier("Settings.ModelManagement.Delete.\(entry.alias)")
             }
         case .notCached:
             HStack(spacing: 8) {
                 if let gb = Self.downloadSizeLabel(entry.alias) {
                     Text("~\(gb)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(ModelTableLayout.cellMinimumScaleFactor)
                         .help("Estimated download size.")
                         .accessibilityLabel("Estimated download, about \(gb)")
                 }
-                Button {
+                QuietIconButton(
+                    symbol: "arrow.down.circle",
+                    label: "Download \(entry.alias)",
+                    help: "Download",
+                    size: RapidTheme.ControlHeight.mini,
+                    symbolSize: 14
+                ) {
                     _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
-                } label: {
-                    Image(systemName: "arrow.down.circle").font(.system(size: 15))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(RapidTheme.brand)
-                .accessibilityLabel("Download \(entry.alias)")
                 .accessibilityIdentifier("Settings.ModelManagement.Download.\(entry.alias)")
             }
         case .downloading(let pct):
             Button {
                 downloads.cancelDownload(alias: entry.alias)
             } label: {
-                Text(pct.map { "\($0)%" } ?? "Cancel").font(.caption)
+                Text(pct.map { "\($0)%" } ?? "Cancel")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.rapidSecondaryCompact)
             .help("Cancel download")
             .accessibilityLabel(pct.map { "Cancel download, \($0) percent" } ?? "Cancel download")
             .accessibilityIdentifier("Settings.ModelManagement.Cancel.\(entry.alias)")
@@ -1049,10 +1035,9 @@ struct SettingsModelManagementPanel: View {
                 downloads.dismissJob(alias: entry.alias)
                 _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
             } label: {
-                Text("Retry").font(.caption)
+                Text("Retry")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.rapidSecondaryCompact)
             .accessibilityIdentifier("Settings.ModelManagement.Retry.\(entry.alias)")
         }
     }
@@ -1066,6 +1051,13 @@ struct SettingsModelManagementPanel: View {
         return ModelFavorites.favoritesFirst(sorted, favorites: favorites)
     }
 
+    /// Whether the Quality·Speed meters column has the room to render.
+    ///
+    /// Read-only decoration, so it is the correct thing to drop when the
+    /// column gets narrow — every ACTION in the row (download, cancel,
+    /// retry, delete) stays reachable at every supported window size.
+    private var showsMeters: Bool { !isCompact }
+
     /// Kinds that actually have models to manage — the tab bar only offers
     /// these (Video stays hidden until the video lane surfaces aliases).
     private var availableKinds: [ModelKind] {
@@ -1076,9 +1068,10 @@ struct SettingsModelManagementPanel: View {
     private func listSection(_ entries: [ModelEntry]) -> some View {
         if entries.isEmpty {
             Text(noMatchesCopy)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.vertical, 12)
+                .font(RapidFont.body)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, RapidTheme.Space.md)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.alias) { idx, entry in
@@ -1088,21 +1081,14 @@ struct SettingsModelManagementPanel: View {
                         capabilityRow(for: entry)
                     }
                     if idx < entries.count - 1 {
-                        Divider().opacity(0.5)
+                        Rectangle()
+                            .fill(RapidTheme.hairline)
+                            .frame(height: 1)
+                            .accessibilityHidden(true)
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .fill(RapidTheme.card)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                    .stroke(RapidTheme.hairline, lineWidth: 1)
-            )
+            .settingsGroupedCard()
         }
     }
 
@@ -1127,29 +1113,33 @@ struct SettingsModelManagementPanel: View {
             downloadJob: downloads.jobs[entry.alias],
             servingAlias: server.servingAlias
         )
-        HStack(spacing: 10) {
+        HStack(spacing: RapidTheme.Space.sm) {
             favoriteStar(entry.alias)
             BrandIcon(alias: entry.alias)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 7) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                HStack(spacing: RapidTheme.Space.xs) {
                     Text(entry.alias)
-                        .font(.body.weight(.medium))
+                        .font(RapidFont.bodyEmphasis)
+                        .foregroundStyle(RapidTheme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     rowBadge(for: entry.alias)
                 }
                 Text(rowMeta(entry.alias))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textTertiary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            metersView(alias: entry.alias)
-                .frame(width: 158)
+            if showsMeters {
+                metersView(alias: entry.alias)
+                    .frame(width: ModelTableLayout.metersColumnWidth)
+            }
             sizeAction(entry: entry, badge: badge)
                 .frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, RapidTheme.Space.md)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Settings.ModelManagement.Row.\(entry.alias)")
     }
@@ -1163,22 +1153,23 @@ struct SettingsModelManagementPanel: View {
             downloadJob: downloads.jobs[entry.alias],
             servingAlias: server.servingAlias
         )
-        HStack(spacing: 10) {
+        HStack(spacing: RapidTheme.Space.sm) {
             BrandIcon(alias: entry.alias)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
                 Text(entry.alias)
-                    .font(.body.weight(.medium))
+                    .font(RapidFont.bodyEmphasis)
+                    .foregroundStyle(RapidTheme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if entry.kind == .audio, let audioCapability = entry.audioCapability {
                     Text(audioCapabilityLabel(audioCapability))
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
                 }
                 if let repo = entry.hfRepo {
                     Text(repo)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -1187,7 +1178,7 @@ struct SettingsModelManagementPanel: View {
             sizeAction(entry: entry, badge: badge)
                 .frame(width: ModelTableLayout.sizeColumnWidth, alignment: .trailing)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, RapidTheme.Space.md)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Settings.ModelManagement.Row.\(entry.alias)")
     }
@@ -1206,11 +1197,11 @@ struct SettingsModelManagementPanel: View {
     private func statusBadgeView(_ badge: ModelCacheActions.StatusBadge) -> some View {
         switch badge {
         case .cached:
-            pill(text: "On disk", color: RapidTheme.green)
+            pill(text: "On disk", color: RapidTheme.statusReady)
         case .inUse:
-            pill(text: "In use", color: RapidTheme.green)
+            pill(text: "In use", color: RapidTheme.statusReady)
         case .notCached:
-            pill(text: "Not cached", color: .secondary)
+            pill(text: "Not cached", color: RapidTheme.statusIdle)
         case .downloading(let pct):
             let label: String = {
                 if let pct {
@@ -1218,16 +1209,16 @@ struct SettingsModelManagementPanel: View {
                 }
                 return "Downloading…"
             }()
-            pill(text: label, color: RapidTheme.brand)
+            pill(text: label, color: RapidTheme.statusWorking)
         case .failed:
-            pill(text: "Failed", color: .red)
+            pill(text: "Failed", color: RapidTheme.statusError)
         }
     }
 
     @ViewBuilder
     private func pill(text: String, color: Color) -> some View {
         Text(text)
-            .font(.caption.weight(.medium))
+            .font(RapidFont.caption)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
@@ -1236,6 +1227,7 @@ struct SettingsModelManagementPanel: View {
                     .fill(color.opacity(0.15))
             )
             .lineLimit(1)
+            .fixedSize()
             .accessibilityIdentifier("Settings.ModelManagement.Status.\(text)")
     }
 
@@ -1254,20 +1246,19 @@ struct SettingsModelManagementPanel: View {
                 // it came from instead of offering a delete that cannot
                 // reach it.
                 Text("External")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
                     .help("Found outside Rapid's models folder. Rapid didn't download it, so it can't remove it.")
                     .accessibilityIdentifier(
                         "Settings.ModelManagement.Recommended.External.\(entry.alias)"
                     )
             } else {
-                Button(role: .destructive) {
+                Button {
                     pendingDeletion = entry
                 } label: {
                     Text("Delete")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.rapidDestructiveCompact)
                 .accessibilityIdentifier("Settings.ModelManagement.Recommended.Delete.\(entry.alias)")
             }
         case .inUse:
@@ -1275,16 +1266,15 @@ struct SettingsModelManagementPanel: View {
             // either fail or corrupt inference. Mirror the picker's
             // "currently-serving rows are off-limits" rule.
             Text("Serving")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.statusReady)
         case .notCached:
             Button {
                 _ = downloads.startDownload(alias: entry.alias, hfPath: entry.hfRepo)
             } label: {
                 Text("Download")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .buttonStyle(.rapidPrimaryCompact)
             .accessibilityIdentifier("Settings.ModelManagement.Recommended.Download.\(entry.alias)")
         case .downloading:
             Button {
@@ -1292,8 +1282,7 @@ struct SettingsModelManagementPanel: View {
             } label: {
                 Text("Cancel")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.rapidSecondaryCompact)
             .accessibilityIdentifier("Settings.ModelManagement.Recommended.Cancel.\(entry.alias)")
         case .failed:
             Button {
@@ -1302,8 +1291,7 @@ struct SettingsModelManagementPanel: View {
             } label: {
                 Text("Retry")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.rapidSecondaryCompact)
             .accessibilityIdentifier("Settings.ModelManagement.Recommended.Retry.\(entry.alias)")
         }
     }
@@ -1312,64 +1300,31 @@ struct SettingsModelManagementPanel: View {
 
     @ViewBuilder
     private var loadingState: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: RapidTheme.Space.sm) {
             ProgressView().controlSize(.small)
             Text("Loading model catalog…")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(RapidFont.body)
+                .foregroundStyle(RapidTheme.textSecondary)
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, RapidTheme.Space.md)
     }
 
     @ViewBuilder
     private var emptyState: some View {
         Text("Couldn't load the model list. Restart Rapid-MLX to try again.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.vertical, 12)
+            .font(RapidFont.body)
+            .foregroundStyle(RapidTheme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, RapidTheme.Space.md)
     }
 
-    @ViewBuilder
-    private func errorBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            Button("Dismiss") { lastError = nil }
-                .buttonStyle(.plain)
-                .font(.caption)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.red.opacity(0.08))
-        )
-    }
-
-    @ViewBuilder
-    private func freedBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "checkmark.seal.fill")
-                .foregroundStyle(RapidTheme.green)
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(RapidTheme.green)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            Button("Dismiss") { lastFreed = nil }
-                .buttonStyle(.plain)
-                .font(.caption)
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(RapidTheme.green.opacity(0.08))
-        )
-    }
+    // NOTE: local ``errorBanner(_:)`` and ``freedBanner(_:)`` builders
+    // lived here. Each drew its own rounded rectangle out of
+    // `Color.red.opacity(0.08)` / `RapidTheme.green.opacity(0.08)` at a
+    // local 8pt radius, with its own Dismiss button — two more banner
+    // styles on a window that already had three. Both call sites now use
+    // ``InlineNotice`` with the `.error` / `.success` tones, which own
+    // the same job for every surface in the app.
 
     // MARK: - Job reconciliation
 
@@ -1534,14 +1489,14 @@ struct ModelsTableHeading: View {
     let heading: ModelCacheActions.ListHeading
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text(heading.title).font(.caption.weight(.semibold)).textCase(.uppercase)
+        HStack(spacing: RapidTheme.Space.xs) {
+            Text(heading.title).font(RapidFont.groupLabel)
             Text("· \(heading.countText)")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.textTertiary)
                 .accessibilityIdentifier("Settings.ModelManagement.VisibleCount")
         }
-        .foregroundStyle(.secondary)
+        .foregroundStyle(RapidTheme.textSecondary)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(heading.accessibilityLabel)
     }
@@ -1629,6 +1584,37 @@ enum RecommendedCardLayout {
 enum ModelTableLayout {
     /// Shared width of the Size column.
     static let sizeColumnWidth: CGFloat = 124
+
+    /// Shared width of the Quality·Speed meters column.
+    ///
+    /// Was a bare `158` repeated in the row and again in the column
+    /// header — two literals that had to agree for the table not to go
+    /// ragged, with nothing enforcing it.
+    static let metersColumnWidth: CGFloat = 158
+
+    /// Leading chrome in a chat row before the model name: the favourite
+    /// star, the brand icon, and the three gaps between the four columns.
+    static let rowLeadingChromeWidth: CGFloat = 15 + 30 + RapidTheme.Space.sm * 3
+
+    /// Everything a chat row commits to before the flexible model-name
+    /// column gets a single point.
+    ///
+    /// Pure so ``SettingsResponsiveLayoutTests`` can assert the row still
+    /// leaves a readable name at every supported window size, instead of
+    /// that assertion living only in a screenshot somebody has to
+    /// remember to take.
+    static func committedRowWidth(showsMeters: Bool) -> CGFloat {
+        rowLeadingChromeWidth
+            + (showsMeters ? metersColumnWidth + RapidTheme.Space.sm : 0)
+            + sizeColumnWidth
+            // the grouped card's own horizontal inset, both edges
+            + RapidTheme.Space.lg * 2
+    }
+
+    /// The narrowest model name we are willing to render before calling
+    /// the layout broken. Roughly 14 characters at 13pt — enough for
+    /// `qwen3.5-9b-4bit` to read with a middle truncation.
+    static let minimumNameWidth: CGFloat = 120
 
     /// Spacing between the glyph, the figure and the button in a cell.
     static let cellSpacing: CGFloat = 6

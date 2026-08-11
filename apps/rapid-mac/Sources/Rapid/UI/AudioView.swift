@@ -46,15 +46,19 @@ struct AudioView: View {
     private var header: some View {
         HStack(spacing: RapidTheme.Space.lg) {
             Spacer(minLength: 0)
-            Picker("Mode", selection: $viewModel.mode) {
-                ForEach(AudioViewModel.Mode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 250)
-            .accessibilityLabel("Audio mode")
+            // The one segmented treatment, shared with Settings. Named
+            // explicitly in the UI-1 review as one of the oversized
+            // controls: at `.pickerStyle(.segmented)` the selected
+            // segment was amber with WHITE text. This is a component
+            // swap only — the binding, the modes, and everything around
+            // this control are untouched.
+            RapidSegmentedControl(
+                selection: $viewModel.mode,
+                options: AudioViewModel.Mode.allCases.map {
+                    .init(value: $0, title: $0.label)
+                },
+                accessibilityLabel: "Audio mode"
+            )
             .accessibilityIdentifier("Audio.Mode")
         }
         .padding(.horizontal, RapidTheme.Space.xl)

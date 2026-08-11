@@ -168,8 +168,18 @@ struct AccessibilityIdentifierInventoryTests {
     @Test("TrailingSettingsToggleStyle still renders a native switch Toggle")
     func trailingToggleStyleKeepsNativeSemantics() throws {
         let stripped = try strippedSource("Sources/Rapid/UI/SettingsControlStyles.swift")
+        // The invariant is that a REAL `Toggle` bound to the
+        // configuration is what draws the switch — not that the Toggle
+        // is the syntactic root of `makeBody`. UI-1's refinement pass
+        // wraps it in an `HStack` to hold the label column and the
+        // trailing gutter, which is layout around the control and does
+        // not touch its semantics: the switch is still a `Toggle`, still
+        // `.switch`, and still carries its own AXCheckBox role and
+        // value. The `.accessibilityRepresentation` assertion below is
+        // the one that actually catches a regression to #1608's
+        // hand-rolled row, and it is unchanged.
         #expect(
-            stripped.contains("returnToggle(isOn:binding){"),
+            stripped.contains("Toggle(isOn:binding){"),
             "TrailingSettingsToggleStyle must wrap a real Toggle — a hand-rolled row loses the AXCheckBox role and its value."
         )
         #expect(

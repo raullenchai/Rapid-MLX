@@ -516,6 +516,17 @@ struct SidebarView: View {
                 // ``pinControlIdentifier(for:)``.
                 .accessibilityIdentifier(Self.pinControlIdentifier(for: conv))
             }
+            // A native SwiftUI ``Menu`` — so the popup is an ``NSMenu``
+            // drawn entirely by macOS. Its padding, corner radius, item
+            // height and separator spacing are the system's on macOS 26
+            // and are not app-settable; ``.menuStyle`` and
+            // ``.menuIndicator`` below style the TRIGGER button, never
+            // the popup. The only app-level styling that ever reached
+            // the menu content was the scene tint, and ``rowMenuItems``
+            // already clears it (see that method's note). Do not try to
+            // give this Settings card padding or a custom radius —
+            // there is no hook, and a custom popover would cost the
+            // keyboard navigation and AX behaviour NSMenu provides.
             Menu {
                 rowMenuItems(conv)
             } label: {

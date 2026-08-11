@@ -48,6 +48,30 @@ enum DevSnapshot {
         // throwaway instance so the view can be evaluated without trapping.
         let imageGen = ImageGenViewModel(server: server)
         let audio = AudioViewModel(server: server)
+        // Same rule again, for the connectors stack (issue #1716).
+        // ``ContentView`` reads ``MCPCatalog`` and ``MCPToolApprovalStore``
+        // for its tool-approval sheet, and ``SettingsConnectorsPanel``
+        // additionally reads ``MCPConfigStore`` and ``MCPToolRegistry``.
+        // Without these the harness trapped on the FIRST capture with
+        // "No Observable object of type MCPCatalog found" and wrote zero
+        // PNGs — it had been dead since connectors landed, the same way it
+        // was dead before ``browseApproval`` was added above.
+        //
+        // The config store is pointed at a scratch file inside the snapshot
+        // directory so a capture run can never read or write the real
+        // ``mcp.json``. The catalog is given a nil endpoint provider, so it
+        // never polls anything.
+        let snapshotMCPConfig = MCPConfigStore(
+            fileURL: URL(fileURLWithPath: dir).appendingPathComponent("snapshot-mcp.json")
+        )
+        let snapshotMCPCatalog = MCPCatalog { nil }
+        let snapshotMCPApproval = MCPToolApprovalStore()
+        let snapshotMCPTools = MCPToolRegistry(
+            catalog: snapshotMCPCatalog,
+            approval: snapshotMCPApproval
+        )
+        let snapshotInstaller = Installer()
+        let snapshotWebSearch = WebSearchConfig()
 
         // Erase to AnyView so the long environment chain stays cheap to
         // type-check and the render call is monomorphic.
@@ -68,6 +92,8 @@ enum DevSnapshot {
                     .environment(browseApproval)
                     .environment(imageGen)
                     .environment(audio)
+                    .environment(snapshotMCPCatalog)
+                    .environment(snapshotMCPApproval)
                     .frame(width: width, height: height)
             )
         }
@@ -79,6 +105,11 @@ enum DevSnapshot {
             AnyView(
                 ImagesView(viewModel: imageGen, server: server)
                     .tint(RapidTheme.brandAmber)
+                    // ``ImagesView`` deep-links to Settings → Model
+                    // Management from its readiness banner, so it reads the
+                    // router. Missing it trapped the harness here, one
+                    // capture after the MCP fix above.
+                    .environment(settingsRouter)
                     .frame(width: width, height: height)
             )
         }
@@ -334,6 +365,169 @@ enum DevSnapshot {
         }
         renderHosted(headingStates(), size: CGSize(width: 420, height: 300),
                      appearance: .aqua, to: "\(dir)/model-management-heading-states.png")
+
+        // ── UI-1: the whole Settings window, every category, both
+        // appearances, at the three sizes the phase has to hold.
+        //
+        // Panel-at-a-time captures (like the Model Management pair above)
+        // cannot show what this phase is actually about: whether the rail,
+        // the page titles, the section treatment and the row rhythm agree
+        // ACROSS categories. So this renders the real ``SettingsView``
+        // shell and walks the category rail.
+        //
+        // The stores Settings binds that ``runIfRequested`` isn't handed
+        // are built here rather than threaded through the call site — a
+        // dev-only capture should not widen a production signature. The
+        // MCP config store is pointed at a scratch file inside the
+        // snapshot directory so a capture run cannot touch the real one.
+        func settingsShell(category: SettingsView.Category, size: CGSize) -> AnyView {
+            settingsRouter.requestedCategory = category
+            return AnyView(
+                SettingsView()
+                    .environment(chat)
+                    .environment(sampling)
+                    .environment(appearance)
+                    .environment(settingsRouter)
+                    .environment(server)
+                    .environment(downloads)
+                    .environment(updater)
+                    .environment(snapshotInstaller)
+                    .environment(dockPromptStore)
+                    .environment(snapshotWebSearch)
+                    .environment(browseApproval)
+                    .environment(snapshotMCPConfig)
+                    .environment(snapshotMCPCatalog)
+                    .environment(snapshotMCPApproval)
+                    .environment(snapshotMCPTools)
+                    .frame(width: size.width, height: size.height)
+                    .tint(RapidTheme.brandAmber)
+            )
+        }
+
+        // Default (the scene's own ``defaultSize``), the size the brief
+        // names, and the hard floor. 480pt tall is the floor and is
+        // deliberately short — a category that does not scroll cleanly
+        // there is the defect this phase had to fix.
+        let settingsSizes: [(label: String, size: CGSize)] = [
+            ("default", CGSize(width: 900, height: 720)),
+            ("900x640", CGSize(width: 900, height: 640)),
+            ("720x480", CGSize(width: 720, height: 480)),
+        ]
+        for category in SettingsView.Category.allCases {
+            for (label, size) in settingsSizes {
+                for (mode, name) in [("light", NSAppearance.Name.aqua),
+                                     ("dark", NSAppearance.Name.darkAqua)] {
+                    renderHosted(
+                        settingsShell(category: category, size: size),
+                        size: size,
+                        appearance: name,
+                        to: "\(dir)/settings-\(category.rawValue)-\(label)-\(mode).png"
+                    )
+                }
+            }
+        }
+
+        // ── UI-1 refinement proof sheets ──────────────────────────
+        //
+        // The shell captures above show each category in its DEFAULT
+        // state. The refinement review is about states a static capture
+        // of the default cannot reach: a disclosure open, a segmented
+        // control on each segment, a switch on AND off, a disabled
+        // button, each web-search backend. These render those states
+        // side by side, the same way ``headingStates()`` above renders
+        // every filter heading at once.
+
+        func toolsPanel(expanded: Set<String>, width: CGFloat) -> AnyView {
+            AnyView(
+                SettingsToolsPanel(initiallyExpanded: expanded)
+                    .environment(chat)
+                    .environment(snapshotWebSearch)
+                    .environment(browseApproval)
+                    .frame(width: width, alignment: .top)
+                    .padding(RapidTheme.Space.xl)
+                    .background(RapidTheme.surfaceCanvas)
+                    .tint(RapidTheme.brandAmber)
+            )
+        }
+        for (mode, name) in [("light", NSAppearance.Name.aqua),
+                             ("dark", NSAppearance.Name.darkAqua)] {
+            renderHosted(toolsPanel(expanded: [], width: 620),
+                         size: CGSize(width: 660, height: 1000),
+                         appearance: name, to: "\(dir)/tools-collapsed-\(mode).png")
+            renderHosted(toolsPanel(expanded: ["web_search", "browse", "weather"], width: 620),
+                         size: CGSize(width: 660, height: 1500),
+                         appearance: name, to: "\(dir)/tools-expanded-\(mode).png")
+        }
+
+        // Each web-search backend, so the radio group and the key field
+        // that appears for the keyed backends are both reviewable.
+        for provider in WebSearchProvider.allCases {
+            snapshotWebSearch.provider = provider
+            renderHosted(toolsPanel(expanded: [], width: 620),
+                         size: CGSize(width: 660, height: 1000),
+                         appearance: .aqua,
+                         to: "\(dir)/tools-backend-\(provider.id).png")
+        }
+        snapshotWebSearch.provider = .duckduckgo
+
+        // Connectors with the master switch ON — the state that reveals
+        // the servers list, the empty hint and the approvals card.
+        snapshotMCPConfig.isEnabled = true
+        func connectorsPanel(width: CGFloat) -> AnyView {
+            AnyView(
+                SettingsConnectorsPanel()
+                    .environment(snapshotMCPConfig)
+                    .environment(snapshotMCPCatalog)
+                    .environment(snapshotMCPApproval)
+                    .environment(snapshotMCPTools)
+                    .environment(server)
+                    .frame(width: width, alignment: .top)
+                    .padding(RapidTheme.Space.xl)
+                    .background(RapidTheme.surfaceCanvas)
+                    .tint(RapidTheme.brandAmber)
+            )
+        }
+        for (mode, name) in [("light", NSAppearance.Name.aqua),
+                             ("dark", NSAppearance.Name.darkAqua)] {
+            renderHosted(connectorsPanel(width: 620),
+                         size: CGSize(width: 660, height: 900),
+                         appearance: name, to: "\(dir)/connectors-enabled-\(mode).png")
+        }
+        snapshotMCPConfig.isEnabled = false
+
+        // The Add-connector sheet, both appearances.
+        func connectorSheet() -> AnyView {
+            AnyView(
+                MCPServerEditorSheet(original: nil, onSave: { _ in }, onCancel: {})
+                    .tint(RapidTheme.brandAmber)
+            )
+        }
+        for (mode, name) in [("light", NSAppearance.Name.aqua),
+                             ("dark", NSAppearance.Name.darkAqua)] {
+            renderHosted(connectorSheet(), size: CGSize(width: 520, height: 760),
+                         appearance: name, to: "\(dir)/connector-sheet-\(mode).png")
+        }
+
+        // Buttons, toggles and segmented controls in every state the
+        // review asks to see, on one sheet per appearance.
+        for (mode, name) in [("light", NSAppearance.Name.aqua),
+                             ("dark", NSAppearance.Name.darkAqua)] {
+            renderHosted(AnyView(SettingsControlProofSheet()),
+                         size: CGSize(width: 560, height: 620),
+                         appearance: name, to: "\(dir)/controls-proof-\(mode).png")
+        }
+
+        // The menu-bar mark, at the size the bar actually draws it, on the
+        // three backgrounds it has to survive. A template image renders
+        // black-on-transparent in isolation, so these composite it the way
+        // AppKit will: ink on a light bar, on a dark bar, and knocked out
+        // on the selection fill while the menu is open.
+        renderHosted(
+            AnyView(MenuBarMarkProofSheet()),
+            size: CGSize(width: 360, height: 150),
+            appearance: .aqua,
+            to: "\(dir)/menubar-mark.png"
+        )
 
         // Scenario 2: a populated chat transcript, so we can eyeball the
         // streaming bubble / markdown render path that an empty transcript
@@ -608,5 +802,134 @@ enum DevSnapshot {
 
     private static func log(_ message: String) {
         FileHandle.standardError.write(Data("[dev-snapshot] \(message)\n".utf8))
+    }
+}
+
+/// DEV-ONLY proof sheet for the menu-bar template mark.
+///
+/// A template ``NSImage`` is ink plus alpha, so rendering it on its own
+/// says nothing about how it will look — the whole question is what
+/// AppKit does with it. This composites the shipped image the three ways
+/// the menu bar will: black on a light bar, white on a dark bar, and
+/// white on the selection fill while the menu is open.
+private struct MenuBarMarkProofSheet: View {
+    private var mark: Image? {
+        RapidRMark.menuBarTemplateImage().map { Image(nsImage: $0) }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            bar(background: Color(white: 0.96), ink: .black, label: "Light bar")
+            bar(background: Color(white: 0.13), ink: .white, label: "Dark bar")
+            bar(background: Color(red: 0, green: 0.48, blue: 1), ink: .white, label: "Menu open")
+        }
+        .frame(width: 360)
+    }
+
+    private func bar(background: Color, ink: Color, label: String) -> some View {
+        HStack(spacing: RapidTheme.Space.md) {
+            Text(label)
+                .font(RapidFont.caption)
+                .foregroundStyle(ink.opacity(0.6))
+            Spacer()
+            if let mark {
+                // `.template` + `foregroundStyle` is what AppKit does to a
+                // template image; rendering it any other way would be
+                // testing something the app never does.
+                mark
+                    .renderingMode(.template)
+                    .foregroundStyle(ink)
+            }
+        }
+        .padding(.horizontal, RapidTheme.Space.lg)
+        .frame(height: 50)
+        .background(background)
+    }
+}
+
+/// DEV-ONLY proof sheet for the shared Settings controls.
+///
+/// Every button tier, both switch states, and each segmented control on
+/// each of its segments — in one frame, so "do the heights match, is the
+/// ink on amber dark, is the disabled state legible" can be answered by
+/// looking rather than by reading modifier chains.
+private struct SettingsControlProofSheet: View {
+    private enum Segment: Hashable { case first, second, third }
+
+    @State private var segA: Segment = .first
+    @State private var segB: Segment = .second
+    @State private var toggleOn = true
+    @State private var toggleOff = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader("Buttons", emphasis: .section)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                HStack(spacing: RapidTheme.Space.sm) {
+                    Button("Primary") {}.buttonStyle(.rapidPrimary)
+                    Button("Secondary") {}.buttonStyle(.rapidSecondary)
+                    Button("Destructive") {}.buttonStyle(.rapidDestructive)
+                    Button("Tertiary") {}.buttonStyle(.rapidTertiary)
+                }
+                HStack(spacing: RapidTheme.Space.sm) {
+                    Button("Primary") {}.buttonStyle(.rapidPrimaryCompact)
+                    Button("Secondary") {}.buttonStyle(.rapidSecondaryCompact)
+                    Button("Destructive") {}.buttonStyle(.rapidDestructiveCompact)
+                    QuietIconButton(symbol: "trash", label: "Delete",
+                                    tint: RapidTheme.statusError) {}
+                    QuietIconButton(symbol: "arrow.down.circle", label: "Download") {}
+                }
+                HStack(spacing: RapidTheme.Space.sm) {
+                    Button("Disabled primary") {}.buttonStyle(.rapidPrimary).disabled(true)
+                    Button("Disabled secondary") {}.buttonStyle(.rapidSecondary).disabled(true)
+                }
+                Button("Wide primary") {}.buttonStyle(.rapidPrimaryWide)
+            }
+            .settingsGroupedCard()
+
+            SectionHeader("Switches", emphasis: .section)
+            VStack(alignment: .leading, spacing: 0) {
+                Toggle(isOn: $toggleOn) {
+                    SettingsRowLabel(
+                        title: "On, with a description",
+                        description: "A three-line description exists to prove the switch stays pinned to the title line and never gets crowded by the copy beside it, however long that copy runs."
+                    )
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+                SettingsRowDivider()
+                Toggle(isOn: $toggleOff) {
+                    SettingsRowLabel(title: "Off, no description")
+                }
+                .toggleStyle(TrailingSettingsToggleStyle())
+            }
+            .settingsGroupedCard()
+
+            SectionHeader("Segmented", emphasis: .section)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                RapidSegmentedControl(
+                    selection: $segA,
+                    options: [
+                        .init(value: .first, title: "Chat models"),
+                        .init(value: .second, title: "Audio models"),
+                    ],
+                    accessibilityLabel: "Two-way"
+                )
+                RapidSegmentedControl(
+                    selection: $segB,
+                    options: [
+                        .init(value: .first, title: "All"),
+                        .init(value: .second, title: "Cached"),
+                        .init(value: .third, title: "Not cached"),
+                    ],
+                    accessibilityLabel: "Three-way"
+                )
+            }
+            .settingsGroupedCard()
+            Spacer(minLength: 0)
+        }
+        .padding(RapidTheme.Space.xl)
+        .frame(width: 560, alignment: .leading)
+        .background(RapidTheme.surfaceCanvas)
+        .tint(RapidTheme.brandAmber)
     }
 }
