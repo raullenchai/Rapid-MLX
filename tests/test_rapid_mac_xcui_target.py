@@ -21,8 +21,8 @@ def test_pixel_assertion_uses_element_screenshots_and_crops_chrome():
         MAC / "Tests/RapidUITests/Tests/ImageGenerationPixelTests.swift"
     ).read_text()
 
-    assert 'element("Images.Gallery.Thumb.1")' in source
-    assert 'element("Images.Gallery.Thumb.2")' in source
+    assert 'element("Images.Gallery.Thumb.1", in: app)' in source
+    assert 'element("Images.Gallery.Thumb.2", in: app)' in source
     assert "newest.screenshot()" in source
     assert "older.screenshot()" in source
     assert "source.cropping(to: rect)" in source

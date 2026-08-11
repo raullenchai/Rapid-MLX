@@ -3,12 +3,9 @@ import XCTest
 
 @MainActor
 final class ImageGenerationPixelTests: XCTestCase {
-    private var app: XCUIApplication!
-    private var testHome: URL!
-
-    override func setUpWithError() throws {
+    func testTwoImageRendersDrawDistinctThumbnailPixels() throws {
         continueAfterFailure = false
-        testHome = FileManager.default.temporaryDirectory
+        let testHome = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-xcui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: testHome, withIntermediateDirectories: true)
 
@@ -21,7 +18,7 @@ final class ImageGenerationPixelTests: XCTestCase {
         try defaults.run()
         defaults.waitUntilExit()
 
-        app = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")
+        let app = XCUIApplication(bundleIdentifier: "com.rapidmlx.rapid")
         app.launchEnvironment = [
             "HOME": testHome.path,
             "RAPID_BIN": ProcessInfo.processInfo.environment["RAPID_XCUI_FAKE_BIN"]!,
@@ -30,33 +27,29 @@ final class ImageGenerationPixelTests: XCTestCase {
             "FAKE_IMAGE_STEP_MS": "100",
         ]
         app.launch()
+        defer {
+            app.terminate()
+            try? FileManager.default.removeItem(at: testHome)
+        }
         XCTAssertTrue(app.windows["Rapid-MLX"].waitForExistence(timeout: 20))
-    }
-
-    override func tearDownWithError() throws {
-        app?.terminate()
-        if let testHome { try? FileManager.default.removeItem(at: testHome) }
-    }
-
-    func testTwoImageRendersDrawDistinctThumbnailPixels() throws {
-        dismissFirstRunIfNeeded()
-        let images = element("Sidebar.Images")
+        dismissFirstRunIfNeeded(in: app)
+        let images = element("Sidebar.Images", in: app)
         XCTAssertTrue(images.waitForExistence(timeout: 10))
         images.click()
 
-        let readiness = element("Readiness.Action")
+        let readiness = element("Readiness.Action", in: app)
         XCTAssertTrue(readiness.waitForExistence(timeout: 20))
         readiness.click()
 
-        let prompt = element("Images.Prompt")
+        let prompt = element("Images.Prompt", in: app)
         XCTAssertTrue(prompt.waitForExistence(timeout: 20))
         prompt.click()
         prompt.typeText("a cheetah on a red couch")
-        let generate = element("Images.Generate")
+        let generate = element("Images.Generate", in: app)
         XCTAssertTrue(waitUntil(timeout: 30) { generate.isEnabled })
         generate.click()
 
-        let first = element("Images.Gallery.Thumb.1")
+        let first = element("Images.Gallery.Thumb.1", in: app)
         XCTAssertTrue(first.waitForExistence(timeout: 30))
 
         prompt.click()
@@ -65,8 +58,8 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(waitUntil(timeout: 10) { generate.isEnabled })
         generate.click()
 
-        let newest = element("Images.Gallery.Thumb.1")
-        let older = element("Images.Gallery.Thumb.2")
+        let newest = element("Images.Gallery.Thumb.1", in: app)
+        let older = element("Images.Gallery.Thumb.2", in: app)
         XCTAssertTrue(older.waitForExistence(timeout: 30))
 
         let newestShot = newest.screenshot()
@@ -86,14 +79,14 @@ final class ImageGenerationPixelTests: XCTestCase {
         )
     }
 
-    private func dismissFirstRunIfNeeded() {
-        let decline = element("TelemetryConsent.DontShare")
+    private func dismissFirstRunIfNeeded(in app: XCUIApplication) {
+        let decline = element("TelemetryConsent.DontShare", in: app)
         if decline.waitForExistence(timeout: 5) { decline.click() }
-        let skip = element("Quickstart.Skip")
+        let skip = element("Quickstart.Skip", in: app)
         if skip.waitForExistence(timeout: 10) { skip.click() }
     }
 
-    private func element(_ identifier: String) -> XCUIElement {
+    private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
 
