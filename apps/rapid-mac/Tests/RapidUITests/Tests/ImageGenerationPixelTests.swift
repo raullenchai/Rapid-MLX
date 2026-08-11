@@ -8,6 +8,7 @@ final class ImageGenerationPixelTests: XCTestCase {
         let testHome = FileManager.default.temporaryDirectory
             .appendingPathComponent("rapid-xcui-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: testHome, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: testHome) }
 
         // The CI runner is disposable, but clearing the app domain makes local
         // full-Xcode runs deterministic too. HOME isolates sessions and owned
@@ -38,10 +39,7 @@ final class ImageGenerationPixelTests: XCTestCase {
             "FAKE_IMAGE_STEP_MS": "100",
         ]
         app.launch()
-        defer {
-            app.terminate()
-            try? FileManager.default.removeItem(at: testHome)
-        }
+        defer { app.terminate() }
         XCTAssertTrue(app.windows["Rapid-MLX"].waitForExistence(timeout: 20))
         dismissFirstRunIfNeeded(in: app)
         let images = element("Sidebar.Images", in: app)
