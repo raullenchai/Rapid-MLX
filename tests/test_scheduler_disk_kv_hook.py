@@ -374,8 +374,11 @@ def test_disk_checkpoint_cli_default_is_opt_in():
     import vllm_mlx.cli as cli_mod
 
     src = inspect.getsource(cli_mod)
+    # Scope the match to this add_argument call: stop at the first
+    # ``help=`` so a dropped default cannot let ``.*?`` skip ahead and
+    # capture an unrelated later flag's ``default=`` (codex nit).
     m = re.search(
-        r'"--kv-disk-checkpoint-interval",.*?default=(\d+)\s*,',
+        r'"--kv-disk-checkpoint-interval",[^)]*?default=(\d+)\s*,[^)]*?help=',
         src,
         flags=re.DOTALL,
     )

@@ -337,11 +337,13 @@ def test_reasoning_wins_over_safelist():
 # ---------------------------------------------------------------------------
 
 
-def test_bf16_default_reason_marks_it_as_default():
+def test_bf16_reason_is_neutral_and_not_a_downgrade():
     decision = resolve_kv_cache_dtype("bf16", model_name="qwen3-4b-4bit")
-    # Operators should be able to see from the startup log that the
-    # default (not a downgrade) produced bf16.
-    assert "default" in decision.reason
+    # argparse cannot distinguish an explicit bf16 from the parser
+    # default, so the reason must not claim either; what matters is
+    # that bf16 resolution is never reported as a downgrade.
+    assert "bf16" in decision.reason
+    assert "default" not in decision.reason
     assert decision.downgraded is False
 
 

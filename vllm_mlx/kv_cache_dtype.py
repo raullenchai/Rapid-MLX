@@ -312,11 +312,11 @@ def resolve_kv_cache_dtype(
                 requested=requested,
             )
 
-    # Pass-through for the safe-to-use cases. Reason text varies so the
-    # operator can distinguish "default kicked in" from "I asked for it
-    # explicitly".
+    # Pass-through for the safe-to-use cases. argparse cannot tell an
+    # explicit ``--kv-cache-dtype bf16`` from the parser default, so the
+    # reason makes no default-vs-override claim.
     if requested == "bf16":
-        reason = "bf16 selected (default; no QuantizedKVCache wrap)"
+        reason = "bf16 selected (no QuantizedKVCache wrap)"
     else:
         reason = (
             f"{requested} selected (operator override; dequant-on-read "
