@@ -54,11 +54,16 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
 
 def test_swift_source_parent_traversal_resolves_rapid_mac_fixture():
     source = MAC / "Tests/RapidUITests/Tests/ImageGenerationPixelTests.swift"
+    source_text = source.read_text()
+    traversal_expression = source_text.split(
+        "let rapidMacRoot = URL(fileURLWithPath: #filePath)", 1
+    )[1].split("let fakeSidecar", 1)[0]
+    traversal_count = traversal_expression.count(".deletingLastPathComponent()")
 
-    # Swift starts with the file URL and deletes four path components:
-    # Tests, RapidUITests, Tests, then the filename's rapid-mac root.
+    # Replay the traversal count from the actual Swift expression, starting
+    # with the file itself just as URL(fileURLWithPath: #filePath) does.
     resolved = source
-    for _ in range(4):
+    for _ in range(traversal_count):
         resolved = resolved.parent
 
     assert resolved == MAC
