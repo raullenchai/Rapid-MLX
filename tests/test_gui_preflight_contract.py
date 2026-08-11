@@ -100,6 +100,7 @@ def test_peekaboo_requirement_is_default_deny():
         "model-crash-recovery",
         "image-generation",
         "window-close-prompt",
+        "resident-load-rejected",
     }
     named = {
         flow
