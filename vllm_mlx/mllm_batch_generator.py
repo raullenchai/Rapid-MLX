@@ -16,6 +16,7 @@ Architecture:
 3. Language model generation is batched using BatchKVCache (like LLM batching)
 """
 
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -38,7 +39,10 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E4
 
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
-from .vision_embedding_cache import VisionEmbeddingCache  # noqa: E402
+from .vision_embedding_cache import (  # noqa: E402
+    VisionEmbeddingCache,
+    compute_images_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +58,31 @@ logger = logging.getLogger(__name__)
 # single-shot) with no throughput cost — it is also mlx-lm's own text-lane
 # default (``generate_step``/``PromptProcessingBatch`` prefill_step_size).
 _MLLM_PREFILL_CHUNK_TOKENS = 2048
+
+
+def _model_supports_vision_feature_cache(model: nn.Module) -> bool:
+    """Whether ``model.get_input_embeddings`` implements the mlx-vlm
+    vision-feature caching contract (``vision_cache`` + ``_image_key`` kwargs).
+
+    mlx-vlm's own server passes ``vision_cache``/``_image_key`` into
+    ``get_input_embeddings`` so a repeated image reuses the projected image
+    features (``vision_tower`` + ``embed_vision`` output) instead of re-running
+    the vision encoder — worth ~0.3-0.4s of TTFT per repeated image (#1854).
+    Only some model families read those kwargs (gemma-4 does); the rest take
+    ``**kwargs`` and silently ignore them. Detect support by inspecting the
+    method source so the batch generator only forwards the cache to models
+    that actually honour it (models that don't keep the unchanged full-forward
+    path — no behaviour change, no wasted key hashing). Future mlx-vlm versions
+    that wire more families into the contract are picked up automatically.
+    """
+    fn = getattr(type(model), "get_input_embeddings", None)
+    if fn is None:
+        return False
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return False
+    return "vision_cache" in src
 
 
 def _attention_mask_is_droppable(mask) -> bool:
@@ -122,6 +151,12 @@ class MLLMBatchRequest:
     # 0 means "not yet processed" — the field is set in ``_process_prompts``
     # once preprocessing has run.
     num_prompt_tokens: int = 0
+
+    # Content hash of this request's images, keyed into the vision-feature
+    # cache so a repeated image reuses its projected features and skips the
+    # vision encoder on the next request (#1854). None when the request has
+    # no images or the model does not support feature caching.
+    vision_feature_key: str | None = None
 
     # Vision state (populated after initial VLM forward pass)
     vision_encoded: bool = False
@@ -491,6 +526,42 @@ class MLLMBatchGenerator:
                 f"MLLMBatchGenerator: Vision cache enabled (size={vision_cache_size})"
             )
 
+        # Vision-feature cache (projected vision_tower + embed_vision output,
+        # keyed by image content hash). This is the level that actually moves
+        # TTFT: rapid's continuous-batching prefill re-ran the vision encoder
+        # on every request, so a repeated image — the common multi-turn "ask
+        # again about the same screenshot" case — paid the full ~0.3-0.4s
+        # vision cost each time, unlike stock mlx-vlm's server which caches it
+        # (#1854). We reuse mlx-vlm's own ``VisionFeatureCache`` because the
+        # model's ``get_input_embeddings`` speaks its ``.get()/.put()``
+        # interface natively. Only wired in for model families that implement
+        # the ``vision_cache``/``_image_key`` contract (gemma-4 today); every
+        # other model keeps the unchanged full-forward path.
+        self._vision_feature_cache = None
+        self._supports_vision_feature_cache = (
+            enable_vision_cache and _model_supports_vision_feature_cache(model)
+        )
+        if self._supports_vision_feature_cache:
+            try:
+                from mlx_vlm.vision_cache import VisionFeatureCache
+
+                # Each entry pins a projected-features ``mx.array`` (Metal
+                # buffer) for the image's lifetime in the LRU, so bound this
+                # tighter than the pixel cache: a handful of recent images
+                # covers the multi-turn "same screenshot" case, and 32 caps a
+                # 26b-class feature tensor (~2-3 MB each) at well under 100 MB.
+                feature_cache_size = min(vision_cache_size, 32)
+                self._vision_feature_cache = VisionFeatureCache(
+                    max_size=feature_cache_size
+                )
+                logger.info(
+                    "MLLMBatchGenerator: Vision-feature cache enabled "
+                    f"(size={feature_cache_size}) — repeated images skip the "
+                    "vision encoder"
+                )
+            except ImportError:
+                self._supports_vision_feature_cache = False
+
         # Generation stream.
         #
         # Use the WORKER THREAD's default stream rather than a freshly
@@ -683,6 +754,14 @@ class MLLMBatchGenerator:
                     # drop hallucinates; ValueError so the scheduler
                     # cleans up the request properly.
                     raise ValueError(f"Failed to process video: {e}") from e
+
+        # Key this request's images into the vision-feature cache by content
+        # hash (robust to the per-request temp-file paths ``all_images`` holds).
+        # Consumed in ``_run_vision_encoding`` to let the model reuse projected
+        # image features on a repeat (#1854). Content order is preserved, so
+        # ``[a, b]`` and ``[b, a]`` get distinct keys.
+        if self._supports_vision_feature_cache and all_images:
+            request.vision_feature_key = compute_images_hash(all_images)
 
         # Check pixel cache first
         cached_pixels = self.vision_cache.get_pixel_cache(all_images, request.prompt)
@@ -884,6 +963,27 @@ class MLLMBatchGenerator:
             kwargs["attention_mask"] = request.attention_mask
         if request.image_grid_thw is not None:
             kwargs["image_grid_thw"] = request.image_grid_thw
+
+        # Reuse projected image features across requests with the same image
+        # (#1854). ``get_input_embeddings`` looks up ``vision_cache[_image_key]``
+        # and, on a hit, scatters the cached ``vision_tower + embed_vision``
+        # output instead of re-running the vision encoder — the ~0.3-0.4s that
+        # made rapid's vision TTFT 2.4x stock mlx-vlm on a repeated image. Only
+        # set when the model honours the contract (see ``__init__``) and the
+        # request actually carries images; text-only prefill and the chunked
+        # path (``pixel_values=None``) never see these kwargs. The features are
+        # image-only (prompt-independent), so the key is the image content
+        # hash, not the prompt. ``getattr`` keeps this callable on the
+        # minimally-constructed generators the chunked-prefill tests build via
+        # ``__new__`` (which set only model / language_model / prefill_step_size).
+        feature_cache = getattr(self, "_vision_feature_cache", None)
+        if (
+            feature_cache is not None
+            and request.pixel_values is not None
+            and request.vision_feature_key is not None
+        ):
+            kwargs["vision_cache"] = feature_cache
+            kwargs["_image_key"] = request.vision_feature_key
 
         # Run the VLM forward pass with cache.
         # The VLM passes cache= through to self.language_model(),
