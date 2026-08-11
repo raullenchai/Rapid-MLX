@@ -279,6 +279,16 @@ class InferenceAbortedError(RuntimeError):
     """
 
 
+class ClientRequestError(ValueError):
+    """A request rejection whose message is explicitly safe for clients.
+
+    This is a trust-boundary type, not a generic validation alias. Only code
+    that constructs a bounded, actionable diagnostic may raise it. Streaming
+    guards use the type — never message substrings — to decide whether an
+    exception may cross the F-131 sanitisation boundary.
+    """
+
+
 @dataclass
 class RequestOutput:
     """
@@ -327,7 +337,11 @@ class RequestOutput:
     # so positional constructor args for the pre-existing fields keep
     # their indices.
     matched_stop: str | None = None
-    # Distinguishes WHY the request aborted, when ``error`` is set. The engine
+    # Distinguishes WHY the request aborted, when ``error`` is set.
+    # ``invalid_request`` means the scheduler caught an explicit
+    # ``ClientRequestError`` whose bounded message is safe to expose through
+    # the route; it must never be inferred from arbitrary exception text.
+    # The engine
     # raises InferenceAbortedError (→ HTTP 503) for genuine mid-flight failures
     # (Metal runtime errors, engine-loop crashes) where the partial output may
     # be corrupt. A repetition-guard hard-stop is different: the scheduler

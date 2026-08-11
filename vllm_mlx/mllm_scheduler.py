@@ -48,7 +48,12 @@ from .mllm_batch_generator import (  # noqa: E402
 )
 from .mllm_cache import MLLMCacheManager  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
-from .request import RequestOutput, RequestStatus, SamplingParams  # noqa: E402
+from .request import (  # noqa: E402
+    ClientRequestError,
+    RequestOutput,
+    RequestStatus,
+    SamplingParams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1152,19 +1157,10 @@ class MLLMScheduler:
                 # VLM saw an empty assistant message + "Reached max_tokens
                 # before any output" rendered by the client).
                 #
-                # The "per-batch cap" string is the marker raised by
-                # ``mllm_batch_generator._process_prompts`` when prompt
-                # tokens (vision + text) exceed the configured cap. For
-                # VLM the typical trigger is a high-resolution image; the
-                # error message already tells the user to downscale or
-                # raise --prefill-step-size, so surfacing the message
-                # is strictly more informative than the legacy soft
-                # truncation.
-                is_client_error = (
-                    "Failed to process image" in err_msg
-                    or "Failed to process video" in err_msg
-                    or "exceeds the per-batch cap" in err_msg
-                )
+                # An explicit type owns the public-message trust boundary.
+                # Arbitrary RuntimeError/ValueError text may include caller
+                # data or local paths that happen to match the old markers.
+                is_client_error = isinstance(e, ClientRequestError)
                 # Create error outputs (queue delivery deferred to caller).
                 for request_id in error_ids:
                     output.outputs.append(
@@ -1173,6 +1169,7 @@ class MLLMScheduler:
                             output_text="",
                             finished=True,
                             error=err_msg if is_client_error else None,
+                            error_kind=("invalid_request" if is_client_error else None),
                             finish_reason="error" if is_client_error else "length",
                         )
                     )
@@ -1781,6 +1778,8 @@ class MLLMScheduler:
                     # Mark finished BEFORE raising so the finally block
                     # doesn't double-abort what's already cleaned up.
                     finished_normally = True
+                    if output.error_kind == "invalid_request":
+                        raise ClientRequestError(output.error)
                     raise ValueError(output.error)
                 # Mark terminal output before yielding it. A consumer of an
                 # async generator may stop immediately after receiving the

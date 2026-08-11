@@ -578,3 +578,104 @@ def test_disconnect_guard_keepalive_does_not_break_disconnect_detection():
     # We may have emitted a few keepalives before the disconnect, but
     # NOT the forever-stalled real chunk.
     assert "data: never\n\n" not in chunks
+
+
+# --------------------------------------------------------------------------- #
+# #1849 — a mid-stream client-actionable rejection (e.g. the MLLM per-batch
+# prefill cap, or a failed image/video fetch) must surface its REAL message
+# in the SSE error frame, not be swallowed into the generic
+# "Internal error during streaming" 200 envelope.
+# --------------------------------------------------------------------------- #
+def _collect_disconnect_guard_chunks(generator):
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    class _FakeRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def _run():
+        out = []
+        async for chunk in _disconnect_guard(
+            generator, _FakeRequest(), keepalive_seconds=60.0
+        ):
+            out.append(chunk)
+        return out
+
+    return asyncio.run(_run())
+
+
+def test_disconnect_guard_surfaces_client_actionable_error_message():
+    """#1849: the MLLM per-batch cap rejection (a client-correctable error)
+    must reach the caller with its real, actionable message and an
+    ``invalid_request_error`` type — NOT be masked into the generic
+    "Internal error during streaming". Pre-fix the F-131 sanitisation
+    swallowed it into a misleading 200 with a generic message.
+    """
+
+    async def _generator():
+        from vllm_mlx.request import ClientRequestError
+
+        yield 'data: {"role":"assistant"}\n\n'
+        raise ClientRequestError(
+            "Vision-request prompt tokens (20000) exceeds the per-batch cap "
+            "(8192 = prefill_step_size 8192 × 1 vision request(s)). "
+            "For image inputs, downscale the image."
+        )
+
+    chunks = _collect_disconnect_guard_chunks(_generator())
+    error_frames = [c for c in chunks if '"error"' in c]
+    assert error_frames, f"expected an SSE error frame; got chunks={chunks!r}"
+    payload = json.loads(error_frames[-1].replace("data: ", "", 1).strip())
+    err = payload["error"]
+    assert err["type"] == "invalid_request_error", (
+        f"client-actionable error must carry type=invalid_request_error, got {err!r}"
+    )
+    assert "exceeds the per-batch cap" in err["message"], (
+        f"real, actionable message must be preserved; got {err['message']!r}"
+    )
+    assert "Internal error during streaming" not in err["message"]
+    # The stream terminates with [DONE].
+    assert "data: [DONE]\n\n" in chunks
+
+
+def test_disconnect_guard_still_masks_genuine_engine_fault():
+    """F-131 sanitisation must be preserved: a genuine engine fault (a raw
+    Python exception that is NOT a client-actionable marker) still surfaces
+    as the generic ``internal_error`` envelope — never leaking the raw
+    Python type name / message through the SSE payload.
+    """
+
+    async def _generator():
+        yield 'data: {"role":"assistant"}\n\n'
+        raise RuntimeError("TextEncodeInput must be str or List[str]")
+
+    chunks = _collect_disconnect_guard_chunks(_generator())
+    error_frames = [c for c in chunks if '"error"' in c]
+    assert error_frames, f"expected an SSE error frame; got chunks={chunks!r}"
+    payload = json.loads(error_frames[-1].replace("data: ", "", 1).strip())
+    err = payload["error"]
+    assert err["type"] == "internal_error"
+    assert err["message"] == "Internal error during streaming"
+    assert "TextEncodeInput" not in err["message"], (
+        f"raw Python exception detail must not leak; got {err['message']!r}"
+    )
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_disconnect_guard_does_not_trust_actionable_substrings(error_type):
+    """F-131: marker text cannot promote an arbitrary exception to public."""
+
+    async def _generator():
+        yield 'data: {"role":"assistant"}\n\n'
+        raise error_type(
+            "Failed to process image: /Users/private/internal-secret-token"
+        )
+
+    chunks = _collect_disconnect_guard_chunks(_generator())
+    error_frame = [c for c in chunks if '"error"' in c][-1]
+    payload = json.loads(error_frame.replace("data: ", "", 1).strip())
+    assert payload["error"] == {
+        "message": "Internal error during streaming",
+        "type": "internal_error",
+    }
+    assert "internal-secret-token" not in str(chunks)

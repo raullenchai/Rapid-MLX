@@ -240,7 +240,7 @@ def test_chat_route_maps_per_batch_cap_error_to_http_400():
     """
     engine = _StubMLLMEngine(
         raise_msg=(
-            "Total prompt tokens (2292) exceeds the per-batch cap "
+            "Vision-request prompt tokens (2292) exceeds the per-batch cap "
             "(2048 for 1 request(s)). For image inputs, downscale the "
             "image; for text inputs, shorten the prompt or restart "
             "the server with --prefill-step-size set higher."

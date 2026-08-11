@@ -743,25 +743,25 @@ class TestMLLMBatchGeneratorFailsLoud:
 
         return Path(mod.__file__).read_text()
 
-    def test_image_branch_raises_value_error(self):
+    def test_image_branch_raises_explicit_client_error(self):
         src = self._source()
         assert "Failed to process image" in src
         # Window straddles the marker so we see the raise above it.
         idx = src.find("Failed to process image")
         window = src[max(0, idx - 200) : idx + 200]
-        assert "raise ValueError" in window
+        assert "raise ClientRequestError" in window
         # The old silent-drop pattern must not return.
         assert 'logger.warning(f"Failed to process image' not in src
         # And we must NOT use HTTPException here — the scheduler's
-        # narrow except catches ValueError/RuntimeError only.
+        # narrow except catches its ValueError base class.
         assert "HTTPException" not in window
 
-    def test_video_branch_raises_value_error(self):
+    def test_video_branch_raises_explicit_client_error(self):
         src = self._source()
         assert "Failed to process video" in src
         idx = src.find("Failed to process video")
         window = src[max(0, idx - 200) : idx + 200]
-        assert "raise ValueError" in window
+        assert "raise ClientRequestError" in window
         assert 'logger.warning(f"Failed to process video' not in src
         assert "HTTPException" not in window
 

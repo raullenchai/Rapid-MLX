@@ -3997,11 +3997,33 @@ async def _disconnect_guard(
                 # surface from this entry point. The full exception is
                 # logged above with ``exc_info`` so operators retain
                 # the diagnostic detail server-side.
+                # #1849: explicit ``ClientRequestError`` exceptions are
+                # client-actionable rejections whose bounded message must
+                # reach the caller (MLLM prefill cap, bad image/video). The
+                # non-streaming route already maps these to HTTP 400 with
+                # the real message; but on the streaming path the SSE
+                # response has already started (headers + role chunk were
+                # emitted), so we cannot change the HTTP status. F-131's
+                # generic masking would otherwise swallow the actionable
+                # message and hand the client a misleading 200 with
+                # "Internal error during streaming" — exactly the shape
+                # #1849 reports. Trust the explicit carrier type, never a
+                # message substring: arbitrary internal exceptions may contain
+                # caller text or local paths. Every other fault remains under
+                # F-131's generic sanitisation.
+                from ..request import ClientRequestError
+
+                if isinstance(exc, ClientRequestError):
+                    _sse_type = "invalid_request_error"
+                    _sse_message = str(exc)
+                else:
+                    _sse_type = "internal_error"
+                    _sse_message = "Internal error during streaming"
                 error_data = _json.dumps(
                     {
                         "error": {
-                            "message": "Internal error during streaming",
-                            "type": "internal_error",
+                            "message": _sse_message,
+                            "type": _sse_type,
                         }
                     }
                 )

@@ -16,6 +16,7 @@ Architecture:
 3. Language model generation is batched using BatchKVCache (like LLM batching)
 """
 
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -38,7 +39,11 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E4
 
 from .mllm_cache_compat import first_incompatible_mllm_cache_type  # noqa: E402
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
-from .vision_embedding_cache import VisionEmbeddingCache  # noqa: E402
+from .request import ClientRequestError  # noqa: E402
+from .vision_embedding_cache import (  # noqa: E402
+    VisionEmbeddingCache,
+    compute_images_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,54 @@ logger = logging.getLogger(__name__)
 # single-shot) with no throughput cost — it is also mlx-lm's own text-lane
 # default (``generate_step``/``PromptProcessingBatch`` prefill_step_size).
 _MLLM_PREFILL_CHUNK_TOKENS = 2048
+
+
+def _model_supports_vision_feature_cache(model: nn.Module) -> bool:
+    """Whether ``model.get_input_embeddings`` implements the mlx-vlm
+    vision-feature caching contract (``vision_cache`` + ``_image_key`` kwargs).
+
+    mlx-vlm's own server passes ``vision_cache``/``_image_key`` into
+    ``get_input_embeddings`` so a repeated image reuses the projected image
+    features (``vision_tower`` + ``embed_vision`` output) instead of re-running
+    the vision encoder — worth ~0.3-0.4s of TTFT per repeated image (#1854).
+    Only some model families read those kwargs (gemma-4 does); the rest take
+    ``**kwargs`` and silently ignore them. Detect support structurally so the
+    batch generator only forwards the cache to models that actually honour it
+    (models that don't keep the unchanged full-forward path — no behaviour
+    change, no wasted key hashing). Future mlx-vlm versions that wire more
+    families into the contract are picked up automatically.
+
+    Three conditions, all required:
+      1. Both ``__call__`` (where ``_run_vision_encoding`` actually passes the
+         kwargs) AND ``get_input_embeddings`` (where ``__call__`` forwards them)
+         accept ``**kwargs`` — so injecting the two extra kwargs can NEVER
+         raise ``TypeError`` on either hop, even on a false-positive match.
+      2. ``get_input_embeddings``'s body references BOTH contract kwargs as
+         *quoted* keys (``"vision_cache"`` AND ``"_image_key"``) — the form
+         ``kwargs.get("vision_cache")`` / ``_scatter(..., "_image_key")`` uses.
+         Matching the quoted form (not the bare word) keeps a prose mention in
+         a docstring or comment from being mistaken for real consumption.
+    """
+    embed = getattr(type(model), "get_input_embeddings", None)
+    call = getattr(type(model), "__call__", None)
+    if embed is None or call is None:
+        return False
+    if not (_accepts_var_kwargs(embed) and _accepts_var_kwargs(call)):
+        return False
+    try:
+        src = inspect.getsource(embed)
+    except (OSError, TypeError):
+        return False
+    return '"vision_cache"' in src and '"_image_key"' in src
+
+
+def _accepts_var_kwargs(fn) -> bool:
+    """Whether ``fn``'s signature has a ``**kwargs`` parameter."""
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return False
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def _attention_mask_is_droppable(mask) -> bool:
@@ -73,6 +126,63 @@ def _attention_mask_is_droppable(mask) -> bool:
     if mask is None:
         return True
     return bool(mx.all(mask != 0))
+
+
+def _is_text_only_request(request: "MLLMBatchRequest") -> bool:
+    """Whether ``request`` carries no vision payload at all.
+
+    A text-only request has ``pixel_values is None`` and
+    ``image_grid_thw is None`` after ``_preprocess_request`` (there are no
+    images/videos, so no vision tokens are produced). Such a request does
+    *not* consume per-forward vision-token memory and is safely prefilled
+    on the chunked text-only path (``_run_vision_encoding``), so it is
+    exempt from the per-batch cap that exists purely to bound vision-merge
+    memory (#682 / #1848).
+    """
+    return request.pixel_values is None and request.image_grid_thw is None
+
+
+def _prefill_cap_violation(requests, prefill_step_size: int):
+    """Return the "exceeds the per-batch cap" error message when a batch of
+    requests violates the per-batch prefill cap, else ``None``.
+
+    The cap (issue #682) exists to bound merge-time memory for *vision*
+    prompts: each image request can embed thousands of vision-patch tokens
+    into the prompt, so a batch of them can blow past a single forward.
+    Text-only requests (``_is_text_only_request``) are prefilled in chunks
+    and do not contribute vision tokens, so only vision-bearing requests
+    count toward the cap, and their aggregate token count is compared
+    against ``prefill_step_size × num_vision`` (#1848). A batch with no
+    vision requests can never violate the cap.
+
+    The returned string MUST keep the ``exceeds the per-batch cap`` phrase:
+    ``MLLMScheduler._step_no_queue`` matches on it to classify the error as
+    client-actionable (#682) and ``routes/chat.py`` maps it to HTTP 400 with
+    the actionable message. If the phrase ever drifts, the soft-truncation
+    regression comes back (route returns HTTP 200 with empty content +
+    ``finish_reason="length"``).
+    """
+    vision_requests = [r for r in requests if not _is_text_only_request(r)]
+    if not vision_requests:
+        # All requests are text-only: the chunked text-only prefill path
+        # bounds per-forward memory, so there is no vision-merge budget to
+        # exceed (#1848).
+        return None
+    num_vision = len(vision_requests)
+    vision_tokens = sum(
+        r.input_ids.size if r.input_ids is not None else 1 for r in vision_requests
+    )
+    max_batch_tokens = prefill_step_size * num_vision
+    if vision_tokens > max_batch_tokens:
+        return (
+            f"Vision-request prompt tokens ({vision_tokens}) exceeds the "
+            f"per-batch cap ({max_batch_tokens} = prefill_step_size "
+            f"{prefill_step_size} × {num_vision} vision request(s)). "
+            f"For image inputs, downscale the image; for text inputs, "
+            f"shorten the prompt or restart the server with "
+            f"--prefill-step-size set higher."
+        )
+    return None
 
 
 @dataclass
@@ -127,6 +237,13 @@ class MLLMBatchRequest:
     vision_encoded: bool = False
     cross_attention_states: Any | None = None  # For models that use cross-attention
     encoder_outputs: Any | None = None  # For encoder-decoder models
+
+    # Content hash of this request's images, keyed into the vision-feature
+    # cache so a repeated image reuses its projected features and skips the
+    # vision encoder on the next request (#1854). None when the request has
+    # no images or the model does not support feature caching. Appended last so
+    # inserting it never shifts the meaning of any positional constructor arg.
+    vision_feature_key: str | None = None
 
 
 @dataclass
@@ -491,6 +608,42 @@ class MLLMBatchGenerator:
                 f"MLLMBatchGenerator: Vision cache enabled (size={vision_cache_size})"
             )
 
+        # Vision-feature cache (projected vision_tower + embed_vision output,
+        # keyed by image content hash). This is the level that actually moves
+        # TTFT: rapid's continuous-batching prefill re-ran the vision encoder
+        # on every request, so a repeated image — the common multi-turn "ask
+        # again about the same screenshot" case — paid the full ~0.3-0.4s
+        # vision cost each time, unlike stock mlx-vlm's server which caches it
+        # (#1854). We reuse mlx-vlm's own ``VisionFeatureCache`` because the
+        # model's ``get_input_embeddings`` speaks its ``.get()/.put()``
+        # interface natively. Only wired in for model families that implement
+        # the ``vision_cache``/``_image_key`` contract (gemma-4 today); every
+        # other model keeps the unchanged full-forward path.
+        self._vision_feature_cache = None
+        self._supports_vision_feature_cache = (
+            enable_vision_cache and _model_supports_vision_feature_cache(model)
+        )
+        if self._supports_vision_feature_cache:
+            try:
+                from mlx_vlm.vision_cache import VisionFeatureCache
+
+                # Each entry pins a projected-features ``mx.array`` (Metal
+                # buffer) for the image's lifetime in the LRU, so bound this
+                # tighter than the pixel cache: a handful of recent images
+                # covers the multi-turn "same screenshot" case, and 32 caps a
+                # 26b-class feature tensor (~2-3 MB each) at well under 100 MB.
+                feature_cache_size = min(vision_cache_size, 32)
+                self._vision_feature_cache = VisionFeatureCache(
+                    max_size=feature_cache_size
+                )
+                logger.info(
+                    "MLLMBatchGenerator: Vision-feature cache enabled "
+                    f"(size={feature_cache_size}) — repeated images skip the "
+                    "vision encoder"
+                )
+            except ImportError:
+                self._supports_vision_feature_cache = False
+
         # Generation stream.
         #
         # Use the WORKER THREAD's default stream rather than a freshly
@@ -634,14 +787,14 @@ class MLLMBatchGenerator:
         all_images = []
 
         if request.images:
-            from .models.mllm import process_image_input
+            from .models.mllm import FileSizeExceededError, process_image_input
 
             # Pre-PR: undecodable / unreachable image was logged at WARN
             # and silently dropped from ``all_images``, so the model
             # would caption a non-existent image and confidently
             # hallucinate ("a vibrant red jellyfish" for a 404'd URL).
-            # Fail loud with ValueError so MLLMScheduler._step's narrow
-            # ``except (ValueError, RuntimeError)`` cleans up the
+            # Fail loud with a typed, bounded public diagnostic so the
+            # scheduler cleans up the
             # request (finish_reason="error") instead of the generic
             # ``except Exception`` in _process_loop swallowing the
             # error and hanging the client.
@@ -649,13 +802,19 @@ class MLLMBatchGenerator:
                 try:
                     path = process_image_input(img)
                     all_images.append(path)
-                except Exception as e:
-                    raise ValueError(f"Failed to process image: {e}") from e
+                except FileSizeExceededError as e:
+                    raise ClientRequestError(f"Failed to process image: {e}") from e
+                except (OSError, ValueError) as e:
+                    raise ClientRequestError(
+                        "Failed to process image: could not load the image; "
+                        "check that its URL or encoded data is valid"
+                    ) from e
 
         if request.videos:
             from .models.mllm import (
                 DEFAULT_FPS,
                 MAX_FRAMES,
+                FileSizeExceededError,
                 extract_video_frames_smart,
                 process_video_input,
                 save_frames_to_temp,
@@ -678,11 +837,24 @@ class MLLMBatchGenerator:
                     )
                     frame_paths = save_frames_to_temp(frames)
                     all_images.extend(frame_paths)
-                except Exception as e:
+                except FileSizeExceededError as e:
+                    raise ClientRequestError(f"Failed to process video: {e}") from e
+                except (OSError, ValueError) as e:
                     # Same rationale as the image branch above: silent
-                    # drop hallucinates; ValueError so the scheduler
-                    # cleans up the request properly.
-                    raise ValueError(f"Failed to process video: {e}") from e
+                    # drop hallucinates; the typed error lets the scheduler
+                    # clean up the request without exposing decoder internals.
+                    raise ClientRequestError(
+                        "Failed to process video: could not load or decode the video; "
+                        "check that its URL or encoded data is valid"
+                    ) from e
+
+        # Key this request's images into the vision-feature cache by content
+        # hash (robust to the per-request temp-file paths ``all_images`` holds).
+        # Consumed in ``_run_vision_encoding`` to let the model reuse projected
+        # image features on a repeat (#1854). Content order is preserved, so
+        # ``[a, b]`` and ``[b, a]`` get distinct keys.
+        if self._supports_vision_feature_cache and all_images:
+            request.vision_feature_key = compute_images_hash(all_images)
 
         # Check pixel cache first
         cached_pixels = self.vision_cache.get_pixel_cache(all_images, request.prompt)
@@ -724,9 +896,8 @@ class MLLMBatchGenerator:
         #
         # Pre-filter with PIL here so the request fails fast with a
         # canonical ``Failed to process image: image too small …``
-        # ``ValueError`` — the same marker the
-        # ``except (OSError, ValueError)`` block below uses, so
-        # ``is_client_error`` fires and routes map it to HTTP 400.
+        # ``ClientRequestError``. Its explicit type tells the scheduler and
+        # route that this bounded diagnostic may cross the F-131 boundary.
         if all_images:
             from PIL import Image as _PILImage
 
@@ -740,7 +911,7 @@ class MLLMBatchGenerator:
                     # try/except below; don't double-report here.
                     continue
                 if min(_w, _h) < _MIN_DIM:
-                    raise ValueError(
+                    raise ClientRequestError(
                         f"Failed to process image: image too small "
                         f"(min dimension must be >= {_MIN_DIM}, "
                         f"got {_w}x{_h})"
@@ -771,11 +942,10 @@ class MLLMBatchGenerator:
         #     ``content=null`` and ``prompt_tokens=0`` (F-062).
         #
         # Normalize every image-decode failure to the canonical
-        # ``Failed to process image: …`` ``ValueError`` so:
+        # ``Failed to process image: …`` ``ClientRequestError`` so:
         #   * ``_step_no_queue``'s ``except (ValueError, RuntimeError)``
         #     catches it (no infinite retry),
-        #   * ``is_client_error`` fires on the ``"Failed to process
-        #     image"`` substring (clean ``error`` field), and
+        #   * its explicit type produces a clean public ``error`` field, and
         #   * ``routes/chat.py`` / ``routes/anthropic.py`` /
         #     ``routes/responses.py`` map the marker to HTTP 400 with
         #     an actionable message.
@@ -796,14 +966,14 @@ class MLLMBatchGenerator:
                 image_token_index=image_token_index,
             )
         except (OSError, ValueError) as e:
-            # Already-canonical messages (the ``process_image_input``
-            # branch above raises ``ValueError("Failed to process image:
-            # …")``) pass through unchanged; everything else gets the
-            # canonical prefix so downstream matchers fire.
-            msg = str(e)
-            if msg.startswith("Failed to process image"):
-                raise
-            raise ValueError(f"Failed to process image: {msg}") from e
+            # Do not reflect decoder text: PIL / mlx-vlm messages can contain
+            # server-side temporary paths. Keep the public diagnostic useful
+            # and bounded while preserving the original exception as cause for
+            # logs and observability.
+            raise ClientRequestError(
+                "Failed to process image: image data could not be decoded; "
+                "use a valid PNG, JPEG, GIF, or WebP image"
+            ) from e
 
         request.input_ids = inputs.get("input_ids")
         request.pixel_values = inputs.get("pixel_values")
@@ -885,6 +1055,27 @@ class MLLMBatchGenerator:
         if request.image_grid_thw is not None:
             kwargs["image_grid_thw"] = request.image_grid_thw
 
+        # Reuse projected image features across requests with the same image
+        # (#1854). ``get_input_embeddings`` looks up ``vision_cache[_image_key]``
+        # and, on a hit, scatters the cached ``vision_tower + embed_vision``
+        # output instead of re-running the vision encoder — the ~0.3-0.4s that
+        # made rapid's vision TTFT 2.4x stock mlx-vlm on a repeated image. Only
+        # set when the model honours the contract (see ``__init__``) and the
+        # request actually carries images; text-only prefill and the chunked
+        # path (``pixel_values=None``) never see these kwargs. The features are
+        # image-only (prompt-independent), so the key is the image content
+        # hash, not the prompt. ``getattr`` keeps this callable on the
+        # minimally-constructed generators the chunked-prefill tests build via
+        # ``__new__`` (which set only model / language_model / prefill_step_size).
+        feature_cache = getattr(self, "_vision_feature_cache", None)
+        if (
+            feature_cache is not None
+            and request.pixel_values is not None
+            and request.vision_feature_key is not None
+        ):
+            kwargs["vision_cache"] = feature_cache
+            kwargs["_image_key"] = request.vision_feature_key
+
         # Run the VLM forward pass with cache.
         # The VLM passes cache= through to self.language_model(),
         # so the language model writes KV state directly into our cache.
@@ -947,7 +1138,7 @@ class MLLMBatchGenerator:
         # them. The chunking only engages once the un-chunked activations +
         # full-sequence logits would actually spike memory (long contexts).
         chunk = max(1, min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS))
-        is_text_only = request.pixel_values is None and request.image_grid_thw is None
+        is_text_only = _is_text_only_request(request)
         no_extra_kwargs = not request.extra_kwargs
         if (
             cache is not None
@@ -1045,29 +1236,14 @@ class MLLMBatchGenerator:
         # Guard against excessive memory usage during cache merge.
         # Each token in the batch requires KV entries across all layers.
         #
-        # The error string MUST keep the ``exceeds the per-batch cap``
-        # phrase — ``MLLMScheduler._step_no_queue`` matches on it to
-        # classify the error as client-actionable (#682) and ``routes/
-        # chat.py`` maps it to HTTP 400 with the actionable message.
-        # If the phrase ever drifts, the soft-truncation regression
-        # comes back: the route would return HTTP 200 with empty
-        # content + ``finish_reason="length"`` and the Desktop client
-        # would render "Reached max_tokens before any output".
-        #
-        # The message also calls out image-downscale as a lever
-        # explicitly, because vision tokens dominate the prompt budget
-        # on a typical screenshot and "shorten the prompt" is not a
-        # useful instruction when the prompt is mostly image patches.
-        max_batch_tokens = self.prefill_step_size * len(requests)
-        if total_prompt_tokens > max_batch_tokens:
-            raise ValueError(
-                f"Total prompt tokens ({total_prompt_tokens}) exceeds the "
-                f"per-batch cap ({max_batch_tokens} = prefill_step_size "
-                f"{self.prefill_step_size} × {len(requests)} request(s)). "
-                f"For image inputs, downscale the image; for text inputs, "
-                f"shorten the prompt or restart the server with "
-                f"--prefill-step-size set higher."
-            )
+        # The cap exists to bound vision-merge memory for image-heavy
+        # prompts (#682). Text-only requests are prefilled in chunks on the
+        # vision-encoding path and do not contribute vision tokens, so they
+        # are exempt from the cap (#1848) — a >8k text-only prompt must not
+        # be rejected just because ``prefill_step_size`` defaults to 8192.
+        _cap_help = _prefill_cap_violation(requests, self.prefill_step_size)
+        if _cap_help is not None:
+            raise ClientRequestError(_cap_help)
 
         # Run vision encoding for each request with its own KVCache.
         # Vision encoding cannot be batched because each request may have

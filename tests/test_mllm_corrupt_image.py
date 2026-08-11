@@ -34,11 +34,9 @@ The bug had two faces:
   (``finish_reason="length"``, ``error=None``) → silent ``200 OK`` with
   ``content=null`` and ``prompt_tokens=0`` (F-062).
 
-The fix wraps the ``prepare_inputs`` call in
-``MLLMBatchGenerator._preprocess_request`` so every non-canonical
-exception is re-raised as ``ValueError("Failed to process image: <orig>")``.
-That makes ``_step_no_queue`` clean-abort the request *and* the route
-layer return ``HTTP 400`` with the underlying PIL message.
+The fix maps expected decoder failures to a typed ``ClientRequestError``
+with a bounded public message. That makes ``_step_no_queue`` clean-abort
+the request without exposing temporary paths from the underlying decoder.
 """
 
 from __future__ import annotations
@@ -130,9 +128,8 @@ def test_preprocess_wraps_pil_oserror_as_failed_to_process_image(monkeypatch):
     with pytest.raises(ValueError) as exc_info:
         gen._preprocess_request(req)
     assert str(exc_info.value).startswith("Failed to process image")
-    # Original PIL message must still be embedded for the route layer
-    # to surface to the client.
-    assert "broken data stream" in str(exc_info.value)
+    assert "valid PNG, JPEG, GIF, or WebP" in str(exc_info.value)
+    assert "broken data stream" not in str(exc_info.value)
 
 
 def test_preprocess_wraps_pil_unidentified_image_as_failed_to_process_image(
@@ -156,7 +153,7 @@ def test_preprocess_wraps_pil_unidentified_image_as_failed_to_process_image(
     with pytest.raises(ValueError) as exc_info:
         gen._preprocess_request(req)
     assert str(exc_info.value).startswith("Failed to process image")
-    assert "cannot identify image file" in str(exc_info.value)
+    assert "cannot identify image file" not in str(exc_info.value)
 
 
 def test_preprocess_normalizes_failed_to_load_image_to_failed_to_process_image(
@@ -186,21 +183,17 @@ def test_preprocess_normalizes_failed_to_load_image_to_failed_to_process_image(
     assert msg.startswith("Failed to process image"), (
         f"matcher would miss this message: {msg!r}"
     )
-    # Underlying mlx_vlm message is still embedded — clients see why.
-    assert "cannot identify image file" in msg
+    # Underlying mlx_vlm message can contain private temporary paths and must
+    # stay in the exception cause rather than crossing the public boundary.
+    assert "/tmp/xyz.png" not in msg
 
 
-def test_preprocess_preserves_canonical_message_unchanged(monkeypatch):
-    """A pre-canonical ``ValueError("Failed to process image: …")`` (the
-    ``process_image_input`` branch already raises this shape for
-    download / base64-decode failures) must pass through *without* being
-    double-wrapped — otherwise the route-layer 400 message becomes
-    ``"Failed to process image: Failed to process image: …"``.
-    """
+def test_preprocess_does_not_reflect_canonical_looking_decoder_message(monkeypatch):
+    """Message shape must not grant permission to cross the boundary."""
     _bypass_process_image(monkeypatch)
 
     def _raise_canonical(*args, **kwargs):
-        raise ValueError("Failed to process image: 404 Client Error")
+        raise ValueError("Failed to process image: /Users/private/secret.png")
 
     _install_prepare_inputs_stub(monkeypatch, _raise_canonical)
 
@@ -210,9 +203,24 @@ def test_preprocess_preserves_canonical_message_unchanged(monkeypatch):
     with pytest.raises(ValueError) as exc_info:
         gen._preprocess_request(req)
     msg = str(exc_info.value)
-    assert msg == "Failed to process image: 404 Client Error", (
-        f"canonical message must pass through unchanged, got {msg!r}"
-    )
+    assert "/Users/private/secret.png" not in msg
+
+
+def test_process_image_internal_runtime_error_is_not_made_public(monkeypatch):
+    """Unexpected loader bugs remain server errors even if their text looks safe."""
+    from vllm_mlx.models import mllm as mllm_models
+
+    sentinel = RuntimeError("Failed to process image: /Users/private/secret.png")
+
+    def _raise_runtime_error(_image):
+        raise sentinel
+
+    monkeypatch.setattr(mllm_models, "process_image_input", _raise_runtime_error)
+    gen = _make_generator()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        gen._preprocess_request(_make_request(images=["https://example.test/a.png"]))
+    assert exc_info.value is sentinel
 
 
 def test_preprocess_propagates_internal_bugs_unchanged(monkeypatch):

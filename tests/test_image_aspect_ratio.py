@@ -234,4 +234,5 @@ def test_unreadable_image_does_not_short_circuit_guard(monkeypatch, tmp_path):
     # prefix — confirms the dim guard didn't preempt the wrapper.
     msg = str(exc_info.value)
     assert msg.startswith("Failed to process image"), msg
-    assert "broken data stream" in msg
+    assert "valid PNG, JPEG, GIF, or WebP" in msg
+    assert "broken data stream" not in msg
