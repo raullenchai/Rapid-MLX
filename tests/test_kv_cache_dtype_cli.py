@@ -101,7 +101,9 @@ def test_reasoning_plus_legacy_kv_cache_quantization_bits_4_is_rejected():
     rejection outright would not reliably have turned it red.
     """
     reason = cli.kv_cache_flag_conflict(
-        _KVArgs(reasoning=True, kv_cache_quantization=True, kv_cache_quantization_bits=4)
+        _KVArgs(
+            reasoning=True, kv_cache_quantization=True, kv_cache_quantization_bits=4
+        )
     )
     assert reason is not None, "the --reasoning + bits=4 conflict must be rejected"
     assert "--reasoning" in reason
