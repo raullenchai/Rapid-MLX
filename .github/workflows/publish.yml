@@ -189,23 +189,100 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Create installer checksums
+        env:
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          sha256sum install.sh > SHA256SUMS.txt
+          # Version-stamp the manifest so each release signs UNIQUE content.
+          # install.sh is stable across releases, so a version-independent
+          # SHA256SUMS.txt yields a byte-identical blob every time; cosign
+          # keyless signatures are deterministic, so Rekor rejects the
+          # duplicate transparency-log entry with a 409 "equivalent entry
+          # already exists" and the signing step fails (#1434). A per-release
+          # header line makes the signed blob unique, so Rekor always gets a
+          # fresh entry. The header is a `#` comment line, which both GNU
+          # `sha256sum -c` (incl. --strict) and BSD `shasum -c` skip, so
+          # `install.sh` verification is unaffected. TAG comes via env (not
+          # inline GitHub Actions expression interpolation) to avoid script
+          # injection.
+          {
+            printf '# Rapid-MLX %s installer checksums\n' "$TAG"
+            sha256sum install.sh
+          } > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Sign checksums (keyless, GitHub OIDC)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          cosign sign-blob --yes SHA256SUMS.txt \
-            --bundle SHA256SUMS.txt.sigstore.json
+          set -o pipefail
+          # The version-stamped manifest above makes the normal path 409-free,
+          # so cosign signs and writes the bundle as usual. Belt-and-suspenders
+          # for a re-published tag (identical content signed twice): tolerate
+          # ONLY the benign Rekor 409. But a 409 alone does NOT prove a usable
+          # signature is published — an earlier run could have created the
+          # transparency-log entry and then died before writing/uploading the
+          # bundle. So on a 409, require that the release already carries a
+          # bundle that cryptographically verifies against the current
+          # SHA256SUMS.txt; otherwise fail rather than publish unsigned
+          # checksums. Any other cosign failure also fails the job.
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          if cosign sign-blob --yes SHA256SUMS.txt \
+              --bundle SHA256SUMS.txt.sigstore.json 2>&1 | tee "$log"; then
+            echo "signed SHA256SUMS.txt"
+          elif grep -q '409' "$log" \
+              && grep -qi 'equivalent entry already exists' "$log"; then
+            echo "::notice::cosign 409 (equivalent Rekor entry already exists) —" \
+              "re-published tag; validating the bundle already on the release"
+            rm -f SHA256SUMS.txt.sigstore.json
+            if ! gh release download "$TAG" \
+                --pattern SHA256SUMS.txt.sigstore.json --dir .; then
+              echo "::error::Rekor 409 but the release has no signature bundle" \
+                "to fall back on — refusing to publish unsigned checksums" >&2
+              exit 1
+            fi
+            # Pin the exact keyless identity — THIS publish workflow at THIS
+            # tag — not a repo-wide regexp, so the fallback cannot bless a
+            # bundle signed by any other workflow or ref. Exact match (not a
+            # regexp) also sidesteps escaping TAG. Worst case if the SAN
+            # differs is a fail-closed job on a rare re-publish, never a
+            # loosened check.
+            if ! cosign verify-blob SHA256SUMS.txt \
+                --bundle SHA256SUMS.txt.sigstore.json \
+                --certificate-identity \
+                  "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/tags/${TAG}" \
+                --certificate-oidc-issuer \
+                  "https://token.actions.githubusercontent.com"; then
+              echo "::error::existing release bundle does not verify against the" \
+                "current SHA256SUMS.txt — refusing to publish unsigned checksums" >&2
+              exit 1
+            fi
+            echo "::notice::existing release bundle verifies; keeping it"
+          else
+            echo "::error::cosign sign-blob failed for a reason other than a" \
+              "benign Rekor 409" >&2
+            exit 1
+          fi
 
       - name: Upload installer assets to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
+          # The sign step guarantees a local bundle whenever the job reaches
+          # here: either freshly signed, or (on a tolerated 409 re-run)
+          # downloaded from the release and cryptographically verified. If it
+          # is somehow absent, fail rather than publish checksums without a
+          # signature — the signed-release guarantee is not optional.
+          if [ ! -f SHA256SUMS.txt.sigstore.json ]; then
+            echo "::error::no signature bundle present at upload — refusing to" \
+              "publish checksums without a signature" >&2
+            exit 1
+          fi
           gh release upload "$TAG" \
             install.sh SHA256SUMS.txt SHA256SUMS.txt.sigstore.json \
             --clobber
