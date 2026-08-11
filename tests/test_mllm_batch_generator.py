@@ -9,6 +9,9 @@ text-only request to those models, so ``_run_vision_encoding`` must always
 pass it through — including when it's ``None``.
 """
 
+import base64
+import io
+
 import mlx.core as mx
 import mlx.nn as nn
 import pytest
@@ -1444,3 +1447,92 @@ def test_unsupported_model_always_encodes_repeated_image():
             cache=None,
         )
     assert model.encode_count == 3
+
+
+def _png_data_uri(color):
+    """A tiny deterministic PNG data-URI (16x16, solid ``color``)."""
+    from PIL import Image
+
+    im = Image.new("RGB", (16, 16), color)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_preprocess_request_derives_stable_content_key(monkeypatch):
+    """``_preprocess_request`` derives ``vision_feature_key`` from image
+    *content* (not the temp-file path): the same image yields the same key
+    across requests so the cache hits, and different content yields a
+    different key. This exercises the real request path (not a manually
+    supplied key)."""
+    pytest.importorskip("mlx_vlm.vision_cache")
+    import mlx_vlm.utils as _vlm_utils
+
+    # Stub only the heavy processor call — we test key derivation, not
+    # tokenization. ``_preprocess_request`` imports it as
+    # ``from mlx_vlm.utils import prepare_inputs`` at call time, so patching
+    # the module attribute takes effect.
+    monkeypatch.setattr(
+        _vlm_utils,
+        "prepare_inputs",
+        lambda *a, **k: {
+            "input_ids": mx.array([1, 2, 3]),
+            "pixel_values": mx.zeros((1, 3, 4, 4)),
+        },
+    )
+
+    gen = MLLMBatchGenerator(
+        model=_VisionCacheModel(),
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=True,
+    )
+    assert gen._supports_vision_feature_cache is True
+
+    def key_for(uri):
+        req = MLLMBatchRequest(
+            uid=0, request_id="r", prompt="p", images=[uri], max_tokens=8
+        )
+        gen._preprocess_request(req)
+        return req.vision_feature_key
+
+    uri_a = _png_data_uri((10, 20, 30))
+    key_a1 = key_for(uri_a)
+    key_a2 = key_for(_png_data_uri((10, 20, 30)))  # identical content
+    key_b = key_for(_png_data_uri((200, 100, 50)))  # different content
+
+    assert key_a1, "a request with an image must get a vision_feature_key"
+    assert key_a1 == key_a2, "same image content must yield the same key"
+    assert key_a1 != key_b, "different image content must yield a different key"
+
+
+def test_preprocess_request_no_key_for_unsupported_model(monkeypatch):
+    """An unsupported model leaves ``vision_feature_key`` None (the key is only
+    computed when the feature is actually wired in)."""
+    import mlx_vlm.utils as _vlm_utils
+
+    monkeypatch.setattr(
+        _vlm_utils,
+        "prepare_inputs",
+        lambda *a, **k: {
+            "input_ids": mx.array([1, 2, 3]),
+            "pixel_values": mx.zeros((1, 3, 4, 4)),
+        },
+    )
+    gen = MLLMBatchGenerator(
+        model=_RecordingModel(),
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=True,
+    )
+    assert gen._supports_vision_feature_cache is False
+
+    req = MLLMBatchRequest(
+        uid=0,
+        request_id="r",
+        prompt="p",
+        images=[_png_data_uri((10, 20, 30))],
+        max_tokens=8,
+    )
+    gen._preprocess_request(req)
+    assert req.vision_feature_key is None
