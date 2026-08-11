@@ -47,14 +47,22 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
 
     /// Controllable in-order gate for the same-alias concurrency test. When
     /// ``gateAlias`` is set, the FIRST ``/v1/models/load`` whose target
-    /// matches it blocks in ``startLoading`` (on the URL loading thread, NOT
-    /// the main actor) until the test signals ``gateSemaphore``. Every later
-    /// load for that alias passes straight through. This lets a test make an
-    /// OLDER ``ensureServing`` attempt return AFTER a NEWER one, which the
+    /// matches it is HELD (its response deferred) rather than answered
+    /// immediately, so a second, newer attempt for the same alias can
+    /// complete first. The test signals ``releaseGate()`` to deliver the held
+    /// first load's response last — recreating the interleaving where an
+    /// OLDER ``ensureServing`` attempt returns AFTER a NEWER one, which the
     /// per-alias ``residentLoadFailures`` dictionary alone cannot express.
+    ///
+    /// The deferred delivery must NOT block the URL loading thread with a
+    /// semaphore: URLProtocol ``startLoading`` runs on a shared transport
+    /// thread, and blocking it stalls every other request on the same
+    /// ``URLSession`` (the second, newer load would fail to start and the
+    /// whole test would deadlock). Instead we park the ``URLProtocol``
+    /// instance and deliver its response asynchronously on ``releaseGate()``.
     nonisolated(unsafe) static var gateAlias: String?
-    nonisolated(unsafe) static var gateSemaphore: DispatchSemaphore?
     nonisolated(unsafe) static var gateHasHeldOne = false
+    nonisolated(unsafe) private static var heldProtocol: ResidentLoadRejectProtocol?
 
     /// Restore the defaults so one test can never observe another test's
     /// leftover configuration — the leak that made the previous global-slot
@@ -63,8 +71,23 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
         rejectLoad = true
         rejectOnlyAlias = nil
         gateAlias = nil
-        gateSemaphore = nil
         gateHasHeldOne = false
+        heldProtocol = nil
+    }
+
+    /// Release the held first gated load (if any), delivering its response
+    /// asynchronously after the newer attempt has already completed. The
+    /// response uses the current ``rejectLoad`` / ``rejectOnlyAlias`` values,
+    /// so the test toggles them just before releasing to choose whether the
+    /// OLDER attempt resolves to a rejection or a success.
+    static func releaseGate() {
+        guard let held = heldProtocol else { return }
+        heldProtocol = nil
+        let reject = rejectOnlyAlias
+        let rejectAll = rejectLoad
+        DispatchQueue.global(qos: .userInitiated).async {
+            held.finish(resolveWith: rejectAll, rejectOnlyAlias: reject)
+        }
     }
 
     static func session() -> URLSession {
@@ -77,38 +100,27 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let body: Data
-        let status: Int
         if request.httpMethod == "POST", request.url?.path == "/v1/models/load" {
             let requestedAlias = Self.alias(from: request)
-            // Hold only the FIRST load for the gated alias until the test
-            // releases it, so a second, newer attempt can complete while the
-            // first is still in flight — recreating the exact interleaving
-            // where an older attempt returns last (#1838 follow-up).
+            // Hold the FIRST load for the gated alias (defer its response)
+            // until the test calls ``releaseGate()``, so a second, newer
+            // attempt can complete while the first is still in flight —
+            // recreating the exact interleaving where an older attempt
+            // returns last (#1838 follow-up). The hold parks the protocol
+            // instance without blocking the URL loading thread, so the newer
+            // attempt's request can still be serviced.
             if let ga = Self.gateAlias, requestedAlias == ga, !Self.gateHasHeldOne {
                 Self.gateHasHeldOne = true
-                Self.gateSemaphore?.wait()
+                Self.heldProtocol = self
+                return
             }
-            if let rejectOnlyAlias = Self.rejectOnlyAlias {
-                if requestedAlias == rejectOnlyAlias {
-                    status = 422
-                    body = Data("{\"detail\": \"\(Self.rejectionDetail)\"}".utf8)
-                } else {
-                    status = 200
-                    body = Self.successLoadBody
-                }
-            } else if Self.rejectLoad {
-                status = 422
-                body = Data("{\"detail\": \"\(Self.rejectionDetail)\"}".utf8)
-            } else {
-                status = 200
-                body = Self.successLoadBody
-            }
-        } else if request.httpMethod == "GET", request.url?.path == "/v1/models/residency" {
+            finish(resolveWith: Self.rejectLoad, rejectOnlyAlias: Self.rejectOnlyAlias)
+            return
+        }
+        if request.httpMethod == "GET", request.url?.path == "/v1/models/residency" {
             // A healthy residency snapshot so a successful load's
             // ``refreshResidency`` has something to read.
-            status = 200
-            body = Data(#"""
+            let body = Data(#"""
                 {
                   "memory_limit_bytes": 34359738368,
                   "memory_used_bytes": 10737418240,
@@ -131,10 +143,41 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
                   }]
                 }
                 """#.utf8)
+            respond(status: 200, body: body)
         } else {
-            status = 404
-            body = Data("{\"error\":\"not_found\"}".utf8)
+            respond(status: 404, body: Data("{\"error\":\"not_found\"}".utf8))
         }
+    }
+
+    /// Deliver this request's answer, computing the body from the given
+    /// rejection configuration. Also the delayed path for a held gated load
+    /// (dispatched from ``releaseGate`` on a background queue, so it never
+    /// blocks the URL loading thread).
+    private func finish(
+        resolveWith rejectAll: Bool,
+        rejectOnlyAlias: String?
+    ) {
+        let body: Data
+        let status: Int
+        if let rejectOnlyAlias = rejectOnlyAlias {
+            if alias(from: request) == rejectOnlyAlias {
+                status = 422
+                body = Data("{\"detail\": \"\(Self.rejectionDetail)\"}".utf8)
+            } else {
+                status = 200
+                body = Self.successLoadBody
+            }
+        } else if rejectAll {
+            status = 422
+            body = Data("{\"detail\": \"\(Self.rejectionDetail)\"}".utf8)
+        } else {
+            status = 200
+            body = Self.successLoadBody
+        }
+        respond(status: status, body: body)
+    }
+
+    private func respond(status: Int, body: Data) {
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: status,
@@ -290,7 +333,7 @@ struct ResidentLoadFeedbackTests {
     /// expired failure even though the latest load succeeded.
     ///
     /// The stub's in-order gate holds the FIRST load for the alias in flight
-    /// (on the URL loading thread, never the main actor) while a second,
+    /// (in ``startLoading``, steering clear of the main actor) while a second,
     /// newer attempt completes first — reproducing exactly the interleaving
     /// where latest-attempt-wins must hold.
     @Test("An older rejection cannot clobber a newer success for the same alias")
@@ -299,13 +342,11 @@ struct ResidentLoadFeedbackTests {
         let server = makeServer()
         let alias = "flux2-klein-4b"
 
-        let gate = DispatchSemaphore(value: 0)
         ResidentLoadRejectProtocol.rejectLoad = true // older attempt, when released, rejects
         ResidentLoadRejectProtocol.gateAlias = alias
-        ResidentLoadRejectProtocol.gateSemaphore = gate
 
         // Attempt 1 (older): mints the first token, clears the failure, and
-        // blocks inside the load until the gate releases it.
+        // is held by the gate (its response deferred) until releaseGate().
         let attempt1: Task<Bool, Never> = Task { @MainActor in
             await server.ensureServing(alias: alias, hfPath: nil)
         }
@@ -319,10 +360,10 @@ struct ResidentLoadFeedbackTests {
         #expect(server.residentLoadFailure(for: alias) == nil,
                 "the newer success leaves no rejection in its own slot")
 
-        // Release attempt 1 so it resumes as a REJECTION — but it is no
+        // Release attempt 1 so it resolves as a REJECTION — but it is no
         // longer the newest attempt, so its stale rejection must be ignored.
         ResidentLoadRejectProtocol.rejectLoad = true
-        gate.signal()
+        ResidentLoadRejectProtocol.releaseGate()
         let attempt1Result = await attempt1.value
         #expect(attempt1Result == false)
         #expect(server.residentLoadFailure(for: alias) == nil,
@@ -339,10 +380,8 @@ struct ResidentLoadFeedbackTests {
         let server = makeServer()
         let alias = "flux2-klein-4b"
 
-        let gate = DispatchSemaphore(value: 0)
         ResidentLoadRejectProtocol.rejectLoad = false // older attempt, when released, succeeds
         ResidentLoadRejectProtocol.gateAlias = alias
-        ResidentLoadRejectProtocol.gateSemaphore = gate
 
         let attempt1: Task<Bool, Never> = Task { @MainActor in
             await server.ensureServing(alias: alias, hfPath: nil)
@@ -357,10 +396,10 @@ struct ResidentLoadFeedbackTests {
         #expect(server.residentLoadFailure(for: alias) != nil,
                 "the newer rejection is recorded")
 
-        // Release attempt 1 so it resumes as SUCCESS — but it is not newest,
+        // Release attempt 1 so it resolves as SUCCESS — but it is not newest,
         // so its success must not wipe the newer rejection.
         ResidentLoadRejectProtocol.rejectLoad = false
-        gate.signal()
+        ResidentLoadRejectProtocol.releaseGate()
         let attempt1Result = await attempt1.value
         #expect(attempt1Result == true)
         #expect(server.residentLoadFailure(for: alias) != nil,
