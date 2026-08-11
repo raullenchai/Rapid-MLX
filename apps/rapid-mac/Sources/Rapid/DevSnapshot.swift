@@ -865,25 +865,39 @@ private struct SettingsControlProofSheet: View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
             SectionHeader("Buttons", emphasis: .section)
             VStack(alignment: .leading, spacing: RapidTheme.Space.md) {
+                // Specimen controls: rendered only offscreen via
+                // ``ImageRenderer`` for the visual harness, never AX-driven.
+                // They still carry identifiers so the AX-identifier gate can
+                // hold its zero-exemption line — see the gate's doc comment.
                 HStack(spacing: RapidTheme.Space.sm) {
                     Button("Primary") {}.buttonStyle(.rapidPrimary)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.Primary")
                     Button("Secondary") {}.buttonStyle(.rapidSecondary)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.Secondary")
                     Button("Destructive") {}.buttonStyle(.rapidDestructive)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.Destructive")
                     Button("Tertiary") {}.buttonStyle(.rapidTertiary)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.Tertiary")
                 }
                 HStack(spacing: RapidTheme.Space.sm) {
                     Button("Primary") {}.buttonStyle(.rapidPrimaryCompact)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.PrimaryCompact")
                     Button("Secondary") {}.buttonStyle(.rapidSecondaryCompact)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.SecondaryCompact")
                     Button("Destructive") {}.buttonStyle(.rapidDestructiveCompact)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.DestructiveCompact")
                     QuietIconButton(symbol: "trash", label: "Delete",
                                     tint: RapidTheme.statusError) {}
                     QuietIconButton(symbol: "arrow.down.circle", label: "Download") {}
                 }
                 HStack(spacing: RapidTheme.Space.sm) {
                     Button("Disabled primary") {}.buttonStyle(.rapidPrimary).disabled(true)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.DisabledPrimary")
                     Button("Disabled secondary") {}.buttonStyle(.rapidSecondary).disabled(true)
+                        .accessibilityIdentifier("DevSnapshot.Specimen.DisabledSecondary")
                 }
                 Button("Wide primary") {}.buttonStyle(.rapidPrimaryWide)
+                    .accessibilityIdentifier("DevSnapshot.Specimen.WidePrimary")
             }
             .settingsGroupedCard()
 
@@ -896,11 +910,13 @@ private struct SettingsControlProofSheet: View {
                     )
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("DevSnapshot.Specimen.ToggleOn")
                 SettingsRowDivider()
                 Toggle(isOn: $toggleOff) {
                     SettingsRowLabel(title: "Off, no description")
                 }
                 .toggleStyle(TrailingSettingsToggleStyle())
+                .accessibilityIdentifier("DevSnapshot.Specimen.ToggleOff")
             }
             .settingsGroupedCard()
 

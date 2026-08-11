@@ -106,16 +106,20 @@ struct MCPServerEditorSheet: View {
                         Text("Arguments — one per line")
                             .font(RapidFont.caption)
                             .foregroundStyle(RapidTheme.textSecondary)
-                        codeEditor(text: $argsText, height: 64)
-                            .accessibilityIdentifier("Settings.Connectors.Editor.AddArgument")
+                        codeEditor(
+                            text: $argsText, height: 64,
+                            axIdentifier: "Settings.Connectors.Editor.AddArgument"
+                        )
                     }
 
                     VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
                         Text("Environment — one KEY=value per line")
                             .font(RapidFont.caption)
                             .foregroundStyle(RapidTheme.textSecondary)
-                        codeEditor(text: $envText, height: 56)
-                            .accessibilityIdentifier("Settings.Connectors.Editor.AddEnv")
+                        codeEditor(
+                            text: $envText, height: 56,
+                            axIdentifier: "Settings.Connectors.Editor.AddEnv"
+                        )
                     }
 
                 case .sse:
@@ -170,8 +174,14 @@ struct MCPServerEditorSheet: View {
     /// ``surfaceCode`` is the same recessed ground inline code uses
     /// everywhere else in the app.
     @ViewBuilder
-    private func codeEditor(text: Binding<String>, height: CGFloat) -> some View {
+    private func codeEditor(
+        text: Binding<String>, height: CGFloat, axIdentifier: String
+    ) -> some View {
+        // The identifier is applied to the ``TextEditor`` itself (not at the
+        // call site) so the AX-identifier gate sees the control carry it and
+        // the AX driver lands on the editable field, not a wrapper.
         TextEditor(text: text)
+            .accessibilityIdentifier(axIdentifier)
             .font(RapidFont.code)
             .scrollContentBackground(.hidden)
             .padding(RapidTheme.Space.xs)
