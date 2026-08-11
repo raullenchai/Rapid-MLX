@@ -7600,8 +7600,9 @@ class Scheduler:
         count grows until its 499000-resource ceiling is reached (#1827).
 
         Dense KV caches use in-place writes and do not need this per-token
-        synchronization.  Gate on an affirmative non-trimmable layer and
-        evaluate the complete cache state only for hybrid batches.
+        synchronization. Evaluate only the non-trimmable/unknown layer states:
+        materializing dense KV layers too would add an unnecessary per-token
+        synchronization cost to hybrid models.
         """
         batch_generator = self.batch_generator
         if batch_generator is None:
@@ -7613,28 +7614,28 @@ class Scheduler:
         if not cache:
             return 0
 
-        has_recurrent_state = False
         states = []
         for layer in cache:
             is_trimmable = getattr(layer, "is_trimmable", None)
             if callable(is_trimmable):
                 try:
-                    has_recurrent_state |= not bool(is_trimmable())
+                    materialize = not bool(is_trimmable())
                 except Exception:
                     # Classification is a safety gate: treating an unknown
                     # cache as dense would silently disable the only barrier
                     # preventing an unbounded lazy-state graph.  An extra eval
                     # is safe; skipping one for a recurrent cache is not.
-                    has_recurrent_state = True
+                    materialize = True
             else:
                 # Supported modern dense caches affirmatively implement this
                 # method. Missing/non-callable classification is unknown, so
                 # retain the same safety-first behavior as a raised classifier.
-                has_recurrent_state = True
-            state = getattr(layer, "state", None)
-            if state is not None:
-                states.append(state)
-        if not has_recurrent_state or not states:
+                materialize = True
+            if materialize:
+                state = getattr(layer, "state", None)
+                if state is not None:
+                    states.append(state)
+        if not states:
             return 0
         mx.eval(states)
         return len(states)

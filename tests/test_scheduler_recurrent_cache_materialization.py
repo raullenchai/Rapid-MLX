@@ -95,9 +95,10 @@ def test_recurrent_cache_barrier_bounds_lazy_decode_chain(monkeypatch):
     for _ in range(1_000):
         recurrent.advance()
         dense.advance()
-        assert scheduler._materialize_active_recurrent_cache() == 2
+        assert scheduler._materialize_active_recurrent_cache() == 1
 
     assert len(evaluations) == 1_000
+    assert evaluations[-1] == [[recurrent.head]]
     assert _chain_length(recurrent.head) == 1
 
 
