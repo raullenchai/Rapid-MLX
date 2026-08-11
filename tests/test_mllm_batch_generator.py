@@ -1344,3 +1344,95 @@ def test_run_vision_encoding_no_vision_cache_for_unsupported_model():
 
     assert "vision_cache" not in model.last_call_kwargs
     assert "_image_key" not in model.last_call_kwargs
+
+
+class _CachingBehaviorModel:
+    """Model stub that mimics mlx-vlm's ``get_input_embeddings`` caching dance:
+    on a ``vision_cache`` miss it "encodes" (bumps ``encode_count``) and stores
+    the projected features; on a hit it skips. Lets a test assert that rapid's
+    wiring actually dedups the vision encoder across repeated images end to end
+    — not just that the kwargs are forwarded."""
+
+    def __init__(self):
+        self.encode_count = 0
+        self.language_model = object()
+
+    def get_input_embeddings(self, input_ids=None, pixel_values=None, **kwargs):
+        # Contract markers so _model_supports_vision_feature_cache enables the
+        # feature: names both vision_cache and _image_key in the body.
+        _ = kwargs.get("vision_cache")
+        _ = kwargs.get("_image_key")
+        return None
+
+    def __call__(self, input_ids, cache=None, **kwargs):
+        vision_cache = kwargs.get("vision_cache")
+        image_key = kwargs.get("_image_key")
+        if vision_cache is not None and image_key is not None:
+            if vision_cache.get(image_key) is None:
+                self.encode_count += 1
+                vision_cache.put(image_key, mx.zeros((1, 4)))
+        else:
+            # No cache wired in → the encoder always runs (pre-fix behaviour).
+            self.encode_count += 1
+        return mx.zeros((1, 1, 8))
+
+
+def test_repeated_image_skips_encoder_distinct_image_reencodes():
+    """The wiring dedups the vision encoder: a repeated image reuses cached
+    features (no re-encode); a distinct image encodes again."""
+    pytest.importorskip("mlx_vlm.vision_cache")
+    model = _CachingBehaviorModel()
+    gen = MLLMBatchGenerator(
+        model=model,
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=True,
+    )
+    assert gen._supports_vision_feature_cache is True
+
+    def run(key):
+        gen._run_vision_encoding(
+            _make_vision_request(
+                pixel_values=mx.zeros((1, 3, 4, 4)), vision_feature_key=key
+            ),
+            cache=None,
+        )
+
+    run("image-A")  # miss → encode
+    run("image-A")  # hit  → skip
+    assert model.encode_count == 1, "repeated image must not re-run the encoder"
+
+    run("image-B")  # distinct → encode
+    assert model.encode_count == 2, "a distinct image must encode again"
+
+
+class _NoContractCachingModel(_CachingBehaviorModel):
+    """Same counting ``__call__`` as ``_CachingBehaviorModel`` but its
+    ``get_input_embeddings`` omits the contract markers, so it is NOT detected
+    as cache-capable."""
+
+    def get_input_embeddings(self, input_ids=None, pixel_values=None, **kwargs):
+        return None
+
+
+def test_unsupported_model_always_encodes_repeated_image():
+    """Negative control: a model that does not honour the contract keeps the
+    unchanged path — the (stubbed) encoder runs on every request even for a
+    repeated image, because no cache kwargs are forwarded."""
+    model = _NoContractCachingModel()
+    gen = MLLMBatchGenerator(
+        model=model,
+        processor=object(),
+        mm_processor=None,
+        enable_vision_cache=True,
+    )
+    assert gen._supports_vision_feature_cache is False
+
+    for _ in range(3):
+        gen._run_vision_encoding(
+            _make_vision_request(
+                pixel_values=mx.zeros((1, 3, 4, 4)), vision_feature_key="image-A"
+            ),
+            cache=None,
+        )
+    assert model.encode_count == 3

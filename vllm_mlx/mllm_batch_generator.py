@@ -69,20 +69,37 @@ def _model_supports_vision_feature_cache(model: nn.Module) -> bool:
     features (``vision_tower`` + ``embed_vision`` output) instead of re-running
     the vision encoder — worth ~0.3-0.4s of TTFT per repeated image (#1854).
     Only some model families read those kwargs (gemma-4 does); the rest take
-    ``**kwargs`` and silently ignore them. Detect support by inspecting the
-    method source so the batch generator only forwards the cache to models
-    that actually honour it (models that don't keep the unchanged full-forward
-    path — no behaviour change, no wasted key hashing). Future mlx-vlm versions
-    that wire more families into the contract are picked up automatically.
+    ``**kwargs`` and silently ignore them. Detect support structurally so the
+    batch generator only forwards the cache to models that actually honour it
+    (models that don't keep the unchanged full-forward path — no behaviour
+    change, no wasted key hashing). Future mlx-vlm versions that wire more
+    families into the contract are picked up automatically.
+
+    Two conditions, both required:
+      1. ``get_input_embeddings`` accepts ``**kwargs`` — so forwarding the two
+         extra kwargs can NEVER raise ``TypeError`` even on a false-positive
+         source match (an unrelated ``**kwargs`` method just ignores them).
+      2. Its body names BOTH contract kwargs (``vision_cache`` AND
+         ``_image_key``) — a lone docstring/comment mention of one word is not
+         enough to conclude the method consumes the cache.
     """
     fn = getattr(type(model), "get_input_embeddings", None)
     if fn is None:
         return False
     try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return False
+    accepts_var_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if not accepts_var_kwargs:
+        return False
+    try:
         src = inspect.getsource(fn)
     except (OSError, TypeError):
         return False
-    return "vision_cache" in src
+    return "vision_cache" in src and "_image_key" in src
 
 
 def _attention_mask_is_droppable(mask) -> bool:
