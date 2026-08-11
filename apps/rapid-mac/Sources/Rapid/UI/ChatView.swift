@@ -1898,6 +1898,9 @@ extension MarkdownUI.Theme {
             .markdownMargin(top: 8, bottom: 8)
         }
         .table { config in
+            let accessibilityTable = MarkdownTableAccessibility.parse(
+                config.content.renderMarkdown()
+            )
             config.label
                 // ``fixedSize`` vertically: without it a cell whose text
                 // wraps gets its height clipped to one line, because the
@@ -1905,6 +1908,11 @@ extension MarkdownUI.Theme {
                 .fixedSize(horizontal: false, vertical: true)
                 .markdownTableBorderStyle(.init(color: .secondary.opacity(0.4)))
                 .markdownMargin(top: 8, bottom: 8)
+                .accessibilityRepresentation {
+                    if let accessibilityTable {
+                        AccessibleMarkdownTable(model: accessibilityTable)
+                    }
+                }
         }
         // 2026-08: the theme set a table BORDER but never a cell style, so
         // MarkdownUI fell back to ``Theme.tableCell``'s default — the bare

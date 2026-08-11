@@ -37,6 +37,9 @@ covered, and each one names the defect it would have caught:
     `[image:gen]` in their own section (mirroring `[video:gen]`), and the
     chat catalog's `hasNonChatKindTag` drops `image` alongside `audio`/`video`,
     so a 24 GB FLUX/Qwen-Image checkpoint can never surface in the chat picker.
+    The same flow opens Model Management and pins its always-visible disk
+    overview, including the largest app-managed model; read-only external
+    runtime entries remain visible but are excluded from that calculation.
 
 11. `image-generation` — a journey, not an invariant (listed here to keep the
     numbering stable): the Images tab turns a text prompt into a picture and
@@ -184,6 +187,10 @@ configured tokens (`background-color`, `@font-face`, `.PHONY`, `filter-out`),
 split across SSE chunks. The AX contract proves the source survives intact in
 separate rendered code blocks; `SyntaxHighlighterTests` owns the colour-run
 assertion because foreground colours are not exposed by `AXUIElement`.
+Its comparison response must also expose the native macOS SwiftUI `Table`
+shape (`AXOutline` with `AXRow`, `AXCell`, titled `AXColumn` children), not
+merely six sibling text nodes, so VoiceOver retains table navigation and
+header association (#1689).
 
 ### Low-memory recovery
 

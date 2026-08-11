@@ -44,6 +44,7 @@ struct SettingsModelManagementPanel: View {
     @State private var pendingDeletion: ModelEntry?
     @State private var lastError: String?
     @State private var lastFreed: String?
+    @State private var modelsVolumeFreeBytes: Int64?
 
     @State private var query: String = ""
     /// Which capability tab is showing (Chat vs Image vs Audio vs future Video). Model
@@ -119,6 +120,7 @@ struct SettingsModelManagementPanel: View {
         VStack(alignment: .leading, spacing: 16) {
             header
             modelsFolderSection
+            storageOverviewSection
             preferencesSection
             capabilityTabs
             controlsRow
@@ -146,6 +148,7 @@ struct SettingsModelManagementPanel: View {
         // transition, which can overlay the spinner on stale model rows.
         .task {
             await refreshCatalog()
+            refreshStorageCapacity()
         }
         // codex r1 P2 / codex r2 P2 fix: catch the running → terminal
         // transition without relying on SwiftUI's observation graph,
@@ -371,6 +374,73 @@ struct SettingsModelManagementPanel: View {
         return resolved?.path ?? "~/.cache/huggingface/hub"
     }
 
+    private var effectiveModelsFolderURL: URL? {
+        ModelsFolderPreference.validatedOverrideURL()
+            ?? BundledModel.userHFCacheURL(environment: ProcessInfo.processInfo.environment)
+    }
+
+    private func refreshStorageCapacity() {
+        modelsVolumeFreeBytes = effectiveModelsFolderURL.flatMap {
+            DiskSpaceProbe.freeBytes(forPath: $0.path)
+        }
+    }
+
+    /// Always-visible cache overview. Unlike the old footer this spans Chat,
+    /// Image, and Audio, and it excludes read-only entries owned by another
+    /// runtime because this panel cannot reclaim those bytes.
+    @ViewBuilder
+    private var storageOverviewSection: some View {
+        let managed = catalog.filter { !$0.isExternal }
+        let usage = ModelCacheActions.aggregateOnDiskBytes(managed)
+        let largest = ModelCacheActions.largestManagedEntry(managed)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Disk overview")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Label("Models", systemImage: "internaldrive")
+                        .font(.callout.weight(.medium))
+                    Spacer()
+                    Text(ModelCacheActions.storageSummary(
+                        usage: usage,
+                        freeBytes: modelsVolumeFreeBytes
+                    ))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("Settings.ModelManagement.StorageSummary")
+                }
+                if let largest {
+                    Divider()
+                    HStack {
+                        Text("Largest")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(largest.alias)
+                            .font(.caption.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(largest.sizeOnDisk ?? "")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("Settings.ModelManagement.LargestModel")
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
+                    .fill(RapidTheme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
+                    .stroke(RapidTheme.hairline, lineWidth: 1)
+            )
+        }
+    }
+
     /// Present a folder picker and persist the choice. Directories only;
     /// the app is not sandboxed so no security-scoped bookmark is
     /// needed to read/write the picked folder (including an external
@@ -391,6 +461,7 @@ struct SettingsModelManagementPanel: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         ModelsFolderPreference.setStoredPath(url.path)
         customFolderPath = ModelsFolderPreference.storedPath()
+        refreshStorageCapacity()
         Task { await refreshCatalog() }
     }
 
@@ -398,6 +469,7 @@ struct SettingsModelManagementPanel: View {
     private func resetModelsFolder() {
         ModelsFolderPreference.setStoredPath(nil)
         customFolderPath = nil
+        refreshStorageCapacity()
         Task { await refreshCatalog() }
     }
 
@@ -825,6 +897,13 @@ struct SettingsModelManagementPanel: View {
             badgePill(badge, color: RapidTheme.brand)
         } else if ModelBrandStyle.modelType(forAlias: alias) == .vision {
             badgePill("VISION", color: Self.visionColor)
+        }
+        ForEach(ModelCacheActions.retentionBadges(
+            alias: alias,
+            starterAlias: QuickstartCoordinator.defaultChoice.alias,
+            lastServedAlias: ServerManager.lastServedAlias()
+        ), id: \.self) { badge in
+            badgePill(badge, color: badge == "STARTER" ? RapidTheme.amber : RapidTheme.green)
         }
     }
 

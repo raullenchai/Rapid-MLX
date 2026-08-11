@@ -1,19 +1,18 @@
-import XCTest
+import Testing
 
 @testable import Rapid
 
 /// Contract tests for ``ModelReadiness`` — the single source of truth for
 /// "can the user send right now, and if not, what should they do?".
 ///
-/// XCTest rather than swift-testing deliberately: the excluded legacy
-/// suite under `Tests/RapidTests` uses `import Testing`, and the package
-/// manifest records that the module does not resolve from the command
-/// line in this toolchain. XCTest always does, and a test that cannot be
-/// run is not a test.
+/// Swift Testing keeps this pure state-machine suite runnable from the same
+/// command-line toolchain as `RapidTests`. XCTest is not present in the
+/// Command Line Tools SDK used by `swift test` (#1638).
 ///
 /// Everything here is a pure value transform, so no SwiftUI host, no
 /// subprocess, and no live ``ServerManager`` is needed.
-final class ModelReadinessTests: XCTestCase {
+@Suite
+struct ModelReadinessTests {
 
     private let alias = "qwen3.5-9b-4bit"
 
@@ -87,6 +86,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// The core Phase 1 contract: sending is possible in exactly one
     /// state. Everything else keeps the field live and the action dark.
+    @Test
     func testSendAllowedOnlyWhenReady() {
         for state in allStates {
             if case .ready = state {
@@ -103,6 +103,7 @@ final class ModelReadinessTests: XCTestCase {
     /// A gated state must always be able to say WHY, in both the mouse
     /// channel (tooltip) and the copy channel (banner headline). An
     /// empty explanation is the silent-gate defect this phase removes.
+    @Test
     func testEveryGatedStateExplainsItself() {
         for state in allStates where !state.sendAllowed {
             XCTAssertFalse(
@@ -123,6 +124,7 @@ final class ModelReadinessTests: XCTestCase {
     /// Ready is the one state that must NOT nag: no banner detail, and a
     /// plain "Send" tooltip rather than an explanation of a problem that
     /// no longer exists.
+    @Test
     func testReadyIsQuiet() {
         let ready = ModelReadiness.ready(alias: alias)
         XCTAssertNil(ready.detail)
@@ -138,6 +140,7 @@ final class ModelReadinessTests: XCTestCase {
     /// was interpolated into failure copy, producing "Couldn't start ."
     /// with an empty model name. No surface may render a placeholder as
     /// if it were a model.
+    @Test
     func testUnresolvedAliasNeverBecomesAModelName() {
         // "" plus every internal placeholder ``ModelDisplayName`` knows.
         let placeholders = ["", "   ", "loading", "Loading", "STARTING",
@@ -163,6 +166,7 @@ final class ModelReadinessTests: XCTestCase {
     /// A `.ready` state carrying a placeholder alias is not ready — it
     /// falls back to "choose a model" rather than claiming to be
     /// chatting with nothing.
+    @Test
     func testReadyWithPlaceholderAliasIsNotReady() {
         let state = resolve(.ready(alias: ""), alias: "")
         XCTAssertEqual(state, .noModel)
@@ -171,6 +175,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// No user-facing string may ever contain an empty-name artefact
     /// like a double space, a dangling "start ." or a trailing " —".
+    @Test
     func testNoCopyContainsEmptyNameArtefacts() {
         for state in allStates {
             let strings = [
@@ -193,6 +198,7 @@ final class ModelReadinessTests: XCTestCase {
 
     // MARK: - Resolution precedence
 
+    @Test
     func testEngineMissingWinsOverEverything() {
         let state = resolve(
             .missing,
@@ -206,6 +212,7 @@ final class ModelReadinessTests: XCTestCase {
     /// An in-flight start outranks a stale failure. Otherwise pressing
     /// Retry would leave the banner reading "Couldn't start X" while X
     /// is visibly starting.
+    @Test
     func testInFlightStartBeatsStaleFailure() {
         let state = resolve(
             .starting(alias: alias),
@@ -219,6 +226,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// A crash outranks a chat-level failure and supplies its own
     /// classified message plus a retry aimed at the crashed alias.
+    @Test
     func testCrashedResolvesToFailedWithRetry() {
         let state = resolve(
             .crashed(alias: alias, message: "RuntimeError: out of memory"),
@@ -239,6 +247,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// ``ChatViewModel.lastFailureKind`` was previously computed and
     /// discarded. It must now choose the message the user reads.
+    @Test
     func testChatFailureUsesStructuredDiagnosisOverRawMessage() {
         let state = resolve(
             .idle,
@@ -260,6 +269,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// With no structured kind, the raw message is the fallback rather
     /// than a generic sentence that loses information.
+    @Test
     func testChatFailureWithoutKindKeepsItsMessage() {
         let state = resolve(.idle, failure: .init(message: "Disk is full.", alias: alias))
         guard case .failed(_, let message, _) = state else {
@@ -277,6 +287,7 @@ final class ModelReadinessTests: XCTestCase {
     /// ``.crashed`` short-circuited before the selection was consulted.
     private let crashed = "kimi-k2.6"
 
+    @Test
     func testCrashedAliasMatchingSelectionStillFails() {
         let state = resolve(
             .crashed(alias: crashed, message: "load failed"),
@@ -293,6 +304,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// The fix: a crash on a DIFFERENT model than the one now selected
     /// must not describe the new selection. Cached → needsStart.
+    @Test
     func testCrashedAliasDiffersFromSelectionResolvesToNeedsStart() {
         let state = resolve(
             .crashed(alias: crashed, message: "load failed"),
@@ -305,6 +317,7 @@ final class ModelReadinessTests: XCTestCase {
     }
 
     /// Same, uncached → needsDownload with the download CTA.
+    @Test
     func testCrashedAliasDiffersFromSelectionResolvesToNeedsDownload() {
         let state = resolve(
             .crashed(alias: crashed, message: "load failed"),
@@ -321,6 +334,7 @@ final class ModelReadinessTests: XCTestCase {
     /// is the second half of the bug. Previously the resolver read
     /// `failure.alias ?? alias`, so a failure recorded against Kimi (or
     /// with no alias at all) got re-attributed to the new pick.
+    @Test
     func testStaleChatFailureDoesNotFollowTheNewSelection() {
         let state = resolve(
             .idle,
@@ -334,6 +348,7 @@ final class ModelReadinessTests: XCTestCase {
     }
 
     /// A chat failure that DOES belong to the selection still shows.
+    @Test
     func testChatFailureMatchingSelectionStillShows() {
         let state = resolve(
             .idle,
@@ -351,6 +366,7 @@ final class ModelReadinessTests: XCTestCase {
     /// Regression for #1514: model-load failures are not retryable in place.
     /// The shared diagnosis contract sends the user to Model Management, but
     /// readiness used to overwrite that decision with an unconditional Retry.
+    @Test
     func testModelLoadFailureOffersModelManagementInsteadOfRetry() {
         let state = resolve(
             .idle,
@@ -362,6 +378,7 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertEqual(state.action, .openModelManagement)
     }
 
+    @Test
     func testOutOfMemoryFailureOffersModelManagementInsteadOfRetry() {
         let state = resolve(
             .idle,
@@ -373,6 +390,7 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertEqual(state.action, .openModelManagement)
     }
 
+    @Test
     func testEngineNotRunningFailureOffersRestartInsteadOfRetry() {
         let state = resolve(
             .idle,
@@ -384,6 +402,7 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertEqual(state.action, .restart(alias: alias))
     }
 
+    @Test
     func testOtherDiagnosedFailureKeepsLegacyRetry() {
         let state = resolve(
             .idle,
@@ -397,6 +416,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// An unattributable failure must not be pinned on the user's fresh
     /// pick. We show the selection's own (true) state instead.
+    @Test
     func testUnattributedFailureDoesNotBlameTheSelection() {
         let state = resolve(
             .idle,
@@ -409,6 +429,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// With nothing chosen there is no better thing to show, so the
     /// failure stays visible rather than silently vanishing.
+    @Test
     func testFailureStaysVisibleWhenNothingIsSelected() {
         let state = resolve(
             .crashed(alias: crashed, message: "load failed"),
@@ -423,6 +444,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// The reported repro in full: crash, then pick three different
     /// models in a row. None may fall back to Kimi's failure.
+    @Test
     func testSuccessiveSelectionsAfterCrashNeverReturnToTheFailedModel() {
         let picks = [
             ("bonsai-1.7b-2bit", true),
@@ -451,6 +473,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// Selecting the failed model AGAIN brings its failure back — the
     /// failure is scoped, not discarded.
+    @Test
     func testReselectingTheFailedModelRestoresItsFailure() {
         let away = resolve(
             .crashed(alias: crashed, message: "load failed"),
@@ -472,6 +495,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// The attribution rule on its own, so a future refactor of
     /// ``resolve`` cannot quietly change it.
+    @Test
     func testFailureAppliesRule() {
         // Nothing selected → always show.
         XCTAssertTrue(ModelReadiness.failureApplies(failedAlias: "a", selectedAlias: nil))
@@ -509,11 +533,13 @@ final class ModelReadinessTests: XCTestCase {
 
     // MARK: - Choose → download → start → ready
 
+    @Test
     func testNoModelWhenNothingChosen() {
         XCTAssertEqual(resolve(.idle, alias: "", cached: nil), .noModel)
         XCTAssertEqual(resolve(.stopped, alias: "", cached: nil), .noModel)
     }
 
+    @Test
     func testChosenButUncachedNeedsDownload() {
         let state = resolve(.idle, cached: false, sizeText: "5.0 GB")
         XCTAssertEqual(state, .needsDownload(alias: alias, sizeText: "5.0 GB"))
@@ -521,6 +547,7 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertTrue(state.detail?.contains("5.0 GB") == true)
     }
 
+    @Test
     func testChosenAndCachedNeedsStart() {
         let state = resolve(.idle, cached: true)
         XCTAssertEqual(state, .needsStart(alias: alias))
@@ -531,6 +558,7 @@ final class ModelReadinessTests: XCTestCase {
     /// resolve to "start", which is true either way — ``ServerManager``
     /// pulls on demand — rather than promising a multi-gigabyte wait we
     /// have no evidence for.
+    @Test
     func testUnknownCacheStateResolvesToStartNotDownload() {
         let state = resolve(.idle, cached: nil)
         XCTAssertEqual(state, .needsStart(alias: alias))
@@ -540,6 +568,7 @@ final class ModelReadinessTests: XCTestCase {
     /// ``needsStart`` and its "already downloaded" copy. This is the
     /// transient case the fallback was designed for, and it must not
     /// regress when the permanently-unknown case is split out below.
+    @Test
     func testCatalogPendingKeepsTheAlreadyDownloadedCopy() {
         let state = resolveCacheState(.idle, cacheState: .catalogPending)
         XCTAssertEqual(state, .needsStart(alias: alias))
@@ -552,6 +581,7 @@ final class ModelReadinessTests: XCTestCase {
     /// on disk. Nothing establishes that, and the picker chip beside the
     /// banner simultaneously showed the unknown-model glyph, so the same
     /// row said two different things.
+    @Test
     func testUnknownAliasDoesNotClaimItIsDownloaded() {
         let unknown = "mlx-community/Some-Custom-Repo"
         let state = resolveCacheState(
@@ -572,6 +602,7 @@ final class ModelReadinessTests: XCTestCase {
     /// gate on Send, and the status colour are identical to
     /// ``needsStart`` — ``ServerManager`` pulls on demand, so Start is
     /// still the right and only button.
+    @Test
     func testUnknownAliasStillOffersStartAndStaysGated() {
         let unknown = "mlx-community/Some-Custom-Repo"
         let state = resolveCacheState(.idle, alias: unknown, cacheState: .notInCatalog)
@@ -590,6 +621,7 @@ final class ModelReadinessTests: XCTestCase {
     /// engine is serving it, the live serve-state outranks the catalog —
     /// a custom model the user started must reach ``ready`` and enable
     /// Send like any other.
+    @Test
     func testUnknownAliasStillReachesReadyWhenServing() {
         let unknown = "mlx-community/Some-Custom-Repo"
         let state = resolveCacheState(
@@ -604,6 +636,7 @@ final class ModelReadinessTests: XCTestCase {
     /// A blank alias is "no model chosen" regardless of how the cache
     /// state describes it — the unknown-alias branch must not intercept
     /// the empty selection and start naming a placeholder.
+    @Test
     func testUnknownCacheStateWithNoAliasIsStillNoModel() {
         XCTAssertEqual(
             resolveCacheState(.idle, alias: "", cacheState: .notInCatalog),
@@ -613,12 +646,14 @@ final class ModelReadinessTests: XCTestCase {
 
     /// An empty size string means ``ModelSizing`` had no estimate. It
     /// must be dropped, not rendered as empty parentheses.
+    @Test
     func testBlankSizeTextIsDropped() {
         let state = resolve(.idle, cached: false, sizeText: "   ")
         XCTAssertEqual(state, .needsDownload(alias: alias, sizeText: nil))
         XCTAssertEqual(state.detail, "It downloads once, then starts in seconds.")
     }
 
+    @Test
     func testDownloadingCarriesProgress() {
         let state = resolve(
             .starting(alias: alias),
@@ -644,6 +679,7 @@ final class ModelReadinessTests: XCTestCase {
     /// Loading / warming up are NOT downloading. The word "Downloading"
     /// may only appear when bytes are provably moving — the invariant
     /// ``DownloadProgress.startupActivity`` exists to protect.
+    @Test
     func testLoadingAndWarmingAreStartingNotDownloading() {
         for activity in [DownloadProgress.StartupActivity.loading, .warmingUp, .starting] {
             let state = resolve(
@@ -663,6 +699,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// Only ``downloading`` gets a determinate bar. Everything else
     /// would be implying precision we do not have.
+    @Test
     func testOnlyDownloadingHasAProgressFraction() {
         for state in allStates {
             if case .downloading(_, _, let fraction) = state {
@@ -673,6 +710,7 @@ final class ModelReadinessTests: XCTestCase {
         }
     }
 
+    @Test
     func testReadyWhenServing() {
         let state = resolve(.ready(alias: alias))
         XCTAssertEqual(state, .ready(alias: alias))
@@ -683,6 +721,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// The full happy path, in order, asserting that send unlocks only
     /// at the final step.
+    @Test
     func testFullLifecycleSequence() {
         let steps: [(ServerState, Bool?, ModelReadiness)] = [
             (.idle, nil, .noModel),
@@ -714,6 +753,7 @@ final class ModelReadinessTests: XCTestCase {
 
     // MARK: - Status roles
 
+    @Test
     func testStatusRolesMapToTheFourTokens() {
         XCTAssertEqual(ModelReadiness.engineMissing.statusRole, .error)
         XCTAssertEqual(ModelReadiness.noModel.statusRole, .idle)
@@ -731,6 +771,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// Only genuine faults take the error treatment. "You haven't
     /// started it yet" is not a fault and must not paint red.
+    @Test
     func testIsFailureIsReservedForFaults() {
         XCTAssertTrue(ModelReadiness.engineMissing.isFailure)
         XCTAssertTrue(ModelReadiness.failed(alias: nil, message: "x", action: nil).isFailure)
@@ -746,6 +787,7 @@ final class ModelReadinessTests: XCTestCase {
     /// ``chooseModel`` must not render a button: the picker already
     /// carries those exact words 40pt away, and a second control saying
     /// the same thing is the duplicate-action defect.
+    @Test
     func testChooseModelIsNamedButNotRendered() {
         let state = ModelReadiness.noModel
         XCTAssertEqual(state.action, .chooseModel)
@@ -754,6 +796,7 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertNil(state.action?.alias)
     }
 
+    @Test
     func testActionableStatesRenderTheirButton() {
         let renderable: [ModelReadiness] = [
             .needsDownload(alias: alias, sizeText: nil),
@@ -773,6 +816,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// In-flight states offer no action — progress is the answer, and a
     /// button there would either duplicate Stop or do nothing.
+    @Test
     func testInFlightStatesOfferNoAction() {
         XCTAssertNil(
             ModelReadiness.downloading(alias: alias, detail: nil, fraction: nil).action)
@@ -786,6 +830,7 @@ final class ModelReadinessTests: XCTestCase {
     /// Connect Tools header said "start a chat to generate the key"
     /// while its body said "Start a model"; this pins the vocabulary so
     /// that cannot come back.
+    @Test
     func testVocabularyIsConsistent() {
         let chooseCopy = ModelReadiness.noModel
         XCTAssertTrue(chooseCopy.headline.contains("chosen"))
@@ -825,6 +870,7 @@ final class ModelReadinessTests: XCTestCase {
     /// Every state that is ABOUT a specific model names it in the
     /// headline, so the user always knows which model the sentence
     /// refers to.
+    @Test
     func testHeadlineNamesTheModelWhenThereIsOne() {
         let named: [ModelReadiness] = [
             .needsDownload(alias: alias, sizeText: nil),
@@ -852,6 +898,7 @@ final class ModelReadinessTests: XCTestCase {
     /// The first draft of this suite asserted the alias in EVERY named
     /// state's placeholder, which contradicted ``testReadyIsQuiet`` — the
     /// implementation was right and the expectation was wrong.
+    @Test
     func testPlaceholderNamesTheModelOnlyWhileItBlocksSending() {
         let blocking: [ModelReadiness] = [
             .needsDownload(alias: alias, sizeText: nil),
@@ -875,6 +922,7 @@ final class ModelReadinessTests: XCTestCase {
     /// The empty state's two approved strings survive verbatim — the
     /// visual redesign signed off on this copy and Phase 1 is not a
     /// licence to rewrite it.
+    @Test
     func testApprovedEmptyStateCopyIsPreserved() {
         XCTAssertEqual(ModelReadiness.noModel.emptyStateSubtitle, "Choose a model to start")
         XCTAssertEqual(
@@ -891,6 +939,7 @@ final class ModelReadinessTests: XCTestCase {
 
     /// The composed VoiceOver label must carry both halves, so a screen
     /// reader user gets the same information a sighted user reads.
+    @Test
     func testAccessibilityLabelComposesHeadlineAndDetail() {
         let state = ModelReadiness.needsDownload(alias: alias, sizeText: "5.0 GB")
         let label = state.accessibilityLabel
@@ -898,6 +947,7 @@ final class ModelReadinessTests: XCTestCase {
         XCTAssertTrue(label.contains(state.detail ?? "<missing>"))
     }
 
+    @Test
     func testAccessibilityLabelIsNeverEmpty() {
         for state in allStates {
             XCTAssertFalse(
@@ -916,6 +966,7 @@ final class ModelReadinessTests: XCTestCase {
     /// gated. (Regression: `.ready` previously described the serving alias
     /// unconditionally, enabling a send that ``ChatView`` would dispatch
     /// against the un-running selection.)
+    @Test
     func testReadyForADifferentModelResolvesTheSelection() {
         let other = "bonsai-1.7b-2bit"
         let state = resolve(.ready(alias: alias), alias: other, cached: true)
@@ -932,6 +983,7 @@ final class ModelReadinessTests: XCTestCase {
     /// with an empty/foreign alias — Send stays gated until a real model is
     /// actually selected, which the `onChange(of: server.state)` sync does a
     /// frame later.
+    @Test
     func testReadyWithNoSelectionYetIsNotSendable() {
         let state = resolve(.ready(alias: alias), alias: "", cached: true)
         XCTAssertFalse(state.sendAllowed)
@@ -939,6 +991,7 @@ final class ModelReadinessTests: XCTestCase {
     }
 
     /// The matching case is untouched: serving == selected → ready.
+    @Test
     func testReadyForTheSelectedModelStaysReady() {
         XCTAssertEqual(resolve(.ready(alias: alias), alias: alias), .ready(alias: alias))
         XCTAssertTrue(readyDescribesSelectionRef(serving: alias, selected: alias))
@@ -949,6 +1002,7 @@ final class ModelReadinessTests: XCTestCase {
     /// `.starting` is permissive (it never enables Send): a not-yet-synced
     /// selection at launch keeps the in-flight start visible, but a
     /// deliberate pick of a DIFFERENT real model resolves that model.
+    @Test
     func testStartingIsPermissiveExceptForADifferentRealModel() {
         // Launch: breadcrumb lags the auto-started model — still show it.
         let launch = resolve(.starting(alias: alias), alias: "")
@@ -981,6 +1035,7 @@ final class ModelReadinessTests: XCTestCase {
     /// A turn-level error is shown in the ready composer only when it
     /// belongs to the current model (or carries no alias at all). Switching
     /// to a healthy model must not inherit the previous model's error.
+    @Test
     func testTurnErrorScopedToSelection() {
         XCTAssertTrue(
             ModelReadiness.turnErrorApplies(failureAlias: nil, selectedAlias: alias),
@@ -1008,7 +1063,9 @@ final class ModelReadinessTests: XCTestCase {
 /// ``@MainActor`` because ``ContentView`` is a SwiftUI ``View``, which
 /// Swift 6 infers as main-actor-isolated — including its statics.
 @MainActor
-final class MainAreaBranchTests: XCTestCase {
+@Suite
+struct MainAreaBranchTests {
+    @Test
     func testOnlyMissingLeavesTheChatSurface() {
         XCTAssertEqual(ContentView.mainAreaBranch(for: .missing), .missing)
         for state: ServerState in [

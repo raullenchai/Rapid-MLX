@@ -591,12 +591,6 @@ PYEOF
 # subtree — a preview, a tooltip, an off-screen copy — answer for the
 # transcript.
 #
-# What this deliberately does NOT claim: that the table is a table. The app
-# exposes markdown tables as plain sibling AXStaticTexts with no AXTable role,
-# so a renderer that stripped the pipes and stacked the six cells as ordinary
-# paragraphs is indistinguishable from a real table at the AX layer. That is a
-# gap in what the app publishes, not something an assertion here can close —
-# tracked in #1689.
 assert_rendered_shapes() {
     local transcript="$1" scratch="$2"
     # These two hold anywhere in the transcript: no source syntax survives,
@@ -626,6 +620,19 @@ assert_rendered_shapes() {
     assistant_message_only "$transcript" 3 "$m3"
     assert_rendered_as_separate_nodes "$m3" "table cells" \
         "qwen3.5-9b" "5.2 GB" "74 tok/s" "llama-3.1-8b" "4.5 GB" "68 tok/s"
+    # AppKit exposes a native SwiftUI Table as AXOutline on macOS, with real
+    # row/cell/column children and titled column headers. Pin the whole shape;
+    # six loose AXStaticTexts cannot satisfy this contract (#1689).
+    jq -e '[.data.ui_elements[]?] as $e
+            | any($e[]; .role == "AXOutline" and .description == "Markdown table")
+              and ([ $e[] | select(.role == "AXRow") ] | length >= 2)
+              and ([ $e[] | select(.role == "AXCell") ] | length >= 6)
+              and ([ $e[] | select(.role == "AXColumn") ] | length >= 3)
+              and ([ $e[] | select(.title == "model") ] | length > 0)
+              and ([ $e[] | select(.title == "size") ] | length > 0)
+              and ([ $e[] | select(.title == "speed") ] | length > 0)' \
+        "$m3" >/dev/null \
+        || die "markdown comparison has no navigable table semantics in the AX tree (#1689)"
     assert_tree_text "$m3" "Both fit comfortably in 16 GB."
 
     assistant_message_only "$transcript" 4 "$m4"
@@ -1919,6 +1926,14 @@ flow_catalog_integrity() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Row.fake-external-alias")' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "external model was not visible in Model Management"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.StorageSummary")' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "Model Management disk overview was not visible"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.LargestModel")
+              | [(.title // ""), (.value // ""), (.description // "")]
+              | join(" ") | contains("fake-image-alias")' \
+        "$OUT/catalog-model-management.json" >/dev/null \
+        || die "disk overview did not identify the largest managed model"
     jq -e '[.data.ui_elements[]? | select(.identifier == "Settings.ModelManagement.Delete.fake-external-alias")] | length == 0' \
         "$OUT/catalog-model-management.json" >/dev/null \
         || die "external model exposed a delete action"

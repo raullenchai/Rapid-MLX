@@ -420,6 +420,45 @@ enum ModelCacheActions {
         let missingSizeCount: Int
     }
 
+    /// Largest cache entry that this app can actually manage. External
+    /// runtime entries are visible in the inventory but live outside Rapid's
+    /// selected models folder, so including them would make the overview's
+    /// total and cleanup signal contradict its own delete surface (#1818).
+    static func largestManagedEntry(_ entries: [ModelEntry]) -> ModelEntry? {
+        entries
+            .filter { $0.cached && !$0.isExternal && parseSizeBytes($0.sizeOnDisk) != nil }
+            .max {
+                let lhs = parseSizeBytes($0.sizeOnDisk) ?? 0
+                let rhs = parseSizeBytes($1.sizeOnDisk) ?? 0
+                if lhs != rhs { return lhs < rhs }
+                return $0.alias.localizedStandardCompare($1.alias) == .orderedDescending
+            }
+    }
+
+    static func storageSummary(usage: DiskUsage, freeBytes: Int64?) -> String {
+        let used = usage.totalBytes.map {
+            ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
+        } ?? "size unavailable"
+        let models = "\(usage.cachedCount) model\(usage.cachedCount == 1 ? "" : "s")"
+        guard let freeBytes else { return "\(used) · \(models)" }
+        let free = ByteCountFormatter.string(fromByteCount: freeBytes, countStyle: .file)
+        return "\(used) · \(models) · \(free) free"
+    }
+
+    /// Conservative keep-signals shown beside chat models. They make the two
+    /// easy-to-regret deletions visible without claiming that everything else
+    /// is automatically safe to remove (#1818).
+    static func retentionBadges(
+        alias: String,
+        starterAlias: String,
+        lastServedAlias: String?
+    ) -> [String] {
+        var badges: [String] = []
+        if alias == starterAlias { badges.append("STARTER") }
+        if alias == lastServedAlias { badges.append("LAST USED") }
+        return badges
+    }
+
     static func aggregateOnDiskBytes(_ entries: [ModelEntry]) -> DiskUsage {
         var total: Int64 = 0
         var anyParsed = false

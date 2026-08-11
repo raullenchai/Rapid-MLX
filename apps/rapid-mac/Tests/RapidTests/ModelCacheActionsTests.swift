@@ -359,6 +359,42 @@ struct ModelCacheActionsTests {
         #expect(usage.missingSizeCount == 1)
     }
 
+    @Test("disk overview: largest excludes uncached and external entries")
+    func largestManagedEntry() {
+        let entries = [
+            entry("small", cached: true, size: "1 GB"),
+            ModelEntry(alias: "external", hfRepo: nil, sizeOnDisk: "9 GB", cached: true, isExternal: true),
+            entry("not-downloaded", cached: false, size: "8 GB"),
+            entry("largest", cached: true, size: "5 GB"),
+        ]
+        #expect(ModelCacheActions.largestManagedEntry(entries)?.alias == "largest")
+    }
+
+    @Test("disk overview: summary includes count and optional free space")
+    func storageSummary() {
+        let usage = ModelCacheActions.DiskUsage(
+            cachedCount: 2,
+            totalBytes: 3_000_000_000,
+            missingSizeCount: 0
+        )
+        let measured = ModelCacheActions.storageSummary(usage: usage, freeBytes: 20_000_000_000)
+        #expect(measured.contains("2 models"))
+        #expect(measured.contains("free"))
+        let unavailable = ModelCacheActions.storageSummary(usage: usage, freeBytes: nil)
+        #expect(unavailable.contains("2 models"))
+        #expect(!unavailable.contains("free"))
+    }
+
+    @Test("disk overview: starter and last-used badges are conservative keep signals")
+    func retentionBadges() {
+        #expect(ModelCacheActions.retentionBadges(
+            alias: "starter", starterAlias: "starter", lastServedAlias: "starter"
+        ) == ["STARTER", "LAST USED"])
+        #expect(ModelCacheActions.retentionBadges(
+            alias: "other", starterAlias: "starter", lastServedAlias: "recent"
+        ).isEmpty)
+    }
+
     @Test("diskUsageFooter: hidden when nothing cached")
     func diskUsageFooterHidden() {
         let usage = ModelCacheActions.DiskUsage(cachedCount: 0, totalBytes: nil, missingSizeCount: 0)
