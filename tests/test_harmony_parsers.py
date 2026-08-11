@@ -1289,12 +1289,15 @@ class TestHarmonyCLIIntegration:
 
 class TestServeLogLevelFlags:
     def test_cli_serve_has_log_level_flag(self):
-        import importlib
-        import inspect
+        # Assert against the real parser (the flag moved from ``main``
+        # into ``build_parser`` when the two split for #1853's
+        # effective-default tests; source-scraping ``main`` went stale).
+        from vllm_mlx.cli import build_parser
 
-        source = inspect.getsource(importlib.import_module("vllm_mlx.cli").main)
-        assert '"--log-level"' in source
-        assert 'choices=["DEBUG", "INFO", "WARNING", "ERROR"]' in source
+        args = build_parser().parse_args(["serve", "m", "--log-level", "DEBUG"])
+        assert args.log_level == "DEBUG"
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["serve", "m", "--log-level", "TRACE"])
 
     def test_module_server_has_log_level_flag(self):
         from pathlib import Path
