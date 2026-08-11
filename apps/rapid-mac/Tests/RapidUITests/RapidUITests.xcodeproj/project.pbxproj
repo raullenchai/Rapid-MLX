@@ -1,0 +1,392 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		3608146521E5B0C044E55806 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB04F3C22EF0AAABD315027F /* main.swift */; };
+		D71E30DFF3F95D912DA8B3D5 /* ImageGenerationPixelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09911169C1BB45270E153F25 /* ImageGenerationPixelTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		405CD7DDE7986F8317D4F0C8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 2050763562A3D2CF502845B3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2AE93E3215C1858C2978A2CB;
+			remoteInfo = RapidUITestHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		09911169C1BB45270E153F25 /* ImageGenerationPixelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageGenerationPixelTests.swift; sourceTree = "<group>"; };
+		132399B0849D8BAAFA1DCC11 /* RapidUITestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RapidUITestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7425B296704FF8766ABDBEC3 /* RapidUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RapidUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C125516144CFDFB692F0EA16 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		CB04F3C22EF0AAABD315027F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0227B5A18E76E11410CE7982 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				132399B0849D8BAAFA1DCC11 /* RapidUITestHost.app */,
+				7425B296704FF8766ABDBEC3 /* RapidUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1B5A8BB0E7AD6E27D95CB510 /* Host */ = {
+			isa = PBXGroup;
+			children = (
+				C125516144CFDFB692F0EA16 /* Info.plist */,
+				CB04F3C22EF0AAABD315027F /* main.swift */,
+			);
+			path = Host;
+			sourceTree = "<group>";
+		};
+		E6A84D31EDC64D755BA80792 = {
+			isa = PBXGroup;
+			children = (
+				1B5A8BB0E7AD6E27D95CB510 /* Host */,
+				F27E5155342C1F7C1AFFB341 /* Tests */,
+				0227B5A18E76E11410CE7982 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F27E5155342C1F7C1AFFB341 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				09911169C1BB45270E153F25 /* ImageGenerationPixelTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		09CC64EEB7943972825D21A5 /* RapidUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BEDC330663DE29BCB88FABB5 /* Build configuration list for PBXNativeTarget "RapidUITests" */;
+			buildPhases = (
+				7D8D635EBBC8022891B4F0FE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				96B85FD2F66A514917CA07C0 /* PBXTargetDependency */,
+			);
+			name = RapidUITests;
+			packageProductDependencies = (
+			);
+			productName = RapidUITests;
+			productReference = 7425B296704FF8766ABDBEC3 /* RapidUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		2AE93E3215C1858C2978A2CB /* RapidUITestHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 11BAB8E9D5D652B8A79A10B4 /* Build configuration list for PBXNativeTarget "RapidUITestHost" */;
+			buildPhases = (
+				ACC4691B22758826F17E513B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RapidUITestHost;
+			packageProductDependencies = (
+			);
+			productName = RapidUITestHost;
+			productReference = 132399B0849D8BAAFA1DCC11 /* RapidUITestHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		2050763562A3D2CF502845B3 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					09CC64EEB7943972825D21A5 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = 2AE93E3215C1858C2978A2CB;
+					};
+					2AE93E3215C1858C2978A2CB = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = C66820E335E777A4230B7219 /* Build configuration list for PBXProject "RapidUITests" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E6A84D31EDC64D755BA80792;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 0227B5A18E76E11410CE7982 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				2AE93E3215C1858C2978A2CB /* RapidUITestHost */,
+				09CC64EEB7943972825D21A5 /* RapidUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7D8D635EBBC8022891B4F0FE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D71E30DFF3F95D912DA8B3D5 /* ImageGenerationPixelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ACC4691B22758826F17E513B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3608146521E5B0C044E55806 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		96B85FD2F66A514917CA07C0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2AE93E3215C1858C2978A2CB /* RapidUITestHost */;
+			targetProxy = 405CD7DDE7986F8317D4F0C8 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		121AF7BEB0FF56EEEBF7768E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.rapidmlx.rapid-uitests";
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = RapidUITestHost;
+			};
+			name = Debug;
+		};
+		2664CE10D2A86F98B50438DF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		48516F6622BE2EA4861F86A7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Host/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.rapidmlx.rapid-uitest-host";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		4911A93FEA2DC5040D5673FE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.rapidmlx.rapid-uitests";
+				SDKROOT = macosx;
+				TEST_TARGET_NAME = RapidUITestHost;
+			};
+			name = Release;
+		};
+		7EE385A7C1F402FA7125E8E3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Host/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.rapidmlx.rapid-uitest-host";
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		8E04065B1764668575089515 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		11BAB8E9D5D652B8A79A10B4 /* Build configuration list for PBXNativeTarget "RapidUITestHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				48516F6622BE2EA4861F86A7 /* Debug */,
+				7EE385A7C1F402FA7125E8E3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BEDC330663DE29BCB88FABB5 /* Build configuration list for PBXNativeTarget "RapidUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				121AF7BEB0FF56EEEBF7768E /* Debug */,
+				4911A93FEA2DC5040D5673FE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C66820E335E777A4230B7219 /* Build configuration list for PBXProject "RapidUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2664CE10D2A86F98B50438DF /* Debug */,
+				8E04065B1764668575089515 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 2050763562A3D2CF502845B3 /* Project object */;
+}

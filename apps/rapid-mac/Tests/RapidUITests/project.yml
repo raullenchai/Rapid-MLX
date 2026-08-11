@@ -1,0 +1,48 @@
+name: RapidUITests
+options:
+  minimumXcodeGenVersion: 2.42.0
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  RapidUITestHost:
+    type: application
+    platform: macOS
+    sources:
+      - path: Host
+    info:
+      path: Host/Info.plist
+      properties:
+        CFBundleDisplayName: Rapid UI Test Host
+        CFBundleIdentifier: com.rapidmlx.rapid-uitest-host
+        CFBundleName: RapidUITestHost
+        CFBundlePackageType: APPL
+        LSMinimumSystemVersion: "14.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rapidmlx.rapid-uitest-host
+        GENERATE_INFOPLIST_FILE: NO
+  RapidUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: RapidUITestHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rapidmlx.rapid-uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: RapidUITestHost
+schemes:
+  RapidUITests:
+    build:
+      targets:
+        RapidUITestHost: all
+        RapidUITests: [test]
+    test:
+      targets:
+        - RapidUITests

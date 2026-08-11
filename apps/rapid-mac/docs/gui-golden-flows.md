@@ -1,5 +1,19 @@
 # AX-first GUI golden flows
 
+The AX suite remains the broad semantic regression net. A native XCUITest
+target now complements it under `Tests/RapidUITests`: its first migrated
+journey is `image-generation`, where XCTest captures each thumbnail itself,
+crops away selection chrome, and proves the two rendered interiors differ.
+That pixel assertion is intentionally impossible in an `AXUIElement` dump.
+Run it with full Xcode after building the app:
+
+```bash
+./scripts/run-xcui-tests.sh
+```
+
+The target is additive; do not remove an AX journey until its semantic and
+structural assertions have equivalent native coverage.
+
 `scripts/gui-golden-flows.sh` runs the release journeys against a built
 Rapid-MLX Desktop app without loading a real model.
 
