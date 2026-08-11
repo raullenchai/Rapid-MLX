@@ -31,12 +31,13 @@ final class ImageGenerationPixelTests: XCTestCase {
         let appURL = rapidMacRoot.appendingPathComponent("build/Rapid-MLX Desktop.app")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: fakeSidecar))
         XCTAssertTrue(FileManager.default.fileExists(atPath: appURL.path))
+        let eventLog = testHome.appendingPathComponent("fake-events.jsonl")
         let app = XCUIApplication(url: appURL)
         app.launchEnvironment = [
             "HOME": testHome.path,
             "CFFIXED_USER_HOME": testHome.path,
             "RAPID_BIN": fakeSidecar,
-            "FAKE_EVENT_LOG": testHome.appendingPathComponent("fake-events.jsonl").path,
+            "FAKE_EVENT_LOG": eventLog.path,
             "FAKE_IMAGE_STEPS": "4",
             "FAKE_IMAGE_STEP_MS": "100",
         ]
@@ -48,9 +49,23 @@ final class ImageGenerationPixelTests: XCTestCase {
         XCTAssertTrue(images.waitForExistence(timeout: 10))
         images.click()
 
+        // Catalog discovery is asynchronous. Wait for the Images picker to
+        // resolve before pressing the shared readiness control; otherwise the
+        // click can still target the previously selected chat model.
+        let picker = element("Images.ModelPicker", in: app)
+        XCTAssertTrue(picker.waitForExistence(timeout: 20))
+        XCTAssertTrue(waitUntil(timeout: 20) {
+            picker.debugDescription.contains("fake-image-alias")
+        })
+
         let readiness = element("Readiness.Action", in: app)
         XCTAssertTrue(readiness.waitForExistence(timeout: 20))
         readiness.click()
+        XCTAssertTrue(waitUntil(timeout: 30) {
+            guard let events = try? String(contentsOf: eventLog, encoding: .utf8) else { return false }
+            return events.contains(#""event": "server_started""#)
+                && events.contains(#""alias": "fake-image-alias""#)
+        })
 
         let prompt = element("Images.Prompt", in: app)
         XCTAssertTrue(prompt.waitForExistence(timeout: 20))
