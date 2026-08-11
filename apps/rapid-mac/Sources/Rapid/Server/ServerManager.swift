@@ -2646,6 +2646,60 @@ final class ServerManager {
         "HF_HOME", "HF_HUB_CACHE", "XDG_CACHE_HOME",
     ]
 
+    /// Directories appended to the sidecar's ``PATH`` so user-installed
+    /// toolchains stay reachable when the app is launched from Finder/Dock.
+    ///
+    /// A GUI app started from the Dock inherits launchd's environment, whose
+    /// ``PATH`` is ``/usr/bin:/bin:/usr/sbin:/sbin`` unless the user has run
+    /// ``launchctl setenv PATH`` — virtually nobody has. Homebrew's
+    /// ``/opt/homebrew/bin`` (Apple Silicon), ``/usr/local/bin`` (Intel), and
+    /// uv's installer target ``~/.local/bin`` are all absent from it.
+    ///
+    /// Order is the conventional macOS toolchain precedence. ``~/.local/bin``
+    /// is appended separately by ``augmentedToolchainPATH`` because it needs
+    /// the resolved home directory.
+    nonisolated internal static let toolchainPATHFallbacks: [String] = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+
+    /// ``ambient`` PATH with the standard toolchain directories appended.
+    ///
+    /// Ambient entries keep their position and precedence — we only APPEND
+    /// fallbacks, never reorder what the operator set, so a user who put a
+    /// specific toolchain first still wins. Duplicates are dropped so the
+    /// result stays stable when the ambient PATH already lists a fallback
+    /// (the common case when the app is launched from a terminal).
+    ///
+    /// ``home`` is used for ``~/.local/bin`` and is ignored unless it is an
+    /// absolute path, so a missing/garbage ``HOME`` can't inject a relative
+    /// entry into the child's PATH.
+    nonisolated internal static func augmentedToolchainPATH(
+        ambient: String?,
+        home: String?
+    ) -> String {
+        var seen = Set<String>()
+        var ordered: [String] = []
+
+        func add(_ directory: String) {
+            guard !directory.isEmpty, seen.insert(directory).inserted else { return }
+            ordered.append(directory)
+        }
+
+        for entry in (ambient ?? "").split(separator: ":", omittingEmptySubsequences: true) {
+            add(String(entry))
+        }
+        for fallback in toolchainPATHFallbacks {
+            add(fallback)
+        }
+        if let home, home.hasPrefix("/") {
+            add((home as NSString).appendingPathComponent(".local/bin"))
+        }
+        return ordered.joined(separator: ":")
+    }
+
     /// Pure builder for the FULL env handed to ``ProcessGroupChild.spawn``
     /// for the ``rapid-mlx serve`` child. Despite the historical
     /// "additions" name (#271 landed the helper, #272 turned it into
@@ -2722,6 +2776,26 @@ final class ServerManager {
             }
             env[key] = value
         }
+
+        // Layer 1b: append user-toolchain directories to PATH.
+        //
+        // Forwarding launchd's PATH verbatim breaks every stdio MCP server
+        // the user configures: the engine resolves ``uvx`` / ``npx`` /
+        // ``docker`` with ``shutil.which`` against THIS PATH and fails with
+        // "Command 'uvx' not found in PATH" (``vllm_mlx/mcp/security.py``).
+        // The same config works when the app is launched from a terminal,
+        // so the bug only reproduces via Finder/Dock — i.e. only for real
+        // users, never in a developer's own terminal-launched run.
+        //
+        // ``DownloadManager.augmentedEnv`` already does this for the
+        // ``rapid-mlx pull`` child; the serve child was left behind.
+        // Applied AFTER the allowlist loop so an ambient PATH that did make
+        // it through keeps its own ordering, and BEFORE Layer 2 so the
+        // desktop-injected vars are unaffected.
+        env["PATH"] = augmentedToolchainPATH(
+            ambient: env["PATH"],
+            home: env["HOME"]
+        )
 
         // Layer 2: desktop-injected, always.
         if !bearer.isEmpty {

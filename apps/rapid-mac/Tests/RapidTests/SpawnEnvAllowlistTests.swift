@@ -18,6 +18,75 @@ import Testing
 @Suite("Spawn env allowlist (issue #272)")
 struct SpawnEnvAllowlistTests {
 
+    // MARK: - PATH augmentation for Dock-launched runs
+
+    /// The PATH a GUI app actually inherits when launched from Finder or
+    /// the Dock: launchd's default, with no Homebrew and no ``~/.local/bin``.
+    private static let launchdPATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+    @Test("Dock-launched PATH gains Homebrew and ~/.local/bin so stdio MCP servers resolve")
+    func dockLaunchPATHGainsToolchainDirs() {
+        // The reported failure: a `time` connector configured as
+        // `uvx --with mcp==1.9.4 mcp-server-time` reports
+        // "Command 'uvx' not found in PATH" when the app is opened from the
+        // Dock, but works when the app is started from a terminal. The
+        // engine resolves the command with `shutil.which` against the
+        // sidecar's PATH (vllm_mlx/mcp/security.py), so launchd's minimal
+        // PATH means Homebrew's uvx is invisible.
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["PATH": Self.launchdPATH, "HOME": "/Users/test"]
+        )
+        let entries = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        #expect(entries.contains("/opt/homebrew/bin"))
+        #expect(entries.contains("/usr/local/bin"))
+        #expect(entries.contains("/Users/test/.local/bin"))
+        // launchd's own entries survive, still ahead of the fallbacks.
+        #expect(env["PATH"]?.hasPrefix(Self.launchdPATH) == true)
+    }
+
+    @Test("PATH augmentation does not duplicate directories already present")
+    func pathAugmentationDeduplicates() {
+        // A terminal-launched run already has Homebrew on PATH. Appending
+        // blindly would ship a PATH that grows on every launch path and
+        // makes the env harder to read in `ps eww` / bug reports.
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["PATH": "/opt/homebrew/bin:/usr/bin", "HOME": "/Users/test"]
+        )
+        let entries = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        #expect(entries.filter { $0 == "/opt/homebrew/bin" }.count == 1)
+        #expect(entries.filter { $0 == "/usr/bin" }.count == 1)
+        // The operator's ordering is preserved — Homebrew stays first.
+        #expect(entries.first == "/opt/homebrew/bin")
+    }
+
+    @Test("A non-absolute HOME contributes no ~/.local/bin entry")
+    func nonAbsoluteHomeIsIgnoredForLocalBin() {
+        // Defensive: a missing or relative HOME must not inject a relative
+        // directory into the child's PATH, where it would resolve against
+        // the sidecar's cwd.
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["PATH": Self.launchdPATH, "HOME": "relative/path"]
+        )
+        let entries = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        #expect(entries.allSatisfy { $0.hasPrefix("/") })
+        #expect(entries.contains { $0.hasSuffix(".local/bin") } == false)
+    }
+
+    @Test("Missing ambient PATH still yields a usable toolchain PATH")
+    func absentAmbientPATHStillGetsFallbacks() {
+        let env = ServerManager.serveEnvironmentAdditions(
+            bearer: "b",
+            ambient: ["HOME": "/Users/test"]
+        )
+        let entries = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+        #expect(entries.contains("/opt/homebrew/bin"))
+        #expect(entries.contains("/usr/bin"))
+        #expect(entries.contains("/bin"))
+    }
+
     // MARK: - allowlist drops third-party secrets
 
     @Test("Third-party API keys in the launcher's env are dropped")
@@ -48,8 +117,9 @@ struct SpawnEnvAllowlistTests {
         #expect(env["GH_TOKEN"] == nil)
         #expect(env["GITHUB_TOKEN"] == nil)
         #expect(env["NPM_TOKEN"] == nil)
-        // PATH is on the allowlist, so it passes through.
-        #expect(env["PATH"] == "/usr/bin")
+        // PATH is on the allowlist, so it passes through — with the
+        // toolchain fallbacks appended (see augmentedToolchainPATH).
+        #expect(env["PATH"]?.split(separator: ":").first.map(String.init) == "/usr/bin")
         // The legitimate bearer is the canonical one.
         #expect(env["RAPID_MLX_API_KEY"] == "real-bearer")
     }
@@ -73,7 +143,9 @@ struct SpawnEnvAllowlistTests {
             bearer: "b",
             ambient: ambient
         )
-        #expect(env["PATH"] == "/usr/local/bin:/usr/bin:/bin")
+        // Ambient entries keep their order and precedence; the toolchain
+        // fallbacks are appended after them.
+        #expect(env["PATH"]?.hasPrefix("/usr/local/bin:/usr/bin:/bin") == true)
         #expect(env["HOME"] == "/Users/test")
         #expect(env["USER"] == "test")
         #expect(env["LOGNAME"] == "test")
@@ -129,7 +201,7 @@ struct SpawnEnvAllowlistTests {
             ambient: ambient
         )
         #expect(env["RAPID_MLX_API_KEY"] == "real-bearer-xyz")
-        #expect(env["PATH"] == "/usr/bin")
+        #expect(env["PATH"]?.hasPrefix("/usr/bin") == true)
     }
 
     // MARK: - empty bearer ships no sentinel
@@ -150,7 +222,7 @@ struct SpawnEnvAllowlistTests {
         #expect(env.keys.contains("RAPID_MLX_API_KEY") == false)
         // The rest of the layered env still ships correctly.
         #expect(env["PYTHONUNBUFFERED"] == "1")
-        #expect(env["PATH"] == "/usr/bin")
+        #expect(env["PATH"]?.hasPrefix("/usr/bin") == true)
     }
 
     // MARK: - desktop prefix-cache ceiling (issue #1412)
@@ -227,10 +299,13 @@ struct SpawnEnvAllowlistTests {
 
     @Test("Empty ambient yields only the desktop-injected layer")
     func emptyAmbientYieldsOnlyInjected() {
-        // No allowlisted var present means the result is exactly the
-        // desktop-injected layer — bearer + PYTHONUNBUFFERED + HF
-        // pinning. Anything else would mean we accidentally hard-coded
-        // a system var into the helper.
+        // No allowlisted var present means the result is the desktop-
+        // injected layer — bearer + PYTHONUNBUFFERED + HF pinning — plus
+        // ``PATH``, which is deliberately always set (see
+        // ``augmentedToolchainPATH``): a sidecar with no PATH at all
+        // cannot resolve any stdio MCP server command. Anything BEYOND
+        // this set would mean we accidentally hard-coded a system var
+        // into the helper, which is what this test exists to catch.
         let env = ServerManager.serveEnvironmentAdditions(
             bearer: "b",
             ambient: [:]
@@ -241,8 +316,12 @@ struct SpawnEnvAllowlistTests {
             "HF_HUB_DISABLE_PROGRESS_BARS",
             "HF_HUB_DISABLE_XET",
             "HF_HUB_DOWNLOAD_TIMEOUT",
+            "PATH",
         ]
         #expect(Set(env.keys) == expectedKeys)
+        // The always-set PATH carries only the fallback toolchain dirs —
+        // no HOME means no ``~/.local/bin`` entry.
+        #expect(env["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
     }
 
     // MARK: - allowlist is documented in source as a Set
@@ -413,7 +492,7 @@ struct SpawnEnvAllowlistTests {
         #expect(env.keys.contains("HF_HUB_CACHE") == false)
         #expect(env.keys.contains("XDG_CACHE_HOME") == false)
         // Other allowlisted keys still cross.
-        #expect(env["PATH"] == "/usr/bin")
+        #expect(env["PATH"]?.hasPrefix("/usr/bin") == true)
     }
 
     @Test("Both HF_HUB_CACHE and HF_HOME set — both cross verbatim, child resolves precedence")

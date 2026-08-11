@@ -94,7 +94,7 @@ struct WatchdogSpawnEnvTests {
             supervisorPID: 7777
         )
         #expect(env["RAPID_MLX_API_KEY"] == "real-bearer-123")
-        #expect(env["PATH"] == "/usr/bin")
+        #expect(env["PATH"]?.hasPrefix("/usr/bin") == true)
         #expect(env["HOME"] == "/Users/test")
         #expect(env["RAPID_MLX_WATCHDOG_PPID"] == "7777")
         #expect(env["PYTHONUNBUFFERED"] == "1")
