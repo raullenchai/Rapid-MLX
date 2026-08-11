@@ -419,6 +419,11 @@ struct DownloadManagerTests {
         #expect(before != after, "a deletion anywhere must invalidate the picker's snapshot")
         // Same generation + same binary ⇒ no redundant re-fetch.
         #expect(before == ModelPickerBar.PickerCatalogKey(binaryPath: path, cacheGeneration: 3))
+        #expect(before != ModelPickerBar.PickerCatalogKey(
+            binaryPath: path,
+            cacheGeneration: 3,
+            refreshEnabled: false
+        ))
     }
 }
 

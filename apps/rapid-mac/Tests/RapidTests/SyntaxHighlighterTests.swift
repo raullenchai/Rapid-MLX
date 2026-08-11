@@ -70,6 +70,19 @@ struct SyntaxHighlighterTests {
         }
     }
 
+    @Test("Configured punctuation-bearing tokens colour as one run")
+    func compoundConfiguredTokens() {
+        #expect(runs(".PHONY: all", "makefile", kind: .keyword).contains(".PHONY"))
+        #expect(runs("$(filter-out %.tmp,$(FILES))", "makefile", kind: .type)
+            .contains("filter-out"))
+        #expect(runs("a { background-color: red; }", "css", kind: .type)
+            .contains("background-color"))
+        #expect(runs("@font-face { font-family: Demo; }", "css", kind: .keyword)
+            .contains("@font-face"))
+        #expect(!runs("not-background-colorful", "css", kind: .type)
+            .contains("background-color"))
+    }
+
     @Test("Empty input is handled")
     func emptyInput() {
         let out = SyntaxHighlighter.highlight("", language: "swift")

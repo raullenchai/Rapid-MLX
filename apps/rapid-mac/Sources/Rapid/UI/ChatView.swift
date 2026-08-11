@@ -187,6 +187,9 @@ struct ChatView: View {
     /// hero and the composer read their copy off this, so they cannot
     /// describe the same lifecycle differently.
     var readiness: ModelReadiness
+    /// First launch must not inspect model caches behind the consent sheet.
+    /// The parent flips this after the user makes that one-time decision.
+    var catalogRefreshEnabled: Bool = true
     /// Explicit picker gesture signal used by launch auto-start arbitration.
     /// Catalog-driven default selection intentionally does not call this.
     var onUserModelSelection: (String) -> Void = { _ in }
@@ -509,6 +512,7 @@ struct ChatView: View {
                 alias: $alias,
                 quickstart: quickstart,
                 composerStyle: true,
+                catalogRefreshEnabled: catalogRefreshEnabled,
                 onUserSelection: onUserModelSelection
             )
             sendOrStopButton

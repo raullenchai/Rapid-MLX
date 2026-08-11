@@ -618,6 +618,10 @@ assert_rendered_shapes() {
     assert_code_block_is_its_own_view "$m2" \
         "Here is the function you asked for" "def fib(n)"
     assert_tree_text "$m2" "    return a"
+    assert_tree_text "$m2" "background-color"
+    assert_tree_text "$m2" "@font-face"
+    assert_tree_text "$m2" ".PHONY"
+    assert_tree_text "$m2" "filter-out"
 
     assistant_message_only "$transcript" 3 "$m3"
     assert_rendered_as_separate_nodes "$m3" "table cells" \
@@ -996,6 +1000,15 @@ flow_fresh_install() {
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
     baseline fresh-install.consent "$OUT/consent-visible.json"
+    # #1560: merely launching a fresh install must not inspect model caches
+    # behind the consent sheet. Give both SwiftUI catalog tasks time to run;
+    # the fake sidecar records every non-serve command before it exits.
+    sleep 0.75
+    if [[ -s "$OUT/fake-events.jsonl" ]] && jq -e \
+        'select(.event == "command" and (.subcommand == "models" or .subcommand == "ls"))' \
+        "$OUT/fake-events.jsonl" >/dev/null; then
+        die "#1560: first launch probed the model catalog before user interaction"
+    fi
     dismiss_first_run
     selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
     [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \

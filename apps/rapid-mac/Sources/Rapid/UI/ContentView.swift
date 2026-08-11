@@ -213,8 +213,10 @@ struct ContentView: View {
         // extra subprocess.
         .task(id: ModelPickerBar.PickerCatalogKey(
             binaryPath: server.binaryPath,
-            cacheGeneration: downloads.cacheGeneration
+            cacheGeneration: downloads.cacheGeneration,
+            refreshEnabled: !telemetryConsentPending
         )) {
+            guard !telemetryConsentPending else { return }
             await refreshCatalogSnapshot()
         }
         .task {
@@ -447,6 +449,7 @@ struct ContentView: View {
                 server: server,
                 alias: $alias,
                 readiness: readiness,
+                catalogRefreshEnabled: !telemetryConsentPending,
                 onUserModelSelection: selectChatModel,
                 onReadinessAction: performReadinessAction
             )

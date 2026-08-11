@@ -6,6 +6,8 @@ Rapid-MLX Desktop app without loading a real model.
 **Journeys** — a user walking a path end to end:
 
 1. fresh install, consent, onboarding, and steady-state shell; its
+   pre-consent checkpoint waits without interacting and proves the fake
+   sidecar receives no `models` or `ls` cache probe (#1560); its
    `cached-quickstart` companion proves a first-run user can select and start
    an existing chat model without a second download (#1793);
    `download-progress` drives a deliberately undersized download estimate and
@@ -176,6 +178,12 @@ Every journey gets a unique bundle identifier and throwaway `HOME` through
 `dogfood-isolate.sh`. The fake sidecar emits deterministic SSE and JSONL
 lifecycle evidence, so the suite does not download a model or put meaningful
 pressure on unified memory.
+
+`chat-depth` also streams CSS and Makefile fences with punctuation-bearing
+configured tokens (`background-color`, `@font-face`, `.PHONY`, `filter-out`),
+split across SSE chunks. The AX contract proves the source survives intact in
+separate rendered code blocks; `SyntaxHighlighterTests` owns the colour-run
+assertion because foreground colours are not exposed by `AXUIElement`.
 
 ### Low-memory recovery
 

@@ -260,6 +260,10 @@ enum SyntaxHighlighter {
         /// template. Same "don't stop at the newline" as ``rawMultilineQuotes``
         /// but `\`` still escapes, so it is a distinct set rather than a flag.
         let escapedMultilineQuotes: Set<Character>
+        /// Configured keywords/types containing punctuation that the generic
+        /// identifier scanner deliberately excludes. Longest-first prevents
+        /// a shorter configured token from stealing a longer one.
+        let punctuationTokens: [(text: String, kind: TokenKind)]
 
         init(
             lineComment: [String],
@@ -291,6 +295,16 @@ enum SyntaxHighlighter {
             self.nestableBlockComments = nestableBlockComments
             self.rawMultilineQuotes = rawMultilineQuotes
             self.escapedMultilineQuotes = escapedMultilineQuotes
+            self.punctuationTokens = (
+                keywords.compactMap { token in
+                    token.contains(where: { !isIdentifierChar($0) && $0 != "@" && $0 != "#" })
+                        ? (token, TokenKind.keyword) : nil
+                }
+                + types.compactMap { token in
+                    token.contains(where: { !isIdentifierChar($0) && $0 != "@" && $0 != "#" })
+                        ? (token, TokenKind.type) : nil
+                }
+            ).sorted { lhs, rhs in lhs.0.count > rhs.0.count }
         }
 
         static func forLanguage(_ raw: String?) -> Grammar? {
@@ -504,6 +518,19 @@ enum SyntaxHighlighter {
                 continue
             }
 
+            // --- configured punctuation-bearing keyword / type ---
+            // Match before generic identifiers so `.PHONY`, `filter-out`,
+            // `background-color`, and `@font-face` reach the exact token sets
+            // that already declare them instead of being split at `.` / `-`.
+            if let token = grammar.punctuationTokens.first(where: {
+                matches($0.text, chars, i)
+                    && punctuationTokenIsDelimited($0.text, chars: chars, at: i)
+            }) {
+                emit(token.text, token.kind)
+                i += token.text.count
+                continue
+            }
+
             // --- identifier / keyword / type ---
             if isIdentifierStart(chars[i]) {
                 let start = i
@@ -587,6 +614,23 @@ enum SyntaxHighlighter {
 
     private static func isIdentifierChar(_ c: Character) -> Bool {
         c.isLetter || c.isNumber || c == "_" || c == "$"
+    }
+
+    private static func punctuationTokenIsDelimited(
+        _ token: String,
+        chars: [Character],
+        at index: Int
+    ) -> Bool {
+        if index > 0 {
+            let previous = chars[index - 1]
+            guard !isIdentifierChar(previous), previous != "-", previous != "." else {
+                return false
+            }
+        }
+        let end = index + token.count
+        guard end < chars.count else { return true }
+        let next = chars[end]
+        return !isIdentifierChar(next) && next != "-" && next != "."
     }
 
     private static func apostropheIdentifierEnd(
