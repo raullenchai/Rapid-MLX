@@ -194,14 +194,18 @@ class SchedulerConfig:
     kv_cache_turboquant_mode: str = "v4"
 
     # R15-P1 (task #296): disk-backed KV checkpointing.
-    # ``0`` disables the feature so the scheduler hot-path never touches
-    # the disk module; the default 256 matches MLX-LM's ``KVCache.step``
+    # ``0`` (default) disables the feature so the scheduler hot-path never
+    # touches the disk module. Opt-in only: each snapshot serializes the
+    # FULL KV cache synchronously on the decode thread, which costs
+    # O(context) per boundary — at 16k context on a 4B model one snapshot
+    # is ~0.6s, degrading long-context decode by up to 45% (#1853). When
+    # enabling, use a multiple of 256 to match MLX-LM's ``KVCache.step``
     # so the on-disk shape lines up with the in-memory shape on reload.
     # The disk cap is resolved at runtime via
     # ``RAPID_MLX_KV_CHECKPOINT_MAX_BYTES`` so a single field on the
     # SchedulerConfig is enough — see
     # :mod:`vllm_mlx.runtime.disk_kv_checkpoint`.
-    kv_disk_checkpoint_interval: int = 256
+    kv_disk_checkpoint_interval: int = 0
 
     # Paged cache settings (experimental - for memory efficiency)
     use_paged_cache: bool = (

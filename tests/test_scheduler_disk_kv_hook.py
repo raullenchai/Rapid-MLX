@@ -338,3 +338,49 @@ def test_safe_disk_checkpoint_records_silent_failure(
     # double-check the second call ticked again, so a "swallows but
     # forgets to record" regression also fails here.
     assert _dkc.get_stats()["hook_errors"] == after + 1
+
+
+# ---------------------------------------------------------------------------
+# #1853 — the disk checkpoint must be OPT-IN.
+# ---------------------------------------------------------------------------
+
+
+def test_disk_checkpoint_default_is_opt_in():
+    """Default interval must be 0 — checkpointing is opt-in (#1853).
+
+    When this defaulted to 256, every server synchronously serialized
+    the FULL KV cache to disk every 256 generated tokens — an
+    O(context) stall on the decode thread (~0.6s per snapshot at 16k
+    on a 4B model) that degraded 16k-context decode from 150 to
+    82 tok/s, and nothing in the engine ever read the checkpoints
+    back. Anyone flipping the default back on must come armed with an
+    async writer and a wired-up load path.
+    """
+    assert SchedulerConfig().kv_disk_checkpoint_interval == 0
+
+
+def test_disk_checkpoint_cli_default_is_opt_in():
+    """The serve CLI flag must default to 0 as well (#1853).
+
+    The parser is built inline in ``cli.main`` (no importable
+    factory), so pin the ``add_argument`` block's default in source:
+    a CLI default that silently diverges from SchedulerConfig's 0
+    re-enables the decode stall for every ``rapid-mlx serve`` user
+    while this file's config-level test stays green.
+    """
+    import inspect
+    import re
+
+    import vllm_mlx.cli as cli_mod
+
+    src = inspect.getsource(cli_mod)
+    m = re.search(
+        r'"--kv-disk-checkpoint-interval",.*?default=(\d+)\s*,',
+        src,
+        flags=re.DOTALL,
+    )
+    assert m, "--kv-disk-checkpoint-interval add_argument block not found"
+    assert m.group(1) == "0", (
+        f"--kv-disk-checkpoint-interval CLI default must be 0 (opt-in, "
+        f"#1853); found {m.group(1)}"
+    )

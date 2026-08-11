@@ -3557,11 +3557,12 @@ def serve_command(args):
         # the boolean ``kv_cache_turboquant`` for downstream callers;
         # the mode string rides on the dedicated ``_mode`` field.
         **_turboquant_scheduler_kwargs(args),
-        # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok
-        # boundaries. ``0`` disables; the runtime module guards every
-        # hot-path call with ``should_checkpoint`` so the cost when off
-        # is one int comparison.
-        kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
+        # R15-P1 (task #296): disk-backed KV checkpointing. ``0``
+        # (default) disables; each snapshot blocks the decode thread for
+        # O(context) so the feature is opt-in (#1853). The runtime module
+        # guards every hot-path call with ``should_checkpoint`` so the
+        # cost when off is one int comparison.
+        kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 0),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
@@ -4668,11 +4669,10 @@ def bench_command(args):
             kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
             kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
             # R15-P1 (task #296): disk-backed KV checkpointing. Bench
-            # path mirrors serve so a regression in the boundary trigger
-            # surfaces in `rapid-mlx bench` numbers too.
-            kv_disk_checkpoint_interval=getattr(
-                args, "kv_disk_checkpoint_interval", 256
-            ),
+            # path mirrors serve (0 = off by default, #1853) so a
+            # regression in the boundary trigger surfaces in
+            # `rapid-mlx bench` numbers too.
+            kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 0),
             # PFlash long-prompt compression (#287)
             pflash_config=bench_pflash_config,
         )
@@ -8391,19 +8391,25 @@ Examples:
         default=32,
         help="Group size for TurboQuant V-side quantization (default: 32)",
     )
-    # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok boundaries.
-    # 0 disables the feature entirely (no scheduler-hot-path cost, no
-    # ~/.cache/rapid-mlx/kv_checkpoints/ directory creation); the default
-    # 256 matches MLX-LM's KVCache.step and LMCache's external-chunk size
-    # so the on-disk shape aligns with the in-memory shape on reload.
+    # R15-P1 (task #296): disk-backed KV checkpointing. 0 (default)
+    # disables the feature entirely (no scheduler-hot-path cost, no
+    # ~/.cache/rapid-mlx/kv_checkpoints/ directory creation). Opt-in
+    # only: each snapshot serializes the full KV cache synchronously on
+    # the decode thread — O(context) per boundary, which degraded 16k
+    # decode by up to 45% when this defaulted to 256 (#1853). When
+    # enabling, use a multiple of 256 to match MLX-LM's KVCache.step and
+    # LMCache's external-chunk size so the on-disk shape aligns with the
+    # in-memory shape on reload.
     serve_parser.add_argument(
         "--kv-disk-checkpoint-interval",
         type=int,
-        default=256,
+        default=0,
         help=(
             "Token interval at which the scheduler snapshots KV state to "
             "~/.cache/rapid-mlx/kv_checkpoints/ for resume / shared-prefix "
-            "reload (R15 #296, default 256). 0 disables. Pairs with the "
+            "reload (R15 #296). 0 (default) disables. Each snapshot blocks "
+            "decode for O(context), so enable only when checkpoint reuse "
+            "is worth that stall (#1853). Pairs with the "
             "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
             "for the oldest-first disk-cap eviction policy."
         ),
