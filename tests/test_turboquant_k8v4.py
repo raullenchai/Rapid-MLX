@@ -22,6 +22,7 @@ import argparse
 import copy
 import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import mlx.core as mx
@@ -533,12 +534,32 @@ class TestCLIFlag:
 
         from vllm_mlx import cli
 
-        source = inspect.getsource(cli.serve_command)
+        # The check moved out of ``serve_command`` into the extracted
+        # ``kv_cache_flag_conflict`` predicate (#1717) so it could be tested
+        # without spawning a real ``serve``; ``serve_command`` now calls it
+        # and exits on a non-None result. Both halves are asserted, so
+        # neither the check nor its wiring can silently disappear.
+        source = inspect.getsource(cli.kv_cache_flag_conflict)
         # Mutex check must exist and use ``args.kv_cache_turboquant``
         # truthiness (not ``== True``) so the v4/k8v4 string values
         # trigger the gate.
         assert "kv_cache_turboquant and args.kv_cache_quantization" in source
         assert "mutually exclusive" in source.lower()
+        assert "kv_cache_flag_conflict" in inspect.getsource(cli.serve_command)
+
+        # Behavioural companion to the greps above: the gate must actually
+        # fire for the string modes the ``nargs="?"`` flag now produces.
+        for mode in ("v4", "k8v4"):
+            args = SimpleNamespace(
+                kv_cache_turboquant=mode,
+                kv_cache_quantization=True,
+                kv_cache_quantization_bits=8,
+                reasoning=False,
+            )
+            reason = cli.kv_cache_flag_conflict(args)
+            assert reason is not None and "mutually exclusive" in reason.lower(), (
+                f"--kv-cache-turboquant={mode} + --kv-cache-quantization must conflict"
+            )
 
 
 # ---------------------------------------------------------------------------

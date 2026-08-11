@@ -2383,6 +2383,71 @@ def _serve_will_run_on_mllm_lane(args) -> bool:
     return is_mllm_lane
 
 
+def kv_cache_flag_conflict(args) -> str | None:
+    """Return the operator-facing reason the KV-cache flags conflict, else None.
+
+    Pure predicate over the parsed args — no I/O, no model resolution, no
+    process exit. ``serve_command`` prints the returned message and exits 1.
+
+    Extracted from ``serve_command`` because the rejections were only
+    reachable by spawning a real ``serve``, and the test that covered them
+    did exactly that: it ran ``serve <alias> --reasoning
+    --kv-cache-quantization --kv-cache-quantization-bits 4`` in a subprocess
+    with a 30 s timeout and asserted a non-zero exit. Alias resolution and
+    the weight download run *before* this point, so on a machine without the
+    fixture model cached the child spent the whole budget downloading and the
+    test timed out — it passed or failed on local Hugging Face cache state
+    rather than on whether the rejection still fired. A guard whose colour is
+    decided by something other than the behaviour it guards is not a guard.
+
+    The three checks and their messages are unchanged; only their location is.
+    """
+    # Mutual exclusion: turboquant (any mode) vs standard quantization.
+    # The argparse layer normalizes the flag to either ``None`` (off),
+    # ``"v4"``, or ``"k8v4"``. Anything truthy means TurboQuant is on.
+    if args.kv_cache_turboquant and args.kv_cache_quantization:
+        return (
+            "--kv-cache-turboquant and --kv-cache-quantization are "
+            "mutually exclusive. Choose one."
+        )
+
+    if not args.kv_cache_quantization:
+        return None
+
+    # codex r1 BLOCKING #1: ``--reasoning`` must override the legacy
+    # ``--kv-cache-quantization`` flag too — otherwise ``rapid-mlx serve
+    # --reasoning --kv-cache-quantization --kv-cache-quantization-bits 4``
+    # silently resolves to int4 and the operator who deliberately asked for
+    # the reasoning profile gets the AIME-class quality cliff. Reject the
+    # conflicting combo explicitly: silently flipping the legacy bits to 8
+    # would hide the misconfiguration. bits=8 is equivalent to
+    # ``--reasoning``'s int8 pin and is harmless; only bits=4 conflicts.
+    if args.reasoning and args.kv_cache_quantization_bits == 4:
+        return (
+            "--reasoning is incompatible with --kv-cache-quantization "
+            "--kv-cache-quantization-bits 4. The reasoning profile pins KV "
+            "cache to int8 because sub-4-bit drops -20pt on AIME-class math. "
+            "Either drop --reasoning or drop --kv-cache-quantization-bits 4 "
+            "(or both; use --kv-cache-dtype int8 instead)."
+        )
+
+    # codex r2 BLOCKING #1: argparse pins ``--kv-cache-quantization-bits`` to
+    # ``choices={4,8}``, but programmatic callers (tests, library users that
+    # bypass argparse) can land an out-of-range bits value here. The old
+    # ``"int4" if bits == 4 else "int8"`` silently labeled every non-4 value
+    # as ``int8`` even when KV would actually be quantized at the requested
+    # bit width. Fail fast instead so the gauge / banner / SchedulerConfig
+    # never lie about the active dtype.
+    if args.kv_cache_quantization_bits not in (4, 8):
+        return (
+            f"--kv-cache-quantization-bits must be 4 or 8 "
+            f"(got {args.kv_cache_quantization_bits}). Use --kv-cache-dtype "
+            f"for the canonical knob."
+        )
+
+    return None
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -3286,14 +3351,12 @@ def serve_command(args):
         args, model_name=args.model
     )
 
-    # Mutual exclusion: turboquant (any mode) vs standard quantization.
-    # The argparse layer normalizes the flag to either ``None`` (off),
-    # ``"v4"``, or ``"k8v4"``. Anything truthy means TurboQuant is on.
-    if args.kv_cache_turboquant and args.kv_cache_quantization:
-        print(
-            "\n  Error: --kv-cache-turboquant and --kv-cache-quantization are "
-            "mutually exclusive. Choose one.\n"
-        )
+    # Reject conflicting KV-cache flag combinations before anything else in
+    # this block reads them. Extracted so the rejection can be tested without
+    # spawning ``serve`` — see ``kv_cache_flag_conflict``.
+    _kv_conflict = kv_cache_flag_conflict(args)
+    if _kv_conflict is not None:
+        print(f"\n  Error: {_kv_conflict}\n")
         sys.exit(1)
 
     # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
@@ -3345,42 +3408,10 @@ def serve_command(args):
             KVCacheDtypeDecision,
         )
 
-        # codex r1 BLOCKING #1: ``--reasoning`` must override the
-        # legacy ``--kv-cache-quantization`` flag too — otherwise
-        # ``rapid-mlx serve --reasoning --kv-cache-quantization
-        # --kv-cache-quantization-bits 4`` silently resolves to int4
-        # and the operator who deliberately asked for the reasoning
-        # profile gets the AIME-class quality cliff. Reject the
-        # conflicting combo with an explicit error: silently flipping
-        # the legacy bits to 8 would hide the misconfiguration.
-        # bits=8 is equivalent to --reasoning's int8 pin and is
-        # harmless; only bits=4 conflicts.
-        if args.reasoning and args.kv_cache_quantization_bits == 4:
-            print(
-                "\n  Error: --reasoning is incompatible with "
-                "--kv-cache-quantization --kv-cache-quantization-bits 4. "
-                "The reasoning profile pins KV cache to int8 because "
-                "sub-4-bit drops -20pt on AIME-class math. Either drop "
-                "--reasoning or drop --kv-cache-quantization-bits 4 "
-                "(or both; use --kv-cache-dtype int8 instead).\n"
-            )
-            sys.exit(1)
-
-        # codex r2 BLOCKING #1: argparse pins ``--kv-cache-quantization-bits``
-        # to ``choices={4,8}``, but programmatic callers (tests, library
-        # users that bypass argparse) can land an out-of-range bits value
-        # here. The old ``"int4" if bits == 4 else "int8"`` silently
-        # labeled every non-4 value as ``int8`` even when KV would actually
-        # be quantized at the requested bit width. Fail fast instead so
-        # the gauge / banner / SchedulerConfig never lie about the
-        # active dtype.
-        if args.kv_cache_quantization_bits not in (4, 8):
-            print(
-                f"\n  Error: --kv-cache-quantization-bits must be 4 or 8 "
-                f"(got {args.kv_cache_quantization_bits}). Use "
-                f"--kv-cache-dtype for the canonical knob.\n"
-            )
-            sys.exit(1)
+        # The two rejections that used to live here (``--reasoning`` +
+        # bits=4, and an out-of-range bits value) moved into
+        # ``kv_cache_flag_conflict`` and already fired above, so anything
+        # reaching this point has a legal bits value.
         legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
         # When --reasoning is set alongside the (compatible) bits=8
         # legacy flag, the operator-facing reason should still
