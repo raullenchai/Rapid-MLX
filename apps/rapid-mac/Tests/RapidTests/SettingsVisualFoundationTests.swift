@@ -75,15 +75,20 @@ struct SettingsVisualFoundationTests {
     @MainActor
     @Test("Every category still exists, with a title and an icon")
     func everyCategorySurvives() {
+        // ``performance`` joined in #1717 (per-model engine knobs), as
+        // ``connectors`` did in #1716. The guard's job is to make a category
+        // change deliberate and reviewed, not to freeze the list forever —
+        // update this literal alongside the enum when a feature adds one.
         let expected: Set<String> = [
-            "modelManagement", "tools", "connectors", "appearance", "privacy", "app",
+            "modelManagement", "tools", "connectors", "performance",
+            "appearance", "privacy", "app",
         ]
         let actual = Set(SettingsView.Category.allCases.map(\.rawValue))
         #expect(
             actual == expected,
             """
             UI-1 is a visual migration and must not add, remove, or rename a \
-            Settings category. Got \(actual.sorted()).
+            Settings category as a side effect. Got \(actual.sorted()).
             """
         )
         for category in SettingsView.Category.allCases {
@@ -96,8 +101,14 @@ struct SettingsVisualFoundationTests {
     @Test("Category order is unchanged, so arrow-key navigation is unchanged")
     func categoryOrderIsStable() {
         #expect(SettingsView.Category.allCases.map(\.rawValue) == [
-            "modelManagement", "tools", "connectors", "appearance", "privacy", "app",
+            "modelManagement", "tools", "connectors", "performance",
+            "appearance", "privacy", "app",
         ])
+        // #1717: ``performance`` sits after ``connectors`` — both are
+        // "what the engine is wired to do", ahead of the presentation and
+        // app-level sections.
+        #expect(SettingsView.category(.connectors, movedBy: 1) == .performance)
+        #expect(SettingsView.category(.performance, movedBy: 1) == .appearance)
         // The rail's ↑/↓ handler walks this order and clamps at the ends.
         #expect(SettingsView.category(.modelManagement, movedBy: -1) == nil)
         #expect(SettingsView.category(.app, movedBy: 1) == nil)

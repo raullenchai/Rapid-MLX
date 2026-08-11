@@ -81,6 +81,13 @@ struct SettingsView: View {
         /// ship with the app and are audited by us, connectors are programs
         /// the user installs and points us at.
         case connectors
+        /// Issue #1717 — per-model engine performance: KV-cache precision,
+        /// prefix caching, cache budget. Deliberately NOT folded into
+        /// ``modelManagement``'s sampling controls: those shape what the model
+        /// says, these shape how fast (and, for some choices, whether) it says
+        /// the same thing. Mixing them would invite the "I moved a slider and
+        /// quality changed" confusion the issue is written to avoid.
+        case performance
         case appearance
         case privacy
         /// Rapid-MLX Desktop app updates. The .app self-update is the
@@ -93,6 +100,7 @@ struct SettingsView: View {
             case .modelManagement: return "Model Management"
             case .tools: return "Tools"
             case .connectors: return "Connectors"
+            case .performance: return "Performance"
             case .appearance: return "Appearance"
             case .privacy: return "Privacy"
             case .app: return "App"
@@ -103,6 +111,7 @@ struct SettingsView: View {
             case .modelManagement: return "externaldrive.fill"
             case .tools: return "wrench.and.screwdriver.fill"
             case .connectors: return "powerplug.fill"
+            case .performance: return "speedometer"
             case .appearance: return "paintpalette.fill"
             case .privacy: return "lock.shield.fill"
             case .app: return "app.badge.fill"
@@ -460,6 +469,8 @@ struct SettingsView: View {
             SettingsToolsPanel()
         case .connectors:
             SettingsConnectorsPanel()
+        case .performance:
+            SettingsPerformancePanel()
         case .appearance:
             appearancePanel
         case .privacy:

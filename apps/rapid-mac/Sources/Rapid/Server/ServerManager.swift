@@ -309,6 +309,18 @@ final class ServerManager {
     /// argv verbatim.
     var mcpConfigPathProvider: (() -> String?)?
 
+    /// Supplies the user's per-model performance flags for the alias about to
+    /// be spawned, or an empty array when they have no opinion about it.
+    ///
+    /// Issue #1717. Same closure shape and rationale as
+    /// ``mcpConfigPathProvider``: the answer is owned by
+    /// ``ModelPerfConfigStore`` in the SwiftUI environment and changes while
+    /// the app runs, and every start path (cold start, crash recovery,
+    /// auto-respawn) funnels through ``start(alias:)`` without threading
+    /// flags. Left nil by tests and the dev-snapshot harness, which therefore
+    /// keep the pre-#1717 argv verbatim.
+    var perfLaunchFlagsProvider: ((String) -> [String])?
+
     /// Health-check budget — interpreted as a **stall window** since
     /// v0.7.13, not a wall-clock-from-launch cap. The deadline slides
     /// forward every time ``downloadProgress`` reports forward motion
@@ -1346,9 +1358,18 @@ final class ServerManager {
         // the 24 GB gemma-4-26b), so a hand-picked model that isn't the
         // recommendation gets none.
         let hardware = MacHardware.detect()
-        var extraFlags = RAMBucketedDefault.launchFlags(
-            forAlias: trimmedAlias,
-            physicalRAMGB: hardware.physicalRAMGB
+        // Issue #1717: the user's per-model overrides take precedence over the
+        // RAM-tier recommendation for the knobs they actually set, and leave
+        // the rest of the recommendation (e.g. `--no-mllm`) intact. Merged
+        // HERE, alongside the recommendation, for the same reason it is
+        // computed here — every start path reaches `start(alias:)` and none of
+        // them thread flags.
+        var extraFlags = Self.mergedPerformanceFlags(
+            recommended: RAMBucketedDefault.launchFlags(
+                forAlias: trimmedAlias,
+                physicalRAMGB: hardware.physicalRAMGB
+            ),
+            userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
         )
         extraFlags.append(contentsOf: [
             "--resident-memory-limit-gb",
@@ -2453,6 +2474,77 @@ final class ServerManager {
             }
         }
         return true
+    }
+
+    // MARK: - Per-model performance overrides (issue #1717)
+
+    /// Flags that carry a value, and so must be dropped together with the
+    /// token after them when the user's override supersedes them.
+    nonisolated private static let perfValueCarryingFlags: Set<String> = [
+        "--kv-cache-dtype", "--kv-cache-turboquant", "--cache-memory-mb",
+    ]
+
+    /// Flags that move as a unit: an override for any member supersedes the
+    /// recommendation's value for every member.
+    ///
+    /// The KV group is why this is groups and not names. The engine resolves
+    /// ``--kv-cache-dtype`` only when TurboQuant is off, so a user who picks
+    /// TurboQuant on a model whose RAM-tier recommendation pins
+    /// ``--kv-cache-dtype bf16`` must not ship both — the dtype would sit on
+    /// argv, appear in the dev snapshot and in `ps`, and be silently ignored.
+    /// Dropping it keeps argv an honest account of what the engine will do.
+    nonisolated private static let perfFlagGroups: [Set<String>] = [
+        ["--kv-cache-dtype", "--kv-cache-turboquant"],
+        ["--enable-prefix-cache", "--disable-prefix-cache"],
+        ["--cache-memory-mb"],
+    ]
+
+    /// Merge the RAM-tier recommendation with the user's per-model overrides.
+    ///
+    /// Precedence is per-group, not wholesale: a user who only changes the
+    /// prefix-cache toggle keeps the recommendation's KV dtype and its
+    /// unrelated flags (``--no-mllm``). Recommendation flags outside every
+    /// group pass through untouched.
+    ///
+    /// Exposed ``internal static`` — like ``serveArguments`` — so the argv
+    /// contract can be pinned in tests without standing up a spawn.
+    nonisolated internal static func mergedPerformanceFlags(
+        recommended: [String],
+        userOverrides: [String]
+    ) -> [String] {
+        guard !userOverrides.isEmpty else { return recommended }
+
+        // Which groups the user expressed an opinion about. Derived from the
+        // flags actually emitted, NOT from the full set the config *could*
+        // emit — otherwise setting one knob would silently discard the
+        // recommendation's value for the other two.
+        var supersededFlags: Set<String> = []
+        for group in perfFlagGroups where !group.isDisjoint(with: Set(userOverrides)) {
+            supersededFlags.formUnion(group)
+        }
+        guard !supersededFlags.isEmpty else { return recommended + userOverrides }
+
+        var kept: [String] = []
+        var index = recommended.startIndex
+        while index < recommended.endIndex {
+            let token = recommended[index]
+            guard supersededFlags.contains(token) else {
+                kept.append(token)
+                index += 1
+                continue
+            }
+            // Skip the flag, and its value when it takes one. ``--kv-cache-
+            // turboquant`` is ``nargs="?"`` in the engine, so its value is
+            // optional — only consume the next token when it is not itself a
+            // flag, or a bare recommendation form would eat the flag after it.
+            index += 1
+            if perfValueCarryingFlags.contains(token),
+               index < recommended.endIndex,
+               !recommended[index].hasPrefix("--") {
+                index += 1
+            }
+        }
+        return kept + userOverrides
     }
 
     // MARK: - Unified spawn shape (issue #271)

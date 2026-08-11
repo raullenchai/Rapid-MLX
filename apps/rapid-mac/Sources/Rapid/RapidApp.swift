@@ -70,6 +70,9 @@ struct RapidApp: App {
     @State private var mcpCatalog: MCPCatalog
     @State private var mcpApproval: MCPToolApprovalStore
     @State private var mcpTools: MCPToolRegistry
+    /// Per-model performance overrides (issue #1717) — the KV-cache and
+    /// prefix-cache flags the app hands the engine at spawn.
+    @State private var perfConfig: ModelPerfConfigStore
 
     /// AppKit delegate — installs the menu-bar tray + tears down the
     /// subprocess before the process image dies.
@@ -170,6 +173,17 @@ struct RapidApp: App {
         _mcpApproval = State(initialValue: mcpApprovalStore)
         _mcpTools = State(initialValue: mcpRegistry)
 
+        // Issue #1717: per-model performance overrides. Resolved at each spawn
+        // for the alias being started — see ``ServerManager/
+        // perfLaunchFlagsProvider``. Empty for every alias the user has not
+        // touched, so an install that never opens the panel spawns the same
+        // argv as before.
+        let perfConfigStore = ModelPerfConfigStore()
+        manager.perfLaunchFlagsProvider = { [weak perfConfigStore] alias in
+            MainActor.assumeIsolated { perfConfigStore?.launchFlags(forAlias: alias) ?? [] }
+        }
+        _perfConfig = State(initialValue: perfConfigStore)
+
         let chat = ChatViewModel(tools: toolRegistry, sampling: samplingConfig, server: manager)
         let updateChecker: UpdateChecker
         if ProcessInfo.processInfo.environment["RAPID_GUI_UPDATE_CURRENT"] == "1" {
@@ -246,6 +260,7 @@ struct RapidApp: App {
                 .environment(mcpCatalog)
                 .environment(mcpApproval)
                 .environment(mcpTools)
+                .environment(perfConfig)
                 .task {
                     // DEV-ONLY: render real screens to PNG when
                     // RAPID_DEV_SNAPSHOT_DIR is set, then quit. Inert
@@ -371,6 +386,7 @@ struct RapidApp: App {
                 .environment(mcpCatalog)
                 .environment(mcpApproval)
                 .environment(mcpTools)
+                .environment(perfConfig)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 900, height: 720)
