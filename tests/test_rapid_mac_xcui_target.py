@@ -47,3 +47,17 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "fake-rapid-mlx.sh" in source
     assert "isExecutableFile" in source
     assert "RapidUITests-$(date +%s)-$$.xcresult" in runner
+
+
+def test_swift_source_parent_traversal_resolves_rapid_mac_fixture():
+    source = MAC / "Tests/RapidUITests/Tests/ImageGenerationPixelTests.swift"
+
+    # Swift starts with the file URL and deletes four path components:
+    # Tests, RapidUITests, Tests, then the filename's rapid-mac root.
+    resolved = source
+    for _ in range(4):
+        resolved = resolved.parent
+
+    assert resolved == MAC
+    assert (resolved / "scripts/fake-rapid-mlx.sh").is_file()
+    assert not (resolved.parent / "scripts/fake-rapid-mlx.sh").exists()
