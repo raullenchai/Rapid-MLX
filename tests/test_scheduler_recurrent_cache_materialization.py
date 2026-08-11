@@ -35,6 +35,15 @@ class _UnclassifiableLayer(_Layer):
         raise RuntimeError("unknown cache classification")
 
 
+class _UnclassifiedLayer:
+    def __init__(self):
+        self.head = _Node()
+
+    @property
+    def state(self):
+        return [self.head]
+
+
 class _Batch:
     def __init__(self, cache):
         self.prompt_cache = cache
@@ -106,6 +115,18 @@ def test_dense_batch_does_not_pay_per_token_eval(monkeypatch):
 
 def test_unknown_cache_classification_fails_safe_to_materialization(monkeypatch):
     unknown = _UnclassifiableLayer(trimmable=True)
+    scheduler = _scheduler_with([unknown])
+    evaluations = []
+    monkeypatch.setattr(
+        scheduler_module.mx, "eval", lambda value: evaluations.append(value)
+    )
+
+    assert scheduler._materialize_active_recurrent_cache() == 1
+    assert evaluations == [[[unknown.head]]]
+
+
+def test_missing_cache_classification_fails_safe_to_materialization(monkeypatch):
+    unknown = _UnclassifiedLayer()
     scheduler = _scheduler_with([unknown])
     evaluations = []
     monkeypatch.setattr(

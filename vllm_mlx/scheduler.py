@@ -7626,6 +7626,11 @@ class Scheduler:
                     # preventing an unbounded lazy-state graph.  An extra eval
                     # is safe; skipping one for a recurrent cache is not.
                     has_recurrent_state = True
+            else:
+                # Supported modern dense caches affirmatively implement this
+                # method. Missing/non-callable classification is unknown, so
+                # retain the same safety-first behavior as a raised classifier.
+                has_recurrent_state = True
             state = getattr(layer, "state", None)
             if state is not None:
                 states.append(state)
