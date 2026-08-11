@@ -36,22 +36,32 @@ enum MarkdownTableAccessibility {
     private static func cells(in line: String) -> [String] {
         var result: [String] = []
         var current = ""
-        var escaped = false
         var codeFenceLength = 0
+        let characters = Array(line)
+        var index = 0
 
-        for character in line {
-            if escaped {
-                current.append(character)
-                escaped = false
-                continue
-            }
-            if character == "\\" {
-                escaped = true
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\",
+               index + 1 < characters.count,
+               isEscapablePunctuation(characters[index + 1]) {
+                current.append(characters[index + 1])
+                index += 2
                 continue
             }
             if character == "`" {
-                codeFenceLength = codeFenceLength == 0 ? 1 : 0
-                current.append(character)
+                var runEnd = index + 1
+                while runEnd < characters.count, characters[runEnd] == "`" {
+                    runEnd += 1
+                }
+                let runLength = runEnd - index
+                if codeFenceLength == 0 {
+                    codeFenceLength = runLength
+                } else if codeFenceLength == runLength {
+                    codeFenceLength = 0
+                }
+                current.append(contentsOf: String(repeating: "`", count: runLength))
+                index = runEnd
                 continue
             }
             if character == "|", codeFenceLength == 0 {
@@ -60,8 +70,8 @@ enum MarkdownTableAccessibility {
             } else {
                 current.append(character)
             }
+            index += 1
         }
-        if escaped { current.append("\\") }
         result.append(clean(current))
         if result.first == "" { result.removeFirst() }
         if result.last == "" { result.removeLast() }
@@ -71,6 +81,18 @@ enum MarkdownTableAccessibility {
     private static func clean(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "`", with: "")
+    }
+
+    /// CommonMark backslash escapes apply only to ASCII punctuation. Treating
+    /// every backslash as an escape corrupts ordinary cell text such as a
+    /// Windows path before VoiceOver sees it.
+    private static func isEscapablePunctuation(_ character: Character) -> Bool {
+        guard character.unicodeScalars.count == 1,
+              let value = character.unicodeScalars.first?.value else { return false }
+        return (0x21...0x2F).contains(value)
+            || (0x3A...0x40).contains(value)
+            || (0x5B...0x60).contains(value)
+            || (0x7B...0x7E).contains(value)
     }
 
     private static func isSeparatorCell(_ value: String) -> Bool {

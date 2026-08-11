@@ -29,6 +29,26 @@ struct MarkdownTableAccessibilityTests {
         #expect(table?.rows == [["escaped", "a|b"], ["code", "x|y"]])
     }
 
+    @Test("Pipes inside multi-backtick code spans stay inside their cells")
+    func preservesPipesInMultiBacktickCode() {
+        let table = MarkdownTableAccessibility.parse("""
+        | name | expression |
+        | --- | --- |
+        | code | ``x`|y`` |
+        """)
+        #expect(table?.rows == [["code", "x|y"]])
+    }
+
+    @Test("Backslashes outside CommonMark escapes remain in accessible text")
+    func preservesOrdinaryBackslashes() {
+        let table = MarkdownTableAccessibility.parse("""
+        | platform | path |
+        | --- | --- |
+        | Windows | C:\\Models |
+        """)
+        #expect(table?.rows == [["Windows", "C:\\Models"]])
+    }
+
     @Test("Ordinary prose is not mistaken for a table")
     func rejectsProse() {
         #expect(MarkdownTableAccessibility.parse("hello\nworld") == nil)
