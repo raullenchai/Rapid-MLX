@@ -2342,8 +2342,17 @@ flow_resident_load_rejected() {
     wait_fake_event \
         ".event == \"server_started\" and .alias == \"$FAKE_ALIAS\"" \
         "the chat model never started - no resident sidecar to reject against"
-    # Let the app observe residency so the Images load takes the in-process path.
-    sleep 1
+    # The chat sidecar must actually reach .ready (with a child) in the app's
+    # state machine BEFORE the Images load: ``ensureServing`` only takes the
+    # in-process ``/v1/models/load`` path when ``readyWithChild`` is true, i.e.
+    # when the chat model is already residing in this process. Bare
+    # ``server_started`` only proves the fake bound its port; if we press
+    # Images readiness while the chat model is still ``.starting``, the app
+    # falls back to replacing the child process (a cold start) and the
+    # rejection never reaches the wire (#1838). ``wait_send_idle`` blocks
+    # until the ChatView readiness gate opens, which is exactly the app's
+    # story that ``state == .ready``.
+    wait_send_idle "$OUT/rlr-chat-ready.json"
 
     # 2. Go to Images and ask it to load its model.
     see_main "$OUT/rlr-ig-chat.json"
