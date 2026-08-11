@@ -127,9 +127,9 @@ final class ImageGenerationPixelTests: XCTestCase {
         let insetX = source.width / 5
         let insetY = source.height / 5
         let rect = CGRect(
-            x: insetX, y: insetY,
-            width: source.width - 2 * insetX,
-            height: source.height - 2 * insetY
+            x: CGFloat(insetX), y: CGFloat(insetY),
+            width: CGFloat(source.width - 2 * insetX),
+            height: CGFloat(source.height - 2 * insetY)
         )
         let cropped = try XCTUnwrap(
             source.cropping(to: rect),
