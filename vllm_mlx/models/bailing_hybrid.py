@@ -149,7 +149,12 @@ class ShortConv1d(nn.Module):
             state = mx.zeros((B, self.kernel_size - 1, C), dtype=x.dtype)
         conv_input = mx.concatenate([state, x], axis=1)
         out = nn.silu(self.conv(conv_input))
-        new_state = conv_input[:, -(self.kernel_size - 1) :, :]
+        if self.kernel_size == 1:
+            # ``-(k-1)`` would be ``-0`` and retain the WHOLE input,
+            # growing the cache every step (codex r3 #3).
+            new_state = conv_input[:, :0, :]
+        else:
+            new_state = conv_input[:, -(self.kernel_size - 1) :, :]
         return out, new_state
 
 
@@ -475,19 +480,22 @@ class BailingGate(nn.Module):
             select = scores + self.expert_bias
 
         B = select.shape[:-1]
-        grouped = select.reshape(*B, a.n_group, a.num_experts // a.n_group)
-        # Group score = sum of the top-2 selection scores in the group.
-        top2 = mx.topk(grouped, 2, axis=-1)
-        group_scores = top2.sum(axis=-1)
         k_drop = a.n_group - a.topk_group
-        drop = mx.argpartition(group_scores, kth=k_drop - 1, axis=-1)[..., :k_drop]
-        masked = mx.put_along_axis(
-            grouped,
-            mx.expand_dims(drop, -1),
-            mx.array(-float("inf"), grouped.dtype),
-            axis=-2,
-        )
-        select = masked.reshape(*B, a.num_experts)
+        if k_drop > 0:
+            grouped = select.reshape(*B, a.n_group, a.num_experts // a.n_group)
+            # Group score = sum of the top-2 selection scores in the group.
+            top2 = mx.topk(grouped, 2, axis=-1)
+            group_scores = top2.sum(axis=-1)
+            drop = mx.argpartition(group_scores, kth=k_drop - 1, axis=-1)[..., :k_drop]
+            masked = mx.put_along_axis(
+                grouped,
+                mx.expand_dims(drop, -1),
+                mx.array(-float("inf"), grouped.dtype),
+                axis=-2,
+            )
+            select = masked.reshape(*B, a.num_experts)
+        # topk_group == n_group keeps every group — nothing to drop
+        # (codex r3 #1: argpartition(kth=-1) would fault).
 
         k = a.num_experts_per_tok
         idx = mx.argpartition(-select, kth=k - 1, axis=-1)[..., :k]
@@ -651,8 +659,12 @@ class Model(nn.Module):
     @property
     def quant_predicate(self):
         def predicate(path, module):
+            # Short-conv weights stay fp — tiny tensors, and quantized
+            # depthwise conv has no parity coverage (codex r3 #2).
+            if "_conv1d" in path:
+                return False
             # Router quality is precision-critical (deepseek-v3
-            # precedent) and conv weights are tiny.
+            # precedent): keep the gate at 8-bit.
             if "mlp.gate" in path and "gate_proj" not in path:
                 return {"group_size": 64, "bits": 8}
             return True

@@ -203,5 +203,26 @@ def test_glm47_parser_handles_bailing_wire():
     r = p.extract_tool_calls(wire)
     assert r.tools_called
     assert r.tool_calls[0]["name"] == "get_weather"
-    assert '"city"' in r.tool_calls[0]["arguments"]
-    assert "Tokyo" in r.tool_calls[0]["arguments"]
+    import json
+
+    assert json.loads(r.tool_calls[0]["arguments"]) == {"city": "Tokyo"}
+
+
+def test_gate_retain_all_groups():
+    """topk_group == n_group keeps every group (codex r3 #1: the drop
+    path faulted on argpartition(kth=-1))."""
+    args = bh.ModelArgs.from_dict(dict(TINY, n_group=4, topk_group=4))
+    model = bh.Model(args)
+    out = model(mx.array([[1, 2, 3]]))
+    assert out.shape == (1, 3, TINY["vocab_size"])
+
+
+def test_short_conv_kernel_one_state():
+    """kernel_size=1 must keep an EMPTY rolling state (codex r3 #3)."""
+    conv = bh.ShortConv1d(4, 1)
+    x = mx.ones((1, 5, 4))
+    out, state = conv(x)
+    assert out.shape == (1, 5, 4)
+    assert state.shape == (1, 0, 4)
+    out2, state2 = conv(mx.ones((1, 1, 4)), state)
+    assert out2.shape == (1, 1, 4) and state2.shape == (1, 0, 4)
