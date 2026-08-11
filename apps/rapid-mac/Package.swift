@@ -14,6 +14,10 @@ let package = Package(
         // ``MarkdownUI`` renders each block as a real SwiftUI view, à la
         // ChatGPT Desktop. Pinned to the maintenance-line 2.4 series.
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
+        // Parsing only (swift-cmark underneath, GFM tables + strikethrough).
+        // The TextKit 2 render layer needs a parsed block list, which
+        // MarkdownUI's string-only entry point cannot provide — see #1843.
+        .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.6.0"),
         // Issue #131: LaTeX rendering for math/STEM model responses.
         // ``MarkdownUI`` ships no math engine, so ``$``/``\frac``/``\sqrt``
         // would render as visible tokens. ``SwiftMath`` is the macOS-
@@ -50,6 +54,7 @@ let package = Package(
             name: "Rapid",
             dependencies: [
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+                .product(name: "Markdown", package: "swift-markdown"),
                 "SwiftMath",
                 "RapidCrashHandler"
             ],
