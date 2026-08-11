@@ -232,14 +232,29 @@ final class ServerManager {
     /// Bounded to `logBufferCapacity` entries.
     private(set) var logLines: [String] = []
 
-    /// The most recent in-process residency load that the engine rejected, or
-    /// `nil` when there has been no rejection since the last successful load.
+    /// Most recent in-process residency load rejections, keyed by the alias
+    /// that failed. Per-alias rather than a single global slot so two
+    /// concurrent loads of DIFFERENT models cannot clobber each other across
+    /// an `await` (#1838 follow-up): model B's rejection published while
+    /// model A is still loading will not be wiped by A's later success, and
+    /// an older request's rejection cannot overwrite a newer request's
+    /// result for a different model. Each key owns its own outcome, so the
+    /// surface that asked to load that model reads exactly that model's
+    /// result.
     ///
     /// This is *published* (an `@Observable` property), not log-only: the
     /// surface that initiated the load reads it and presents the engine's
     /// reason verbatim, so a rejected resident load is an actionable message
     /// instead of a silent no-op (#1838).
-    private(set) var lastResidentLoadFailure: ResidentLoadFailure?
+    private(set) var residentLoadFailures: [String: ResidentLoadFailure] = [:]
+
+    /// The most recent rejection for `alias`, or `nil` if the last attempt
+    /// for that model succeeded or no rejection has been recorded. Read by
+    /// the surface that initiated the load so it can present the engine's
+    /// reason verbatim rather than only writing it to the log pane (#1838).
+    func residentLoadFailure(for alias: String) -> ResidentLoadFailure? {
+        residentLoadFailures[alias]
+    }
 
     /// True while a start or stop is in flight. The UI disables both
     /// buttons during this window so a second click cannot race the
@@ -832,6 +847,14 @@ final class ServerManager {
         }
         if replacementGroup == nil, isModelResident(trimmed) { return true }
 
+        // Any fresh load attempt — resident, cold start, or the legacy
+        // stop/start fallback — supersedes a stale rejection for THIS alias so
+        // the surface stops showing last round's result while this load is in
+        // flight (or about to succeed). Clearing here (not only inside the
+        // resident branch) means an early-return path can never leave the old
+        // banner up once the user asked to load the model again (#1838).
+        residentLoadFailures[trimmed] = nil
+
         // A healthy sidecar can admit another engine without replacing the
         // process. Only a 404/405 from an older bundled server falls back to
         // the legacy stop/start path; capacity and load failures stay failures
@@ -844,10 +867,6 @@ final class ServerManager {
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
         if Self.residencyLoadApplies(residencyEligible: residencyEligible, readyWithChild: readyWithChild) {
-            // A fresh attempt supersedes a stale failure so the surface does
-            // not keep showing last round's rejection while this load is in
-            // flight (or about to succeed).
-            lastResidentLoadFailure = nil
             let estimate = estimatedMemoryGB ?? ModelSizing.estimate(alias: trimmed).totalGB
             let result = await residencyClient.load(
                 alias: trimmed,
@@ -875,7 +894,9 @@ final class ServerManager {
                 if replacementGroup != nil {
                     state = .ready(alias: trimmed)
                 }
-                lastResidentLoadFailure = nil
+                // A successful in-process load confirms the model is fine, so
+                // drop any (possibly concurrent) rejection recorded for it.
+                residentLoadFailures[trimmed] = nil
                 return true
             case .unsupported:
                 break
@@ -885,7 +906,7 @@ final class ServerManager {
                 // serialized/token-bearing `detail` never reaches the surface
                 // unsanitized, while keeping the engine's actionable reason
                 // verbatim otherwise (audit P1 parity with `appendLogLines`).
-                lastResidentLoadFailure = ResidentLoadFailure(
+                residentLoadFailures[trimmed] = ResidentLoadFailure(
                     alias: trimmed,
                     message: LogScrubber.scrub(message)
                 )

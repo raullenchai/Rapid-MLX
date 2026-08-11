@@ -272,7 +272,7 @@ struct ContentView: View {
     /// the chat surface, not only in the log pane. When no load was rejected,
     /// fall back to the chat failure exactly as before.
     private var readinessFailure: ModelReadiness.Failure? {
-        if let load = server.lastResidentLoadFailure {
+        if let load = server.residentLoadFailure(for: alias) {
             return ModelReadiness.Failure(message: load.message, alias: load.alias)
         }
         return chat.lastError.map {
