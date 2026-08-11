@@ -55,7 +55,7 @@ final class ImageGenerationPixelTests: XCTestCase {
         let picker = element("Images.ModelPicker", in: app)
         XCTAssertTrue(picker.waitForExistence(timeout: 20))
         XCTAssertTrue(waitUntil(timeout: 20) {
-            picker.debugDescription.contains("fake-image-alias")
+            picker.label.contains("fake-image-alias")
         })
 
         let readiness = element("Readiness.Action", in: app)
@@ -76,6 +76,7 @@ final class ImageGenerationPixelTests: XCTestCase {
         generate.click()
 
         let save = element("Images.Result.Save", in: app)
+        XCTAssertTrue(waitUntil(timeout: 30) { imageResponseCount(in: eventLog) == 1 })
         XCTAssertTrue(save.waitForExistence(timeout: 30))
         let first = element("Images.Gallery.Thumb.1", in: app)
         XCTAssertTrue(first.waitForExistence(timeout: 30))
@@ -85,15 +86,17 @@ final class ImageGenerationPixelTests: XCTestCase {
         prompt.typeText("the same cheetah, at night")
         XCTAssertTrue(waitUntil(timeout: 10) { generate.isEnabled })
         generate.click()
-        XCTAssertTrue(save.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(waitUntil(timeout: 30) { imageResponseCount(in: eventLog) == 2 })
         XCTAssertTrue(save.waitForExistence(timeout: 30))
 
         let newest = element("Images.Gallery.Thumb.1", in: app)
         let older = element("Images.Gallery.Thumb.2", in: app)
         XCTAssertTrue(older.waitForExistence(timeout: 30))
 
-        let newestShot = newest.screenshot()
+        older.click()
         let olderShot = older.screenshot()
+        newest.click()
+        let newestShot = newest.screenshot()
         add(XCTAttachment(screenshot: newestShot))
         add(XCTAttachment(screenshot: olderShot))
 
@@ -128,6 +131,11 @@ final class ImageGenerationPixelTests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         } while Date() < deadline
         return condition()
+    }
+
+    private func imageResponseCount(in eventLog: URL) -> Int {
+        guard let events = try? String(contentsOf: eventLog, encoding: .utf8) else { return 0 }
+        return events.split(separator: "\n").count { $0.contains(#""event": "image_response""#) }
     }
 
     /// Compare only the central 60% of each element screenshot. This removes
