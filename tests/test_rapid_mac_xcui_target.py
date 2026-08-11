@@ -12,7 +12,9 @@ def test_xcui_target_is_checked_in_and_runs_in_gui_ci():
     workflow_path = ROOT / ".github/workflows/rapid-mac-ci.yml"
     workflow = workflow_path.read_text()
     gui_steps = yaml.safe_load(workflow)["jobs"]["gui-golden-flows"]["steps"]
-    named_steps = {step.get("name"): (index, step) for index, step in enumerate(gui_steps)}
+    named_steps = {
+        step.get("name"): (index, step) for index, step in enumerate(gui_steps)
+    }
 
     assert project.is_file()
     assert "com.apple.product-type.bundle.ui-testing" in project.read_text()
