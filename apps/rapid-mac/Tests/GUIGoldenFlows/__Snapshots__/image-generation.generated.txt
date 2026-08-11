@@ -20,6 +20,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Images.Aspect" desc="1:1" enabled=true
           AXButton id="Images.Aspect" desc="3:4" enabled=true
           AXButton id="Images.Aspect" desc="4:3" enabled=true
+          AXPopUpButton id="Images.Resolution" desc="Output resolution" help="Output resolution: 1024 × 1024" value=text enabled=true
           AXPopUpButton id="Images.ModelPicker" desc="<model>" help="Model: <model>" enabled=true
           AXButton id="Images.Generate" desc="Up" help="Generate" enabled=true
       AXButton desc="Settings" help="Settings — ⌘," enabled=true
