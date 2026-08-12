@@ -2574,7 +2574,7 @@ flow_image_generation() {
     # png-rgba-sha subcommand runs the exact same decoder the request fake
     # uses, so expectation and upload can never drift.
     local expected_sha
-    expected_sha="$(python3 "$ROOT/scripts/fake-rapid-mlx.sh" png-rgba-sha "$fixture")"
+    expected_sha="$("$ROOT/scripts/fake-rapid-mlx.sh" png-rgba-sha "$fixture")"
     [[ -n "$expected_sha" ]] \
         || die "could not compute the fixture's pixel hash: $fixture"
     jq -s -e --arg sha "$expected_sha" --arg prompt "$import_prompt" \
