@@ -329,10 +329,13 @@ image reached the wire, verifies the returned image becomes the next edit
 source, then exits back to generation mode. It then drives the second entry —
 `Images.Edit.Import` — all the way through a real file import to a regenerate:
 the journey presses `Images.Edit.Import` and drives the app through a
-deterministic test seam: the harness's launcher sets `RAPID_SIMULATED_IMPORT_PATH`
-(a test-only switch, like `RAPID_BIN`/`RAPID_GUI_WEB_SEARCH_FIXTURE`), so the
-button imports exactly that fixture through the same post-pick path a real picker
-would. This is deliberate: the native `NSOpenPanel`'s file browser publishes no
+deterministic test seam: the harness's launcher sets `RAPID_GUI_GOLDEN_MODE=1`
+plus `RAPID_SIMULATED_IMPORT_PATH` (a golden-harness-only switch, like
+`RAPID_BIN`/`RAPID_GUI_WEB_SEARCH_FIXTURE`), so the button imports exactly that
+fixture through the same post-pick path a real picker would. The explicit
+golden-mode gate means a real user's launch — which never sets it — always opens
+`NSOpenPanel` even if an unrelated process leaked an import path into the
+environment. This is deliberate: the native `NSOpenPanel`'s file browser publishes no
 accessibility identifiers, so neither AX actions nor injected keyboard events can
 drive its "Go to Folder" sheet on an unattended CI runner. The journey then
 asserts the app entered edit mode keyed to the imported file's name, submits an

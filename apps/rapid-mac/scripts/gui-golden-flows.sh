@@ -2160,13 +2160,16 @@ flow_image_generation() {
     # No diffusion weights: the fake answers /v1/images/* with a real 1x1 PNG
     # whose bytes differ per render, after a scripted number of steps so the
     # in-flight card is observable rather than a frame between two polls.
-    # RAPID_SIMULATED_IMPORT_PATH activates the app's import test seam: when
-    # set, Images.Edit.Import imports exactly this file through the same
-    # post-pick path a real picker would (see ImagesView.chooseEditImage) instead
-    # of opening a native NSOpenPanel, whose file browser publishes no AX
-    # identifiers and cannot be driven by injected key events on an unattended
-    # CI runner. Unset in normal use, so real users still get the picker.
+    # RAPID_GUI_GOLDEN_MODE=1 + RAPID_SIMULATED_IMPORT_PATH together activate
+    # the app's import test seam: when both are set, Images.Edit.Import imports
+    # exactly this file through the same post-pick path a real picker would (see
+    # ImagesView.chooseEditImage) instead of opening a native NSOpenPanel, whose
+    # file browser publishes no AX identifiers and cannot be driven by injected
+    # key events on an unattended CI runner. The golden-mode gate means a real
+    # user's launch — which never sets it — always gets the picker even if an
+    # unrelated process leaked an import path into the environment.
     start_persona image-generation FAKE_IMAGE_STEPS=8 FAKE_IMAGE_STEP_MS=300 \
+        RAPID_GUI_GOLDEN_MODE=1 \
         RAPID_SIMULATED_IMPORT_PATH="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
 
     dismiss_first_run
