@@ -569,8 +569,11 @@ def _install_batched_mask_safe_quantized_sdpa() -> None:
 
     _orig = _mlx_base.quantized_scaled_dot_product_attention
 
+    # ``mask=None`` default: upstream 0.31.3 declares mask as positional
+    # (no default), but a defaulted parameter is a strict superset — any
+    # caller relying on either shape keeps working (codex r5).
     def _batched_mask_safe(
-        queries, q_keys, q_values, scale, mask, group_size=64, bits=8
+        queries, q_keys, q_values, scale, mask=None, group_size=64, bits=8
     ):
         n_q_heads = queries.shape[1]
         n_kv_heads = q_keys[0].shape[-3]
