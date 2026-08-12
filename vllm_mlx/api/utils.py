@@ -103,9 +103,13 @@ _FINAL_SANITIZER_ALTERNATIVES = (
     # `call:name{...}` body would be left orphaned in content.
     r"<\|tool_call>.*?<tool_call\|>"
     # Any <|...> or <...|> token (Gemma 4 asymmetric: <|channel>, <tool_call|>, etc.)
-    r"|<\|[a-z_\"]+>|<[a-z_\"]+\|>"
+    r"|<\|[A-Za-z0-9_\"]+>|<[A-Za-z0-9_\"]+\|>"
     # Any <|...|> token (symmetric: <|im_end|>, <|channel|>, etc.)
-    r"|<\|[a-z_]+\|>"
+    # The alphabet is intentionally case-complete: Cohere North uses
+    # uppercase sentinels such as ``<|END_THINKING|>`` and declares them
+    # as ordinary added tokens (``special=false``), so tokenizer-level
+    # ``skip_special_tokens=True`` does not remove them.
+    r"|<\|[A-Za-z0-9_]+\|>"
     # [Calling tool:...] or [Calling tool="..."] or bare "[Calling tool" (Gemma 4 mimicry)
     r"|\[Calling\s+tool[^\]]*\]?"
     # Stray closing tags

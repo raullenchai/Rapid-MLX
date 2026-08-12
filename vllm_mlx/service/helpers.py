@@ -50,6 +50,7 @@ from ..api.models import (
 )
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import (
+    sanitize_output,
     sanitize_reasoning_content,
     strip_reasoning_channel_markup,
 )
@@ -369,6 +370,11 @@ def _finalize_content_and_reasoning(
     extract = lambda text: reasoning_parser.extract_reasoning(text, **extract_kwargs)
     if tool_calls:
         reasoning_text, _ = extract(raw_text)
+        if reasoning_text and cleaned_text:
+            cleaned_sanitized = sanitize_output(cleaned_text).strip()
+            reasoning_sanitized = sanitize_output(reasoning_text).strip()
+            if cleaned_sanitized and cleaned_sanitized == reasoning_sanitized:
+                cleaned_text = ""
     else:
         text_to_parse = cleaned_text or raw_text
         new_reasoning, new_cleaned = extract(text_to_parse)

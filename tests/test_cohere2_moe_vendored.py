@@ -92,22 +92,18 @@ def test_cache_layout_and_weight_key_cleanup_need_no_model_weights() -> None:
     }
 
 
-def test_checkpoint_profile_defaults_and_conservative_capabilities() -> None:
-    # The North-native ``cohere`` tool/reasoning parsers ship in a separate
-    # shared-inference PR; until it lands the aliases run with default
-    # parsing (``None`` -> generic text path), which is sufficient to load
-    # and generate.
+def test_checkpoint_profile_uses_native_parser_and_conservative_capabilities() -> None:
     profile = detect_model_config("mlx-community/North-Mini-Code-1.0-bf16")
 
     assert profile is not None
     assert profile.tool_call_parser == "cohere"
-    assert profile.reasoning_parser is None
+    assert profile.reasoning_parser == "cohere"
     assert profile.is_hybrid is False
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False
 
 
-def test_public_4bit_alias_defaults_and_conservative_capabilities() -> None:
+def test_public_4bit_alias_uses_native_parser_and_conservative_capabilities() -> None:
     assert (
         resolve_model("north-mini-code-4bit")
         == "mlx-community/North-Mini-Code-1.0-4bit"
@@ -118,7 +114,7 @@ def test_public_4bit_alias_defaults_and_conservative_capabilities() -> None:
     assert profile is not None
     assert profile.hf_path == "mlx-community/North-Mini-Code-1.0-4bit"
     assert profile.tool_call_parser == "cohere"
-    assert profile.reasoning_parser is None
+    assert profile.reasoning_parser == "cohere"
     assert profile.is_hybrid is False
     assert profile.is_moe is True
     assert profile.supports_spec_decode is False
