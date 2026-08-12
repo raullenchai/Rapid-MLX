@@ -30,10 +30,21 @@ import SwiftUI
 ///   rather than being re-derived per block.
 struct TextKitMarkdownView: View {
     let content: String
-    /// Body point size, already scaled for Dynamic Type by the caller.
-    var basePointSize: CGFloat = 15
 
-    @Environment(\.colorScheme) private var colorScheme
+    /// Body point size, scaled for Dynamic Type (#546).
+    ///
+    /// MarkdownUI does this itself — its `ScaledFontSizeModifier` wraps the
+    /// theme's root `FontSize` in the one and only `@ScaledMetric`, which is
+    /// why `.rapidChat` sets a fixed literal and the theme comment warns
+    /// against adding a second one at the call site.
+    ///
+    /// TextKit has no such pass: `NSFont` takes a number. So the scaling lives
+    /// here, once, inside the view — not at the call site, which would be the
+    /// double-scale bug that comment is about (~15 × scale²). 15 is the same
+    /// literal the theme uses, and the two must move together; the theme
+    /// comment names three literals that already travel in lockstep, and this
+    /// is now a fourth.
+    @ScaledMetric(relativeTo: .body) private var basePointSize: CGFloat = 15
 
     var body: some View {
         MarkdownBlockStack(

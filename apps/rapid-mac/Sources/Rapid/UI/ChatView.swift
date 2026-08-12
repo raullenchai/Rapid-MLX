@@ -1082,8 +1082,24 @@ private struct MessageRow: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if !message.content.isEmpty {
-                LaTeXMarkdownView(content: message.content)
-                    .textSelection(.enabled)
+                // #1843: settled messages render through TextKit 2; anything
+                // still streaming stays on MarkdownUI.
+                //
+                // The switch is per-message (`message.status`), not the view
+                // model's `isStreaming` — that flag is true for the whole
+                // transcript while the last answer arrives, and keying off it
+                // would re-render every earlier message the moment a new one
+                // starts. `status` flips once, on the message that owns it.
+                //
+                // PR 1 deliberately changes nothing about streaming: the
+                // streaming path is byte-for-byte what it was, and the
+                // incremental-render work that motivated #1843 lands in PR 2.
+                if message.status == .streaming {
+                    LaTeXMarkdownView(content: message.content)
+                        .textSelection(.enabled)
+                } else {
+                    TextKitMarkdownView(content: message.content)
+                }
             } else if let caption = toolDispatchCaption {
                 Text(caption)
                     .font(.footnote)
