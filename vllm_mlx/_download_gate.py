@@ -617,7 +617,31 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     )
     resolved_sha = _resolved_snapshot_sha(repo_root)
     if resolved_sha is None:
-        return None
+        # An interrupted first download can leave the snapshot directory and
+        # its small component indexes behind before refs/main is committed.
+        # With exactly one mflux-shaped candidate there is no ambiguity about
+        # which on-disk checkpoint the loader could reuse, so inspect it.  Do
+        # not choose among multiple unpinned snapshots: an old complete one
+        # must never mask a newer partial one.
+        snapshots_root = os.path.join(repo_root, "snapshots")
+        try:
+            candidates = [
+                name
+                for name in os.listdir(snapshots_root)
+                if os.path.isdir(os.path.join(snapshots_root, name))
+            ]
+        except OSError:
+            return None
+        if len(candidates) != 1:
+            return None
+        candidate_dir = os.path.join(snapshots_root, candidates[0])
+        mflux_markers = (
+            os.path.join(candidate_dir, component, "model.safetensors.index.json")
+            for component in ("transformer", "text_encoder", "vae")
+        )
+        if not any(os.path.lexists(marker) for marker in mflux_markers):
+            return None
+        resolved_sha = candidates[0]
     snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
     if not os.path.isdir(snap_dir):
         return None

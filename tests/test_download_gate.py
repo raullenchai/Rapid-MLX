@@ -1173,6 +1173,57 @@ def test_mflux_missing_weights_empty_when_complete(tmp_path, monkeypatch):
     assert gate.mflux_missing_weights(repo) == []
 
 
+def test_mflux_missing_weights_checks_single_partial_snapshot_without_ref(
+    tmp_path, monkeypatch
+):
+    """Interrupted first pulls can leave indexes before refs/main is written."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "e" * 40, omit=("text_encoder", "1.safetensors"))
+    (repo_root / "refs" / "main").unlink()
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == ["text_encoder/1.safetensors"]
+
+
+def test_mflux_missing_weights_no_verdict_for_multiple_unpinned_snapshots(
+    tmp_path, monkeypatch
+):
+    """Never let an old complete snapshot mask a newer partial snapshot."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "f" * 40)
+    _seed_mflux_snapshot(repo_root, "0" * 40, omit=("transformer", "0.safetensors"))
+    (repo_root / "refs" / "main").unlink()
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) is None
+
+
+def test_mflux_missing_weights_rejects_zero_byte_shard_and_bad_index(
+    tmp_path, monkeypatch
+):
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    sha = "1" * 40
+    _seed_mflux_snapshot(repo_root, sha)
+    snap = repo_root / "snapshots" / sha
+    (snap / "transformer" / "0.safetensors").write_bytes(b"")
+    (snap / "vae" / "model.safetensors.index.json").write_text("not json")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == [
+        "transformer/0.safetensors",
+        "vae/model.safetensors.index.json",
+    ]
+
+
 def test_mflux_missing_weights_no_verdict_when_nothing_cached(tmp_path, monkeypatch):
     """An absent snapshot is "no verdict", never "incomplete".
 
