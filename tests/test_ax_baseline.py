@@ -41,6 +41,21 @@ def test_live_percentage_in_description_is_scrubbed(ax_baseline):
     )
 
 
+@pytest.mark.parametrize("pressure", ["normal", "tight", "critical"])
+def test_live_memory_pressure_bucket_is_scrubbed(ax_baseline, pressure):
+    memory = ax_baseline.Node(
+        {
+            "role": "AXUnknown",
+            "description": f"Memory {pressure}: 12 gigabytes used out of 32 gigabytes",
+            "enabled": True,
+        }
+    )
+
+    assert ax_baseline.render_node(memory, ()) == (
+        'AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true'
+    )
+
+
 @pytest.mark.parametrize("description", ["Hide Sidebar", "Show Sidebar"])
 def test_system_sidebar_button_subtree_is_ignored(ax_baseline, description):
     button = ax_baseline.Node(

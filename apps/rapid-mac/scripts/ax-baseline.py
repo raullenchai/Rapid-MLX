@@ -96,6 +96,14 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     # Footer telemetry is live state, not structure. Once #1588 mounted the
     # footer, consecutive dumps legitimately observed CPU 89%, 99%, and 100%.
     (re.compile(r"\b\d+(?:\.\d+)?\s*percent\b"), "<percent>"),
+    # The memory-pressure label is derived from live utilisation and therefore
+    # legitimately differs between a developer Mac and a hosted runner even
+    # when the UI is identical. Keep the Memory gauge and its wording, but
+    # collapse only the volatile pressure bucket.
+    (
+        re.compile(r"\bMemory (?:normal|tight|critical):"),
+        "Memory <pressure>:",
+    ),
     (
         re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|µs|us|ns|s|min|h)\b"),
         "<duration>",
