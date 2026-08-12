@@ -21,7 +21,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 FAKE = ROOT / "apps/rapid-mac/scripts/fake-rapid-mlx.sh"
 GOLDEN_FLOWS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
-IMAGE_TAG = "[image:gen]"
+IMAGE_TAGS = {"[image:gen]", "[image:edit]", "[image:both]"}
+FIXTURE_IMAGE_TAG = "[image:both]"
 
 
 # --- Mirrors of the Swift gates, byte-for-byte ---------------------------
@@ -125,19 +126,22 @@ def image_rows(output: str) -> list[list[str]]:
     rows = []
     for line in output.splitlines():
         fields = line.split()
-        if IMAGE_TAG in fields:
+        if IMAGE_TAGS.intersection(fields):
             rows.append(fields)
     return rows
 
 
 def test_models_emits_exactly_one_image_row(models_output):
     rows = image_rows(models_output)
-    assert len(rows) == 1, f"expected one {IMAGE_TAG} row, got {rows}"
+    assert len(rows) == 1, f"expected one image capability row, got {rows}"
 
 
 def test_image_row_has_the_shape_the_parser_indexes(models_output):
     (fields,) = image_rows(models_output)
-    tag_index = fields.index(IMAGE_TAG)
+    tag_index = next(i for i, field in enumerate(fields) if field in IMAGE_TAGS)
+    assert fields[tag_index] == FIXTURE_IMAGE_TAG, (
+        "the golden image model must exercise generation and editing"
+    )
     # alias = fields[0]; size = fields[1..<tag]; repo = fields[tag + 1]
     assert tag_index > 1, "no size column: parseImageRows would read size as empty"
     assert tag_index + 1 < len(fields), "no HF id after the tag: the repo would be nil"
@@ -159,7 +163,8 @@ def test_image_alias_is_cached_so_the_tab_resolves_without_a_download():
     no business running against a fake.
     """
     (fields,) = image_rows(run_fake("models"))
-    alias, repo = fields[0], fields[fields.index(IMAGE_TAG) + 1]
+    tag_index = next(i for i, field in enumerate(fields) if field in IMAGE_TAGS)
+    alias, repo = fields[0], fields[tag_index + 1]
     cached = run_fake("ls")
     cached_rows = [_split_on_multi_space(line.strip()) for line in cached.splitlines()]
     assert any(row[:2] == [alias, repo] for row in cached_rows if len(row) >= 2), (
@@ -215,7 +220,7 @@ def test_image_row_carries_a_kind_tag_so_chat_cannot_offer_it(models_output):
     (fields,) = image_rows(models_output)
     alias = fields[0]
     assert alias in _chat_excluded_aliases(models_output), (
-        f"{alias} is not excluded from the chat catalog — its {IMAGE_TAG} tag "
+        f"{alias} is not excluded from the chat catalog — its image tag "
         "no longer marks it as a non-chat modality"
     )
 
@@ -238,10 +243,11 @@ def test_info_reports_each_aliass_own_repo(models_output):
     a model; if ``info`` answered every alias with the chat repo, readiness and
     resolution for the image model would target the chat repository while
     ``models``/``ls`` pointed at the image one. Pin the image alias against the
-    repo its own ``[image:gen]`` row declares.
+    repo its own image-capability row declares.
     """
     (fields,) = image_rows(models_output)
-    alias, row_repo = fields[0], fields[fields.index(IMAGE_TAG) + 1]
+    tag_index = next(i for i, field in enumerate(fields) if field in IMAGE_TAGS)
+    alias, row_repo = fields[0], fields[tag_index + 1]
     info = run_fake("info", alias).strip()
     assert info == f"Alias: {alias} -> {row_repo}", (
         f"info {alias} said {info!r}, but its catalog row maps it to {row_repo!r}"

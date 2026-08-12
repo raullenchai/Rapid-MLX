@@ -5540,7 +5540,11 @@ def models_command(args):
         for alias in sorted(image_profiles):
             p = image_profiles[alias]
             folded_path = p.hf_path.casefold().replace("_", "-")
-            if "flux2" in folded_path or "flux.2" in folded_path or "klein" in folded_path:
+            if (
+                "flux2" in folded_path
+                or "flux.2" in folded_path
+                or "klein" in folded_path
+            ):
                 kind_tag = "[image:both]"
             elif "qwen-image-edit" in folded_path:
                 kind_tag = "[image:edit]"
