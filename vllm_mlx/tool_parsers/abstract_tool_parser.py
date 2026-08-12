@@ -116,6 +116,8 @@ class ExtractedToolCallInformation:
 #                           uses the inline ``<function=NAME>`` attribute form.
 #   ui_tars_action        — Action: verb(kwargs)  UI-TARS GUI-agent action
 #                           lines, normalized to ``computer`` tool_calls.
+#   cohere_action_envelope — <|START_ACTION|>[{tool_name,parameters}]<|END_ACTION|>
+#                           (Cohere North / cohere2_moe)
 #   hy3_native            — <tool_call:opensource>NAME<tool_sep:opensource>
 #                           {json}<end_of_tool_call:opensource>  Tencent
 #                           Hunyuan 3. Suffix-tolerant (``:opensource``
@@ -154,6 +156,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "deepseek_v4_dsml",
         "qwen3_coder_xml_named",
         "ui_tars_action",
+        "cohere_action_envelope",
         "hy3_native",
         "minicpm_native",
         "muse_atem",

@@ -146,6 +146,21 @@ def _extract_stream(parser_name: str, text: str) -> list:
 # concrete example).
 # --------------------------------------------------------------------------
 PARITY_FIXTURES: list = [
+    # Cohere North / cohere2_moe — action envelope with JSON tool entries.
+    # The checkpoint emits this exact START_ACTION / END_ACTION form rather
+    # than mlx-lm's parser-local return shape, so Rapid's parser normalizes it
+    # to the same OpenAI tool-call representation in both paths.
+    (
+        "cohere",
+        "cohere_action_envelope",
+        (
+            "<|START_ACTION|>"
+            '[{"tool_call_id":"north-1","tool_name":"read_file",'
+            '"parameters":{"path":"/etc/hostname"}}]'
+            "<|END_ACTION|>"
+        ),
+        [("read_file", {"path": "/etc/hostname"})],
+    ),
     # MiniCPM5 — documented native XML without a <tool_call> wrapper.
     (
         "minicpm",
@@ -271,6 +286,7 @@ PARITY_FIXTURES: list = [
 # a fixture removes the entry; new parsers added without a fixture or
 # exemption fail ``test_tool_parser_parity_coverage``.
 _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
+    "cohere2_moe": "alias of cohere",
     # Multi-channel control-token formats — fixture authoring needs a
     # tokenizer fixture (vocab IDs) rather than raw text, which is a
     # different test surface (see tests/test_batched_engine_output_router.py
