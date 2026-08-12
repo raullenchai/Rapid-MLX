@@ -134,6 +134,10 @@ struct InstallTrackerTests {
             "/Users/developer/DerivedData/Rapid-MLX Desktop.app",
             "/Volumes/Rapid-MLX/Rapid-MLX Desktop.app",
             "/ApplicationsBackup/Rapid-MLX Desktop.app",
+            // Dev build under a /Applications SUBdirectory: rebuilds bump the
+            // mtime while the version is unchanged, but this is not the
+            // canonical Finder-Replace install and must never flag.
+            "/Applications/RapidDev/Rapid-MLX Desktop.app",
         ]
     )
     func nonInstalledBundleNeverFlags(path: String) {

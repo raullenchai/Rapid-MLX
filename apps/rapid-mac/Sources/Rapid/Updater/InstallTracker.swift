@@ -141,8 +141,16 @@ final class InstallTracker {
         currentVersion: String,
         currentBundleURL: URL
     ) -> Bool {
-        let bundlePath = currentBundleURL.standardizedFileURL.path
-        guard bundlePath.hasPrefix("/Applications/") else {
+        // Only a bundle sitting DIRECTLY in /Applications is a Finder-Replace
+        // release install. `hasPrefix("/Applications/")` matched at any depth,
+        // so a dev build under a subdirectory
+        // (e.g. /Applications/RapidDev/Rapid-MLX Desktop.app) slipped through:
+        // rebuilds bump the Info.plist mtime while keeping the same version,
+        // which then read as a "failed replace" and flashed the banner. A
+        // parent-directory equality check keeps the sibling-prefix exclusion
+        // (/ApplicationsBackup/…) and adds the subdirectory one.
+        let bundleURL = currentBundleURL.standardizedFileURL
+        guard bundleURL.deletingLastPathComponent().path == "/Applications" else {
             return false
         }
         guard let previousMtime, let previousVersion, let currentMtime else {
