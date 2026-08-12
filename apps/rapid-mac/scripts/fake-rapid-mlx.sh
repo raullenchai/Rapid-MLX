@@ -373,16 +373,18 @@ class _ImageRenders:
 RENDERS = _ImageRenders()
 
 
-def _multipart_image_sha256(raw_body, content_type):
-    """SHA-256 of the uploaded image bytes in a multipart edit request.
+def _extract_image_part(raw_body, content_type):
+    """The raw image bytes carried by the ``name="image"`` part of a multipart
+    edit request.
 
     ``raw_body`` is the full request body and ``content_type`` is the request's
     ``Content-Type`` header. The image part's own headers end at the first
     blank line after ``name="image"``; the bytes run from there until the
-    CRLF + the next ``--<boundary>`` separator, so a stray ``\\r\\n--`` that
-    happens to occur inside PNG pixel data cannot truncate it. Returns the hex
-    digest, or ``None`` when no image part is present (parsing is best-effort
-    and is not the authority on image validity — hermetic unit tests are).
+    CRLF + the next ``--<boundary>`` separator, so a stray ``\r\n--`` that
+    happens to occur inside PNG pixel data cannot truncate it. Returns the
+    image bytes, or ``None`` when no image part is present (parsing is
+    best-effort and is not the authority on image validity — hermetic unit
+    tests are).
     """
     boundary = None
     for token in (content_type or "").split(";"):
@@ -405,7 +407,103 @@ def _multipart_image_sha256(raw_body, content_type):
     else:
         j = raw_body.find(b"\r\n--", start)
         end = j if j >= 0 else len(raw_body)
-    return hashlib.sha256(raw_body[start:end]).hexdigest()
+    return raw_body[start:end]
+
+
+def _png_rgba_sha256(png_bytes):
+    """SHA-256 of the DECODED RGBA pixels of a PNG.
+
+    The app's ``EditImageImporter.pngData`` decodes and re-encodes an import
+    through ``NSBitmapImageRep``, so the uploaded PNG is not byte-identical
+    to the file the user picked — ancillary chunks (iCCP, eXIf ...) and the
+    IDAT zlib stream can legitimately differ. Comparing raw bytes against the
+    fixture would be fragile across macOS encoder versions. Comparing the
+    decoded pixel payload instead pins the user contract that matters: the
+    same pixels reached the wire. Returns the hex digest, or ``None`` when the
+    PNG cannot be decoded.
+
+    Supports 8-bit, non-interlaced PNGs of color types 0 (gray), 2 (RGB),
+    3 (palette), 4 (gray+alpha) and 6 (RGBA); everything else is normalized
+    to 8-bit RGBA before hashing. This is the same code the ``png-rgba-sha``
+    subcommand runs, so the golden flow and the request fake agree exactly.
+    """
+    try:
+        if not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            return None
+        pos = 8
+        width = height = bit_depth = color_type = interlace = None
+        palette = None
+        idat = bytearray()
+        while pos < len(png_bytes):
+            length = int.from_bytes(png_bytes[pos:pos + 4], "big")
+            ctype = png_bytes[pos + 4:pos + 8]
+            data = png_bytes[pos + 8:pos + 8 + length]
+            if ctype == b"IHDR":
+                width, height, bit_depth, color_type, _, _, interlace = struct.unpack(
+                    ">IIBBBBB", data
+                )
+            elif ctype == b"PLTE":
+                palette = data
+            elif ctype == b"IDAT":
+                idat += data
+            pos += 12 + length
+        if not (width and height and bit_depth == 8 and interlace == 0):
+            return None
+        channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
+        if channels is None:
+            return None
+        raw = bytearray(zlib.decompress(bytes(idat)))
+        stride = width * channels
+        prev = bytearray(stride)
+        rows = bytearray()
+        row_len = stride + 1
+        for y in range(height):
+            filter_type = raw[y * row_len]
+            line = bytearray(raw[y * row_len + 1:(y + 1) * row_len])
+            for x in range(stride):
+                a = line[x - channels] if x >= channels else 0
+                b = prev[x]
+                c = prev[x - channels] if x >= channels else 0
+                if filter_type == 0:
+                    value = line[x]
+                elif filter_type == 1:
+                    value = line[x] + a
+                elif filter_type == 2:
+                    value = line[x] + b
+                elif filter_type == 3:
+                    value = line[x] + (a + b) // 2
+                elif filter_type == 4:
+                    p = a + b - c
+                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                    value = line[x] + (a if pa <= pb and pa <= pc else (b if pb <= pc else c))
+                else:
+                    return None
+                line[x] = value & 0xFF
+            prev = line
+            rows += line
+        rgba = bytearray()
+        if color_type == 6:
+            rgba = rows
+        elif color_type == 2:
+            for i in range(0, len(rows), 3):
+                rgba += rows[i:i + 3] + b"\xff"
+        elif color_type == 4:
+            for i in range(0, len(rows), 2):
+                rgba += rows[i:i + 1] * 3 + rows[i + 1:i + 2]
+        elif color_type == 0:
+            for value in rows:
+                rgba += bytes((value, value, value, 255))
+        elif color_type == 3:
+            if palette is None:
+                return None
+            for entry in rows:
+                r, g, b = palette[entry * 3:entry * 3 + 3]
+                rgba += bytes((r, g, b, 255))
+        else:
+            return None
+        return hashlib.sha256(bytes(rgba)).hexdigest()
+    except (zlib.error, struct.error, IndexError):
+        return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -578,8 +676,8 @@ class Handler(BaseHTTPRequestHandler):
             n=count,
             operation="edit" if editing else "generation",
             has_image=(b'name="image"; filename="input.png"' in raw_body) if editing else False,
-            image_sha256=(_multipart_image_sha256(raw_body, self.headers.get("content-type"))
-                          if editing else None),
+            image_rgba_sha256=(_png_rgba_sha256(_extract_image_part(raw_body, self.headers.get("content-type")))
+                               if editing else None),
         )
         cancelled = False
         for _ in range(total):
@@ -840,6 +938,22 @@ def main():
     # output rather than falling through to the server, so a future
     # ``ModelCatalog`` subcommand can't resurrect the hang.
     if args.subcommand != "serve":
+        # Utility subcommand: print the SHA-256 of a PNG file's DECODED RGBA
+        # pixels and exit. The golden flow shells out to this to get the
+        # fixture's expected hash, so it shares the EXACT decoder the request
+        # fake uses (``_png_rgba_sha256``) — one source of truth, no drift
+        # between the upload assertion and the fixture expectation.
+        if args.subcommand == "png-rgba-sha":
+            try:
+                with open(args.alias, "rb") as stream:
+                    digest = _png_rgba_sha256(stream.read())
+            except OSError:
+                digest = None
+            if digest is None:
+                print("error: cannot decode PNG", file=sys.stderr)
+                sys.exit(1)
+            print(digest)
+            sys.exit(0)
         _event(
             "command",
             subcommand=args.subcommand,

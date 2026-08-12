@@ -331,8 +331,9 @@ source, then exits back to generation mode. It then drives the second entry —
 the journey presses the control, hands the native open panel a fixture path
 through the same keyboard channel a human uses (Cmd+Shift+G → type → Return),
 asserts the app entered edit mode keyed to the imported file's name, submits an
-instruction, and verifies the fixture's bytes reached the wire as a multipart
-edit. Unlike `Images.Result.Save`, the import picker is therefore **not** left
+instruction, and verifies the fixture's decoded pixel payload reached the wire as
+a multipart edit (compared by RGBA hash rather than raw bytes, because the app
+legitimately re-encodes imports). Unlike `Images.Result.Save`, the import picker is therefore **not** left
 as "out of AX scope": it is driven to prove the "import an image → edit it"
 contract, which no tree dump can witness on its own.
 

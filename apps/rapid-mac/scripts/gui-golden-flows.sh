@@ -2563,18 +2563,25 @@ flow_image_generation() {
               | {model, n, operation, has_image}] ==
          [{model:$alias, n:1, operation:"edit", has_image:true}]' "$OUT/fake-events.jsonl" >/dev/null \
         || die "the imported edit request did not carry the exact prompt, model, and the fixture image: $(jq -s -c '[.[] | select(.event == "image_request" and .operation == "edit")]' "$OUT/fake-events.jsonl")"
-    # The wire bytes must be the fixture itself. has_image only proves a
+    # The uploaded image must be the picked fixture. has_image only proves a
     # multipart part named "image" existed; a regression that submits the
-    # previously generated image — or anything else — would still pass it.
-    # Compare the SHA-256 of the uploaded image part against the fixture file
-    # so the golden flow really pins the picked file's bytes to the request.
+    # previously generated image — or any other arbitrary PNG — would still
+    # pass it. But the fixture cannot be compared by raw bytes: the app's
+    # EditImageImporter decodes and re-encodes every import, so ancillary
+    # chunks (iCCP, eXIf ...) and the IDAT stream can legitimately differ
+    # across macOS encoder versions. Compare the DECODED RGBA pixel hash
+    # instead, which is the user contract that matters. The fake's
+    # png-rgba-sha subcommand runs the exact same decoder the request fake
+    # uses, so expectation and upload can never drift.
     local expected_sha
-    expected_sha="$(shasum -a 256 "$fixture" | awk '{print $1}')"
+    expected_sha="$(python3 "$ROOT/scripts/fake-rapid-mlx.sh" png-rgba-sha "$fixture")"
+    [[ -n "$expected_sha" ]] \
+        || die "could not compute the fixture's pixel hash: $fixture"
     jq -s -e --arg sha "$expected_sha" --arg prompt "$import_prompt" \
         '[.[] | select(.event == "image_request" and .operation == "edit" and .prompt == $prompt)
-              | .image_sha256] == [$sha]' \
+              | .image_rgba_sha256] == [$sha]' \
         "$OUT/fake-events.jsonl" >/dev/null \
-        || die "the uploaded image bytes do not match the fixture ($fixture, sha256 $expected_sha)"
+        || die "the uploaded image pixels do not match the fixture ($fixture, rgba sha256 $expected_sha)"
 
     # Exit restores generation controls — the same exit contract as the
     # generated-result journey, now after an import.
