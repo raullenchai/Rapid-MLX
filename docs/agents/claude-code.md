@@ -33,11 +33,15 @@ npm install -g @anthropic-ai/claude-code
 # 2. Start rapid-mlx
 rapid-mlx serve qwen3.6-35b-4bit --port 8000
 
-# 3. Point Claude Code at the local server (note: bare host, no /v1)
-ANTHROPIC_BASE_URL=http://localhost:8000 \
-ANTHROPIC_API_KEY=not-needed \
-  claude
+# 3. Preview, then safely persist Claude Code's connection settings
+rapid-mlx agents claude-code --setup --dry-run
+rapid-mlx agents claude-code --setup
 ```
+
+Setup shows the exact JSON diff before asking, preserves unrelated settings,
+backs up an existing file, writes atomically, and checks the running server.
+For automation use `--yes`; use `--no-check` only when intentionally preparing
+the config before starting the server.
 
 To make it permanent, export the two env vars in your shell profile:
 

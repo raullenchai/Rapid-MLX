@@ -17,6 +17,7 @@ so we don't keep stacking copies.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from . import _common
 
@@ -91,6 +92,21 @@ def write_or_patch_config(
     existing = _common.load_json_lenient(path)
     _common.backup_existing(path)
 
+    existing = patched_config(existing, server_url, model, api_key)
+
+    _common.atomic_write_json(path, existing)
+    return path
+
+
+def patched_config(
+    existing: dict[str, Any],
+    server_url: str,
+    model: str,
+    api_key: str = "sk-noop",
+) -> dict[str, Any]:
+    """Return the Continue config we would write, without touching disk."""
+    existing = dict(existing)
+
     base_url = server_url.rstrip("/")
     if not base_url.endswith("/v1"):
         base_url = base_url + "/v1"
@@ -117,5 +133,4 @@ def write_or_patch_config(
         models.append(new_entry)
     existing["models"] = models
 
-    _common.atomic_write_json(path, existing)
-    return path
+    return existing

@@ -17,6 +17,22 @@
 | `rapid-mlx doctor` | Run self-diagnostic / regression harness |
 | `rapid-mlx telemetry` | Manage anonymous usage telemetry (opt-in) |
 | `rapid-mlx upgrade` | Upgrade rapid-mlx (brew / pip / install.sh) |
+
+Agent integrations can be configured without hand-editing dotfiles:
+
+```bash
+# Preview the exact change (never writes)
+rapid-mlx agents claude-code --setup --dry-run
+rapid-mlx agents continue --setup --dry-run
+
+# Confirm interactively, back up existing config, write atomically, and verify
+rapid-mlx agents claude-code --setup
+rapid-mlx agents continue --setup
+```
+
+Use `--yes` for an explicitly non-interactive apply. `--no-check` skips only
+the post-write server health/model check; preview, merge, backup, and atomic
+write behavior are unchanged.
 | `rapid-mlx version` | Show version number |
 | `rapid-mlx help <cmd>` | Show help for a subcommand |
 

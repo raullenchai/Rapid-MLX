@@ -7673,6 +7673,50 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
+        # Claude Code and Continue are the first first-class setup flows. They
+        # preview an exact diff, require consent, back up existing config,
+        # write atomically, and verify the server afterwards. Keep the generic
+        # profile writer below for the remaining integrations until each one
+        # receives an equally precise adapter.
+        if profile.name in {"claude-code", "continue"}:
+            from vllm_mlx.agents.setup import (
+                apply_setup_plan,
+                build_setup_plan,
+                confirm_plan,
+                verify_server,
+            )
+
+            try:
+                plan = build_setup_plan(profile.name, base_url, model_id)
+            except (OSError, ValueError) as exc:
+                print(f"\n  {profile.display_name} setup failed: {exc}\n")
+                sys.exit(1)
+
+            print(f"\n  {profile.display_name} configuration: {plan.path}")
+            if plan.changed:
+                print(plan.diff())
+            else:
+                print("  Already configured; no file changes needed.")
+
+            if args.dry_run:
+                print("\n  Dry run only; nothing was written.\n")
+                return
+            if plan.changed and not args.yes and not confirm_plan(plan):
+                print("\n  Setup cancelled; nothing was written.\n")
+                return
+            try:
+                if plan.changed:
+                    apply_setup_plan(plan)
+                    print(f"\n  Configured {profile.display_name} at {plan.path}.")
+                if not args.no_check:
+                    advertised = verify_server(base_url, model_id)
+                    print(f"  Connection check passed (model: {advertised}).")
+            except RuntimeError as exc:
+                print(f"\n  Setup incomplete: {exc}\n")
+                sys.exit(1)
+            print()
+            return
+
         summary = setup_agent_config(
             profile,
             base_url,
@@ -9583,6 +9627,22 @@ Examples:
         "--setup",
         action="store_true",
         help="Auto-configure the agent to point at this server",
+    )
+    agents_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview setup changes without writing configuration",
+    )
+    agents_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Apply setup without an interactive confirmation",
+    )
+    agents_parser.add_argument(
+        "--no-check",
+        action="store_true",
+        help="Skip the post-write server health and model check",
     )
     agents_parser.add_argument(
         "--test",

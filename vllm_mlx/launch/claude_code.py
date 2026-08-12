@@ -25,6 +25,7 @@ the standard ``~/.config`` tree before the first run.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from . import _common
 
@@ -112,6 +113,21 @@ def write_or_patch_config(
     existing = _common.load_json_lenient(path)
     _common.backup_existing(path)
 
+    existing = patched_config(existing, server_url, model, api_key)
+
+    _common.atomic_write_json(path, existing)
+    return path
+
+
+def patched_config(
+    existing: dict[str, Any],
+    server_url: str,
+    model: str,
+    api_key: str = "sk-noop",
+) -> dict[str, Any]:
+    """Return the Claude settings we would write, without touching disk."""
+    existing = dict(existing)
+
     # Strip a trailing ``/v1`` if the user pasted one — the Anthropic
     # SDK appends ``/v1/messages`` itself, and ``/v1/v1/messages`` is a
     # 404. This is the inverse of Cline's behaviour (which *requires*
@@ -127,5 +143,4 @@ def write_or_patch_config(
     env["ANTHROPIC_MODEL"] = model
     existing["env"] = env
 
-    _common.atomic_write_json(path, existing)
-    return path
+    return existing

@@ -1,0 +1,19 @@
+name: continue
+display_name: "Continue.dev"
+repo: "continuedev/continue"
+stars: 30000
+
+# Setup is handled by agents.setup because Continue's model list needs an
+# update-in-place operation rather than a generic dict deep merge.
+config:
+  type: json
+  path: "~/.continue/config.json"
+
+models:
+  recommended:
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-9b-4bit"
+
+capabilities:
+  function_calling: true
+  streaming: true
