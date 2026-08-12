@@ -48,7 +48,7 @@ AXApplication title="Rapid-MLX"
       AXUnknown desc="CPU <percent>" enabled=true
       AXUnknown desc="GPU <gpu>" enabled=true
       AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true
-      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> · up to date" help="Rapid-MLX <version> is the latest release. Click to open Settings → App." enabled=true
+      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> <update-state>" help="Rapid-MLX <version> <update-state>" enabled=true
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true
     AXButton subrole=AXCloseButton enabled=true

@@ -335,6 +335,25 @@ def quote(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
+# The footer version pill states its own version AND the updater's verdict
+# about it ("· up to date" / "· update X.Y.Z available" / bare when the
+# check is inconclusive), with the tooltip phrased around the same three
+# cases. That verdict compares the running build against the latest
+# PUBLISHED release — network state, not UI state — and it INVERTS on
+# every version-bump PR: the bumped app is newer than any release until
+# the release it is cutting exists, so the pill drops to its unknown
+# state and every baseline holding "up to date" goes red for no product
+# reason (first hit: the 0.12.11 bump).
+#
+# Collapsed by IDENTIFIER rather than by a text scrubber so the same
+# phrasing elsewhere — notably Settings → App, whose version line the
+# flows assert against separately — keeps its own value. What survives:
+# the pill exists, is a button, carries this identifier, is enabled. Its
+# three-state wording is covered by DesktopVersionPillTests.
+_UPDATE_VERDICT_IDS = frozenset({"Footer.DesktopVersionPill"})
+_UPDATE_VERDICT_TEXT = "Rapid-MLX <version> <update-state>"
+
+
 def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
     record = node.record
     if is_gpu_telemetry(record):
@@ -380,12 +399,16 @@ def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
     # — see the scope note at the top of the module; visible text belongs to
     # the PNG snapshots in Tests/RapidTests.
     description = record.get("description")
+    verdict_bearing = identifier in _UPDATE_VERDICT_IDS
     for key, label in (("title", "title"), ("description", "desc"), ("help", "help")):
         if key == "title" and description:
             continue
         text = record.get(key)
         if text:
-            parts.append(f"{label}={quote(scrub(text, extra_tokens))}")
+            value = (
+                _UPDATE_VERDICT_TEXT if verdict_bearing else scrub(text, extra_tokens)
+            )
+            parts.append(f"{label}={quote(value)}")
     kind = value_kind(record)
     if kind is not None:
         parts.append(f"value={kind}")
