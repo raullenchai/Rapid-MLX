@@ -26,6 +26,10 @@ struct ChatConversation: Identifiable, Codable, Equatable {
     /// this flag is what makes the derivation skip an owned title.
     var hasCustomTitle: Bool = false
 
+    /// Instructions scoped to this conversation. Optional on disk so history
+    /// written before custom instructions shipped remains valid.
+    var customInstructions: String? = nil
+
     init(
         id: UUID,
         title: String,
@@ -34,7 +38,8 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         updatedAt: Date,
         isPinned: Bool = false,
         isArchived: Bool = false,
-        hasCustomTitle: Bool = false
+        hasCustomTitle: Bool = false,
+        customInstructions: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -44,6 +49,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         self.isPinned = isPinned
         self.isArchived = isArchived
         self.hasCustomTitle = hasCustomTitle
+        self.customInstructions = customInstructions
     }
 
     /// Hand-written so a history file written before pin/archive shipped
@@ -61,6 +67,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         hasCustomTitle = try c.decodeIfPresent(Bool.self, forKey: .hasCustomTitle) ?? false
+        customInstructions = try c.decodeIfPresent(String.self, forKey: .customInstructions)
     }
 }
 

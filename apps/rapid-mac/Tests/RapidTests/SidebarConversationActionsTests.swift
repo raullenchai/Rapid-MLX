@@ -210,5 +210,6 @@ struct SidebarConversationActionsTests {
         #expect(decoded.first?.isPinned == false)
         #expect(decoded.first?.isArchived == false)
         #expect(decoded.first?.hasCustomTitle == false)
+        #expect(decoded.first?.customInstructions == nil)
     }
 }

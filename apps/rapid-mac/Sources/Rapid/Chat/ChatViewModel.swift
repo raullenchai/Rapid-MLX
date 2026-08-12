@@ -31,6 +31,10 @@ final class ChatViewModel {
     /// upserts under this id once the user sends.
     private(set) var activeConversationID = UUID()
 
+    /// User-authored instructions for the open conversation. They are kept
+    /// outside the visible transcript and merged into the wire-only system row.
+    private(set) var conversationInstructions: String = ""
+
     /// Bumped on every conversation switch (new / select / delete). Each
     /// send captures the epoch; any streaming write or completion whose
     /// captured epoch no longer matches is discarded — so a stream that
@@ -123,6 +127,9 @@ final class ChatViewModel {
     /// ``SamplingConfig`` reading from ``UserDefaults``.
     let sampling: SamplingConfig?
 
+    /// Global custom instructions shared with Settings.
+    let customInstructions: CustomInstructionsConfig
+
     /// v0.5.1: live handle on the embedded server so the chat loop can
     /// resolve `request.model` against the alias currently being served
     /// instead of trusting the picker bar's state. Mirrors the global
@@ -137,6 +144,7 @@ final class ChatViewModel {
         tools: any ToolRegistry = EmptyToolRegistry(),
         toolDefaults: UserDefaults = .standard,
         sampling: SamplingConfig? = nil,
+        customInstructions: CustomInstructionsConfig? = nil,
         server: ServerManager? = nil,
         persistsConversations: Bool = true,
         conversationStoreURL: URL? = nil
@@ -145,6 +153,7 @@ final class ChatViewModel {
         self.tools = tools
         self.toolDefaults = toolDefaults
         self.sampling = sampling
+        self.customInstructions = customInstructions ?? CustomInstructionsConfig()
         self.server = server
         self.persistsConversations = persistsConversations
         self.conversationStoreURL = conversationStoreURL
@@ -229,6 +238,9 @@ final class ChatViewModel {
                 if !conversation.hasCustomTitle {
                     conversation.title = title
                 }
+                conversation.customInstructions = Self.normalizedInstruction(
+                    conversationInstructions
+                )
             }
         } else {
             conversations.insert(
@@ -237,7 +249,8 @@ final class ChatViewModel {
                     title: title,
                     messages: messages,
                     createdAt: now,
-                    updatedAt: now
+                    updatedAt: now,
+                    customInstructions: Self.normalizedInstruction(conversationInstructions)
                 ),
                 at: 0
             )
@@ -297,6 +310,19 @@ final class ChatViewModel {
         saveConversations()
     }
 
+    /// Update the instruction layer for the open conversation. Existing saved
+    /// chats are written immediately; a brand-new empty chat is persisted with
+    /// its first user turn, avoiding an empty row in the sidebar.
+    func setConversationInstructions(_ value: String) {
+        guard value != conversationInstructions else { return }
+        conversationInstructions = value
+        guard let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else {
+            return
+        }
+        conversations[index].customInstructions = Self.normalizedInstruction(value)
+        saveConversations()
+    }
+
     private func saveConversations() {
         guard persistsConversations else { return }
         ConversationStore.save(conversations, to: conversationStoreURL)
@@ -316,6 +342,7 @@ final class ChatViewModel {
         persistActive(touching: false)
         guard let conv = conversations.first(where: { $0.id == id }) else { return }
         messages = conv.messages
+        conversationInstructions = conv.customInstructions ?? ""
         activeConversationID = id
         lastError = nil
         lastFailureKind = nil
@@ -334,6 +361,7 @@ final class ChatViewModel {
             inflight = nil
             conversationEpoch &+= 1
             messages.removeAll()
+            conversationInstructions = ""
             activeConversationID = UUID()
             isStreaming = false          // messages now empty → persistActive no-ops
             lastError = nil
@@ -386,6 +414,7 @@ final class ChatViewModel {
         isStreaming = false
         persistActive(touching: false)
         messages.removeAll()
+        conversationInstructions = ""
         activeConversationID = UUID()
         lastError = nil
         lastFailureKind = nil
@@ -447,6 +476,11 @@ final class ChatViewModel {
         isStreaming = true
 
         let epoch = conversationEpoch
+        // Freeze both user-authored layers for this turn. Changing Settings in
+        // another window takes effect on the next send, not halfway through a
+        // multi-round tool exchange.
+        let globalInstruction = customInstructions.global
+        let chatInstruction = conversationInstructions
         inflight = Task { [weak self] in
             guard let self else { return }
 
@@ -501,7 +535,9 @@ final class ChatViewModel {
                 alias: alias,
                 initialPlaceholder: placeholderIndex,
                 epoch: epoch,
-                forcedWebSearchQuery: forcedWebSearchQuery
+                forcedWebSearchQuery: forcedWebSearchQuery,
+                globalInstruction: globalInstruction,
+                conversationInstruction: chatInstruction
             )
         }
     }
@@ -1223,7 +1259,9 @@ final class ChatViewModel {
         alias: String,
         initialPlaceholder: Int,
         epoch: Int,
-        forcedWebSearchQuery: String? = nil
+        forcedWebSearchQuery: String? = nil,
+        globalInstruction: String = "",
+        conversationInstruction: String = ""
     ) async {
         defer {
             // A stream that outlived a conversation switch must not reset
@@ -1320,18 +1358,23 @@ final class ChatViewModel {
             let knownToolNames = Set(tools.definitions.map { $0.function.name })
             // Ambient anti-confabulation guidance, prepended for the wire body
             // only (never appended to the transcript) so the user's history
-            // stays prose-only. Skipped when the transcript already opens with
-            // a system row, when no tools are advertised, and — the point of
-            // #1549 — on rounds that carry no tool result for it to talk about.
-            let ambient = ChatViewModel.ambientSystemMessages(
-                historyOpensWithSystem: history.first?.role == .system,
-                toolsAdvertised: !definitions.isEmpty,
-                toolResultPresent: ChatViewModel.carriesToolResultForThisTurn(history)
-            )
+            // stays prose-only. Skipped when no tools are advertised and — the
+            // point of #1549 — on rounds that carry no tool result for it to
+            // talk about. Existing/custom instructions are merged into the
+            // same system row below.
+            let ambientPreamble = !definitions.isEmpty
+                && ChatViewModel.carriesToolResultForThisTurn(history)
+                ? ChatViewModel.toolGuidancePreamble
+                : nil
             // Inserted BEFORE the trim so its tokens are inside the budget the
             // trim works to, not added on top of a body already sized to fill
             // the window.
-            history.insert(contentsOf: ambient, at: 0)
+            history = ChatViewModel.addingInstructionLayers(
+                to: history,
+                ambientPreamble: ambientPreamble,
+                global: globalInstruction,
+                conversation: conversationInstruction
+            )
             // v0.5.11 / issue #363: silent context-window trim against the
             // engine-reported window (captured on the last profile fetch),
             // falling back to the per-family heuristic in ``ModelInfoCatalog``.
@@ -1353,11 +1396,13 @@ final class ChatViewModel {
             // with no tool result behind it — #1549 again, just needing a long
             // enough conversation to reach. If the evidence didn't survive,
             // neither does the instruction.
-            if !ambient.isEmpty,
-                history.first?.content == ChatViewModel.toolGuidancePreamble,
+            if let ambientPreamble,
                 !ChatViewModel.carriesToolResultForThisTurn(history)
             {
-                history.removeFirst()
+                history = ChatViewModel.removingLeadingSystemComponent(
+                    ambientPreamble,
+                    from: history
+                )
             }
             // Add this after the ambient/evidence consistency check above so
             // combining the two system instructions cannot defeat that guard.
@@ -1748,6 +1793,65 @@ final class ChatViewModel {
             return []
         }
         return [ChatMessage(role: .system, content: toolGuidancePreamble, status: .complete)]
+    }
+
+    /// Merge app, pre-existing, global, and conversation instruction layers
+    /// into one leading system row. Local chat templates often reject a second
+    /// system message, so every caller must go through this transformation.
+    nonisolated static func addingInstructionLayers(
+        to messages: [ChatMessage],
+        ambientPreamble: String?,
+        global: String,
+        conversation: String
+    ) -> [ChatMessage] {
+        var result = messages
+        let existing = result.first?.role == .system ? result.removeFirst().content : nil
+        var parts = [ambientPreamble, existing]
+            .compactMap { $0.flatMap(normalizedInstruction) }
+        if let global = normalizedInstruction(global) {
+            parts.append("""
+            [GLOBAL USER INSTRUCTIONS]
+            These user preferences apply unless this conversation has a conflicting instruction:
+            \(global)
+            """)
+        }
+        if let conversation = normalizedInstruction(conversation) {
+            parts.append("""
+            [CONVERSATION INSTRUCTIONS - HIGHEST USER PRIORITY]
+            These instructions apply only to this conversation. If they conflict with the global user instructions above, follow THESE conversation instructions. They do not override earlier application, safety, or tool instructions:
+            \(conversation)
+            """)
+        }
+        guard !parts.isEmpty else { return result }
+        result.insert(
+            ChatMessage(role: .system, content: parts.joined(separator: "\n\n"), status: .complete),
+            at: 0
+        )
+        return result
+    }
+
+    /// Remove an exact first component from the merged system row. Used when
+    /// context trimming drops the tool evidence that armed ambient guidance.
+    nonisolated static func removingLeadingSystemComponent(
+        _ component: String,
+        from messages: [ChatMessage]
+    ) -> [ChatMessage] {
+        var result = messages
+        guard result.first?.role == .system,
+              let normalized = normalizedInstruction(component)
+        else { return result }
+        let separator = "\n\n"
+        let prefix = normalized + separator
+        if result[0].content == normalized {
+            result.removeFirst()
+        } else if result[0].content.hasPrefix(prefix) {
+            result[0].content.removeFirst(prefix.count)
+        }
+        return result
+    }
+
+    nonisolated static func normalizedInstruction(_ value: String) -> String? {
+        CustomInstructionsConfig.normalized(value)
     }
 
     static let toolGuidancePreamble: String = """

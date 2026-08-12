@@ -211,6 +211,11 @@ struct ChatView: View {
     /// Incremented every time the user tries to send while gated. Drives
     /// the banner's brief emphasis so a blocked Return is never silent.
     @State private var blockedSendAttempts: Int = 0
+    @State private var showsConversationInstructions = false
+    /// Refreshed from the active conversation every time the popover opens.
+    /// SwiftUI may otherwise reuse the popover's old local `@State` when the
+    /// same conversation closes and reopens it.
+    @State private var conversationInstructionsDraft = ""
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
     /// A live user gesture must reach the actual trailing edge before
@@ -505,6 +510,38 @@ struct ChatView: View {
             // text-only. Ordering identifier first keeps it addressable.
             .accessibilityIdentifier("ChatView.AddPhotos")
             .accessibilityHint(supportsImageInput ? "" : "This model doesn't support images")
+            Button {
+                conversationInstructionsDraft = viewModel.conversationInstructions
+                showsConversationInstructions = true
+            } label: {
+                Image(systemName: "text.bubble")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(
+                        CustomInstructionsConfig.normalized(
+                            viewModel.conversationInstructions
+                        ) == nil
+                            ? Color.secondary
+                            : RapidTheme.brandPrimary
+                    )
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Color.primary.opacity(0.06)))
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isStreaming)
+            .help("Conversation instructions")
+            .accessibilityLabel("Conversation instructions")
+            .accessibilityIdentifier("ChatView.ConversationInstructions")
+            .popover(isPresented: $showsConversationInstructions, arrowEdge: .bottom) {
+                ConversationInstructionsPopover(
+                    draft: $conversationInstructionsDraft,
+                    onSave: { value in
+                        viewModel.setConversationInstructions(value)
+                        showsConversationInstructions = false
+                    },
+                    onCancel: { showsConversationInstructions = false }
+                )
+                .id(viewModel.activeConversationID)
+            }
             Spacer(minLength: 0)
             ModelPickerBar(
                 server: server,

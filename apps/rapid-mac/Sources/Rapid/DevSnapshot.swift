@@ -419,6 +419,7 @@ enum DevSnapshot {
                 SettingsView()
                     .environment(chat)
                     .environment(sampling)
+                    .environment(chat.customInstructions)
                     .environment(appearance)
                     .environment(settingsRouter)
                     .environment(server)

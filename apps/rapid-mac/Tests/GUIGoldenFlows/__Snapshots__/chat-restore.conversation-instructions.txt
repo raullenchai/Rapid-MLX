@@ -12,7 +12,7 @@ AXApplication title="Rapid-MLX"
             AXHeading desc="<relative-day>" enabled=true
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
             AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
-            AXButton id="Sidebar.Conversation.<uuid>" desc="golden stop marker" enabled=true
+            AXButton id="Sidebar.Conversation.<uuid>" desc="golden restore marker" enabled=true
           AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
           AXStaticText id="Sidebar.Residency" value=text enabled=true
@@ -39,6 +39,17 @@ AXApplication title="Rapid-MLX"
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddPhotos" desc="Add photos" help="This model doesn't support images" enabled=false
           AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
+            AXPopover
+              AXGroup subrole=AXHostingView
+                AXStaticText value=text enabled=true
+                AXStaticText value=text enabled=true
+                AXScrollArea
+                  AXTextArea id="ChatView.ConversationInstructions.Editor" value=text
+                  AXScrollBar value=number enabled=false
+                AXStaticText id="ChatView.ConversationInstructions.Editor.Count" value=text enabled=true
+                AXButton id="ChatView.ConversationInstructions.Clear" desc="Clear instructions" help="Clear instructions" enabled=true
+                AXButton id="ChatView.ConversationInstructions.Cancel" desc="Cancel" enabled=true
+                AXButton id="ChatView.ConversationInstructions.Save" desc="Save" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
