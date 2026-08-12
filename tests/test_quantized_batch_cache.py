@@ -1057,3 +1057,27 @@ def test_mask_patch_is_superset_for_stock_shapes():
         mask[None, None] * mx.ones((1, 1, 1, S), dtype=mx.bool_),
     )
     assert _max_abs(out, ref) < 5e-2
+
+
+def test_install_wires_the_mask_patch(monkeypatch):
+    """install_quantized_batch_cache() must itself install the mask-rank
+    patch — the equivalence tests above invoke the patch function
+    directly, so without this check the install hook could silently stop
+    wiring it and production would regress while tests stay green
+    (codex r4 blocking #2)."""
+    import mlx_lm.models.base as mlx_base
+
+    from vllm_mlx.quantized_batch_cache import install_quantized_batch_cache
+
+    # Reset the idempotence marker so this test observes the wiring
+    # regardless of which test ran first.
+    monkeypatch.setattr(
+        mlx_base, "_rapid_batched_mask_safe_qsdpa", False, raising=False
+    )
+
+    class _FakeBG:
+        def _make_new_cache(self):
+            return []
+
+    assert install_quantized_batch_cache(_FakeBG()) is True
+    assert getattr(mlx_base, "_rapid_batched_mask_safe_qsdpa", False) is True
