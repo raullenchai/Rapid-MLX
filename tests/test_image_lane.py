@@ -146,6 +146,82 @@ def test_generate_is_lazy(monkeypatch):
     assert built.calls[0]["prompt"] == "x"
 
 
+_MFLUX_REPO = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+
+
+def _seed_mflux_cache(tmp_path, monkeypatch, *, omit=None):
+    """Lay down an mflux snapshot in a throwaway HF cache.
+
+    ``omit`` drops one ``(component, shard)`` to model the state an
+    interrupted pull leaves behind: indexes and small files present, one
+    multi-gigabyte shard absent.
+    """
+    repo_root = tmp_path / "hf-cache" / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    snap = repo_root / "snapshots" / ("e" * 40)
+    (snap / "tokenizer").mkdir(parents=True)
+    (snap / "tokenizer" / "tokenizer.json").write_text("{}")
+    for component in ("transformer", "text_encoder", "vae"):
+        component_dir = snap / component
+        component_dir.mkdir()
+        (component_dir / "model.safetensors.index.json").write_text(
+            '{"weight_map": {"a": "0.safetensors", "b": "1.safetensors"}}'
+        )
+        for shard in ("0.safetensors", "1.safetensors"):
+            if omit != (component, shard):
+                (component_dir / shard).write_bytes(b"weights")
+    (repo_root / "refs").mkdir(parents=True)
+    (repo_root / "refs" / "main").write_text("e" * 40)
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "hf-cache")
+    )
+
+
+def test_partial_download_refuses_to_load(tmp_path, monkeypatch):
+    """A half-downloaded checkpoint must fail loudly, before mflux touches it.
+
+    mflux globs the component directory and ignores the index beside it, so
+    the shards that did arrive would load and the run would render noise with
+    no error anywhere. The whole point of the gate is that ``_build_model`` is
+    never reached.
+    """
+    _seed_mflux_cache(tmp_path, monkeypatch, omit=("transformer", "0.safetensors"))
+    engine = ImageGenerationEngine(_MFLUX_REPO)
+
+    def _must_not_build():
+        raise AssertionError("mflux was handed a partially-downloaded snapshot")
+
+    monkeypatch.setattr(engine, "_build_model", _must_not_build)
+
+    with pytest.raises(ImageRuntimeError, match="transformer/0.safetensors"):
+        engine._ensure_loaded()
+
+
+def test_complete_download_loads(tmp_path, monkeypatch):
+    """The gate stays out of the way once every shard is on disk."""
+    _seed_mflux_cache(tmp_path, monkeypatch)
+    engine = ImageGenerationEngine(_MFLUX_REPO)
+    built = _FakeModel()
+    monkeypatch.setattr(engine, "_build_model", lambda: built)
+
+    assert engine._ensure_loaded() is built
+
+
+def test_uncached_model_is_not_treated_as_partial(tmp_path, monkeypatch):
+    """No snapshot yet ⇒ no verdict ⇒ mflux does its own first-run download.
+
+    Blocking here would break the cold-start path the gate is meant to
+    protect, so "cannot tell" must never harden into "refuse".
+    """
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "empty")
+    )
+    engine = ImageGenerationEngine(_MFLUX_REPO)
+    built = _FakeModel()
+    monkeypatch.setattr(engine, "_build_model", lambda: built)
+
+    assert engine._ensure_loaded() is built
+
+
 def test_edit_family_requires_image_paths():
     engine = ImageGenerationEngine("Qwen/Qwen-Image-Edit-2509")
     engine._model = _FakeModel()

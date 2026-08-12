@@ -1620,9 +1620,20 @@ def _ensure_model_downloaded(
     # shards still in flight), letting the spawned ``serve`` quietly
     # finish the download inside its logfile. Codex round-3 BLOCKING #2.
     try:
-        from vllm_mlx._download_gate import is_repo_cached
+        from vllm_mlx._download_gate import is_repo_cached, mflux_missing_weights
 
         if is_repo_cached(model_name):
+            return
+        # ``is_repo_cached`` probes for root ``model*.safetensors``, which an
+        # mflux checkpoint never has — its weights live under ``transformer/``,
+        # ``text_encoder/`` and ``vae/``. So a fully-downloaded image model
+        # always failed that probe and fell through to the disk-space gate and
+        # the mirror below, i.e. every single start of an image model needed
+        # the network. On a hostile DNS path that is not a slow start but a
+        # hung one: the socket sits in SYN_SENT against a poisoned address
+        # while the UI shows "Starting" forever. Verified-complete component
+        # weights are just as cached as a verified-complete root checkpoint.
+        if mflux_missing_weights(model_name) == []:
             return
     except Exception:
         # Probe failed (filesystem permission error, unexpected layout) —
@@ -2705,6 +2716,28 @@ def serve_command(args):
             # number of embedders/tests replace this hook with a one-argument
             # prefetch function.
             _ensure_model_downloaded(args.model)
+
+    # The prefetch above swallows transport errors on purpose ("server will
+    # retry"), which is right for a text model — the loader retries and raises
+    # something legible. An mflux checkpoint has no such backstop: it loads
+    # whatever shards arrived and renders noise, so a pull that ended early
+    # would boot a server whose only possible output is garbage. Refuse here
+    # instead, while the operator is still watching the command they typed.
+    if _serve_profile is not None and _serve_profile.modality == "image-gen":
+        from ._download_gate import mflux_missing_weights
+
+        _missing = mflux_missing_weights(args.model)
+        if _missing:
+            _shown = getattr(args, "_original_alias", None) or args.model
+            print(
+                f"\n  Error: {_shown} is only partially downloaded — "
+                f"{len(_missing)} required file(s) missing, starting with "
+                f"{_missing[0]}.\n"
+                f"  Finish the download with `rapid-mlx pull {_shown}`, "
+                "then serve again.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Import unified server
     from . import server
