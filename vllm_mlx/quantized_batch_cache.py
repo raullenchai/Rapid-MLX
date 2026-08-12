@@ -564,10 +564,17 @@ def _install_batched_mask_safe_quantized_sdpa() -> None:
     ):
         n_q_heads = queries.shape[1]
         n_kv_heads = q_keys[0].shape[-3]
+        # Only rewrite the exact shape this cache's make_mask produces:
+        # ``[B, 1, L, S]`` with B matching the query batch. A rank-4 mask
+        # already laid out for the expanded scores (e.g.
+        # ``[n_kv_heads, n_repeats, L, S]``) has shape[1] == n_repeats > 1
+        # here and passes through untouched (codex r1 BLOCKING #1).
         if (
             n_q_heads // n_kv_heads > 1
             and isinstance(mask, mx.array)
             and mask.ndim == 4
+            and mask.shape[0] == queries.shape[0]
+            and mask.shape[1] == 1
         ):
             mask = mask[:, None]
         return _orig(

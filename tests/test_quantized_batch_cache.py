@@ -988,6 +988,7 @@ def test_fused_qsdpa_matches_dequant_reference_batched_gqa():
     _install_batched_mask_safe_quantized_sdpa()
     import mlx_lm.models.base as mlx_base
 
+    mx.random.seed(1751)  # deterministic thresholds (codex r1 BLOCKING #2)
     B, n_kv, n_q, S, Dh = 2, 2, 4, 24, 64
     lp = [3, 0]
     q = QuantizedBatchKVCache(lp, group_size=32, bits=8)
@@ -1036,6 +1037,7 @@ def test_mask_patch_is_superset_for_stock_shapes():
     _install_batched_mask_safe_quantized_sdpa()
     import mlx_lm.models.base as mlx_base
 
+    mx.random.seed(1751)
     n_kv, n_q, S, Dh = 2, 4, 16, 64
     k = mx.random.normal((1, n_kv, S, Dh)).astype(mx.bfloat16)
     v = mx.random.normal((1, n_kv, S, Dh)).astype(mx.bfloat16)
