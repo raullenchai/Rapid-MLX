@@ -28,6 +28,7 @@ later ``kill $(cat ~/.rapid-mlx/launch.pid)`` shuts it down cleanly.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -41,7 +42,7 @@ from . import ADAPTERS, cursor
 PID_FILE = Path.home() / ".rapid-mlx" / "launch.pid"
 
 
-def _print_list() -> int:
+def _print_list(*, as_json: bool = False) -> int:
     """Print the supported-clients + detection matrix.
 
     Output shape (one line per client):
@@ -53,6 +54,11 @@ def _print_list() -> int:
 
     Always returns 0 — listing is a read-only inspect command.
     """
+    if as_json:
+        from vllm_mlx.integrations import integration_targets_json
+
+        print(json.dumps(integration_targets_json(), ensure_ascii=False))
+        return 0
     width = max(len(name) for name in ADAPTERS) + 2
     print("Supported clients:")
     for name, adapter in ADAPTERS.items():
@@ -128,7 +134,7 @@ def launch_command(args: argparse.Namespace) -> None:
     without touching disk.
     """
     if args.client == "list":
-        sys.exit(_print_list())
+        sys.exit(_print_list(as_json=args.json))
 
     if args.all and args.client:
         print(
@@ -353,4 +359,9 @@ def register(subparsers) -> None:
         "--dry-run",
         action="store_true",
         help="Print what would change without touching disk.",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="With `list`, emit the complete GUI/CLI integration registry as JSON.",
     )

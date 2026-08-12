@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering,
+Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -2557,6 +2557,33 @@ flow_resident_load_rejected() {
     log "  resident-load-rejected OK"
 }
 
+flow_launch_integrations() {
+    log "flow: launch-integrations"
+    start_persona launch-integrations
+    dismiss_first_run
+    see_main "$OUT/main.json"
+    press "$OUT/main.json" Sidebar.Launch "$OUT/launch.json"
+
+    # The engine-owned registry currently resolves to fourteen distinct
+    # products after the overlapping Claude Code and Continue entries are
+    # merged. Pin representatives at both ends as well as the exact count so a
+    # new YAML profile cannot silently disappear from the desktop again.
+    for _ in {1..40}; do
+        see_main "$OUT/launch.json"
+        count="$(jq '[.data.ui_elements[]? | (.identifier // "") | select(startswith("Launch.Integration."))] | unique | length' "$OUT/launch.json")"
+        [[ "$count" == 14 ]] && break
+        sleep 0.25
+    done
+    [[ "$count" == 14 ]] || die "Launch rendered $count integrations; engine registry exposes 14 (#1715)"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.cline")' "$OUT/launch.json" >/dev/null \
+        || die "Launch omitted config-writing target Cline"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.smolagents")' "$OUT/launch.json" >/dev/null \
+        || die "Launch omitted adapter profile smolagents"
+    baseline launch-integrations.complete "$OUT/launch.json"
+    log "  launch-integrations OK"
+    cleanup_persona
+}
+
 
 if [[ -d "$OUT_ROOT" && -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
     RESULT_WRITTEN=1
@@ -2584,6 +2611,7 @@ case "$FLOW" in
     browse-all-destination) flow_browse_all_destination ;;
     image-generation) flow_image_generation ;;
     resident-load-rejected) flow_resident_load_rejected ;;
+    launch-integrations) flow_launch_integrations ;;
     all)
         flow_fresh_install
         flow_cached_quickstart
@@ -2604,6 +2632,7 @@ case "$FLOW" in
         flow_browse_all_destination
         flow_image_generation
         flow_resident_load_rejected
+        flow_launch_integrations
         ;;
     *) die "unknown flow: $FLOW" ;;
 esac

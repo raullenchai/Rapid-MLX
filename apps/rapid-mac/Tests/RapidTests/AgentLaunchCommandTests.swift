@@ -3,6 +3,15 @@ import Testing
 
 @Suite("Connect agents — process-scoped launch commands")
 struct AgentLaunchCommandTests {
+    @Test("registry commands carry authentication only for config writers")
+    func registryCommands() {
+        #expect(IntegrationLaunchCommand.configWriter(
+            id: "cline", serverURL: "http://127.0.0.1:8000", key: "secret", model: "model"
+        ) == "env RAPID_MLX_API_KEY=secret rapid-mlx launch cline --server-url http://127.0.0.1:8000 --model model")
+        #expect(IntegrationLaunchCommand.adapterGuide(
+            id: "aider", baseURL: "http://127.0.0.1:8000/v1", model: "model"
+        ) == "rapid-mlx agents aider --base-url http://127.0.0.1:8000/v1 --model model")
+    }
     private let base = "http://127.0.0.1:8000/v1"
     private let key = "local-key"
     private let model = "qwen-test"

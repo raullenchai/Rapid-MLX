@@ -45,6 +45,26 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+if sys.argv[1:] == ["launch", "list", "--json"]:
+    print(json.dumps([
+        {"id": "cline", "name": "Cline", "kind": "config_writer", "config_path": "~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"},
+        {"id": "claude-code", "name": "Claude Code", "kind": "config_writer", "config_path": "~/.claude/settings.json"},
+        {"id": "continue-dev", "name": "Continue.dev", "kind": "config_writer", "config_path": "~/.continue/config.json"},
+        {"id": "cursor", "name": "Cursor", "kind": "config_writer", "config_path": "~/Library/Application Support/Cursor/User/settings.json"},
+        {"id": "aider", "name": "Aider", "kind": "adapter_profile", "config_path": None},
+        {"id": "codex", "name": "Codex CLI", "kind": "adapter_profile", "config_path": None},
+        {"id": "hermes", "name": "Hermes Agent", "kind": "adapter_profile", "config_path": None},
+        {"id": "kilo-code", "name": "Kilo Code", "kind": "adapter_profile", "config_path": None},
+        {"id": "langchain", "name": "LangChain", "kind": "adapter_profile", "config_path": None},
+        {"id": "opencode", "name": "OpenCode", "kind": "adapter_profile", "config_path": None},
+        {"id": "openhands", "name": "OpenHands", "kind": "adapter_profile", "config_path": None},
+        {"id": "pydanticai", "name": "PydanticAI", "kind": "adapter_profile", "config_path": None},
+        {"id": "qwen-code", "name": "Qwen Code", "kind": "adapter_profile", "config_path": None},
+        {"id": "smolagents", "name": "smolagents", "kind": "adapter_profile", "config_path": None},
+    ]))
+    sys.exit(0)
+
+
 try:
     with open(os.path.join(os.environ.get("HOME", ""), ".rapid-golden-fake.json"), encoding="utf-8") as stream:
         FILE_CONFIG = json.load(stream)

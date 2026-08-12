@@ -36,9 +36,11 @@ struct ConnectToolsView: View {
     /// snapshot harness, which has no live server to resolve against.
     var readiness: ModelReadiness? = nil
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
+    @State private var integrationTargets: [IntegrationTarget] = []
 
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
     private var anthropicBaseURL: String { "http://\(host):\(port)" }
+    private var serverOrigin: String { "http://\(host):\(port)" }
 
     /// The model id to publish in a config, or ``nil`` when no real
     /// model is resolved yet. Deliberately not defaulted to a
@@ -106,6 +108,9 @@ struct ConnectToolsView: View {
         // so we keep it rather than the PR's inline frame.
         .modifier(ConnectToolsFrame(fixedSize: showsCloseButton))
         .background(RapidTheme.surfaceCanvas)
+        .task {
+            integrationTargets = await IntegrationCatalog.load()
+        }
     }
 
     /// The scrollable content. Factored out so the snapshot harness can
@@ -235,6 +240,43 @@ struct ConnectToolsView: View {
     // MARK: - Tool definitions
 
     private var tools: [ConnectTool] {
+        guard !integrationTargets.isEmpty else { return legacyTools }
+        return integrationTargets.map { target in
+            let isWriter = target.kind == .configWriter
+            let command: String
+            let displayCommand: String
+            if isWriter {
+                command = IntegrationLaunchCommand.configWriter(
+                    id: target.id, serverURL: serverOrigin, key: snippetKey, model: snippetModel
+                )
+                displayCommand = IntegrationLaunchCommand.configWriter(
+                    id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel
+                )
+            } else {
+                command = IntegrationLaunchCommand.adapterGuide(
+                    id: target.id, baseURL: openAIBaseURL, model: snippetModel
+                )
+                displayCommand = command
+            }
+            let destination = target.configPath.map { " It writes \($0)." } ?? ""
+            let cursorCaveat = target.id == "cursor"
+                ? " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend."
+                : ""
+            return ConnectTool(
+                id: target.id,
+                name: target.name,
+                symbol: isWriter ? "slider.horizontal.3" : "point.3.connected.trianglepath.dotted",
+                blurb: isWriter
+                    ? "Configure this client to use Rapid-MLX.\(destination)\(cursorCaveat)"
+                    : "View this adapter's setup guide for the local endpoint.",
+                snippet: command,
+                displaySnippet: displayCommand
+            )
+        }
+    }
+
+    /// Available while an older or missing sidecar cannot expose the registry.
+    private var legacyTools: [ConnectTool] {
         [
             ConnectTool(
                 id: "claude-code",
@@ -298,6 +340,16 @@ enum AgentLaunchCommand {
     static func hermes(baseURL: String, key: String, model: String) -> String {
         "env OPENAI_BASE_URL=\(baseURL) OPENAI_API_KEY=\(key) HERMES_INFERENCE_MODEL=\(model) "
             + "hermes --provider openai-api --ignore-user-config"
+    }
+}
+
+enum IntegrationLaunchCommand {
+    static func configWriter(id: String, serverURL: String, key: String, model: String) -> String {
+        "env RAPID_MLX_API_KEY=\(key) rapid-mlx launch \(id) --server-url \(serverURL) --model \(model)"
+    }
+
+    static func adapterGuide(id: String, baseURL: String, model: String) -> String {
+        "rapid-mlx agents \(id) --base-url \(baseURL) --model \(model)"
     }
 }
 
@@ -451,6 +503,7 @@ private struct ConnectToolRow: View {
         }
         .padding(.horizontal, RapidTheme.Space.xl - 4)
         .padding(.vertical, RapidTheme.Space.lg + 1)
+        .accessibilityIdentifier("Launch.Integration.\(tool.id)")
     }
 
     private func copy() {

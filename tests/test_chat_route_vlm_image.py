@@ -38,6 +38,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.request import ClientRequestError
 from vllm_mlx.routes.chat import router as chat_router
 
 
@@ -89,7 +90,7 @@ class _StubMLLMEngine:
     async def stream_chat(self, messages, **kwargs):
         self.stream_calls.append({"messages": messages, "kwargs": kwargs})
         if self._raise_msg is not None:
-            raise ValueError(self._raise_msg)
+            raise ClientRequestError(self._raise_msg)
         text = "A blue background."
         yield GenerationOutput(
             text=text,
@@ -190,6 +191,16 @@ def test_chat_route_forwards_image_url_content_to_mllm_engine():
     # Image URL payload survives end-to-end.
     image_part = next(p for p in parts if p.get("type") == "image_url")
     assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
+
+    # The streaming path preflights MLLM preprocessing before committing
+    # HTTP 200, then replays its buffered role/content chunks exactly once.
+    payload["stream"] = True
+    stream_resp = client.post("/v1/chat/completions", json=payload)
+    assert stream_resp.status_code == 200, stream_resp.text
+    assert stream_resp.text.count('"role":"assistant"') == 1
+    assert stream_resp.text.count('"content":"A blue background."') == 1
+    assert stream_resp.text.rstrip().endswith("data: [DONE]")
+    assert len(engine.stream_calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -293,6 +304,16 @@ def test_chat_route_maps_image_fetch_error_to_http_400_still_works():
     }
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 400
+
+    # The lazy streaming engine raises only after the route would previously
+    # have committed SSE HTTP 200 plus its synthetic role chunk.  It must now
+    # remain a normal JSON 400 with the actionable message intact.
+    payload["stream"] = True
+    stream_resp = client.post("/v1/chat/completions", json=payload)
+    assert stream_resp.status_code == 400, stream_resp.text
+    assert stream_resp.headers["content-type"].startswith("application/json")
+    assert "Failed to process image" in stream_resp.json()["detail"]
+    assert "data:" not in stream_resp.text
 
 
 if __name__ == "__main__":

@@ -519,6 +519,7 @@ def _make_args(**overrides):
         port=8000,
         start_server=False,
         dry_run=False,
+        json=False,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -532,6 +533,22 @@ class TestLaunchCommand:
         out = capsys.readouterr().out
         for name in ADAPTERS:
             assert name in out
+
+    def test_list_json_is_complete_deduplicated_registry(self, fake_home, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(_make_args(client="list", json=True))
+        assert excinfo.value.code == 0
+        targets = json.loads(capsys.readouterr().out)
+        ids = [target["id"] for target in targets]
+        assert len(ids) == len(set(ids)) == 14
+        assert ids[:4] == ["cline", "claude-code", "continue-dev", "cursor"]
+        assert {target["kind"] for target in targets} == {
+            "config_writer",
+            "adapter_profile",
+        }
+        writer = next(t for t in targets if t["id"] == "claude-code")
+        assert writer["config_path"].startswith("~/")
+        assert next(t for t in targets if t["id"] == "codex")["config_path"] is None
 
     def test_unknown_client_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:

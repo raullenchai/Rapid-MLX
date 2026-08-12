@@ -67,6 +67,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..request import ClientRequestError
 from ..response_cache import (
     UNCACHEABLE,
     get_response_cache,
@@ -3280,6 +3281,55 @@ def _effective_posthoc_reasoning_cap(sampling_kwargs: dict, request) -> int | No
     return getattr(request, "reasoning_max_tokens", None)
 
 
+async def _preflight_mllm_chat_stream(
+    stream: AsyncIterator[str],
+    raw_request: Request,
+    *,
+    timeout: float,
+) -> AsyncIterator[str] | None:
+    """Prime an MLLM stream through its first engine-backed event.
+
+    ``stream_chat_completion`` yields the assistant role before asking the
+    engine for output.  Reading two items therefore crosses the lazy MLLM
+    preprocessing boundary without putting either item on the wire.  A typed
+    ``ClientRequestError`` can then become an HTTP 400 at the route boundary.
+    The returned iterator replays the buffered items exactly once and delegates
+    the remainder to the original iterator.
+    """
+
+    buffered: list[str] = []
+
+    async def _prime() -> bool:
+        try:
+            buffered.append(await anext(stream))
+            buffered.append(await anext(stream))
+        except StopAsyncIteration:
+            # A valid zero-content completion can terminate after its role
+            # chunk.  Preserve it rather than treating exhaustion as failure.
+            pass
+        return True
+
+    try:
+        completed = await _wait_with_disconnect(_prime(), raw_request, timeout=timeout)
+    except BaseException:
+        await stream.aclose()
+        raise
+    if completed is None:
+        await stream.aclose()
+        return None
+
+    async def _replay() -> AsyncIterator[str]:
+        try:
+            for chunk in buffered:
+                yield chunk
+            async for chunk in stream:
+                yield chunk
+        finally:
+            await stream.aclose()
+
+    return _replay()
+
+
 def _template_generation_prefix(engine, messages, tools, enable_thinking) -> str | None:
     """Return the TEMPLATE-added generation-prefix delta for ``messages``.
 
@@ -4882,7 +4932,6 @@ async def _create_chat_completion_impl(
                         detail=f"Chat template error: {err_msg}",
                     )
                 raise
-        _commit_state[0] = True
         # L-05: surface silent ``enable_thinking`` drop on non-Qwen
         # parsers via response headers. Merging here lets the SSE
         # ``Cache-Control`` / ``Connection`` headers stay intact.
@@ -4916,6 +4965,7 @@ async def _create_chat_completion_impl(
             # synthesize an SSE stream from the buffered output. Falls
             # back to the unconstrained streaming helper on guided
             # failure (logged), matching the non-streaming fallback.
+            _commit_state[0] = True
             return StreamingResponse(
                 _disconnect_guard(
                     stream_chat_completion_guided(
@@ -4952,6 +5002,7 @@ async def _create_chat_completion_impl(
             # retry tokens to the first stream). The strict-request
             # counter has already ticked above when ``strict_mode``
             # was detected — no double-count here.
+            _commit_state[0] = True
             return StreamingResponse(
                 _disconnect_guard(
                     stream_chat_completion_strict_postgen(
@@ -4969,15 +5020,38 @@ async def _create_chat_completion_impl(
                 media_type="text/event-stream",
                 headers=_sse_headers,
             )
+        _chat_stream = stream_chat_completion(
+            engine,
+            messages,
+            request,
+            caller_agent=_caller_ua,
+            **chat_kwargs,
+        )
+        if engine.is_mllm:
+            # #1849: an MLLM does its image/video decode and prompt-cap
+            # validation lazily, on the first engine iteration.  The chat
+            # generator emits a synthetic assistant-role chunk immediately
+            # before that iteration, so constructing StreamingResponse here
+            # used to commit HTTP 200 before a bad image could raise its
+            # typed, client-actionable error.  Prime through the role plus the
+            # first engine-backed chunk while the route can still select an
+            # HTTP status.  Text models retain their immediate role chunk and
+            # SSE keepalive behaviour; only MLLM TTFT waits for prefill, which
+            # is the unavoidable trade-off for a truthful HTTP status.
+            try:
+                _chat_stream = await _preflight_mllm_chat_stream(
+                    _chat_stream,
+                    raw_request,
+                    timeout=request.timeout or cfg.default_timeout,
+                )
+            except ClientRequestError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if _chat_stream is None:
+                return Response(status_code=499)
+        _commit_state[0] = True
         return StreamingResponse(
             _disconnect_guard(
-                stream_chat_completion(
-                    engine,
-                    messages,
-                    request,
-                    caller_agent=_caller_ua,
-                    **chat_kwargs,
-                ),
+                _chat_stream,
                 raw_request,
                 engine=engine,
                 request_id_holder=request_id_holder,
