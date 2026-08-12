@@ -3,7 +3,7 @@
 <p align="center">
   <strong>The fastest local AI engine for Apple Silicon.</strong>
   <br>
-  <em>Drop-in OpenAI / Anthropic API · 2–4× faster than Ollama · Runs on any M-series Mac.</em>
+  <em>Drop-in OpenAI / Anthropic API · up to 3× Ollama's throughput (<a href="https://rapidmlx.com/blog/rapid-mlx-vs-ollama-benchmark">measured</a>) · Runs on any M-series Mac.</em>
 </p>
 
 <p align="center">
