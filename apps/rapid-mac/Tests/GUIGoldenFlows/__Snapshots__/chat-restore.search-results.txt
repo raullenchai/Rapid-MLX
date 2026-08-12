@@ -46,7 +46,6 @@ AXApplication title="Rapid-MLX"
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true
       AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true
-        AXButton id="Toolbar.SearchChats" desc="Search chats" help="Search chats - Command-K" enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
     AXButton subrole=AXMinimizeButton enabled=true

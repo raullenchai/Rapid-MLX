@@ -190,15 +190,7 @@ _ROLE_EQUIVALENTS = {
 
 def is_window_control(record: dict) -> bool:
     """True for a traffic-light / toolbar button whose subtree is AppKit's."""
-    if record.get("subrole") in _WINDOW_CONTROL_SUBROLES:
-        return True
-    # On macOS 15.6 the system sidebar item gained a second, lazily-realized
-    # AXButton child. Keep the public button but ignore its OS-owned internals,
-    # just as we already do for traffic-light controls.
-    return record.get("role") == "AXButton" and record.get("description") in {
-        "Hide Sidebar",
-        "Show Sidebar",
-    }
+    return record.get("subrole") in _WINDOW_CONTROL_SUBROLES
 
 
 # The footer's GPU gauge has no stable cross-machine shape. Apple Silicon
@@ -245,6 +237,56 @@ class Node:
     def __init__(self, record: dict) -> None:
         self.record = record
         self.children: list[Node] = []
+
+
+def is_lazy_button_wrapper(node: Node) -> bool:
+    """True for an ``AXButton`` that only wraps a re-published copy of itself.
+
+    macOS 15 realizes a SwiftUI toolbar ``Button`` as an outer AXButton *plus*
+    a lazily-created inner AXButton that carries the button's own identity — the
+    same identifier and description, with the tooltip surfacing as ``AXHelp`` on
+    the child. macOS 26 publishes the button flat, with no inner copy. Keeping
+    the outer button (so a vanished control is still a diff) and dropping the
+    OS-owned duplicate makes a baseline generated on one release match the
+    other, exactly as ``is_window_control`` already does for the traffic lights.
+
+    #1845 pinned this for the system "Hide/Show Sidebar" toggle by matching its
+    description; keying on the STRUCTURE instead absorbs it for every toolbar
+    button — app-authored ones like ``Toolbar.SearchChats`` (#1879) included —
+    so a new toolbar button no longer has to be added to a hand-kept allowlist.
+
+    The predicate matches only the exact shape observed in the real cross-OS
+    dumps (``tests/fixtures/ax_baseline``): an ``AXButton`` directly under an
+    ``AXToolbar`` (``render`` checks the parent) with an identity of its own,
+    whose SINGLE child is a LEAF ``AXButton`` re-publishing that same identifier
+    and description. Every clause narrows away a way a real control could be
+    hidden:
+
+    * an *anonymous* button (no identifier and no description) has no identity to
+      re-publish, so a button nested in it is a distinct control, never a copy;
+    * a real nested control brings its own children or siblings, so requiring a
+      single leaf child leaves any richer structure — and any change to it —
+      visible in the diff;
+    * a child with a different identifier or description is a different control
+      and is kept.
+
+    Only AppKit's lazy self-copy, which no product change can introduce, matches.
+    """
+    record = node.record
+    if record.get("role") != "AXButton" or len(node.children) != 1:
+        return False
+    identifier = record.get("identifier") or ""
+    description = record.get("description") or ""
+    if not identifier and not description:
+        return False
+    (child,) = node.children
+    child_record = child.record
+    return (
+        not child.children
+        and child_record.get("role") == "AXButton"
+        and (child_record.get("identifier") or "") == identifier
+        and (child_record.get("description") or "") == description
+    )
 
 
 def scrub(text: str, extra_tokens: tuple[str, ...] = ()) -> str:
@@ -420,16 +462,34 @@ def render_node(node: Node, extra_tokens: tuple[str, ...]) -> str:
 def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
     lines: list[str] = []
 
-    def walk(node: Node, depth: int, sort_children: bool) -> None:
+    def walk(
+        node: Node, depth: int, sort_children: bool, parent_is_toolbar: bool
+    ) -> None:
         lines.append("  " * depth + render_node(node, extra_tokens))
-        if is_window_control(node.record):
+        if is_window_control(node.record) or (
+            parent_is_toolbar and is_lazy_button_wrapper(node)
+        ):
             # The traffic-light buttons are AppKit's, not ours. Their anonymous
             # AXGroup descendants are lazily realized: two dumps taken seconds
             # apart in the SAME run recorded one group under AXZoomButton in
             # settings-root and two in models-idle. Keeping the button (so a
             # missing close box is still a diff) and dropping its private
             # innards removes a whole class of false failure that no product
-            # change could ever cause.
+            # change could ever cause. The same holds for a toolbar button whose
+            # only child is macOS 15's lazily-realized copy of itself — scoped to
+            # a button OWNED by the toolbar so an identical-identity nesting
+            # deeper in the tree still surfaces as a diff (see
+            # ``is_lazy_button_wrapper``).
+            #
+            # The dropped copy carries the button's tooltip as ``AXHelp``, and it
+            # is dropped, not lifted onto the parent, ON PURPOSE: macOS 26 does
+            # not publish that tooltip on the toolbar button at all (the flat
+            # button has ``help=None`` in the fixtures), so lifting it would make
+            # the two releases disagree on ``help`` and reintroduce exactly the
+            # un-regenerable baseline this normalizer exists to prevent. A tooltip
+            # that only one OS exposes is not cross-OS structure; the PNG
+            # snapshots under ``Tests/RapidTests/__Snapshots__`` remain the check
+            # for user-visible tooltip text.
             return
         children = node.children
         if sort_children:
@@ -438,10 +498,16 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
             # rewrite the baseline. Deeper sibling order is the view order and
             # is exactly what we want to detect changing.
             children = sorted(children, key=window_sort_key)
+        # AppKit's lazy button self-copy sits DIRECTLY under the toolbar, so the
+        # collapse in ``is_lazy_button_wrapper`` is armed only for a toolbar's
+        # own children, never for buttons deeper in the subtree.
+        node_is_toolbar = node.record.get("role") == "AXToolbar"
         for child in children:
-            walk(child, depth + 1, sort_children=False)
+            walk(
+                child, depth + 1, sort_children=False, parent_is_toolbar=node_is_toolbar
+            )
 
-    walk(root, 0, sort_children=True)
+    walk(root, 0, sort_children=True, parent_is_toolbar=False)
     return lines
 
 

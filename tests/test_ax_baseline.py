@@ -56,6 +56,14 @@ def test_live_memory_pressure_bucket_is_scrubbed(ax_baseline, pressure):
     )
 
 
+def _toolbar_with(ax_baseline, button):
+    """Wrap ``button`` in an AXToolbar, since the lazy-copy collapse is armed
+    only for toolbar descendants (where AppKit's self-copy is observed)."""
+    toolbar = ax_baseline.Node({"role": "AXToolbar", "enabled": True})
+    toolbar.children.append(button)
+    return toolbar
+
+
 @pytest.mark.parametrize("description", ["Hide Sidebar", "Show Sidebar"])
 def test_system_sidebar_button_subtree_is_ignored(ax_baseline, description):
     button = ax_baseline.Node(
@@ -72,8 +80,134 @@ def test_system_sidebar_button_subtree_is_ignored(ax_baseline, description):
         )
     )
 
-    assert ax_baseline.render(button, ()) == [
-        f'AXButton desc="{description}" enabled=true'
+    assert ax_baseline.render(_toolbar_with(ax_baseline, button), ()) == [
+        "AXToolbar enabled=true",
+        f'  AXButton desc="{description}" enabled=true',
+    ]
+
+
+def test_app_toolbar_button_lazy_copy_is_ignored(ax_baseline):
+    """An app-authored toolbar button carries its own identifier, so the old
+    description allowlist could not reach it — every new toolbar button would
+    have had to be added by hand or turn macOS 26 red against a macOS 15
+    baseline. The structural rule collapses macOS 15's lazily-realized inner
+    copy (same identifier and description, tooltip as AXHelp) for any of them.
+    """
+    button = ax_baseline.Node(
+        {
+            "role": "AXButton",
+            "identifier": "Toolbar.SearchChats",
+            "description": "Search chats",
+            "enabled": True,
+        }
+    )
+    button.children.append(
+        ax_baseline.Node(
+            {
+                "role": "AXButton",
+                "identifier": "Toolbar.SearchChats",
+                "description": "Search chats",
+                "help": "Search chats - Command-K",
+                "enabled": True,
+            }
+        )
+    )
+
+    assert ax_baseline.render(_toolbar_with(ax_baseline, button), ()) == [
+        "AXToolbar enabled=true",
+        '  AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true',
+    ]
+
+
+def test_nested_button_with_its_own_identity_is_preserved(ax_baseline):
+    """The collapse is narrow even inside a toolbar: a child button that is a
+    DIFFERENT control keeps its line, so a real reparented button still shows up
+    as a structural diff.
+    """
+    outer = ax_baseline.Node(
+        {"role": "AXButton", "description": "Outer", "enabled": True}
+    )
+    outer.children.append(
+        ax_baseline.Node({"role": "AXButton", "description": "Inner", "enabled": True})
+    )
+
+    assert ax_baseline.render(_toolbar_with(ax_baseline, outer), ()) == [
+        "AXToolbar enabled=true",
+        '  AXButton desc="Outer" enabled=true',
+        '    AXButton desc="Inner" enabled=true',
+    ]
+
+
+def test_anonymous_nested_button_is_preserved(ax_baseline):
+    """An anonymous button (no identifier, no description) has no identity to
+    re-publish, so a button nested inside it is a distinct control — not
+    AppKit's self-copy — even under a toolbar. Collapsing on empty==empty would
+    hide that nesting from every golden diff, so the identity guard keeps both.
+    """
+    outer = ax_baseline.Node({"role": "AXButton", "enabled": True})
+    outer.children.append(ax_baseline.Node({"role": "AXButton", "enabled": True}))
+
+    assert ax_baseline.render(_toolbar_with(ax_baseline, outer), ()) == [
+        "AXToolbar enabled=true",
+        "  AXButton enabled=true",
+        "    AXButton enabled=true",
+    ]
+
+
+def test_identical_identity_nested_button_outside_toolbar_is_preserved(ax_baseline):
+    """The collapse is scoped to toolbar descendants. AppKit's lazy self-copy is
+    only seen there; the identical shape ANYWHERE ELSE is a real nested control,
+    so a change to it must still surface as a golden diff.
+    """
+    outer = ax_baseline.Node(
+        {
+            "role": "AXButton",
+            "identifier": "Some.Button",
+            "description": "Twin",
+            "enabled": True,
+        }
+    )
+    outer.children.append(
+        ax_baseline.Node(
+            {
+                "role": "AXButton",
+                "identifier": "Some.Button",
+                "description": "Twin",
+                "enabled": True,
+            }
+        )
+    )
+
+    assert ax_baseline.render(outer, ()) == [
+        'AXButton id="Some.Button" desc="Twin" enabled=true',
+        '  AXButton id="Some.Button" desc="Twin" enabled=true',
+    ]
+
+
+def test_same_identity_toolbar_button_with_a_deeper_child_is_preserved(ax_baseline):
+    """Even under a toolbar and even sharing its parent's identity, a button that
+    is NOT AppKit's leaf self-copy — here it owns a child of its own — is a real
+    control whose structure must stay in the diff. The lazy copy is always a
+    single leaf, so requiring that shape keeps this nesting visible.
+    """
+    outer = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Real.Group", "enabled": True}
+    )
+    inner = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Real.Group", "enabled": True}
+    )
+    inner.children.append(
+        ax_baseline.Node(
+            {"role": "AXStaticText", "description": "count", "enabled": True}
+        )
+    )
+    outer.children.append(inner)
+
+    assert ax_baseline.render(_toolbar_with(ax_baseline, outer), ()) == [
+        "AXToolbar enabled=true",
+        '  AXButton id="Real.Group" enabled=true',
+        '    AXButton id="Real.Group" enabled=true',
+        '      AXStaticText desc="count" enabled=true',
     ]
 
 

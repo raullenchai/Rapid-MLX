@@ -71,7 +71,8 @@ def test_fixtures_carry_all_three_known_os_differences():
       1. the conversation menu's role spelling — AXMenuButton on macOS 26,
          AXPopUpButton on macOS 15 (absorbed by ``_ROLE_EQUIVALENTS``);
       2. an extra lazily-realized AXButton child under the "Hide Sidebar"
-         control on macOS 15 (absorbed by ``is_window_control``);
+         control on macOS 15 (absorbed by ``is_lazy_button_wrapper``, which
+         collapses that self-copy for every toolbar button by structure);
       3. an AppKit-synthesised AXTitle="More" on the conversation menu on
          macOS 15 (absorbed by the title rule in ``render_node``).
 
