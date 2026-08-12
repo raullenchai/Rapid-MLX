@@ -819,6 +819,45 @@ def _post_load_ubc_evict(model_name: str) -> None:
         logger.debug(f"Defect 4 post-load UBC evict skipped (non-fatal): {e}")
 
 
+def _local_snapshot_if_cached(model_name: str) -> str:
+    """Resolve a verified-complete cached repo id to its on-disk snapshot dir,
+    so the loader is handed a local path and never makes a network round-trip.
+
+    ``mlx_lm``'s ``get_model_path`` calls ``snapshot_download`` with no
+    ``local_files_only``, so even a fully cached flat repo does a metadata
+    round-trip (``refs/main`` HEAD + per-file ETag) on every start. On a
+    poisoned-DNS network that round-trip hangs in SYN_SENT rather than failing
+    fast, and the UI sits at "Starting" until the outer deadline.
+
+    Resolving the cached snapshot here with ``local_files_only=True`` and
+    handing the loader that local directory is the explicit, concurrency-safe
+    fix: no process-global ``HF_HUB_OFFLINE`` toggling (which is racy across
+    overlapping loads and does not reconfigure an already-created HTTP session),
+    just a path the loader treats as a local checkpoint that never round-trips.
+
+    Gated on ``is_repo_cached`` — the same completeness signal the pre-download
+    gate trusts to skip fetching. On anything else (cold cache, not a repo id, a
+    local path, or a resolve failure) return ``model_name`` unchanged so the
+    normal online pull still runs.
+    """
+    try:
+        from .._download_gate import is_repo_cached
+
+        if not is_repo_cached(model_name):
+            return model_name
+    except Exception:
+        return model_name
+    try:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_name, local_files_only=True)
+    except Exception:
+        # The cache probe said complete but the local resolve failed — fall
+        # back to the normal path rather than blocking a load that may still
+        # succeed online.
+        return model_name
+
+
 def _resolve_subfolder_checkpoint(model_name: str) -> str:
     """Turn ``org/repo`` into ``…/snapshots/<sha>/<subfolder>`` when the
     alias for that repo pins one; otherwise return ``model_name`` as-is.
@@ -865,33 +904,57 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
 
     from huggingface_hub import snapshot_download
 
+    from .._download_gate import _snapshot_is_complete
+
     patterns = [f"{subfolder}/*"]
+
+    # Offline-first: a warm, COMPLETE cache resolves with zero network. The
+    # online call used to run first and, on a poisoned-DNS network, hangs in
+    # SYN_SENT indefinitely instead of raising — so the cached fallback it
+    # reached only inside ``except`` never ran, and an already-downloaded
+    # subfolder (e.g. the default starter ``lfm2.5-1b-4bit``) sat at
+    # "Starting" until the outer deadline. Only a verified-complete on-disk
+    # subfolder short-circuits: a half-pulled one still falls through to the
+    # Hub so an interrupted download is finished rather than loaded as-is.
+    cached_local = None
     try:
-        local = snapshot_download(repo_id, allow_patterns=patterns)
-    except Exception as online_exc:
-        # The Hub call failed. The cause could be anything — no network, a
-        # gated repo, a bad token, a full disk — and we deliberately do NOT
-        # try to tell them apart: the recovery is the same for all of them,
-        # namely "is it already on disk?", and a wrong guess about the cause
-        # is worse than not guessing. So the diagnosis below says what we
-        # observed, not why.
-        try:
-            local = snapshot_download(
-                repo_id, allow_patterns=patterns, local_files_only=True
-            )
-        except Exception:
-            raise RuntimeError(
-                f"Could not fetch the {subfolder!r} subfolder of {repo_id}, "
-                f"and it is not in the local cache. This publisher ships one "
-                f"checkpoint per quantization folder, so the repo root cannot "
-                f"be loaded instead. Original error: {online_exc}"
-            ) from online_exc
-        logger.warning(
-            "Could not reach %s (%s) — falling back to the cached %r subfolder.",
-            repo_id,
-            online_exc,
-            subfolder,
+        cached_local = snapshot_download(
+            repo_id, allow_patterns=patterns, local_files_only=True
         )
+    except Exception:
+        cached_local = None
+
+    if cached_local is not None and _snapshot_is_complete(
+        os.path.join(cached_local, subfolder)
+    ):
+        local = cached_local
+    else:
+        try:
+            local = snapshot_download(repo_id, allow_patterns=patterns)
+        except Exception as online_exc:
+            # The Hub call failed. The cause could be anything — no network, a
+            # gated repo, a bad token, a full disk — and we deliberately do NOT
+            # try to tell them apart: the recovery is the same for all of them,
+            # namely "is it already on disk?", and a wrong guess about the
+            # cause is worse than not guessing. Reuse whatever the cache holds
+            # (even if incomplete) so the completeness check below produces the
+            # precise "present but incomplete" diagnosis instead of a raw
+            # network error.
+            if cached_local is not None:
+                local = cached_local
+                logger.warning(
+                    "Could not reach %s (%s) — falling back to the cached %r subfolder.",
+                    repo_id,
+                    online_exc,
+                    subfolder,
+                )
+            else:
+                raise RuntimeError(
+                    f"Could not fetch the {subfolder!r} subfolder of {repo_id}, "
+                    f"and it is not in the local cache. This publisher ships one "
+                    f"checkpoint per quantization folder, so the repo root cannot "
+                    f"be loaded instead. Original error: {online_exc}"
+                ) from online_exc
 
     resolved = os.path.join(local, subfolder)
     if not os.path.isdir(resolved):
@@ -907,9 +970,7 @@ def _resolve_subfolder_checkpoint(model_name: str) -> str:
     # it. Both reach here on the SUCCESS path too, so the check belongs
     # after both branches, not only after the offline fallback. Reuse the
     # download gate's implementation — it already mirrors mlx-lm's own
-    # ``model*.safetensors`` glob and shard-index validation.
-    from .._download_gate import _snapshot_is_complete
-
+    # ``model*.safetensors`` glob and shard-index validation (imported above).
     if not _snapshot_is_complete(resolved):
         raise RuntimeError(
             f"The {subfolder!r} subfolder of {repo_id} is present but "
@@ -970,6 +1031,12 @@ def load_model_with_fallback(
     # bare repo id. No-op for the ~99% of aliases whose repo root is the
     # checkpoint.
     model_name = _resolve_subfolder_checkpoint(model_name)
+
+    # Hand the loader a local snapshot path for a verified-complete cached repo,
+    # so mlx_lm's own ``snapshot_download`` never fires the online metadata
+    # round-trip that hangs a start on a poisoned-DNS network. No-op for a cold
+    # cache or an already-local path (see the helper).
+    model_name = _local_snapshot_if_cached(model_name)
 
     # ``mlx_lm.load`` may import config.json::model_file.  Validate that
     # caller-supplied local path once at this shared boundary before any native

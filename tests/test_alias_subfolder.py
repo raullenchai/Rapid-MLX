@@ -279,9 +279,16 @@ def test_download_failure_raises_instead_of_returning_the_repo_id(monkeypatch):
         _resolve_subfolder_checkpoint(REPO)
 
 
-def test_offline_with_a_warm_cache_still_loads(monkeypatch, tmp_path):
-    """The strict error above must not brick a machine that already has
-    the checkpoint on disk — retry the cache before giving up."""
+def test_warm_complete_subfolder_never_touches_the_network(monkeypatch, tmp_path):
+    """A warm, COMPLETE cache resolves offline-first with zero network.
+
+    The online ``snapshot_download`` used to run first; on a poisoned-DNS
+    network it hangs in SYN_SENT indefinitely rather than raising, so the
+    cached fallback (reached only inside ``except``) never ran and an
+    already-downloaded subfolder sat at "Starting" until the outer deadline.
+    A verified-complete on-disk checkpoint must now short-circuit before any
+    networked call is made.
+    """
     import huggingface_hub
 
     snapshot = tmp_path / "snap"
@@ -295,23 +302,60 @@ def test_offline_with_a_warm_cache_still_loads(monkeypatch, tmp_path):
 
     calls: list[bool] = []
 
-    def offline_then_cache(repo_id, **kwargs):
+    def offline_first(repo_id, **kwargs):
         local_only = kwargs.get("local_files_only", False)
         calls.append(local_only)
         if not local_only:
-            raise OSError("no network")
+            raise AssertionError(
+                "warm complete cache must resolve offline; the network call "
+                "is exactly what hangs on a poisoned-DNS start"
+            )
         return str(snapshot)
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline_then_cache)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", offline_first)
 
     resolved = _resolve_subfolder_checkpoint(REPO)
     assert resolved == str(ckpt)
-    assert calls == [False, True], "must try the network first, then the cache"
+    assert calls == [True], "offline-first: the cache is tried before the Hub"
     # What the loader is handed must be openable: mlx-lm globs
     # ``model*.safetensors`` at the directory it is given, non-recursively.
     assert Path(resolved, "config.json").exists()
     assert list(Path(resolved).glob("model*.safetensors")), (
         "the returned directory must be where mlx-lm's loader glob will hit"
+    )
+
+
+def test_incomplete_cached_subfolder_falls_through_to_the_hub(monkeypatch, tmp_path):
+    """A half-pulled cache must NOT short-circuit — it still hits the Hub to
+    finish the download, rather than loading a shard-less checkpoint that
+    would fail (or render garbage). Only a *complete* offline resolve wins."""
+    import huggingface_hub
+
+    partial = tmp_path / "partial"
+    complete = tmp_path / "complete"
+    # Offline cache: subfolder present but NO weight shards → incomplete.
+    (partial / "4bit").mkdir(parents=True)
+    (partial / "4bit" / "config.json").write_text('{"model_type": "lfm2"}')
+    # What the Hub returns once the pull finishes.
+    (complete / "4bit").mkdir(parents=True)
+    (complete / "4bit" / "config.json").write_text('{"model_type": "lfm2"}')
+    (complete / "4bit" / "model.safetensors").write_bytes(b"\x00" * 16)
+
+    calls: list[bool] = []
+
+    def offline_incomplete_then_online(repo_id, **kwargs):
+        local_only = kwargs.get("local_files_only", False)
+        calls.append(local_only)
+        return str(partial) if local_only else str(complete)
+
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", offline_incomplete_then_online
+    )
+
+    resolved = _resolve_subfolder_checkpoint(REPO)
+    assert resolved == str(complete / "4bit")
+    assert calls == [True, False], (
+        "incomplete offline resolve must fall through to the networked pull"
     )
 
 
@@ -780,3 +824,63 @@ def test_completeness_is_checked_on_the_success_path_too(monkeypatch, tmp_path):
     )
     with pytest.raises(RuntimeError, match="incomplete"):
         _resolve_subfolder_checkpoint(REPO)
+
+
+def test_local_snapshot_resolves_a_cached_repo_to_its_path_offline(monkeypatch):
+    """A verified-complete cached repo is resolved to its local snapshot dir
+    with ``local_files_only=True`` — so the loader gets a path and never
+    round-trips. No process-global offline toggling, no network.
+
+    A fail-fast fake asserts the resolve requests the cache (never the Hub) and
+    that the returned local path is what the loader is handed.
+    """
+    import huggingface_hub
+
+    from vllm_mlx.utils import tokenizer as tok
+
+    calls: list[bool] = []
+
+    def fake_snapshot_download(repo_id, **kwargs):
+        calls.append(kwargs.get("local_files_only", False))
+        assert repo_id == "org/warm-repo"
+        return "/cache/models--org--warm-repo/snapshots/abc"
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: True)
+
+    resolved = tok._local_snapshot_if_cached("org/warm-repo")
+    assert resolved == "/cache/models--org--warm-repo/snapshots/abc"
+    assert calls == [True], "must resolve from the cache, never the network"
+
+
+def test_local_snapshot_leaves_a_cold_repo_untouched(monkeypatch):
+    """A cold cache is NOT resolved locally — the bare repo id passes through so
+    the loader's own online pull still runs. snapshot_download is a tripwire."""
+    import huggingface_hub
+
+    from vllm_mlx.utils import tokenizer as tok
+
+    def tripwire(repo_id, **kwargs):
+        raise AssertionError("a cold repo must not be resolved from the cache")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", tripwire)
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: False)
+
+    assert tok._local_snapshot_if_cached("org/cold-repo") == "org/cold-repo"
+
+
+def test_local_snapshot_falls_back_when_the_local_resolve_fails(monkeypatch):
+    """If the completeness probe says cached but the offline resolve raises
+    (unexpected cache state), return the bare id so the normal path can still
+    try — never propagate a resolve error out of a supposedly-warm start."""
+    import huggingface_hub
+
+    from vllm_mlx.utils import tokenizer as tok
+
+    def boom(repo_id, **kwargs):
+        raise OSError("cache surprised us")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", boom)
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", lambda _name: True)
+
+    assert tok._local_snapshot_if_cached("org/warm-repo") == "org/warm-repo"
