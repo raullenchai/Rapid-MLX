@@ -36,6 +36,8 @@ struct SidebarView: View {
     @Bindable var chat: ChatViewModel
     /// Start a fresh conversation and show the chat surface.
     var onNewChat: () -> Void
+    /// Open the window-level conversation search panel.
+    var onSearchChats: () -> Void = {}
     /// Open a saved conversation (switches the detail pane back to chat).
     var onSelectConversation: (UUID) -> Void
     /// Optional in isolated snapshot fixtures; the shipping ContentView passes
@@ -163,6 +165,19 @@ struct SidebarView: View {
         .padding(.horizontal, RapidTheme.Space.sm)
         .padding(.vertical, RapidTheme.Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Column-scoped toolbar content renders beside the native sidebar
+        // toggle instead of in the detail column's title group.
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: onSearchChats) {
+                    Image(systemName: "magnifyingglass")
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .help("Search chats - Command-K")
+                .accessibilityLabel("Search chats")
+                .accessibilityIdentifier("Toolbar.SearchChats")
+            }
+        }
         .task { await dayBoundaryTicker() }
         // A conversation is a HARD delete with no undo, so confirm first —
         // mirrors the cached-model delete dialog. ``confirmationDialog`` over

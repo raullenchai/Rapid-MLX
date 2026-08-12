@@ -32,6 +32,8 @@ struct ContentView: View {
     @State private var userSelectionRevision: UInt = 0
     /// Which detail surface the sidebar shows (chat vs the Launch page).
     @State private var section: SidebarSection = .chat
+    /// Window-level conversation search, opened from the toolbar.
+    @State private var showConversationSearch = false
     /// An absent telemetry preference is an undecided first run, not
     /// implicit consent.
     @State private var telemetryConsentPending = TelemetryConsent.needsDecision()
@@ -63,8 +65,8 @@ struct ContentView: View {
         // Ollama-style layout: a left sidebar (New Chat / Launch / — later —
         // history) + a detail pane. No top model-control bar; the model
         // picker lives inline in the compose box (see ChatView) and the
-        // model comes up on first send (implicit lifecycle). macOS gives us
-        // the sidebar-collapse toggle in the toolbar for free.
+        // model comes up on first send (implicit lifecycle). Search belongs
+        // to the sidebar column beside macOS's native collapse control.
         VStack(spacing: 0) {
             // #1588: this recovery path existed since the app was introduced
             // but was never mounted, so a failed Finder replacement was
@@ -77,6 +79,9 @@ struct ContentView: View {
                 onNewChat: {
                     chat.newConversation()
                     section = .chat
+                },
+                onSearchChats: {
+                    showConversationSearch = true
                 },
                 onSelectConversation: { id in
                     chat.selectConversation(id)
@@ -125,6 +130,11 @@ struct ContentView: View {
                 AppDelegate.shared.attachMainWindow(window)
             }
             .frame(width: 0, height: 0)
+        }
+        .overlay {
+            if showConversationSearch {
+                conversationSearchOverlay
+            }
         }
         .onChange(of: server.state) { _, newState in
             // #223: clear the download-prompt CTA the moment the server
@@ -241,6 +251,42 @@ struct ContentView: View {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
+    }
+
+    private var conversationSearchOverlay: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { showConversationSearch = false }
+                    .accessibilityHidden(true)
+
+                ConversationSearchView(
+                    conversations: chat.conversations,
+                    now: Date(),
+                    onNewChat: {
+                        showConversationSearch = false
+                        chat.newConversation()
+                        section = .chat
+                    },
+                    onSelectConversation: { id in
+                        showConversationSearch = false
+                        chat.selectConversation(id)
+                        section = .chat
+                    },
+                    onDismiss: { showConversationSearch = false }
+                )
+                .frame(
+                    width: min(680, max(480, proxy.size.width - 64)),
+                    height: min(560, max(400, proxy.size.height - 80))
+                )
+                .padding(RapidTheme.Space.xl)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .transition(.opacity)
+        .zIndex(10)
     }
 
     // MARK: - Readiness (the one shared lifecycle value)
