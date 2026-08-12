@@ -179,6 +179,31 @@ def _replacement_group(entry: ModelEntry) -> str:
     return "assistant" if modality in {"text", "mllm"} else modality
 
 
+# Generative-media lanes hold multi-GB checkpoints and are driven one model at
+# a time, so they are inherently single-slot: loading another image/video model
+# should evict the previous one even when the client sends no ``replace_group``.
+# Text/VLM stay client-controlled through the explicit ``assistant`` group so
+# the chat picker's replacement semantics are unchanged. Without this, image
+# engines only ever accumulated (two resident image models measured at 9.1 GB).
+_SINGLE_SLOT_MEDIA_GROUPS = frozenset({"image-gen", "video-gen"})
+
+
+def _effective_replace_group(
+    entry: ModelEntry, replace_group: str | None
+) -> str | None:
+    """Resolve the replacement group to enforce for a just-touched model.
+
+    An explicit ``replace_group`` always wins. Otherwise a generative-media
+    entry derives its own single-slot group; everything else stays unmanaged
+    (``None``) so a bare text load never evicts a sibling.
+    """
+
+    if replace_group is not None:
+        return replace_group
+    derived = _replacement_group(entry)
+    return derived if derived in _SINGLE_SLOT_MEDIA_GROUPS else None
+
+
 def estimate_model_bytes(model_name: str) -> int:
     """Conservative fallback charge when the caller has no catalog estimate.
 
@@ -465,8 +490,9 @@ class ResidentModelManager:
                 record.last_used_at = self._clock()
                 if pin:
                     record.pinned = True
-                if replace_group is not None:
-                    await self._replace_group_locked(record, replace_group)
+                group = _effective_replace_group(record.entry, replace_group)
+                if group is not None:
+                    await self._replace_group_locked(record, group)
                 return record
 
             await self._evict_for_locked(estimate, exclude={model_name})
@@ -495,8 +521,9 @@ class ResidentModelManager:
 
             try:
                 await self._evict_for_locked(0, exclude={record.model_id})
-                if replace_group is not None:
-                    await self._replace_group_locked(record, replace_group)
+                group = _effective_replace_group(record.entry, replace_group)
+                if group is not None:
+                    await self._replace_group_locked(record, group)
             except BaseException:
                 # Once the loader returns, this manager owns the engine.  A
                 # later admission/replacement failure must not leave a model

@@ -244,6 +244,60 @@ async def test_replacing_assistant_promotes_target_and_keeps_image_resident():
 
 
 @pytest.mark.asyncio
+async def test_second_image_model_evicts_the_first_without_an_explicit_group():
+    """Generative-media lanes are single-slot server-side.
+
+    The desktop loads image models with no ``replace_group`` (unlike the chat
+    picker's explicit ``assistant``). Image engines therefore only ever
+    accumulated — two multi-GB checkpoints resident at once (measured 9.1 GB).
+    A second image load must now evict the first even with no group supplied,
+    while the ``assistant`` group is left untouched — including a NON-primary
+    resident chat model, which (unlike the eviction-protected primary) would
+    actually disappear if media replacement leaked across groups.
+    """
+    registry = ModelRegistry()
+    primary = entry("chat")
+    registry.add(primary, is_default=True)
+    loaded: dict[str, FakeEngine] = {}
+
+    async def loader(name: str, path: str | None, performance=None):
+        engine = FakeImageEngine() if name.startswith("image") else FakeEngine()
+        loaded[name] = engine
+        return ModelEntry(
+            engine=engine,
+            model_name=name,
+            model_path=path or f"repo/{name}",
+        )
+
+    manager = ResidentModelManager(
+        registry,
+        loader,
+        memory_limit_bytes=50 * GIB,
+        memory_reader=lambda: 0,
+    )
+    manager.register_primary(primary, estimated_bytes=4 * GIB)
+
+    # A second, NON-primary chat model in the assistant group. It has no
+    # independent eviction protection, so it is the real probe for cross-group
+    # isolation: if media replacement touched the assistant group it would be
+    # evicted here.
+    await manager.load("chat-2", estimated_bytes=4 * GIB)
+
+    await manager.load("image-a", estimated_bytes=5 * GIB)
+    await manager.load("image-b", estimated_bytes=5 * GIB)
+
+    ids = {item["id"] for item in manager.snapshot()["models"]}
+    # image-a evicted by image-b; both assistant-group models survive.
+    assert ids == {"chat", "chat-2", "image-b"}
+    assert loaded["image-a"].stopped is True
+    assert loaded["image-b"].stopped is False
+    assert loaded["chat-2"].stopped is False
+    assert "image-a" not in registry
+    assert "image-b" in registry
+    assert "chat-2" in registry
+
+
+@pytest.mark.asyncio
 async def test_failed_assistant_replacement_rolls_back_newly_loaded_model():
     manager, registry, loaded, _ = manager_fixture(limit_gib=20)
     registry.get_engine("chat").running = 1
