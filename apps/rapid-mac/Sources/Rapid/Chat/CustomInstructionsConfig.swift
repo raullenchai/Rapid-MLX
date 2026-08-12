@@ -7,27 +7,36 @@ import Observation
 @MainActor
 @Observable
 final class CustomInstructionsConfig {
-    static let storageKey = "rapid.custom-instructions.global.v1"
+    nonisolated static let storageKey = "rapid.custom-instructions.global.v1"
+    nonisolated static let maximumLength = 4_000
 
     private let defaults: UserDefaults
+    private var storedGlobal: String
 
     var global: String {
-        didSet {
-            if global.isEmpty {
+        get { storedGlobal }
+        set {
+            let value = Self.limited(newValue)
+            storedGlobal = value
+            if value.isEmpty {
                 defaults.removeObject(forKey: Self.storageKey)
             } else {
-                defaults.set(global, forKey: Self.storageKey)
+                defaults.set(value, forKey: Self.storageKey)
             }
         }
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        self.global = defaults.string(forKey: Self.storageKey) ?? ""
+        self.storedGlobal = Self.limited(defaults.string(forKey: Self.storageKey) ?? "")
     }
 
     nonisolated static func normalized(_ value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = limited(value).trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    nonisolated static func limited(_ value: String) -> String {
+        String(value.prefix(maximumLength))
     }
 }

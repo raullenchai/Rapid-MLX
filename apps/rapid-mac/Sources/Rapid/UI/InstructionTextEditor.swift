@@ -21,7 +21,10 @@ struct InstructionTextEditor: View {
                     .padding(.vertical, RapidTheme.Space.sm + 1)
                     .allowsHitTesting(false)
             }
-            TextEditor(text: $text)
+            TextEditor(text: Binding(
+                get: { text },
+                set: { text = CustomInstructionsConfig.limited($0) }
+            ))
                 .accessibilityIdentifier(accessibilityIdentifier)
                 .font(RapidFont.body)
                 .scrollContentBackground(.hidden)
@@ -41,6 +44,13 @@ struct InstructionTextEditor: View {
             RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
         )
         .onTapGesture { focused = true }
+        .overlay(alignment: .bottomTrailing) {
+            Text("\(text.count) / \(CustomInstructionsConfig.maximumLength)")
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.textTertiary)
+                .padding(RapidTheme.Space.sm)
+                .accessibilityIdentifier("\(accessibilityIdentifier).Count")
+        }
         .task {
             guard autoFocus else { return }
             await Task.yield()

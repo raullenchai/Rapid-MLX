@@ -20,6 +20,7 @@ AXApplication title="Rapid-MLX"
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddPhotos" desc="Add photos" help="This model doesn't support images" enabled=false
+          AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
@@ -46,6 +47,9 @@ AXApplication title="Rapid-MLX"
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.modelManagement" desc="Model Management" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.instructions" desc="Instructions" enabled=true
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.tools" desc="Tools" enabled=true

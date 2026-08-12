@@ -1136,6 +1136,20 @@ flow_settings_persistence() {
     open_settings
     wait_settings_stable "$OUT/settings-root.json"
     baseline settings-persistence.settings-root "$OUT/settings-root.json"
+    press "$OUT/settings-root.json" Settings.Category.instructions "$OUT/settings-instructions-open.json"
+    wait_settings_stable "$OUT/instructions-open.json" Settings.Instructions.GlobalEditor
+    "$AX_DRIVER" set-value "$APP_PID" Settings.Instructions.GlobalEditor \
+        "Keep answers concise and include runnable examples." > "$OUT/instructions-type.json"
+    for _ in {1..20}; do
+        [[ "$(defaults read "$BUNDLE_ID" rapid.custom-instructions.global.v1 2>/dev/null || true)" == \
+            "Keep answers concise and include runnable examples." ]] && break
+        sleep 0.1
+    done
+    [[ "$(defaults read "$BUNDLE_ID" rapid.custom-instructions.global.v1 2>/dev/null || true)" == \
+        "Keep answers concise and include runnable examples." ]] \
+        || die "global instructions did not persist to isolated preferences"
+    wait_settings_stable "$OUT/instructions-saved.json" Settings.Instructions.GlobalEditor.Count
+    baseline settings-persistence.instructions-saved "$OUT/instructions-saved.json"
     # #1717: configure a chosen model before it runs. This proves the panel is
     # not coupled to the current child, its model selector is addressable, and
     # a real control mutation reaches the honest "next load" state.
@@ -1197,7 +1211,13 @@ PY
     dismiss_first_run
     open_settings
     wait_settings_stable "$OUT/settings-relaunch.json"
-    press "$OUT/settings-relaunch.json" Settings.Category.modelManagement "$OUT/settings-models-reopen.json"
+    press "$OUT/settings-relaunch.json" Settings.Category.instructions "$OUT/settings-instructions-reopen.json"
+    wait_settings_stable "$OUT/instructions-persisted.json" Settings.Instructions.GlobalEditor
+    jq -e '.data.ui_elements[]? | select(.identifier == "Settings.Instructions.GlobalEditor" and .value == "Keep answers concise and include runnable examples.")' \
+        "$OUT/instructions-persisted.json" >/dev/null \
+        || die "relaunch did not restore global instructions in the editor"
+    baseline settings-persistence.instructions-after-relaunch "$OUT/instructions-persisted.json"
+    press "$OUT/instructions-persisted.json" Settings.Category.modelManagement "$OUT/settings-models-reopen.json"
     wait_settings_stable "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle
     baseline settings-persistence.models-after-relaunch "$OUT/models-persisted.json"
     press "$OUT/models-persisted.json" Settings.Models.ShowAllModelsToggle "$OUT/models-toggle-after-relaunch.json"
@@ -1228,6 +1248,14 @@ flow_chat_restore() {
     # first so the baseline is the finished turn, not a partial one.
     wait_send_idle "$OUT/chat-settled.json"
     baseline chat-restore.answered "$OUT/chat-settled.json"
+    press "$OUT/chat-settled.json" ChatView.ConversationInstructions "$OUT/conversation-instructions-open-press.json"
+    wait_identifier ChatView.ConversationInstructions.Editor "$OUT/conversation-instructions-open.json"
+    "$AX_DRIVER" set-value "$APP_PID" ChatView.ConversationInstructions.Editor \
+        "Answer this conversation as a product analyst." > "$OUT/conversation-instructions-type.json"
+    see_main "$OUT/conversation-instructions-draft.json"
+    press "$OUT/conversation-instructions-draft.json" ChatView.ConversationInstructions.Save \
+        "$OUT/conversation-instructions-save.json"
+    baseline chat-restore.conversation-instructions "$OUT/conversation-instructions-draft.json"
     relaunch_persona
     dismiss_first_run
     wait_identifier Sidebar.NewChat "$OUT/chat-restored.json"
@@ -1280,6 +1308,14 @@ flow_chat_restore() {
     see_main "$OUT/chat-restored-transcript.json"
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
     wait_send_idle "$OUT/chat-restored-settled.json"
+    press "$OUT/chat-restored-settled.json" ChatView.ConversationInstructions \
+        "$OUT/conversation-instructions-reopen-press.json"
+    wait_identifier ChatView.ConversationInstructions.Editor "$OUT/conversation-instructions-restored.json"
+    jq -e '.data.ui_elements[]? | select(.identifier == "ChatView.ConversationInstructions.Editor" and .value == "Answer this conversation as a product analyst.")' \
+        "$OUT/conversation-instructions-restored.json" >/dev/null \
+        || die "relaunch did not restore per-conversation instructions"
+    press "$OUT/conversation-instructions-restored.json" ChatView.ConversationInstructions.Cancel \
+        "$OUT/conversation-instructions-close.json"
     baseline chat-restore.transcript-restored "$OUT/chat-restored-settled.json"
 
     # #1588: these controls existed for months without ever being mounted.

@@ -2,31 +2,20 @@
 AXApplication title="Rapid-MLX"
   AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
     AXGroup subrole=AXHostingView
-      AXTextField id="ConversationSearch.Field" value=text enabled=true
-      AXButton id="ConversationSearch.Clear" desc="Clear search" help="Clear search" enabled=true
-      AXButton id="ConversationSearch.Close" desc="Close" help="Close — Esc" enabled=true
-      AXUnknown id="ConversationSearch.Panel" enabled=true
-      AXScrollArea
-        AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
-          AXButton id="ConversationSearch.NewChat" desc="New chat" enabled=true
-          AXHeading desc="<relative-day>" enabled=true
-          AXButton id="ConversationSearch.Result.<uuid>" desc="golden restore marker" enabled=true
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
-          AXScrollArea
-            AXHeading desc="<relative-day>" enabled=true
-            AXButton id="Sidebar.Conversation.<uuid>" desc="golden restore marker" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
-          AXGroup desc="Starting <model>, Loading the model into memory…" enabled=true
+          AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
+            AXButton id="Readiness.Action" desc="Start" enabled=true
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
@@ -34,7 +23,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="<model> is still starting." enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
       AXButton desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
@@ -49,5 +38,45 @@ AXApplication title="Rapid-MLX"
         AXButton id="Toolbar.SearchChats" desc="Search chats" help="Search chats - Command-K" enabled=true
     AXButton subrole=AXCloseButton enabled=true
     AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
+    AXButton subrole=AXMinimizeButton enabled=true
+    AXStaticText value=text enabled=true
+  AXWindow subrole=AXStandardWindow id="settings" title="Settings"
+    AXGroup subrole=AXHostingView
+      AXScrollArea
+        AXOutline desc="Settings categories" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.modelManagement" desc="Model Management" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.instructions" desc="Instructions" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.tools" desc="Tools" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.connectors" desc="Connectors" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.performance" desc="Performance" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.appearance" desc="Appearance" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.privacy" desc="Privacy" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.app" desc="App" enabled=true
+          AXColumn id="ListColumn"
+      AXScrollArea
+        AXHeading desc="Custom Instructions, Set preferences for how the assistant responds in every conversation." enabled=true
+        AXHeading id="Settings.Instructions.Clear" desc="Global, Used in every conversation. A conversation can add more specific direction." help="Clear global instructions" enabled=true
+        AXScrollArea
+          AXTextArea id="Settings.Instructions.GlobalEditor" value=text
+          AXScrollBar value=number enabled=false
+        AXStaticText id="Settings.Instructions.GlobalEditor.Count" value=text enabled=true
+    AXButton subrole=AXCloseButton enabled=true
+    AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true
     AXStaticText value=text enabled=true

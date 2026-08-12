@@ -36,6 +36,22 @@ struct CustomInstructionsTests {
         #expect(defaults.object(forKey: CustomInstructionsConfig.storageKey) == nil)
     }
 
+    @Test("Instruction layers are bounded before persistence and wire use")
+    func instructionLengthBound() {
+        let overlong = String(repeating: "x", count: CustomInstructionsConfig.maximumLength + 10)
+        #expect(CustomInstructionsConfig.limited(overlong).count == 4_000)
+        #expect(CustomInstructionsConfig.normalized(overlong)?.count == 4_000)
+
+        let (defaults, name) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(overlong, forKey: CustomInstructionsConfig.storageKey)
+        #expect(CustomInstructionsConfig(defaults: defaults).global.count == 4_000)
+        let config = CustomInstructionsConfig(defaults: defaults)
+        config.global = overlong
+        #expect(config.global.count == 4_000)
+        #expect(defaults.string(forKey: CustomInstructionsConfig.storageKey)?.count == 4_000)
+    }
+
     @Test("Blank instruction layers are ignored")
     func blankLayersAreIgnored() {
         let user = ChatMessage(role: .user, content: "Hello", status: .complete)
