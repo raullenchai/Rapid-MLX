@@ -21,6 +21,7 @@ struct SettingsView: View {
     // the shared spring and drop to instant under Reduce Motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppearanceConfig.self) private var appearance
+    @Environment(CustomInstructionsConfig.self) private var customInstructions
     @Environment(SettingsRouter.self) private var router
     /// Read-only here — only needed so the Phase 3b toggle can
     /// trigger ``refreshBinary()`` immediately when the server is
@@ -72,6 +73,9 @@ struct SettingsView: View {
         /// the older stand-alone "Models" tab was folded in here so
         /// users don't face two competing model surfaces.
         case modelManagement
+        /// Instructions applied to every chat before any conversation-specific
+        /// override. Stored locally in UserDefaults.
+        case instructions
         /// Built-in tools the model can call: on/off per tool, the
         /// web-search backend + key, and the browse approval mode.
         case tools
@@ -98,6 +102,7 @@ struct SettingsView: View {
         var title: String {
             switch self {
             case .modelManagement: return "Model Management"
+            case .instructions: return "Instructions"
             case .tools: return "Tools"
             case .connectors: return "Connectors"
             case .performance: return "Performance"
@@ -109,6 +114,7 @@ struct SettingsView: View {
         var iconName: String {
             switch self {
             case .modelManagement: return "externaldrive.fill"
+            case .instructions: return "text.bubble.fill"
             case .tools: return "wrench.and.screwdriver.fill"
             case .connectors: return "powerplug.fill"
             case .performance: return "speedometer"
@@ -465,6 +471,8 @@ struct SettingsView: View {
         switch category {
         case .modelManagement:
             SettingsModelManagementPanel()
+        case .instructions:
+            instructionsPanel
         case .tools:
             SettingsToolsPanel()
         case .connectors:
@@ -477,6 +485,30 @@ struct SettingsView: View {
             privacyPanel
         case .app:
             appPanel
+        }
+    }
+
+    private var instructionsPanel: some View {
+        @Bindable var config = customInstructions
+        return VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
+            SectionHeader(
+                "Custom Instructions",
+                subtitle: "Set preferences for how the assistant responds in every conversation.",
+                emphasis: .page
+            )
+            InstructionEditorSection(
+                "Global",
+                subtitle: "Used in every conversation. A conversation can add more specific direction.",
+                clearEnabled: CustomInstructionsConfig.normalized(config.global) != nil,
+                onClear: { config.global = "" }
+            ) {
+                InstructionTextEditor(
+                    text: $config.global,
+                    placeholder: "For example: Be concise, use plain language, and include code examples when useful.",
+                    height: 172,
+                    accessibilityIdentifier: "Settings.Instructions.GlobalEditor"
+                )
+            }
         }
     }
 

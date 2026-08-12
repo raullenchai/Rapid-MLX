@@ -43,6 +43,8 @@ struct RapidApp: App {
     @State private var installer: Installer
     /// Persisted sampling knobs exposed via Settings → Sampling.
     @State private var sampling: SamplingConfig
+    /// App-wide custom instructions shared by Settings and every chat turn.
+    @State private var customInstructions: CustomInstructionsConfig
     /// Persisted theme override exposed via Settings → Appearance.
     @State private var appearance: AppearanceConfig
     /// Deep-link channel into the Settings window.
@@ -114,6 +116,7 @@ struct RapidApp: App {
         PortSweep.startLaunchSweep(port: PortAllocator.candidatePorts.first ?? 8000)
         let manager = ServerManager()
         let samplingConfig = SamplingConfig()
+        let customInstructionsConfig = CustomInstructionsConfig()
         let appearanceConfig = AppearanceConfig()
         // Apply the persisted theme override before the first window
         // renders so the user doesn't see a flash of the wrong mode.
@@ -198,7 +201,12 @@ struct RapidApp: App {
         }
         _perfConfig = State(initialValue: perfConfigStore)
 
-        let chat = ChatViewModel(tools: toolRegistry, sampling: samplingConfig, server: manager)
+        let chat = ChatViewModel(
+            tools: toolRegistry,
+            sampling: samplingConfig,
+            customInstructions: customInstructionsConfig,
+            server: manager
+        )
         let updateChecker: UpdateChecker
         if ProcessInfo.processInfo.environment["RAPID_GUI_UPDATE_CURRENT"] == "1" {
             // Deterministic GUI-golden fixture: exercise the restored update
@@ -236,6 +244,7 @@ struct RapidApp: App {
         _updater = State(initialValue: updateChecker)
         _installer = State(initialValue: installerInstance)
         _sampling = State(initialValue: samplingConfig)
+        _customInstructions = State(initialValue: customInstructionsConfig)
         _appearance = State(initialValue: appearanceConfig)
         _settingsRouter = State(initialValue: SettingsRouter())
         // Hand the live singletons to the delegate so the shutdown hook
@@ -263,6 +272,7 @@ struct RapidApp: App {
                 .environment(audio)
                 .environment(updater)
                 .environment(sampling)
+                .environment(customInstructions)
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(installTracker)
@@ -387,6 +397,7 @@ struct RapidApp: App {
                 .tint(RapidTheme.brandAmber)
                 .environment(chatViewModel)
                 .environment(sampling)
+                .environment(customInstructions)
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(server)

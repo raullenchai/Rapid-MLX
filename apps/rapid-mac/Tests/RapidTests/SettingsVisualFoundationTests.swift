@@ -81,7 +81,7 @@ struct SettingsVisualFoundationTests {
         // change deliberate and reviewed, not to freeze the list forever —
         // update this literal alongside the enum when a feature adds one.
         let expected: Set<String> = [
-            "modelManagement", "tools", "connectors", "performance",
+            "modelManagement", "instructions", "tools", "connectors", "performance",
             "appearance", "privacy", "app",
         ]
         let actual = Set(SettingsView.Category.allCases.map(\.rawValue))
@@ -102,7 +102,7 @@ struct SettingsVisualFoundationTests {
     @Test("Category order is unchanged, so arrow-key navigation is unchanged")
     func categoryOrderIsStable() {
         #expect(SettingsView.Category.allCases.map(\.rawValue) == [
-            "modelManagement", "tools", "connectors", "performance",
+            "modelManagement", "instructions", "tools", "connectors", "performance",
             "appearance", "privacy", "app",
         ])
         // #1717: ``performance`` sits after ``connectors`` — both are
@@ -113,7 +113,7 @@ struct SettingsVisualFoundationTests {
         // The rail's ↑/↓ handler walks this order and clamps at the ends.
         #expect(SettingsView.category(.modelManagement, movedBy: -1) == nil)
         #expect(SettingsView.category(.app, movedBy: 1) == nil)
-        #expect(SettingsView.category(.modelManagement, movedBy: 1) == .tools)
+        #expect(SettingsView.category(.modelManagement, movedBy: 1) == .instructions)
         #expect(SettingsView.category(.app, movedBy: -1) == .privacy)
     }
 
@@ -127,6 +127,7 @@ struct SettingsVisualFoundationTests {
         let requirements: [(path: String, owners: [String])] = [
             ("Sources/Rapid/UI/SettingsView.swift", [
                 "@Environment(AppearanceConfig.self)",
+                "@Environment(CustomInstructionsConfig.self)",
                 "@Environment(SettingsRouter.self)",
                 "@Environment(ServerManager.self)",
                 "@Environment(UpdateChecker.self)",
@@ -177,7 +178,9 @@ struct SettingsVisualFoundationTests {
         for path in Self.settingsSources where !path.hasSuffix("MCPServerEditorSheet.swift") {
             let source = try strippedSource(path)
             #expect(
-                source.contains("SettingsSection(") || source.contains("settingsGroupedCard("),
+                source.contains("SettingsSection(")
+                    || source.contains("settingsGroupedCard(")
+                    || source.contains("InstructionEditorSection("),
                 "\(path) draws no shared Settings section — it is still hand-rolling a card."
             )
         }
