@@ -280,6 +280,37 @@ class ImageGenerationEngine:
             )
         raise ImageRuntimeError(f"{self.family} does not support image editing.")
 
+    def _verify_weights_complete(self) -> None:
+        """Refuse to build a model out of a half-downloaded checkpoint.
+
+        mflux loads whatever ``*.safetensors`` happen to sit in a component
+        directory and never reads the ``model.safetensors.index.json`` beside
+        them, so an interrupted pull is not an error to it: the shards that
+        arrived get loaded, the rest of the transformer keeps its randomly
+        initialised weights, and the run renders noise. Nothing downstream can
+        tell that apart from a bad prompt.
+
+        Checking the index here — the one point every load path converges on,
+        whatever left the snapshot short — turns that into a clear failure
+        before any weight is touched.
+        """
+        if Path(self.model_name).expanduser().is_dir():
+            # A local directory is the user's own checkpoint layout; we have no
+            # index contract to hold it to.
+            return
+        from .._download_gate import mflux_missing_weights
+
+        missing = mflux_missing_weights(self.model_name)
+        if not missing:
+            # ``[]`` verified complete, ``None`` no verdict — see that
+            # function: an environment problem must not read as a broken model.
+            return
+        raise ImageRuntimeError(
+            f"Image model '{self.model_name}' is only partially downloaded, so "
+            "generating with it would produce noise rather than an image. "
+            f"Missing: {', '.join(missing)}. Re-run the download to finish it."
+        )
+
     def _ensure_loaded(self, *, for_edit: bool | None = None):
         if for_edit is None:
             for_edit = self.is_edit
@@ -289,6 +320,7 @@ class ImageGenerationEngine:
             self._loaded_mode = None
             _release_allocator_cache()
         if self._model is None:
+            self._verify_weights_complete()
             try:
                 self._model = (
                     self._build_edit_model() if for_edit else self._build_model()

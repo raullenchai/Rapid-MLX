@@ -580,81 +580,130 @@ def _snapshot_is_complete_split_model(repo_id: str) -> bool:
         return False
 
 
+def mflux_missing_weights(repo_id: str) -> list[str] | None:
+    """Snapshot-relative paths of mflux weight files that are absent or empty.
+
+    ``[]`` means every file the component indexes name is present and
+    non-empty. A non-empty list names what is missing, which is exactly what
+    an error message needs to be actionable.
+
+    ``None`` is the third state, and the reason this returns a list rather
+    than a bool: *no verdict*. It means ``repo_id`` is not a registered
+    image-gen alias, or nothing is cached under it yet — in which case mflux
+    pulls the whole snapshot itself and there is no partial checkpoint to
+    guard against. Callers that gate on this MUST treat ``None`` as "let it
+    through": a missing dependency or an unreadable cache is an environment
+    problem, and reporting it as a corrupt model would send the user off to
+    re-download perfectly good weights.
+
+    Only expected filesystem/JSON errors are absorbed into ``None``; anything
+    else propagates so a real bug surfaces as a stack trace rather than a
+    phantom "your model is broken".
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        from vllm_mlx.model_aliases import resolve_profile
+    except ImportError:
+        return None
+
+    profile = resolve_profile(repo_id)
+    if profile is None or profile.modality != "image-gen":
+        return None
+
+    repo_root = os.path.join(
+        HF_HUB_CACHE,
+        f"models--{repo_id.replace('/', '--')}",
+    )
+    resolved_sha = _resolved_snapshot_sha(repo_root)
+    if resolved_sha is None:
+        return None
+    snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
+    if not os.path.isdir(snap_dir):
+        return None
+
+    repo_root_real = os.path.realpath(repo_root)
+
+    def _is_nonempty_repo_file(path: str) -> bool:
+        if not os.path.isfile(path):
+            return False
+        real = os.path.realpath(path)
+        if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+            return False
+        try:
+            return os.path.getsize(path) > 0
+        except OSError:
+            return False
+
+    import json
+
+    missing: list[str] = []
+
+    # All currently supported mflux families use these three components and a
+    # local tokenizer. Requiring the full set prevents an interrupted pull with
+    # only one component index from looking runnable.
+    if not _is_nonempty_repo_file(
+        os.path.join(snap_dir, "tokenizer", "tokenizer.json")
+    ):
+        missing.append("tokenizer/tokenizer.json")
+
+    for component in ("transformer", "text_encoder", "vae"):
+        component_dir = os.path.join(snap_dir, component)
+        index_rel = f"{component}/model.safetensors.index.json"
+        index_path = os.path.join(component_dir, "model.safetensors.index.json")
+        if not _is_nonempty_repo_file(index_path):
+            missing.append(index_rel)
+            continue
+        try:
+            with open(index_path) as fh:
+                index = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            # An index we cannot parse cannot vouch for its shards. Naming it
+            # keeps the component fail-closed without pretending to know which
+            # weight files it would have listed.
+            missing.append(index_rel)
+            continue
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict) or not weight_map:
+            missing.append(index_rel)
+            continue
+        shard_values = weight_map.values()
+        if not all(isinstance(v, str) for v in shard_values):
+            # A non-string value (list, number, null) is enough to make
+            # ``set()``/``sorted()`` below raise instead of returning a verdict.
+            # An index that cannot name its shards as plain strings cannot vouch
+            # for them either, so fail the component closed before deduping.
+            missing.append(index_rel)
+            continue
+        for shard in sorted(set(shard_values)):
+            if (
+                not shard.endswith(".safetensors")
+                or os.path.basename(shard) != shard
+                or shard in (".", "..")
+            ):
+                # Path traversal guard: refuse to act on a hostile index at
+                # all rather than probing the path it names.
+                missing.append(index_rel)
+                break
+            if not _is_nonempty_repo_file(os.path.join(component_dir, shard)):
+                missing.append(f"{component}/{shard}")
+    return missing
+
+
 def _snapshot_is_complete_mflux_model(repo_id: str) -> bool:
     """True when a registered image-gen repo has every mflux weight shard.
 
     mflux checkpoints keep independent sharded indexes below ``transformer/``,
     ``text_encoder/``, and ``vae/``. They therefore satisfy neither the text
     ``model*.safetensors`` probe nor mlx-video's ``split_model.json`` probe.
-    Anchor this layout to an explicit image-gen alias, then validate every
-    shard named by each required component index.
+
+    Best-effort boolean for the ``ls``-style callers that only render a
+    cached/not-cached column, where "cannot tell" and "incomplete" are the
+    same pixel. Anything that gates *behaviour* wants
+    :func:`mflux_missing_weights` and its three states instead.
     """
     try:
-        from huggingface_hub.constants import HF_HUB_CACHE
-
-        from vllm_mlx.model_aliases import resolve_profile
-
-        profile = resolve_profile(repo_id)
-        if profile is None or profile.modality != "image-gen":
-            return False
-
-        repo_root = os.path.join(
-            HF_HUB_CACHE,
-            f"models--{repo_id.replace('/', '--')}",
-        )
-        resolved_sha = _resolved_snapshot_sha(repo_root)
-        if resolved_sha is None:
-            return False
-        snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
-        if not os.path.isdir(snap_dir):
-            return False
-
-        repo_root_real = os.path.realpath(repo_root)
-
-        def _is_nonempty_repo_file(path: str) -> bool:
-            if not os.path.isfile(path):
-                return False
-            real = os.path.realpath(path)
-            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
-                return False
-            try:
-                return os.path.getsize(path) > 0
-            except OSError:
-                return False
-
-        # All currently supported mflux families use these three components
-        # and a local tokenizer. Requiring the full set prevents an interrupted
-        # pull with only one component index from looking runnable.
-        tokenizer = os.path.join(snap_dir, "tokenizer", "tokenizer.json")
-        if not _is_nonempty_repo_file(tokenizer):
-            return False
-
-        import json
-
-        for component in ("transformer", "text_encoder", "vae"):
-            component_dir = os.path.join(snap_dir, component)
-            index_path = os.path.join(component_dir, "model.safetensors.index.json")
-            if not _is_nonempty_repo_file(index_path):
-                return False
-            try:
-                with open(index_path) as fh:
-                    index = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                return False
-            weight_map = index.get("weight_map") if isinstance(index, dict) else None
-            if not isinstance(weight_map, dict) or not weight_map:
-                return False
-            for shard in set(weight_map.values()):
-                if (
-                    not isinstance(shard, str)
-                    or not shard.endswith(".safetensors")
-                    or os.path.basename(shard) != shard
-                    or shard in (".", "..")
-                ):
-                    return False
-                if not _is_nonempty_repo_file(os.path.join(component_dir, shard)):
-                    return False
-        return True
+        return mflux_missing_weights(repo_id) == []
     except Exception:
         return False
 

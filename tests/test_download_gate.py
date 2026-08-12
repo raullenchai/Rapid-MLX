@@ -1149,6 +1149,106 @@ def test_partial_mflux_snapshot_is_not_runnable(tmp_path, monkeypatch):
     assert gate._snapshot_is_complete_mflux_model(repo) is False
 
 
+def test_mflux_missing_weights_names_the_absent_shard(tmp_path, monkeypatch):
+    """The gate reports WHICH file is missing, so the error can be acted on."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "c" * 40, omit=("transformer", "0.safetensors"))
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == ["transformer/0.safetensors"]
+
+
+def test_mflux_missing_weights_empty_when_complete(tmp_path, monkeypatch):
+    """Complete is ``[]``, not ``None`` — the two must stay distinguishable."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "d" * 40)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == []
+
+
+def test_mflux_missing_weights_no_verdict_when_nothing_cached(tmp_path, monkeypatch):
+    """An absent snapshot is "no verdict", never "incomplete".
+
+    mflux downloads a snapshot it cannot find, so there is no partial
+    checkpoint to guard against — reporting this as missing weights would
+    block a first-run pull that was going to succeed.
+    """
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "empty-cache")
+    )
+
+    assert gate.mflux_missing_weights("Runpod/FLUX.2-klein-4B-mflux-4bit") is None
+
+
+def test_mflux_missing_weights_no_verdict_for_non_image_alias(tmp_path, monkeypatch):
+    """A repo outside the image-gen registry has no mflux index contract."""
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert gate.mflux_missing_weights("mlx-community/Qwen3-0.6B-4bit") is None
+
+
+def test_mflux_missing_weights_no_verdict_without_huggingface_hub(monkeypatch):
+    """A missing dependency must not masquerade as a corrupt model.
+
+    Regression guard for the shape this function used to have: a blanket
+    ``except Exception: return False`` reported an import failure with the
+    same value as genuinely absent weights. Harmless while it only tinted a
+    column in ``ls``; once it gates loading, it would send a user off to
+    re-download weights that were never broken.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_hub(name, *args, **kwargs):
+        if name.startswith("huggingface_hub"):
+            raise ImportError("no huggingface_hub")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_hub)
+
+    assert gate.mflux_missing_weights("Runpod/FLUX.2-klein-4B-mflux-4bit") is None
+
+
+def test_mflux_missing_weights_reports_non_string_index_without_raising(
+    tmp_path, monkeypatch
+):
+    """A weight_map whose values are not strings fails the component closed.
+
+    ``sorted(set(weight_map.values()))`` raises ``TypeError`` on an unhashable
+    (``list``) or unorderable (mixed ``str``/``int``) value. That must not
+    escape as a bare stack trace from the load-time and serve-time gates, which
+    do not wrap this call — an index that cannot name its shards as plain
+    strings is treated as missing, exactly like a corrupt one.
+    """
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "9" * 40)
+    # Corrupt one component index with a non-string (unhashable) shard value.
+    bad_index = (
+        repo_root
+        / "snapshots"
+        / ("9" * 40)
+        / "transformer"
+        / "model.safetensors.index.json"
+    )
+    bad_index.write_text('{"weight_map": {"a": ["0.safetensors"]}}')
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == [
+        "transformer/model.safetensors.index.json"
+    ]
+
+
 def test_is_weightless_stub_true_for_partial_split_model_components(
     tmp_path, monkeypatch
 ):
