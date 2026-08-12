@@ -27,11 +27,11 @@ struct ImageCatalogTests {
       ────────────────────────────
       Alias                 Size       Kind        HF id
       ────────────────────────────
-      flux2-klein-4b        4.3 GiB    [image:gen] Runpod/FLUX.2-klein-4B-mflux-4bit
+      flux2-klein-4b        4.3 GiB    [image:both] Runpod/FLUX.2-klein-4B-mflux-4bit
       z-image-turbo         5.5 GiB    [image:gen] filipstrand/Z-Image-Turbo-mflux-4bit
     """
 
-    @Test("parseImageRows extracts only the [image:gen] rows")
+    @Test("parseImageRows extracts image rows and their operation")
     func parsesImageRows() {
         let rows = ModelCatalog.parseImageRows(Self.sample)
         #expect(rows.count == 2)
@@ -46,6 +46,7 @@ struct ImageCatalogTests {
         let klein = rows.first { $0.alias == "flux2-klein-4b" }
         #expect(klein?.hfRepo == "Runpod/FLUX.2-klein-4B-mflux-4bit")
         #expect(klein?.size == "4.3 GiB")
+        #expect(klein?.capability == .generationAndEditing)
     }
 
     @Test("complete mflux caches are marked downloaded in Images")
@@ -59,15 +60,17 @@ struct ImageCatalogTests {
             ]
         )
 
-        #expect(cached.first { $0.alias == "flux2-klein-4b" }?.cached == true)
+        let klein = cached.first { $0.alias == "flux2-klein-4b" }
+        #expect(klein?.cached == true)
+        #expect(klein?.imageCapability == .generationAndEditing)
         #expect(cached.first { $0.alias == "z-image-turbo" }?.cached == true)
     }
 
-    @Test("[image:gen] rows are excluded from the chat catalog")
+    @Test("Image capability rows are excluded from the chat catalog")
     func imageRowsExcludedFromChat() {
         // hasNonChatKindTag now drops image alongside audio/video.
         #expect(ModelCatalog.hasNonChatKindTag(
-            "flux2-klein-4b  4.3 GiB  [image:gen] Runpod/FLUX.2-klein-4B-mflux-4bit"))
+            "flux2-klein-4b  4.3 GiB  [image:both] Runpod/FLUX.2-klein-4B-mflux-4bit"))
         #expect(ModelCatalog.hasNonChatKindTag(
             "ltx-2.3-mlx-q4  24.0 GiB  [video:gen] repo/ltx"))
         // A plain chat row is not dropped.

@@ -34,6 +34,24 @@ enum AudioModelCapability: String, Sendable, Hashable {
     var supportsPresetSpeech: Bool { self == .speech }
 }
 
+/// The request shape an image checkpoint accepts. This comes from the CLI's
+/// explicit CLI capability tag, never from UI name matching.
+enum ImageModelCapability: String, Sendable, Hashable {
+    case generation
+    case editing
+    case generationAndEditing
+
+    var supportsGeneration: Bool { self != .editing }
+    var supportsEditing: Bool { self != .generation }
+    var label: String {
+        switch self {
+        case .generation: return "Image generation"
+        case .editing: return "Image editing"
+        case .generationAndEditing: return "Image generation and editing"
+        }
+    }
+}
+
 /// One model in the rapid-mlx catalog. The picker UI groups cached vs.
 /// uncached so the user knows which aliases boot instantly vs. which
 /// trigger an HF download on first ``serve``.
@@ -69,6 +87,9 @@ struct ModelEntry: Identifiable, Hashable, Sendable {
     /// chat/image/video rows.
     var audioCapability: AudioModelCapability? = nil
     var audioFamily: String? = nil
+
+    /// Image-only operation metadata. `nil` for chat/audio/video rows.
+    var imageCapability: ImageModelCapability? = nil
 
     var id: String { alias }
 }
@@ -453,7 +474,7 @@ enum ModelCatalog {
         return (parseAvailable(output), parseExcludedAliases(output))
     }
 
-    /// Image-generation aliases (``[image:gen]`` rows) for the Images tab's
+    /// Image aliases with explicit generation/edit capabilities for the Images tab's
     /// model picker. Parsed from the same ``rapid-mlx models`` output the
     /// chat catalog reads, but keeping ONLY the image rows the chat catalog
     /// deliberately excludes. ``cached`` is resolved by cross-referencing
@@ -478,7 +499,12 @@ enum ModelCatalog {
     /// mflux snapshots reported by `rapid-mlx ls` must reach the Images UI as
     /// cached even though they intentionally have no root `config.json`.
     static func mergeImageRows(
-        _ rows: [(alias: String, hfRepo: String?, size: String?)],
+        _ rows: [(
+            alias: String,
+            hfRepo: String?,
+            size: String?,
+            capability: ImageModelCapability
+        )],
         cachedRepos: Set<String>
     ) -> [ModelEntry] {
         return rows.map { row in
@@ -487,7 +513,8 @@ enum ModelCatalog {
                 hfRepo: row.hfRepo,
                 sizeOnDisk: row.size,
                 cached: row.hfRepo.map { cachedRepos.contains($0) } ?? false,
-                kind: .image
+                kind: .image,
+                imageCapability: row.capability
             )
         }
     }
@@ -581,21 +608,36 @@ enum ModelCatalog {
         return .speech
     }
 
-    /// Parse ``[image:gen]``-tagged rows into ``(alias, hfRepo, size)``.
+    /// Parse operation-tagged image rows into catalog metadata.
     /// Row shape (see cli.py image section):
-    /// ``flux-schnell-4bit    8.9 GiB    [image:gen] dhairyashil/FLUX...``.
+    /// ``flux2-klein-4b  4.3 GiB  [image:both] Runpod/FLUX...`` or
+    /// ``z-image-turbo  5.5 GiB  [image:gen] filipstrand/Z-Image...``.
     static func parseImageRows(
         _ output: String
-    ) -> [(alias: String, hfRepo: String?, size: String?)] {
-        var rows: [(String, String?, String?)] = []
+    ) -> [(
+        alias: String,
+        hfRepo: String?,
+        size: String?,
+        capability: ImageModelCapability
+    )] {
+        var rows: [(String, String?, String?, ImageModelCapability)] = []
         for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(rawLine).trimmingCharacters(in: .whitespaces)
             let fields = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
             guard let alias = fields.first, isSafeAlias(alias),
-                  let tagIdx = fields.firstIndex(of: "[image:gen]") else { continue }
+                  let tagIdx = fields.firstIndex(where: {
+                      $0 == "[image:gen]" || $0 == "[image:edit]"
+                          || $0 == "[image:both]"
+                  }) else { continue }
+            let capability: ImageModelCapability
+            switch fields[tagIdx] {
+            case "[image:edit]": capability = .editing
+            case "[image:both]": capability = .generationAndEditing
+            default: capability = .generation
+            }
             let hfRepo = tagIdx + 1 < fields.count ? fields[tagIdx + 1] : nil
             let size = tagIdx > 1 ? fields[1..<tagIdx].joined(separator: " ") : nil
-            rows.append((alias, hfRepo, size))
+            rows.append((alias, hfRepo, size, capability))
         }
         return rows
     }

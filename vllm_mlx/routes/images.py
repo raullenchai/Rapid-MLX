@@ -2,6 +2,7 @@
 """Image generation endpoints (OpenAI ``/v1/images/*`` compatible)."""
 
 import base64
+import io
 import logging
 import math
 import os
@@ -22,6 +23,8 @@ router = APIRouter()
 # Cap the uploaded init image so a single edit request can't buffer an
 # unbounded body into memory before the size validators run.
 _MAX_EDIT_IMAGE_BYTES = 25 * 1024 * 1024
+_MAX_EDIT_IMAGE_DIMENSION = 8192
+_MAX_EDIT_IMAGE_PIXELS = 40_000_000
 # Whole-request cap for the middleware (init image + a little multipart framing
 # slack), enforced BEFORE FastAPI spools the body to disk.
 _IMAGE_EDIT_REQUEST_BYTES = _MAX_EDIT_IMAGE_BYTES + 1024 * 1024
@@ -125,13 +128,27 @@ def install_image_body_limit_middleware(app) -> None:
     app.add_middleware(ImageBodyLimitMiddleware)
 
 
-# Default denoise steps for an instruction edit. Qwen-Image-Edit is a large,
-# non-distilled model (unlike the 4-step FLUX.1-schnell generator): its edit
-# structure needs ~20 steps to resolve, and — because output quality on the
-# 4-bit checkpoints is bounded by the quantized VAE rather than by step count —
-# pushing past this only costs wall-clock (≈1 min/step at the derived 1024²
-# canvas) without a visible gain. Callers can override via ``steps``.
+# Compatibility fallback for edit engines that do not advertise a family-aware
+# default. Current built-in FLUX.2 Klein advertises four distilled steps.
 _DEFAULT_EDIT_STEPS = 20
+
+
+def _supports_generation(img_engine) -> bool:
+    """Capability probe with compatibility for older/fake image engines."""
+    return bool(
+        getattr(
+            img_engine,
+            "supports_generation",
+            not getattr(img_engine, "is_edit", False),
+        )
+    )
+
+
+def _supports_editing(img_engine) -> bool:
+    """Capability probe with compatibility for older/fake image engines."""
+    return bool(
+        getattr(img_engine, "supports_editing", getattr(img_engine, "is_edit", False))
+    )
 
 
 def _image_engine(model_name: str = ""):
@@ -227,7 +244,7 @@ async def create_image(request: ImageGenerationRequest = Body(...)):
     # When the selected resident engine is an instruction-edit model,
     # text-to-image generation is the wrong endpoint. Point the caller to
     # /v1/images/edits instead of silently ignoring the mismatch.
-    if getattr(img_engine, "is_edit", False):
+    if not _supports_generation(img_engine):
         raise HTTPException(
             status_code=409,
             detail={
@@ -337,21 +354,85 @@ def _reject(condition: bool, message: str, param: str) -> None:
         )
 
 
+def _validate_edit_image(raw: bytes) -> None:
+    """Reject unsupported or excessive decoded dimensions without rasterizing."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            width, height = source.size
+            image_format = (source.format or "").upper()
+    except Image.DecompressionBombError as exc:
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": {
+                    "message": "image dimensions exceed the 8192 px / 40 megapixel limit",
+                    "type": "invalid_request_error",
+                    "param": "image",
+                }
+            },
+        ) from exc
+    except (OSError, UnidentifiedImageError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "image must be a readable PNG or JPEG",
+                    "type": "invalid_request_error",
+                    "param": "image",
+                }
+            },
+        ) from exc
+    if image_format not in {"PNG", "JPEG"}:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "image must be a PNG or JPEG",
+                    "type": "invalid_request_error",
+                    "param": "image",
+                }
+            },
+        )
+    if (
+        width <= 0
+        or height <= 0
+        or width > _MAX_EDIT_IMAGE_DIMENSION
+        or height > _MAX_EDIT_IMAGE_DIMENSION
+        or width * height > _MAX_EDIT_IMAGE_PIXELS
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "error": {
+                    "message": "image dimensions exceed the 8192 px / 40 megapixel limit",
+                    "type": "invalid_request_error",
+                    "param": "image",
+                }
+            },
+        )
+
+
 def _generate_edit_one(
     img_engine, prompt, steps, seed, guidance, negative_prompt, image_path
 ) -> bytes:
     """Blocking single instruction-edit render — runs off the event loop.
 
-    No width/height is threaded: the edit family sizes its output canvas from
-    the input image (the img_engine passes ``None`` to mflux). Forcing a mismatched
-    size desyncs the conditioning latents and yields pure noise, so the request
-    ``size`` is accepted for OpenAI-API shape but deliberately not honored.
+    No width/height is threaded through the API. Each edit engine chooses its
+    compatible default: FLUX.2 uses 1024×1024, while Qwen derives a canvas from
+    the input image. The request ``size`` is accepted for OpenAI compatibility
+    but deliberately not honored.
     """
     return img_engine.generate(
         prompt=prompt,
-        num_inference_steps=steps if steps is not None else _DEFAULT_EDIT_STEPS,
+        num_inference_steps=steps
+        if steps is not None
+        else getattr(img_engine, "default_edit_steps", _DEFAULT_EDIT_STEPS),
         seed=seed,
-        guidance=guidance if guidance is not None else 4.0,
+        guidance=guidance
+        if guidance is not None
+        else getattr(img_engine, "default_edit_guidance", 4.0),
         negative_prompt=negative_prompt,
         image_paths=[image_path],
     )
@@ -372,9 +453,9 @@ async def edit_image(
 ):
     """Instruction-edit an input image (OpenAI ``/v1/images/edits`` compatible).
 
-    Requires a server running an image-**edit** model (e.g.
-    ``rapid-mlx serve qwen-image-edit-4bit``); the uploaded image plus the
-    prompt drive a global instruction edit (no mask). Returns the same
+    Requires a server running an edit-capable image model (e.g.
+    ``rapid-mlx serve flux2-klein-4b``); the uploaded image plus the prompt
+    drive a global instruction edit (no mask). Returns the same
     ``{created, data:[{b64_json}]}`` envelope as generations.
     """
     from ..image.engine import ImageGenerationCancelled, ImageRuntimeError
@@ -383,7 +464,7 @@ async def edit_image(
 
     # /v1/images/edits requires the edit family; a txt2img server points the
     # caller at /v1/images/generations instead of silently ignoring the image.
-    if not getattr(img_engine, "is_edit", False):
+    if not _supports_editing(img_engine):
         raise HTTPException(
             status_code=409,
             detail={
@@ -391,7 +472,7 @@ async def edit_image(
                     "message": (
                         "This server is running a text-to-image model; use "
                         "/v1/images/generations, or start an image-edit model "
-                        "(e.g. `rapid-mlx serve qwen-image-edit-4bit`)."
+                        "(e.g. `rapid-mlx serve flux2-klein-4b`)."
                     ),
                     "type": "invalid_request_error",
                     "code": "wrong_image_endpoint",
@@ -437,11 +518,8 @@ async def edit_image(
                 }
             },
         )
-    # ``size`` is accepted for OpenAI-API compatibility but the edit family
-    # derives its output canvas from the input image; a mismatched target size
-    # desyncs mflux's conditioning latents into pure noise. We still validate
-    # the value so a malformed ``size`` fails loud rather than being silently
-    # dropped, then discard it — the img_engine sizes the render from the image.
+    # ``size`` is accepted for OpenAI-API compatibility but edit backends own
+    # their compatible canvas sizing. Validate malformed input, then discard it.
     try:
         parse_image_size(size)
     except ValueError as exc:
@@ -512,6 +590,7 @@ async def edit_image(
             },
         )
     raw = bytes(raw)
+    _validate_edit_image(raw)
 
     # A fixed suffix — never the attacker-controlled upload filename, whose
     # length/bytes could otherwise raise an uncaught OSError from the temp-file

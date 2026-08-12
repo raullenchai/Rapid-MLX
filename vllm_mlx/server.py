@@ -2115,6 +2115,7 @@ async def _load_dynamic_resident_model(
     model_name: str,
     model_path: str | None,
     performance=None,
+    image_mode: str | None = None,
 ) -> ModelEntry:
     """Construct and start one non-primary engine for the residency manager."""
 
@@ -2135,7 +2136,7 @@ async def _load_dynamic_resident_model(
         # Dynamic loads are explicit operator/app requests. Materialize the
         # lazy mflux weights before returning so "resident" and budget usage
         # have their literal meanings on the control-plane response.
-        await asyncio.to_thread(engine.ensure_resident)
+        await asyncio.to_thread(engine.ensure_resident, mode=image_mode)
     elif modality == "text-diffusion":
         from .runtime.diffusion_lane import DiffusionEngine
 

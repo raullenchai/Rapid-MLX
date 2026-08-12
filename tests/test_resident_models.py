@@ -128,6 +128,22 @@ async def test_accounting_reserves_lazy_model_estimates_and_tracks_larger_actual
 
 
 @pytest.mark.asyncio
+async def test_image_residency_mode_reaches_extended_loader():
+    registry = ModelRegistry()
+    modes = []
+
+    async def loader(name, path, performance, image_mode):
+        modes.append(image_mode)
+        return entry(name)
+
+    manager = ResidentModelManager(registry, loader, memory_reader=lambda: 0)
+
+    await manager.load("image", image_mode="editing")
+
+    assert modes == ["editing"]
+
+
+@pytest.mark.asyncio
 async def test_load_evicts_least_recently_used_unpinned_model():
     manager, registry, loaded, clock = manager_fixture()
     clock.now = 1

@@ -123,8 +123,17 @@ def test_models_command_sections_image_aliases_out_of_the_text_table():
             "consumer would offer it as a chat model"
         )
         assert alias in image_section
-    tagged = [ln for ln in image_section.splitlines() if "[image:gen]" in ln]
+    tagged = [
+        ln
+        for ln in image_section.splitlines()
+        if "[image:gen]" in ln or "[image:edit]" in ln or "[image:both]" in ln
+    ]
     assert len(tagged) == len(image_profiles)
+    assert "qwen-image-edit-4bit" not in image_section
+    klein_row = next(
+        ln for ln in image_section.splitlines() if "flux2-klein-4b" in ln
+    )
+    assert "[image:both]" in klein_row
 
 
 def test_models_command_shows_capability_columns():

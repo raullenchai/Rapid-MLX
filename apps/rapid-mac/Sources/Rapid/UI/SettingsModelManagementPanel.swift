@@ -367,7 +367,7 @@ struct SettingsModelManagementPanel: View {
         // inset. Same content and the same identifiers, moved onto the
         // shared section so it does not ship as the one un-migrated card
         // in the window.
-        return SettingsSection("Disk overview") {
+        SettingsSection("Disk overview") {
             HStack(spacing: RapidTheme.Space.md) {
                 Label("Models", systemImage: "internaldrive")
                     .font(RapidFont.bodyEmphasis)
@@ -1163,6 +1163,11 @@ struct SettingsModelManagementPanel: View {
                     .truncationMode(.middle)
                 if entry.kind == .audio, let audioCapability = entry.audioCapability {
                     Text(audioCapabilityLabel(audioCapability))
+                        .font(RapidFont.caption)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                }
+                if entry.kind == .image, let imageCapability = entry.imageCapability {
+                    Text(imageCapability.label)
                         .font(RapidFont.caption)
                         .foregroundStyle(RapidTheme.textSecondary)
                 }

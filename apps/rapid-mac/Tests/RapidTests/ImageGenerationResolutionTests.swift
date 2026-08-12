@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Rapid
 
@@ -63,5 +64,92 @@ struct ImageGenerationResolutionTests {
                 #expect(dimensions.height.isMultiple(of: 16))
             }
         }
+    }
+
+    @Test("Editing switches to an edit model and exiting restores generation")
+    @MainActor
+    func editModeModelSelection() {
+        let viewModel = ImageGenViewModel(server: ServerManager())
+        viewModel.imageModels = [
+            ModelEntry(
+                alias: "flux2-klein-4b", hfRepo: "example/generate",
+                sizeOnDisk: nil, cached: true, kind: .image,
+                imageCapability: .generationAndEditing
+            ),
+        ]
+        viewModel.selectedAlias = "flux2-klein-4b"
+        let source = GeneratedImage(pngData: Data([1, 2, 3]), prompt: "source", isEdit: false)
+
+        viewModel.beginEdit(source)
+
+        #expect(viewModel.isEditing)
+        #expect(viewModel.activeImage?.id == source.id)
+        #expect(viewModel.selectedAlias == "flux2-klein-4b")
+        #expect(viewModel.selectableModels.map(\.alias) == ["flux2-klein-4b"])
+
+        viewModel.cancelEdit()
+
+        #expect(!viewModel.isEditing)
+        #expect(viewModel.selectedAlias == "flux2-klein-4b")
+        #expect(viewModel.selectableModels.map(\.alias) == ["flux2-klein-4b"])
+    }
+
+    @Test("Dual-capability models appear in both pickers")
+    @MainActor
+    func dualCapabilityModelSelection() {
+        let viewModel = ImageGenViewModel(server: ServerManager())
+        viewModel.imageModels = [
+            ModelEntry(
+                alias: "flux2-klein-4b", hfRepo: "example/both",
+                sizeOnDisk: "4.3 GiB", cached: true, kind: .image,
+                imageCapability: .generationAndEditing
+            ),
+            ModelEntry(
+                alias: "z-image-turbo", hfRepo: "example/generate",
+                sizeOnDisk: "5.5 GiB", cached: true, kind: .image,
+                imageCapability: .generation
+            ),
+        ]
+
+        #expect(viewModel.generationModels.map(\.alias) == [
+            "flux2-klein-4b", "z-image-turbo",
+        ])
+        #expect(viewModel.editModels.map(\.alias) == ["flux2-klein-4b"])
+    }
+
+    @Test("FLUX.2 editing uses the distilled 4-step estimate")
+    @MainActor
+    func editStepEstimate() {
+        let viewModel = ImageGenViewModel(server: ServerManager())
+        #expect(viewModel.estimatedSteps == 4)
+        viewModel.editSource = GeneratedImage(
+            pngData: Data([1]), prompt: "source", isEdit: false
+        )
+        #expect(viewModel.estimatedSteps == 4)
+    }
+
+    @Test("A submitted image request keeps an immutable model target")
+    @MainActor
+    func requestTargetSnapshot() throws {
+        let viewModel = ImageGenViewModel(server: ServerManager())
+        viewModel.imageModels = [
+            ModelEntry(
+                alias: "flux2-klein-4b", hfRepo: "example/flux",
+                sizeOnDisk: "4.3 GiB", cached: true, kind: .image,
+                imageCapability: .generationAndEditing
+            ),
+            ModelEntry(
+                alias: "z-image-turbo", hfRepo: "example/z",
+                sizeOnDisk: "5.5 GiB", cached: true, kind: .image,
+                imageCapability: .generation
+            ),
+        ]
+        viewModel.selectedAlias = "flux2-klein-4b"
+        let target = try #require(viewModel.makeRequestTarget())
+
+        viewModel.selectedAlias = "z-image-turbo"
+
+        #expect(target.alias == "flux2-klein-4b")
+        #expect(target.hfPath == "example/flux")
     }
 }

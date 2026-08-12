@@ -62,6 +62,15 @@ def test_detect_family(hf_path, expected_family, is_edit):
     assert engine.is_edit is is_edit
 
 
+def test_flux2_klein_supports_generation_and_editing():
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    assert engine.supports_generation is True
+    assert engine.supports_editing is True
+    assert engine.default_steps == 4
+    assert engine.default_edit_steps == 4
+    assert engine.default_edit_guidance is None
+
+
 @pytest.mark.parametrize(
     "hf_path,expected_default_steps",
     [
@@ -149,6 +158,49 @@ def test_txt2img_family_rejects_image_paths():
     engine._model = _FakeModel()
     with pytest.raises(ImageRuntimeError, match="text-to-image only"):
         engine.generate(prompt="a cat", image_paths=["/tmp/x.png"])
+
+
+def test_flux2_edit_passes_image_and_dimensions_through():
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    fake = _FakeModel()
+    engine._model = fake
+    engine.generate(
+        prompt="add a hat",
+        image_paths=["/tmp/in.png"],
+        width=768,
+        height=1024,
+        seed=3,
+    )
+    assert fake.calls[0]["image_paths"] == ["/tmp/in.png"]
+    assert fake.calls[0]["width"] == 768
+    assert fake.calls[0]["height"] == 1024
+
+
+def test_flux2_switches_between_generation_and_edit_variants(monkeypatch):
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    generation = _FakeModel()
+    editing = _FakeModel()
+    releases = []
+    monkeypatch.setattr(engine, "_build_model", lambda: generation)
+    monkeypatch.setattr(engine, "_build_edit_model", lambda: editing)
+    monkeypatch.setattr(
+        "vllm_mlx.image.engine._release_allocator_cache", lambda: releases.append(True)
+    )
+
+    engine.generate(prompt="a fox", seed=1)
+    assert engine._model is generation
+    assert engine._loaded_mode == "generation"
+
+    engine.generate(prompt="add a hat", image_paths=["/tmp/in.png"], seed=2)
+    assert engine._model is editing
+    assert engine._loaded_mode == "edit"
+    assert editing.calls[0]["image_paths"] == ["/tmp/in.png"]
+    assert releases == [True]
+
+    engine.generate(prompt="a dog", seed=3)
+    assert engine._model is generation
+    assert engine._loaded_mode == "generation"
+    assert releases == [True, True]
 
 
 def test_edit_family_passes_image_paths_through():
@@ -295,6 +347,27 @@ def test_image_engine_adapter_is_duck_typed():
     assert engine._loaded is True
     assert engine.family == "flux-schnell"
     assert engine.is_edit is False
+
+
+def test_flux2_adapter_advertises_both_operations():
+    engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    assert engine.supports_generation is True
+    assert engine.supports_editing is True
+    assert engine.default_edit_steps == 4
+
+
+def test_flux2_adapter_residency_can_preload_edit_variant(monkeypatch):
+    engine = ImageEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    modes = []
+    monkeypatch.setattr(
+        engine._engine,
+        "_ensure_loaded",
+        lambda *, for_edit=None: modes.append(for_edit),
+    )
+
+    engine.ensure_resident(mode="editing")
+
+    assert modes == [True]
 
 
 # --------------------------------------------------------------------------- #
@@ -521,6 +594,28 @@ def test_edit_happy_path_returns_b64_and_passes_image(client, monkeypatch):
     assert engine.dims_seen[0] == (None, None)
 
 
+def test_dual_capability_model_works_on_generation_and_edit_routes(client, monkeypatch):
+    engine = _FakeImageEngine(default_steps=4)
+    engine.supports_generation = True
+    engine.supports_editing = True
+    engine.default_edit_steps = 4
+    engine.default_edit_guidance = None
+    _patch_engine(monkeypatch, engine)
+
+    generated = client.post(
+        "/v1/images/generations", json={"prompt": "a fox", "seed": 7}
+    )
+    edited = client.post(
+        "/v1/images/edits",
+        files={"image": ("in.png", _png_upload_bytes(), "image/png")},
+        data={"prompt": "add a hat", "seed": "8"},
+    )
+
+    assert generated.status_code == 200
+    assert edited.status_code == 200
+    assert engine.steps_seen == [4, 4]
+
+
 def test_edit_defaults_to_20_steps_when_unspecified(client, monkeypatch):
     # FLUX.1-schnell generation defaults to 4 distilled steps, but a
     # non-distilled edit needs ~20 to resolve structure; the edit route must
@@ -622,6 +717,29 @@ def test_edit_rejects_oversized_image(client, monkeypatch):
         data={"prompt": "x"},
     )
     assert resp.status_code == 413
+
+
+def test_edit_rejects_excessive_pixel_dimensions(client, monkeypatch):
+    _patch_engine(monkeypatch, _FakeImageEngine(is_edit=True))
+    source = io.BytesIO()
+    Image.new("1", (8193, 1)).save(source, format="PNG")
+    resp = client.post(
+        "/v1/images/edits",
+        files={"image": ("in.png", source.getvalue(), "image/png")},
+        data={"prompt": "x"},
+    )
+    assert resp.status_code == 413
+    assert "8192 px / 40 megapixel" in resp.json()["error"]["message"]
+
+
+def test_edit_rejects_non_image_bytes(client, monkeypatch):
+    _patch_engine(monkeypatch, _FakeImageEngine(is_edit=True))
+    resp = client.post(
+        "/v1/images/edits",
+        files={"image": ("in.png", b"not an image", "image/png")},
+        data={"prompt": "x"},
+    )
+    assert resp.status_code == 400
 
 
 def test_edit_cancel_returns_cancelled_envelope(client, monkeypatch):

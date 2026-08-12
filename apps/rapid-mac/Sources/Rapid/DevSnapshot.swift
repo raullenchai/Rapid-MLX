@@ -72,6 +72,9 @@ enum DevSnapshot {
         )
         let snapshotInstaller = Installer()
         let snapshotWebSearch = WebSearchConfig()
+        let snapshotPerfDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.perf")!
+        snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
+        let snapshotPerfConfig = ModelPerfConfigStore(defaults: snapshotPerfDefaults)
 
         // Erase to AnyView so the long environment chain stays cheap to
         // type-check and the render call is monomorphic.
@@ -199,6 +202,33 @@ enum DevSnapshot {
         renderHosted(imagesView(width: 700, height: 640),
                      size: CGSize(width: 700, height: 640),
                      appearance: .darkAqua, to: "\(dir)/images-dark.png")
+
+        // Image-edit mode at regular and narrow widths. Use the bundled mascot
+        // as a deterministic source image; this exercises the stage actions,
+        // source strip, edit-capable picker, and wrapped composer without weights.
+        imageGen.imageModels = [
+            ModelEntry(
+                alias: "flux2-klein-4b", hfRepo: "snapshot/generate",
+                sizeOnDisk: "4.3 GiB", cached: true, kind: .image,
+                imageCapability: .generationAndEditing
+            ),
+        ]
+        imageGen.selectedAlias = "flux2-klein-4b"
+        if let mascot = CheetahLogo.load(forSize: 120),
+           let tiff = mascot.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            imageGen.beginEdit(GeneratedImage(
+                pngData: png, prompt: "Cheetah", isEdit: false
+            ))
+            imageGen.prompt = "Change the background to a bright photo studio"
+            renderHosted(imagesView(width: 700, height: 640),
+                         size: CGSize(width: 700, height: 640),
+                         appearance: .aqua, to: "\(dir)/images-edit.png")
+            renderHosted(imagesView(width: 420, height: 640),
+                         size: CGSize(width: 420, height: 640),
+                         appearance: .aqua, to: "\(dir)/images-edit-narrow.png")
+        }
 
         // Scenario 1b (v1.0 visual foundation): the Light/Dark × surface
         // matrix the Phase-1 review runs on. Chat and Launch are the two
@@ -402,6 +432,7 @@ enum DevSnapshot {
                     .environment(snapshotMCPCatalog)
                     .environment(snapshotMCPApproval)
                     .environment(snapshotMCPTools)
+                    .environment(snapshotPerfConfig)
                     .frame(width: size.width, height: size.height)
                     .tint(RapidTheme.brandAmber)
             )

@@ -144,6 +144,11 @@ enum ResidentModelReplacementGroup: String, Sendable {
     case assistant
 }
 
+enum ResidentImageMode: String, Sendable, Encodable {
+    case generation
+    case editing
+}
+
 struct ServerResidencyClient {
     private struct LoadBody: Encodable {
         let model: String
@@ -151,6 +156,7 @@ struct ServerResidencyClient {
         let estimated_size_gb: Double
         let pin: Bool
         let replace_group: String?
+        let image_mode: ResidentImageMode?
         let performance: ResidentPerformanceStatus?
         let reload_if_changed: Bool
     }
@@ -191,6 +197,7 @@ struct ServerResidencyClient {
         hfPath: String?,
         estimatedSizeGB: Double,
         replaceGroup: ResidentModelReplacementGroup? = nil,
+        imageMode: ResidentImageMode? = nil,
         performance: ModelPerfConfig? = nil,
         reloadIfChanged: Bool = false,
         port: Int,
@@ -206,6 +213,7 @@ struct ServerResidencyClient {
                 estimated_size_gb: estimatedSizeGB,
                 pin: false,
                 replace_group: replaceGroup?.rawValue,
+                image_mode: imageMode,
                 performance: performance.map(ResidentPerformanceStatus.init),
                 reload_if_changed: reloadIfChanged
             )

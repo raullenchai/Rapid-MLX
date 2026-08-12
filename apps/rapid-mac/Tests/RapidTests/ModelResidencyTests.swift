@@ -138,6 +138,7 @@ struct ModelResidencyTests {
             alias: "qwen3.5-4b-4bit",
             hfPath: "mlx-community/Qwen3.5-4B-MLX-4bit",
             estimatedSizeGB: 4,
+            imageMode: .editing,
             performance: ModelPerfConfig(
                 kvCacheMode: .turboquantK8V4,
                 prefixCacheEnabled: false,
@@ -155,6 +156,7 @@ struct ModelResidencyTests {
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let performance = try #require(json["performance"] as? [String: Any])
         #expect(json["reload_if_changed"] as? Bool == true)
+        #expect(json["image_mode"] as? String == "editing")
         #expect(performance["kv_cache_dtype"] == nil)
         #expect(performance["kv_cache_turboquant"] as? String == "k8v4")
         #expect(performance["prefix_cache_enabled"] as? Bool == false)

@@ -5519,9 +5519,11 @@ def models_command(args):
             )
         print(video_sep)
 
-    # Image-generation aliases, tagged ``[image:gen]`` — same rationale as the
-    # video section above (#1603): a chat-catalog consumer must be able to
-    # exclude them by Kind tag rather than by hardcoded name.
+    # Image aliases carry an operation tag: text-to-image checkpoints use
+    # ``[image:gen]`` and instruction-edit checkpoints use ``[image:edit]``;
+    # FLUX.2 Klein accepts both request shapes and uses ``[image:both]``.
+    # Besides keeping both out of chat catalogs, this lets GUI consumers expose
+    # the right request shape without guessing capability from the alias.
     if image_profiles:
         image_alias_width = max(
             24, max((len(a) for a in image_profiles), default=0) + 2
@@ -5536,9 +5538,16 @@ def models_command(args):
         print(image_sep)
         for alias in sorted(image_profiles):
             p = image_profiles[alias]
+            folded_path = p.hf_path.casefold().replace("_", "-")
+            if "flux2" in folded_path or "flux.2" in folded_path or "klein" in folded_path:
+                kind_tag = "[image:both]"
+            elif "qwen-image-edit" in folded_path:
+                kind_tag = "[image:edit]"
+            else:
+                kind_tag = "[image:gen]"
             print(
                 f"  {alias:<{image_alias_width}} "
-                f"{format_size(p.hf_path):<10} {'[image:gen]':<11} "
+                f"{format_size(p.hf_path):<10} {kind_tag:<12} "
                 f"{p.hf_path:<40}"
             )
         print(image_sep)

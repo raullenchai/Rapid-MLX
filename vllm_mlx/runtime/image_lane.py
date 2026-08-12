@@ -67,9 +67,11 @@ class ImageEngine:
         """Whether mflux weights, rather than only the adapter, are loaded."""
         return self._engine._model is not None  # noqa: SLF001
 
-    def ensure_resident(self) -> None:
+    def ensure_resident(self, *, mode: str | None = None) -> None:
         """Eagerly materialize lazy mflux weights for budgeted residency."""
-        self._engine._ensure_loaded()  # noqa: SLF001
+        if mode not in (None, "generation", "editing"):
+            raise ValueError(f"unsupported image residency mode: {mode!r}")
+        self._engine._ensure_loaded(for_edit=mode == "editing")  # noqa: SLF001
 
     def get_stats(self) -> dict:
         """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).
@@ -86,6 +88,14 @@ class ImageEngine:
         return self._engine.is_edit
 
     @property
+    def supports_generation(self) -> bool:
+        return self._engine.supports_generation
+
+    @property
+    def supports_editing(self) -> bool:
+        return self._engine.supports_editing
+
+    @property
     def family(self) -> str:
         return self._engine.family
 
@@ -93,6 +103,14 @@ class ImageEngine:
     def default_steps(self) -> int:
         """Per-family default denoise steps when the request pins none."""
         return self._engine.default_steps
+
+    @property
+    def default_edit_steps(self) -> int:
+        return self._engine.default_edit_steps
+
+    @property
+    def default_edit_guidance(self) -> float | None:
+        return self._engine.default_edit_guidance
 
     def request_cancel(self) -> None:
         """Ask the in-flight generation to stop at the next denoise step."""
@@ -132,3 +150,4 @@ class ImageEngine:
     async def stop(self) -> None:
         """Release the backing model reference (mflux holds no async resources)."""
         self._engine._model = None  # noqa: SLF001 — internal drop for restart hygiene
+        self._engine._loaded_mode = None  # noqa: SLF001

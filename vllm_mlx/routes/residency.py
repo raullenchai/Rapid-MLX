@@ -44,6 +44,7 @@ class ModelLoadRequest(BaseModel):
     estimated_size_gb: float | None = Field(default=None, gt=0, le=1024)
     pin: bool = False
     replace_group: str | None = Field(default=None, pattern="^(assistant)$")
+    image_mode: Literal["generation", "editing"] | None = None
     performance: ModelPerformanceRequest | None = None
     reload_if_changed: bool = False
 
@@ -120,6 +121,7 @@ async def load_resident_model(request: ModelLoadRequest):
             estimated_bytes=estimated_bytes,
             pin=request.pin,
             replace_group=request.replace_group,
+            image_mode=request.image_mode,
             performance=performance,
             reload_if_changed=request.reload_if_changed,
         )

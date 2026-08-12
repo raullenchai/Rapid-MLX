@@ -291,9 +291,9 @@ echo "==> bundling mlx-vlm --no-deps + Pillow (gemma-4 + DiffusionGemma loader p
 
 # ----- step 2.6: bundle mflux --no-deps (Images tab image-gen lane) ----
 #
-# The Images tab offers the ``[image:gen]`` aliases — flux2-klein-4b and
-# z-image-turbo — and ``ImageGenViewModel.runGenerate`` starts the sidecar
-# on whichever one the user picked. Without mflux the sidecar prints
+# The Images tab offers flux2-klein-4b for generation + editing and
+# z-image-turbo for generation. ``ImageGenViewModel`` starts the sidecar on
+# whichever one the user picked. Without mflux the sidecar prints
 # "image generation requires the `rapid-mlx[image]` Python extra" and
 # exits before binding a port, so the app can only say "Couldn't start X.
 # Try again" — advice that fails identically forever, after a 4-6 GB

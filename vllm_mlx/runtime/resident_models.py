@@ -157,9 +157,7 @@ class ResidencyRecord:
         return self.entry.model_name
 
 
-Loader = Callable[
-    [str, str | None, ResidentPerformanceConfig | None], Awaitable[ModelEntry]
-]
+Loader = Callable[..., Awaitable[ModelEntry]]
 PrimaryChanged = Callable[[ModelEntry], None]
 
 
@@ -449,6 +447,7 @@ class ResidentModelManager:
         estimated_bytes: int | None = None,
         pin: bool = False,
         replace_group: str | None = None,
+        image_mode: str | None = None,
         performance: ResidentPerformanceConfig | None = None,
         reload_if_changed: bool = False,
     ) -> ResidencyRecord:
@@ -472,7 +471,12 @@ class ResidentModelManager:
 
             await self._evict_for_locked(estimate, exclude={model_name})
             before = self._read_memory()
-            entry = await self.loader(model_name, model_path, performance)
+            if image_mode is None:
+                entry = await self.loader(model_name, model_path, performance)
+            else:
+                entry = await self.loader(
+                    model_name, model_path, performance, image_mode
+                )
             now = self._clock()
             after = self._read_memory()
             delta = max(0, after - before) if before and after else 0

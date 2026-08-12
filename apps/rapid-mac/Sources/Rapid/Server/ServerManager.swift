@@ -849,6 +849,7 @@ final class ServerManager {
         hfPath: String?,
         estimatedMemoryGB: Double?,
         replacementGroup: ResidentModelReplacementGroup? = nil,
+        imageMode: ResidentImageMode? = nil,
         residencyEligible: Bool = true
     ) async -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -895,6 +896,7 @@ final class ServerManager {
                 hfPath: hfPath,
                 estimatedSizeGB: estimate,
                 replaceGroup: replacementGroup,
+                imageMode: imageMode,
                 performance: perfConfigProvider?(trimmed),
                 port: activePort,
                 bearer: activeBearer

@@ -43,9 +43,10 @@ enum ImageClientError: Error, LocalizedError {
 /// ``ServerManager.activePort`` / ``activeBearer`` at request time (they can
 /// change across a stop/start reload), never caching them.
 struct ImageClient {
-    /// Generous timeout: a cold diffusion run on a large model can take tens
-    /// of seconds, and the first call also pays a lazy model load.
-    static let requestTimeout: TimeInterval = 300
+    static let maxEditImageBytes = 25 * 1024 * 1024
+    /// Keep enough headroom for cold diffusion model loads and slower hardware;
+    /// progress polling and Cancel remain separate short requests.
+    static let requestTimeout: TimeInterval = 30 * 60
 
     static let sharedSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -79,7 +80,11 @@ struct ImageClient {
 
     private struct ErrorEnvelope: Decodable {
         struct Inner: Decodable { let message: String? }
+        struct Detail: Decodable { let error: Inner? }
         let error: Inner?
+        let detail: Detail?
+
+        var message: String? { error?.message ?? detail?.error?.message }
     }
 
     // MARK: - Generations
@@ -116,7 +121,6 @@ struct ImageClient {
         imagePNG: Data,
         prompt: String,
         model: String,
-        size: String,
         count: Int,
         seed: Int?,
         port: Int,
@@ -137,7 +141,6 @@ struct ImageClient {
         var fields: [(String, String)] = [
             ("prompt", prompt),
             ("model", model),
-            ("size", size),
             ("n", String(count)),
             ("response_format", "b64_json"),
         ]
@@ -173,8 +176,7 @@ struct ImageClient {
             throw ImageClientError.transport("Malformed server response.")
         }
         guard (200...299).contains(http.statusCode) else {
-            let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?
-                .error?.message
+            let message = (try? JSONDecoder().decode(ErrorEnvelope.self, from: data))?.message
             throw ImageClientError.http(status: http.statusCode, message: message)
         }
         guard let decoded = try? JSONDecoder().decode(ImageResponse.self, from: data) else {

@@ -47,8 +47,9 @@ covered, and each one names the defect it would have caught:
    up-to-date state (no install CTA or false missing-DMG warning).
 9. `no-dead-controls` — every Settings panel must expose controls of its own.
 10. `catalog-integrity` — a model that cannot chat must never be offered as one.
-    Now covers **image-gen** aliases too: `rapid-mlx models` tags them
-    `[image:gen]` in their own section (mirroring `[video:gen]`), and the
+    Now covers image aliases too: `rapid-mlx models` tags them `[image:gen]`,
+    `[image:edit]`, or `[image:both]` in their own section (mirroring
+    `[video:gen]`), and the
     chat catalog's `hasNonChatKindTag` drops `image` alongside `audio`/`video`,
     so a 24 GB FLUX/Qwen-Image checkpoint can never surface in the chat picker.
     The same flow opens Model Management and pins its always-visible disk
@@ -58,9 +59,9 @@ covered, and each one names the defect it would have caught:
 11. `image-generation` — a journey, not an invariant (listed here to keep the
     numbering stable): the Images tab turns a text prompt into a picture and
     lets the user iterate by re-prompting (see **Image generation** below). The
-    instruction-**edit** path exists in code but is parked as a slow, batch-only
-    lane on current hardware (~20 min/edit at q4); the interactive golden flow is
-    text→image generation.
+    instruction-edit path is available as a deliberately long-running,
+    cancellable action (~20 min/edit at q4); the interactive golden flow still
+    covers text→image generation.
 12. `chat-image-attachment` — a vision-language model accepts a PNG through
     the Chat composer, renders it in the user turn, and sends typed
     `text` + `image_url` content; the same composer keeps its attachment
@@ -289,7 +290,8 @@ identifiers, no real diffusion weights required (the fake sidecar answers
 
 1. open the Images tab via `Sidebar.Images`; assert the `Images.EmptyState`
    hero (the cheetah mark + "Draw anything") is present;
-2. the composer's `Images.ModelPicker` lists the `[image:gen]` rows from
+2. the composer's `Images.ModelPicker` lists image models whose CLI capability
+   includes generation (`[image:gen]` or `[image:both]`) from
    `rapid-mlx models`, never a chat alias (see `catalog-integrity`); set the
    aspect ratio with `Images.Aspect` (1:1 / 3:4 / 4:3);
 3. **Load the model.** rapid-mlx serves one model per process, so when the
@@ -308,46 +310,41 @@ identifiers, no real diffusion weights required (the fake sidecar answers
    save panel — not asserted through the modal `NSSavePanel`, out of AX scope
    like every other file-picker in the app.
 
-### Instruction edit — endpoint-only, parked
+### Instruction edit
 
-The `/v1/images/edits` endpoint and `ImageGenViewModel.runEdit` / `beginEdit`
-exist and are hermetically tested, but the current Images tab wires **no UI
-control** to them — there is no in-app edit action. The path is parked because
-on current Apple Silicon a q4 Qwen-Image-Edit render is ~20 min (see realities
-below): a batch action, not a conversation. It stays in the tree, reachable only
-via the HTTP API, for when a distilled edit model or faster hardware makes it
-interactive; until then the product story is generation.
+The Images tab exposes `/v1/images/edits` in two places: import a PNG/JPEG from
+the composer, or press the pencil action on a generated result. Entering edit
+mode preserves the source image, filters the model picker to edit-capable
+checkpoints (`[image:edit]` or `[image:both]`), and changes the prompt to an
+edit instruction.
+The result remains in edit mode so multiple changes can be applied in sequence;
+Exit returns to the previous text-to-image model. The normal progress and Cancel
+controls remain available for the full request.
+
+The built-in `flux2-klein-4b` alias is shared by generation and editing, so a
+user who already downloaded it needs no second checkpoint.
 
 ### Model realities the UX has to design around
 
 Verified on an M2 Pro 32 GB with the 4-bit mflux checkpoints:
 
-* **Generate is fast, edit is not.** The exposed generators are step-distilled
-  (`flux2-klein-4b` lands a 512² image in ~3 s / a 1024² in ~10 s on an M3
-  Ultra). `qwen-image-edit-4bit` is a large, non-distilled 20B model and mflux
-  fixes the edit canvas to a ~1024²-area render, so each denoise step is ~1 min
-  and a default 20-step edit is
-  **~20 minutes**. The edit round is a *batch* action on this hardware, not the
-  sub-second turnaround ChatGPT has; the compose bar must show a clearly
-  long-running, cancellable in-flight state and never imply instant results.
-* **Do not send a `size` on edits.** mflux derives the edit output canvas from
-  the input image (its VAE conditioning latents are pinned to a 1024²-area
-  grid). Forcing a mismatched `width`/`height` desyncs the RoPE position ids and
-  the model returns a valid-looking PNG of **pure noise**. The engine passes
-  `None` for edit dimensions and the route accepts `size` only for OpenAI-API
-  shape, then discards it. Round 1+ therefore inherits the round-0 framing.
-* **Edit quality is checkpoint-bound, not step-bound.** The q4 edit checkpoint
-  carries a persistent VAE speckle (40 steps looks the same as 20); a clean
-  edit needs a higher-precision repo (`OsaurusAI/Qwen-Image-Edit-mflux-q6` /
-  `-q8`), which costs proportionally more RAM/disk. Raising `steps` past ~20 on
-  q4 only burns wall-clock.
+* **FLUX.2 Klein uses four steps for both operations.** The same 4-bit,
+  approximately 4.3 GiB checkpoint backs text-to-image and image-conditioned
+  editing. The server swaps between mflux's generation and edit variants so
+  only one copy remains resident in unified memory.
+* **Edit output uses the backend default canvas.** The OpenAI-compatible edit
+  request omits `size`; `Flux2KleinEdit` therefore uses its 1024×1024 default.
+  Sequential rounds continue from the newest result.
+* **Editing is image-conditioned generation.** It handles object changes,
+  background replacement, styles, and multiple references, but a compact 4B
+  checkpoint may preserve exact text or identity less reliably than a much
+  larger dedicated edit model.
 
 The **model-vs-endpoint contract** is enforced server-side and covered by
-hermetic tests rather than a live flow: a text-to-image server answers
-`/v1/images/edits` with a 409, and an edit server answers
-`/v1/images/generations` with a 409, so a mis-routed request fails loud instead
-of returning a silent wrong result. The Images tab itself only drives
-`/v1/images/generations`.
+hermetic tests rather than a live flow: generation-only and edit-only models
+still reject the wrong endpoint, while `flux2-klein-4b` accepts both. The
+Images tab selects the endpoint from the explicit `[image:gen]`,
+`[image:edit]`, or `[image:both]` capability carried by the CLI catalog.
 
 ### What the journey does and does not drive
 

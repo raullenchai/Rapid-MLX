@@ -10,8 +10,9 @@ the diffusion pipeline and weight loading.
 Only Apache-2.0-licensed families are wired here so the whole surface stays
 commercially clean:
 
-* ``flux2-klein``      — text→image (``FLUX.2-klein-4B``), 4B/4-step, the fast
-  default: ~3 s @ 512² / ~10 s @ 1024² on an M3 Ultra, ~4 GB at 4-bit
+* ``flux2-klein``      — text→image + image edit (``FLUX.2-klein-4B``),
+  4B/4-step, the fast default: ~3 s @ 512² / ~10 s @ 1024² on an M3 Ultra,
+  ~4 GB at 4-bit
 * ``z-image``          — text→image (``Z-Image-Turbo``), 6B/8-step, the quality
   option (SOTA open-source photorealism), ~5.5 GB at 4-bit
 * ``flux-schnell``     — text→image (``black-forest-labs/FLUX.1-schnell``), 12B
@@ -29,6 +30,7 @@ at server boot would stall startup on a multi-gigabyte download.
 
 from __future__ import annotations
 
+import gc
 import io
 import re
 import threading
@@ -51,6 +53,18 @@ _PROCESS_GENERATION_LOCK = threading.Lock()
 # Default quantization for the on-load quantize path. 4-bit is the 32GB sweet
 # spot (FLUX.1-schnell ~9GB, Qwen-Image ~12GB resident at q4).
 _DEFAULT_QUANTIZE = 4
+
+
+def _release_allocator_cache() -> None:
+    """Return weights from a discarded mflux variant before loading another."""
+    gc.collect()
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception:
+        # Unit-test hosts and older optional MLX builds are valid here.
+        pass
 
 
 class ImageRuntimeError(RuntimeError):
@@ -157,14 +171,24 @@ class ImageGenerationEngine:
     ) -> None:
         self.model_name = model_name
         self.family = _detect_family(model_name)
+        self.supports_generation = self.family != "qwen-image-edit"
+        self.supports_editing = self.family in {"flux2-klein", "qwen-image-edit"}
+        # Kept for compatibility with callers that distinguish exclusive edit
+        # checkpoints. FLUX.2 supports both operations, so it is not edit-only.
         self.is_edit = self.family == "qwen-image-edit"
         self.default_steps = _DEFAULT_STEPS_BY_FAMILY.get(self.family, 4)
+        self.default_edit_steps = 4 if self.family == "flux2-klein" else 20
+        self.default_edit_guidance = None if self.family == "flux2-klein" else 4.0
         self.supports_negative_prompt = self.family not in _NO_NEGATIVE_PROMPT_FAMILIES
         self._prequantized = _looks_like_prequantized(model_name)
         # ``None`` when the repo is already quantized — passing a quantize width
         # for a pre-quantized checkpoint makes mflux re-quantize and error.
         self._quantize = None if self._prequantized else quantize
         self._model = None
+        # FLUX.2 uses distinct mflux classes for generation and editing. Only
+        # one stays resident at a time so switching modes does not duplicate
+        # the checkpoint in unified memory.
+        self._loaded_mode: str | None = None
         self._lock = _PROCESS_GENERATION_LOCK
         # Live denoise progress (single-flight under ``_lock``, so one snapshot
         # is unambiguous). ``request_cancel`` flips ``_cancel``; the reporter
@@ -238,10 +262,38 @@ class ImageGenerationEngine:
             quantize=self._quantize, model_path=model_path, model_config=config
         )
 
-    def _ensure_loaded(self):
+    def _build_edit_model(self):
+        """Instantiate the edit variant for a model that accepts input images."""
+        if self.family == "qwen-image-edit":
+            return self._build_model()
+        if self.family == "flux2-klein":
+            from mflux.models.common.config.model_config import ModelConfig
+            from mflux.models.flux2.variants.edit.flux2_klein_edit import (
+                Flux2KleinEdit,
+            )
+
+            model_path = self.model_name if self._prequantized else None
+            return Flux2KleinEdit(
+                quantize=self._quantize,
+                model_path=model_path,
+                model_config=ModelConfig.flux2_klein_4b(),
+            )
+        raise ImageRuntimeError(f"{self.family} does not support image editing.")
+
+    def _ensure_loaded(self, *, for_edit: bool | None = None):
+        if for_edit is None:
+            for_edit = self.is_edit
+        desired_mode = "edit" if for_edit else "generation"
+        if self._model is not None and self._loaded_mode not in (None, desired_mode):
+            self._model = None
+            self._loaded_mode = None
+            _release_allocator_cache()
         if self._model is None:
             try:
-                self._model = self._build_model()
+                self._model = (
+                    self._build_edit_model() if for_edit else self._build_model()
+                )
+                self._loaded_mode = desired_mode
             except ImageRuntimeError:
                 raise
             except Exception as exc:  # noqa: BLE001 — surface a clean API error
@@ -292,18 +344,19 @@ class ImageGenerationEngine:
     ) -> bytes:
         """Generate one image and return it as PNG bytes.
 
-        ``image_paths`` is required for the edit family and rejected for the
-        text-to-image families so a mis-routed request fails loud instead of
-        silently ignoring the conditioning image.
+        ``image_paths`` selects editing for dual-capability models and is
+        required by edit-only checkpoints. Unsupported combinations fail loud
+        instead of silently ignoring the conditioning image.
         """
-        if self.is_edit and not image_paths:
+        editing = bool(image_paths)
+        if not editing and not self.supports_generation:
             raise ImageRuntimeError(
                 "qwen-image-edit requires at least one input image (image_paths)."
             )
-        if not self.is_edit and image_paths:
+        if editing and not self.supports_editing:
             raise ImageRuntimeError(
                 f"{self.family} is text-to-image only and does not accept input images; "
-                "use the qwen-image-edit model for image editing."
+                "use an image-edit capable model."
             )
 
         with self._lock:
@@ -324,12 +377,12 @@ class ImageGenerationEngine:
                 started_at=time.time(),
             )
             try:
-                model = self._ensure_loaded()
+                model = self._ensure_loaded(for_edit=editing)
                 # Honor a cancel that landed during the warm-up load before we
                 # commit to the denoise loop.
                 if self._is_cancelled():
                     raise ImageGenerationCancelled("Generation cancelled.")
-                if self.is_edit:
+                if editing and self.family == "qwen-image-edit":
                     # Edit derives its output canvas from the input image and
                     # must NOT be given an explicit width/height. mflux fixes the
                     # VAE conditioning latents to a 1024²-area canvas of the input
@@ -344,6 +397,15 @@ class ImageGenerationEngine:
                         image_paths=image_paths,
                         height=None,
                         width=None,
+                        **self._gen_kwargs(
+                            seed, prompt, num_inference_steps, guidance, negative_prompt
+                        ),
+                    )
+                elif editing:
+                    result = model.generate_image(
+                        image_paths=image_paths,
+                        height=height,
+                        width=width,
                         **self._gen_kwargs(
                             seed, prompt, num_inference_steps, guidance, negative_prompt
                         ),

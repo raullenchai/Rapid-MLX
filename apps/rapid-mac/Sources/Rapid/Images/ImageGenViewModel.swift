@@ -74,13 +74,25 @@ final class ImageGenViewModel {
     }
 
     // MARK: - Catalog
-    /// Every installed/available image model (the ``[image:gen]`` rows). The
+    /// Every installed/available image model (all image capability rows). The
     /// picker lists these directly — one dropdown that scales to N models,
     /// same shape as the chat picker, rather than a fixed set of boxes.
     var imageModels: [ModelEntry] = []
     var catalogLoaded: Bool = false
     /// The alias the picker points at. Settable directly by the dropdown.
     var selectedAlias: String = ""
+
+    var generationModels: [ModelEntry] {
+        imageModels.filter { $0.imageCapability?.supportsGeneration == true }
+    }
+
+    var editModels: [ModelEntry] {
+        imageModels.filter { $0.imageCapability?.supportsEditing == true }
+    }
+
+    var selectableModels: [ModelEntry] {
+        isEditing ? editModels : generationModels
+    }
 
     // MARK: - Results
     /// Cap on the in-memory session gallery. Each result holds a full-resolution
@@ -92,6 +104,7 @@ final class ImageGenViewModel {
     /// The focal image the stage shows; nil ⇒ newest, or empty state.
     var activeID: GeneratedImage.ID?
     var activeImage: GeneratedImage? {
+        if let editSource { return editSource }
         if let activeID, let hit = results.first(where: { $0.id == activeID }) { return hit }
         return results.first
     }
@@ -103,6 +116,9 @@ final class ImageGenViewModel {
     var errorMessage: String?
     /// True only for the window between "Cancel pressed" and the run ending.
     private(set) var cancelling: Bool = false
+    /// Immutable request target used by progress, status copy, and Cancel while
+    /// the picker may still be bound to a different catalog selection.
+    private(set) var inFlightAlias: String?
     /// When the current run started — drives a live elapsed clock in the HUD
     /// that keeps moving even during the cold model-load phase.
     private(set) var genStartedAt: Date?
@@ -115,20 +131,24 @@ final class ImageGenViewModel {
     /// Derived from the selected model family (turbo Z-Image wants ~8, the
     /// distilled Klein/schnell 4) so the bar is sensibly scaled from step one.
     var estimatedSteps: Int {
-        progress?.total ?? Self.seedSteps(for: selectedAlias)
+        progress?.total ?? Self.seedSteps(for: inFlightAlias ?? selectedAlias)
     }
 
     static func seedSteps(for alias: String) -> Int {
-        alias.localizedCaseInsensitiveContains("z-image") ? 8 : 4
+        if alias.localizedCaseInsensitiveContains("qwen-image-edit") { return 20 }
+        return alias.localizedCaseInsensitiveContains("z-image") ? 8 : 4
     }
 
     /// A readable name for the selected model, shown in the cold-load HUD.
     var selectedDisplayName: String {
-        selectedAlias.isEmpty ? "the model" : selectedAlias
+        let alias = inFlightAlias ?? selectedAlias
+        return alias.isEmpty ? "the model" : alias
     }
 
-    // MARK: - Edit (parked lane, kept for later)
+    // MARK: - Edit
     var editSource: GeneratedImage?
+    var isEditing: Bool { editSource != nil }
+    private var previousGenerationAlias: String?
 
     private let client = ImageClient()
     private let server: ServerManager
@@ -141,6 +161,7 @@ final class ImageGenViewModel {
         !isGenerating
             && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedAlias.isEmpty
+            && selectableModels.contains { $0.alias == selectedAlias }
     }
 
     func use(starter: String) {
@@ -149,7 +170,12 @@ final class ImageGenViewModel {
 
     func select(_ image: GeneratedImage) {
         activeID = image.id
-        prompt = image.prompt
+        if isEditing {
+            editSource = image
+            prompt = ""
+        } else {
+            prompt = image.prompt
+        }
     }
 
     /// Load the image-gen alias catalog (safe to call repeatedly).
@@ -165,9 +191,10 @@ final class ImageGenViewModel {
     /// when the current selection is empty or no longer in the catalog, so a
     /// user's explicit pick survives a refresh.
     private func resolveAlias() {
-        let stillValid = imageModels.contains { $0.alias == selectedAlias }
+        let candidates = selectableModels
+        let stillValid = candidates.contains { $0.alias == selectedAlias }
         guard selectedAlias.isEmpty || !stillValid else { return }
-        selectedAlias = (imageModels.first { $0.cached } ?? imageModels.first)?.alias ?? ""
+        selectedAlias = (candidates.first { $0.cached } ?? candidates.first)?.alias ?? ""
     }
 
     // MARK: - Generate
@@ -176,12 +203,13 @@ final class ImageGenViewModel {
         // Claim the run synchronously (on the MainActor, before any await) so
         // two rapid submits can't both slip past the gate and launch concurrent
         // renders. ``withRequest`` clears it when the run ends.
-        guard !isGenerating else { return }
+        guard canSubmit, let target = makeRequestTarget() else { return }
         isGenerating = true
+        inFlightAlias = target.alias
         if let source = editSource {
-            await runEdit(source: source)
+            await runEdit(source: source, target: target)
         } else {
-            await runGenerate()
+            await runGenerate(target: target)
         }
     }
 
@@ -195,37 +223,33 @@ final class ImageGenViewModel {
         cancelling = true
         let port = server.activePort
         let bearer = server.activeBearer
-        let model = selectedAlias
+        guard let model = inFlightAlias else { return }
         cancelTask = Task { await client.cancel(model: model, port: port, bearer: bearer) }
     }
 
-    private func runGenerate() async {
+    private func runGenerate(target: RequestTarget) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         // Snapshot at submission: the composer stays enabled through the
         // (possibly minutes-long) warm-up await, so a later aspect/resolution
         // change must not retarget the in-flight request.
         let size = outputSize
-        guard !trimmed.isEmpty, !selectedAlias.isEmpty else { return }
+        guard !trimmed.isEmpty else { return }
         await withRequest {
-            let selected = self.imageModels.first { $0.alias == self.selectedAlias }
-            let hf = selected?.hfRepo
-            let estimatedGB = ModelSizing.residentEstimateGB(
-                alias: self.selectedAlias,
-                sizeText: selected?.sizeOnDisk
-            )
             guard await self.server.ensureServing(
-                alias: self.selectedAlias,
-                hfPath: hf,
-                estimatedMemoryGB: estimatedGB
+                alias: target.alias,
+                hfPath: target.hfPath,
+                estimatedMemoryGB: target.estimatedMemoryGB,
+                imageMode: .generation
             ) else {
                 throw ImageClientError.notReady
             }
+            guard !self.cancelling else { throw CancellationError() }
             let port = self.server.activePort
             let bearer = self.server.activeBearer
-            let poll = self.startPolling(model: self.selectedAlias, port: port, bearer: bearer)
+            let poll = self.startPolling(model: target.alias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.generate(
-                prompt: trimmed, model: self.selectedAlias, size: size,
+                prompt: trimmed, model: target.alias, size: size,
                 count: 1, seed: nil, port: port, bearer: bearer
             )
             if let first = images.first {
@@ -235,36 +259,31 @@ final class ImageGenViewModel {
                 }
                 self.activeID = first.id
             }
+            self.prompt = ""
             // Empty (cancelled before the first image) leaves the gallery as-is.
         }
     }
 
-    private func runEdit(source: GeneratedImage) async {
+    private func runEdit(source: GeneratedImage, target: RequestTarget) async {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Same snapshot rule as ``runGenerate``.
-        let size = outputSize
-        guard !trimmed.isEmpty, !selectedAlias.isEmpty else { return }
+        guard !trimmed.isEmpty else { return }
         await withRequest {
-            let selected = self.imageModels.first { $0.alias == self.selectedAlias }
-            let hf = selected?.hfRepo
-            let estimatedGB = ModelSizing.residentEstimateGB(
-                alias: self.selectedAlias,
-                sizeText: selected?.sizeOnDisk
-            )
             guard await self.server.ensureServing(
-                alias: self.selectedAlias,
-                hfPath: hf,
-                estimatedMemoryGB: estimatedGB
+                alias: target.alias,
+                hfPath: target.hfPath,
+                estimatedMemoryGB: target.estimatedMemoryGB,
+                imageMode: .editing
             ) else {
                 throw ImageClientError.notReady
             }
+            guard !self.cancelling else { throw CancellationError() }
             let port = self.server.activePort
             let bearer = self.server.activeBearer
-            let poll = self.startPolling(model: self.selectedAlias, port: port, bearer: bearer)
+            let poll = self.startPolling(model: target.alias, port: port, bearer: bearer)
             defer { poll.cancel() }
             let images = try await self.client.edit(
-                imagePNG: source.pngData, prompt: trimmed, model: self.selectedAlias,
-                size: size, count: 1, seed: nil, port: port, bearer: bearer
+                imagePNG: source.pngData, prompt: trimmed, model: target.alias,
+                count: 1, seed: nil, port: port, bearer: bearer
             )
             if let first = images.first {
                 self.results.insert(contentsOf: images, at: 0)
@@ -272,7 +291,11 @@ final class ImageGenViewModel {
                     self.results.removeLast(self.results.count - Self.maxResults)
                 }
                 self.activeID = first.id
+                // Continue from the newest result so iterative edits never
+                // accidentally reapply to the original source.
+                self.editSource = first
             }
+            self.prompt = ""
         }
     }
 
@@ -298,12 +321,29 @@ final class ImageGenViewModel {
     }
 
     func beginEdit(_ image: GeneratedImage) {
+        if !isEditing { previousGenerationAlias = selectedAlias }
         editSource = image
+        activeID = image.id
         prompt = ""
         errorMessage = nil
+        if !editModels.contains(where: { $0.alias == selectedAlias }) {
+            selectedAlias = (editModels.first { $0.cached } ?? editModels.first)?.alias ?? ""
+        }
     }
 
-    func cancelEdit() { editSource = nil }
+    func cancelEdit() {
+        editSource = nil
+        prompt = ""
+        if let previousGenerationAlias,
+           generationModels.contains(where: { $0.alias == previousGenerationAlias }) {
+            selectedAlias = previousGenerationAlias
+        } else {
+            selectedAlias = (
+                generationModels.first { $0.cached } ?? generationModels.first
+            )?.alias ?? ""
+        }
+        previousGenerationAlias = nil
+    }
 
     /// Shared request wrapper: flips run state, resets progress, and funnels
     /// every failure into ``errorMessage``.
@@ -322,18 +362,39 @@ final class ImageGenViewModel {
         defer {
             isGenerating = false
             cancelling = false
+            inFlightAlias = nil
             progress = nil
             genStartedAt = nil
             denoiseStartedAt = nil
         }
         do {
             try await body()
-            editSource = nil
-            prompt = ""
+        } catch is CancellationError {
+            // Cancel during residency loading has no image engine to signal yet;
+            // once loading returns, stop locally before sending the render.
         } catch let error as ImageClientError {
             errorMessage = error.errorDescription
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func makeRequestTarget() -> RequestTarget? {
+        guard let selected = selectableModels.first(where: { $0.alias == selectedAlias })
+        else { return nil }
+        return RequestTarget(
+            alias: selected.alias,
+            hfPath: selected.hfRepo,
+            estimatedMemoryGB: ModelSizing.residentEstimateGB(
+                alias: selected.alias,
+                sizeText: selected.sizeOnDisk
+            )
+        )
+    }
+
+    struct RequestTarget: Sendable {
+        let alias: String
+        let hfPath: String?
+        let estimatedMemoryGB: Double
     }
 }

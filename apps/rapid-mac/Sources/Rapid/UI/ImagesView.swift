@@ -1,5 +1,7 @@
 import AppKit
+import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The Images tab. Deliberately mirrors ``ChatView``: a scrollable results
 /// area on top and, at the bottom, the *same* compose box — a `surfaceRaised`
@@ -57,7 +59,7 @@ struct ImagesView: View {
                     .overlay(
                         RoundedRectangle(cornerRadius: 14).stroke(RapidTheme.hairline, lineWidth: 1)
                     )
-                    .overlay(alignment: .topTrailing) { saveOverlay(active) }
+                    .overlay(alignment: .topTrailing) { resultActionsOverlay(active) }
                     .accessibilityIdentifier("Images.Stage")
             } else if !viewModel.isGenerating {
                 emptyStage
@@ -71,21 +73,38 @@ struct ImagesView: View {
     }
 
     @ViewBuilder
-    private func saveOverlay(_ image: GeneratedImage) -> some View {
+    private func resultActionsOverlay(_ image: GeneratedImage) -> some View {
         if !viewModel.isGenerating {
-            Button {
-                save(image)
-            } label: {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 28, height: 28)
-                    .background(.ultraThinMaterial, in: Circle())
+            HStack(spacing: 7) {
+                if !viewModel.isEditing {
+                    Button {
+                        viewModel.beginEdit(image)
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Edit image")
+                    .accessibilityHint("Edit image")
+                    .accessibilityIdentifier("Images.Result.Edit")
+                }
+
+                Button {
+                    save(image)
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Save image")
+                .accessibilityHint("Save image")
+                .accessibilityIdentifier("Images.Result.Save")
             }
-            .buttonStyle(.plain)
             .padding(10)
-            .help("Save image")
-            .accessibilityHint("Save image")
-            .accessibilityIdentifier("Images.Result.Save")
         }
     }
 
@@ -166,18 +185,31 @@ struct ImagesView: View {
             // because the user is almost always switching FROM a running chat
             // model TO the image model, and cold-start ``start`` would no-op
             // while that model is resident. See ``ReadinessModelStart``.
-            Task { await ReadinessModelStart.perform(server, alias: target, hfPath: hf) }
+            Task { await loadImageModel(target, hfPath: hf) }
         case .restart(let target):
             let hf = viewModel.imageModels.first { $0.alias == target }?.hfRepo
             Task {
                 await server.stop()
-                _ = await server.ensureServing(alias: target, hfPath: hf)
+                await loadImageModel(target, hfPath: hf)
             }
         case .openModelManagement:
             settingsRouter.route(.openModelManagement) {
                 openWindow(id: "settings")
             }
         }
+    }
+
+    private func loadImageModel(_ alias: String, hfPath: String?) async {
+        let entry = viewModel.imageModels.first { $0.alias == alias }
+        _ = await server.ensureServing(
+            alias: alias,
+            hfPath: hfPath,
+            estimatedMemoryGB: ModelSizing.residentEstimateGB(
+                alias: alias,
+                sizeText: entry?.sizeOnDisk
+            ),
+            imageMode: viewModel.isEditing ? .editing : .generation
+        )
     }
 
     private var sendEnabled: Bool {
@@ -369,6 +401,11 @@ struct ImagesView: View {
 
     private var composer: some View {
         VStack(spacing: RapidTheme.Space.sm) {
+            if let error = viewModel.errorMessage {
+                InlineNotice(message: error, tone: .error)
+                    .frame(maxWidth: contentMaxWidth)
+                    .frame(maxWidth: .infinity)
+            }
             if !readiness.isReady {
                 ReadinessBanner(
                     readiness: readiness,
@@ -377,24 +414,21 @@ struct ImagesView: View {
                 )
                 .frame(maxWidth: contentMaxWidth)
                 .frame(maxWidth: .infinity)
-            } else if let error = viewModel.errorMessage {
-                InlineNotice(message: error, tone: .error)
-                    .frame(maxWidth: contentMaxWidth)
-                    .frame(maxWidth: .infinity)
             }
-            if viewModel.prompt.isEmpty {
+            if viewModel.prompt.isEmpty && !viewModel.isEditing {
                 starters
                     .frame(maxWidth: contentMaxWidth)
                     .frame(maxWidth: .infinity)
             }
             VStack(spacing: RapidTheme.Space.sm - 2) {
+                if let source = viewModel.editSource {
+                    editSourceBar(source)
+                }
                 ComposeField(
                     text: $viewModel.prompt,
                     focusToken: composeFocusToken,
                     isStreaming: viewModel.isGenerating,
-                    placeholder: readiness.isReady
-                        ? "Describe the image you want…"
-                        : readiness.composerPlaceholder,
+                    placeholder: composerPlaceholder,
                     onSubmit: runSubmit,
                     onCancel: { viewModel.cancel() },
                     // Without these the editor inside this tab announces
@@ -433,8 +467,13 @@ struct ImagesView: View {
     private var composerControls: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: RapidTheme.Space.sm) {
-                aspectPicker
-                resolutionPicker
+                if viewModel.isEditing {
+                    importButton
+                } else {
+                    aspectPicker
+                    resolutionPicker
+                    importButton
+                }
                 Spacer(minLength: 0)
                 modelPicker
                 sendOrStopButton
@@ -442,8 +481,13 @@ struct ImagesView: View {
 
             VStack(spacing: RapidTheme.Space.xs) {
                 HStack(spacing: RapidTheme.Space.sm) {
-                    aspectPicker
-                    resolutionPicker
+                    if viewModel.isEditing {
+                        importButton
+                    } else {
+                        aspectPicker
+                        resolutionPicker
+                        importButton
+                    }
                     Spacer(minLength: 0)
                 }
                 HStack(spacing: RapidTheme.Space.sm) {
@@ -453,6 +497,63 @@ struct ImagesView: View {
                 }
             }
         }
+    }
+
+    private var composerPlaceholder: String {
+        guard readiness.isReady else { return readiness.composerPlaceholder }
+        return viewModel.isEditing
+            ? "Describe what you want to change…"
+            : "Describe the image you want…"
+    }
+
+    private func editSourceBar(_ source: GeneratedImage) -> some View {
+        HStack(spacing: 9) {
+            if let image = NSImage(data: source.pngData) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Editing image")
+                    .font(RapidFont.secondary)
+                    .foregroundStyle(RapidTheme.textPrimary)
+                Text(source.prompt)
+                    .font(RapidFont.caption)
+                    .foregroundStyle(RapidTheme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 8)
+            Button { viewModel.cancelEdit() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isGenerating)
+            .help("Exit image editing")
+            .accessibilityLabel("Exit image editing")
+            .accessibilityIdentifier("Images.Edit.Exit")
+        }
+        .padding(.bottom, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Images.Edit.Source")
+    }
+
+    private var importButton: some View {
+        Button(action: chooseEditImage) {
+            Image(systemName: "photo.badge.plus")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 28, height: RapidTheme.ControlHeight.small)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isGenerating)
+        .help(viewModel.isEditing ? "Replace source image" : "Import image to edit")
+        .accessibilityLabel(viewModel.isEditing ? "Replace source image" : "Import image to edit")
+        .accessibilityIdentifier("Images.Edit.Import")
     }
 
     private var starters: some View {
@@ -558,10 +659,12 @@ struct ImagesView: View {
     /// a cache glyph per row, scaling to any number of image models.
     private var modelPicker: some View {
         Menu {
-            if viewModel.imageModels.isEmpty {
-                Text(viewModel.catalogLoaded ? "No image models available" : "Loading…")
+            if viewModel.selectableModels.isEmpty {
+                Text(viewModel.catalogLoaded
+                     ? (viewModel.isEditing ? "No image editing models available" : "No image generation models available")
+                     : "Loading…")
             } else {
-                ForEach(viewModel.imageModels) { entry in
+                ForEach(viewModel.selectableModels) { entry in
                     Button {
                         viewModel.selectedAlias = entry.alias
                     } label: {
@@ -578,7 +681,7 @@ struct ImagesView: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "photo")
+                Image(systemName: viewModel.isEditing ? "pencil.and.scribble" : "photo")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 Text(viewModel.selectedAlias.isEmpty ? "Choose a model" : viewModel.selectedAlias)
@@ -607,6 +710,7 @@ struct ImagesView: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+        .disabled(viewModel.isGenerating)
         .onHover { pickerHovering = $0 }
         .help(viewModel.selectedAlias.isEmpty ? "Choose a model" : "Model: \(viewModel.selectedAlias)")
         // Mirror the tooltip into an accessibility hint: SwiftUI's `.help(_)`
@@ -655,13 +759,17 @@ struct ImagesView: View {
             }
             .buttonStyle(.plain)
             .disabled(!sendEnabled)
-            .help(readiness.isReady ? "Generate" : "Load the model first")
+            .help(readiness.isReady
+                  ? (viewModel.isEditing ? "Edit image" : "Generate")
+                  : "Load the model first")
             // `.help(_)` does not reach AXHelp on macOS 26 for this button
             // (it publishes an identifier but no accessibilityLabel), so mirror
             // the readiness tooltip into a hint — the only signal that
             // distinguishes "ready" from "load the model first" while the
             // button is disabled for an empty prompt on both.
-            .accessibilityHint(readiness.isReady ? "Generate" : "Load the model first")
+            .accessibilityHint(readiness.isReady
+                               ? (viewModel.isEditing ? "Edit image" : "Generate")
+                               : "Load the model first")
             .accessibilityIdentifier("Images.Generate")
         }
     }
@@ -690,6 +798,95 @@ struct ImagesView: View {
             // Don't let a disk-full / permission failure look like a success.
             viewModel.errorMessage = "Couldn't save the image: \(error.localizedDescription)"
         }
+    }
+
+    private func chooseEditImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            do {
+                let png = try await EditImageImporter.pngData(from: url)
+                viewModel.beginEdit(GeneratedImage(
+                    pngData: png,
+                    prompt: url.deletingPathExtension().lastPathComponent,
+                    isEdit: false
+                ))
+            } catch {
+                viewModel.errorMessage = "Couldn't import the image: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+enum ImportedEditImageError: LocalizedError {
+    case tooLarge
+    case tooManyPixels
+    case unsupportedType
+    case cannotDecode
+
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge: return "Choose an image smaller than 25 MB."
+        case .tooManyPixels: return "Choose an image no larger than 8192 px or 40 megapixels."
+        case .unsupportedType: return "Choose a PNG or JPEG image."
+        case .cannotDecode: return "The selected file isn't a readable image."
+        }
+    }
+}
+
+enum EditImageImporter {
+    static let maxDimension = 8192
+    static let maxPixelCount = 40_000_000
+
+    static func pngData(from url: URL) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            guard (values.fileSize ?? 0) <= ImageClient.maxEditImageBytes else {
+                throw ImportedEditImageError.tooLarge
+            }
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            return try pngData(from: data)
+        }.value
+    }
+
+    static func pngData(from data: Data) throws -> Data {
+        guard data.count <= ImageClient.maxEditImageBytes else {
+            throw ImportedEditImageError.tooLarge
+        }
+        let metadataOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, metadataOptions),
+              let type = CGImageSourceGetType(source),
+              let contentType = UTType(type as String),
+              contentType.conforms(to: .png) || contentType.conforms(to: .jpeg) else {
+            throw ImportedEditImageError.unsupportedType
+        }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(
+            source, 0, metadataOptions
+        ) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0 else {
+            throw ImportedEditImageError.cannotDecode
+        }
+        guard width <= maxDimension,
+              height <= maxDimension,
+              width <= maxPixelCount / height else {
+            throw ImportedEditImageError.tooManyPixels
+        }
+        let decodeOptions = [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, decodeOptions) else {
+            throw ImportedEditImageError.cannotDecode
+        }
+        guard let png = NSBitmapImageRep(cgImage: image)
+                .representation(using: .png, properties: [:]),
+              png.count <= ImageClient.maxEditImageBytes else {
+            throw ImportedEditImageError.tooLarge
+        }
+        return png
     }
 }
 
