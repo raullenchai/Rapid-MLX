@@ -1149,6 +1149,37 @@ def test_partial_mflux_snapshot_is_not_runnable(tmp_path, monkeypatch):
     assert gate._snapshot_is_complete_mflux_model(repo) is False
 
 
+def test_mflux_missing_weights_checks_single_partial_snapshot_without_ref(
+    tmp_path, monkeypatch
+):
+    """Interrupted first pulls can leave indexes before refs/main is written."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "e" * 40, omit=("text_encoder", "1.safetensors"))
+    (repo_root / "refs" / "main").unlink()
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) == ["text_encoder/1.safetensors"]
+
+
+def test_mflux_missing_weights_no_verdict_for_multiple_unpinned_snapshots(
+    tmp_path, monkeypatch
+):
+    """Never let an old complete snapshot mask a newer partial snapshot."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "f" * 40)
+    _seed_mflux_snapshot(repo_root, "0" * 40, omit=("transformer", "0.safetensors"))
+    (repo_root / "refs" / "main").unlink()
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_missing_weights(repo) is None
+
+
 def test_mflux_missing_weights_names_the_absent_shard(tmp_path, monkeypatch):
     """The gate reports WHICH file is missing, so the error can be acted on."""
     cache_root = tmp_path / "hf-cache"
