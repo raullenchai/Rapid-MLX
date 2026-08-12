@@ -111,3 +111,36 @@ def test_cli_parser_exposes_setup_safety_flags(monkeypatch):
     assert captured["setup"] is True
     assert captured["dry_run"] is True
     assert captured["yes"] is False
+
+
+def test_cli_reports_saved_config_when_connection_check_fails(
+    setup_paths, monkeypatch, capsys
+):
+    import vllm_mlx.cli as cli
+
+    _, continue_path = setup_paths
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rapid-mlx",
+            "agents",
+            "continue",
+            "--setup",
+            "--yes",
+            "--model",
+            "qwen3.5-4b-4bit",
+        ],
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.agents.setup.verify_server",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("connection refused")),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
+
+    assert exit_info.value.code == 1
+    assert continue_path.exists()
+    output = capsys.readouterr().out
+    assert "Configuration was saved, but the connection check failed" in output
+    assert "Setup incomplete" not in output

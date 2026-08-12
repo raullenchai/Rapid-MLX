@@ -7704,16 +7704,25 @@ def agents_command(args):
             if plan.changed and not args.yes and not confirm_plan(plan):
                 print("\n  Setup cancelled; nothing was written.\n")
                 return
-            try:
-                if plan.changed:
+            if plan.changed:
+                try:
                     apply_setup_plan(plan)
-                    print(f"\n  Configured {profile.display_name} at {plan.path}.")
-                if not args.no_check:
+                except RuntimeError as exc:
+                    print(f"\n  {profile.display_name} setup failed: {exc}\n")
+                    sys.exit(1)
+                print(f"\n  Configured {profile.display_name} at {plan.path}.")
+            if not args.no_check:
+                try:
                     advertised = verify_server(base_url, model_id)
-                    print(f"  Connection check passed (model: {advertised}).")
-            except RuntimeError as exc:
-                print(f"\n  Setup incomplete: {exc}\n")
-                sys.exit(1)
+                except RuntimeError as exc:
+                    status = (
+                        "Configuration was saved"
+                        if plan.changed
+                        else "Configuration is unchanged"
+                    )
+                    print(f"\n  {status}, but the connection check failed: {exc}\n")
+                    sys.exit(1)
+                print(f"  Connection check passed (model: {advertised}).")
             print()
             return
 
