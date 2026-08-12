@@ -13,6 +13,34 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.11] — 2026-08-12
+
+A speed release. The engine underneath the app got a full tuning pass
+measured against every other way to run these models on a Mac, and it is
+now the fastest of them at answering several conversations at once —
+with single-conversation typing speed matched to the best of them too.
+
+### Changed
+
+- Several chats, agents, or tool calls running at the same time now share
+  the Mac far better. On a large mixture-of-experts model with eight
+  conversations in flight, total throughput went up about 40%; every
+  model size we measure now runs concurrent work faster than the
+  reference implementation rather than behind it.
+- A single conversation types out faster as well, including long ones —
+  the engine no longer pays for machinery it only needs when several
+  conversations are active.
+- Plain chats no longer carry the extra per-word processing that only
+  tool-using requests need.
+
+### Fixed
+
+- A tool call that the app asked a model to make could come back with
+  malformed arguments and either break the client reading it or, when
+  streaming, end the turn with nothing at all. Those calls are now
+  repaired to a valid shape, or reported clearly when the tool's own
+  requirements cannot be met.
+
 ## [0.12.10] — 2026-08-11
 
 Settings got a full visual refresh: every category now shares one design —

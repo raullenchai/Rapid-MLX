@@ -75,3 +75,63 @@ def test_system_sidebar_button_subtree_is_ignored(ax_baseline, description):
     assert ax_baseline.render(button, ()) == [
         f'AXButton desc="{description}" enabled=true'
     ]
+
+
+@pytest.mark.parametrize(
+    ("description", "help_text"),
+    [
+        (
+            "Rapid-MLX 0.12.10 · up to date",
+            "Rapid-MLX 0.12.10 is the latest release. Click to open Settings → App.",
+        ),
+        (
+            "Rapid-MLX 0.12.11",
+            "Rapid-MLX 0.12.11. Click to open Settings → App.",
+        ),
+        (
+            "Rapid-MLX 0.12.10 · update 0.13.0 available",
+            "Rapid-MLX 0.13.0 is available (you're on 0.12.10). Click to install.",
+        ),
+    ],
+)
+def test_version_pill_collapses_every_update_verdict(
+    ax_baseline, description, help_text
+):
+    """The footer pill states the updater's verdict, which compares the
+    running build against the latest PUBLISHED release. That inverts on
+    every version-bump PR — the bumped app is newer than any release
+    until the one it is cutting exists — so all three states must render
+    identically or the bump PR turns the golden flows red."""
+    pill = ax_baseline.Node(
+        {
+            "role": "AXButton",
+            "identifier": "Footer.DesktopVersionPill",
+            "description": description,
+            "help": help_text,
+            "enabled": True,
+        }
+    )
+
+    assert ax_baseline.render_node(pill, ()) == (
+        'AXButton id="Footer.DesktopVersionPill" '
+        'desc="Rapid-MLX <version> <update-state>" '
+        'help="Rapid-MLX <version> <update-state>" enabled=true'
+    )
+
+
+def test_version_text_elsewhere_keeps_its_wording(ax_baseline):
+    """Scoped by identifier, not by phrasing: Settings → App publishes the
+    same sentence and the flows assert the version it names."""
+    pane = ax_baseline.Node(
+        {
+            "role": "AXStaticText",
+            "identifier": "Settings.App.UpToDate",
+            "description": "Rapid-MLX 0.12.11 is the latest release.",
+            "enabled": True,
+        }
+    )
+
+    assert ax_baseline.render_node(pane, ()) == (
+        'AXStaticText id="Settings.App.UpToDate" '
+        'desc="Rapid-MLX <version> is the latest release." enabled=true'
+    )

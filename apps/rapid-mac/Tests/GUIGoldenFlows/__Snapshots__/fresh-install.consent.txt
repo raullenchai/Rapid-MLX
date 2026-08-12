@@ -24,6 +24,8 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true
+      AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true
+        AXButton id="Toolbar.SearchChats" desc="Search chats" help="Search chats - Command-K" enabled=true
     AXButton subrole=AXCloseButton enabled=false
     AXButton subrole=AXZoomButton enabled=true
     AXButton subrole=AXMinimizeButton enabled=true
