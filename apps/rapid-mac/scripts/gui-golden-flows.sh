@@ -1232,6 +1232,39 @@ flow_chat_restore() {
     dismiss_first_run
     wait_identifier Sidebar.NewChat "$OUT/chat-restored.json"
     assert_tree_text "$OUT/chat-restored.json" "golden restore marker"
+
+    # Conversation search is a window-level recovery path, including for
+    # history that is not currently visible in the sidebar. Exercise the real
+    # toolbar button, live filtering, result selection, and dismissal by
+    # opening the restored transcript from the panel.
+    press "$OUT/chat-restored.json" Toolbar.SearchChats "$OUT/search-open-press.json"
+    wait_identifier ConversationSearch.Field "$OUT/search-open.json"
+    "$AX_DRIVER" set-value "$APP_PID" ConversationSearch.Field "golden restore" \
+        > "$OUT/search-type.json"
+    local search_result_id=""
+    for _ in {1..40}; do
+        see_main "$OUT/search-filtered.json"
+        search_result_id="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+            | select(test("^ConversationSearch\\.Result\\.[0-9A-Fa-f-]{36}$"))' \
+            "$OUT/search-filtered.json" | head -1)"
+        [[ -n "$search_result_id" ]] && break
+        sleep 0.1
+    done
+    [[ -n "$search_result_id" ]] || die "conversation search did not return the restored chat"
+    assert_tree_text "$OUT/search-filtered.json" "golden restore marker"
+    baseline chat-restore.search-results "$OUT/search-filtered.json"
+    press "$OUT/search-filtered.json" "$search_result_id" "$OUT/search-result-open.json"
+    for _ in {1..40}; do
+        see_main "$OUT/search-dismissed.json"
+        if ! jq -e '.data.ui_elements[]? | select(.identifier == "ConversationSearch.Field")' \
+            "$OUT/search-dismissed.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    jq -e '[.data.ui_elements[]? | select(.identifier == "ConversationSearch.Field")] | length == 0' \
+        "$OUT/search-dismissed.json" >/dev/null \
+        || die "opening a conversation did not dismiss the search panel"
+    assert_tree_text "$OUT/search-dismissed.json" "deterministic content"
+
     local conversation_id
     # Match the ROW exactly. `Sidebar.Conversation.` is now a namespace, not a
     # row: it also contains `…Pin.<uuid>`, `…Unpin.<uuid>`, `…Menu.<uuid>` and
