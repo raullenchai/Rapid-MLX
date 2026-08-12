@@ -328,14 +328,22 @@ submits an instruction through the multipart edit endpoint, verifies the source
 image reached the wire, verifies the returned image becomes the next edit
 source, then exits back to generation mode. It then drives the second entry —
 `Images.Edit.Import` — all the way through a real file import to a regenerate:
-the journey presses the control, hands the native open panel a fixture path
-through the same keyboard channel a human uses (Cmd+Shift+G → type → Return),
+the journey presses `Images.Edit.Import` and drives the app through a
+deterministic test seam: the harness's launcher sets `RAPID_SIMULATED_IMPORT_PATH`
+(a test-only switch, like `RAPID_BIN`/`RAPID_GUI_WEB_SEARCH_FIXTURE`), so the
+button imports exactly that fixture through the same post-pick path a real picker
+would. This is deliberate: the native `NSOpenPanel`'s file browser publishes no
+accessibility identifiers, so neither AX actions nor injected keyboard events can
+drive its "Go to Folder" sheet on an unattended CI runner. The journey then
 asserts the app entered edit mode keyed to the imported file's name, submits an
 instruction, and verifies the fixture's decoded pixel payload reached the wire as
 a multipart edit (compared by RGBA hash rather than raw bytes, because the app
-legitimately re-encodes imports). Unlike `Images.Result.Save`, the import picker is therefore **not** left
-as "out of AX scope": it is driven to prove the "import an image → edit it"
-contract, which no tree dump can witness on its own.
+legitimately re-encodes imports). Pressing the button itself, entering edit mode
+keyed to the file name, and the fixture's bytes on the wire are all still exercised
+end-to-end; what the seam cannot cover is Apple's own OS file-browser dialog. As
+with `Images.Result.Save`'s save dialog, the native picker UI itself is out of AX
+scope — the "import an image → edit it" contract it feeds is proven through the
+app-level path above, which no tree dump can witness on its own.
 
 ### Model realities the UX has to design around
 

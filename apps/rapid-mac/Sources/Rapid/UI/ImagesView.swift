@@ -811,14 +811,19 @@ struct ImagesView: View {
         // identifiers, so a golden flow cannot reach it: neither a
         // pid-targeted CGEvent nor a HID session tap opens its "Go to Folder"
         // sheet on an unattended build/CI runner. To keep the image-edit
-        // import journey deterministic, an explicit environment variable
-        // (only ever set by the golden-flow harness) names the file to import
-        // so the exactly-same post-pick path below still runs for real — edit
-        // mode, the "Replace source image" affordance, the file name on the
-        // source bar, and the fixture's bytes on the wire are all still
-        // asserted. In normal use the variable is unset and the picker shows.
+        // import journey deterministic, an explicit test-only environment
+        // switch names the file to import so the exactly-same post-pick path
+        // below still runs for real — edit mode, the "Replace source image"
+        // affordance, the file name on the source bar, and the fixture's bytes
+        // on the wire are all still asserted. Like the other GUI fixtures
+        // (RAPID_BIN, RAPID_GUI_WEB_SEARCH_FIXTURE, RAPID_DEV_SNAPSHOT_DIR,
+        // RAPID_DESKTOP_NO_PORT_SWEEP) this is only ever set by the golden-flow
+        // harness's launcher; normal launches never set it. To further blunt an
+        // accidentally inherited value, the switch only fires when it names a
+        // file that actually exists — otherwise the real picker still shows.
         if let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_IMPORT_PATH"],
-           !simulated.isEmpty {
+           !simulated.isEmpty,
+           FileManager.default.fileExists(atPath: simulated) {
             importEditImage(at: URL(fileURLWithPath: simulated))
             return
         }
