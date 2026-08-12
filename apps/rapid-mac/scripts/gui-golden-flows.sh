@@ -2457,6 +2457,132 @@ flow_image_generation() {
         || die "exiting edit mode did not restore generation controls"
 
     baseline image-generation.generated "$OUT/ig-edit-exited.json"
+
+    # 7. Import from disk — the SECOND door into /v1/images/edits, and the one
+    #    the journey above never opens.
+    #
+    #    The generated-result edit walks in through Images.Result.Edit. This
+    #    section drives the other entry: Images.Edit.Import -> the native open
+    #    panel -> an edit keyed to the imported file's own name. It exists
+    #    because "import an image then edit it" is a distinct user contract:
+    #    nothing below can pass unless the app really turns the picked file
+    #    into an editable source (edit mode, "Replace source image" affordance,
+    #    the file name on the source bar, and the fixture's bytes on the wire).
+    #
+    #    The app's own AX tree cannot reach the panel — an NSOpenPanel publishes
+    #    no kAXIdentifierAttribute, so press/set-value have nothing to hit. The
+    #    flow therefore drives the panel through the same keyboard channel a
+    #    human uses (Cmd+Shift+G to open the "Go to folder" sheet, type the
+    #    absolute path, Return to navigate to the file, Return again to confirm
+    #    "Open"). The panel is still a native window, so its arrival is
+    #    witnessed through the driver's window list before any keystroke lands.
+    local fixture="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
+    [[ -f "$fixture" ]] || die "import fixture not found: $fixture"
+    press "$OUT/ig-edit-exited.json" Images.Edit.Import "$OUT/ig-import-press.json" \
+        || die "the composer offers no pressable Images.Edit.Import to import a file"
+    # The open panel is a real native window whose title is not the main
+    # window's. Wait for any second window in the AX list before typing into it.
+    local panel_seen=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-import-panel.json"
+        if jq -e '.data.windows.complete == true
+                  and ([.data.windows.titles[]? | select(. != "Rapid-MLX")] | length) >= 1' \
+               "$OUT/ig-import-panel.json" >/dev/null; then
+            panel_seen=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$panel_seen" == 1 ]] \
+        || die "no native open panel appeared after pressing Images.Edit.Import"
+
+    "$AX_DRIVER" key "$APP_PID" "cmd+shift+g" > "$OUT/ig-import-go.json" \
+        || die "could not open the panel's Go to Folder sheet (cmd+shift+g)"
+    sleep 0.3
+    "$AX_DRIVER" type "$APP_PID" "$fixture" > "$OUT/ig-import-type.json" \
+        || die "could not type the fixture path into the open panel"
+    sleep 0.2
+    # Return #1 closes the Go to Folder sheet and navigates to / selects the
+    # typed file; Return #2 confirms the panel (Open).
+    "$AX_DRIVER" key "$APP_PID" "return" > "$OUT/ig-import-ok.json" \
+        || die "could not send the first Return to the open panel"
+    sleep 0.5
+    "$AX_DRIVER" key "$APP_PID" "return" > "$OUT/ig-import-open.json" \
+        || die "could not confirm the open panel (second Return)"
+
+    # Entering edit mode from an import must be observably different from the
+    # generated-result entry: the source is keyed to the FILE NAME, the import
+    # affordance flips to "Replace source image", and the edit source bar
+    # appears. The old filename is static; assert it landed.
+    local imported=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/ig-import-entered.json"
+        if jq -e '.success == true and .data.walk.complete == true
+                  and (([.data.ui_elements[]? | .identifier // ""] | index("Images.Edit.Source")) != null)
+                  and (([.data.ui_elements[]? | .identifier // ""] | index("Images.Edit.Import")) != null)
+                  and ([.data.ui_elements[]? | select(.identifier == "Images.Edit.Import")
+                        | (.help // .description // "")] | any(. == "Replace source image"))' \
+               "$OUT/ig-import-entered.json" >/dev/null; then
+            imported=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$imported" == 1 ]] \
+        || die "importing the fixture did not enter edit mode with a replace-source affordance"
+    local file_basename
+    file_basename="$(basename "$fixture" .png)"
+    assert_tree_text "$OUT/ig-import-entered.json" "$file_basename" \
+        || die "the imported source does not carry the file name ($file_basename) on the edit source bar"
+
+    # 8. Edit the imported image — the rest of the contract after a real
+    #    import: type an instruction, generate, and the multipart edit request
+    #    must carry the fixture bytes.
+    local import_prompt="give the logo a blue background"
+    type_prompt "$import_prompt" ig-import-draft
+    press "$OUT/ig-import-draft.json" Images.Generate "$OUT/ig-import-submit.json" \
+        || die "Images.Generate is not pressable after importing an image"
+    wait_fake_event '.event == "image_request" and .operation == "edit" and .has_image == true' \
+        "no multipart edit request carrying an image reached the sidecar after import"
+    wait_fake_event '.event == "image_response" and .cancelled == false and .index == 4' \
+        "the imported edit never completed"
+    local import_done=0
+    for ((i=0; i<200; i++)); do
+        see_main "$OUT/ig-import-result.json"
+        if jq -e '.success == true and .data.walk.complete == true
+                  and (([.data.ui_elements[]? | .identifier // ""] | index("Images.Gallery.Thumb.4")) != null)
+                  and (([.data.ui_elements[]? | .identifier // ""] | index("Images.Edit.Source")) != null)
+                  and (([.data.ui_elements[]? | .identifier // ""] | index("Images.Cancel")) == null)' \
+               "$OUT/ig-import-result.json" >/dev/null; then
+            import_done=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$import_done" == 1 ]] \
+        || die "the imported edit did not land as a new thumbnail and remain the edit source"
+    jq -s -e --arg alias "$FAKE_IMAGE_ALIAS" --arg prompt "$import_prompt" \
+        '[.[] | select(.event == "image_request" and .operation == "edit" and .prompt == $prompt)
+              | {model, n, operation, has_image}] ==
+         [{model:$alias, n:1, operation:"edit", has_image:true}]' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the imported edit request did not carry the exact prompt, model, and the fixture image: $(jq -s -c '[.[] | select(.event == "image_request" and .operation == "edit")]' "$OUT/fake-events.jsonl")"
+
+    # Exit restores generation controls — the same exit contract as the
+    # generated-result journey, now after an import.
+    press "$OUT/ig-import-result.json" Images.Edit.Exit "$OUT/ig-import-exit.json" \
+        || die "Images.Edit.Exit is not pressable after an imported edit"
+    local import_exited=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-import-exited.json"
+        if jq -e '.success == true and .data.walk.complete == true
+                  and ([.data.ui_elements[]? | .identifier // ""] as $ids
+                       | ($ids | index("Images.Edit.Source")) == null
+                         and ($ids | index("Images.Aspect")) != null)' \
+               "$OUT/ig-import-exited.json" >/dev/null; then
+            import_exited=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$import_exited" == 1 ]] \
+        || die "exiting edit mode after an import did not restore generation controls"
+
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {

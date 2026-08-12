@@ -1,8 +1,11 @@
 #!/usr/bin/env swift
 // Minimal native Accessibility driver for deterministic Rapid GUI journeys.
-// It deliberately exposes only semantic operations: dump, press, set-value,
-// and closing a named native window through its AXCloseButton.
+// It deliberately exposes only semantic operations — dump, press, set-value,
+// and closing a named native window through its AXCloseButton — plus two
+// CGEvent keyboard commands, `key` and `type`, for the handful of surfaces
+// that publish no AX identifiers at all (the standard file picker).
 import ApplicationServices
+import CoreGraphics
 import Foundation
 
 func fail(_ message: String) -> Never {
@@ -110,10 +113,131 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|set-value|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|set-value|close-window|key|type|trust> <pid> [identifier-or-window-title|combo|text] [value]")
 }
 
 let command = CommandLine.arguments[1]
+
+// ---- CGEvent keyboard injection --------------------------------------
+//
+// The standard file picker is a native NSOpenPanel: its controls publish no
+// `kAXIdentifierAttribute`, so neither `press` nor `set-value` can reach it.
+// `key` and `type` fall back to synthesizing keyboard events into the target
+// process's window server session — the same channel a human's keystrokes
+// take — which the panel understands and the AX-only commands cannot touch.
+//
+// The target pid is still required: it is what `postToPid` uses to route the
+// events, and it keeps the commands honest about WHICH app is being driven
+// (a golden flow names a pid, never "the frontmost app", so it cannot grab
+// whatever window the operator happens to have focused).
+
+func keyCodeFor(_ name: String) -> CGKeyCode? {
+    // The mappings needed by the golden flows plus the handful a keyboard
+    // gesture might reasonably ask for. US ANSI layout.
+    let map: [String: CGKeyCode] = [
+        "return": 36, "enter": 76, "tab": 48, "space": 49,
+        "escape": 53, "delete": 51, "backspace": 51,
+        "up": 126, "down": 125, "left": 123, "right": 124,
+        "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
+        // US-ANSI A–Z keycodes, used both for `key` chords and by `type`.
+        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5,
+        "h": 4, "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45,
+        "o": 31, "p": 35, "q": 12, "r": 15, "s": 1, "t": 17, "u": 32,
+        "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
+        "cmd": 55, "command": 55, "shift": 56, "option": 58, "alt": 58,
+        "control": 59, "ctrl": 59, "fn": 63,
+        // Digits / punctuation used by `key` combos and shortcuts.
+        "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26,
+        "8": 28, "9": 25, "0": 29, "-": 27, "=": 24, "[": 33, "]": 30,
+        ";": 41, "'": 39, ",": 43, ".": 47, "/": 44, "\\": 42, "`": 50,
+    ]
+    return map[name.lowercased()]
+}
+
+func modifiersFrom(_ flags: Set<String>) -> CGEventFlags {
+    var result: CGEventFlags = []
+    if flags.contains("cmd") || flags.contains("command") { result.insert(.maskCommand) }
+    if flags.contains("shift") { result.insert(.maskShift) }
+    if flags.contains("option") || flags.contains("alt") { result.insert(.maskAlternate) }
+    if flags.contains("control") || flags.contains("ctrl") { result.insert(.maskControl) }
+    return result
+}
+
+func postKey(_ pid: pid_t, _ keyCode: CGKeyCode, _ modifier: CGEventFlags) {
+    // Key down while holding the modifiers, then key up, each with the
+    // modifiers still held so the panel sees a coherent chord.
+    let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)
+    down?.flags = modifier
+    down?.postToPid(pid)
+    let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
+    up?.flags = modifier
+    up?.postToPid(pid)
+    usleep(30_000)
+}
+
+func postCombination(_ pid: pid_t, _ combo: String) {
+    // A `+`-joined combo: "cmd+shift+g". At least one bare key is required.
+    let parts = combo.split(separator: "+").map { String($0).lowercased() }
+    guard let last = parts.last, let keyCode = keyCodeFor(last) else {
+        fail("key: unrecognized key in combo '\(combo)'")
+    }
+    let modifiers = modifiersFrom(Set(parts.dropLast()))
+    postKey(pid, keyCode, modifiers)
+}
+
+// Punctuation that appears in the driven surfaces (absolute path strings) and
+// its (keycode, needsShift) US-ANSI mapping. Kept deliberately small: every
+// character here must be typeable by one unshifted or shifted key so the
+// result is layout-stable.
+let typePunctuation: [Character: (CGKeyCode, Bool)] = [
+    "/": (44, false), ".": (47, false), "-": (27, false),
+    "_": (27, true),  " ": (49, false),  ":": (41, true),
+]
+
+func typeText(_ pid: pid_t, _ text: String) {
+    // The synthetic keystroke carries only a keycode; a native panel (and
+    // text fields in general) interpret that code through the CURRENT
+    // keyboard layout. To stay deterministic regardless of layout, only
+    // ASCII letters, digits, and the punctuation above are supported here;
+    // anything else is rejected rather than silently typed wrong.
+    for ch in text {
+        if ch.isLetter, let base = keyCodeFor(String(ch).lowercased()) {
+            // Uppercase letters are Shift+letter. Because the keystroke is a
+            // keycode, the panel re-derives the glyph from its layout; we only
+            // say which letter KEY and whether Shift was held.
+            postKey(pid, base, ch.isUppercase ? .maskShift : [])
+            continue
+        }
+        if ch.isNumber, let base = keyCodeFor(String(ch)) {
+            postKey(pid, base, [])
+            continue
+        }
+        if let punctuation = typePunctuation[ch] {
+            postKey(pid, punctuation.0, punctuation.1 ? .maskShift : [])
+            continue
+        }
+        fail("type: unsupported character '\(ch)' — only ASCII letters, digits, and basic punctuation are supported")
+    }
+}
+
+if command == "key" {
+    guard CommandLine.arguments.count > 3 else {
+        fail("key requires a combo, e.g. cmd+shift+g or return")
+    }
+    postCombination(pid, CommandLine.arguments[3])
+    print("{\"success\":true,\"action\":\"key\",\"combo\":\"\(CommandLine.arguments[3])\"}")
+    exit(0)
+}
+
+if command == "type" {
+    guard CommandLine.arguments.count > 3 else {
+        fail("type requires text to type")
+    }
+    typeText(pid, CommandLine.arguments[3])
+    print("{\"success\":true,\"action\":\"type\",\"text\":\"\(CommandLine.arguments[3])\"}")
+    exit(0)
+}
+
 let application = AXUIElementCreateApplication(pid)
 var visited = Set<AXUIElement>()
 var records = [[String: Any]]()

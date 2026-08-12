@@ -326,7 +326,15 @@ user who already downloaded it needs no second checkpoint.
 The `image-generation` golden journey enters editing from a generated result,
 submits an instruction through the multipart edit endpoint, verifies the source
 image reached the wire, verifies the returned image becomes the next edit
-source, then exits back to generation mode.
+source, then exits back to generation mode. It then drives the second entry —
+`Images.Edit.Import` — all the way through a real file import to a regenerate:
+the journey presses the control, hands the native open panel a fixture path
+through the same keyboard channel a human uses (Cmd+Shift+G → type → Return),
+asserts the app entered edit mode keyed to the imported file's name, submits an
+instruction, and verifies the fixture's bytes reached the wire as a multipart
+edit. Unlike `Images.Result.Save`, the import picker is therefore **not** left
+as "out of AX scope": it is driven to prove the "import an image → edit it"
+contract, which no tree dump can witness on its own.
 
 ### Model realities the UX has to design around
 
