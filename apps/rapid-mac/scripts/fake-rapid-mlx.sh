@@ -411,7 +411,8 @@ def _extract_image_part(raw_body, content_type):
 
 
 def _png_rgba_sha256(png_bytes):
-    """SHA-256 of the DECODED RGBA pixels of a PNG.
+    """SHA-256 of the DECODED RGBA pixels of a PNG (including its
+    width and height, so geometry is pinned as well as pixels).
 
     The app's ``EditImageImporter.pngData`` decodes and re-encodes an import
     through ``NSBitmapImageRep``, so the uploaded PNG is not byte-identical
@@ -501,7 +502,15 @@ def _png_rgba_sha256(png_bytes):
                 rgba += bytes((r, g, b, 255))
         else:
             return None
-        return hashlib.sha256(bytes(rgba)).hexdigest()
+        # Include the decoded width/height in the digest. Hashing only the
+        # flattened RGBA stream would let two images with identical pixels
+        # but different dimensions (e.g. 1×4 vs 2×2) collide, so a golden
+        # flow could pass even if import/re-encoding corrupted the geometry.
+        h = hashlib.sha256()
+        h.update(width.to_bytes(4, "big"))
+        h.update(height.to_bytes(4, "big"))
+        h.update(bytes(rgba))
+        return h.hexdigest()
     except (zlib.error, struct.error, IndexError):
         return None
 
