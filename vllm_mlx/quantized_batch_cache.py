@@ -107,7 +107,17 @@ def supported_group_size(head_dim: int, requested: int) -> int | None:
 
 
 class QuantizedBatchKVCache(_BaseCache):
-    """Batch-aware KV cache that stores quantized KV and returns bf16.
+    """Batch-aware KV cache that stores quantized KV and returns the triples.
+
+    Read contract (#1751): ``update_and_fetch`` returns the quantized
+    ``(packed, scales, biases)`` triples, NOT bf16 arrays — consumers must
+    route them through ``mlx_lm.models.base.scaled_dot_product_attention``
+    (which dispatches on the ``bits`` attribute), exactly like mlx-lm's own
+    ``QuantizedKVCache``. Every in-repo caller does: the stock mlx-lm model
+    files and the vendored models (muse_glimmer, bailing_hybrid) all pass
+    ``cache=cache`` into that dispatcher immediately after
+    ``update_and_fetch``; MLA families (deepseek_v4 etc.) never receive this
+    cache because ``resolve_kv_cache_dtype`` downgrades them to bf16.
 
     Storage layout mirrors :class:`~mlx_lm.models.cache.QuantizedKVCache` — each
     of ``self.keys`` / ``self.values`` is a 3-element list
@@ -569,6 +579,14 @@ def _install_batched_mask_safe_quantized_sdpa() -> None:
         # already laid out for the expanded scores (e.g.
         # ``[n_kv_heads, n_repeats, L, S]``) has shape[1] == n_repeats > 1
         # here and passes through untouched (codex r1 BLOCKING #1).
+        #
+        # The ``n_repeats > 1`` gate is deliberately co-extensive with the
+        # stock kernel's own expansion: quantized_scaled_dot_product_
+        # attention reshapes scores to rank 5 ONLY under ``n_repeats > 1``
+        # (mlx_lm/models/base.py:79 ``if n_repeats > 1``). For MHA
+        # (n_repeats == 1) scores stay rank 4 and a ``[B, 1, L, S]`` mask
+        # already broadcasts correctly — inserting an axis there would
+        # CREATE the misalignment this wrapper prevents.
         if (
             n_q_heads // n_kv_heads > 1
             and isinstance(mask, mx.array)
