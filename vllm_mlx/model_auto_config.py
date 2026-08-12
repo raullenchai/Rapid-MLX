@@ -1123,6 +1123,18 @@ def _detect_metadata_config(model_path: str) -> ModelConfig | None:
             supports_spec_decode=False,
         )
         reasons.append("dense Qwen3.5 architecture")
+    elif "granitemoe_swa" in model_types:
+        # Granite Swash is pure attention but sparse MoE with mixed
+        # full/sliding KV caches. Its checkpoint template emits the existing
+        # Granite ``<|tool_call|>`` JSON protocol. Keep spec decode disabled
+        # until the mixed-cache server path has a real-weight run.
+        settings.update(
+            tool_call_parser="granite",
+            reasoning_parser=None,
+            is_moe=True,
+            supports_spec_decode=False,
+        )
+        reasons.append("GraniteMoE SWA architecture and Granite tool template")
 
     if _template_uses_parameterized_xml_tools(metadata.chat_template):
         settings["tool_call_parser"] = "hermes"
