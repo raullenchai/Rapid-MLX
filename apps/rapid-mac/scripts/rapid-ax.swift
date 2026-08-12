@@ -132,26 +132,69 @@ let command = CommandLine.arguments[1]
 // whatever window the operator happens to have focused).
 
 func keyCodeFor(_ name: String) -> CGKeyCode? {
-    // The mappings needed by the golden flows plus the handful a keyboard
-    // gesture might reasonably ask for. US ANSI layout.
+    // Physical keycodes only for the *control* keys — the keys that are the
+    // same physical key regardless of keyboard layout (Return is Return, Esc
+    // is Esc, an arrow is an arrow). These are safe to post as a keycode
+    // because layout does not change what physical key they are.
+    //
+    // Letters, digits and punctuation are deliberately NOT here: a US-ANSI
+    // keycode for `g` is a DIFFERENT key on Dvorak / AZERTY / Colemak, and a
+    // menu key-equivalent (e.g. NSOpenPanel's Go to Folder = Cmd+Shift+G)
+    // matches on the *character* produced after layout interpretation. Those
+    // keys are handled by ``characterFor``/``postKeyChar`` via
+    // ``keyboardSetUnicodeString``, exactly like ``type`` does, so the same
+    // chord opens the same menu item on any host layout.
     let map: [String: CGKeyCode] = [
         "return": 36, "enter": 76, "tab": 48, "space": 49,
         "escape": 53, "delete": 51, "backspace": 51,
         "up": 126, "down": 125, "left": 123, "right": 124,
         "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
-        // US-ANSI A–Z keycodes, used both for `key` chords and by `type`.
-        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5,
-        "h": 4, "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45,
-        "o": 31, "p": 35, "q": 12, "r": 15, "s": 1, "t": 17, "u": 32,
-        "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
         "cmd": 55, "command": 55, "shift": 56, "option": 58, "alt": 58,
         "control": 59, "ctrl": 59, "fn": 63,
-        // Digits / punctuation used by `key` combos and shortcuts.
-        "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26,
-        "8": 28, "9": 25, "0": 29, "-": 27, "=": 24, "[": 33, "]": 30,
-        ";": 41, "'": 39, ",": 43, ".": 47, "/": 44, "\\": 42, "`": 50,
     ]
     return map[name.lowercased()]
+}
+
+// Control-key names that are resolved to physical keycodes (layout-neutral).
+// Anything else is a *character* key and is resolved by character.
+let controlKeyNames: Set<String> = [
+    "return", "enter", "tab", "space", "escape", "delete", "backspace",
+    "up", "down", "left", "right", "home", "end", "pageup", "pagedown",
+    "fn",
+]
+
+func isControlKey(_ name: String) -> Bool {
+    controlKeyNames.contains(name.lowercased())
+}
+
+// The shifted glyph each US-ANSI digit / punctuation key produces. Used to
+// derive what character a `cmd+shift+x`-style chord should emit so the target
+// matches the menu key-equivalent by character, on any keyboard layout.
+let shiftedGlyphs: [String: Character] = [
+    "1": "!", "2": "@", "3": "#", "4": "$", "5": "%", "6": "^", "7": "&",
+    "8": "*", "9": "(", "0": ")",
+    "-": "_", "=": "+", "[": "{", "]": "}", ";": ":", "'": "\"",
+    ",": "<", ".": ">", "/": "?", "\\": "|", "`": "~",
+]
+
+// Resolve a bare character key (letter / digit / punctuation) to the Unicode
+// character it produces for a given shift state. `key` keeps combos
+// lowercase, so a letter's upper/shifted form is derived here.
+func characterFor(_ key: String, shifted: Bool) -> Character? {
+    let k = key.lowercased()
+    if k.count == 1, let c = k.first, c.isLetter {
+        return shifted ? Character(String(c).uppercased()) : c
+    }
+    if k.count == 1, let c = k.first, c.isNumber {
+        return shifted ? (shiftedGlyphs[k] ?? c) : c
+    }
+    if shifted, let glyph = shiftedGlyphs[k] {
+        return glyph
+    }
+    if k.count == 1 {
+        return k.first
+    }
+    return nil
 }
 
 func modifiersFrom(_ flags: Set<String>) -> CGEventFlags {
@@ -178,22 +221,56 @@ func postKey(_ pid: pid_t, _ keyCode: CGKeyCode, _ modifier: CGEventFlags) {
 func postCombination(_ pid: pid_t, _ combo: String) {
     // A `+`-joined combo: "cmd+shift+g". At least one bare key is required.
     let parts = combo.split(separator: "+").map { String($0).lowercased() }
-    guard let last = parts.last, let keyCode = keyCodeFor(last) else {
+    guard let last = parts.last else {
         fail("key: unrecognized key in combo '\(combo)'")
     }
     let modifiers = modifiersFrom(Set(parts.dropLast()))
-    postKey(pid, keyCode, modifiers)
+    if isControlKey(last) {
+        guard let keyCode = keyCodeFor(last) else {
+            fail("key: unrecognized control key '\(last)' in combo '\(combo)'")
+        }
+        postKey(pid, keyCode, modifiers)
+    } else {
+        // Character key: inject the produced glyph as an explicit Unicode
+        // string (like ``type``) while holding the combo's modifiers. Cocoa
+        // matches menu key-equivalents on this *character*, so the same chord
+        // (e.g. Cmd+Shift+G → Go to Folder) works on any keyboard layout.
+        let shifted = modifiers.contains(.maskShift)
+        guard let char = characterFor(last, shifted: shifted) else {
+            fail("key: unrecognized key '\(last)' in combo '\(combo)'")
+        }
+        postKeyChar(pid, char, modifiers)
+    }
+}
+
+func postKeyChar(_ pid: pid_t, _ char: Character, _ modifier: CGEventFlags) {
+    // Character chord: attach the character via ``keyboardSetUnicodeString``
+    // so the target sees that exact character regardless of the active layout,
+    // while the modifiers (cmd/option/control, and shift for a forced-uppercase
+    // combo) are still held on both the down and up events.
+    let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+    let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+    let units = Array(String(char).utf16)
+    units.withUnsafeBufferPointer { buf in
+        down?.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
+        up?.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
+    }
+    down?.flags = modifier
+    up?.flags = modifier
+    down?.postToPid(pid)
+    up?.postToPid(pid)
+    usleep(30_000)
 }
 
 func typeText(_ pid: pid_t, _ text: String) {
-    // The synthetic keystroke for `key` carries a keycode, which the target
-    // app re-derives into a glyph using the ACTIVE keyboard layout — correct
-    // for shortcut chords (Cmd+Shift+G, Return) but wrong for typing text on
-    // a Dvorak / AZERTY / any non-US layout. `type` therefore attaches each
-    // character as an explicit Unicode string to the event via
-    // ``keyboardSetUnicodeString``; the system sends that exact text through
-    // regardless of layout, so any Unicode character is supported and the
-    // fixture path can never be mangled by the host keyboard layout.
+    // `type` types literal text, so every character is attached as an explicit
+    // Unicode string to the event via ``keyboardSetUnicodeString``; the system
+    // sends that exact text through regardless of the active layout, so any
+    // Unicode character is supported and the fixture path can never be mangled
+    // by a Dvorak / AZERTY / any non-US host keyboard. (The `key` command posts
+    // physical keycodes only for layout-neutral control keys like Return and
+    // Escape; its character chords also inject Unicode — see
+    // ``characterFor``/``postKeyChar`` — so both commands are layout-safe.)
     for ch in text {
         let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
         let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
