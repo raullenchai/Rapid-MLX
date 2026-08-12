@@ -469,17 +469,37 @@ class Handler(BaseHTTPRequestHandler):
         # behaviour every other persona depends on.
         self._json(404, {"error": "not_found"})
 
-    def _images_generate(self):
-        """``POST /v1/images/generations`` — a timed render of a real PNG."""
+    def _images_generate(self, *, editing=False):
+        """Timed generation/edit render of a real PNG.
+
+        Edit requests are multipart, so parse only the named text fields the
+        journey needs to pin. The source bytes themselves are deliberately not
+        decoded here; app/server image validation has hermetic unit coverage.
+        """
         length = int(self.headers.get("content-length", "0") or "0")
         body = {}
+        raw_body = b""
         if length:
+            raw_body = self.rfile.read(length)
             try:
-                body = json.loads(self.rfile.read(length))
+                body = json.loads(raw_body)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 body = {}
-        prompt = body.get("prompt") if isinstance(body.get("prompt"), str) else ""
+        def multipart_field(name):
+            marker = ('name="' + name + '"\r\n\r\n').encode()
+            start = raw_body.find(marker)
+            if start < 0:
+                return None
+            start += len(marker)
+            end = raw_body.find(b"\r\n", start)
+            return raw_body[start:end].decode("utf-8", errors="replace")
+
+        prompt = multipart_field("prompt") if editing else body.get("prompt")
+        prompt = prompt if isinstance(prompt, str) else ""
         raw_count = body.get("n")
+        if editing:
+            raw_count = multipart_field("n")
+            raw_count = int(raw_count) if raw_count and raw_count.isdigit() else 1
         count = raw_count if isinstance(raw_count, int) and raw_count > 0 else 1
         total = max(1, int(_setting("FAKE_IMAGE_STEPS", 8)))
         step_ms = max(0, int(_setting("FAKE_IMAGE_STEP_MS", 300)))
@@ -499,9 +519,11 @@ class Handler(BaseHTTPRequestHandler):
         _event(
             "image_request",
             prompt=prompt,
-            model=body.get("model"),
-            size=body.get("size"),
+            model=multipart_field("model") if editing else body.get("model"),
+            size=multipart_field("size") if editing else body.get("size"),
             n=count,
+            operation="edit" if editing else "generation",
+            has_image=(b'name="image"; filename="input.png"' in raw_body) if editing else False,
         )
         cancelled = False
         for _ in range(total):
@@ -541,15 +563,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"cancelled": True})
             return
         if self.path == "/v1/images/edits":
-            # The tab only drives generations. Mirroring the engine's
-            # model-vs-endpoint 409 keeps the fake honest about a boundary the
-            # real server enforces, instead of inventing a success the product
-            # would never see from a text-to-image process.
-            self._json(409, {"error": {
-                "message": "This server is running a text-to-image model; "
-                           "use /v1/images/generations",
-                "code": "image_endpoint_mismatch",
-            }})
+            self._images_generate(editing=True)
             return
         if self.path != "/v1/chat/completions":
             self._json(404, {"error": "not_found"})
@@ -720,7 +734,7 @@ def _emit_catalog(subcommand, alias):
         print("Image models (1 aliases)")
         print("Alias                  Size       Kind        HF id")
         print("---------------------  ---------  ----------  ------")
-        print(f"{FAKE_IMAGE_ALIAS}       4.6 GiB    [image:gen] {FAKE_IMAGE_REPO}")
+        print(f"{FAKE_IMAGE_ALIAS}       4.6 GiB    [image:both] {FAKE_IMAGE_REPO}")
         return True
     if subcommand == "ls":
         print("Cached models")

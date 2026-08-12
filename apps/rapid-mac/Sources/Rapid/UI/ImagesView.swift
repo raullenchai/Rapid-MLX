@@ -52,15 +52,21 @@ struct ImagesView: View {
     private var stage: some View {
         ZStack {
             if let active = viewModel.activeImage, let nsImage = NSImage(data: active.pngData) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14).stroke(RapidTheme.hairline, lineWidth: 1)
-                    )
-                    .overlay(alignment: .topTrailing) { resultActionsOverlay(active) }
-                    .accessibilityIdentifier("Images.Stage")
+                ZStack(alignment: .topTrailing) {
+                    Image(nsImage: nsImage)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(RapidTheme.hairline, lineWidth: 1)
+                        )
+                        .accessibilityIdentifier("Images.Stage")
+                    // Keep actions as siblings of the named image. Applying
+                    // the identifier after `.overlay` makes AppKit inherit it
+                    // onto both buttons, erasing their semantic identifiers.
+                    resultActionsOverlay(active)
+                }
             } else if !viewModel.isGenerating {
                 emptyStage
             }

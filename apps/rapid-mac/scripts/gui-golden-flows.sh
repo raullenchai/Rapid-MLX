@@ -2323,7 +2323,71 @@ flow_image_generation() {
     [[ "$revisited" == 1 ]] \
         || die "selecting the older thumbnail did not restore its prompt"
 
-    baseline image-generation.generated "$OUT/ig-revisited.json"
+    # 6. Edit that generated result. This is the actual GUI contract added by
+    # the feature: action -> edit mode -> multipart request -> returned image
+    # becomes the next source -> exit restores generation controls.
+    press "$OUT/ig-revisited.json" Images.Result.Edit "$OUT/ig-edit-open.json" \
+        || die "the generated result has no pressable Edit action"
+    wait_identifier Images.Edit.Source "$OUT/ig-edit-source.json"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Edit.Exit")' \
+        "$OUT/ig-edit-source.json" >/dev/null \
+        || die "edit mode has no way to exit"
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Edit.Import")' \
+        "$OUT/ig-edit-source.json" >/dev/null \
+        || die "edit mode has no way to replace its source"
+
+    local edit_prompt="replace the couch with a blue armchair"
+    type_prompt "$edit_prompt" ig-edit-draft
+    press "$OUT/ig-edit-draft.json" Images.Generate "$OUT/ig-edit-submit.json" \
+        || die "Images.Generate is not pressable with an edit instruction"
+    wait_fake_event '.event == "image_request" and .operation == "edit"' \
+        "no multipart image edit request reached the sidecar"
+    wait_fake_event '.event == "image_response" and .cancelled == false and .index == 3' \
+        "the image edit never completed"
+
+    local edited=0
+    for ((i=0; i<200; i++)); do
+        see_main "$OUT/ig-edit-result.json"
+        if jq -e '.success == true and .data.walk.complete == true
+                  and ([.data.ui_elements[]? | .identifier // ""] as $ids
+                       | ($ids | index("Images.Gallery.Thumb.3")) != null
+                         and ($ids | index("Images.Edit.Source")) != null
+                         and ($ids | index("Images.Cancel")) == null)' \
+               "$OUT/ig-edit-result.json" >/dev/null; then
+            edited=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$edited" == 1 ]] \
+        || die "the edited result did not land as a third thumbnail and remain the edit source"
+    jq -s -e --arg alias "$FAKE_IMAGE_ALIAS" --arg prompt "$edit_prompt" \
+        '[.[] | select(.event == "image_request" and .operation == "edit")
+              | {prompt, model, size, n, operation, has_image}] ==
+         [{prompt:$prompt, model:$alias, size:null, n:1,
+           operation:"edit", has_image:true}]' "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the edit request did not carry the exact prompt, model, and source image: $(jq -s -c '[.[] | select(.event == "image_request" and .operation == "edit")]' "$OUT/fake-events.jsonl")"
+
+    # Sequential-edit invariant: the source strip now names the EDIT result's
+    # instruction, not the original generation prompt.
+    assert_tree_text "$OUT/ig-edit-result.json" "$edit_prompt"
+    press "$OUT/ig-edit-result.json" Images.Edit.Exit "$OUT/ig-edit-exit.json" \
+        || die "Images.Edit.Exit is not pressable after an edit"
+    local exited=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-edit-exited.json"
+        if jq -e '.success == true and .data.walk.complete == true
+                  and ([.data.ui_elements[]? | .identifier // ""] as $ids
+                       | ($ids | index("Images.Edit.Source")) == null
+                         and ($ids | index("Images.Aspect")) != null)' \
+               "$OUT/ig-edit-exited.json" >/dev/null; then
+            exited=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$exited" == 1 ]] \
+        || die "exiting edit mode did not restore generation controls"
+
+    baseline image-generation.generated "$OUT/ig-edit-exited.json"
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {

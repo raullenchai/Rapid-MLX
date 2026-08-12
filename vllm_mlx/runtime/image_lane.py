@@ -71,7 +71,11 @@ class ImageEngine:
         """Eagerly materialize lazy mflux weights for budgeted residency."""
         if mode not in (None, "generation", "editing"):
             raise ValueError(f"unsupported image residency mode: {mode!r}")
-        self._engine._ensure_loaded(for_edit=mode == "editing")  # noqa: SLF001
+        # ``None`` preserves the engine's family-aware default. In particular,
+        # edit-only checkpoints must not be forced through the generation
+        # loader when an older client omits the newly optional mode field.
+        for_edit = None if mode is None else mode == "editing"
+        self._engine._ensure_loaded(for_edit=for_edit)  # noqa: SLF001
 
     def get_stats(self) -> dict:
         """Route-facing engine surface (mirrors ``BaseEngine.get_stats``).

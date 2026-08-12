@@ -370,6 +370,20 @@ def test_flux2_adapter_residency_can_preload_edit_variant(monkeypatch):
     assert modes == [True]
 
 
+def test_image_adapter_residency_without_mode_preserves_family_default(monkeypatch):
+    engine = ImageEngine("Qwen/Qwen-Image-Edit-2509")
+    modes = []
+    monkeypatch.setattr(
+        engine._engine,
+        "_ensure_loaded",
+        lambda *, for_edit=None: modes.append(for_edit),
+    )
+
+    engine.ensure_resident()
+
+    assert modes == [None]
+
+
 # --------------------------------------------------------------------------- #
 # Route: /v1/images/generations
 # --------------------------------------------------------------------------- #

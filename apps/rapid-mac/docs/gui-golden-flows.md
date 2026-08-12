@@ -59,9 +59,8 @@ covered, and each one names the defect it would have caught:
 11. `image-generation` — a journey, not an invariant (listed here to keep the
     numbering stable): the Images tab turns a text prompt into a picture and
     lets the user iterate by re-prompting (see **Image generation** below). The
-    instruction-edit path is available as a deliberately long-running,
-    cancellable action (~20 min/edit at q4); the interactive golden flow still
-    covers text→image generation.
+    instruction-edit path is available as a cancellable action and the same
+    journey continues through generated-result editing and iterative editing.
 12. `chat-image-attachment` — a vision-language model accepts a PNG through
     the Chat composer, renders it in the user turn, and sends typed
     `text` + `image_url` content; the same composer keeps its attachment
@@ -323,6 +322,11 @@ controls remain available for the full request.
 
 The built-in `flux2-klein-4b` alias is shared by generation and editing, so a
 user who already downloaded it needs no second checkpoint.
+
+The `image-generation` golden journey enters editing from a generated result,
+submits an instruction through the multipart edit endpoint, verifies the source
+image reached the wire, verifies the returned image becomes the next edit
+source, then exits back to generation mode.
 
 ### Model realities the UX has to design around
 
