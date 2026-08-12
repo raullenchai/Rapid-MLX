@@ -3920,8 +3920,7 @@ def serve_command(args):
     # which shape depends on the bind mode:
     #
     #   * Default (host+port): stamp ``bind_host``/``bind_port`` so the
-    #     SSOT banner prints ``Ready: http://host:port`` (base URL; the
-    #     OpenAI/Anthropic paths are separate rows).
+    #     banner prints ``Ready: http://host:port/v1``.
     #   * ``--listen-fd``: stamp ``bind_listen_fd`` instead. The
     #     supervisor's ``getsockname`` is the only honest source for the
     #     address — stamping ``args.host``/``args.port`` here would lie
@@ -7771,83 +7770,6 @@ def agents_command(args):
     print()
 
 
-def connect_command(args):
-    """Show server connection info and wire up a tool (SSOT-backed).
-
-    Renders from :mod:`vllm_mlx.connect` — the same source the serve
-    lifespan banner uses — so ``ready``/``openai``/``anthropic`` and the
-    machine form can never drift from what a running server prints.
-    """
-    from vllm_mlx.connect import render_banner, resolve_endpoints
-
-    eps = resolve_endpoints(host=args.host, port=args.port, model=args.model)
-
-    # Per-target "how to connect" cheat sheet.
-    if args.target:
-        _connect_target(args, eps)
-        return
-
-    if args.json:
-        print(eps.to_json())
-        return
-
-    print(render_banner(eps), end="")
-
-
-def _connect_target(args, eps):
-    """Print the exact command / snippet for ``rapid-mlx connect <target>``.
-
-    The ``claude-code`` / ``continue`` entries point at the first-class safe
-    setup flow (`rapid-mlx agents <agent> --setup`) rather than re-implementing
-    the config writer here — that keeps a single owner for each tool's config
-    shape while ``connect`` stays the one place a user learns "how do I point
-    this tool at the server?"
-    """
-    target = args.target
-
-    if target in {"openai", "openai-python", "python"}:
-        model = eps.model or "<detected-model>"
-        print()
-        print(f"  Python (OpenAI SDK)  →  {eps.openai_url}")
-        print()
-        print("      pip install openai")
-        print()
-        print("      from openai import OpenAI")
-        print(f"      client = OpenAI(base_url={eps.openai_url!r}, api_key='sk-noop')")
-        print("      resp = client.chat.completions.create(")
-        print(f"          model={model!r},")
-        print('          messages=[{"role": "user", "content": "Hello!"}],')
-        print("      )")
-        print()
-        return
-
-    if target in {"claude", "claude-code"}:
-        # Anthropic endpoints are the base URL (the SDK adds /v1/messages itself).
-        _print_point_command(
-            "Claude Code", "agents claude-code --setup", eps.anthropic_url
-        )
-        return
-    if target in {"continue", "continue-dev"}:
-        _print_point_command("Continue.dev", "agents continue --setup", eps.openai_url)
-        return
-
-    print(f"  Unknown connect target: {args.target}")
-    print("  Supported: claude-code, continue, openai-python")
-    sys.exit(1)
-
-
-def _print_point_command(app: str, setup_verb: str, url: str) -> None:
-    """Print the canonical setup command for a first-class agent target."""
-    print()
-    print(f"  {app}  →  {url}")
-    print()
-    print(f"      rapid-mlx {setup_verb}")
-    print()
-    print("  This writes your tool's config to point at the running server")
-    print("  (previews a diff, requires consent, verifies the connection).")
-    print()
-
-
 def upgrade_command(args):
     """Detect install method and (optionally) run the right upgrade command."""
     import subprocess
@@ -9768,47 +9690,6 @@ Examples:
         help="Agent version for version-specific config (e.g. 0.8.5)",
     )
 
-    # Connect command — the single place to learn "the server is up, now
-    # point a tool at it." Renders from the same SSOT as the serve banner
-    # (:mod:`vllm_mlx.connect`) so ``ready``/``openai``/``anthropic`` and the
-    # ``--json`` machine form can never drift from what the server prints.
-    connect_parser = subparsers.add_parser(
-        "connect",
-        help="Show the server's connection info and wire up a tool",
-    )
-    connect_parser.add_argument(
-        "target",
-        nargs="?",
-        default=None,
-        help=(
-            "Tool to set up: claude-code, continue, or openai-python. "
-            "Omit to print the connection banner."
-        ),
-    )
-    connect_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON instead of the rendered banner",
-    )
-    connect_parser.add_argument(
-        "--host",
-        type=str,
-        default=None,
-        help="Server host (default: auto-detect or localhost)",
-    )
-    connect_parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Server port (default: auto-detect or 8000)",
-    )
-    connect_parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Model name to advertise (default: auto-detect from server)",
-    ).completer = alias_completer
-
     # Doctor command — pure env-health probe (≤5 s, no model load, no server).
     # Model-validation tiers (smoke/check/full/benchmark) moved to
     # ``rapid-mlx bench --tier ...`` as of v0.7.22.
@@ -10384,8 +10265,6 @@ def main():
         jlens_command(args)
     elif args.command == "agents":
         agents_command(args)
-    elif args.command == "connect":
-        connect_command(args)
     elif args.command == "doctor":
         from vllm_mlx.doctor.cli import doctor_command
 

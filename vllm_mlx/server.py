@@ -511,6 +511,47 @@ async def _warmup_tool_grammar(engine) -> None:
         )
 
 
+def _detect_hybrid_for_warmup(engine) -> bool:
+    """Whether the loaded model is hybrid for warmup-gating purposes.
+
+    Hybrid (GatedDeltaNet/Mamba + Transformer) models must SKIP the bare
+    ``generate_warmup`` (it contaminates compiled kernel state that
+    interferes with batched inference) and take the full-request warmup
+    path instead. Two independent signals, either sufficing:
+
+    1. The engine's fail-closed ``_is_hybrid_model()`` profile probe
+       (BatchedEngine). This replaced the old ``_hybrid_throttle`` read,
+       which stopped implying is-hybrid when the #115 admission throttle
+       default flipped OFF (codex review on the retirement PR).
+    2. The pre-existing ``make_cache()``/``ArraysCache`` structural
+       detection through the wrapper layers — retained unchanged as the
+       fallback for engine wrappers that do not expose the probe.
+
+    MLLM engines are excluded FIRST, before either signal (their warmup
+    path is separate). Today the combination cannot arise — hybrid VLMs
+    auto-downgrade to the text lane because the MLLM engine cannot build
+    a BatchKVCache over an ArraysCache backbone (#352) — but if the MLLM
+    lane ever gains hybrid support, warmup must fail closed to the bare
+    path rather than silently entering the hybrid one.
+    """
+    if getattr(engine, "_is_mllm", False):
+        return False
+    probe = getattr(engine, "_is_hybrid_model", None)
+    if callable(probe) and bool(probe()):
+        return True
+    model = getattr(engine, "_model", None) or getattr(engine, "_shared_model", None)
+    if model and hasattr(model, "model") and not hasattr(model, "make_cache"):
+        model = model.model
+    if model and hasattr(model, "make_cache"):
+        try:
+            from mlx_lm.models.cache import ArraysCache
+
+            return any(isinstance(c, ArraysCache) for c in model.make_cache())
+        except Exception:
+            pass
+    return False
+
+
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
@@ -585,34 +626,7 @@ async def lifespan(app: FastAPI):
         logger.info("Warming up (compiling Metal shaders)...")
         _warmup_start = _time.monotonic()
         try:
-            # Skip warmup for hybrid models (GatedDeltaNet) to avoid
-            # contaminating compiled kernel state that interferes with
-            # batched inference.  Check multiple engine wrappers:
-            # BatchedEngine sets _hybrid_throttle via EngineCore,
-            # Check model for hybrid cache
-            _is_hybrid = getattr(_engine, "_hybrid_throttle", False)
-            if not _is_hybrid and not getattr(_engine, "_is_mllm", False):
-                # Try to find the raw model through wrapper layers
-                _model = getattr(_engine, "_model", None) or getattr(
-                    _engine, "_shared_model", None
-                )
-                # Unwrap model wrapper if needed
-                if (
-                    _model
-                    and hasattr(_model, "model")
-                    and not hasattr(_model, "make_cache")
-                ):
-                    _model = _model.model
-                if _model and hasattr(_model, "make_cache"):
-                    try:
-                        from mlx_lm.models.cache import ArraysCache
-
-                        _test_cache = _model.make_cache()
-                        _is_hybrid = any(
-                            isinstance(c, ArraysCache) for c in _test_cache
-                        )
-                    except Exception:
-                        pass
+            _is_hybrid = _detect_hybrid_for_warmup(_engine)
             if not _is_hybrid:
                 _engine.generate_warmup()
                 # NOTE: do NOT call `mx.eval(mx.zeros(1))` here — that
@@ -772,23 +786,22 @@ async def lifespan(app: FastAPI):
         global _prefix_cache_load_task
         _prefix_cache_load_task = asyncio.create_task(_deferred_load_prefix_cache())
 
-    # Render the real "Ready:" / "Connect:" banner now — only here is the
-    # port truly accepting connections AND the engine warmed up. The CLI's
-    # earlier "Starting server …" line is replaced by this. Output is produced
-    # by the connect SSOT (:mod:`vllm_mlx.connect`) so the served banner and
-    # ``rapid-mlx connect`` can never disagree about an endpoint. If neither
-    # the host/port nor inherited-fd source of truth was stashed (e.g.
+    # Print the real "Ready:" banner now — only here is the port truly
+    # accepting connections AND the engine warmed up. The CLI's earlier
+    # "Starting server …" line is replaced by this. If neither the
+    # host/port nor inherited-fd source of truth was stashed (e.g.
     # embedded usage where uvicorn is owned elsewhere), fall back silently.
-    from vllm_mlx.connect import endpoints_from_bind, render_banner
-
-    _ep = endpoints_from_bind(
-        _cfg.bind_host,
-        _cfg.bind_port,
-        model=_cfg.model_alias or _cfg.model_name,
-        listen_fd=_cfg.bind_listen_fd,
-    )
-    if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
-        print(render_banner(_ep), end="")
+    if _cfg.bind_host and _cfg.bind_port:
+        print(f"  Ready: http://{_cfg.bind_host}:{_cfg.bind_port}/v1")
+        print(f"  Docs:  http://{_cfg.bind_host}:{_cfg.bind_port}/docs")
+        print()
+    elif _cfg.bind_listen_fd is not None:
+        # Socket-activation branch: the supervisor's ``getsockname`` is the
+        # source of truth for the bind address (we don't probe it). Print
+        # the fd shape so log readers can match it to the supervisor's
+        # ``LISTEN_FDS=1`` handoff record.
+        print(f"  Ready: inherited fd {_cfg.bind_listen_fd}")
+        print()
 
     yield
 

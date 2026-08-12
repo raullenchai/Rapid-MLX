@@ -15,6 +15,7 @@ import asyncio
 import concurrent.futures
 import copy
 import logging
+import math
 import os
 import sys
 import time
@@ -82,6 +83,53 @@ def _init_mlx_step_thread() -> None:
         "MLX step thread initialized: stream=%s (worker default = generation_stream)",
         stream,
     )
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var, falling back to ``default`` on any garbage.
+
+    Used by the admission-wave knobs, which are read inside the engine
+    step loop's ``try`` — a raised ``ValueError`` there would be treated
+    as a step failure and abort every in-flight request, turning a
+    typo'd tuning var into an outage (codex review on the #115
+    retirement PR).
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("ignoring non-numeric %s=%r (using %s)", name, raw, default)
+        return default
+    # inf/nan parse fine but would make asyncio.sleep(tick) never return,
+    # hanging every fresh-wave first step (codex r2 NIT).
+    if not math.isfinite(value):
+        logger.warning("ignoring non-finite %s=%r (using %s)", name, raw, default)
+        return default
+    return value
+
+
+def _resolve_hybrid_throttle(is_hybrid: bool) -> bool:
+    """Whether to space hybrid-model admissions 200ms apart (#115).
+
+    The throttle papered over ArraysCache corruption during simultaneous
+    batch formation on the mlx-lm of April 2026. mlx-lm >= 0.30.6 ships
+    native ArraysCache batch operations (our MambaCache patch is a no-op
+    — see ``utils/mamba_cache.ensure_mamba_support``), and the corruption
+    no longer reproduces (2026-08-12: 32/32 simultaneous-formation rounds
+    clean on Qwen3.6-35B-A3B). Meanwhile the forced staggering admits
+    concurrent requests at different scheduler steps, whose ragged
+    per-row offsets keep mlx-lm's batched attention on the array-mask
+    slow path for the batch's whole lifetime: −29% aggregate decode at
+    B=8 (190 → 267.7 tok/s with the throttle off, #1861 investigation).
+
+    Default OFF. ``RAPID_HYBRID_THROTTLE=1`` re-enables the old spacing
+    as an emergency escape hatch for unsupported mlx-lm builds.
+    """
+    return is_hybrid and os.environ.get(
+        "RAPID_HYBRID_THROTTLE", "0"
+    ).strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -261,6 +309,11 @@ class EngineCore:
         # binds to the running loop. See issue #265.
         self._idle_event: asyncio.Event | None = None
 
+        # Admission-wave coalescing (#1861 conc investigation): counts
+        # ``add_request`` submissions so ``_await_admission_wave`` can
+        # detect a burst still landing. Event-loop thread only.
+        self._admission_seq = 0
+
         # Single MLX worker thread that owns the per-thread generation_stream
         # (created on demand in start(); see _init_mlx_step_thread). All MLX
         # array operations that touch cached KV state must go through this
@@ -332,7 +385,7 @@ class EngineCore:
         # Plumb profile into Scheduler so spec-decode installs can consult
         # capability gates (e.g. ``supports_spec_decode``).
         self.scheduler.model_config = self.model_config
-        self._hybrid_throttle = self.model_config.is_hybrid
+        self._hybrid_throttle = _resolve_hybrid_throttle(self.model_config.is_hybrid)
         self._hybrid_lock: asyncio.Lock | None = None  # lazy-init in event loop
         self._last_request_time = 0.0
 
@@ -453,6 +506,63 @@ class EngineCore:
         """Check if engine is running."""
         return self._running
 
+    async def _await_admission_wave(self) -> None:
+        """Hold the first step after idle so a co-arriving burst is
+        admitted (and prefilled) as ONE aligned wave.
+
+        Rows admitted at different scheduler steps carry ragged per-row
+        offsets for the batch's whole lifetime, which keeps mlx-lm's
+        batched attention on the array-mask slow path every decode step
+        — measured on Qwen3.6-35B-A3B-4bit at B=8 (prompt 512/gen 256):
+        staggered admission 256.8 agg tok/s vs one-wave 378.4 (+47%),
+        next() p50 29.5ms vs 20.3ms (#1861 investigation).
+
+        Runs on the event loop, NOT the mlx-step thread: ``add_request``
+        submissions land on that executor, so a scheduler-side wait
+        would deadlock against its own queue. Engages only when nothing
+        is running (fresh wave — alignment achievable; mid-batch joins
+        are ragged by definition and must not be delayed). The wait is
+        tick-based and extends only while new submissions keep arriving;
+        a lone request pays exactly one tick of extra TTFT. Ticks are
+        awaited on the loop, so pending route handlers and executor-side
+        ``scheduler.add_request`` tasks make progress during the hold,
+        and submissions counted before the hold ends are admitted with
+        the wave (their ``add_request`` executor tasks queue ahead of
+        the step dispatch on the single-worker executor). Best-effort by
+        construction: a submission that lands after the last quiet tick
+        joins the NEXT wave — a timed coalescer cannot promise more.
+        """
+        tick_s = _env_float("RAPID_ADMISSION_WINDOW_MS", 8.0) / 1e3
+        if tick_s <= 0:
+            return
+        get_running = getattr(self.scheduler, "get_num_running", None)
+        if get_running is None or get_running() != 0:
+            return
+        cap_s = _env_float("RAPID_ADMISSION_WINDOW_CAP_MS", 120.0) / 1e3
+        deadline = time.monotonic() + cap_s
+        start = seen = self._admission_seq
+        ticks = 0
+        while True:
+            # Clamp each sleep to the time remaining so a tick larger
+            # than the cap cannot overshoot it (pr_validate codex
+            # BLOCKING: a huge finite RAPID_ADMISSION_WINDOW_MS would
+            # otherwise hold the first step far past the advertised cap).
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(tick_s, remaining))
+            ticks += 1
+            cur = self._admission_seq
+            if cur == seen:
+                break
+            seen = cur
+        if seen > start:
+            logger.debug(
+                "[admission_window] coalesced %d extra submission(s) over %d tick(s)",
+                seen - start,
+                ticks,
+            )
+
     def _run_pressure_evict_tick(self) -> None:
         """D-METAL-PFX: drive the scheduler pressure-eviction loop once.
 
@@ -568,6 +678,16 @@ class EngineCore:
         while self._running:
             try:
                 if self.scheduler.has_requests():
+                    # Fresh wave about to start → give a co-arriving burst
+                    # a few ms to land so it prefills aligned (no-op when
+                    # anything is already running).
+                    await self._await_admission_wave()
+                    # Re-check after the hold: a cancellation landing
+                    # during the awaited window can drain the scheduler,
+                    # and stepping an empty scheduler is wasted executor
+                    # work (pr_validate codex r2).
+                    if not self.scheduler.has_requests():
+                        continue
                     output = await loop.run_in_executor(_executor, self.scheduler.step)
                     self._steps_executed += 1
                     _consecutive_step_failures = 0
@@ -821,6 +941,12 @@ class EngineCore:
         Returns:
             The request ID
         """
+        # Admission-wave signal: ``_await_admission_wave`` extends its
+        # hold while this counter keeps moving (event-loop thread only —
+        # both writer and reader run on the loop). getattr-guarded for
+        # the ``__new__``-built stub engines in the zombie-KV tests.
+        self._admission_seq = getattr(self, "_admission_seq", 0) + 1
+
         if request_id is None:
             request_id = str(uuid.uuid4())
 
