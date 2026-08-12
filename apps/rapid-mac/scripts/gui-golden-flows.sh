@@ -2478,8 +2478,22 @@ flow_image_generation() {
     #    witnessed through the driver's window list before any keystroke lands.
     local fixture="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
     [[ -f "$fixture" ]] || die "import fixture not found: $fixture"
+    # Pressing ``Images.Edit.Import`` opens a native modal NSOpenPanel whose
+    # action starts on the app's main run loop. The instant the panel begins
+    # the app is "busy", so AXUIElementPerformAction reports
+    # kAXErrorCannotComplete — even though the press DID fire and the panel IS
+    # opening. The ``press`` helper would count that as a failure and die
+    # before ever looking for the very panel it just opened, and retrying would
+    # stack a second modal. The exit wait above already proved the generation
+    # branch (Images.Aspect, and this button in the same composer controls) is
+    # present and enabled, so fire the press exactly ONCE, tolerate that single
+    # CannotComplete, and let the panel-wait below be the judge: if no "Open"
+    # window appears the import button is genuinely broken.
+    # The CannotComplete is EXPECTED here, so suppress the driver's stderr —
+    # an "AXPress ... failed: -25204" line would look like a real error to a
+    # reader who does not know the modal opens anyway.
     press "$OUT/ig-edit-exited.json" Images.Edit.Import "$OUT/ig-import-press.json" \
-        || die "the composer offers no pressable Images.Edit.Import to import a file"
+        2>/dev/null || true
     # The open panel is a real native window whose title is not the main
     # window's. Wait for any second window in the AX list before typing into it.
     local panel_seen=0
