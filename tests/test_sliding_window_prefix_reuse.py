@@ -363,3 +363,173 @@ def test_fix_preserves_kvcache_reuse_and_rotated_skip():
     assert rot.is_trimmable() is False
     assert _layer_forbids_trim(rot) is True
     assert _cache_has_non_trimmable([KVCache(), rot]) is True
+
+
+# ---------------------------------------------------------------------------
+# Hybrid sliding/full per-layer TYPE STABILITY across a trimming fetch
+# ---------------------------------------------------------------------------
+# Regression coverage for the batched-generation crash on hybrid
+# sliding/full-attention models (Muse-Glimmer-30B: 52 layers,
+# ``[sliding, sliding, sliding, full]`` repeating). ``_trim_cache_offset``
+# rebuilt EVERY keys/offset layer as a plain ``KVCache``, so a trim-requiring
+# fetch (supersequence-with-excess / LCP) returned a uniform ``KVCache`` list
+# for a mixed model. mlx-lm then merged those into a uniform ``BatchKVCache``,
+# and extending that batch against a correctly-typed one
+# (``BatchRotatingKVCache`` on the sliding layers) raised
+# ``AttributeError: 'BatchKVCache' object has no attribute 'rotated'``.
+#
+# The tests above already prove the ROTATED case is refused. These cover the
+# UNROTATED case, which is what actually shipped broken: the rotation gate
+# passes it, so the trim helper must preserve the class.
+
+_HYBRID_LAYER_TYPES = ["sliding", "sliding", "sliding", "full"] * 3
+
+
+def _make_hybrid_cache(n_tokens: int, window: int = W):
+    """A Muse-Glimmer-shaped mixed cache with ``n_tokens`` pushed through."""
+    caches = [
+        RotatingKVCache(max_size=window, keep=0) if t == "sliding" else KVCache()
+        for t in _HYBRID_LAYER_TYPES
+    ]
+    for c in caches:
+        x = mx.random.normal((B, H, n_tokens, D))
+        c.update_and_fetch(x, x)
+        mx.eval(c.keys, c.values)
+    return caches
+
+
+def test_trim_preserves_hybrid_per_layer_cache_types():
+    """An UNROTATED hybrid cache keeps its per-layer classes across a trim."""
+    from vllm_mlx.memory_cache import _trim_cache_offset
+
+    cache = _make_hybrid_cache(n_tokens=8)
+    before = [type(c).__name__ for c in cache]
+    assert set(before) == {"RotatingKVCache", "KVCache"}, "fixture is not mixed"
+
+    trimmed = _trim_cache_offset(cache, 2)
+    assert trimmed is not None, "unrotated hybrid cache should be trimmable"
+    assert [type(c).__name__ for c in trimmed] == before
+
+    for original, tc in zip(cache, trimmed):
+        assert tc.offset == 6
+        if isinstance(tc, RotatingKVCache):
+            # Sliding-window identity AND the ring write cursor must survive:
+            # a stale ``_idx`` would append the continuation at the wrong slot.
+            assert tc.max_size == original.max_size
+            assert tc.keep == original.keep
+            assert tc._idx == 6
+
+
+def test_trim_does_not_mutate_the_retained_hybrid_entry():
+    """Trimming returns copies — the cached entry stays reusable at full length."""
+    from vllm_mlx.memory_cache import _trim_cache_offset
+
+    cache = _make_hybrid_cache(n_tokens=8)
+    assert _trim_cache_offset(cache, 2) is not None
+    for c in cache:
+        assert c.offset == 8
+        if isinstance(c, RotatingKVCache):
+            assert c._idx == 8
+
+
+def test_trimmed_hybrid_cache_merges_to_same_batch_types_as_fresh():
+    """HIT and MISS paths must agree per layer, or ``_extend_cache`` crashes.
+
+    This is the assertion that fails with the pre-fix helper: the restored
+    (trimmed) side merged to ``BatchKVCache`` on the sliding layers while a
+    fresh sequence merged to ``BatchRotatingKVCache``, and ``extend`` then read
+    ``other.rotated`` off a cache that has no such attribute.
+    """
+    from vllm_mlx.memory_cache import _trim_cache_offset
+
+    restored = _trim_cache_offset(_make_hybrid_cache(n_tokens=8), 2)
+    assert restored is not None
+    fresh = [
+        RotatingKVCache(max_size=W, keep=0) if t == "sliding" else KVCache()
+        for t in _HYBRID_LAYER_TYPES
+    ]
+
+    restored_batch = [type(c).merge([c]) for c in restored]
+    fresh_batch = [type(c).merge([c]) for c in fresh]
+    assert [type(c).__name__ for c in restored_batch] == [
+        type(c).__name__ for c in fresh_batch
+    ]
+    # The crash was an AttributeError, so assert the attribute is really there
+    # rather than trusting the class name alone.
+    for a, b in zip(restored_batch, fresh_batch):
+        assert hasattr(a, "rotated") == hasattr(b, "rotated")
+
+
+def test_rotated_hybrid_cache_is_refused_rather_than_mistyped():
+    """Once the ring wraps, refuse the trim — never silently downgrade the type.
+
+    Returning a plain ``KVCache`` here would stop the crash but corrupt the
+    sliding layers' KV, which is the failure mode this fix must NOT trade into.
+    """
+    from vllm_mlx.memory_cache import _trim_cache_offset
+
+    rotated = _make_hybrid_cache(n_tokens=W + 8)
+    assert any(
+        isinstance(c, RotatingKVCache) and not c.is_trimmable() for c in rotated
+    ), "fixture did not actually rotate"
+    assert _trim_cache_offset(rotated, 2) is None
+
+
+def test_trim_offset_plain_kvcache_path_unchanged():
+    """Full-attention-only models keep their previous behaviour exactly."""
+    from vllm_mlx.memory_cache import _trim_cache_offset
+
+    plain = []
+    for _ in range(4):
+        c = KVCache()
+        x = mx.random.normal((B, H, 10, D))
+        c.update_and_fetch(x, x)
+        mx.eval(c.keys, c.values)
+        plain.append(c)
+
+    trimmed = _trim_cache_offset(plain, 3)
+    assert trimmed is not None
+    assert all(type(c) is KVCache for c in trimmed)
+    assert all(c.offset == 7 for c in trimmed)
+    assert all(c.offset == 10 for c in plain)
+
+
+def test_trim_scope_is_limited_to_rotating_layers():
+    """The #1863 fix must not change behaviour for any OTHER cache class.
+
+    ``_trim_cache_offset``'s duck-typed branch accepts anything exposing
+    non-list ``keys`` + ``offset``. A "has a trim() method" test would have
+    silently re-routed ``ChunkedKVCache``, ``ConcatenateKVCache`` and the
+    quantized ``_QuantizableKVCache`` through the class-preserving path too —
+    classes whose semantics this helper has never applied (and which
+    ``_TRIM_UNSAFE_CACHE_CLASSES`` / the quantization normalizer handle
+    separately). Pin the narrow scope so a future refactor can't widen it.
+    """
+    from mlx_lm.models.cache import ChunkedKVCache
+
+    from vllm_mlx.memory_cache import _trim_cache_offset
+    from vllm_mlx.quantized_batch_cache import _QuantizableKVCache
+
+    def _filled(layer, n=8):
+        x = mx.random.normal((B, H, n, D))
+        layer.update_and_fetch(x, x)
+        mx.eval(layer.keys, layer.values)
+        return layer
+
+    # Rotating -> preserved (the fix).
+    out = _trim_cache_offset([_filled(RotatingKVCache(max_size=64, keep=0))], 2)
+    assert out is not None and type(out[0]) is RotatingKVCache
+
+    # Everything else -> still rebuilt as a plain KVCache, exactly as before.
+    for layer in (
+        KVCache(),
+        ChunkedKVCache(chunk_size=256),
+        _QuantizableKVCache(64, 8),
+    ):
+        out = _trim_cache_offset([_filled(layer)], 2)
+        assert out is not None, f"{type(layer).__name__} unexpectedly refused"
+        assert type(out[0]) is KVCache, (
+            f"{type(layer).__name__} was re-routed off the legacy rebuild path — "
+            "the fix's scope widened beyond RotatingKVCache"
+        )
+        assert out[0].offset == 6
