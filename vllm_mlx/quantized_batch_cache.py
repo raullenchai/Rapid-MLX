@@ -8,8 +8,9 @@ used by continuous batching is mlx-lm's :class:`~mlx_lm.models.cache.BatchKVCach
 which is always bf16 — so a fresh server with ``--disable-prefix-cache`` got no
 memory reduction from the requested dtype at all.
 
-``QuantizedBatchKVCache`` is a drop-in replacement for ``BatchKVCache`` that
-stores keys/values **quantized** (``mx.quantize`` along the head dimension). The
+``QuantizedBatchKVCache`` is the batch-cache counterpart of mlx-lm's own
+``QuantizedKVCache`` — same read contract, batched bookkeeping. It stores
+keys/values **quantized** (``mx.quantize`` along the head dimension). The
 model reads KV through ``update_and_fetch``, which returns the **quantized
 triples**, and the cache exposes ``bits`` / ``group_size`` — so
 ``mlx_lm.models.base.scaled_dot_product_attention`` dispatches to the fused
