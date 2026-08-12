@@ -772,22 +772,23 @@ async def lifespan(app: FastAPI):
         global _prefix_cache_load_task
         _prefix_cache_load_task = asyncio.create_task(_deferred_load_prefix_cache())
 
-    # Print the real "Ready:" banner now — only here is the port truly
-    # accepting connections AND the engine warmed up. The CLI's earlier
-    # "Starting server …" line is replaced by this. If neither the
-    # host/port nor inherited-fd source of truth was stashed (e.g.
+    # Render the real "Ready:" / "Connect:" banner now — only here is the
+    # port truly accepting connections AND the engine warmed up. The CLI's
+    # earlier "Starting server …" line is replaced by this. Output is produced
+    # by the connect SSOT (:mod:`vllm_mlx.connect`) so the served banner and
+    # ``rapid-mlx connect`` can never disagree about an endpoint. If neither
+    # the host/port nor inherited-fd source of truth was stashed (e.g.
     # embedded usage where uvicorn is owned elsewhere), fall back silently.
-    if _cfg.bind_host and _cfg.bind_port:
-        print(f"  Ready: http://{_cfg.bind_host}:{_cfg.bind_port}/v1")
-        print(f"  Docs:  http://{_cfg.bind_host}:{_cfg.bind_port}/docs")
-        print()
-    elif _cfg.bind_listen_fd is not None:
-        # Socket-activation branch: the supervisor's ``getsockname`` is the
-        # source of truth for the bind address (we don't probe it). Print
-        # the fd shape so log readers can match it to the supervisor's
-        # ``LISTEN_FDS=1`` handoff record.
-        print(f"  Ready: inherited fd {_cfg.bind_listen_fd}")
-        print()
+    from vllm_mlx.connect import endpoints_from_bind, render_banner
+
+    _ep = endpoints_from_bind(
+        _cfg.bind_host,
+        _cfg.bind_port,
+        model=_cfg.model_alias or _cfg.model_name,
+        listen_fd=_cfg.bind_listen_fd,
+    )
+    if _ep.listen_fd is not None or (_cfg.bind_host and _cfg.bind_port):
+        print(render_banner(_ep), end="")
 
     yield
 
