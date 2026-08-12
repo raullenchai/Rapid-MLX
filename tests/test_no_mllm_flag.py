@@ -182,6 +182,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # `serve` (and the canonical name on `chat`). Same dest, same
         # semantics — pure UX symmetry between the two subcommands.
         "--no-think",
+        # Agent setup UX knob: skips a post-write HTTP connectivity probe.
+        # It does not change model/runtime routing or any auto-detection.
+        "--no-check",
         # CORS toggle.
         "--enable-cors",
         # Perf / UX toggles, not routing decisions.
