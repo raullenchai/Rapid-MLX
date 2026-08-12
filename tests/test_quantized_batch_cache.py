@@ -48,6 +48,31 @@ def _max_abs(a, b):
     return float(mx.max(mx.abs(a.astype(mx.float32) - b.astype(mx.float32))))
 
 
+def _deq(cache, triple):
+    """Dequantize an update_and_fetch return (quantized triples, #1751)."""
+    return _dequantize(list(triple), cache._q_group_size, cache._q_bits)
+
+
+def _ref_attention_fp32(queries, k, v, mask):
+    """Hand-composed fp32 GQA attention with an explicitly aligned mask.
+
+    ``mask`` is the rank-4 batched mask ``[B, 1, L, S]``; alignment against
+    the GQA-expanded scores is done here the *correct* way so the fused
+    path can be compared against unambiguous semantics."""
+    q32 = queries.astype(mx.float32)
+    k32 = k.astype(mx.float32)
+    v32 = v.astype(mx.float32)
+    B, n_q, L, Dh = q32.shape
+    n_kv = k32.shape[1]
+    rep_ = n_q // n_kv
+    q32 = q32.reshape(B, n_kv, rep_, L, Dh)
+    scores = q32 @ mx.expand_dims(k32, 2).swapaxes(-1, -2)
+    scores = mx.where(mask[:, None], scores, mx.finfo(mx.float32).min)
+    probs = mx.softmax(scores, axis=-1, precise=True)
+    out = probs @ mx.expand_dims(v32, 2)
+    return out.reshape(B, n_q, L, Dh)
+
+
 # --- update_and_fetch --------------------------------------------------------
 
 
@@ -55,7 +80,10 @@ def test_single_update_matches_quant_roundtrip():
     B, n = 3, 40
     k, v = _kv(B, n, 0)
     q = QuantizedBatchKVCache([0, 0, 0], GS, BITS)
-    ok, ov = q.update_and_fetch(k, v)
+    qk, qv = q.update_and_fetch(k, v)
+    # Fused read (#1751): returns are the quantized triples.
+    assert isinstance(qk, tuple) and len(qk) == 3
+    ok, ov = _deq(q, qk), _deq(q, qv)
     assert ok.shape == (B, H, n, D)
     assert _max_abs(ok, _qrt(k)) == 0.0
     assert _max_abs(ov, _qrt(v)) == 0.0
@@ -69,7 +97,8 @@ def test_multi_chunk_crosses_capacity_growth():
     total = 0
     for i, n in enumerate([100, 200, 50, 300]):  # crosses 256 boundary
         k, v = _kv(B, n, 10 + i)
-        ok, ov = q.update_and_fetch(k, v)
+        qk, qv = q.update_and_fetch(k, v)
+        ok, ov = _deq(q, qk), _deq(q, qv)
         ref_k_chunks.append(_qrt(k))
         ref_v_chunks.append(_qrt(v))
         total += n
@@ -377,7 +406,8 @@ def test_state_roundtrip_preserves_content():
     B = 2
     q = QuantizedBatchKVCache([0, 0], GS, BITS)
     k, v = _kv(B, 20, 6)
-    out_k, _ = q.update_and_fetch(k, v)
+    qk, _qv = q.update_and_fetch(k, v)
+    out_k = _deq(q, qk)
     st = q.state
 
     q2 = QuantizedBatchKVCache([0, 0], GS, BITS)
@@ -558,7 +588,8 @@ def test_update_adjusts_group_size_for_head_dim_96():
     # head_dim=96 is not divisible by 64 but is by 32 — must auto-adjust, not crash
     q = QuantizedBatchKVCache([0], group_size=64, bits=8)
     k = mx.random.normal((1, H, 10, 96)).astype(mx.bfloat16)
-    ok, ov = q.update_and_fetch(k, k)
+    qk, _qv = q.update_and_fetch(k, k)
+    ok = _deq(q, qk)
     assert q._q_group_size == 32
     assert ok.shape == (1, H, 10, 96)
     assert _max_abs(ok, _dequantize(_quantize(k, 32, 8), 32, 8)) == 0.0
@@ -925,3 +956,102 @@ def test_extend_mismatched_params_raises():
     b.update_and_fetch(*_kv(1, 10, 2))
     with pytest.raises(ValueError, match="mismatched quantization"):
         a.extend(b)
+
+
+# --- fused read path (#1751) --------------------------------------------------
+
+
+def test_cache_exposes_quantized_dispatch_attrs():
+    """``hasattr(cache, "bits")`` is mlx-lm's fused-SDPA dispatch predicate;
+    the attrs must mirror the effective quantization params."""
+    q = QuantizedBatchKVCache([0], group_size=64, bits=4)
+    assert q.bits == 4
+    assert q.group_size == 64
+    k = mx.random.normal((1, H, 10, 96)).astype(mx.bfloat16)
+    q.update_and_fetch(k, k)
+    # group size auto-adjusted for head_dim=96 must show through the attr
+    assert q.group_size == 32
+
+
+def test_fused_qsdpa_matches_dequant_reference_batched_gqa():
+    """Patched quantized SDPA on the triples must match full-precision
+    attention on the dequantized KV for B>1 + GQA + left-padded mask.
+
+    This is the mask-rank regression test: without the ``mask[:, None]``
+    fix the rank-4 batched mask broadcasts against the GQA repeat axis
+    and the outputs diverge by O(1), not O(quant-error).
+    """
+    from vllm_mlx.quantized_batch_cache import (
+        _install_batched_mask_safe_quantized_sdpa,
+    )
+
+    _install_batched_mask_safe_quantized_sdpa()
+    import mlx_lm.models.base as mlx_base
+
+    B, n_kv, n_q, S, Dh = 2, 2, 4, 24, 64
+    lp = [3, 0]
+    q = QuantizedBatchKVCache(lp, group_size=32, bits=8)
+    k = mx.random.normal((B, n_kv, S, Dh)).astype(mx.bfloat16)
+    v = mx.random.normal((B, n_kv, S, Dh)).astype(mx.bfloat16)
+    q.update_and_fetch(k, v)
+
+    # Real decode-step ordering: the mask is built BEFORE the step's
+    # update (covers S+1 keys), attention runs on the post-update cache.
+    mask = q.make_mask(1)
+    assert mask.ndim == 4  # the shape class the patch exists for
+    k1 = mx.random.normal((B, n_kv, 1, Dh)).astype(mx.bfloat16)
+    v1 = mx.random.normal((B, n_kv, 1, Dh)).astype(mx.bfloat16)
+    qk, qv = q.update_and_fetch(k1, v1)
+
+    queries = mx.random.normal((B, n_q, 1, Dh)).astype(mx.bfloat16)
+
+    out = mlx_base.quantized_scaled_dot_product_attention(
+        queries,
+        qk,
+        qv,
+        scale=1.0,
+        mask=mask,
+        group_size=q.group_size,
+        bits=q.bits,
+    )
+    ref = _ref_attention_fp32(queries, _deq(q, qk), _deq(q, qv), mask)
+    err = _max_abs(out, ref)
+    assert err < 5e-2, f"fused vs fp32 reference diverged: {err}"
+
+    # Negative control — the misalignment the patch exists to prevent
+    # (mask batch axis pairing with the GQA repeat axis) must move the
+    # output by far more than numeric noise, or this test could not
+    # catch a regression to the stock broadcast.
+    bad = _ref_attention_fp32(queries, _deq(q, qk), _deq(q, qv), mask[:, 0][None])
+    assert _max_abs(bad, ref) > 0.2
+
+
+def test_mask_patch_is_superset_for_stock_shapes():
+    """The mask-rank patch must be a no-op for the shapes mlx-lm's own
+    QuantizedKVCache path produces (rank-2 causal slice, B=1)."""
+    from vllm_mlx.quantized_batch_cache import (
+        _install_batched_mask_safe_quantized_sdpa,
+    )
+
+    _install_batched_mask_safe_quantized_sdpa()
+    import mlx_lm.models.base as mlx_base
+
+    n_kv, n_q, S, Dh = 2, 4, 16, 64
+    k = mx.random.normal((1, n_kv, S, Dh)).astype(mx.bfloat16)
+    v = mx.random.normal((1, n_kv, S, Dh)).astype(mx.bfloat16)
+    qk = tuple(_quantize(k, 32, 8))
+    qv = tuple(_quantize(v, 32, 8))
+    queries = mx.random.normal((1, n_q, 1, Dh)).astype(mx.bfloat16)
+    # rank-2 mask: one query row attending everywhere (stock shape class)
+    mask = mx.ones((1, S), dtype=mx.bool_)
+    assert mask.shape[-1] == qk[0].shape[-2]
+    out = mlx_base.quantized_scaled_dot_product_attention(
+        queries, qk, qv, scale=1.0, mask=mask, group_size=32, bits=8
+    )
+    ref = _ref_attention_fp32(
+        queries,
+        _dequantize(list(qk), 32, 8),
+        _dequantize(list(qv), 32, 8),
+        mask[None, None] * mx.ones((1, 1, 1, S), dtype=mx.bool_),
+    )
+    assert _max_abs(out, ref) < 5e-2

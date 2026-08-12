@@ -10,11 +10,20 @@ memory reduction from the requested dtype at all.
 
 ``QuantizedBatchKVCache`` is a drop-in replacement for ``BatchKVCache`` that
 stores keys/values **quantized** (``mx.quantize`` along the head dimension). The
-paths the *model* reads through — ``update_and_fetch`` and ``extract`` —
-dequantize on the way out, so attention/SDPA see bf16 and nothing in the model
-changes. This is the "dequant-on-read" design that vLLM and SGLang both fall
-back to on backends without a fused quantized-attention kernel — it wins back
-the resident-memory footprint (the point of the flag) without a custom kernel.
+model reads KV through ``update_and_fetch``, which returns the **quantized
+triples**, and the cache exposes ``bits`` / ``group_size`` — so
+``mlx_lm.models.base.scaled_dot_product_attention`` dispatches to the fused
+``quantized_scaled_dot_product_attention`` and attention reads the packed KV
+directly through ``mx.quantized_matmul`` with no per-step full-precision
+materialization (#1751). The original dequant-on-read design rebuilt the
+layer's full bf16 history every decode step — an O(context) tax measured at
+-27% (int4) / -36% (int8) decode throughput at 16k on qwen3.5-4b
+(#1853/#1857); the fused read costs ~-8% vs bf16 while keeping the 4x/2x
+resident-KV saving. ``extract`` still dequantizes — it feeds the bf16
+single-sequence ``KVCache`` reuse path, not attention. mlx-lm's stock
+quantized SDPA mishandles this cache's rank-4 batched mask once GQA expands
+scores to rank 5, so ``install_quantized_batch_cache`` also installs a
+mask-rank-safe wrapper (a strict superset of the stock behavior).
 
 ``state`` / ``meta_state`` are the *serialization* interface (save / restore /
 mid-prefill snapshot), not a model-read path. Like mlx-lm's own
@@ -125,6 +134,19 @@ class QuantizedBatchKVCache(_BaseCache):
         self._q_group_size = group_size
         self._q_bits = bits
 
+    # ``hasattr(cache, "bits")`` is mlx-lm's dispatch predicate for the
+    # fused quantized attention path (models/base.py::
+    # scaled_dot_product_attention). Exposing these MUST stay paired with
+    # ``update_and_fetch`` returning quantized triples — bf16 returns plus
+    # these attributes would feed float tensors into quantized_matmul.
+    @property
+    def bits(self) -> int:
+        return self._q_bits
+
+    @property
+    def group_size(self) -> int:
+        return self._q_group_size
+
     # -- internal helpers -------------------------------------------------
 
     def _capacity(self) -> int:
@@ -219,24 +241,17 @@ class QuantizedBatchKVCache(_BaseCache):
             self.keys[i][..., prev : self._idx, :] = qk[i]
             self.values[i][..., prev : self._idx, :] = qv[i]
 
-        # dequant-on-read: return bf16 K/V so attention/SDPA stays unchanged.
-        # This materializes the current layer's full history in bf16, but only
-        # transiently — MLX frees it before the next layer's dequant runs, while
-        # the resident cache stays quantized. Net decode PEAK memory is therefore
-        # LOWER than a bf16 cache (all layers resident bf16), not higher:
-        # measured int8 0.65x / int4 0.43x of bf16 peak at L=32,B=4,T=4k. Because
-        # decode is memory-bandwidth-bound, the smaller cache also makes each
-        # step FASTER (int8 ~2.3x) despite the dequant. A fused quantized SDPA
-        # (route B) would drop the transient entirely but needs a custom kernel.
+        # Fused read (#1751): return the quantized triples. The model's
+        # attention dispatches on ``hasattr(cache, "bits")`` and reads the
+        # packed KV directly via ``mx.quantized_matmul`` — no per-step
+        # full-precision materialization. The previous dequant-on-read
+        # design rebuilt the layer's full bf16 history every decode step,
+        # an O(context) tax measured at -27% (int4) / -36% (int8) decode
+        # throughput at 16k context (#1853/#1857); the fused read costs
+        # ~-8% vs bf16 while keeping the 4x/2x resident-KV saving.
         return (
-            _dequantize(
-                self._slice_seq(self.keys, self._idx), self._q_group_size, self._q_bits
-            ),
-            _dequantize(
-                self._slice_seq(self.values, self._idx),
-                self._q_group_size,
-                self._q_bits,
-            ),
+            tuple(self._slice_seq(self.keys, self._idx)),
+            tuple(self._slice_seq(self.values, self._idx)),
         )
 
     def prepare(self, *, left_padding=None, lengths=None, right_padding=None):
@@ -518,6 +533,57 @@ class _QuantizableKVCache(KVCache):
         )
 
 
+def _install_batched_mask_safe_quantized_sdpa() -> None:
+    """Make mlx-lm's fused quantized SDPA safe for batched rank-4 masks.
+
+    ``QuantizedBatchKVCache.make_mask`` produces a rank-4 boolean mask
+    ``[B, 1, L, S]`` (``create_causal_mask`` with per-row
+    ``left_padding``). mlx-lm's ``quantized_scaled_dot_product_attention``
+    expands scores to rank 5 ``[B, n_kv_heads, n_repeats, L, S]`` for GQA;
+    broadcasting a rank-4 mask against that aligns trailing dims, pairing
+    the mask's batch axis with ``n_repeats`` — silently wrong attention
+    for B > 1. Inserting an axis (``mask[:, None]`` ->
+    ``[B, 1, 1, L, S]``) restores correct alignment and is a no-op for
+    every shape the stock path already handles (rank-2 causal slices and
+    B=1 rank-4 masks become ``[1, 1, 1, L, S]``, which broadcast the
+    same).
+
+    Idempotent module-level patch on ``mlx_lm.models.base`` — the model
+    files call ``base.scaled_dot_product_attention``, which resolves the
+    quantized path through this module global.
+    """
+    import mlx_lm.models.base as _mlx_base
+
+    if getattr(_mlx_base, "_rapid_batched_mask_safe_qsdpa", False):
+        return
+
+    _orig = _mlx_base.quantized_scaled_dot_product_attention
+
+    def _batched_mask_safe(
+        queries, q_keys, q_values, scale, mask, group_size=64, bits=8
+    ):
+        n_q_heads = queries.shape[1]
+        n_kv_heads = q_keys[0].shape[-3]
+        if (
+            n_q_heads // n_kv_heads > 1
+            and isinstance(mask, mx.array)
+            and mask.ndim == 4
+        ):
+            mask = mask[:, None]
+        return _orig(
+            queries,
+            q_keys,
+            q_values,
+            scale=scale,
+            mask=mask,
+            group_size=group_size,
+            bits=bits,
+        )
+
+    _mlx_base.quantized_scaled_dot_product_attention = _batched_mask_safe
+    _mlx_base._rapid_batched_mask_safe_qsdpa = True
+
+
 def install_quantized_batch_cache(
     batch_gen: Any, group_size: int = 64, bits: int = 8
 ) -> bool:
@@ -569,6 +635,9 @@ def install_quantized_batch_cache(
         ]
 
     batch_gen._make_new_cache = _quantized_make_new_cache
+    # The fused read path (#1751) routes attention through mlx-lm's
+    # quantized SDPA; make it safe for this cache's batched masks first.
+    _install_batched_mask_safe_quantized_sdpa()
     return True
 
 
