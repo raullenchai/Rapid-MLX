@@ -2509,18 +2509,51 @@ flow_image_generation() {
     [[ "$panel_seen" == 1 ]] \
         || die "no native open panel appeared after pressing Images.Edit.Import"
 
-    "$AX_DRIVER" key "$APP_PID" "cmd+shift+g" > "$OUT/ig-import-go.json" \
+    # Keystrokes for the panel are `keypanel`/`typepanel`, NOT `key`/`type`.
+    # A native NSOpenPanel runs `runModal()` in its own nested event loop,
+    # which ignores events injected with `CGEvent.postToPid` (measured: the
+    # Go to Folder sheet never opens). The panel only reacts to events posted
+    # to the HID session tap (`.cghidEventTap`), which land on whatever window
+    # is key. A modal panel is by construction the only thing that can receive
+    # input while it is up, so session-targeting is unambiguous here.
+    "$AX_DRIVER" keypanel "$APP_PID" "cmd+shift+g" > "$OUT/ig-import-go.json" \
         || die "could not open the panel's Go to Folder sheet (cmd+shift+g)"
-    sleep 0.3
-    "$AX_DRIVER" type "$APP_PID" "$fixture" > "$OUT/ig-import-type.json" \
+
+    # Wait for the sheet's path field to actually arrive before typing into
+    # it — a blind sleep can type into nothing if the sheet animation lags, and
+    # the flow should never depend on being faster than AppKit.
+    local sheet_seen=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-import-sheet.json"
+        if jq -e '.data.ui_elements[]? | select(.identifier == "PathTextField")' \
+               "$OUT/ig-import-sheet.json" >/dev/null; then
+            sheet_seen=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$sheet_seen" == 1 ]] \
+        || die "the panel's Go to Folder sheet did not appear after cmd+shift+g"
+
+    "$AX_DRIVER" typepanel "$APP_PID" "$fixture" > "$OUT/ig-import-type.json" \
         || die "could not type the fixture path into the open panel"
-    sleep 0.2
     # Return #1 closes the Go to Folder sheet and navigates to / selects the
-    # typed file; Return #2 confirms the panel (Open).
-    "$AX_DRIVER" key "$APP_PID" "return" > "$OUT/ig-import-ok.json" \
+    # typed file; Return #2 confirms the panel (Open). Wait for the sheet to
+    # actually close after Return #1 — firing Return #2 into a still-animating
+    # sheet would just confirm a different row.
+    "$AX_DRIVER" keypanel "$APP_PID" "return" > "$OUT/ig-import-ok.json" \
         || die "could not send the first Return to the open panel"
-    sleep 0.5
-    "$AX_DRIVER" key "$APP_PID" "return" > "$OUT/ig-import-open.json" \
+    local sheet_gone=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/ig-import-navigated.json"
+        if ! jq -e '.data.ui_elements[]? | select(.identifier == "PathTextField")' \
+               "$OUT/ig-import-navigated.json" >/dev/null; then
+            sheet_gone=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$sheet_gone" == 1 ]] \
+        || die "the Go to Folder sheet did not close after the first Return"
+    "$AX_DRIVER" keypanel "$APP_PID" "return" > "$OUT/ig-import-open.json" \
         || die "could not confirm the open panel (second Return)"
 
     # Entering edit mode from an import must be observably different from the

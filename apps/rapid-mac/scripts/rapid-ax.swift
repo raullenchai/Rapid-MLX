@@ -113,7 +113,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|set-value|close-window|key|type|trust> <pid> [identifier-or-window-title|combo|text] [value]")
+    fail("usage: rapid-ax <dump|press|set-value|close-window|key|type|keypanel|typepanel|trust> <pid> [identifier-or-window-title|combo|text] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -126,10 +126,40 @@ let command = CommandLine.arguments[1]
 // process's window server session — the same channel a human's keystrokes
 // take — which the panel understands and the AX-only commands cannot touch.
 //
+// That channel does NOT reach a *modal* panel. An NSOpenPanel opened with
+// `runModal()` runs in its own nested event loop, and `CGEvent.postToPid`
+// injects into the app's normal event stream, which a busy modal simply never
+// processes — measured: Cmd+Shift+G posted to the pid never opens the panel's
+// "Go to Folder" sheet. The panel only reacts to events posted to the *HID
+// session tap* (`.cghidEventTap`), which arrive through the window server at
+// whatever window is key. `keypanel`/`typepanel` are the session-targeted
+// variants used for exactly this stage; they are safe because a modal panel
+// is by construction the only thing that can receive input while it is up.
+//
 // The target pid is still required: it is what `postToPid` uses to route the
 // events, and it keeps the commands honest about WHICH app is being driven
 // (a golden flow names a pid, never "the frontmost app", so it cannot grab
 // whatever window the operator happens to have focused).
+
+// Where a synthesized keyboard event is delivered.
+enum PostTarget {
+    // Route through `CGEvent.postToPid` into the named app's ordinary event
+    // stream. Right for every SwiftUI surface Rapid owns; wrong for a modal
+    // panel, whose nested run loop never sees these.
+    case pid
+    // Route through `CGEvent.post(.cghidEventTap)` to the HID session tap, so
+    // the event lands on whatever window is key. Reserved for native modal
+    // panels, which postToPid cannot reach.
+    case session
+}
+
+/// Post a keyboard event with the chosen target.
+func post(_ event: CGEvent, _ target: PostTarget, _ pid: pid_t) {
+    switch target {
+    case .pid: event.postToPid(pid)
+    case .session: event.post(tap: .cghidEventTap)
+    }
+}
 
 func keyCodeFor(_ name: String) -> CGKeyCode? {
     // Physical keycodes only for the *control* keys — the keys that are the
@@ -206,19 +236,19 @@ func modifiersFrom(_ flags: Set<String>) -> CGEventFlags {
     return result
 }
 
-func postKey(_ pid: pid_t, _ keyCode: CGKeyCode, _ modifier: CGEventFlags) {
+func postKey(_ pid: pid_t, _ target: PostTarget, _ keyCode: CGKeyCode, _ modifier: CGEventFlags) {
     // Key down while holding the modifiers, then key up, each with the
     // modifiers still held so the panel sees a coherent chord.
     let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)
     down?.flags = modifier
-    down?.postToPid(pid)
+    if let down { post(down, target, pid) }
     let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
     up?.flags = modifier
-    up?.postToPid(pid)
+    if let up { post(up, target, pid) }
     usleep(30_000)
 }
 
-func postCombination(_ pid: pid_t, _ combo: String) {
+func postCombination(_ pid: pid_t, _ target: PostTarget, _ combo: String) {
     // A `+`-joined combo: "cmd+shift+g". At least one bare key is required.
     let parts = combo.split(separator: "+").map { String($0).lowercased() }
     guard let last = parts.last else {
@@ -229,21 +259,32 @@ func postCombination(_ pid: pid_t, _ combo: String) {
         guard let keyCode = keyCodeFor(last) else {
             fail("key: unrecognized control key '\(last)' in combo '\(combo)'")
         }
-        postKey(pid, keyCode, modifiers)
+        postKey(pid, target, keyCode, modifiers)
     } else {
-        // Character key: inject the produced glyph as an explicit Unicode
-        // string (like ``type``) while holding the combo's modifiers. Cocoa
-        // matches menu key-equivalents on this *character*, so the same chord
-        // (e.g. Cmd+Shift+G → Go to Folder) works on any keyboard layout.
         let shifted = modifiers.contains(.maskShift)
-        guard let char = characterFor(last, shifted: shifted) else {
+        // Which Unicode character to type depends on HOW the chord reaches the
+        // target:
+        //   * ``key`` (pid-targeted) goes through the app's ordinary event
+        //     pipeline, which re-interprets the produced glyph — so post the
+        //     SHIFTED character ("G" for cmd+shift+g), as a layout-safe
+        //     stand-in for the physical key.
+        //   * ``keypanel`` (session-tap) posts straight into a native modal's
+        //     key-equivalent matching, which compares against the stored base
+        //     character "g" WITH the shift modifier bit set. Posting the
+        //     shifted "G" there never matches (measured: the Go to Folder
+        //     sheet never opens), so post the BASE character while holding
+        //     shift — exactly what a human's physical shift+g produces.
+        let char = (target == .session)
+            ? characterFor(last, shifted: false)
+            : characterFor(last, shifted: shifted)
+        guard let char else {
             fail("key: unrecognized key '\(last)' in combo '\(combo)'")
         }
-        postKeyChar(pid, char, modifiers)
+        postKeyChar(pid, target, char, modifiers)
     }
 }
 
-func postKeyChar(_ pid: pid_t, _ char: Character, _ modifier: CGEventFlags) {
+func postKeyChar(_ pid: pid_t, _ target: PostTarget, _ char: Character, _ modifier: CGEventFlags) {
     // Character chord: attach the character via ``keyboardSetUnicodeString``
     // so the target sees that exact character regardless of the active layout,
     // while the modifiers (cmd/option/control, and shift for a forced-uppercase
@@ -257,12 +298,12 @@ func postKeyChar(_ pid: pid_t, _ char: Character, _ modifier: CGEventFlags) {
     }
     down?.flags = modifier
     up?.flags = modifier
-    down?.postToPid(pid)
-    up?.postToPid(pid)
+    if let down { post(down, target, pid) }
+    if let up { post(up, target, pid) }
     usleep(30_000)
 }
 
-func typeText(_ pid: pid_t, _ text: String) {
+func typeText(_ pid: pid_t, _ target: PostTarget, _ text: String) {
     // `type` types literal text, so every character is attached as an explicit
     // Unicode string to the event via ``keyboardSetUnicodeString``; the system
     // sends that exact text through regardless of the active layout, so any
@@ -279,8 +320,8 @@ func typeText(_ pid: pid_t, _ text: String) {
             down?.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
             up?.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
         }
-        down?.postToPid(pid)
-        up?.postToPid(pid)
+        if let down { post(down, target, pid) }
+        if let up { post(up, target, pid) }
         usleep(15_000)
     }
 }
@@ -289,7 +330,7 @@ if command == "key" {
     guard CommandLine.arguments.count > 3 else {
         fail("key requires a combo, e.g. cmd+shift+g or return")
     }
-    postCombination(pid, CommandLine.arguments[3])
+    postCombination(pid, .pid, CommandLine.arguments[3])
     print("{\"success\":true,\"action\":\"key\",\"combo\":\"\(CommandLine.arguments[3])\"}")
     exit(0)
 }
@@ -298,8 +339,26 @@ if command == "type" {
     guard CommandLine.arguments.count > 3 else {
         fail("type requires text to type")
     }
-    typeText(pid, CommandLine.arguments[3])
+    typeText(pid, .pid, CommandLine.arguments[3])
     print("{\"success\":true,\"action\":\"type\",\"text\":\"\(CommandLine.arguments[3])\"}")
+    exit(0)
+}
+
+if command == "keypanel" {
+    guard CommandLine.arguments.count > 3 else {
+        fail("keypanel requires a combo, e.g. cmd+shift+g or return")
+    }
+    postCombination(pid, .session, CommandLine.arguments[3])
+    print("{\"success\":true,\"action\":\"keypanel\",\"combo\":\"\(CommandLine.arguments[3])\"}")
+    exit(0)
+}
+
+if command == "typepanel" {
+    guard CommandLine.arguments.count > 3 else {
+        fail("typepanel requires text to type")
+    }
+    typeText(pid, .session, CommandLine.arguments[3])
+    print("{\"success\":true,\"action\":\"typepanel\",\"text\":\"\(CommandLine.arguments[3])\"}")
     exit(0)
 }
 
