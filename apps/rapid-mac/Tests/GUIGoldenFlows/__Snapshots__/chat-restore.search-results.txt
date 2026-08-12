@@ -2,6 +2,15 @@
 AXApplication title="Rapid-MLX"
   AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
     AXGroup subrole=AXHostingView
+      AXTextField id="ConversationSearch.Field" value=text enabled=true
+      AXButton id="ConversationSearch.Clear" desc="Clear search" help="Clear search" enabled=true
+      AXButton id="ConversationSearch.Close" desc="Close" help="Close — Esc" enabled=true
+      AXUnknown id="ConversationSearch.Panel" enabled=true
+      AXScrollArea
+        AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
+          AXButton id="ConversationSearch.NewChat" desc="New chat" enabled=true
+          AXHeading desc="<relative-day>" enabled=true
+          AXButton id="ConversationSearch.Result.<uuid>" desc="golden restore marker" enabled=true
       AXSplitGroup id="main, SidebarNavigationSplitView"
         AXGroup subrole=AXHostingView
           AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
@@ -10,37 +19,21 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
           AXScrollArea
             AXHeading desc="<relative-day>" enabled=true
-            AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
-            AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="golden restore marker" enabled=true
-          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
-          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
-          AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
-          AXScrollArea
-            AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-              AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
-              AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-              AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-              AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
-              AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXGroup desc="Starting <model>, Loading the model into memory…" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
           AXButton id="ChatView.AddPhotos" desc="Add photos" help="This model doesn't support images" enabled=false
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
           AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
-          AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="<model> is still starting." enabled=false
       AXButton desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

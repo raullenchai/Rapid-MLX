@@ -29,7 +29,11 @@ struct ConversationSearchView: View {
                 .overlay(RapidTheme.hairlineStrong)
             resultsList
         }
-        .background(RapidTheme.surfaceOverlay)
+        .background {
+            RapidTheme.surfaceOverlay
+                .accessibilityElement()
+                .accessibilityIdentifier("ConversationSearch.Panel")
+        }
         .clipShape(RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
@@ -47,7 +51,6 @@ struct ConversationSearchView: View {
             selectedConversationID = results.first?.id
             searchFieldFocused = true
         }
-        .accessibilityIdentifier("ConversationSearch.Panel")
     }
 
     private var searchHeader: some View {
