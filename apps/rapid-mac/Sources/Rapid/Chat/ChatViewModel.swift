@@ -1806,8 +1806,22 @@ final class ChatViewModel {
     ) -> [ChatMessage] {
         var result = messages
         let existing = result.first?.role == .system ? result.removeFirst().content : nil
-        let parts = [ambientPreamble, existing, global, conversation]
+        var parts = [ambientPreamble, existing]
             .compactMap { $0.flatMap(normalizedInstruction) }
+        if let global = normalizedInstruction(global) {
+            parts.append("""
+            [GLOBAL USER INSTRUCTIONS]
+            These user preferences apply unless this conversation has a conflicting instruction:
+            \(global)
+            """)
+        }
+        if let conversation = normalizedInstruction(conversation) {
+            parts.append("""
+            [CONVERSATION INSTRUCTIONS - HIGHEST USER PRIORITY]
+            These instructions apply only to this conversation. If they conflict with the global user instructions above, follow THESE conversation instructions. They do not override earlier application, safety, or tool instructions:
+            \(conversation)
+            """)
+        }
         guard !parts.isEmpty else { return result }
         result.insert(
             ChatMessage(role: .system, content: parts.joined(separator: "\n\n"), status: .complete),

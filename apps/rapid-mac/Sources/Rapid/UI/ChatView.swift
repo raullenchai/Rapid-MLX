@@ -212,6 +212,10 @@ struct ChatView: View {
     /// the banner's brief emphasis so a blocked Return is never silent.
     @State private var blockedSendAttempts: Int = 0
     @State private var showsConversationInstructions = false
+    /// Refreshed from the active conversation every time the popover opens.
+    /// SwiftUI may otherwise reuse the popover's old local `@State` when the
+    /// same conversation closes and reopens it.
+    @State private var conversationInstructionsDraft = ""
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
     /// A live user gesture must reach the actual trailing edge before
@@ -507,6 +511,7 @@ struct ChatView: View {
             .accessibilityIdentifier("ChatView.AddPhotos")
             .accessibilityHint(supportsImageInput ? "" : "This model doesn't support images")
             Button {
+                conversationInstructionsDraft = viewModel.conversationInstructions
                 showsConversationInstructions = true
             } label: {
                 Image(systemName: "text.bubble")
@@ -528,7 +533,7 @@ struct ChatView: View {
             .accessibilityIdentifier("ChatView.ConversationInstructions")
             .popover(isPresented: $showsConversationInstructions, arrowEdge: .bottom) {
                 ConversationInstructionsPopover(
-                    initialValue: viewModel.conversationInstructions,
+                    draft: $conversationInstructionsDraft,
                     onSave: { value in
                         viewModel.setConversationInstructions(value)
                         showsConversationInstructions = false

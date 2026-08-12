@@ -7,6 +7,9 @@ struct InstructionTextEditor: View {
     let placeholder: String
     let height: CGFloat
     let accessibilityIdentifier: String
+    var autoFocus: Bool = false
+
+    @FocusState private var focused: Bool
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -22,6 +25,7 @@ struct InstructionTextEditor: View {
                 .accessibilityIdentifier(accessibilityIdentifier)
                 .font(RapidFont.body)
                 .scrollContentBackground(.hidden)
+                .focused($focused)
                 .padding(RapidTheme.Space.xs)
         }
         .frame(height: height)
@@ -33,6 +37,16 @@ struct InstructionTextEditor: View {
             RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
                 .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
         )
+        .contentShape(
+            RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+        )
+        .onTapGesture { focused = true }
+        .task {
+            guard autoFocus else { return }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            focused = true
+        }
     }
 }
 
@@ -77,18 +91,9 @@ struct InstructionEditorSection<Content: View>: View {
 }
 
 struct ConversationInstructionsPopover: View {
-    let initialValue: String
+    @Binding var draft: String
     let onSave: (String) -> Void
     let onCancel: () -> Void
-
-    @State private var draft: String
-
-    init(initialValue: String, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
-        self.initialValue = initialValue
-        self.onSave = onSave
-        self.onCancel = onCancel
-        _draft = State(initialValue: initialValue)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
@@ -104,7 +109,8 @@ struct ConversationInstructionsPopover: View {
                 text: $draft,
                 placeholder: "Add instructions for this conversation.",
                 height: 160,
-                accessibilityIdentifier: "ChatView.ConversationInstructions.Editor"
+                accessibilityIdentifier: "ChatView.ConversationInstructions.Editor",
+                autoFocus: true
             )
             HStack(spacing: RapidTheme.Space.sm) {
                 if !draft.isEmpty {
