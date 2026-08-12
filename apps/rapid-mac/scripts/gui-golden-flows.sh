@@ -2563,6 +2563,18 @@ flow_image_generation() {
               | {model, n, operation, has_image}] ==
          [{model:$alias, n:1, operation:"edit", has_image:true}]' "$OUT/fake-events.jsonl" >/dev/null \
         || die "the imported edit request did not carry the exact prompt, model, and the fixture image: $(jq -s -c '[.[] | select(.event == "image_request" and .operation == "edit")]' "$OUT/fake-events.jsonl")"
+    # The wire bytes must be the fixture itself. has_image only proves a
+    # multipart part named "image" existed; a regression that submits the
+    # previously generated image — or anything else — would still pass it.
+    # Compare the SHA-256 of the uploaded image part against the fixture file
+    # so the golden flow really pins the picked file's bytes to the request.
+    local expected_sha
+    expected_sha="$(shasum -a 256 "$fixture" | awk '{print $1}')"
+    jq -s -e --arg sha "$expected_sha" --arg prompt "$import_prompt" \
+        '[.[] | select(.event == "image_request" and .operation == "edit" and .prompt == $prompt)
+              | .image_sha256] == [$sha]' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the uploaded image bytes do not match the fixture ($fixture, sha256 $expected_sha)"
 
     # Exit restores generation controls — the same exit contract as the
     # generated-result journey, now after an import.

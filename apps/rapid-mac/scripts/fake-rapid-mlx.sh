@@ -370,8 +370,42 @@ class _ImageRenders:
                 "elapsed_ms": elapsed,
             }
 
-
 RENDERS = _ImageRenders()
+
+
+def _multipart_image_sha256(raw_body, content_type):
+    """SHA-256 of the uploaded image bytes in a multipart edit request.
+
+    ``raw_body`` is the full request body and ``content_type`` is the request's
+    ``Content-Type`` header. The image part's own headers end at the first
+    blank line after ``name="image"``; the bytes run from there until the
+    CRLF + the next ``--<boundary>`` separator, so a stray ``\\r\\n--`` that
+    happens to occur inside PNG pixel data cannot truncate it. Returns the hex
+    digest, or ``None`` when no image part is present (parsing is best-effort
+    and is not the authority on image validity — hermetic unit tests are).
+    """
+    boundary = None
+    for token in (content_type or "").split(";"):
+        token = token.strip()
+        if token.startswith("boundary="):
+            boundary = token.split("=", 1)[1].strip('"')
+            break
+    marker = b'name="image"'
+    i = raw_body.find(marker)
+    if i < 0:
+        return None
+    hdr = raw_body.find(b"\r\n\r\n", i)
+    if hdr < 0:
+        return None
+    start = hdr + 4
+    if boundary:
+        sep = ("\r\n--" + boundary).encode()
+        j = raw_body.find(sep, start)
+        end = j if j >= 0 else len(raw_body)
+    else:
+        j = raw_body.find(b"\r\n--", start)
+        end = j if j >= 0 else len(raw_body)
+    return hashlib.sha256(raw_body[start:end]).hexdigest()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -544,6 +578,8 @@ class Handler(BaseHTTPRequestHandler):
             n=count,
             operation="edit" if editing else "generation",
             has_image=(b'name="image"; filename="input.png"' in raw_body) if editing else False,
+            image_sha256=(_multipart_image_sha256(raw_body, self.headers.get("content-type"))
+                          if editing else None),
         )
         cancelled = False
         for _ in range(total):

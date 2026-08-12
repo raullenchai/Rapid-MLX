@@ -185,38 +185,26 @@ func postCombination(_ pid: pid_t, _ combo: String) {
     postKey(pid, keyCode, modifiers)
 }
 
-// Punctuation that appears in the driven surfaces (absolute path strings) and
-// its (keycode, needsShift) US-ANSI mapping. Kept deliberately small: every
-// character here must be typeable by one unshifted or shifted key so the
-// result is layout-stable.
-let typePunctuation: [Character: (CGKeyCode, Bool)] = [
-    "/": (44, false), ".": (47, false), "-": (27, false),
-    "_": (27, true),  " ": (49, false),  ":": (41, true),
-]
-
 func typeText(_ pid: pid_t, _ text: String) {
-    // The synthetic keystroke carries only a keycode; a native panel (and
-    // text fields in general) interpret that code through the CURRENT
-    // keyboard layout. To stay deterministic regardless of layout, only
-    // ASCII letters, digits, and the punctuation above are supported here;
-    // anything else is rejected rather than silently typed wrong.
+    // The synthetic keystroke for `key` carries a keycode, which the target
+    // app re-derives into a glyph using the ACTIVE keyboard layout — correct
+    // for shortcut chords (Cmd+Shift+G, Return) but wrong for typing text on
+    // a Dvorak / AZERTY / any non-US layout. `type` therefore attaches each
+    // character as an explicit Unicode string to the event via
+    // ``keyboardSetUnicodeString``; the system sends that exact text through
+    // regardless of layout, so any Unicode character is supported and the
+    // fixture path can never be mangled by the host keyboard layout.
     for ch in text {
-        if ch.isLetter, let base = keyCodeFor(String(ch).lowercased()) {
-            // Uppercase letters are Shift+letter. Because the keystroke is a
-            // keycode, the panel re-derives the glyph from its layout; we only
-            // say which letter KEY and whether Shift was held.
-            postKey(pid, base, ch.isUppercase ? .maskShift : [])
-            continue
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+        let units = Array(String(ch).utf16)
+        units.withUnsafeBufferPointer { buf in
+            down?.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
+            up?.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
         }
-        if ch.isNumber, let base = keyCodeFor(String(ch)) {
-            postKey(pid, base, [])
-            continue
-        }
-        if let punctuation = typePunctuation[ch] {
-            postKey(pid, punctuation.0, punctuation.1 ? .maskShift : [])
-            continue
-        }
-        fail("type: unsupported character '\(ch)' — only ASCII letters, digits, and basic punctuation are supported")
+        down?.postToPid(pid)
+        up?.postToPid(pid)
+        usleep(15_000)
     }
 }
 
