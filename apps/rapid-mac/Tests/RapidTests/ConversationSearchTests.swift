@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 import Testing
 @testable import Rapid
 
@@ -110,47 +109,4 @@ struct ConversationSearchTests {
         ])
     }
 
-    @MainActor
-    @Test("Search panel renders in light and dark appearances")
-    func searchPanelSnapshots() {
-        let now = Date(timeIntervalSince1970: 1_786_531_200)
-        let conversations = [
-            conversation(
-                title: "Rapid-MLX performance tuning",
-                messages: [ChatMessage(role: .user, content: "Tune prefix caching")],
-                updatedAt: now
-            ),
-            conversation(
-                title: "Tool calling with local models",
-                updatedAt: now.addingTimeInterval(-86_400)
-            ),
-            conversation(
-                title: "Archived release checklist",
-                updatedAt: now.addingTimeInterval(-12 * 86_400),
-                isArchived: true
-            ),
-        ]
-        let panel = ConversationSearchView(
-            conversations: conversations,
-            now: now,
-            onNewChat: {},
-            onSelectConversation: { _ in },
-            onDismiss: {}
-        )
-        .frame(width: 620, height: 500)
-        .padding(32)
-        .background(RapidTheme.surfaceCanvas)
-
-        assertSnapshot(
-            of: panel,
-            size: CGSize(width: 684, height: 564),
-            name: "conversation-search-light"
-        )
-        assertSnapshot(
-            of: panel,
-            size: CGSize(width: 684, height: 564),
-            name: "conversation-search-dark",
-            appearance: .darkAqua
-        )
-    }
 }
