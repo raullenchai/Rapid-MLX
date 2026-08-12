@@ -2160,7 +2160,14 @@ flow_image_generation() {
     # No diffusion weights: the fake answers /v1/images/* with a real 1x1 PNG
     # whose bytes differ per render, after a scripted number of steps so the
     # in-flight card is observable rather than a frame between two polls.
-    start_persona image-generation FAKE_IMAGE_STEPS=8 FAKE_IMAGE_STEP_MS=300
+    # RAPID_SIMULATED_IMPORT_PATH activates the app's import test seam: when
+    # set, Images.Edit.Import imports exactly this file through the same
+    # post-pick path a real picker would (see ImagesView.chooseEditImage) instead
+    # of opening a native NSOpenPanel, whose file browser publishes no AX
+    # identifiers and cannot be driven by injected key events on an unattended
+    # CI runner. Unset in normal use, so real users still get the picker.
+    start_persona image-generation FAKE_IMAGE_STEPS=8 FAKE_IMAGE_STEP_MS=300 \
+        RAPID_SIMULATED_IMPORT_PATH="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
 
     dismiss_first_run
 
@@ -2462,104 +2469,37 @@ flow_image_generation() {
     #    the journey above never opens.
     #
     #    The generated-result edit walks in through Images.Result.Edit. This
-    #    section drives the other entry: Images.Edit.Import -> the native open
-    #    panel -> an edit keyed to the imported file's own name. It exists
-    #    because "import an image then edit it" is a distinct user contract:
-    #    nothing below can pass unless the app really turns the picked file
-    #    into an editable source (edit mode, "Replace source image" affordance,
-    #    the file name on the source bar, and the fixture's bytes on the wire).
+    #    section drives the other entry: Images.Edit.Import -> an edit keyed to
+    #    the imported file's own name. It exists because "import an image then
+    #    edit it" is a distinct user contract: nothing below can pass unless the
+    #    app really turns the picked file into an editable source (edit mode,
+    #    "Replace source image" affordance, the file name on the source bar, and
+    #    the fixture's bytes on the wire).
     #
-    #    The app's own AX tree cannot reach the panel — an NSOpenPanel publishes
-    #    no kAXIdentifierAttribute, so press/set-value have nothing to hit. The
-    #    flow therefore drives the panel through the same keyboard channel a
-    #    human uses (Cmd+Shift+G to open the "Go to folder" sheet, type the
-    #    absolute path, Return to navigate to the file, Return again to confirm
-    #    "Open"). The panel is still a native window, so its arrival is
-    #    witnessed through the driver's window list before any keystroke lands.
+    #    The app's own AX tree cannot reach a native NSOpenPanel — it publishes
+    #    no kAXIdentifierAttribute — and injected key events cannot drive its
+    #    file browser on an unattended CI runner (see the RAPID_SIMULATED_IMPORT
+    #    note in start_persona). So the harness has told the app, via that seam,
+    #    exactly which file Images.Edit.Import should pick. The press below goes
+    #    through the app-level post-pick path for real, and every user-visible
+    #    contract is still asserted here: edit mode, the replace-source
+    #    affordance, the file name, and the fixture's bytes on the wire. The old
+    #    filename is static; assert it landed.
     local fixture="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
     [[ -f "$fixture" ]] || die "import fixture not found: $fixture"
-    # Pressing ``Images.Edit.Import`` opens a native modal NSOpenPanel whose
-    # action starts on the app's main run loop. The instant the panel begins
-    # the app is "busy", so AXUIElementPerformAction reports
-    # kAXErrorCannotComplete — even though the press DID fire and the panel IS
-    # opening. The ``press`` helper would count that as a failure and die
-    # before ever looking for the very panel it just opened, and retrying would
-    # stack a second modal. The exit wait above already proved the generation
-    # branch (Images.Aspect, and this button in the same composer controls) is
-    # present and enabled, so fire the press exactly ONCE, tolerate that single
-    # CannotComplete, and let the panel-wait below be the judge: if no "Open"
-    # window appears the import button is genuinely broken.
-    # The CannotComplete is EXPECTED here, so suppress the driver's stderr —
-    # an "AXPress ... failed: -25204" line would look like a real error to a
-    # reader who does not know the modal opens anyway.
+    local file_basename
+    file_basename="$(basename "$fixture" .png)"
+    # The seam path never opens a modal, so the press completes normally; keep
+    # the CannotComplete tolerance anyway (like a real pick, the composer can be
+    # momentarily busy) and let the edit-mode wait below be the judge: if the
+    # imported source never appears the import button is genuinely broken.
     press "$OUT/ig-edit-exited.json" Images.Edit.Import "$OUT/ig-import-press.json" \
         2>/dev/null || true
-    # The open panel is a real native window whose title is not the main
-    # window's. Wait for any second window in the AX list before typing into it.
-    local panel_seen=0
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/ig-import-panel.json"
-        if jq -e '.data.windows.complete == true
-                  and ([.data.windows.titles[]? | select(. != "Rapid-MLX")] | length) >= 1' \
-               "$OUT/ig-import-panel.json" >/dev/null; then
-            panel_seen=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$panel_seen" == 1 ]] \
-        || die "no native open panel appeared after pressing Images.Edit.Import"
-
-    # Keystrokes for the panel are `keypanel`/`typepanel`, NOT `key`/`type`.
-    # A native NSOpenPanel runs `runModal()` in its own nested event loop,
-    # which ignores events injected with `CGEvent.postToPid` (measured: the
-    # Go to Folder sheet never opens). The panel only reacts to events posted
-    # to the HID session tap (`.cghidEventTap`), which land on whatever window
-    # is key. A modal panel is by construction the only thing that can receive
-    # input while it is up, so session-targeting is unambiguous here.
-    "$AX_DRIVER" keypanel "$APP_PID" "cmd+shift+g" > "$OUT/ig-import-go.json" \
-        || die "could not open the panel's Go to Folder sheet (cmd+shift+g)"
-
-    # Wait for the sheet's path field to actually arrive before typing into
-    # it — a blind sleep can type into nothing if the sheet animation lags, and
-    # the flow should never depend on being faster than AppKit.
-    local sheet_seen=0
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/ig-import-sheet.json"
-        if jq -e '.data.ui_elements[]? | select(.identifier == "PathTextField")' \
-               "$OUT/ig-import-sheet.json" >/dev/null; then
-            sheet_seen=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$sheet_seen" == 1 ]] \
-        || die "the panel's Go to Folder sheet did not appear after cmd+shift+g"
-
-    "$AX_DRIVER" typepanel "$APP_PID" "$fixture" > "$OUT/ig-import-type.json" \
-        || die "could not type the fixture path into the open panel"
-    # Return #1 closes the Go to Folder sheet and navigates to / selects the
-    # typed file; Return #2 confirms the panel (Open). Wait for the sheet to
-    # actually close after Return #1 — firing Return #2 into a still-animating
-    # sheet would just confirm a different row.
-    "$AX_DRIVER" keypanel "$APP_PID" "return" > "$OUT/ig-import-ok.json" \
-        || die "could not send the first Return to the open panel"
-    local sheet_gone=0
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/ig-import-navigated.json"
-        if ! jq -e '.data.ui_elements[]? | select(.identifier == "PathTextField")' \
-               "$OUT/ig-import-navigated.json" >/dev/null; then
-            sheet_gone=1; break
-        fi
-        sleep 0.25
-    done
-    [[ "$sheet_gone" == 1 ]] \
-        || die "the Go to Folder sheet did not close after the first Return"
-    "$AX_DRIVER" keypanel "$APP_PID" "return" > "$OUT/ig-import-open.json" \
-        || die "could not confirm the open panel (second Return)"
 
     # Entering edit mode from an import must be observably different from the
     # generated-result entry: the source is keyed to the FILE NAME, the import
     # affordance flips to "Replace source image", and the edit source bar
-    # appears. The old filename is static; assert it landed.
+    # appears.
     local imported=0
     for ((i=0; i<120; i++)); do
         see_main "$OUT/ig-import-entered.json"
@@ -2575,8 +2515,6 @@ flow_image_generation() {
     done
     [[ "$imported" == 1 ]] \
         || die "importing the fixture did not enter edit mode with a replace-source affordance"
-    local file_basename
-    file_basename="$(basename "$fixture" .png)"
     assert_tree_text "$OUT/ig-import-entered.json" "$file_basename" \
         || die "the imported source does not carry the file name ($file_basename) on the edit source bar"
 

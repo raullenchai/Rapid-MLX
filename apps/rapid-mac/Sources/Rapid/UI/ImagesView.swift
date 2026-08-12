@@ -807,12 +807,31 @@ struct ImagesView: View {
     }
 
     private func chooseEditImage() {
+        // The native NSOpenPanel's file browser publishes no accessibility
+        // identifiers, so a golden flow cannot reach it: neither a
+        // pid-targeted CGEvent nor a HID session tap opens its "Go to Folder"
+        // sheet on an unattended build/CI runner. To keep the image-edit
+        // import journey deterministic, an explicit environment variable
+        // (only ever set by the golden-flow harness) names the file to import
+        // so the exactly-same post-pick path below still runs for real — edit
+        // mode, the "Replace source image" affordance, the file name on the
+        // source bar, and the fixture's bytes on the wire are all still
+        // asserted. In normal use the variable is unset and the picker shows.
+        if let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_IMPORT_PATH"],
+           !simulated.isEmpty {
+            importEditImage(at: URL(fileURLWithPath: simulated))
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        importEditImage(at: url)
+    }
+
+    private func importEditImage(at url: URL) {
         Task {
             do {
                 let png = try await EditImageImporter.pngData(from: url)
