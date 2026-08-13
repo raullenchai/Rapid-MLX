@@ -23,6 +23,13 @@ import CryptoKit
 /// correct if a future fetch path moves off it.
 final class BrowseContentCache: @unchecked Sendable {
     struct Entry: Codable, Sendable {
+        /// Sparse character-offset checkpoints used by pagination. Building
+        /// these once avoids walking from `startIndex` again for every page.
+        /// They are derived from `markdown`, so they are never persisted.
+        private let characterCheckpoints: [String.Index]
+        private let characterCount: Int
+        private static let checkpointStride = 4_096
+
         let title: String?
         /// Full rendered Markdown; `browse` returns `offset..<offset+budget`
         /// slices of this.
@@ -39,6 +46,7 @@ final class BrowseContentCache: @unchecked Sendable {
             self.markdown = markdown
             self.finalURL = finalURL
             self.fetchedAt = fetchedAt
+            (characterCheckpoints, characterCount) = Self.makeCharacterCheckpoints(markdown)
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -54,6 +62,43 @@ final class BrowseContentCache: @unchecked Sendable {
             // time. Treat them as expired instead of silently serving an
             // arbitrarily old page after upgrade.
             fetchedAt = try container.decodeIfPresent(Date.self, forKey: .fetchedAt) ?? .distantPast
+            (characterCheckpoints, characterCount) = Self.makeCharacterCheckpoints(markdown)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encodeIfPresent(title, forKey: .title)
+            try container.encode(markdown, forKey: .markdown)
+            try container.encode(finalURL, forKey: .finalURL)
+            try container.encode(fetchedAt, forKey: .fetchedAt)
+        }
+
+        var count: Int { characterCount }
+
+        func index(atCharacterOffset rawOffset: Int) -> String.Index {
+            let offset = min(max(0, rawOffset), characterCount)
+            let checkpointNumber = offset / Self.checkpointStride
+            let checkpointOffset = checkpointNumber * Self.checkpointStride
+            return markdown.index(
+                characterCheckpoints[checkpointNumber],
+                offsetBy: offset - checkpointOffset
+            )
+        }
+
+        private static func makeCharacterCheckpoints(
+            _ text: String
+        ) -> ([String.Index], Int) {
+            var checkpoints = [text.startIndex]
+            var index = text.startIndex
+            var count = 0
+            while index < text.endIndex {
+                index = text.index(after: index)
+                count += 1
+                if count.isMultiple(of: checkpointStride) {
+                    checkpoints.append(index)
+                }
+            }
+            return (checkpoints, count)
         }
     }
 

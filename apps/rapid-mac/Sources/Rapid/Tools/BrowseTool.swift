@@ -409,7 +409,7 @@ enum BrowseTool {
         cacheExpiresAt: Date? = nil
     ) -> ToolCallResult {
         let full = entry.markdown
-        let total = full.count
+        let total = entry.count
         let start = min(max(0, offset), total)
         var end = min(start + charBudget, total)
         // Snap the cut back to a line boundary when there's more to come, so a
@@ -417,10 +417,10 @@ enum BrowseTool {
         // at the emitted length — no off-by-one in the cursor the model reuses.
         if end < total {
             let lower = max(start, end - 500)
-            if let nl = lastNewline(in: full, from: lower, to: end) { end = nl + 1 }
+            if let nl = lastNewline(in: entry, from: lower, to: end) { end = nl + 1 }
         }
-        let sliceStart = full.index(full.startIndex, offsetBy: start)
-        let sliceEnd = full.index(full.startIndex, offsetBy: end)
+        let sliceStart = entry.index(atCharacterOffset: start)
+        let sliceEnd = entry.index(atCharacterOffset: end)
         let content = String(full[sliceStart..<sliceEnd])
         let hasMore = end < total
 
@@ -449,10 +449,15 @@ enum BrowseTool {
     }
 
     /// Index of the last "\n" in `full` within [from, to), or nil.
-    private static func lastNewline(in full: String, from: Int, to: Int) -> Int? {
+    private static func lastNewline(
+        in entry: BrowseContentCache.Entry,
+        from: Int,
+        to: Int
+    ) -> Int? {
         guard from < to else { return nil }
-        let lo = full.index(full.startIndex, offsetBy: from)
-        let hi = full.index(full.startIndex, offsetBy: to)
+        let full = entry.markdown
+        let lo = entry.index(atCharacterOffset: from)
+        let hi = entry.index(atCharacterOffset: to)
         var found: Int? = nil
         var idx = lo
         var pos = from

@@ -55,6 +55,7 @@ enum ConversationSearch {
     ) -> [Section] {
         let sorted = conversations.sorted { $0.updatedAt > $1.updatedAt }
         let startOfToday = calendar.startOfDay(for: now)
+        let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday)
         let weekCutoff = calendar.date(byAdding: .day, value: -7, to: startOfToday)
         let monthCutoff = calendar.date(byAdding: .day, value: -30, to: startOfToday)
 
@@ -67,7 +68,9 @@ enum ConversationSearch {
         for conversation in sorted {
             if calendar.isDate(conversation.updatedAt, inSameDayAs: now) {
                 today.append(conversation)
-            } else if calendar.isDateInYesterday(conversation.updatedAt) {
+            } else if let startOfYesterday,
+                      conversation.updatedAt >= startOfYesterday,
+                      conversation.updatedAt < startOfToday {
                 yesterday.append(conversation)
             } else if let weekCutoff, conversation.updatedAt >= weekCutoff {
                 week.append(conversation)
