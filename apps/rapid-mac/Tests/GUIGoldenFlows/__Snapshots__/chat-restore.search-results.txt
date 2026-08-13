@@ -22,11 +22,11 @@ AXApplication title="Rapid-MLX"
             AXButton id="Sidebar.Conversation.<uuid>" desc="golden restore marker" enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
-          AXStaticText value=text enabled=true
-          AXStaticText value=text enabled=true
-          AXGroup desc="Starting <model>, Loading the model into memory…" enabled=true
+          AXGroup id="Readiness.Band" desc="Starting <model>, Loading the model into memory…" enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
           AXStaticText value=text enabled=true
           AXScrollArea
             AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
