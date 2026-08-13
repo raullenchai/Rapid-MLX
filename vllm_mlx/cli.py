@@ -1676,6 +1676,7 @@ def _ensure_model_downloaded(
         from vllm_mlx._download_gate import (
             _HF_RESOLVE_TIMEOUT_SECONDS,
             call_with_deadline,
+            pin_main_ref,
         )
         from vllm_mlx.model_aliases import subfolder_allow_patterns
 
@@ -1685,22 +1686,21 @@ def _ensure_model_downloaded(
         allow_patterns = subfolder_allow_patterns(model_name)
         _prefix = allow_patterns[0][:-1] if allow_patterns else None
 
-        # This bounded call is also the reachability gate for the unbounded one
-        # below. ``snapshot_download`` resolves the revision through httpx with
+        # This bounded call resolves the revision ahead of the download.
+        # ``snapshot_download`` otherwise resolves it through httpx with
         # an explicit ``timeout=None``, which *disables* the client timeout
         # rather than inheriting it, so that call has no deadline and hangs
         # indefinitely on a blackholed route — the desktop then sits at
         # "Starting" until its 30-minute stall window. Proving the Hub answers
         # within a deadline first turns that hang into an error.
         #
-        # The sha is deliberately NOT pinned onto ``snapshot_download`` below,
-        # tempting as it looks (given a commit hash it skips its own lookup
-        # entirely): huggingface_hub only writes ``refs/main`` when the revision
-        # it was handed differs from the resolved commit, so pinning would leave
-        # every freshly downloaded model without the ref that ``is_repo_cached``
-        # requires — and every later start would go back to the network, undoing
-        # the warm-cache fix this is meant to complement.
+        # Pinning the resolved SHA is essential: treating this probe merely as
+        # a reachability check leaves a TOCTOU window where the network can go
+        # dark before snapshot_download repeats the same unbounded lookup.
+        # huggingface_hub does not write refs/main for an explicit SHA, so we
+        # publish that ref ourselves, atomically, only after the download wins.
         size_gb = 0.0
+        resolved_sha: str | None = None
         try:
             info = call_with_deadline(
                 model_info,
@@ -1708,6 +1708,9 @@ def _ensure_model_downloaded(
                 model_name,
                 files_metadata=True,
             )
+            resolved_sha = getattr(info, "sha", None)
+            if not resolved_sha:
+                raise RuntimeError("HuggingFace metadata did not include a revision")
             size_bytes = sum(
                 (s.size or 0)
                 for s in (getattr(info, "siblings", None) or [])
@@ -1756,10 +1759,15 @@ def _ensure_model_downloaded(
                 f"fetching {model_name} from HuggingFace ..."
             )
 
+        download_kwargs = {"revision": resolved_sha} if resolved_sha else {}
         if allow_patterns:
-            snapshot_download(model_name, allow_patterns=allow_patterns)
+            snapshot_download(
+                model_name, allow_patterns=allow_patterns, **download_kwargs
+            )
         else:
-            snapshot_download(model_name)
+            snapshot_download(model_name, **download_kwargs)
+        if resolved_sha:
+            pin_main_ref(model_name, resolved_sha)
         print()
     except SystemExit:
         # _check_disk_space aborts via sys.exit(1) — let it through.

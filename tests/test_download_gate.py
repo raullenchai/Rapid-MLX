@@ -1391,6 +1391,16 @@ def test_call_with_deadline_passes_through_result_and_error():
         gate.call_with_deadline(_boom, 5)
 
 
+def test_pin_main_ref_is_atomic_and_populates_warm_cache_ref(tmp_path, monkeypatch):
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    gate.pin_main_ref("org/repo", "a" * 40)
+
+    ref = tmp_path / "models--org--repo" / "refs" / "main"
+    assert ref.read_text() == "a" * 40
+    assert list(ref.parent.glob("main.*.tmp")) == []
+
+
 def _seed_split_model_snapshot(repo_root, sha: str, *, omit: str | None = None):
     snap = repo_root / "snapshots" / sha
     snap.mkdir(parents=True)

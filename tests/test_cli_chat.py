@@ -1573,6 +1573,36 @@ def test_ensure_model_downloaded_aborts_when_the_hub_wont_answer(monkeypatch):
     assert downloaded == []  # never entered the unbounded download
 
 
+def test_ensure_model_downloaded_pins_resolved_sha_and_records_main_ref(monkeypatch):
+    """The bounded probe result must replace, not precede, an unbounded lookup."""
+    from types import SimpleNamespace
+
+    from vllm_mlx import _download_gate as gate
+
+    monkeypatch.setattr("os.path.exists", lambda _p: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_try_mirror_prefetch", lambda *_a, **_kw: False)
+    monkeypatch.setattr(gate, "is_repo_cached", lambda _repo: False)
+    monkeypatch.setattr(gate, "mflux_missing_weights", lambda _repo: None)
+    sha = "b" * 40
+    monkeypatch.setattr(
+        "huggingface_hub.model_info",
+        lambda *_a, **_kw: SimpleNamespace(sha=sha, siblings=[]),
+    )
+    downloads = []
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *a, **kw: downloads.append((a, kw)) or "/tmp/fake",
+    )
+    pins = []
+    monkeypatch.setattr(gate, "pin_main_ref", lambda *a: pins.append(a))
+
+    cli._ensure_model_downloaded("org/repo")
+
+    assert downloads == [(("org/repo",), {"revision": sha})]
+    assert pins == [("org/repo", sha)]
+
+
 def test_ensure_model_downloaded_uses_strict_cache_probe(monkeypatch):
     """Codex round-3 BLOCKING #2 (sibling fix): the chat REPL's pre-download
     probe used to short-circuit on cached ``config.json`` alone — same

@@ -269,6 +269,41 @@ def call_with_deadline(fn, timeout: float, /, *args, **kwargs):
     return result.get("value")
 
 
+def pin_main_ref(repo_id: str, revision: str) -> None:
+    """Atomically record the resolved default-branch revision in HF's cache.
+
+    A download pinned to a commit SHA avoids a second, unbounded Hub metadata
+    lookup, but huggingface_hub intentionally does not write ``refs/main`` for
+    an explicit SHA. Rapid's warm-cache gate needs that ref, so publish it only
+    after the pinned snapshot download succeeds. Failure is best-effort: the
+    downloaded snapshot is still valid, and a later run can resolve it online.
+    """
+    if not revision:
+        return
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        refs_dir = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+            "refs",
+        )
+        os.makedirs(refs_dir, exist_ok=True)
+        target = os.path.join(refs_dir, "main")
+        temporary = f"{target}.{os.getpid()}.tmp"
+        try:
+            with open(temporary, "w", encoding="utf-8") as fh:
+                fh.write(revision)
+            os.replace(temporary, target)
+        finally:
+            try:
+                os.remove(temporary)
+            except FileNotFoundError:
+                pass
+    except OSError:
+        pass
+
+
 def _model_info_with_timeout(repo_id: str, timeout: float):
     """Call ``HfApi().model_info`` with a hard timeout.
 
