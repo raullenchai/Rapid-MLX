@@ -7,6 +7,7 @@ command injection attacks and other security vulnerabilities.
 """
 
 import re
+from unittest.mock import patch
 
 import pytest
 
@@ -289,13 +290,14 @@ class TestMCPServerConfigSecurity:
 
     def test_valid_stdio_config(self):
         """Test that valid stdio config passes security validation."""
-        # This should not raise
-        config = MCPServerConfig(
-            name="test-server",
-            transport=MCPTransport.STDIO,
-            command="npx",
-            args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
-        )
+        # Unit tests must not depend on Node being installed on the host.
+        with patch("shutil.which", return_value="/usr/local/bin/npx"):
+            config = MCPServerConfig(
+                name="test-server",
+                transport=MCPTransport.STDIO,
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            )
         assert config.command == "npx"
 
     def test_invalid_command_rejected(self):

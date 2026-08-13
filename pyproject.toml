@@ -456,7 +456,7 @@ Documentation = "https://github.com/raullenchai/Rapid-MLX#readme"
 Repository = "https://github.com/raullenchai/Rapid-MLX"
 
 [project.scripts]
-rapid-mlx = "vllm_mlx.cli:main"
+rapid-mlx = "vllm_mlx.cli:cli_entrypoint"
 # First-class short command for accessibility and reduced typing (#1279).
 rmlx = "vllm_mlx.cli:main"
 rapid-mlx-chat = "vllm_mlx.gradio_app:main"

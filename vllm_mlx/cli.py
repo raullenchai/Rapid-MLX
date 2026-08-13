@@ -10590,5 +10590,19 @@ def main():
         sys.exit(1)
 
 
+def cli_entrypoint() -> None:
+    """Console entry point with normal Unix broken-pipe semantics."""
+    try:
+        main()
+    except BrokenPipeError:
+        # Unix consumers commonly stop reading early (for example,
+        # ``rapid-mlx models | head``).  Treat EPIPE as normal completion
+        # instead of printing a traceback from the CLI entry point.
+        try:
+            sys.stdout.close()
+        finally:
+            sys.exit(0)
+
+
 if __name__ == "__main__":
-    main()
+    cli_entrypoint()

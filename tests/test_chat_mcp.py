@@ -10,6 +10,7 @@ import json
 import logging
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -658,23 +659,26 @@ def test_server_parameters_use_official_sdk_types():
 
 
 def test_server_parameters_keep_npx_bootstrap_output_off_protocol():
-    quiet = _server_parameters(
-        MCPServerConfig(
-            name="filesystem",
-            command="/opt/homebrew/bin/npx",
-            args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    # Parameter shaping is under test here, not the host's Node installation.
+    with patch("shutil.which", return_value="/opt/homebrew/bin/npx"):
+        quiet = _server_parameters(
+            MCPServerConfig(
+                name="filesystem",
+                command="/opt/homebrew/bin/npx",
+                args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            )
         )
-    )
     assert quiet.env["npm_config_loglevel"] == "silent"
 
-    explicit = _server_parameters(
-        MCPServerConfig(
-            name="filesystem",
-            command="npx",
-            args=["server"],
-            env={"NPM_CONFIG_LOGLEVEL": "warn"},
+    with patch("shutil.which", return_value="/opt/homebrew/bin/npx"):
+        explicit = _server_parameters(
+            MCPServerConfig(
+                name="filesystem",
+                command="npx",
+                args=["server"],
+                env={"NPM_CONFIG_LOGLEVEL": "warn"},
+            )
         )
-    )
     assert explicit.env["NPM_CONFIG_LOGLEVEL"] == "warn"
     assert "npm_config_loglevel" not in explicit.env
 
