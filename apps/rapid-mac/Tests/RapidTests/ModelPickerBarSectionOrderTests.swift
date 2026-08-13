@@ -281,11 +281,21 @@ struct ModelPickerBarSectionOrderTests {
         #expect(!ModelPickerBar.isQuickstartInFlight(phase: nil))
     }
 
-    @Test("isQuickstartInFlight: idle / ready / failed phases → off (CTA released)")
+    @Test("isQuickstartInFlight: idle / dismissed / failed phases → off (CTA released)")
     func inFlightTerminalPhasesOff() {
         #expect(!ModelPickerBar.isQuickstartInFlight(phase: .idle))
-        #expect(!ModelPickerBar.isQuickstartInFlight(phase: .ready))
-        #expect(!ModelPickerBar.isQuickstartInFlight(phase: .failed(message: "boom")))
+        #expect(!ModelPickerBar.isQuickstartInFlight(phase: .dismissed))
+        #expect(!ModelPickerBar.isQuickstartInFlight(
+            phase: .failed(message: "boom", origin: .download)
+        ))
+    }
+
+    @Test("isQuickstartInFlight: ready is in-flight — onboarding still owns the window")
+    func inFlightReadyAwaitsConfirmation() {
+        // Onboarding V3: ``.ready`` no longer means "handed off to chat".
+        // The setup surface is still up, full-window, waiting for Start
+        // chatting — so the picker's CTA stays gated.
+        #expect(ModelPickerBar.isQuickstartInFlight(phase: .ready))
     }
 
     @Test("isQuickstartInFlight: lowDisk / downloading / starting → on (CTA disabled)")
@@ -382,14 +392,14 @@ struct ModelPickerBarSectionOrderTests {
         }
     }
 
-    @Test("quickstartPhaseGateKey: ready / failed / idle all map to off half")
+    @Test("quickstartPhaseGateKey: dismissed / failed / idle all map to off half")
     func gateKeyOffAcrossInactivePhases() {
         let cat = makeCatalog()
         let keys = [
             ModelPickerBar.quickstartPhaseGateKey(phase: .idle, catalog: cat),
-            ModelPickerBar.quickstartPhaseGateKey(phase: .ready, catalog: cat),
+            ModelPickerBar.quickstartPhaseGateKey(phase: .dismissed, catalog: cat),
             ModelPickerBar.quickstartPhaseGateKey(
-                phase: .failed(message: "boom"),
+                phase: .failed(message: "boom", origin: .download),
                 catalog: cat
             ),
             ModelPickerBar.quickstartPhaseGateKey(phase: nil, catalog: cat),

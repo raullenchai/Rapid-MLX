@@ -1682,19 +1682,25 @@ struct ModelPickerBar: View {
 
     /// Pure helper: ``true`` iff a Quickstart flow currently owns
     /// the Start CTA. Disabled phases are ``.lowDiskWarning``,
-    /// ``.downloading``, ``.starting`` (everything between
-    /// "Get started" and "model ready to chat"). ``.idle`` /
-    /// ``.ready`` / ``.failed`` release the gate — ``.idle`` means
+    /// ``.downloading``, ``.starting`` and ``.ready`` (everything
+    /// between "Get started" and the user finishing setup). ``.idle`` /
+    /// ``.dismissed`` / ``.failed`` release the gate — ``.idle`` means
     /// the user hasn't clicked yet (or dismissed the card),
-    /// ``.ready`` means Quickstart finished and ChatView owns the
-    /// frame, ``.failed`` means the user can pick a different model
+    /// ``.dismissed`` means onboarding has released the frame,
+    /// ``.failed`` means the user can pick a different model
     /// from the picker to recover.
+    ///
+    /// ``.ready`` moved from released to in-flight with Onboarding V3.
+    /// It used to mean "Quickstart finished and ChatView owns the frame";
+    /// it now means the onboarding surface is still up, holding the whole
+    /// window, waiting for Start chatting. Releasing the gate there would
+    /// claim the picker owns a CTA the user cannot even see.
     static func isQuickstartInFlight(phase: QuickstartCoordinator.Phase?) -> Bool {
         guard let phase else { return false }
         switch phase {
-        case .lowDiskWarning, .downloading, .starting:
+        case .lowDiskWarning, .downloading, .starting, .ready:
             return true
-        case .idle, .ready, .failed:
+        case .idle, .dismissed, .failed:
             return false
         }
     }

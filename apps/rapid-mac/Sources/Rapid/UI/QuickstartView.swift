@@ -176,6 +176,47 @@ struct QuickstartModelChoice: Equatable, Identifiable, Sendable {
 @MainActor
 @Observable
 final class QuickstartCoordinator {
+    /// The four PUBLIC onboarding steps (Paper 05.1.G — "Four public
+    /// steps, and Ready is confirmed").
+    ///
+    /// Everything the user can be doing during setup collapses onto one of
+    /// these four. Micro-states are NOT steps: hardware detection,
+    /// recommendation loading, choosing a recommended / cached /
+    /// alternative model and reviewing a model all live inside
+    /// ``chooseModel``; preparing, offline, insufficient disk, an
+    /// interrupted download, a download failure and its retry all live
+    /// inside ``download``; starting, the pre-load memory confirmation and
+    /// Ready all live inside ``start``.
+    ///
+    /// A failure never becomes a fifth step — it keeps the macro step that
+    /// owns it (see ``FailureOrigin``), so the rail does not jump when
+    /// something goes wrong.
+    enum Step: Int, CaseIterable, Equatable, Sendable {
+        case welcome = 0
+        case chooseModel = 1
+        case download = 2
+        case start = 3
+
+        /// The one place the public step count is stated. Onboarding V3
+        /// moves the production progress model from three steps to four;
+        /// every "Step N of M" label reads M from here.
+        static let total: Int = Step.allCases.count
+
+        /// 1-based number as spoken and displayed ("Step 3 of 4").
+        var displayNumber: Int { rawValue + 1 }
+    }
+
+    /// Which macro step owns a terminal failure. Carried on ``Phase/failed``
+    /// so the progress rail keeps reporting the step the user was actually
+    /// in when it broke — a download failure is still Step 3, a load failure
+    /// is still Step 4.
+    enum FailureOrigin: Equatable, Sendable {
+        /// The pull did not finish (network, mirror, disk, cancellation).
+        case download
+        /// The weights are on disk but the serve did not come up.
+        case start
+    }
+
     /// Phases the Quickstart UI walks through.
     enum Phase: Equatable {
         /// Initial state — the hero card is showing or the surface
@@ -193,14 +234,28 @@ final class QuickstartCoordinator {
         case downloading
         /// Download finished, ``ServerManager.start`` is in flight.
         case starting
-        /// Server is serving ``alias`` and the seeded assistant message
-        /// has been appended to the active session. Quickstart hands off
-        /// to the normal chat surface.
+        /// The selected model is serving and onboarding is STOPPED here,
+        /// waiting for the user.
+        ///
+        /// This is the Onboarding V3 change of meaning (Paper 05.1.G —
+        /// "Readiness does not dismiss setup"). Before, readiness itself
+        /// completed the flow and handed off to chat; the user was never
+        /// asked and never confirmed. Now readiness only moves us here: the
+        /// full-window surface stays up, nothing is persisted, and the flow
+        /// ends only when the user activates Start chatting
+        /// (``confirmStartChatting(seedWelcome:)``).
         case ready
+        /// Terminal. The onboarding surface has released the frame, either
+        /// because the user confirmed Ready or because they revised their
+        /// intent mid-flow (``releaseInFlight``). Whether onboarding was
+        /// actually COMPLETED is ``done``'s business, not this phase's —
+        /// only the confirmed path writes it.
+        case dismissed
         /// Download or serve failed. ``message`` is a single-line
-        /// human-readable summary suitable for inline display.
+        /// human-readable summary suitable for inline display; ``origin``
+        /// pins the macro step that owns the failure so the rail stays put.
         /// "Retry" is offered; the persistent done-flag is NOT set.
-        case failed(message: String)
+        case failed(message: String, origin: FailureOrigin)
     }
 
     /// The default + recommended starter — the first-run decision.
@@ -365,6 +420,40 @@ Open the picker any time to switch models.
     }
     private(set) var stage: Stage = .welcome
 
+    /// The public macro step the current (phase, stage) pair belongs to.
+    ///
+    /// Pure and static so the four-step mapping can be pinned exhaustively
+    /// without a SwiftUI host, and so every rendered rail reads the SAME
+    /// function rather than hard-coding an ordinal per screen — which is
+    /// how the old model ended up with two screens both claiming step 3.
+    static func step(phase: Phase, stage: Stage) -> Step {
+        switch phase {
+        case .idle:
+            // The pre-download wizard screens are the only place ``stage``
+            // is load-bearing; once a download is in flight the lifecycle
+            // machine owns the step.
+            switch stage {
+            case .welcome:     return .welcome
+            case .chooseModel: return .chooseModel
+            }
+        case .lowDiskWarning, .downloading:
+            // Insufficient disk is a download-time interstitial, not a step
+            // of its own — the user is being asked about the pull they just
+            // authorised.
+            return .download
+        case .starting, .ready, .dismissed:
+            return .start
+        case .failed(_, let origin):
+            switch origin {
+            case .download: return .download
+            case .start:    return .start
+            }
+        }
+    }
+
+    /// Live macro step for the current state.
+    var step: Step { Self.step(phase: phase, stage: stage) }
+
     /// Advance from the hero to the model chooser ("Get started").
     func advanceToChooseModel() { stage = .chooseModel }
 
@@ -389,9 +478,17 @@ Open the picker any time to switch models.
     /// Set the model the wizard will download. No-op once a download is
     /// in flight (``phase != .idle``) so a late tap can't retarget an
     /// active pull.
+    ///
+    /// Moving to a different alias invalidates any pending-Ready
+    /// provenance: the flow that reached Ready was about the OLD model, and
+    /// keeping the record would let a later relaunch offer to confirm a
+    /// model the user has since walked away from.
     func select(_ choice: QuickstartModelChoice) {
         guard case .idle = phase else { return }
         selection = choice
+        if let pending = pendingReadyAlias, pending != choice.alias {
+            clearPendingReady()
+        }
     }
 
     /// True once ``markDone`` has been called. Read on every eligibility
@@ -459,6 +556,50 @@ Open the picker any time to switch models.
     /// true; cleared in lockstep by the ``awaitingWelcomeSeed`` didSet.
     static let awaitingSeedAliasKey: String = "rapid.quickstart.v1.awaitingSeedAlias"
 
+    /// Provenance for an onboarding flow that reached ``Phase/ready`` but
+    /// has NOT been confirmed with Start chatting (Paper 05.1.G —
+    /// "Completion is what persists, not readiness").
+    ///
+    /// ## Why a second key rather than reusing ``storageKey``
+    ///
+    /// ``storageKey`` answers "is onboarding finished?" and must stay
+    /// truthful: it is written only by the user's confirmation. But
+    /// "finished" and "never started" are not the only two states any more
+    /// — a user can quit while the Ready screen is on screen, and on the
+    /// next launch we owe them that same screen rather than either the
+    /// normal shell (which would silently swallow the flow) or the welcome
+    /// hero (which would pretend nothing happened). This key records
+    /// exactly that third state, and names the alias it is about so the
+    /// claim can be re-verified instead of trusted.
+    ///
+    /// ## What it is NOT
+    ///
+    /// It is not a readiness cache. A stored alias alone never re-enters
+    /// Ready — ``QuickstartView.handleServerStateChange`` re-enters it only
+    /// when ``ServerManager`` genuinely reports ``.ready`` for that alias
+    /// on this launch. If the model is no longer ready the user lands back
+    /// on the ordinary chooser with their pick preselected, and nothing
+    /// claims a download or a selection was "resumed".
+    ///
+    /// Cleared on: confirmation, ``releaseInFlight``, a fresh
+    /// ``enterDownloading``, ``skipForNow``, selecting a different alias,
+    /// and ``_testingReset``.
+    static let pendingReadyAliasKey: String = "rapid.quickstart.v1.pendingReadyAlias"
+
+    /// Alias of an unconfirmed Ready flow, or ``nil`` when there is none.
+    private(set) var pendingReadyAlias: String? {
+        didSet {
+            if let pendingReadyAlias {
+                UserDefaults.standard.set(pendingReadyAlias, forKey: Self.pendingReadyAliasKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.pendingReadyAliasKey)
+            }
+        }
+    }
+
+    /// True while an unconfirmed Ready flow is on the books.
+    var hasPendingReady: Bool { pendingReadyAlias != nil }
+
     init() {
         self.done = UserDefaults.standard.bool(forKey: Self.storageKey)
         self.legacyDone = UserDefaults.standard.bool(forKey: Self.legacyStorageKey)
@@ -468,12 +609,25 @@ Open the picker any time to switch models.
         // property in ``init`` does NOT trigger the didSet, so this read
         // can't clobber the persisted alias below.)
         self.awaitingWelcomeSeed = UserDefaults.standard.bool(forKey: Self.awaitingSeedKey)
+        self.pendingReadyAlias = UserDefaults.standard.string(forKey: Self.pendingReadyAliasKey)
         // #1524: if a deferred seed survived a quit, restore the model it
         // was waiting on so the seed observers match the served alias and
         // the welcome copy names the right model (not the reset default).
         if self.awaitingWelcomeSeed,
            let alias = UserDefaults.standard.string(forKey: Self.awaitingSeedAliasKey) {
             self.selection = Self.choice(forAlias: alias)
+        }
+        // An unconfirmed Ready flow restores its model and drops the user
+        // back at the chooser rather than the welcome hero — they already
+        // made this choice, and re-asking "would you like to get started?"
+        // of somebody who downloaded and loaded a model reads as amnesia.
+        //
+        // Deliberately NOT ``phase = .ready``: at init nothing has verified
+        // the model is actually up on this launch. The Ready screen is
+        // re-entered by the live server observer or not at all.
+        if let alias = self.pendingReadyAlias {
+            self.selection = Self.choice(forAlias: alias)
+            self.stage = .chooseModel
         }
     }
 
@@ -515,9 +669,29 @@ Open the picker any time to switch models.
         selection = Self.defaultChoice
         hasSeededWelcome = false
         awaitingWelcomeSeed = false
+        pendingReadyAlias = nil
         UserDefaults.standard.removeObject(forKey: Self.storageKey)
         UserDefaults.standard.removeObject(forKey: Self.awaitingSeedKey)
         UserDefaults.standard.removeObject(forKey: Self.awaitingSeedAliasKey)
+        UserDefaults.standard.removeObject(forKey: Self.pendingReadyAliasKey)
+    }
+
+    /// Drop the record of an unconfirmed Ready flow. Idempotent.
+    func clearPendingReady() {
+        pendingReadyAlias = nil
+    }
+
+    /// The user asked to leave setup for now ("Skip for now", Esc, or a
+    /// swipe-down on the sheet).
+    ///
+    /// Skip keeps its existing semantics — it does NOT write the completion
+    /// flag, so onboarding is still owed on a later launch — but it does
+    /// retire any pending-Ready record. Someone who deliberately walked away
+    /// from the Ready screen has answered the question it was asking; coming
+    /// back to it on the next launch would be re-asking.
+    func skipForNow() {
+        clearPendingReady()
+        awaitingWelcomeSeed = false
     }
 
     /// External clearer for the awaiting-seed provenance flag. Called
@@ -538,6 +712,9 @@ Open the picker any time to switch models.
     func enterDownloading() {
         phase = .downloading
         awaitingWelcomeSeed = false
+        // A fresh pull is a fresh flow: whatever reached Ready before is no
+        // longer the thing being confirmed.
+        clearPendingReady()
     }
 
     /// Surface the non-blocking low-disk warning between the hero card
@@ -565,8 +742,12 @@ Open the picker any time to switch models.
     /// Record a terminal failure. Does NOT flip ``done`` so the next
     /// surface render shows Quickstart again (with "Retry" if the
     /// failure was the download, plain "Get started" otherwise).
-    func enterFailed(message: String) {
-        phase = .failed(message: message)
+    ///
+    /// ``origin`` is the macro step that owns the failure. It exists so a
+    /// failure never reads as its own step: a broken pull still reports
+    /// Step 3, a serve that would not come up still reports Step 4.
+    func enterFailed(message: String, origin: FailureOrigin) {
+        phase = .failed(message: message, origin: origin)
     }
 
     /// Release the in-flight phase WITHOUT seeding the welcome or
@@ -582,54 +763,72 @@ Open the picker any time to switch models.
     /// parent's ``.onChange(of: activeID)`` retry observer doesn't
     /// fire a stray welcome message after the user revised intent.
     func releaseInFlight() {
-        phase = .ready
+        phase = .dismissed
         awaitingWelcomeSeed = false
+        clearPendingReady()
     }
 
-    /// Drop into ready state, seed the welcome assistant message into
-    /// the active session exactly once, and persist the done flag.
+    /// Readiness landed for the selected model: park onboarding on the
+    /// Ready screen and record that a confirmation is outstanding.
     ///
-    /// Idempotent on the second call: multiple ``.ready`` notifications
-    /// (auto-respawn cycle, scheduler tick) flip ``done`` once and seed
-    /// the message once. Returns ``true`` when the seed actually
-    /// landed.
+    /// This is deliberately the WHOLE of what readiness does. Before
+    /// Onboarding V3 this method also seeded the welcome message and wrote
+    /// the completion flag, so the app decided on the user's behalf that
+    /// setup was finished the instant a subprocess reported a port was
+    /// listening. Paper 05.1.G retires that ending explicitly ("Kept for the
+    /// record, not for build … must not be re-introduced"): readiness is
+    /// something to state, and completion is something to confirm.
     ///
-    /// Codex r2 MAJOR: ``seed`` returns ``true`` only when the welcome
-    /// message actually landed in a session. The parent's seed closure
-    /// short-circuits on ``store.activeID == nil`` (no active session
-    /// available — possible during the brief window before
-    /// ``SessionStore.awaitInitialLoad`` lands or if the user deleted
-    /// every session mid-Quickstart). We must NOT mark the flow as
-    /// done in that case: ``hasSeededWelcome`` would lock out the
-    /// retry on the next ``.ready`` fire, and the persistent done flag
-    /// would silently skip the welcome message forever.
-    @discardableResult
-    func markReady(seed: () -> Bool) -> Bool {
+    /// So nothing is persisted here except the provenance saying a
+    /// confirmation is owed, and the surface stays up.
+    ///
+    /// Idempotent, because readiness is not a single event: an auto-respawn
+    /// cycle, a residency refresh or a scheduler tick can all republish
+    /// ``.ready`` for the same serve. Repeat calls re-affirm the same state
+    /// and change nothing. A flow that has already been confirmed or
+    /// released is never dragged back onto the Ready screen.
+    func enterReady() {
+        guard !done else { return }
+        guard phase != .dismissed else { return }
         phase = .ready
-        if hasSeededWelcome {
-            // Already done on a prior tick — re-affirm ``done`` so a
-            // restored coordinator that lost the flag still persists
-            // it, but don't try to seed again.
-            markDone()
-            awaitingWelcomeSeed = false
-            return false
+        pendingReadyAlias = selection.alias
+    }
+
+    /// The user activated **Start chatting** — the single completion
+    /// transaction for onboarding.
+    ///
+    /// Runs, in order: seed the welcome message exactly once, persist the
+    /// completion flag, retire the pending-Ready provenance, and release the
+    /// surface. Everything outside this object's ownership — routing to
+    /// Chat, announcing completion, moving keyboard focus — is the caller's
+    /// half of the transaction and runs only when this returns ``true``.
+    ///
+    /// Idempotent by construction: the guard is the phase itself, so a
+    /// double-click, a repeated key activation, or a stray re-entry after
+    /// completion all return ``false`` without seeding a second welcome,
+    /// re-writing the flag, or re-running the caller's transition.
+    ///
+    /// - Parameter seedWelcome: appends the welcome assistant message to the
+    ///   intended chat session, returning ``true`` when it actually landed.
+    ///   A ``false`` return does NOT block completion — the user asked to
+    ///   start chatting and must not be stranded on a screen they already
+    ///   dismissed — but it does leave ``awaitingWelcomeSeed`` set so the
+    ///   parent's retry observer can land the message once a session exists.
+    /// - Returns: ``true`` when this call performed the transaction.
+    @discardableResult
+    func confirmStartChatting(seedWelcome: () -> Bool) -> Bool {
+        guard case .ready = phase else { return false }
+        if !hasSeededWelcome {
+            if seedWelcome() {
+                hasSeededWelcome = true
+                awaitingWelcomeSeed = false
+            } else {
+                awaitingWelcomeSeed = true
+            }
         }
-        let seeded = seed()
-        guard seeded else {
-            // Welcome couldn't land — leave the door open for the
-            // next ``.ready`` tick (or a retry after the user creates
-            // a session). Phase still flips to ``.ready`` so the
-            // visibility predicate's "in-flight" guard releases. Flag
-            // the deferred-seed provenance (codex r4 MAJOR) so the
-            // parent's activeID retry observer knows this is a real
-            // pending seed (not a user who manually picked the
-            // Quickstart alias from the picker after dismissing).
-            awaitingWelcomeSeed = true
-            return false
-        }
-        hasSeededWelcome = true
         markDone()
-        awaitingWelcomeSeed = false
+        clearPendingReady()
+        phase = .dismissed
         return true
     }
 
@@ -819,13 +1018,27 @@ struct QuickstartView: View {
     var onBrowseAll: () -> Void
 
     /// Callback the parent supplies for seeding the welcome message
-    /// into the active session. Closing over ``SessionStore`` /
-    /// ``ChatViewModel`` from outside keeps Quickstart from importing
-    /// the entire chat module surface. Returns ``true`` when the
-    /// message actually landed (an active session existed and the
-    /// append succeeded) so the coordinator can defer ``markDone``
-    /// until the welcome has reached the user (codex r2 MAJOR).
+    /// into the intended chat session. Closing over ``ChatViewModel``
+    /// from outside keeps Quickstart from importing the entire chat
+    /// module surface. Returns ``true`` when the message actually landed
+    /// (a session existed and the append succeeded) so the coordinator
+    /// can tell "seeded" from "still owed" (codex r2 MAJOR).
+    ///
+    /// Called from exactly one place — the Start chatting transaction —
+    /// so the welcome is a consequence of the user finishing setup rather
+    /// than of a subprocess reporting a listening port.
     var onSeedWelcome: () -> Bool
+
+    /// The parent's half of the Start chatting transaction, run ONLY after
+    /// ``QuickstartCoordinator/confirmStartChatting(seedWelcome:)`` reports
+    /// it performed the state change.
+    ///
+    /// Split this way so the two halves cannot disagree about whether
+    /// completion happened: the coordinator owns seeding, persistence and
+    /// dismissal; the parent owns routing to Chat, the accessibility
+    /// announcement and composer focus — none of which this view has the
+    /// environment to do, and all of which must fire exactly once.
+    var onCompleted: () -> Void = {}
 
     /// Test seam: override the pre-flight free-bytes probe so the
     /// unit / integration test suite can drive the low-disk-warning
@@ -877,8 +1090,17 @@ struct QuickstartView: View {
                 lowDiskCard(freeBytes: freeBytes, requiredBytes: requiredBytes)
             }
         case .downloading:
-            centeredCard(progressStep: 2) { downloadingCard }
-        case .starting, .ready:
+            centeredCard(progressStep: .download) { downloadingCard }
+        case .ready:
+            // Onboarding V3: readiness is a destination, not a hand-off.
+            // The surface stays here until the user confirms.
+            centeredCard(progressStep: .start) { readyCard }
+        case .dismissed:
+            // Terminal — the parent's visibility predicate has already
+            // dropped this surface. A one-frame race can still render here,
+            // so paint nothing rather than a step that is no longer true.
+            Color.clear
+        case .starting:
             // #1503: a serve handed off from Quickstart funnels through
             // ServerManager's pre-load memory guard. On a Mac under heavy
             // memory pressure the guard PARKS the load on
@@ -901,18 +1123,17 @@ struct QuickstartView: View {
                 // .ready is transitional — the parent swaps to ChatView, but
                 // a one-frame race can land here; the starting copy is a calm
                 // fallback so the user never sees a blank pane.
-                centeredCard(progressStep: 2) { startingCard }
+                centeredCard(progressStep: .start) { startingCard }
             }
-        case .failed(let message):
+        case .failed(let message, _):
             centeredCard(progressStep: nil) { failedCard(message: message) }
         }
     }
 
     /// The centered card chrome shared by the download-lifecycle states.
-    /// ``progressStep`` (0-indexed) shows the top progress bar on the
-    /// happy path (download / starting); ``nil`` omits it for the
-    /// low-disk / failed interstitials, where a "progress" bar would
-    /// misread.
+    /// ``progressStep`` shows the top progress bar on the happy path
+    /// (download / starting / ready); ``nil`` omits it for the low-disk /
+    /// failed interstitials, where a "progress" bar would misread.
     ///
     /// The card caps at 460pt but SHRINKS on a narrow detail pane rather
     /// than overflowing — ``QuickstartView`` lives in the split view's
@@ -922,7 +1143,7 @@ struct QuickstartView: View {
     /// the outer horizontal inset keeps the chrome inside the column.
     @ViewBuilder
     private func centeredCard<Content: View>(
-        progressStep: Int?,
+        progressStep: QuickstartCoordinator.Step?,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(spacing: 0) {
@@ -1039,7 +1260,8 @@ struct QuickstartView: View {
             .accessibilityLabel("Skip onboarding and go to the app")
             .padding(.bottom, 18)
 
-            OnboardingStepProgress(current: 0, total: 3).padding(.bottom, 34)
+            OnboardingStepProgress(current: QuickstartCoordinator.Step.welcome.rawValue)
+                .padding(.bottom, 34)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 44)
@@ -1058,7 +1280,7 @@ struct QuickstartView: View {
         let lowMemoryChoices = choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) }
         let tradeUpChoices = choices.filter { $0.tier == .tradeUp && !existingAliases.contains($0.alias) }
         VStack(alignment: .leading, spacing: 0) {
-            OnboardingTopBar(step: 1).padding(.top, 22)
+            OnboardingTopBar(step: .chooseModel).padding(.top, 22)
 
             Text("Choose your first model")
                 .scaledSystemFont(24, relativeTo: .title, weight: .bold)
@@ -1264,6 +1486,63 @@ struct QuickstartView: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
+    }
+
+    /// The Ready confirmation screen — the end of Step 4 and the only
+    /// thing that ends onboarding.
+    ///
+    /// Deliberately minimal: this PR carries the BEHAVIOUR change (Ready is
+    /// persistent, completion is confirmed) and reuses the surrounding
+    /// wizard's existing components and styling so the contract can be
+    /// exercised and tested. The Direction D treatment of this screen —
+    /// the ready indicator, the amber primary sitting in the content
+    /// column, the type scale — belongs to the Onboarding visual PR, which
+    /// consumes this state rather than redefining it.
+    ///
+    /// No spinner, no progress, no countdown: the model IS ready, and
+    /// dressing the wait for a click as work would be a lie about what the
+    /// app is doing.
+    @ViewBuilder
+    private var readyCard: some View {
+        VStack(spacing: 16) {
+            Text("SETUP COMPLETE")
+                .scaledSystemFont(10, weight: .semibold)
+                .tracking(1.4)
+                .foregroundStyle(.tertiary)
+
+            Text("\(coordinator.selection.displayName) is ready.")
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                completeOnboarding()
+            } label: {
+                Text("Start chatting")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            // The native default action, not custom key handling: Return
+            // activates it and Space activates it while focused, both via
+            // AppKit's ordinary button semantics.
+            .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("Quickstart.Ready.StartChatting")
+            .accessibilityLabel("Start chatting with \(coordinator.selection.displayName)")
+        }
+        .accessibilityIdentifier("Quickstart.Ready")
+    }
+
+    /// Run the Start chatting transaction.
+    ///
+    /// The coordinator half is authoritative and idempotent — it decides
+    /// whether this activation is the one that completes setup. The parent
+    /// half (route to Chat, announce, focus the composer) runs only on that
+    /// verdict, so a double activation cannot fire a second transition.
+    private func completeOnboarding() {
+        guard coordinator.confirmStartChatting(seedWelcome: onSeedWelcome) else { return }
+        onCompleted()
     }
 
     /// In-sheet twin of ContentView's memory-warning ``.alert`` (#1503).
@@ -1698,9 +1977,15 @@ struct QuickstartView: View {
                 )
             }
         case .cancelled:
-            coordinator.enterFailed(message: "Download was cancelled.")
+            coordinator.enterFailed(
+                message: "Download was cancelled.",
+                origin: .download
+            )
         case .failed(let message):
-            coordinator.enterFailed(message: QuickstartView.friendlyFailureMessage(raw: message))
+            coordinator.enterFailed(
+                message: QuickstartView.friendlyFailureMessage(raw: message),
+                origin: .download
+            )
         }
     }
 
@@ -1709,22 +1994,27 @@ struct QuickstartView: View {
         // user could click Get started, downloads finishes mid-flight,
         // ``server.start`` lands at ``.ready`` BEFORE the
         // download-status observer fired. Guard on the live state so
-        // both ordering paths converge on ``markReady``.
+        // both ordering paths converge on ``enterReady``.
         if case .ready(let alias) = server.state,
            alias == coordinator.selection.alias {
-            // Codex r3 MINOR + r4 MINOR: the completed Quickstart
-            // download job is dismissed inside the parent's
-            // ``seedQuickstartWelcome`` closure on the seed-landed
-            // branch. Centralising the dismiss inside the seed
-            // closure (rather than here on the seeded==true path)
-            // also covers the deferred-seed retry path: a later
-            // ``markReady(seed: seedQuickstartWelcome)`` invocation
-            // from the parent's ``store.activeID`` / ``server.state``
-            // observers lands the welcome AFTER this view has
-            // unmounted, so the view-site dismiss wouldn't fire.
-            _ = coordinator.markReady {
-                onSeedWelcome()
-            }
+            // Onboarding V3: this is the WHOLE readiness effect. Nothing is
+            // seeded, nothing is persisted and nothing is dismissed here —
+            // the user does that from the Ready screen. Repeat notifications
+            // (auto-respawn, residency tick) land on an idempotent no-op.
+            coordinator.enterReady()
+            return
+        }
+        // Relaunch into an unconfirmed Ready flow: the launch auto-start is
+        // bringing up the very model that flow was waiting on. Report Step 4
+        // truthfully while it loads instead of either fabricating Ready from
+        // the stored alias or leaving the user parked on the chooser while
+        // the app visibly works. If the load never lands, the crashed branch
+        // below and the ordinary chooser both remain reachable.
+        if case .starting(let alias) = server.state,
+           alias == coordinator.selection.alias,
+           coordinator.hasPendingReady,
+           case .idle = coordinator.phase {
+            coordinator.enterStarting()
             return
         }
         // Codex r2 BLOCKING: server moved on to a DIFFERENT alias
@@ -1748,7 +2038,13 @@ struct QuickstartView: View {
         if case .crashed(let alias, let message) = server.state,
            alias == coordinator.selection.alias,
            case .starting = coordinator.phase {
-            coordinator.enterFailed(message: QuickstartView.friendlyFailureMessage(raw: message))
+            // The weights are on disk; it is the load that failed. Keeping
+            // the origin means the rail still reads Step 4 rather than
+            // sending the user back through the download.
+            coordinator.enterFailed(
+                message: QuickstartView.friendlyFailureMessage(raw: message),
+                origin: .start
+            )
         }
     }
 

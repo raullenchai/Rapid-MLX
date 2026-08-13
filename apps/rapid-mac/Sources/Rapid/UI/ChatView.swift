@@ -202,6 +202,15 @@ struct ChatView: View {
     /// & start, retry). Owned by ``ContentView`` because starting a model
     /// is a window-level concern, not a chat-surface one.
     var onReadinessAction: (ModelReadiness.Action) -> Void = { _ in }
+    /// Monotonic counter the parent bumps when something outside this view
+    /// wants the composer to take keyboard focus — today, the onboarding
+    /// completion transaction dropping the user into their first chat.
+    ///
+    /// A counter rather than a Bool so a second request is distinguishable
+    /// from the first and nothing has to be reset afterwards. Zero is the
+    /// "never asked" value; ``ComposeTextEditor`` ignores it, so a plain
+    /// mount does not steal focus from whatever the user was doing.
+    var composerFocusRequest: Int = 0
 
     /// Backing state for the composer's inline model picker (Ollama-style).
     /// The picker lives in the compose box now, not a top control bar.
@@ -271,6 +280,14 @@ struct ChatView: View {
         // Drop a stale error banner once the server is provably ready.
         .onChange(of: server.state) { _, newState in
             if case .ready = newState { viewModel.clearStaleErrorBanner() }
+        }
+        // Forward an external focus request onto the composer's own token.
+        // Routed through the existing token rather than a second mechanism
+        // so every focus request in this view — Send, Cmd+L, onboarding
+        // completion — reaches the editor by the same path.
+        .onChange(of: composerFocusRequest) { _, request in
+            guard request != 0 else { return }
+            composeFocusToken &+= 1
         }
     }
 

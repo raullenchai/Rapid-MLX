@@ -417,6 +417,44 @@ struct AccessibilityIdentifierInventoryTests {
         )
     }
 
+    // MARK: - Onboarding
+
+    /// Onboarding's addressable controls, including the Ready surface added
+    /// with Onboarding V3.
+    ///
+    /// Ready matters more than the rest here: it is the one screen a golden
+    /// flow can now be *stuck* on. Readiness no longer dismisses setup, so a
+    /// harness that cannot find and press Start chatting never reaches the
+    /// app at all — it hangs on a screen that looks finished.
+    @Test("Onboarding names every step control, including the Ready confirmation")
+    func onboardingIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Quickstart.GetStarted""#,
+                #""Quickstart.Skip""#,
+                #""Quickstart.BrowseAll""#,
+                #""Quickstart.LowDisk.Continue""#,
+                #""Quickstart.LowDisk.Cancel""#,
+                #""Quickstart.Memory.SwitchToLowMemory""#,
+                #""Quickstart.Memory.LoadAnyway""#,
+                #""Quickstart.Memory.Cancel""#,
+                #""Quickstart.Ready""#,
+                #""Quickstart.Ready.StartChatting""#,
+            ],
+            in: "Sources/Rapid/UI/QuickstartView.swift",
+            surface: "Onboarding"
+        )
+        try assertDeclared(
+            [
+                #""Quickstart.Progress""#,
+                #""Quickstart.Footer.Back""#,
+                #""Quickstart.Footer.Primary""#,
+            ],
+            in: "Sources/Rapid/UI/OnboardingComponents.swift",
+            surface: "Onboarding components"
+        )
+    }
+
     /// The positive test above would still pass if someone re-added the
     /// container identifier, bringing the propagation bug back with it. Naming
     /// the wrapper is the mistake, so the absence has to be asserted directly.

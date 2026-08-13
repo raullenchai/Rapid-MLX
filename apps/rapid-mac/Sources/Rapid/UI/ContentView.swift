@@ -40,6 +40,10 @@ struct ContentView: View {
     @SceneStorage("Rapid.showLogs") private var showLogs: Bool = false
     /// Per-session "browse all models" dismissal of the Quickstart card.
     @State private var quickstartDismissedThisSession: Bool = false
+    /// Monotonic composer-focus request forwarded to ``ChatView``. Bumped
+    /// by the onboarding completion transaction so the user lands in their
+    /// first chat with the caret already in the message field.
+    @State private var composerFocusRequest: Int = 0
     @Environment(SettingsRouter.self) private var settingsRouter
     /// #223: launch-time auto-start "needs download" state — the empty
     /// state names the pending pull when non-nil.
@@ -164,6 +168,16 @@ struct ContentView: View {
             // ``.ready(<alias>)`` against a different alias than shown.
             if case .ready(let serving) = newState, !serving.isEmpty, serving != alias {
                 alias = serving
+            }
+            // Retire pending-Ready provenance the moment the app serves some
+            // OTHER model. The record names the alias it is about precisely
+            // so it can be falsified like this: once the user has moved on,
+            // offering to confirm the old flow on the next launch would be
+            // confirming something that is no longer true.
+            if case .ready(let serving) = newState,
+               quickstart.hasPendingReady,
+               serving != quickstart.selection.alias {
+                quickstart.clearPendingReady()
             }
         }
         .alert(
@@ -529,7 +543,8 @@ struct ContentView: View {
                 readiness: readiness,
                 catalogRefreshEnabled: !telemetryConsentPending,
                 onUserModelSelection: selectChatModel,
-                onReadinessAction: performReadinessAction
+                onReadinessAction: performReadinessAction,
+                composerFocusRequest: composerFocusRequest
             )
         case .missing:
             missingOverlay
@@ -552,7 +567,16 @@ struct ContentView: View {
                 // selection and left them on the alphabetical fallback
                 // (#1653). It opens Settings → Models now and leaves the
                 // wizard standing.
-                if !presented { quickstartDismissedThisSession = true }
+                //
+                // Routed through ``skipForNow`` for the same reason it is the
+                // same intent: a user who escapes the Ready screen has
+                // answered it, and returning them to it on the next launch
+                // would be re-asking. Safe on the completion path too — the
+                // record is already retired and this never touches ``done``.
+                if !presented {
+                    quickstartDismissedThisSession = true
+                    quickstart.skipForNow()
+                }
             }
         )
     }
@@ -564,9 +588,16 @@ struct ContentView: View {
             downloads: downloads,
             server: server,
             cachedModels: catalogEntries,
-            onSkip: { quickstartDismissedThisSession = true },
+            onSkip: {
+                quickstartDismissedThisSession = true
+                // Skip keeps its existing meaning — no completion flag — but
+                // it does retire a pending Ready confirmation, so walking
+                // away is not re-asked on the next launch.
+                quickstart.skipForNow()
+            },
             onBrowseAll: { quickstartDismissedThisSession = true },
-            onSeedWelcome: { true }
+            onSeedWelcome: seedQuickstartWelcome,
+            onCompleted: finishOnboardingHandoff
         )
         // QuickstartView was written for the detail column and its comments
         // cite a ~360pt worst case (the 640pt window floor minus the sidebar).
@@ -574,6 +605,43 @@ struct ContentView: View {
         // collapse to its content's ideal width. Pin it near the window floor
         // so the model cards keep the room they were laid out for.
         .frame(minWidth: 620, minHeight: Self.minWindowHeight)
+    }
+
+    /// Steps 1 + 2 of the Start chatting transaction: make sure the chat the
+    /// user is about to land in exists, and put the welcome message in it —
+    /// exactly once, enforced by the coordinator that calls this.
+    ///
+    /// ``ChatViewModel`` always holds an open conversation, so "ensure the
+    /// session exists" is a matter of making that conversation the one on
+    /// screen rather than creating anything. Returning the append's own
+    /// verdict (rather than an unconditional ``true``) is what lets the
+    /// coordinator tell a landed welcome from one still owed.
+    private func seedQuickstartWelcome() -> Bool {
+        section = .chat
+        // A transcript that already holds messages is not a failed seed —
+        // it is somebody's conversation, and dropping an onboarding intro
+        // into the middle of it would be worse than skipping the greeting.
+        // Either way nothing is left owed, so this reports success and the
+        // coordinator does not record a pending welcome.
+        guard chat.messages.isEmpty else { return true }
+        return chat.seedAssistantWelcome(quickstart.seedMessage)
+    }
+
+    /// The parent's half of the Start chatting transaction, run once, only
+    /// after the coordinator confirms it performed the completion.
+    ///
+    /// Order matters here. The surface is already gone by this point (the
+    /// coordinator moved to ``.dismissed``, so ``quickstartVisible`` is
+    /// false and the ordinary shell is back — same window, same size, no
+    /// second window and nothing to fade). What is left is: land on Chat,
+    /// SAY that setup finished, and only then move the caret. The
+    /// announcement is posted before the focus request because a VoiceOver
+    /// user who hears the field described first never learns that the thing
+    /// they just activated actually worked.
+    private func finishOnboardingHandoff() {
+        section = .chat
+        VoiceOverAnnouncer.announce("Setup complete. Opening your first chat.")
+        composerFocusRequest &+= 1
     }
 
     /// True when the Quickstart card should render in place of the chat
@@ -608,11 +676,32 @@ struct ContentView: View {
         ) {
             return true
         }
-        // Keep the card up while the user is mid-flow (download / start).
-        switch quickstart.phase {
-        case .downloading, .starting, .failed, .lowDiskWarning:
+        // A flow that reached Ready and was never confirmed is still owed a
+        // confirmation, and ``isEligible`` cannot say so: it reads
+        // ``lastServedAlias``, which that flow has by definition already
+        // written. Without this clause the relaunch case is unreachable —
+        // the user would be dropped straight into the app having never been
+        // asked, which is the automatic hand-off under another name.
+        if quickstart.hasPendingReady, !quickstart.done {
             return true
-        case .idle, .ready:
+        }
+        // Keep the card up while the user is mid-flow (download / start /
+        // waiting to confirm Ready).
+        return ContentView.quickstartRetainsSurface(phase: quickstart.phase)
+    }
+
+    /// Does onboarding still own the window in this phase?
+    ///
+    /// Pure so the one rule that decides whether setup is on screen can be
+    /// pinned exhaustively. ``.ready`` is the load-bearing case: readiness
+    /// used to release the surface, and the whole point of Onboarding V3 is
+    /// that it no longer does — the screen stays until the user confirms.
+    /// Only the two terminal states let the shell back through.
+    static func quickstartRetainsSurface(phase: QuickstartCoordinator.Phase) -> Bool {
+        switch phase {
+        case .downloading, .starting, .failed, .lowDiskWarning, .ready:
+            return true
+        case .idle, .dismissed:
             return false
         }
     }

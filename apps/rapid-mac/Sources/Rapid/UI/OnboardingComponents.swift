@@ -42,9 +42,15 @@ struct OnboardingBrandMark: View {
 /// buttons (#1792). A labelled linear meter communicates position without
 /// advertising swipe, drag, or arbitrary-page navigation.
 /// ``current`` is 0-indexed.
+///
+/// ``total`` defaults to ``QuickstartCoordinator.Step.total`` so the public
+/// step count lives in exactly one place. Onboarding V3 (Paper 05.1.G,
+/// "Four public steps, and Ready is confirmed") makes that four — Welcome,
+/// Choose a model, Download, Start — and no "Step N of 3" language survives
+/// anywhere in production.
 struct OnboardingStepProgress: View {
     let current: Int
-    let total: Int
+    var total: Int = QuickstartCoordinator.Step.total
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 5) {
@@ -68,16 +74,18 @@ struct OnboardingStepProgress: View {
 // MARK: - Top bar
 
 /// The interior-step header: brand mark + wordmark on the left, step
-/// dots on the right. ``step`` is the 0-indexed current step.
+/// dots on the right. ``step`` is the public macro step this screen
+/// belongs to — never a raw ordinal, so a screen can't drift out of the
+/// four-step model by miscounting.
 struct OnboardingTopBar: View {
-    let step: Int
+    let step: QuickstartCoordinator.Step
 
     var body: some View {
         HStack(spacing: 10) {
             OnboardingBrandMark(size: 26)
             Text("Rapid-MLX").scaledSystemFont(13, weight: .semibold)
             Spacer()
-            OnboardingStepProgress(current: step, total: 3)
+            OnboardingStepProgress(current: step.rawValue)
         }
     }
 }
