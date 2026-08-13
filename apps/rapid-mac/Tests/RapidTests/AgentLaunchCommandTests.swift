@@ -25,10 +25,13 @@ struct AgentLaunchCommandTests {
         #expect(cli == "'/Users/alice/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx'")
         #expect(cli.hasPrefix("'") && cli.hasSuffix("'"))
 
+        // Local key so the generator input and the prefix assertion cannot
+        // drift apart (the suite property is a different value).
+        let key = "secret"
         let writer = IntegrationLaunchCommand.configWriter(
             id: "claude-code",
             serverURL: "http://127.0.0.1:8004",
-            key: "secret",
+            key: key,
             model: "model",
             cli: cli
         )
