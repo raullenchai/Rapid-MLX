@@ -614,6 +614,9 @@ class Handler(BaseHTTPRequestHandler):
                 body = {}
         target = body.get("model") if isinstance(body.get("model"), str) else ""
         _event("model_load", alias=target)
+        delay_ms = int(_setting("FAKE_RESIDENT_LOAD_DELAY_MS", "0") or "0")
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000)
         if _setting("FAKE_REJECT_IMAGE_LOAD") == "1" and target == FAKE_IMAGE_ALIAS:
             # The engine refuses to admit this model (missing Python extra).
             # Mirror the real server's rejection envelope so

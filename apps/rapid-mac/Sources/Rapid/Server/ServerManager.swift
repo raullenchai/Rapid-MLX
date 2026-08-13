@@ -248,6 +248,18 @@ final class ServerManager {
     /// instead of a silent no-op (#1838).
     private(set) var residentLoadFailures: [String: ResidentLoadFailure] = [:]
 
+    /// Aliases currently being admitted through the in-process residency
+    /// endpoint. Unlike a cold process start, this work does not change the
+    /// global ``state`` to `.starting`, so surfaces need this alias-scoped
+    /// signal to acknowledge a Download & start tap immediately.
+    private(set) var residentLoadsInFlight: [String: Int] = [:]
+
+    func isResidentLoadInFlight(_ alias: String) -> Bool {
+        residentLoadsInFlight[
+            alias.trimmingCharacters(in: .whitespacesAndNewlines)
+        ] != nil
+    }
+
     /// The most recent rejection for `alias`, or `nil` if the last attempt
     /// for that model succeeded or no rejection has been recorded. Read by
     /// the surface that initiated the load so it can present the engine's
@@ -890,6 +902,19 @@ final class ServerManager {
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
         if Self.residencyLoadApplies(residencyEligible: residencyEligible, readyWithChild: readyWithChild) {
+            // Publish before crossing the network await so SwiftUI replaces
+            // the still-pressable CTA with an honest working state in the
+            // same run-loop turn. Count rather than coalescing here: callers
+            // outside the GUI retain latest-attempt-wins concurrency semantics.
+            residentLoadsInFlight[trimmed, default: 0] += 1
+            defer {
+                let remaining = (residentLoadsInFlight[trimmed] ?? 1) - 1
+                if remaining == 0 {
+                    residentLoadsInFlight[trimmed] = nil
+                } else {
+                    residentLoadsInFlight[trimmed] = remaining
+                }
+            }
             let estimate = estimatedMemoryGB ?? ModelSizing.estimate(alias: trimmed).totalGB
             let result = await residencyClient.load(
                 alias: trimmed,

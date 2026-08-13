@@ -252,6 +252,24 @@ final class ResidentLoadRejectProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 @Suite("Resident-load rejection feedback", .serialized)
 struct ResidentLoadFeedbackTests {
+    @Test("Resident admission publishes alias-scoped working state immediately")
+    func publishesResidentLoadInFlightState() async {
+        defer { ResidentLoadRejectProtocol.reset() }
+        let server = makeServer()
+        let alias = "flux2-klein-4b"
+        ResidentLoadRejectProtocol.gateAlias = alias
+
+        let load = Task { @MainActor in
+            await server.ensureServing(alias: alias, hfPath: nil)
+        }
+        #expect(await pollUntil { ResidentLoadRejectProtocol.gateHasHeldOne })
+        #expect(server.isResidentLoadInFlight(alias))
+
+        ResidentLoadRejectProtocol.releaseGate()
+        _ = await load.value
+        #expect(!server.isResidentLoadInFlight(alias))
+    }
+
     /// The core defect (#1838): the engine returns an actionable reason, the
     /// ``ServerResidencyClient`` maps it to ``.rejected(detail)``, but the
     /// GUI layer previously dropped that result — the failure reached only the

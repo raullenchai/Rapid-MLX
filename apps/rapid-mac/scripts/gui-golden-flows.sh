@@ -2681,7 +2681,8 @@ flow_image_generation() {
     log "  image-generation OK"
 }
 flow_resident_load_rejected() {
-    start_persona resident-load-rejected FAKE_REJECT_IMAGE_LOAD=1
+    start_persona resident-load-rejected FAKE_REJECT_IMAGE_LOAD=1 \
+        FAKE_RESIDENT_LOAD_DELAY_MS=1500
 
     dismiss_first_run
 
@@ -2751,6 +2752,19 @@ flow_resident_load_rejected() {
     # 4. The wire must show the load was ATTEMPTED in-process and REJECTED.
     wait_fake_event '.event == "model_load"' \
         "the Images action never issued an in-process /v1/models/load"
+
+    # The request is deliberately held open: the tap must immediately replace
+    # the CTA with a working state. Before this regression fix HF was already
+    # writing the checkpoint while the UI still said "isn't downloaded yet"
+    # and kept showing a pressable Download & start button.
+    see_main "$OUT/rlr-in-flight.json"
+    jq -e '[.data.ui_elements[]? | .value? | strings] | any(contains("Downloading or loading the image model"))' \
+        "$OUT/rlr-in-flight.json" >/dev/null \
+        || die "resident image download started without visible working feedback"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
+        "$OUT/rlr-in-flight.json" >/dev/null; then
+        die "Download & start remained pressable while its resident load was in flight"
+    fi
     wait_fake_event '.event == "model_load_rejected"' \
         "the fake did not reject the in-process image load (FAKE_REJECT_IMAGE_LOAD not applied)"
 

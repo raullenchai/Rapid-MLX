@@ -193,7 +193,18 @@ struct ImagesView: View {
     /// engine resident beside the chat engine; otherwise the shared resolver
     /// presents the same on-demand load guidance used by Chat.
     private var readiness: ModelReadiness {
-        ModelReadiness.resolve(
+        // In-process image admission leaves the chat sidecar globally
+        // `.ready`, so the generic resolver cannot infer that this alias is
+        // downloading/loading. Use ServerManager's alias-scoped SSOT; without
+        // it the CTA appears dead and remains repeatedly pressable while HF is
+        // already writing gigabytes to disk.
+        if server.isResidentLoadInFlight(viewModel.selectedAlias) {
+            return .starting(
+                alias: viewModel.selectedAlias,
+                detail: "Downloading or loading the image model…"
+            )
+        }
+        return ModelReadiness.resolve(
             serverState: server.readinessState(for: viewModel.selectedAlias),
             alias: viewModel.selectedAlias,
             cacheState: imageCacheState,
@@ -272,6 +283,10 @@ struct ImagesView: View {
             ),
             imageMode: viewModel.isEditing ? .editing : .generation
         )
+        // A cold resident load can change the cache while the sidecar stays
+        // globally ready. Refresh this surface so its cached/downloaded copy
+        // cannot remain stale after the request settles.
+        await viewModel.refreshCatalog()
     }
 
     private var sendEnabled: Bool {
