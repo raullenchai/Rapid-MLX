@@ -73,12 +73,11 @@ class Glm47ToolParser(ToolParser):
 
     def _get_tool_names(self, request: dict[str, Any] | None) -> set[str]:
         """Extract valid tool names from the request."""
-        if not request or "tools" not in request:
+        if not request:
             return set()
+        tools = request.get("tools") or []
         return {
-            t.get("function", {}).get("name", "")
-            for t in request.get("tools", [])
-            if isinstance(t, dict)
+            t.get("function", {}).get("name", "") for t in tools if isinstance(t, dict)
         }
 
     def extract_tool_calls(

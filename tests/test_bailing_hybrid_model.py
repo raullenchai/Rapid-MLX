@@ -213,6 +213,17 @@ def test_glm47_parser_handles_bailing_wire():
     assert json.loads(r.tool_calls[0]["arguments"]) == {"city": "Tokyo"}
 
 
+def test_glm47_parser_accepts_null_tools_from_plain_chat_request():
+    """OpenAI request serialization includes ``tools: null`` for plain chat."""
+    from vllm_mlx.tool_parsers.glm47_tool_parser import Glm47ToolParser
+
+    parser = Glm47ToolParser(None)
+    result = parser.extract_tool_calls("A normal answer", {"tools": None})
+
+    assert not result.tools_called
+    assert result.content == "A normal answer"
+
+
 def test_gate_retain_all_groups():
     """topk_group == n_group keeps every group (codex r3 #1: the drop
     path faulted on argpartition(kth=-1))."""
