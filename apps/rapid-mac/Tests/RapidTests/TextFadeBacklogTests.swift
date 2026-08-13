@@ -121,6 +121,8 @@ struct TextFadeRateTests {
     @Test("A batch of many units reads as a fast rate, not a slow one")
     func batchSizeDrivesTheRate() {
         let (renderer, animator) = makeAnimator()
+        var timestamps: [CFTimeInterval] = [1.0, 1.1]
+        animator.testing_setClock { timestamps.removeFirst() }
 
         // Two flushes, each carrying many words — the shape a debounced
         // compiler produces against a fast model.

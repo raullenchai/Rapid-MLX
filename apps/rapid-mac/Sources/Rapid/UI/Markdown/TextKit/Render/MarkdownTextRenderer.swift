@@ -12,6 +12,7 @@ import AppKit
 ///
 /// ChatGPT made the same call: its `HorizontallyScrollingMarkdownTextBlock`
 /// has `typealias Body = Never`, the signature of an `NSViewRepresentable`.
+@MainActor
 final class MarkdownTextRenderer {
 
     public let textContentStorage = NSTextContentStorage()
@@ -60,6 +61,15 @@ final class MarkdownTextRenderer {
 
     /// Character offset of the typing dot, or nil when it is absent.
     public private(set) var typingDotLocation: Int?
+
+    /// Visible prose without the private attachment character used by the
+    /// streaming typing dot. Custom-drawn text views publish this through AX.
+    var accessibleText: String {
+        guard let storage = textContentStorage.textStorage else { return "" }
+        return (storage.string as NSString).substring(
+            with: NSRange(location: 0, length: min(proseLength, storage.length))
+        )
+    }
 
     private func typingDotString(trailing prose: NSAttributedString) -> NSAttributedString {
         let font = NSFont.systemFont(ofSize: options.textPointSize)

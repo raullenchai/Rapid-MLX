@@ -183,25 +183,6 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             return true
         }
 
-        /// Follow the bottom at most once per runloop turn.
-        ///
-        /// Both notifications fire many times per streamed batch — the
-        /// document grows as text is appended, the clip view resizes as rows
-        /// settle — and each `scrollToBottom` runs `clipView.scroll(to:)` plus
-        /// `reflectScrolledClipView`, which forces an AppKit layout pass.
-        ///
-        /// Measured on a 5 760-character answer before this coalescing:
-        /// 2 020 SSE flushes produced **6 200** scrolls, three per batch. The
-        /// main thread spent so long in those layout passes that the stream
-        /// reader's `await MainActor.run` waited 51 ms per hop (native-chat's
-        /// equivalent: 2.1 ms), so reading the SSE stream was itself throttled
-        /// by scrolling. The visible symptom was a 5 760-character reply
-        /// taking 181 s to render against an 18 s transmission.
-        ///
-        /// Scrolling more than once per frame cannot show the user anything —
-        /// only the last position of a runloop turn is ever drawn.
-        }
-
         private func observeScrollView(_ scrollView: NSScrollView) {
             scrollView.contentView.postsBoundsChangedNotifications = true
             scrollView.contentView.postsFrameChangedNotifications = true

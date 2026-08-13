@@ -35,6 +35,9 @@ final class MarkdownTextBlockView: NSView {
         self.renderer = MarkdownTextRenderer(options: options)
         super.init(frame: .zero)
         wantsLayer = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityEnabled(true)
     }
 
     @available(*, unavailable)
@@ -72,6 +75,10 @@ final class MarkdownTextBlockView: NSView {
 
         renderer.update(options: options)
         renderer.setBlocks(blocks, showsTypingDot: wantsDot)
+        // A custom-drawn NSView has no automatic text semantics. Mirror the
+        // backing text into AX so VoiceOver and GUI automation can read the
+        // answer just as they could through MarkdownUI's native Text views.
+        setAccessibilityValue(renderer.accessibleText)
 
         if streaming, fadeConfiguration.isEnabled, let fadeState {
             let animator: TextFadeAnimator

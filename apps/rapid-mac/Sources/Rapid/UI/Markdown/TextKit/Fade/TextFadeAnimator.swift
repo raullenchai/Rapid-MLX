@@ -42,6 +42,9 @@ final class TextFadeAnimator {
     /// starts here.
     private var scheduledLength = 0
     private var lastGrowthTime: CFTimeInterval?
+    /// Injectable monotonic clock. Production uses Core Animation's clock;
+    /// tests pin it so rate estimation does not depend on scheduler latency.
+    private var now: () -> CFTimeInterval = CACurrentMediaTime
 
     /// Colour newly-arrived text is tinted toward before decaying.
     public var accentColor: NSColor = .controlAccentColor
@@ -139,7 +142,7 @@ final class TextFadeAnimator {
         }
 
         let newRange = NSRange(location: scheduledLength, length: length - scheduledLength)
-        let now = CACurrentMediaTime()
+        let now = now()
 
         let units = enumerateUnits(in: newRange)
         scheduledLength = length
@@ -446,4 +449,5 @@ final class TextFadeAnimator {
     /// Advance the frame loop with an explicit clock, bypassing the display
     /// link. Lets the timeline be tested without racing a real stream.
     func testing_tick(at time: CFTimeInterval) { tick(at: time) }
+    func testing_setClock(_ clock: @escaping () -> CFTimeInterval) { now = clock }
 }

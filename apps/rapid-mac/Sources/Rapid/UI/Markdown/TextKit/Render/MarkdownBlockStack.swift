@@ -79,13 +79,9 @@ struct MarkdownBlockStack: View {
                     // scales its base size off the same @ScaledMetric curve
                     // as the theme, so display math tracks Dynamic Type with
                     // the prose around it.
-                    HStack {
-                        Spacer(minLength: 0)
-                        MathView(latex: block.latex, displayMode: true)
-                            .padding(.vertical, 4)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity)
+                    MathView(latex: block.latex, displayMode: true)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -127,7 +123,6 @@ struct MarkdownBlockStack: View {
         return groups
     }
 }
-
 // MARK: - AppKit bridges
 
 private struct MarkdownTextBlockRepresentable: NSViewRepresentable {

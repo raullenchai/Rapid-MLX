@@ -13,67 +13,109 @@ AXApplication title="Rapid-MLX"
             AXButton id="Sidebar.Conversation.Pin.<uuid>" desc="Pin conversation" help="Pin conversation" enabled=true
             AXPopUpButton id="Sidebar.Conversation.Menu.<uuid>" desc="Conversation actions" enabled=true
             AXButton id="Sidebar.Conversation.<uuid>" desc="shape:prose write the opening of a story a…" enabled=true
+          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
+          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
+          AXButton id="Transcript.JumpToBottom" desc="Jump to latest" enabled=true
           AXScrollArea
-            AXOpaqueProviderGroup subrole=AXOpaqueProviderList enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
+            AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
+            AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-              AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-              AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
+              AXButton title="复制" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
+              AXButton title="复制" enabled=true
+            AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-              AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-              AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-              AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
-              AXStaticText value=text enabled=true
-              AXScrollArea
-                AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-              AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-              AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-              AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-              AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-              AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-              AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-              AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
-              AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
-              AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
-              AXStaticText value=text enabled=true
-              AXStaticText value=text enabled=true
-              AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
-              AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+              AXButton title="复制" enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
+            AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
+            AXScrollArea
+              AXOutline desc="Markdown table" enabled=true
+                AXRow subrole=AXOutlineRow
+                  AXCell enabled=true
+                    AXGroup subrole=AXHostingView
+                      AXStaticText value=text enabled=true
+                  AXCell enabled=true
+                    AXGroup subrole=AXHostingView
+                      AXStaticText value=text enabled=true
+                  AXCell enabled=true
+                    AXGroup subrole=AXHostingView
+                      AXStaticText value=text enabled=true
+                AXRow subrole=AXOutlineRow
+                  AXCell enabled=true
+                    AXGroup subrole=AXHostingView
+                      AXStaticText value=text enabled=true
+                  AXCell enabled=true
+                    AXGroup subrole=AXHostingView
+                      AXStaticText value=text enabled=true
+                  AXCell enabled=true
+                    AXGroup subrole=AXHostingView
+                      AXStaticText value=text enabled=true
+                AXColumn id="<uuid>"
+                AXColumn id="<uuid>"
+                AXColumn id="<uuid>"
+                AXGroup
+                  AXButton subrole=AXSortButton title="model" enabled=true
+                  AXButton subrole=AXSortButton title="size" enabled=true
+                  AXButton subrole=AXSortButton title="speed" enabled=true
+              AXScrollBar value=number enabled=false
+              AXScrollBar value=number enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
+            AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Edit.<uuid>" desc="Edit message" help="Edit message" enabled=true
+            AXDisclosureTriangle desc="Reasoning" value=bool:false enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy response" help="Copy response" enabled=true
+            AXButton id="ChatView.Message.SelectText.<uuid>" desc="Select text" help="Select text" enabled=true
+            AXButton id="ChatView.Message.Retry.<uuid>" desc="Retry response" enabled=true
             AXScrollBar value=number enabled=true
               AXValueIndicator value=number
               AXButton subrole=AXIncrementArrow
@@ -86,7 +128,16 @@ AXApplication title="Rapid-MLX"
           AXButton id="ChatView.AddPhotos" desc="Add photos" help="This model doesn't support images" enabled=false
           AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
           AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+          AXButton id="info.circle" desc="Show model details" help="Show model details" enabled=true
           AXButton id="ChatView.SendOrStopButton" desc="Send message" enabled=false
+      AXButton desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
+      AXUnknown desc="Server status" enabled=true
+      AXUnknown desc="Tokens per second: no data yet" enabled=true
+      AXUnknown desc="CPU <percent>" enabled=true
+      AXUnknown desc="GPU <gpu>" enabled=true
+      AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true
+      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> <update-state>" help="Rapid-MLX <version> <update-state>" enabled=true
     AXToolbar
       AXButton desc="Hide Sidebar" enabled=true
       AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true

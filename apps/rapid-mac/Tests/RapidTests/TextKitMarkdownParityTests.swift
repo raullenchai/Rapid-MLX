@@ -13,6 +13,22 @@ struct TextKitMarkdownParityTests {
         TextKitMarkdownView.compile(source).items
     }
 
+    @Test("Custom TextKit prose remains readable through accessibility")
+    func prosePublishesAccessibilityValue() {
+        let options = MarkdownOptions.assistantTranscript()
+        let view = MarkdownTextBlockView(options: options)
+        view.configure(
+            blocks: [.init(runs: [InlineRun(text: "Hello from TextKit")], kind: .paragraph)],
+            options: options,
+            streaming: true,
+            fadeState: TextFadeAnimationState(),
+            fadeConfiguration: .off
+        )
+        #expect(view.isAccessibilityElement())
+        #expect(view.accessibilityRole() == .staticText)
+        #expect(view.accessibilityValue() as? String == "Hello from TextKit")
+    }
+
     // MARK: - Structural parity with the MarkdownUI path
 
     @Test("Prose, code and tables compile to distinct blocks")

@@ -26,6 +26,9 @@ final class MarkdownCodeBlockView: NSView {
         wantsLayer = true
         layer?.cornerRadius = options.codeCornerRadius
         layer?.masksToBounds = true
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityEnabled(true)
         setUpHeader()
     }
 
@@ -72,6 +75,7 @@ final class MarkdownCodeBlockView: NSView {
         codeOptions.paragraphSpacing = 0
         renderer.update(options: codeOptions)
         renderer.setCode(code, language: language)
+        setAccessibilityValue(code)
 
         headerLabel.stringValue = language?.capitalized ?? ""
         headerLabel.isHidden = (language?.isEmpty ?? true)
