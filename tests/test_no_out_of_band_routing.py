@@ -129,6 +129,13 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # of that changes. Read by ``vllm_mlx.scheduler._get_request_sampler``
         # only, never by config / aliases / model_auto_config.
         "RAPID_MLX_DISABLE_FUSED_SAMPLER",
+        # Opt-in re-quantization of the lm_head when serving fp8-block
+        # checkpoints through the load-time mxfp8 repack
+        # (vllm_mlx/fp8_repack.py). A precision/speed knob on an
+        # already-selected model: which checkpoint loads, which parser
+        # fires, which tier engages — none of that changes. Default off
+        # keeps the load bit-faithful to the published weights.
+        "RAPID_MLX_FP8_LM_HEAD_AFFINE8",
         # Test/integration helpers — server URL for integration suites,
         # not consulted at runtime by the engine.
         "RAPID_MLX_BASE_URL",

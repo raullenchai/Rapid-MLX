@@ -277,12 +277,33 @@ def test_online_load_repacks_and_runs(fp8_bailing_checkpoint):
     np.testing.assert_array_equal(got_bytes, src_bytes)
 
     # ...bf16-shipped modules stayed plain (checkpoint fidelity the
-    # offline path can't offer for the router).
+    # offline path can't offer for the router), INCLUDING the lm_head —
+    # the affine8 head speedup is opt-in via env var, default faithful.
     assert not hasattr(model.model.layers[1].mlp.gate, "scales")
     assert not hasattr(model.model.layers[1].attention.q_a_proj, "scales")
+    assert not hasattr(model.lm_head, "scales")
 
     # Forward runs and yields finite logits.
     logits = model(mx.array([[1, 2, 3]]))
     mx.eval(logits)
     assert logits.shape == (1, 3, 128)
+    assert bool(mx.all(mx.isfinite(logits.astype(mx.float32))))
+
+
+def test_opt_in_lm_head_affine8(fp8_bailing_checkpoint, monkeypatch):
+    """RAPID_MLX_FP8_LM_HEAD_AFFINE8=1 quantizes ONLY the lm_head."""
+    from vllm_mlx.utils.tokenizer import _register_vendored_archs
+
+    _register_vendored_archs()
+    src, _ = fp8_bailing_checkpoint
+    monkeypatch.setenv("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "1")
+    model = load_fp8_model_online(src)
+    head = model.lm_head
+    assert hasattr(head, "scales") and head.bits == 8 and head.group_size == 64
+    assert getattr(head, "mode", "affine") == "affine"
+    # Everything else untouched: fp8 modules still mxfp8, router still fp.
+    assert model.model.layers[0].attention.q_proj.mode == "mxfp8"
+    assert not hasattr(model.model.layers[1].mlp.gate, "scales")
+    logits = model(mx.array([[1, 2, 3]]))
+    mx.eval(logits)
     assert bool(mx.all(mx.isfinite(logits.astype(mx.float32))))

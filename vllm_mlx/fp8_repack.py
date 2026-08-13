@@ -24,6 +24,16 @@ load time into mlx's ``mxfp8`` quantized layout — **bit-losslessly**:
   stays bf16, which the offline path could not offer (mlx_lm quantizes
   it 8-bit affine via the model's quant_predicate).
 
+One deliberate, opt-in deviation (default OFF — the default load is
+fully faithful): setting ``RAPID_MLX_FP8_LM_HEAD_AFFINE8=1``
+re-quantizes the untied ``lm_head`` to affine 8-bit (group 64, float
+scale+bias) from its loaded bf16 values. Decode is dominated by the
+bf16 head read (483 MB on tiny — measured 1.0 ms/token, ~90% of the
+faithful-vs-offline gap); affine8 halves that while staying far more
+accurate than the offline path's mxfp8 head (measured on real hidden
+states: top-1 flips 0%, max |Δlogit| 0.08 on a ~41 logit range, vs
+4.2% flips / 1.05 for mxfp8's power-of-two scales).
+
 Memory: the model skeleton's random init and the ``nn.quantize`` graph
 stay lazy (never evaluated); only the repacked arrays materialize, so
 peak RSS is about the checkpoint size (~8.4 GB for tiny), not the bf16
@@ -35,6 +45,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import os
 import struct
 from pathlib import Path
 
@@ -218,6 +229,23 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
     if hasattr(model, "sanitize"):
         weights = model.sanitize(weights)
     model.load_weights(list(weights.items()), strict=True)
+
+    # Opt-in (default OFF, keeping the load fully checkpoint-faithful):
+    # RAPID_MLX_FP8_LM_HEAD_AFFINE8=1 quantizes the untied bf16 lm_head
+    # to affine 8-bit from its just-loaded real values — ~+10% decode on
+    # tiny for a measured-zero top-1 change (see module docstring).
+    want_q = os.environ.get("RAPID_MLX_FP8_LM_HEAD_AFFINE8", "") == "1"
+    if want_q and isinstance(getattr(model, "lm_head", None), nn.Linear):
+        nn.quantize(
+            model,
+            class_predicate=lambda path, module: (
+                {"group_size": 64, "bits": 8, "mode": "affine"}
+                if path == "lm_head"
+                else False
+            ),
+        )
+        logger.info("fp8 online repack: lm_head re-quantized to affine8 (opt-in)")
+
     mx.eval(model.parameters())
     model.eval()
     return model
