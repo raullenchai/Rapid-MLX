@@ -114,8 +114,16 @@ enum RapidTheme {
     static let canvas = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
         // v0.6: warm off-white (was cool #F7F7FA) so the canvas pairs
         // with the amber/cheetah accents; dark = the site's `--bg`.
-        appearance.isDark ? NSColor(deviceRed: 0x15/255.0, green: 0x17/255.0, blue: 0x1B/255.0, alpha: 1.0)
-                          : NSColor(deviceRed: 0xF8/255.0, green: 0xF7/255.0, blue: 0xF4/255.0, alpha: 1.0)
+        //
+        // Phase UI-2 (Direction D refinement, decision 01 "bone →
+        // mineral"): #F8F7F4 → #FAFAF9, and #15171B → #141619. The warm
+        // bone was correct on a card and wrong on a whole window — across
+        // 1440pt it read as beige, which put a second warm surface in
+        // competition with the one amber moment each screen is allowed.
+        // #FAFAF9 is a near-white with a slate cast, so amber stays the
+        // only warm thing on screen.
+        appearance.isDark ? NSColor(deviceRed: 0x14/255.0, green: 0x16/255.0, blue: 0x19/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xFA/255.0, green: 0xFA/255.0, blue: 0xF9/255.0, alpha: 1.0)
     }))
 
     /// Elevated card fill — a hair lighter than the window canvas in
@@ -135,9 +143,13 @@ enum RapidTheme {
     /// Hairline border around cards / inputs (`--line-soft`). A defined
     /// but quiet warm-gray edge in light mode (pairs with the warm
     /// canvas); the site's soft line in dark mode.
+    ///
+    /// Phase UI-2: re-cast onto the mineral ramp alongside ``canvas``
+    /// (#E7E6E1 → #E7E7E4, #262B31 → #26292E). A warm hairline on a
+    /// mineral canvas reads as a faint tan line rather than an edge.
     static let hairline = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
-        appearance.isDark ? NSColor(deviceRed: 0x26/255.0, green: 0x2B/255.0, blue: 0x31/255.0, alpha: 1.0)
-                          : NSColor(deviceRed: 0xE7/255.0, green: 0xE6/255.0, blue: 0xE1/255.0, alpha: 1.0)
+        appearance.isDark ? NSColor(deviceRed: 0x26/255.0, green: 0x29/255.0, blue: 0x2E/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xE7/255.0, green: 0xE7/255.0, blue: 0xE4/255.0, alpha: 1.0)
     }))
 
     /// Standard corner radius for the refresh's rounded cards.
@@ -345,14 +357,21 @@ enum RapidTheme {
     /// The sidebar rail. v1.0: re-warmed from the old cool #F3F5F9,
     /// which read as a blue-grey slab beside the warm canvas and made
     /// the whole left column feel like a different product.
+    ///
+    /// Phase UI-2 re-casts it onto the mineral ramp (#F2F0EB → #F3F3F1,
+    /// #1A1C20 → #191B1E) so it stays one step below ``surfaceCanvas``
+    /// without being a warmer plane than it. Direction D decision 04:
+    /// the rail is mineral in BOTH the resting and the working
+    /// composition — it never goes graphite, because dark chrome that
+    /// persists after the work ends is a theme, and this is not one.
     static let surfaceSidebar = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
-        appearance.isDark ? NSColor(deviceRed: 0x1A/255.0, green: 0x1C/255.0, blue: 0x20/255.0, alpha: 1.0)
-                          : NSColor(deviceRed: 0xF2/255.0, green: 0xF0/255.0, blue: 0xEB/255.0, alpha: 1.0)
+        appearance.isDark ? NSColor(deviceRed: 0x19/255.0, green: 0x1B/255.0, blue: 0x1E/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xF3/255.0, green: 0xF3/255.0, blue: 0xF1/255.0, alpha: 1.0)
     }))
 
     /// A raised surface — cards, popovers, grouped rows.
     static let surfaceRaised = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
-        appearance.isDark ? NSColor(deviceRed: 0x1E/255.0, green: 0x21/255.0, blue: 0x26/255.0, alpha: 1.0)
+        appearance.isDark ? NSColor(deviceRed: 0x1D/255.0, green: 0x20/255.0, blue: 0x24/255.0, alpha: 1.0)
                           : NSColor.white
     }))
 
@@ -374,8 +393,46 @@ enum RapidTheme {
     /// A more present divider for structural separation (card headers,
     /// grouped-row separators) where ``hairline`` disappears.
     static let hairlineStrong = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
-        appearance.isDark ? NSColor(deviceRed: 0x32/255.0, green: 0x38/255.0, blue: 0x40/255.0, alpha: 1.0)
-                          : NSColor(deviceRed: 0xDD/255.0, green: 0xDA/255.0, blue: 0xD3/255.0, alpha: 1.0)
+        appearance.isDark ? NSColor(deviceRed: 0x32/255.0, green: 0x36/255.0, blue: 0x3C/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xD5/255.0, green: 0xD5/255.0, blue: 0xD1/255.0, alpha: 1.0)
+    }))
+
+    // MARK: Lifecycle band (the "active AI work" ground)
+    //
+    // Direction D's second composition. A surface only paints these while
+    // the app is doing work the user is waiting on — a download, a model
+    // load — and drops straight back to the mineral ramp when it ends.
+    // Graphite is the ground, amber is the single progress hue on it, and
+    // the ink on amber is the same near-black every other amber fill uses.
+    //
+    // It is a COMPOSITION, not a theme: the sidebar and the status strip
+    // stay mineral throughout, and nothing here survives the work.
+
+    /// Ground for the lifecycle band. Near-black in Light so the band
+    /// reads as a distinct plane over the near-white canvas; one step
+    /// LIGHTER than the canvas in Dark, where a darker band would simply
+    /// disappear into the window.
+    static let surfaceBand = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x23/255.0, green: 0x26/255.0, blue: 0x2B/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0x1B/255.0, green: 0x1D/255.0, blue: 0x21/255.0, alpha: 1.0)
+    }))
+
+    /// Primary ink on ``surfaceBand``. Appearance-independent, because the
+    /// band's ground is graphite in both modes — flipping it would put
+    /// dark ink on a dark plane in exactly one appearance.
+    static let bandInk = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xF4/255.0, green: 0xF3/255.0, blue: 0xF1/255.0, alpha: 1.0)
+    }))
+
+    /// Supporting ink on ``surfaceBand`` — the eyebrow, byte counts, ETA.
+    /// ~7:1 on the band ground, so it is quiet without being unreadable.
+    static let bandInkSecondary = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0xA5/255.0, green: 0xA8/255.0, blue: 0xAE/255.0, alpha: 1.0)
+    }))
+
+    /// Unfilled progress track inside the band.
+    static let bandTrack = Color(nsColor: .init(name: nil, dynamicProvider: { _ in
+        NSColor(deviceRed: 0x33/255.0, green: 0x37/255.0, blue: 0x3D/255.0, alpha: 1.0)
     }))
 
     // MARK: Status
@@ -519,8 +576,40 @@ enum RapidTheme {
 
     // MARK: Interaction
 
+    /// Fill behind a SELECTED row.
+    ///
+    /// Direction D decision 02: neutral, not amber. The v1.0 treatment
+    /// was an amber tint plus an amber label, and on the warm rail the
+    /// two were within a few percent of the surface they sat on — the
+    /// selected row was, in practice, invisible. The signal now comes
+    /// from three things that do not depend on a tint being legible: a
+    /// 3pt amber leading bar (``selectionBarWidth``), this neutral fill,
+    /// and a graphite SEMIBOLD label. Weight and a hard-edged bar survive
+    /// Increase Contrast, colour-blindness, and a glance; a 4% wash does
+    /// not.
+    static let selectionFill = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x24/255.0, green: 0x27/255.0, blue: 0x2B/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xEF/255.0, green: 0xEF/255.0, blue: 0xEC/255.0, alpha: 1.0)
+    }))
+
+    /// The leading bar that marks a selected row. Amber, and the one
+    /// amber element the rail is allowed.
+    static let selectionBar = brandPrimary
+
     /// Hover wash over a neutral row or control.
-    static let hoverFill = Color.primary.opacity(0.055)
+    ///
+    /// Phase UI-2: a concrete mineral value rather than
+    /// ``Color.primary.opacity(0.055)``. The opacity form composited
+    /// differently on each of the four surface planes, so the same hover
+    /// landed a visibly different colour in the sidebar than on a card —
+    /// and in Dark it lifted toward blue-white while everything around it
+    /// stayed slate. One value keeps hover reading as the same gesture
+    /// wherever the pointer is, and keeps it a clear step BELOW
+    /// ``selectionFill`` so hovering a row never looks like selecting it.
+    static let hoverFill = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0x21/255.0, green: 0x24/255.0, blue: 0x29/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xF0/255.0, green: 0xF0/255.0, blue: 0xED/255.0, alpha: 1.0)
+    }))
     /// Pressed wash — one step firmer than hover.
     static let pressedFill = Color.primary.opacity(0.10)
     /// Multiplier applied to a control's opacity when disabled.
@@ -555,6 +644,12 @@ enum RapidTheme {
         static let xl: CGFloat = 24
         /// 32 — major vertical separation.
         static let xxl: CGFloat = 32
+        /// 48 — the gap around a hero composition (the chat empty state's
+        /// breathing room). Above ``xxl`` the rhythm stops being "space
+        /// between things" and becomes "space a thing sits in".
+        static let xxxl: CGFloat = 48
+        /// 72 — full-window compositions only.
+        static let huge: CGFloat = 72
     }
 
     // MARK: - Radii
@@ -587,6 +682,10 @@ enum RapidTheme {
         /// Inset code / endpoint blocks. Tighter than the card that
         /// contains them so the inset reads as recessed, not nested.
         static let code: CGFloat = 6
+        /// A panel that frames a whole composition rather than a control
+        /// — the Images stage, the aspect preview. Softer than ``card``
+        /// because it holds content, not rows.
+        static let panel: CGFloat = 12
     }
 
     // MARK: - Control heights
@@ -621,9 +720,36 @@ enum RapidTheme {
         static let contentMaxWidth: CGFloat = 720
         /// Max width for a settings/tool page's content column.
         static let pageMaxWidth: CGFloat = 640
+        /// Max width for a block asking the user to decide one thing.
+        /// Narrower than a reading measure on purpose — a choice should
+        /// be takeable in one eye movement.
+        static let decisionMaxWidth: CGFloat = 460
         /// Fixed leading slot every row icon occupies, so labels align
         /// down a column regardless of glyph width.
         static let iconSlot: CGFloat = 18
+        /// Width of the amber bar marking a selected row.
+        static let selectionBarWidth: CGFloat = 3
+        /// Height of that bar. Shorter than the 30pt row so it reads as a
+        /// marker beside the label rather than a full-height divider.
+        static let selectionBarHeight: CGFloat = 18
+
+        /// The three window widths the layout is verified at.
+        ///
+        /// These are not CSS media queries — SwiftUI has no such thing,
+        /// and the app resizes continuously. They are the widths the
+        /// design was drawn and reviewed at, named so a view that DOES
+        /// need to change proportion at a threshold reads that threshold
+        /// from one place instead of hard-coding it.
+        enum Breakpoint {
+            /// 720 — the compact floor. Reading measure and window width
+            /// are the same number here, so anything with side margins is
+            /// already compressing.
+            static let floor: CGFloat = 720
+            /// 1000 — the ordinary working width.
+            static let mid: CGFloat = 1000
+            /// 1440 — the wide review width.
+            static let wide: CGFloat = 1440
+        }
     }
 }
 
@@ -686,6 +812,41 @@ enum ModelDisplayName {
 /// that must honour Dynamic Type keep using ``scaledSystemFont``; this
 /// ramp covers the chrome.
 enum RapidFont {
+    /// The one display line on a surface that has nothing else on it —
+    /// the chat empty state's "Ask anything", and nothing else in this
+    /// slice. 34pt semibold over a 40pt leading.
+    ///
+    /// The ramp previously topped out at ``pageTitle`` (20pt), which is a
+    /// *page heading* size: correct above a list of settings rows, far
+    /// too small to be the only object in a 1440pt window. An empty
+    /// surface has no hierarchy to sit inside, so its title has to
+    /// establish one on its own.
+    static let displayTitle = Font.system(size: 34, weight: .semibold)
+
+    /// Optical tracking for ``displayTitle``. SF tightens as it grows;
+    /// at 34pt the default spacing reads loose, and -0.022em is where the
+    /// word closes up without the letters touching.
+    static let displayTitleTracking: CGFloat = -0.75
+
+    /// Supporting line under ``displayTitle``. 14pt — one step above
+    /// ``body``, because at display scale a 12pt subtitle reads as a
+    /// footnote attached to the wrong heading.
+    static let displaySubtitle = Font.system(size: 14)
+
+    /// The model name inside the lifecycle band. Between ``pageTitle``
+    /// and ``displayTitle``: the band is a priority surface, but it is
+    /// still chrome around a transcript, not the subject of the window.
+    static let bandTitle = Font.system(size: 21, weight: .semibold)
+
+    /// The all-caps eyebrow over a band or stage title, and the
+    /// monospaced counters beside it. Monospaced because these values
+    /// tick live (bytes, percent, step counts) and proportional digits
+    /// make a progress line jitter its own width.
+    static let bandEyebrow = Font.system(size: 10, weight: .semibold, design: .monospaced)
+
+    /// The big amber percentage in the lifecycle band.
+    static let bandMetric = Font.system(size: 34, weight: .semibold, design: .default)
+
     /// Window / toolbar title.
     static let windowTitle = Font.system(size: 15, weight: .semibold)
     /// The one big title on a page. Chat empty state, page headers,
