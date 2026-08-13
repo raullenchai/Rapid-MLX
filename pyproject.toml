@@ -458,7 +458,7 @@ Repository = "https://github.com/raullenchai/Rapid-MLX"
 [project.scripts]
 rapid-mlx = "vllm_mlx.cli:cli_entrypoint"
 # First-class short command for accessibility and reduced typing (#1279).
-rmlx = "vllm_mlx.cli:main"
+rmlx = "vllm_mlx.cli:cli_entrypoint"
 rapid-mlx-chat = "vllm_mlx.gradio_app:main"
 rapid-mlx-bench = "vllm_mlx.benchmark:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
