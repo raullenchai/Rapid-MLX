@@ -177,6 +177,24 @@ def test_deepseek_v3_config_triggers_downgrade():
     assert "mla" in decision.reason.lower()
 
 
+def test_bailing_hybrid_model_type_triggers_downgrade():
+    """Ling 3.0 (bailing_hybrid) MLA layers share DeepSeek's compressed-K
+    layout; model_type alone must trigger the safelist — the checkpoint
+    name ("ling...") matches no _MLA_PATTERNS entry."""
+    decision = resolve_kv_cache_dtype(
+        "int4",
+        model_name="/models/ling_v3_tiny_fp8",
+        hf_config={
+            "model_type": "bailing_hybrid",
+            "q_lora_rank": 256,
+            "kv_lora_rank": 512,
+        },
+    )
+    assert decision.dtype == "bf16"
+    assert decision.downgraded is True
+    assert "mla" in decision.reason.lower()
+
+
 def test_deepseek_v4_substring_triggers_downgrade():
     decision = resolve_kv_cache_dtype(
         "int4",

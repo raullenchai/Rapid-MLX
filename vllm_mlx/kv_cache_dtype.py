@@ -90,6 +90,12 @@ _MLA_MODEL_TYPES: frozenset[str] = frozenset(
     {
         "deepseek_v3",
         "deepseek_v4",
+        # inclusionAI Ling 3.0/2.6 (vendored KDA+MLA hybrid): the 6 MLA
+        # layers carry the same compressed-K layout as DeepSeek V3, so
+        # quantized KV stacks error the same way. model_type is the
+        # family signal — the "ling" name alone is too generic for
+        # _MLA_PATTERNS.
+        "bailing_hybrid",
     }
 )
 
