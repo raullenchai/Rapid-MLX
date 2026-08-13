@@ -1274,6 +1274,10 @@ flow_chat_restore() {
     dismiss_first_run
     wait_identifier Sidebar.NewChat "$OUT/chat-restored.json"
     assert_tree_text "$OUT/chat-restored.json" "golden restore marker"
+    # Relaunch restarts the fake model too. Search results are a modal overlay
+    # on the whole window, so its structural baseline otherwise races the
+    # transient readiness band and residency controls behind the panel.
+    wait_send_idle "$OUT/chat-restored-ready.json"
 
     # Conversation search is a window-level recovery path, including for
     # history that is not currently visible in the sidebar. Exercise the real
