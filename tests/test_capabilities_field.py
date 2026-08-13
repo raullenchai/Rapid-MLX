@@ -38,6 +38,7 @@ def _mount_models_app(monkeypatch, **cfg_overrides):
             "model_registry",
             "embedding_model_locked",
             "tool_call_parser",
+            "reasoning_parser_name",
             "api_key",
         )
     }
@@ -240,6 +241,30 @@ class TestToolsCapability:
     non-empty ``tool_call_parser``, (2) the server is booted with
     ``--tool-call-parser`` for an unregistered path. Either fires
     the capability."""
+
+    def test_north_local_path_reports_auto_selected_parsers(self, monkeypatch):
+        """A downloaded North path advertises native parsing without flags."""
+        from vllm_mlx.model_auto_config import detect_model_config
+
+        model_id = "/models/North-Mini-Code-1.0-4bit"
+        profile = detect_model_config(model_id)
+        assert profile is not None
+
+        client, restore = _mount_models_app(
+            monkeypatch,
+            model_name=model_id,
+            model_alias=model_id,
+            tool_call_parser=profile.tool_call_parser,
+            reasoning_parser_name=profile.reasoning_parser,
+        )
+        try:
+            entry = _fetch_entry(client, model_id)
+        finally:
+            restore()
+
+        assert entry["tool_call_parser"] == "north"
+        assert entry["reasoning_parser"] == "north"
+        assert entry["capabilities"] == ["text", "tools"]
 
     def test_profile_tool_parser_enables_tools_tag(self, monkeypatch):
         """A model whose alias profile sets ``tool_call_parser=hermes``

@@ -151,7 +151,7 @@ PARITY_FIXTURES: list = [
     # than mlx-lm's parser-local return shape, so Rapid's parser normalizes it
     # to the same OpenAI tool-call representation in both paths.
     (
-        "cohere",
+        "north",
         "cohere_action_envelope",
         (
             "<|START_ACTION|>"
@@ -286,7 +286,7 @@ PARITY_FIXTURES: list = [
 # a fixture removes the entry; new parsers added without a fixture or
 # exemption fail ``test_tool_parser_parity_coverage``.
 _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
-    "cohere2_moe": "alias of cohere",
+    "cohere_north": "alias of north",
     # Multi-channel control-token formats — fixture authoring needs a
     # tokenizer fixture (vocab IDs) rather than raw text, which is a
     # different test surface (see tests/test_batched_engine_output_router.py

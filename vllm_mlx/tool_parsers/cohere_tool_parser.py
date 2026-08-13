@@ -20,15 +20,18 @@ from .abstract_tool_parser import (
 )
 
 
-@ToolParserManager.register_module(["cohere", "cohere2_moe"])
-class CohereToolParser(ToolParser):
+@ToolParserManager.register_module(["north", "cohere_north"])
+class NorthToolParser(ToolParser):
     """Parse North's JSON action envelope without consuming thinking/text lanes."""
 
     SUPPORTS_NATIVE_TOOL_FORMAT = True
     EXPECTED_WIRE_FORMATS = ("cohere_action_envelope",)
+    PRESERVE_POST_TOOL_CONTENT = True
 
     START = "<|START_ACTION|>"
     END = "<|END_ACTION|>"
+    END_THINKING = "<|END_THINKING|>"
+    REASONING_TOOL_MARKERS = (START,)
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
@@ -61,7 +64,7 @@ class CohereToolParser(ToolParser):
     @classmethod
     def _parse_action(cls, body: str) -> list[dict[str, Any]]:
         try:
-            payload = json.loads(body.replace("\\|", "|"))
+            payload = json.loads(body)
         except json.JSONDecodeError:
             return []
         entries = [payload] if isinstance(payload, dict) else payload
@@ -83,6 +86,153 @@ class CohereToolParser(ToolParser):
             )
         return calls
 
+    @classmethod
+    def _find_action_end(cls, text: str) -> int | None:
+        """Find an END marker outside JSON string literals."""
+        in_string = False
+        escaped = False
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+            else:
+                if char == '"':
+                    in_string = True
+                elif text.startswith(cls.END, index):
+                    return index
+            index += 1
+        return None
+
+    @classmethod
+    def _pending_action_start(cls, text: str) -> int | None:
+        """Return the first action opener without a matching JSON-aware end."""
+        cursor = 0
+        while cursor < len(text):
+            start = text.find(cls.START, cursor)
+            if start < 0:
+                return None
+            body_start = start + len(cls.START)
+            end_index = cls._find_action_end(text[body_start:])
+            if end_index is None:
+                return start
+            cursor = body_start + end_index + len(cls.END)
+        return None
+
+    @staticmethod
+    def _declared_tool_names(
+        request: dict[str, Any] | None,
+    ) -> frozenset[str] | None:
+        """Return the executable names for this request.
+
+        ``None`` means the parser was called without request context (unit
+        parsing and internal parity checks).  An empty set means the request
+        explicitly exposed no executable tools, including ``tools: null`` and
+        ``tool_choice: none``.  Keeping those cases distinct preserves the
+        parser's context-free API without promoting a model-hallucinated name
+        on an actual chat request.
+        """
+        if not isinstance(request, dict):
+            return None
+        if request.get("tool_choice") == "none":
+            return frozenset()
+        tools = request.get("tools")
+        if not isinstance(tools, list):
+            return frozenset()
+        names = set()
+        for tool in tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str) and name:
+                names.add(name)
+        return frozenset(names)
+
+    @classmethod
+    def _calls_are_declared(
+        cls,
+        calls: list[dict[str, Any]],
+        request: dict[str, Any] | None,
+    ) -> bool:
+        declared = cls._declared_tool_names(request)
+        return (
+            declared is None
+            or bool(calls)
+            and all(call["name"] in declared for call in calls)
+        )
+
+    @classmethod
+    def _clean_content_lane(cls, text: str) -> str | None:
+        """Remove North's private reasoning lane from parser-owned content.
+
+        North's template opens thinking in the prompt, so generated output
+        commonly starts with bare reasoning and only emits the closing token.
+        The tool parser removes the action envelope; stripping the preceding
+        reasoning lane here prevents duplication without a shared-path
+        "content equals reasoning" heuristic that could erase legitimate
+        output from unrelated parser families.
+        """
+        if cls.END_THINKING in text:
+            text = text.partition(cls.END_THINKING)[2]
+        content = text.strip()
+        return content or None
+
+    @classmethod
+    def split_reasoning_tool_markup(
+        cls,
+        text: str,
+        *,
+        pending: bool = False,
+        pending_text: str = "",
+    ) -> tuple[str | None, str | None]:
+        """Separate native action envelopes from surrounding reasoning.
+
+        ``pending`` means a prior streaming delta already routed an unclosed
+        action opener to the tool parser, so bytes through the matching closer
+        continue on the promoted lane. The JSON-aware closer scan prevents a
+        quoted ``<|END_ACTION|>`` argument value from ending the envelope.
+        """
+        reasoning_parts: list[str] = []
+        promoted_parts: list[str] = []
+        cursor = 0
+
+        if pending:
+            pending_start = cls._pending_action_start(pending_text)
+            pending_body = (
+                pending_text[pending_start + len(cls.START) :]
+                if pending_start is not None
+                else ""
+            )
+            end_index = cls._find_action_end(pending_body + text)
+            if end_index is None:
+                return None, text
+            envelope_end = end_index - len(pending_body) + len(cls.END)
+            promoted_parts.append(text[:envelope_end])
+            cursor = envelope_end
+
+        while cursor < len(text):
+            start = text.find(cls.START, cursor)
+            if start < 0:
+                reasoning_parts.append(text[cursor:])
+                break
+            reasoning_parts.append(text[cursor:start])
+            body_start = start + len(cls.START)
+            end_index = cls._find_action_end(text[body_start:])
+            if end_index is None:
+                promoted_parts.append(text[start:])
+                break
+            envelope_end = body_start + end_index + len(cls.END)
+            promoted_parts.append(text[start:envelope_end])
+            cursor = envelope_end
+
+        reasoning = "".join(reasoning_parts) or None
+        promoted = "".join(promoted_parts) or None
+        return reasoning, promoted
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
@@ -91,27 +241,63 @@ class CohereToolParser(ToolParser):
             # tokens. Keep mlx-lm's bare-payload fallback, but only accept
             # entries that still carry Cohere's tool-name fields.
             calls = self._parse_action(model_output.strip())
-            if calls:
+            if calls and self._calls_are_declared(calls, request):
                 return ExtractedToolCallInformation(True, calls, None)
 
         calls: list[dict[str, Any]] = []
-        remainder = model_output
-        while self.START in remainder:
-            prefix, _, after_start = remainder.partition(self.START)
-            body, separator, after_end = after_start.partition(self.END)
-            if not separator:
+        content_parts: list[str] = []
+        cursor = 0
+        rejected_envelope = False
+        while cursor < len(model_output):
+            start = model_output.find(self.START, cursor)
+            if start < 0:
+                content_parts.append(model_output[cursor:])
                 break
-            calls.extend(self._parse_action(body.strip()))
-            remainder = prefix + after_end
+            content_parts.append(model_output[cursor:start])
+            body_start = start + len(self.START)
+            end_index = self._find_action_end(model_output[body_start:])
+            if end_index is None:
+                content_parts.append(model_output[start:])
+                break
+            body_end = body_start + end_index
+            envelope_end = body_end + len(self.END)
+            envelope_calls = self._parse_action(
+                model_output[body_start:body_end].strip()
+            )
+            if envelope_calls and self._calls_are_declared(envelope_calls, request):
+                calls.extend(envelope_calls)
+            else:
+                # Rejected and malformed envelopes stay visible as text.  Do
+                # not excise and rejoin around them: marker fragments on the
+                # two sides were never contiguous on the model wire and must
+                # not be rescanned as a synthetic action envelope.
+                content_parts.append(model_output[start:envelope_end])
+                rejected_envelope = True
+            cursor = envelope_end
+
         if not calls:
-            return ExtractedToolCallInformation(False, [], model_output)
-        content = remainder.strip()
-        return ExtractedToolCallInformation(True, calls, content or None)
+            # A complete North envelope is a positive wire-format match.  Its
+            # policy or syntax rejection is authoritative: feeding the same
+            # bytes to the generic raw-JSON scanner can resurrect an
+            # undeclared call from inside the envelope.  A format miss (no
+            # North opener) deliberately remains fallback-compatible.
+            return ExtractedToolCallInformation(
+                False,
+                [],
+                model_output,
+                rejection_authoritative=self.START in model_output,
+            )
+        content = self._clean_content_lane("".join(content_parts))
+        return ExtractedToolCallInformation(
+            True,
+            calls,
+            content,
+            rejection_authoritative=rejected_envelope,
+        )
 
     def has_pending_tool_call(self, text: str) -> bool:
-        return text.rfind(self.START) > text.rfind(
-            self.END
-        ) or self.has_text_format_tool_call(text)
+        native_pending = self._pending_action_start(text) is not None
+        return native_pending or self.has_text_format_tool_call(text)
 
     def extract_tool_calls_streaming(
         self,
@@ -123,24 +309,58 @@ class CohereToolParser(ToolParser):
         delta_token_ids: Sequence[int] | None = None,
         request: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        if self.START not in current_text:
-            self._content_emitted_len = len(current_text)
-            return {"content": delta_text}
-        if current_text.count(self.END) <= previous_text.count(self.END):
-            return None
-        parsed = self.extract_tool_calls(current_text, request)
-        if (
-            not parsed.tools_called
-            or len(parsed.tool_calls) <= self._emitted_tool_count
-        ):
-            return None
-        start = self._emitted_tool_count
-        new_calls = parsed.tool_calls[start:]
-        self._emitted_tool_count = len(parsed.tool_calls)
-        return {
-            "tool_calls": [
+        del previous_text, delta_text
+
+        content_parts: list[str] = []
+        new_calls: list[dict[str, Any]] = []
+        cursor = self._content_emitted_len
+        while cursor < len(current_text):
+            start = current_text.find(self.START, cursor)
+            if start < 0:
+                # Hold the longest suffix that is a strict prefix of the
+                # opener.  This prevents a character-split ``<|START...``
+                # from leaking before the parser knows what it is.
+                safe_end = len(current_text)
+                max_prefix = min(len(self.START) - 1, len(current_text) - cursor)
+                for size in range(max_prefix, 0, -1):
+                    if current_text.endswith(self.START[:size]):
+                        safe_end = len(current_text) - size
+                        break
+                if safe_end > cursor:
+                    content_parts.append(current_text[cursor:safe_end])
+                    cursor = safe_end
+                break
+
+            if start > cursor:
+                content_parts.append(current_text[cursor:start])
+                cursor = start
+
+            body_start = start + len(self.START)
+            end_index = self._find_action_end(current_text[body_start:])
+            if end_index is None:
+                break
+            body_end = body_start + end_index
+            envelope_end = body_end + len(self.END)
+            calls = self._parse_action(current_text[body_start:body_end].strip())
+
+            if calls and self._calls_are_declared(calls, request):
+                new_calls.extend(calls)
+            else:
+                # Syntax failures and undeclared calls remain visible as
+                # ordinary text, matching non-stream behavior.
+                content_parts.append(current_text[start:envelope_end])
+            cursor = envelope_end
+
+        self._content_emitted_len = cursor
+        result: dict[str, Any] = {}
+        content = "".join(content_parts)
+        if content:
+            result["content"] = content
+        if new_calls:
+            start_index = self._emitted_tool_count
+            result["tool_calls"] = [
                 {
-                    "index": start + index,
+                    "index": start_index + index,
                     "id": call["id"],
                     "type": "function",
                     "function": {
@@ -150,7 +370,8 @@ class CohereToolParser(ToolParser):
                 }
                 for index, call in enumerate(new_calls)
             ]
-        }
+            self._emitted_tool_count += len(new_calls)
+        return result or None
 
     def flush_held_content(self, full_text: str) -> str:
         return full_text[self._content_emitted_len :]

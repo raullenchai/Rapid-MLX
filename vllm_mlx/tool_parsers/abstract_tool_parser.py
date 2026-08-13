@@ -75,6 +75,15 @@ class ExtractedToolCallInformation:
     content: str | None = None
     """Any content that wasn't part of tool calls."""
 
+    rejection_authoritative: bool = False
+    """Whether generic fallback must preserve a ``tools_called=False`` result.
+
+    Parsers set this only after positively matching their own wire format and
+    rejecting it (for example because the emitted function was not declared).
+    A plain format miss stays ``False`` so the service may still try its
+    cross-format compatibility parser.
+    """
+
 
 # Canonical wire-format labels each ToolParser subclass declares it handles.
 # Adding a new label here is a deliberate act — the audit script and the
@@ -176,6 +185,20 @@ class ToolParser(ABC):
     # can handle role="tool" messages and tool_calls fields directly,
     # without needing conversion to text format.
     SUPPORTS_NATIVE_TOOL_FORMAT: bool = False
+
+    # Most agent protocols terminate the assistant turn when a tool call is
+    # emitted, so the postprocessor historically suppresses later prose.
+    # Parsers for formats that explicitly allow content after a completed
+    # envelope opt in to preserving those later content deltas.
+    PRESERVE_POST_TOOL_CONTENT: bool = False
+
+    # Wire-format openers that must be routed out of a reasoning lane and
+    # through this parser.  Most thinking parsers promote ``<tool_call>``
+    # themselves; model-specific formats can opt in here so the streaming
+    # postprocessor does not strand a native call in reasoning_content. A
+    # parser may also implement ``split_reasoning_tool_markup`` to promote
+    # only its envelope while preserving surrounding private reasoning.
+    REASONING_TOOL_MARKERS: tuple[str, ...] = ()
 
     # Declarative list of wire formats this parser handles. Every concrete
     # subclass MUST override this with at least one label from

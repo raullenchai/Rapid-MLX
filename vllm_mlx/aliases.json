@@ -1,17 +1,19 @@
 {
   "north-mini-code-4bit": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-4bit",
-    "tool_call_parser": "cohere",
-    "reasoning_parser": "cohere",
+    "tool_call_parser": "north",
+    "reasoning_parser": "north",
     "is_hybrid": false,
+    "is_hybrid_explicit": true,
     "is_moe": true,
     "supports_spec_decode": false
   },
   "north-mini-code-bf16": {
     "hf_path": "mlx-community/North-Mini-Code-1.0-bf16",
-    "tool_call_parser": "cohere",
-    "reasoning_parser": "cohere",
+    "tool_call_parser": "north",
+    "reasoning_parser": "north",
     "is_hybrid": false,
+    "is_hybrid_explicit": true,
     "is_moe": true,
     "supports_spec_decode": false
   },

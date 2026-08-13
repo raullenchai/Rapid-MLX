@@ -232,6 +232,17 @@ class TestStreamingTextParserSuppression:
         calls, _content, _finish = _drive(pp, [_output(LFM_WIRE, finished=True)])
         assert [c["function"]["name"] for c in calls] == ["GetWeather"]
 
+    @pytest.mark.parametrize("tool_choice", ["auto", "none"])
+    def test_north_finalize_cannot_repromote_undeclared_raw_json(self, tool_choice):
+        pp = _make_pp(tool_choice, parser="north")
+        pp.tool_accumulated_text = (
+            '<|START_ACTION|>{"name":"delete_everything","arguments":{}}<|END_ACTION|>'
+        )
+
+        events = pp.finalize()
+
+        assert [event for event in events if event.type == "tool_call"] == []
+
 
 class TestStreamingChannelRoutedSuppression:
     """Harmony/gemma4 surface structured calls on a dedicated channel that

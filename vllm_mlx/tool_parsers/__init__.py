@@ -54,7 +54,7 @@ from .abstract_tool_parser import (
 
 # Import parsers to register them
 from .auto_tool_parser import AutoToolParser
-from .cohere_tool_parser import CohereToolParser
+from .cohere_tool_parser import NorthToolParser
 from .deepseek_tool_parser import DeepSeekToolParser
 from .deepseek_v3_tool_parser import DeepSeekV3ToolParser
 from .deepseek_v4_0731_tool_parser import DeepSeekV40731ToolParser
@@ -87,7 +87,7 @@ __all__ = [
     "ExtractedToolCallInformation",
     # Specific parsers
     "AutoToolParser",
-    "CohereToolParser",
+    "NorthToolParser",
     "MistralToolParser",
     "QwenToolParser",
     "LlamaToolParser",
