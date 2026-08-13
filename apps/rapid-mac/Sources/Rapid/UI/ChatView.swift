@@ -231,24 +231,35 @@ struct ChatView: View {
     private var messages: [ChatMessage] { viewModel.messages }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // The band opens ABOVE the transcript, never between it and
-            // the composer: it is context for the whole surface, and
-            // wedging it into the compose zone is exactly the treatment
-            // that made a multi-gigabyte download read as an inline
-            // footnote. It replaces the readiness banner for the duration
-            // — see ``composeBar`` — rather than joining it, so the same
-            // sentence is never on screen twice.
-            if showsLifecycleBand {
-                LifecycleBand(
-                    readiness: readiness,
-                    attentionToken: blockedSendAttempts
-                )
-                .transition(.move(edge: .top).combined(with: .opacity))
+        // The reader exists for one value: the surface's own width, which
+        // the lifecycle band needs in order to pick its height on the
+        // FIRST layout pass. Reading it here — where the pane already has
+        // a definite size — rather than letting the band measure itself
+        // is what keeps the band's geometry a pure function of its
+        // inputs, and therefore reproducible in a single-pass capture.
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                // The band opens ABOVE the transcript, never between it
+                // and the composer: it is context for the whole surface,
+                // and wedging it into the compose zone is exactly the
+                // treatment that made a multi-gigabyte download read as
+                // an inline footnote. It replaces the readiness banner
+                // for the duration — see ``composeBar`` — rather than
+                // joining it, so the same sentence is never on screen
+                // twice.
+                if showsLifecycleBand {
+                    LifecycleBand(
+                        readiness: readiness,
+                        attentionToken: blockedSendAttempts,
+                        width: proxy.size.width
+                    )
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                transcript
+                Divider()
+                composeBar
             }
-            transcript
-            Divider()
-            composeBar
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .rapidAnimation(RapidMotion.standard, value: showsLifecycleBand)
         .background(RapidTheme.surfaceCanvas)

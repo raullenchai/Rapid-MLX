@@ -45,14 +45,22 @@ struct LifecycleBand: View {
     /// acknowledgement too — otherwise a blocked Return would go silent
     /// precisely during the longest wait in the product.
     var attentionToken: Int = 0
-
-    /// Last measured width of the band, used only to pick one of the
-    /// three heights. Measured through a background probe rather than by
-    /// wrapping the body in a ``GeometryReader``: the height depends on
-    /// the width, and a GeometryReader claims all the space its parent
-    /// offers, so reading the width from inside one would make the band's
-    /// own height its input.
-    @State private var measuredWidth: CGFloat = RapidTheme.Layout.Breakpoint.mid
+    /// Width of the surface the band spans, supplied by the parent.
+    ///
+    /// An input rather than something the band measures itself, and the
+    /// distinction is load-bearing. The first version read its own width
+    /// through a background ``GeometryReader`` into `@State`, which needs
+    /// a SECOND layout pass to take effect — and a single-pass render
+    /// (the snapshot harness, and by extension every screenshot the
+    /// design gets reviewed from) never gives it one. The 720pt capture
+    /// came out wearing the 1000pt layout, which is exactly the kind of
+    /// defect a screenshot review is supposed to catch and instead
+    /// silently produced.
+    ///
+    /// The parent already has a definite width; passing it down makes the
+    /// band's geometry a pure function of its inputs, correct on the
+    /// first pass, and reproducible in a capture.
+    var width: CGFloat
 
     @State private var attentionActive = false
 
@@ -61,19 +69,8 @@ struct LifecycleBand: View {
             .frame(maxWidth: RapidTheme.Layout.contentMaxWidth)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, RapidTheme.Space.xl)
-            .frame(height: Self.height(for: measuredWidth))
+            .frame(height: Self.height(for: width))
             .background(RapidTheme.surfaceBand)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: LifecycleBandWidthKey.self,
-                        value: proxy.size.width
-                    )
-                }
-            }
-            .onPreferenceChange(LifecycleBandWidthKey.self) { width in
-                if abs(width - measuredWidth) > 0.5 { measuredWidth = width }
-            }
             .overlay(alignment: .bottom) {
                 // A blocked send flashes the band's leading edge rather
                 // than moving anything. Reduce Motion is handled by
@@ -212,15 +209,5 @@ struct LifecycleBand: View {
         height(for: width) <= 44
     }
 
-    private var isCompact: Bool { Self.isCompact(width: measuredWidth) }
-}
-
-/// Width probe for ``LifecycleBand``. See ``LifecycleBand/measuredWidth``
-/// for why the band measures itself instead of being wrapped in a
-/// ``GeometryReader``.
-private struct LifecycleBandWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = RapidTheme.Layout.Breakpoint.mid
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
+    private var isCompact: Bool { Self.isCompact(width: width) }
 }
