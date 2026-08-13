@@ -1518,6 +1518,27 @@ flow_slow_stream_stop() {
         > "$OUT/stop-assertion.json"
     wait_send_idle "$OUT/slow-settled.json"
     baseline slow-stream-stop.stopped "$OUT/slow-settled.json"
+
+    # Release dogfood found a second Stop edge: cancelling before the first
+    # content token left an unanswered user prompt in wire history. The next
+    # request then answered that cancelled prompt instead of the new one.
+    # Exercise that zero-content lane and prove the immediately-following turn
+    # is routed from its own prompt.
+    send_prompt "cancel this before content" zero-content-stop
+    for _ in {1..40}; do
+        see_main "$OUT/zero-content-streaming.json"
+        if [[ "$(element_field "$OUT/zero-content-streaming.json" ChatView.SendOrStopButton description)" == "Stop generating" ]]; then break; fi
+        sleep 0.05
+    done
+    [[ "$(element_field "$OUT/zero-content-streaming.json" ChatView.SendOrStopButton description)" == "Stop generating" ]] \
+        || die "zero-content request never transitioned to Stop generating"
+    press "$OUT/zero-content-streaming.json" ChatView.SendOrStopButton "$OUT/zero-content-stop.json"
+    wait_send_idle "$OUT/zero-content-stopped.json"
+    send_prompt "shape:list answer the new request" after-stop
+    wait_send_idle "$OUT/after-stop-settled.json"
+    assert_tree_text "$OUT/after-stop-settled.json" "Three things, in order:"
+    jq -n '{success: true, assertion: "a send immediately after zero-content Stop answers the new prompt"}' \
+        > "$OUT/after-stop-assertion.json"
     cleanup_persona
 }
 

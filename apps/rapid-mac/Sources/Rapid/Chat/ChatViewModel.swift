@@ -859,14 +859,32 @@ final class ChatViewModel {
     /// drop the rest — can be pinned by tests. See the call site for
     /// the full motivation (model-switch silent-failure bug).
     static func filterEmptyAssistantsForWire(_ messages: [ChatMessage]) -> [ChatMessage] {
-        messages.filter { msg in
-            guard msg.role == .assistant else { return true }
+        var filtered: [ChatMessage] = []
+        for msg in messages {
+            guard msg.role == .assistant else {
+                filtered.append(msg)
+                continue
+            }
             let proseEmpty = msg.content
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty
             let noToolCalls = (msg.toolCalls?.isEmpty ?? true)
-            return !(proseEmpty && noToolCalls)
+            guard proseEmpty && noToolCalls else {
+                filtered.append(msg)
+                continue
+            }
+
+            // If Stop landed before the first token, the transcript contains
+            // an unanswered user prompt followed by an empty assistant row
+            // captioned "Stopped.". Dropping only the assistant leaves that
+            // prompt as the last historical turn, so the next send answers
+            // the cancelled request instead of the new one. Remove the pair
+            // from the wire history while keeping both rows visible in the UI.
+            if msg.errorMessage == "Stopped.", filtered.last?.role == .user {
+                filtered.removeLast()
+            }
         }
+        return filtered
     }
 
     /// Issue #477: strip forward-incompatible ``.unknown``-role messages

@@ -55,6 +55,41 @@ struct ModelSwitchHistoryTests {
         #expect(filtered.first?.role == .user)
     }
 
+    @Test("Stop before first token drops the unanswered user/assistant pair from wire history")
+    func dropsZeroTokenCancelledTurn() {
+        var stopped = ChatMessage(role: .assistant, content: "", status: .complete)
+        stopped.errorMessage = "Stopped."
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "Earlier answered question"),
+            ChatMessage(role: .assistant, content: "Earlier answer", status: .complete),
+            ChatMessage(role: .user, content: "Write 500 numbered lines"),
+            stopped,
+            ChatMessage(role: .user, content: "What is 2 + 2?"),
+        ]
+
+        let filtered = ChatViewModel.filterEmptyAssistantsForWire(history)
+
+        #expect(filtered.map(\.content) == [
+            "Earlier answered question", "Earlier answer", "What is 2 + 2?",
+        ])
+    }
+
+    @Test("A partially emitted stopped answer remains valid conversation history")
+    func preservesPartialCancelledTurn() {
+        var stopped = ChatMessage(role: .assistant, content: "1\n2\n3", status: .complete)
+        stopped.errorMessage = "Stopped."
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "Write 500 numbered lines"),
+            stopped,
+            ChatMessage(role: .user, content: "Continue"),
+        ]
+
+        let filtered = ChatViewModel.filterEmptyAssistantsForWire(history)
+
+        #expect(filtered.count == 3)
+        #expect(filtered[1].content == "1\n2\n3")
+    }
+
     @Test("Tool-call assistant (empty prose + populated tool_calls) is preserved — load-bearing for the tool loop")
     func preservesToolCallAssistant() {
         var toolAsst = ChatMessage(role: .assistant, content: "", status: .complete)
