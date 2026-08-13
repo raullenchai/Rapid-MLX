@@ -99,6 +99,7 @@ def test_peekaboo_requirement_is_default_deny():
         "slow-stream-stop",
         "model-crash-recovery",
         "image-generation",
+        "audio-readiness",
         "window-close-prompt",
         "resident-load-rejected",
     }
