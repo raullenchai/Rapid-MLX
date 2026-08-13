@@ -16,6 +16,15 @@ struct ConnectToolsView: View {
     let port: Int
     let bearer: String
     let alias: String
+    /// The absolute path to the `rapid-mlx` sidecar binary this app owns
+    /// (``ServerLocator`` resolution). The Desktop app deliberately does NOT
+    /// install its sidecar onto the user's `PATH` (see ``ServerLocator`` —
+    /// PATH/brew/pipx/uv are intentionally not used), so generated launch
+    /// commands must reference the binary by its absolute path or pasting
+    /// them in a terminal fails with `command not found: rapid-mlx`.
+    /// ``nil`` (the dev snapshot harness) falls back to the bare `rapid-mlx`
+    /// so the page still renders.
+    var binaryPath: URL? = nil
     var onClose: () -> Void
     /// Whether to render the top-right dismiss "✕". True in sheet context
     /// (the caller's ``onClose`` dismisses the sheet). False when embedded
@@ -41,6 +50,24 @@ struct ConnectToolsView: View {
     private var openAIBaseURL: String { "http://\(host):\(port)/v1" }
     private var anthropicBaseURL: String { "http://\(host):\(port)" }
     private var serverOrigin: String { "http://\(host):\(port)" }
+
+    /// The shell command that invokes this app's `rapid-mlx` sidecar.
+    ///
+    /// The sidecar never lands on the user's `PATH` (see ``binaryPath``), so
+    /// the copied launch/agent commands must call it by absolute path. When
+    /// no binary is resolved (dev snapshot) we fall back to the bare command.
+    private var cliCommand: String {
+        guard let binary = binaryPath else { return "rapid-mlx" }
+        return Self.shellQuote(binary.path)
+    }
+
+    /// Single-quote a shell word so spaces / special characters in an
+    /// absolute path (e.g. "Application Support") can't break a pasted
+    /// command. Embedded single quotes are escaped by closing, backslash-
+    /// escaping, and reopening.
+    static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 
     /// The model id to publish in a config, or ``nil`` when no real
     /// model is resolved yet. Deliberately not defaulted to a
@@ -247,14 +274,14 @@ struct ConnectToolsView: View {
             let displayCommand: String
             if isWriter {
                 command = IntegrationLaunchCommand.configWriter(
-                    id: target.id, serverURL: serverOrigin, key: snippetKey, model: snippetModel
+                    id: target.id, serverURL: serverOrigin, key: snippetKey, model: snippetModel, cli: cliCommand
                 )
                 displayCommand = IntegrationLaunchCommand.configWriter(
-                    id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel
+                    id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel, cli: cliCommand
                 )
             } else {
                 command = IntegrationLaunchCommand.adapterGuide(
-                    id: target.id, baseURL: openAIBaseURL, model: snippetModel
+                    id: target.id, baseURL: openAIBaseURL, model: snippetModel, cli: cliCommand
                 )
                 displayCommand = command
             }
@@ -344,12 +371,12 @@ enum AgentLaunchCommand {
 }
 
 enum IntegrationLaunchCommand {
-    static func configWriter(id: String, serverURL: String, key: String, model: String) -> String {
-        "env RAPID_MLX_API_KEY=\(key) rapid-mlx launch \(id) --server-url \(serverURL) --model \(model)"
+    static func configWriter(id: String, serverURL: String, key: String, model: String, cli: String) -> String {
+        "env RAPID_MLX_API_KEY=\(key) \(cli) launch \(id) --server-url \(serverURL) --model \(model)"
     }
 
-    static func adapterGuide(id: String, baseURL: String, model: String) -> String {
-        "rapid-mlx agents \(id) --base-url \(baseURL) --model \(model)"
+    static func adapterGuide(id: String, baseURL: String, model: String, cli: String) -> String {
+        "\(cli) agents \(id) --base-url \(baseURL) --model \(model)"
     }
 }
 

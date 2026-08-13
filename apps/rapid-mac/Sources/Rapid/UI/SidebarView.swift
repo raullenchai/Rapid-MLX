@@ -918,6 +918,10 @@ struct LaunchView: View {
             port: server.activePort,
             bearer: server.activeBearer ?? "",
             alias: alias,
+            // The sidecar binary this app owns lives off-PATH (see
+            // ``ServerLocator``); pass its absolute path so the launch/agent
+            // commands this page generates actually run in a terminal.
+            binaryPath: server.binaryPath,
             // Page context: the sidebar owns navigation, so there is no sheet
             // to dismiss. Hide the close ✕ (it used to render as a dead
             // no-op button). A dedicated page-mode header lands with the
