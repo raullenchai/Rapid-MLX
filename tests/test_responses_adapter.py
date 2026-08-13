@@ -688,7 +688,7 @@ class TestResponsesToOpenai:
         # raw list / dict through — without `_to_text` this would crash
         # with `TypeError: sequence item 0: expected str instance, list
         # found` once a future code path leaves `Message.content` un-
-        # coerced. codex_review NIT: cover the path directly.
+        # coerced. raised in Codex review: cover the path directly.
         msgs = [
             Message.model_construct(
                 role="system",
@@ -707,7 +707,7 @@ class TestResponsesToOpenai:
         assert merged[1].role == "user"
 
     def test_merge_system_messages_drops_empty_system_after_user(self):
-        # codex_review BLOCKING regression: a `developer` item with
+        # raised in Codex review regression: a `developer` item with
         # empty content reaches the merge step as `Message(role="system",
         # content="")`. Old logic branched on whether the merged text
         # was truthy and returned `messages` unchanged when it wasn't —

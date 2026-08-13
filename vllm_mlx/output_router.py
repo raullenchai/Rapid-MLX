@@ -195,7 +195,7 @@ class OutputRouter:
             return None
         # Rollback: lookahead REJECTED the channel intent — the
         # buffered word is just literal user-visible content (codex
-        # re-review BLOCKING: routing rejected ``thought`` to reasoning
+        # raised in re-review: routing rejected ``thought`` to reasoning
         # was hiding valid plain content). Emit it as CONTENT and set
         # the router state to CONTENT for subsequent processing of the
         # current token via the redo queue.
@@ -407,7 +407,7 @@ class OutputRouter:
         # the marker-preserving router followup.
         if self.state == RouterState.INIT:
             # Buffer the bare channel-word for a 1-token lookahead instead
-            # of swallowing it immediately (codex re-review BLOCKING: a
+            # of swallowing it immediately (raised in Codex re-review: a
             # legitimate plain response that genuinely starts with the
             # literal "final" / "content" / "thought" token would lose its
             # first token under the old immediate-swallow). The decision

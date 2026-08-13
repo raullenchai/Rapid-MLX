@@ -196,7 +196,7 @@ def _wait_for_health(health_url: str, proc: subprocess.Popen, timeout_s: int) ->
     Uses ``time.monotonic()`` for the deadline so a system clock
     adjustment mid-boot (NTP step, manual ``date`` change) can't
     shorten or extend the health wait incorrectly (Codex PR #623
-    review NIT-2). ``time.time()`` would happily measure negative
+    raised in review). ``time.time()`` would happily measure negative
     elapsed time if the clock stepped backwards.
     """
     deadline = time.monotonic() + timeout_s

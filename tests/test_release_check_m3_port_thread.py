@@ -450,7 +450,7 @@ def test_every_integration_base_url_env_is_covered() -> None:
     ``http://`` or ``https://``) rather than by the env-var name. A
     name-based regex would false-positive on unrelated envs like
     ``DATABASE_URL`` (which happens to end in ``BASE_URL`` but points at
-    a DB DSN, not an HTTP API) — codex_review NIT on PR #982.
+    a DB DSN, not an HTTP API) — raised in Codex review on PR #982.
     """
     # Capture the env-var name AND its default. Both single- and
     # double-quoted forms; whitespace tolerant. We require the default

@@ -44,7 +44,7 @@ def _capture_runner_lines():
     call and the agent-matrix call are at different nesting depths — the
     latter lives inside a ``for`` — so a walk-order test would have
     reported an order the file does not have, and would have kept
-    passing with the bench moved back to the end (review BLOCKING).
+    passing with the bench moved back to the end (raised in review).
     """
     lines = {}
     for node in ast.walk(_run_body()):

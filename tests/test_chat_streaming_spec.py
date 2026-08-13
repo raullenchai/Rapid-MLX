@@ -1196,7 +1196,7 @@ def test_synthetic_terminal_chunk_does_not_replay_accumulated_text(monkeypatch):
         f"emitted once by the defensive branch), got {full_content!r}. "
         f"A duplicated prefix like 'HelloHello world<' means the synthetic "
         f"chunk re-emitted processor.accumulated_text on top of already-"
-        f"streamed deltas (codex re-review BLOCKING)."
+        f"streamed deltas (raised in Codex re-review)."
     )
 
 

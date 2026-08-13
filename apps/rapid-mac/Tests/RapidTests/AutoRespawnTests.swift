@@ -253,7 +253,7 @@ struct AutoRespawnTests {
         ))
     }
 
-    // MARK: - manual-stop cancellation pins (internal review NIT)
+    // MARK: - manual-stop cancellation pins (internal raised in review)
 
     @Test("stop() zeros the auto-respawn attempt counter")
     func stopZerosAutoRespawnAttempts() async {
@@ -282,7 +282,7 @@ struct AutoRespawnTests {
 
     @Test("dismissTerminalState() zeros the auto-respawn attempt counter")
     func dismissTerminalStateZerosAutoRespawnAttempts() {
-        // Internal review NIT: the existing ``dismissCancelsAutoRespawn``
+        // Internal raised in review: the existing ``dismissCancelsAutoRespawn``
         // test only asserts the post-dismiss counter is 0, which it
         // always was. Seed a non-zero value first so we actually
         // observe the cancel running.

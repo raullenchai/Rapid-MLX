@@ -605,7 +605,7 @@ def _merge_system_messages(
     # system-role message after `_message_item_to_chat`, so leaving the
     # list untouched when `system_texts` is empty would let a non-leading
     # system message reach Qwen / Llama / Gemma — the exact template
-    # failure this function exists to prevent (codex_review BLOCKING).
+    # failure this function exists to prevent (raised in Codex review).
     has_system = any(m.role == "system" for m in messages)
     if not has_system:
         return messages

@@ -120,7 +120,7 @@ BUG_CASES: list[_Case] = [
 ]
 
 
-# Codex re-review BLOCKING (2026-06-04): the bare-INIT gate now uses
+# raised in Codex re-review (2026-06-04): the bare-INIT gate now uses
 # 1-token lookahead. A response that legitimately STARTS with one of
 # the channel-word tokens (``thought`` / ``content`` / ``final``)
 # followed by NON-whitespace must surface the word as content rather
@@ -162,7 +162,7 @@ LOOKAHEAD_ROLLBACK_CASES: list[_Case] = [
         ],
         # Without ``\n`` after ``thought``, lookahead rejects the
         # channel intent — the buffered word is just literal content
-        # (codex re-review BLOCKING: routing rejected bare words to
+        # (raised in Codex re-review: routing rejected bare words to
         # reasoning was hiding valid user-visible content). Emit as
         # CONTENT and let the body follow in the CONTENT state.
         expected_content="thoughtHello",
@@ -278,7 +278,7 @@ def test_gemma4_router_no_channel_marker_leaks(case: _Case, router):
     )
 
 
-# ----- Lookahead rollback (codex re-review BLOCKING) --------------------
+# ----- Lookahead rollback (raised in Codex re-review) --------------------
 
 
 @pytest.mark.parametrize("case", LOOKAHEAD_ROLLBACK_CASES, ids=lambda c: c.id)
@@ -292,7 +292,7 @@ def test_gemma4_router_lookahead_rollback_preserves_legit_first_token(
     the lookahead rolls back to emit the buffered token as the channel
     indicated by its semantic meaning, then continues processing the
     body in that channel. Without this guard, the prior implementation
-    silently swallowed the first token (codex re-review BLOCKING).
+    silently swallowed the first token (raised in Codex re-review).
 
     The bare word ALSO sets channel state — that's intentional: if the
     model speaks one of the channel words at INIT, treat it as

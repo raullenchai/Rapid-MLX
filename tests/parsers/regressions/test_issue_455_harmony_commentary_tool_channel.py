@@ -301,7 +301,7 @@ def test_harmony_router_sanity(case: _SanityCase, router):
         "tool_calls empty) requires asserting in the parser-level "
         "regression file, not here — keeping this contract single-"
         "outcome avoids a passing-test-but-wrong-router-fix loophole "
-        "(codex re-review NIT)."
+        "(raised in Codex re-review)."
     ),
     strict=True,
 )

@@ -206,7 +206,7 @@ class StreamingToolReconstructor:
             existing.arguments += delta_args
         else:
             # R2: id and name must appear on first delta for this index.
-            # Codex re-review BLOCKING: require non-empty strings — pre-fix
+            # raised in Codex re-review: require non-empty strings — pre-fix
             # the ``is not None`` check accepted ``id=""`` / ``name=""``
             # as satisfying the invariant, letting a malformed first delta
             # with blank identifiers slip through silently.

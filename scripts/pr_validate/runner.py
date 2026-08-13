@@ -24,6 +24,7 @@ from .steps.diff_coverage import DiffCoverageStep
 from .steps.fetch import FetchStep
 from .steps.full_unit import FullUnitStep
 from .steps.lint import LintStep
+from .steps.review_vocabulary import ReviewVocabularyStep
 from .steps.stress_e2e_bench import StressE2EBenchStep
 from .steps.supply_chain import SupplyChainStep
 from .steps.targeted_tests import TargetedTestsStep
@@ -64,6 +65,7 @@ STEPS: list[Step] = [
     # when the diff touches dep-declaration files — see ``_test_env.py``
     # for the gate.
     TestEnvCheckStep(),
+    ReviewVocabularyStep(),  # reject diff text that can steer that reviewer (#1528)
     CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.6-sol)
     LintStep(),  # 2 — ruff check + format
     TargetedTestsStep(),  # 3 — diff-aware test selection + neg control

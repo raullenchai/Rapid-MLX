@@ -184,7 +184,7 @@ def _is_root_keep(relpath: str) -> bool:
 # Without this, ``--subfolder docs`` uploads a documentation directory,
 # verifies the objects it just wrote, and reports success — reproducing
 # the "mirror completed but pull still 404s" failure this flag exists to
-# prevent (review MAJOR).
+# prevent (raised in review).
 _WEIGHT_SUFFIXES = (".safetensors", ".npz", ".bin", ".gguf")
 
 
@@ -505,7 +505,7 @@ def mirror_repo(
     # ``is not None``, not truthiness: ``--subfolder ""`` (an unset shell
     # variable expanding to nothing) is a caller mistake, and treating it
     # as "no filter" silently mirrors the full 20 GB repo the flag exists
-    # to avoid. _select_subfolder rejects it (review MAJOR).
+    # to avoid. _select_subfolder rejects it (raised in review).
     if subfolder is not None:
         before = len(files)
         before_bytes = sum((f.size or 0) for f in files)

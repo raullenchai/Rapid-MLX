@@ -138,7 +138,7 @@ def _run_tool_streaming(
     potential ``<tool_call>`` opener but no call ever fired). Without
     this call the parser-level harness would silently drop the held
     suffix and a regression like #448 would pass even if the held
-    bytes never reached the client (codex re-review BLOCKING).
+    bytes never reached the client (raised in Codex re-review).
     """
     reconstructor = StreamingToolReconstructor(
         assert_one_tool_per_delta=assert_one_tool_per_delta

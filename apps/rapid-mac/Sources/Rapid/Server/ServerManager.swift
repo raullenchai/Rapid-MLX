@@ -2397,7 +2397,7 @@ final class ServerManager {
         // whose URL the scrubber will redact, while the progress
         // parser only cares about the trailing `[X/Y]`).
         //
-        // v0.7.11 review NIT #3: the R2 puller fires its aggregate
+        // v0.7.11 raised in review #3: the R2 puller fires its aggregate
         // ``[bytes] D/T`` heartbeat at ~2 Hz × 60-120 s, which
         // would otherwise evict every legitimate startup log /
         // warning from the 200-line ``logLines`` ring buffer well

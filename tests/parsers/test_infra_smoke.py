@@ -203,7 +203,7 @@ def test_harmony_markers_match_source():
     token (say a future ``<|new|>``) and every harmony regression
     file would silently let it leak because
     ``HARMONY_CONTROL_TOKENS`` never gained the entry (codex
-    re-review BLOCKING).
+    raised in re-review).
 
     Now: import the parser's exposed
     ``HARMONY_STRIPPED_CONTROL_TOKENS`` constant and assert set
@@ -247,7 +247,7 @@ def test_assert_no_marker_leak_catches_each_marker(marker):
 def test_tool_reconstructor_rejects_malformed_tool_calls():
     """``tool_calls`` must be a list when present — string / dict / int /
     bytes all rejected. Renamed from ``rejects_null_tool_calls`` (codex
-    re-review NIT): the prior name claimed null coverage, but the
+    raised in re-review): the prior name claimed null coverage, but the
     reconstructor deliberately treats ``tool_calls=None`` as equivalent
     to "key absent" (so JSON deltas that explicitly serialize the field
     as ``None`` round-trip cleanly). Only non-list types are rejected.
@@ -278,7 +278,7 @@ def test_tool_reconstructor_rejects_null_function():
 
 
 def test_tool_reconstructor_rejects_non_string_arguments():
-    """Codex re-review BLOCKING: ``arguments`` was previously coerced via
+    """raised in Codex re-review: ``arguments`` was previously coerced via
     ``function.get("arguments") or ""``, silently swallowing ``None`` /
     ``0`` / ``False``. Strict typing now requires the field to be absent
     or a string; any other type fails the reconstructor's assertion.

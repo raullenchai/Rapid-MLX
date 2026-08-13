@@ -434,7 +434,7 @@ final class DownloadProgress {
         // when a per-file completion line is interleaved on the same
         // poll tick — the heartbeat is the more granular signal.
         if let m = matchR2BytesHeartbeat(trimmed) {
-            // Codex-style review NIT #2: ``setTotalBytes`` writes through
+            // Codex-style raised in review #2: ``setTotalBytes`` writes through
             // an ``@Observable`` setter, which fans out a property-change
             // notification SwiftUI uses to re-render any view that read
             // ``totalBytes``. A 120 s pull fires ~240 heartbeats with the

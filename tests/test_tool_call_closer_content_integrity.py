@@ -199,7 +199,7 @@ class TestStreamingSanitizerHelpersKeepTheCloser:
 class TestRescuePrefixBranchAlsoStrips:
     """The length-cut rescue branch is the OTHER call site that moved.
 
-    Review MINOR, twice: my first attempt at this test passed neither
+    raised in review, twice: my first attempt at this test passed neither
     ``finish_reason="length"`` nor rescue-shaped content, so it ran the
     ORDINARY path and would have stayed green with the rescue line
     reverted. Reviewer mutated that line in memory and confirmed it.

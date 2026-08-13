@@ -27,7 +27,8 @@ python3.12 -m scripts.pr_validate <PR#> -v
 | 0.7 | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
 | 0.75 | `supply_chain` | always | ~5s |
 | 0.8 | `test_env_check` | always (auto-install opt-out: `PR_VALIDATE_NO_AUTO_INSTALL=1`) | <1s (≈10s if install runs) |
-| 6 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
+| 0.9 | `review_vocabulary` | when a diff is available | <1s |
+| 1 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
 | 2 | `lint` | when diff has .py | ~3s |
 | 3 | `targeted_tests` | when diff has .py | 30s–3min |
 | 4 | `full_unit` | blast ≥ medium | ~25s |

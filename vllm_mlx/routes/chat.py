@@ -7292,7 +7292,7 @@ async def stream_chat_completion(
             # ``accumulated_reasoning`` — both were already written
             # to the wire as per-delta chunks during the loop, so
             # replaying them would duplicate the whole response
-            # (codex re-review BLOCKING). The original round-6 fix
+            # (raised in Codex re-review). The original round-6 fix
             # in the postprocessor makes this branch unreachable
             # in the common case, but defense-in-depth: keep this
             # synthetic chunk additive only.

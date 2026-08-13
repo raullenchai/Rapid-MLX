@@ -35,7 +35,7 @@ HARMONY_CONTROL_TOKENS: tuple[str, ...] = (
 # every harmony regression would generate false positives whenever a
 # user-visible response contains them. Tests that need to catch a
 # bare channel-label leak (e.g. ``content="commentary..."``) can
-# import this tuple explicitly. Codex re-review NIT: comment now
+# import this tuple explicitly. raised in Codex re-review: comment now
 # explicitly documents the exclusion rationale rather than leaving it
 # implicit.
 HARMONY_CHANNEL_LABELS: tuple[str, ...] = ("analysis", "commentary", "final")

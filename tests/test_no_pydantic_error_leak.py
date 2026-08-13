@@ -379,7 +379,7 @@ def test_responses_no_pydantic_leak(client, case_id, msgs_body, resp_body):
 # ── H-17 round-2 (codex): attacker sentinel inside a KEY name ────────
 
 
-# Codex H-17 round-2 (PR #784 review BLOCKING #2 + #3): exercise the
+# Codex H-17 round-2 (PR #784 raised in review #2 + #3): exercise the
 # loc-sanitizer across the full byte shape an attacker can choose for
 # a dict key or an extra-forbid field name. The original sanitizer's
 # identifier-shape regex passed valid-identifier sentinels (e.g.

@@ -498,7 +498,7 @@ class TestRelocationIsOptInAndOffByDefault:
 class TestFlagReachesTheAdapterEndToEnd:
     """Exercise the REAL chain, not each link in isolation.
 
-    Review MAJOR: the other tests here check `ServerConfig`'s default, the
+    raised in review: the other tests here check `ServerConfig`'s default, the
     merge helper, and a mocked `get_config()` separately. Delete either
     plumbing assignment — `cli.py`'s `server._relocate_mid_conversation_system
     = ...` or `server.py`'s `cfg.relocate_mid_conversation_system = ...` —

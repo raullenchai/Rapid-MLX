@@ -204,7 +204,7 @@ class StressE2EBenchStep(Step):
                     # Registered here, not after the matrix: the bench has
                     # already produced its artifact, and an exception in
                     # stress or in any agent below would otherwise discard
-                    # a measurement that was complete (review NIT).
+                    # a measurement that was complete (raised in review).
                     if bench_result.get("artifact"):
                         all_artifacts.append(bench_result["artifact"])
 

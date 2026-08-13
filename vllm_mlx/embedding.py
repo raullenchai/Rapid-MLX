@@ -63,7 +63,7 @@ def mlx_embeddings_available() -> bool:
     transitive dependency raising ``ImportError`` deep inside the
     package surfaces as the real exception (not masked behind the
     "install the extra" hint), making misdiagnosis less likely
-    (codex review nit on PR #800).
+    (raised in Codex review on PR #800).
 
     Lazy resolution — keeps the base install (without the
     ``[embeddings]`` extra) free of ``mlx_embeddings`` at module
