@@ -15,6 +15,8 @@ struct ImagesView: View {
 
     private let contentMaxWidth: CGFloat = RapidTheme.Layout.contentMaxWidth
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     @State private var composeFocusToken = 0
     @State private var pickerHovering = false
     /// Bumped when the user tries to submit while gated, so the readiness
@@ -114,9 +116,19 @@ struct ImagesView: View {
         }
     }
 
-    /// The empty hero — the same shape as ChatView's, with the cheetah mark
-    /// and readiness-driven copy. Just "Draw anything" instead of "Ask
-    /// anything", and no Connect-tools / Speed actions.
+    /// The empty stage: a scale drawing of what pressing Generate will
+    /// produce, then the same readiness-driven copy Chat uses.
+    ///
+    /// The mascot is gone from this surface on purpose. It is the brand
+    /// moment for Chat's empty state and for first run, and repeating it
+    /// on every empty surface turned a greeting into wallpaper. What
+    /// belongs here instead is the one thing a user opening Images
+    /// actually needs to know before typing: the shape and the size of
+    /// the thing about to be made. The frame tracks the live aspect and
+    /// resolution selections, so changing either previews itself.
+    ///
+    /// It is a drawing, not a control — every hit target stays in the
+    /// composer's aspect and resolution pickers, which own these values.
     private var emptyStage: some View {
         EmptyState(
             title: "Draw anything",
@@ -124,11 +136,55 @@ struct ImagesView: View {
                 ? "Describe what you want to see, then press Generate."
                 : readiness.emptyStateSubtitle,
             hint: readiness.isReady ? nil : readiness.emptyStateHint,
-            markDiameter: 92,
-            mark: { CheetahLogo(size: 68) },
+            markDiameter: aspectPreviewSize.height,
+            marksOnBackplate: false,
+            mark: { aspectPreview },
             actions: { EmptyView() }
         )
         .accessibilityIdentifier("Images.EmptyState")
+    }
+
+    /// Longest edge of the preview frame. Sized so the tallest aspect
+    /// (3:4 portrait) still leaves the title and subtitle comfortably
+    /// above the composer at the 560pt window floor.
+    private static let aspectPreviewLongEdge: CGFloat = 150
+
+    private var aspectPreviewSize: CGSize {
+        let dimensions = viewModel.aspect.dimensions(for: viewModel.resolution)
+        let long = Self.aspectPreviewLongEdge
+        guard dimensions.width > 0, dimensions.height > 0 else {
+            return CGSize(width: long, height: long)
+        }
+        let ratio = CGFloat(dimensions.width) / CGFloat(dimensions.height)
+        return ratio >= 1
+            ? CGSize(width: long, height: long / ratio)
+            : CGSize(width: long * ratio, height: long)
+    }
+
+    private var aspectPreview: some View {
+        VStack(spacing: RapidTheme.Space.sm - 1) {
+            Image(systemName: "photo")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(RapidTheme.textTertiary)
+            Text(viewModel.aspect.size(for: viewModel.resolution))
+                .font(RapidFont.code)
+                .foregroundStyle(RapidTheme.textTertiary)
+        }
+        .frame(width: aspectPreviewSize.width, height: aspectPreviewSize.height)
+        // Dashed, because the frame describes something that does not
+        // exist yet. A solid border would read as an image that failed
+        // to load.
+        .overlay(
+            RoundedRectangle(cornerRadius: RapidTheme.Radius.panel, style: .continuous)
+                .strokeBorder(
+                    RapidTheme.hairlineStrong,
+                    style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])
+                )
+        )
+        // Redraws should feel like the picker moving, not like the stage
+        // reloading.
+        .rapidAnimation(RapidMotion.quick, value: aspectPreviewSize.width)
+        .rapidAnimation(RapidMotion.quick, value: aspectPreviewSize.height)
     }
 
     // MARK: - Readiness (mirrors ChatView: same "load the model first" flow)
@@ -245,33 +301,50 @@ struct ImagesView: View {
                 VStack(spacing: 14) {
                     HStack(spacing: 10) {
                         if denoising {
+                            // Breathing, and only when Reduce Motion is
+                            // off: this is a perpetual loop, so it is
+                            // fully suppressed rather than merely slowed.
+                            // The decorative glow is gone with it — an
+                            // amber dot on graphite already separates,
+                            // and a halo around a status indicator is
+                            // exactly the ornament this pass removes.
+                            let breathing = RapidMotion.shouldPulse(
+                                isAnimating: true,
+                                reduceMotion: reduceMotion
+                            )
                             Circle()
-                                .fill(RapidTheme.brandAmber)
+                                .fill(RapidTheme.brandPrimary)
                                 .frame(width: 9, height: 9)
-                                .shadow(color: RapidTheme.brandAmber.opacity(0.9), radius: 5)
-                                .scaleEffect(0.65 + 0.35 * (0.5 + 0.5 * sin(phase * .pi * 2)))
+                                .scaleEffect(
+                                    breathing
+                                        ? 0.65 + 0.35 * (0.5 + 0.5 * sin(phase * .pi * 2))
+                                        : 1
+                                )
                             Text(viewModel.cancelling ? "Stopping…" : "Generating")
                                 .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(RapidTheme.bandInk)
                         } else {
                             ProgressView().controlSize(.small)
                             Text(viewModel.cancelling
                                  ? "Stopping…"
                                  : "Warming up \(viewModel.selectedDisplayName)")
                                 .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(RapidTheme.bandInk)
                                 .lineLimit(1).truncationMode(.middle)
                         }
                         Spacer(minLength: 8)
                         if denoising {
                             Text("\(step) / \(total)")
                                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color.primary.opacity(0.76))
+                                .foregroundStyle(RapidTheme.bandInkSecondary)
                                 .monospacedDigit()
                         }
                         Button { viewModel.cancel() } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(RapidTheme.bandInk)
                                 .frame(width: 22, height: 22)
-                                .background(Color.primary.opacity(0.08), in: Circle())
+                                .background(RapidTheme.bandTrack, in: Circle())
                         }
                         .buttonStyle(.plain)
                         .disabled(viewModel.cancelling)
@@ -286,7 +359,7 @@ struct ImagesView: View {
                     HStack {
                         Text(String(format: "%.1fs", max(0, elapsed)))
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(Color.primary.opacity(0.76))
+                            .foregroundStyle(RapidTheme.bandInkSecondary)
                             .monospacedDigit()
                         Spacer()
                         // ETA from the denoise-phase clock, not total elapsed —
@@ -297,16 +370,28 @@ struct ImagesView: View {
                              ? (etaText(step: step, total: total, elapsed: denoiseElapsed) ?? "finishing…")
                              : "First run — only happens once")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.primary.opacity(0.76))
+                            .foregroundStyle(RapidTheme.bandInkSecondary)
                     }
                 }
                 .padding(18)
                 .frame(width: 340)
-                .background(RapidTheme.surfaceOverlay,
+                // The same graphite ground the Chat band paints, in the
+                // shape this surface's geometry calls for. Images cannot
+                // use a band: the subject here IS the canvas, and a strip
+                // above it would push the stage down and shrink the one
+                // thing the user is watching. A HUD over the image keeps
+                // progress on top of its own subject.
+                //
+                // Previously this card took ``surfaceOverlay``, a
+                // near-white plane — so over a bright render it was a
+                // pale card on a pale image with a shadow doing all the
+                // separation. Graphite separates on its own, in both
+                // appearances and over any image.
+                .background(RapidTheme.surfaceBand,
                             in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
+                        .strokeBorder(RapidTheme.bandTrack, lineWidth: 1)
                 )
                 .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
             }
@@ -920,44 +1005,49 @@ enum EditImageImporter {
     }
 }
 
-/// The diffusion progress bar: a rounded amber→gold gradient fill with a soft
-/// glow and a sheen that sweeps across it, over a faint track. Determinate
-/// (true step fraction) while denoising; a sliding segment while the model
-/// warms up. The only bar in the app that shows a real diffusion step count.
+/// The diffusion progress bar: a solid amber fill on the lifecycle
+/// track. Determinate (the real step fraction) while denoising; a
+/// sliding segment while the model warms up and no fraction exists.
+/// The only bar in the app that shows a real diffusion step count.
+///
+/// It used to carry an amber→gold gradient, a white sheen sweeping the
+/// fill, and an amber glow. All three are gone. Amber is a signal
+/// colour here, and a two-stop blend with a moving highlight on top
+/// reads as decoration wrapped around the signal rather than as the
+/// signal itself — the same reason the brand spec allows no gradient on
+/// the amber axis anywhere else in the app.
+///
+/// The sliding segment also now stops under Reduce Motion. It is a
+/// perpetual loop, which is the canonical vestibular offender, and it
+/// was running unconditionally because its clock is a ``TimelineView``
+/// in the parent rather than an ``Animation`` the environment could
+/// suppress. Reduced, the segment holds still and the state is carried
+/// by the surrounding copy, which already names the phase.
 private struct ShimmerProgressBar: View {
     var fraction: Double
     var indeterminate: Bool
-    var phase: Double  // 0→1, loops to drive the sheen
+    var phase: Double  // 0→1, loops to drive the indeterminate slide
 
-    private var fillGradient: LinearGradient {
-        LinearGradient(
-            colors: [RapidTheme.brandAmber, Color(red: 1.0, green: 0.85, blue: 0.47)],
-            startPoint: .leading, endPoint: .trailing)
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let fillW = indeterminate ? max(1, w * 0.34)
                                       : max(10, w * min(1, max(0, fraction)))
-            let slideX = indeterminate ? (w + fillW) * phase - fillW : 0
+            let sliding = RapidMotion.shouldPulse(
+                isAnimating: indeterminate,
+                reduceMotion: reduceMotion
+            )
+            let slideX = sliding ? (w + fillW) * phase - fillW
+                                 : (indeterminate ? (w - fillW) / 2 : 0)
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.12))
-                ZStack(alignment: .leading) {
-                    Capsule().fill(fillGradient)
-                    // A narrow highlight sweeping the filled portion.
-                    Capsule()
-                        .fill(LinearGradient(
-                            colors: [.clear, .white.opacity(0.55), .clear],
-                            startPoint: .leading, endPoint: .trailing))
-                        .frame(width: 64)
-                        .offset(x: (fillW + 64) * phase - 64)
-                }
-                .frame(width: fillW)
-                .clipShape(Capsule())
-                .shadow(color: RapidTheme.brandAmber.opacity(0.55), radius: 6)
-                .offset(x: slideX)
-                .animation(indeterminate ? nil : .easeOut(duration: 0.3), value: fraction)
+                Capsule().fill(RapidTheme.bandTrack)
+                Capsule()
+                    .fill(RapidTheme.brandPrimary)
+                    .frame(width: fillW)
+                    .offset(x: slideX)
+                    .animation(indeterminate ? nil : .easeOut(duration: 0.3), value: fraction)
             }
         }
     }

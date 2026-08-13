@@ -90,6 +90,11 @@ struct ReadinessBanner: View {
         }
         .padding(.horizontal, RapidTheme.Space.md)
         .padding(.vertical, RapidTheme.Space.sm)
+        // A fixed floor, so the composer's top edge does not step up and
+        // down as the user moves between "no model chosen", "not
+        // downloaded" and "not running". Those are three renderings of
+        // one moment; the surface should not reflow between them.
+        .frame(minHeight: 48)
         .background(
             RoundedRectangle(cornerRadius: RapidTheme.Radius.button, style: .continuous)
                 .fill(background)
@@ -97,7 +102,7 @@ struct ReadinessBanner: View {
         .overlay(
             RoundedRectangle(cornerRadius: RapidTheme.Radius.button, style: .continuous)
                 .strokeBorder(
-                    tint.opacity(attentionActive ? 0.85 : 0.22),
+                    borderTint.opacity(attentionActive ? 0.85 : 1),
                     lineWidth: attentionActive ? 1.5 : 1
                 )
         )
@@ -127,10 +132,23 @@ struct ReadinessBanner: View {
         }
     }
 
-    /// Subtle tint only — the same pairing ``InlineNotice`` uses, so a
-    /// readiness notice and an error notice sit on the same visual
-    /// footing when they alternate in the same slot.
+    /// Failure keeps its red tint; everything else sits on a plain raised
+    /// surface.
+    ///
+    /// The amber tint this used to paint in every non-failure state was a
+    /// second amber block roughly 40pt above the send disc — the one
+    /// amber moment the composer is allowed. Two of them competing meant
+    /// neither read as the thing to look at. The dot still carries the
+    /// state's colour, which is where a status hue belongs: on the
+    /// indicator, not on the whole plate behind the sentence.
     private var background: Color {
-        readiness.isFailure ? RapidTheme.statusErrorTint : RapidTheme.brandPrimaryTint
+        readiness.isFailure ? RapidTheme.statusErrorTint : RapidTheme.surfaceRaised
+    }
+
+    /// Matching edge — the status hue on a failure, a plain hairline
+    /// otherwise, so a neutral notice does not draw a coloured outline
+    /// around itself for no reason.
+    private var borderTint: Color {
+        readiness.isFailure ? tint.opacity(0.35) : RapidTheme.hairline
     }
 }

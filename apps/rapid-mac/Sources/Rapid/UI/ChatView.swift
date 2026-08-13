@@ -232,10 +232,25 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The band opens ABOVE the transcript, never between it and
+            // the composer: it is context for the whole surface, and
+            // wedging it into the compose zone is exactly the treatment
+            // that made a multi-gigabyte download read as an inline
+            // footnote. It replaces the readiness banner for the duration
+            // — see ``composeBar`` — rather than joining it, so the same
+            // sentence is never on screen twice.
+            if showsLifecycleBand {
+                LifecycleBand(
+                    readiness: readiness,
+                    attentionToken: blockedSendAttempts
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
             transcript
             Divider()
             composeBar
         }
+        .rapidAnimation(RapidMotion.standard, value: showsLifecycleBand)
         .background(RapidTheme.surfaceCanvas)
         // Drop a stale error banner once the server is provably ready.
         .onChange(of: server.state) { _, newState in
@@ -351,25 +366,64 @@ struct ChatView: View {
         return out
     }
 
+    /// Whether the lifecycle band owns the current moment.
+    ///
+    /// Exactly the two states in which the app is doing work the user is
+    /// waiting on. Everything else — nothing chosen, not downloaded, not
+    /// running, failed — is a DECISION, and a decision belongs beside the
+    /// control that resolves it, which is the composer's notice slot.
+    ///
+    /// Streaming is deliberately absent. A reply arriving is work, but it
+    /// is work the user can already see landing token by token, and it
+    /// does not block the surface; opening a graphite band over every
+    /// answer would make the ordinary case of using the product feel like
+    /// an interruption.
+    private var showsLifecycleBand: Bool { readiness.isWorking }
+
     private var emptyState: some View {
+        // Optically centred, not geometrically. The composer is a fixed
+        // object pinned to the bottom of the window, so a block centred
+        // on the transcript's true midpoint reads as sitting low —
+        // drifting toward the composer rather than balancing against it.
+        // Lifting the block by 2.8% of the region's height puts it where
+        // the eye expects the centre to be. The lift is proportional
+        // rather than a fixed offset so it stays correct from the 560pt
+        // window floor to a full-screen 1440.
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                Spacer(minLength: RapidTheme.Space.lg)
+                heroBlock
+                Spacer(minLength: RapidTheme.Space.xl)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.bottom, proxy.size.height * 0.056)
+        }
+    }
+
+    private var heroBlock: some View {
         EmptyState(
             title: "Ask anything",
             message: emptyStateSubtitle,
             hint: downloadHint,
-            markDiameter: 92,
-            mark: {
-                // The brand moment on the app's main surface. 68pt
-                // inside a 92pt disc — at the previous 28/44 the mascot
-                // read as a favicon rather than the product's mark.
-                //
-                // 68 is deliberately ≥ 64: ``CheetahLogo`` switches to
-                // the 440×390 master above that threshold, so the
-                // artwork is downsampled from a large source (crisp at
-                // @2x) instead of being upscaled from the 56×50 crop.
-                // ``scaledToFit`` inside a square frame preserves the
-                // asset's own aspect ratio.
-                CheetahLogo(size: 68)
-            }
+            // No disc. The plate was framing an illustration that already
+            // has its own silhouette, and — being amber-tinted — it was
+            // spending a second amber moment on a surface whose whole
+            // budget is one (that one is the send disc).
+            //
+            // 116 is deliberately ≥ 64: ``CheetahLogo`` switches to the
+            // 440×390 master above that threshold, so the artwork is
+            // downsampled from a large source (crisp at @2x) rather than
+            // upscaled from the 56×50 crop. ``scaledToFit`` inside the
+            // square frame preserves the asset's own aspect ratio, which
+            // is why the mark renders ~116×103 rather than square.
+            markDiameter: 116,
+            marksOnBackplate: false,
+            // The chat surface at rest has nothing else in it. A 20pt
+            // line alone in 1440pt of canvas reads as a caption that lost
+            // its picture; at 34/40 the greeting is the object it should
+            // be.
+            titleEmphasis: .display,
+            mark: { CheetahLogo(size: 116) }
         )
     }
 
@@ -396,7 +450,15 @@ struct ChatView: View {
             // the same fact twice. Once the model is ready the slot
             // reverts to turn-level errors (a 500 from a healthy server),
             // which readiness has no opinion about.
-            if !readiness.isReady {
+            if !readiness.isReady && !showsLifecycleBand {
+                // Suppressed while the band is open. The band renders the
+                // same ``ModelReadiness`` — same headline, same detail,
+                // same fraction — so leaving the banner here as well
+                // would print one fact twice, 400pt apart, in two
+                // different visual languages. Nothing is lost: neither
+                // ``downloading`` nor ``starting`` carries a renderable
+                // action, so no control moves and no identifier goes
+                // missing (see ``ModelReadiness.action``).
                 ReadinessBanner(
                     readiness: readiness,
                     attentionToken: blockedSendAttempts,
