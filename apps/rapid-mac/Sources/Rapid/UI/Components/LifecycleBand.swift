@@ -52,8 +52,8 @@ struct LifecycleBand: View {
     /// through a background ``GeometryReader`` into `@State`, which needs
     /// a SECOND layout pass to take effect — and a single-pass render
     /// (the snapshot harness, and by extension every screenshot the
-    /// design gets reviewed from) never gives it one. The 720pt capture
-    /// came out wearing the 1000pt layout, which is exactly the kind of
+    /// design gets reviewed from) never gives it one. The compact capture
+    /// came out wearing the middle layout, which is exactly the kind of
     /// defect a screenshot review is supposed to catch and instead
     /// silently produced.
     ///
@@ -101,7 +101,8 @@ struct LifecycleBand: View {
     @ViewBuilder
     private var content: some View {
         if isCompact {
-            // At the 720pt floor the band collapses to one line plus its
+            // At the 720pt window floor (a 520pt detail pane after the
+            // sidebar) the band collapses to one line plus its
             // rule. The detail line is the first thing dropped, because
             // it is the one part the composer placeholder already
             // paraphrases — and dropping the headline instead would take

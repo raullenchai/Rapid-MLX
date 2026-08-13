@@ -754,7 +754,9 @@ enum RapidTheme {
         /// marker beside the label rather than a full-height divider.
         static let selectionBarHeight: CGFloat = 18
 
-        /// The three window widths the layout is verified at.
+        /// The detail-pane widths produced at the three window widths the
+        /// layout is verified at (720 / 1000 / 1440), after the 200pt ideal
+        /// sidebar is removed.
         ///
         /// These are not CSS media queries — SwiftUI has no such thing,
         /// and the app resizes continuously. They are the widths the
@@ -762,14 +764,12 @@ enum RapidTheme {
         /// need to change proportion at a threshold reads that threshold
         /// from one place instead of hard-coding it.
         enum Breakpoint {
-            /// 720 — the compact floor. Reading measure and window width
-            /// are the same number here, so anything with side margins is
-            /// already compressing.
-            static let floor: CGFloat = 720
-            /// 1000 — the ordinary working width.
-            static let mid: CGFloat = 1000
-            /// 1440 — the wide review width.
-            static let wide: CGFloat = 1440
+            /// 520 — detail pane at the 720pt compact window.
+            static let floor: CGFloat = 520
+            /// 800 — detail pane at the 1000pt working window.
+            static let mid: CGFloat = 800
+            /// 1240 — detail pane at the 1440pt wide window.
+            static let wide: CGFloat = 1240
         }
     }
 }

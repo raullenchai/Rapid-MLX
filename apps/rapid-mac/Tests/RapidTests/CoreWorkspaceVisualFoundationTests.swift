@@ -604,13 +604,14 @@ struct CoreWorkspaceVisualFoundationTests {
 
     // MARK: - Responsive contract
 
-    /// The reading measure is fixed, and at the floor the window is
-    /// exactly one measure wide. This is the arithmetic behind "the band
-    /// must not be a column": a vertical priority area of any width at
-    /// all would be taking points out of the conversation here.
-    @Test("At the compact floor the window is exactly one reading measure")
-    func floorEqualsTheReadingMeasure() {
-        #expect(RapidTheme.Layout.contentMaxWidth == RapidTheme.Layout.Breakpoint.floor)
+    /// Breakpoints belong to the view receiving the geometry: Chat's detail
+    /// pane, not the outer window. Pin the conversion so screenshots cannot
+    /// accidentally test one coordinate system while production uses another.
+    @Test("Window review widths map to the intended detail breakpoints")
+    func windowWidthsMapToDetailBreakpoints() {
+        #expect(720 - SidebarView.columnIdealWidth == RapidTheme.Layout.Breakpoint.floor)
+        #expect(1000 - SidebarView.columnIdealWidth == RapidTheme.Layout.Breakpoint.mid)
+        #expect(1440 - SidebarView.columnIdealWidth == RapidTheme.Layout.Breakpoint.wide)
     }
 
     /// The detail pane's floor plus the widest rail has to fit inside the

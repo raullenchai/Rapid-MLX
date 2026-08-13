@@ -352,28 +352,24 @@ enum DevSnapshot {
         // widths: a live ``ContentView`` can only show whichever state
         // the harness is actually in, and staging a real multi-gigabyte
         // download is not something a capture run can do.
-        let ui2Widths: [CGFloat] = [
-            RapidTheme.Layout.Breakpoint.wide,
-            RapidTheme.Layout.Breakpoint.mid,
-            RapidTheme.Layout.Breakpoint.floor,
-        ]
+        let ui2Widths: [CGFloat] = [1440, 1000, 720]
         let ui2Appearances: [(NSAppearance.Name, String)] = [(.aqua, "light"), (.darkAqua, "dark")]
 
-        for width in ui2Widths {
+        for windowWidth in ui2Widths {
             // 900 tall at every width: the point of the sweep is the
             // horizontal behaviour, and holding height fixed makes the
             // three images directly comparable.
-            let size = CGSize(width: width, height: 900)
+            let size = CGSize(width: windowWidth, height: 900)
             for (appearance, mode) in ui2Appearances {
                 renderHosted(
-                    contentView(width: width, height: 900), size: size,
+                    contentView(width: windowWidth, height: 900), size: size,
                     appearance: appearance,
-                    to: "\(dir)/ui2-chat-\(Int(width))-\(mode).png"
+                    to: "\(dir)/ui2-chat-\(Int(windowWidth))-\(mode).png"
                 )
                 renderHosted(
-                    imagesView(width: width, height: 900), size: size,
+                    imagesView(width: windowWidth, height: 900), size: size,
                     appearance: appearance,
-                    to: "\(dir)/ui2-images-result-\(Int(width))-\(mode).png"
+                    to: "\(dir)/ui2-images-result-\(Int(windowWidth))-\(mode).png"
                 )
             }
         }
@@ -391,13 +387,13 @@ enum DevSnapshot {
         // ``activeImage`` is derived from ``results``, so clearing the
         // list is what empties the stage.
         imageGen.results = []
-        for width in ui2Widths {
-            let size = CGSize(width: width, height: 900)
+        for windowWidth in ui2Widths {
+            let size = CGSize(width: windowWidth, height: 900)
             for (appearance, mode) in ui2Appearances {
                 renderHosted(
-                    imagesView(width: width, height: 900), size: size,
+                    imagesView(width: windowWidth, height: 900), size: size,
                     appearance: appearance,
-                    to: "\(dir)/ui2-images-empty-\(Int(width))-\(mode).png"
+                    to: "\(dir)/ui2-images-empty-\(Int(windowWidth))-\(mode).png"
                 )
             }
         }
@@ -443,14 +439,22 @@ enum DevSnapshot {
                 detail: "Loading the model into memory…"
             )),
         ]
+        let ui2DetailWidths: [(window: CGFloat, detail: CGFloat)] = [
+            (1440, RapidTheme.Layout.Breakpoint.wide),
+            (1000, RapidTheme.Layout.Breakpoint.mid),
+            (720, RapidTheme.Layout.Breakpoint.floor),
+        ]
         for (label, state) in bandStates {
-            for width in ui2Widths {
-                let size = CGSize(width: width, height: LifecycleBand.height(for: width) + 80)
+            for widths in ui2DetailWidths {
+                let size = CGSize(
+                    width: widths.detail,
+                    height: LifecycleBand.height(for: widths.detail) + 80
+                )
                 for (appearance, mode) in ui2Appearances {
                     renderHosted(
-                        bandProof(state, width: width), size: size,
+                        bandProof(state, width: widths.detail), size: size,
                         appearance: appearance,
-                        to: "\(dir)/ui2-band-\(label)-\(Int(width))-\(mode).png"
+                        to: "\(dir)/ui2-band-\(label)-\(Int(widths.window))-\(mode).png"
                     )
                 }
             }

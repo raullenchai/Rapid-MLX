@@ -2206,6 +2206,7 @@ flow_image_generation() {
         || die "Images.Aspect is missing — no way to choose an aspect ratio"
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Resolution")' "$OUT/ig-empty.json" >/dev/null \
         || die "Images.Resolution is missing — no way to choose an output resolution"
+    baseline image-generation.empty "$OUT/ig-empty.json"
 
     # 3. Load the model. rapid-mlx serves one model per process, so opening the
     #    tab cannot silently inherit a ready server: the readiness gate holds
@@ -2254,6 +2255,7 @@ flow_image_generation() {
     done
     [[ "$inflight" == 1 ]] \
         || die "no in-flight progress card: Images.Cancel never appeared during a render"
+    baseline image-generation.inflight "$OUT/ig-inflight.json"
 
     wait_fake_event '.event == "image_request"' \
         "no image_request reached the sidecar — the prompt was never sent"
