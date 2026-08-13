@@ -603,3 +603,47 @@ def test_create_output_router_catches_tokenizer_property_errors():
     engine = BrokenTokenizerEngine("fake-model")
 
     assert engine._create_output_router() is None
+
+
+def test_output_router_transient_detection_failure_is_not_cached():
+    """A TRANSIENT detection failure must not be cached.
+
+    The router-detection result is memoized per tokenizer to avoid re-scanning
+    the vocab every request. If the *first* detection transiently fails (e.g.
+    ``get_vocab()`` raising during lazy init), caching that ``None`` would
+    permanently disable the router for the tokenizer's whole lifetime — leaking
+    channel-control tokens into every later response. Detection must instead
+    retry on the next request.
+    """
+
+    class FlakyTokenizer:
+        def __init__(self, vocab: dict[str, int]):
+            self._vocab = vocab
+            self.calls = 0
+
+        def get_vocab(self) -> dict[str, int]:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("vocab not ready (lazy init)")
+            return self._vocab
+
+        def decode(self, ids: list[int]) -> str:  # pragma: no cover - unused
+            return ""
+
+    tok = FlakyTokenizer(GEMMA4_VOCAB)
+    engine = BatchedEngine("fake-model")
+    engine._loaded = True
+    engine._tokenizer = tok
+
+    # First request: detection raises inside get_vocab -> no router this time,
+    # and crucially nothing is cached.
+    assert engine._create_output_router() is None
+    assert getattr(engine, "_output_router_template", None) is None
+
+    # Second request: detection retried, get_vocab now succeeds -> a real
+    # gemma-4 router is returned (would stay None forever if the transient
+    # failure had been cached).
+    router = engine._create_output_router()
+    assert router is not None
+    assert router.map.format_tag == "gemma4"
+    assert tok.calls == 2

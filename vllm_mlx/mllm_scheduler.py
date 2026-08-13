@@ -332,6 +332,19 @@ class MLLMScheduler:
         self._processing_task: asyncio.Task | None = None
         self._step_executor = None  # ThreadPoolExecutor, created in _process_loop
 
+        # Event-driven wake for the idle scheduler loop. When there are no
+        # requests to process, ``_process_loop`` waits on this Event instead of
+        # polling with a fixed 10ms sleep, so a freshly-arrived request is
+        # picked up in microseconds rather than after up to a full poll tick.
+        # ``add_request`` sets it right after appending to ``self.waiting``;
+        # both run on the server event-loop thread, so the set/wait pair is
+        # single-loop and race-free. A bounded ``wait_for`` timeout in the loop
+        # is retained purely as a belt-and-suspenders liveness floor — a missed
+        # wake can never wedge the loop for longer than one tick. Created here
+        # (not bound to a loop until first awaited, per asyncio semantics) so it
+        # exists before ``start()``.
+        self._new_request_event = asyncio.Event()
+
         # Memory management: periodic mx.clear_cache() to free Metal buffer pool
         self._step_count = 0
         self._clear_cache_interval = 32
@@ -560,6 +573,15 @@ class MLLMScheduler:
             self._disconnect_abort_ids.discard(request_id)
             self.requests[request_id] = request
         self.waiting.append(request)
+        # Wake the idle scheduler loop immediately (see ``_new_request_event``)
+        # instead of letting it sleep out its poll tick. Safe from here: both
+        # this append and the loop's wait run on the event-loop thread.
+        # ``getattr`` keeps ``add_request`` callable on the minimally
+        # constructed schedulers unit tests build via ``__new__`` (which set
+        # only ``config`` and skip ``__init__``); the live loop always has it.
+        new_request_event = getattr(self, "_new_request_event", None)
+        if new_request_event is not None:
+            new_request_event.set()
 
         logger.debug(
             f"Added MLLM request {request_id}: "
@@ -1564,8 +1586,20 @@ class MLLMScheduler:
                         # Yield to other tasks
                         await asyncio.sleep(0)
                     else:
-                        # No work, wait a bit
-                        await asyncio.sleep(0.01)
+                        # Idle: block until ``add_request`` signals new work
+                        # rather than polling on a fixed sleep. This removes
+                        # the up-to-10ms first-token latency a cold request
+                        # used to pay while the loop slept out its poll tick.
+                        # The ``wait_for`` timeout is a liveness floor only — a
+                        # missed wake can never wedge the loop beyond it — and
+                        # ``clear()`` re-arms the Event for the next idle spell.
+                        try:
+                            await asyncio.wait_for(
+                                self._new_request_event.wait(), timeout=0.05
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                        self._new_request_event.clear()
 
                 except asyncio.CancelledError:
                     break

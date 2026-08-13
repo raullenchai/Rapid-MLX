@@ -2610,26 +2610,101 @@ class BatchedEngine(BaseEngine):
         openai-harmony's ``StreamableParser`` (issue #513). Falls back to
         the legacy custom state machine for non-harmony models and for
         harmony tokenizers whose IDs don't match the official encoding.
+
+        Detection (``from_tokenizer_for_streaming`` →
+        ``tokenizer.get_vocab()``) rebuilds the tokenizer's full vocab dict
+        — ~60-85ms for a 262k-token Gemma vocab — and was previously paid on
+        EVERY streaming request. The tokenizer and the harmony escape-hatch
+        flags are fixed for the engine's lifetime, so the *detection result*
+        (format + marker ``TokenMap``) is invariant; only the returned
+        router's state machine is per-request. Memoize the detected
+        ``(kind, TokenMap)`` once and rebuild a fresh, cheap router per
+        request. This removes the entire ~84ms MLLM first-token overhead (the
+        whole rapid-vs-mlx-vlm vision TTFT gap) and shaves the same
+        per-request cost off every gemma-4 / gpt-oss streaming completion. The
+        per-request router object is constructed exactly as before — this only
+        skips re-scanning the vocab.
         """
+        # Read the tokenizer first — the property can raise mid-lifecycle
+        # ("not loaded" during a startup/teardown race). Treat that as the
+        # legacy no-router path for THIS request without caching anything, so a
+        # later (loaded) request still detects normally.
         try:
             tokenizer = self.tokenizer
-            if tokenizer is None:
-                return None
-            router = OutputRouter.from_tokenizer_for_streaming(
-                tokenizer,
-                force_harmony_streaming=self._force_openai_harmony_streaming,
-                no_harmony_streaming=self._no_openai_harmony_streaming,
-            )
-            if router is None:
-                return None
-            if router.map.format_tag not in _OUTPUT_ROUTER_ALLOWLIST:
-                return None
-            return router
-        # Unsupported tokenizers are expected to fall through to the legacy
-        # parser path; construction failures indicate the same non-router path.
         except Exception as e:
-            logger.debug("OutputRouter unavailable for this request: %s", e)
+            logger.debug("OutputRouter unavailable (tokenizer error): %s", e)
             return None
+
+        # Cache keyed on the tokenizer *object identity* so a model/tokenizer
+        # hot-swap (a different ``self.tokenizer``) transparently re-detects
+        # instead of serving a stale format map.
+        cached = getattr(self, "_output_router_template", None)
+        if cached is not None and cached[0] is tokenizer:
+            template = cached[1]
+        else:
+            try:
+                template = self._detect_output_router_template(tokenizer)
+            except Exception as e:
+                # A TRANSIENT detection failure (e.g. ``get_vocab()`` raising
+                # during lazy init) must NOT be cached: caching the negative
+                # result would permanently disable the router for this
+                # tokenizer, silently leaking channel tokens into every later
+                # response. Fall back to no-router for this request only and
+                # retry detection next time — matching the pre-cache behavior
+                # where every request re-ran detection. A *legitimate* "no
+                # supported format" result returns ``None`` (not a raise) and
+                # IS cached below.
+                logger.debug("OutputRouter detection failed (will retry): %s", e)
+                return None
+            self._output_router_template = (tokenizer, template)
+
+        if template is None:
+            return None
+        kind, token_map = template
+        try:
+            if kind == "harmony":
+                from ..output_router_harmony import HarmonyStreamingRouter
+
+                return HarmonyStreamingRouter(token_map, tokenizer)
+            return OutputRouter(token_map, tokenizer)
+        except Exception as e:
+            logger.debug("OutputRouter rebuild failed for this request: %s", e)
+            return None
+
+    def _detect_output_router_template(
+        self,
+        tokenizer: Any,
+    ) -> tuple[str, Any] | None:
+        """One-time router-format detection (see ``_create_output_router``).
+
+        Runs the full ``from_tokenizer_for_streaming`` scan once and captures
+        the router *kind* (``"harmony"`` vs the legacy ``"legacy"`` state
+        machine) plus its marker ``TokenMap``, so subsequent requests rebuild
+        a router without re-reading the vocabulary. Returns ``None`` for a
+        *legitimate* negative — no tokenizer, no supported format, or a format
+        outside the allowlist — which the caller caches. Deliberately does NOT
+        swallow exceptions: a transient failure (e.g. ``get_vocab()`` during
+        lazy init) must propagate so the caller can retry instead of caching a
+        permanently-broken no-router result.
+        """
+        if tokenizer is None:
+            return None
+        router = OutputRouter.from_tokenizer_for_streaming(
+            tokenizer,
+            force_harmony_streaming=self._force_openai_harmony_streaming,
+            no_harmony_streaming=self._no_openai_harmony_streaming,
+        )
+        if router is None:
+            return None
+        if router.map.format_tag not in _OUTPUT_ROUTER_ALLOWLIST:
+            return None
+        # ``from_tokenizer_for_streaming`` returns either the legacy
+        # ``OutputRouter`` state machine or a ``HarmonyStreamingRouter``;
+        # remember which so the per-request rebuild picks the same class.
+        from ..output_router_harmony import HarmonyStreamingRouter
+
+        kind = "harmony" if isinstance(router, HarmonyStreamingRouter) else "legacy"
+        return (kind, router.map)
 
     def _make_routed_output(
         self,

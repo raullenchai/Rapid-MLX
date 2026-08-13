@@ -572,6 +572,29 @@ class MLLMBatchGenerator:
                 "MLLMBatchGenerator: Model does not have language_model, using model directly"
             )
 
+        # Gemma-3's ``Model.__call__`` is unusable for cached autoregressive
+        # generation on the image path. ``get_input_embeddings`` returns a
+        # *bidirectional* 4D mask (the outer product of the all-ones padding
+        # mask), and ``Model.__call__`` forwards it verbatim to
+        # ``language_model(mask=…)`` — overriding the causal mask the LM would
+        # otherwise build, so every position attends to every other and the
+        # very first sampled token is EOS (empty completion). Stock mlx-vlm
+        # never hits this because its generate loop bypasses ``Model.__call__``:
+        # it calls ``get_input_embeddings`` for the vision merge, then
+        # ``language_model(..., mask=None)`` so the LM builds its own causal
+        # mask. We mirror that for gemma-3 only (``_run_vision_encoding``);
+        # gemma-4 / Qwen-VL pass the raw 2D/None mask straight through and are
+        # unaffected. Keyed on ``model_type`` so future gemma-3 quant variants
+        # are covered without an allowlist.
+        model_config = getattr(model, "config", None)
+        self._is_gemma3_vlm = getattr(model_config, "model_type", None) == "gemma3"
+        if self._is_gemma3_vlm:
+            logger.info(
+                "MLLMBatchGenerator: gemma-3 image path uses direct "
+                "get_input_embeddings + language_model(mask=None) "
+                "(Model.__call__ forwards a non-causal mask)"
+            )
+
         self.max_tokens = max_tokens
         self.stop_tokens = stop_tokens or set()
         self.sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
@@ -1172,6 +1195,35 @@ class MLLMBatchGenerator:
                 mx.clear_cache()
                 pos += n
             output = self.model(input_ids[:, -1:], cache=cache, pixel_values=None)
+        elif (
+            getattr(self, "_is_gemma3_vlm", False) and request.pixel_values is not None
+        ):
+            # gemma-3 image path: bypass ``Model.__call__`` (it forwards a
+            # non-causal 4D mask to the LM — see ``_is_gemma3_vlm`` note).
+            # Reproduce stock mlx-vlm exactly: run the vision merge via
+            # ``get_input_embeddings`` (needs the padding ``mask`` to build the
+            # image-token 4D expansion), then forward the LM with ``mask=None``
+            # so it builds its own causal + sliding-window masks. The merge
+            # scales image features by 1/sqrt(H) and the LM scales all embeds
+            # by sqrt(H), so this is numerically identical to the broken path
+            # apart from the mask — no re-embedding, no extra forward.
+            merge_mask = request.attention_mask
+            if merge_mask is None:
+                # Defensive: gemma-3's processor always emits an all-ones mask,
+                # but a None here would resurrect the original
+                # ``expand_dims(None)`` crash. Rebuild the all-attended mask.
+                merge_mask = mx.ones(input_ids.shape, dtype=mx.int32)
+            emb = self.model.get_input_embeddings(
+                input_ids,
+                pixel_values=request.pixel_values,
+                mask=merge_mask,
+            )
+            output = self.language_model(
+                input_ids,
+                inputs_embeds=emb.inputs_embeds,
+                mask=None,
+                cache=cache,
+            )
         else:
             output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
@@ -1488,6 +1540,16 @@ class MLLMBatchGenerator:
         # ``logprobs=outgoing_logprobs[i]`` slices from THIS array, so
         # ``outgoing_logprobs`` is the exact object that crosses the
         # worker → route-handler thread boundary.
+        #
+        # This is a compute-AHEAD pipeline: emit ``batch.y`` (the token the
+        # PREVIOUS call decoded), then decode the next token into ``batch.y``
+        # via ``mx.async_eval`` so token N+1's GPU forward OVERLAPS token N's
+        # CPU/async delivery (response build → queue → SSE). Do NOT "optimise"
+        # the first-token path by deferring this decode: emitting the prefill
+        # token without the compute-ahead step breaks the overlap for EVERY
+        # subsequent token and ~halves steady-state decode throughput (measured
+        # 99→53 tok/s on gemma-4-e4b vision) for a ~26ms TTFT saving — a bad
+        # trade. The overlap is the throughput win.
         y, outgoing_logprobs = batch.y, batch.logprobs
         batch.y, batch.logprobs = self._step(y[:, None], batch.cache, batch.requests)
         mx.async_eval(batch.y, batch.logprobs)
