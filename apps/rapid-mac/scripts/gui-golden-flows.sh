@@ -1062,7 +1062,10 @@ flow_cached_quickstart() {
     kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
         || die ":8000 was already occupied; cannot establish the owned-server isolation repro"
 
-    start_persona cached-quickstart
+    # Include the real cold-cache notice alongside the deterministic cached
+    # fixture. Catalog output can be interleaved with prose; the chooser must
+    # never promote that notice into a selectable model named "No" (#1918).
+    start_persona cached-quickstart FAKE_EMPTY_CACHE_NOTICE=1
 
     see_main "$OUT/consent.json"
     if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
@@ -1076,6 +1079,11 @@ flow_cached_quickstart() {
         || die "Quickstart welcome does not expose honest step progress"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/chooser.json"
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Quickstart.CachedModel.No")' \
+        "$OUT/chooser.json" >/dev/null; then
+        die "empty-cache notice surfaced as a selectable model named No (#1918)"
+    fi
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.Progress")
             | select(.description == "Setup progress, step 2 of 4")' "$OUT/chooser.json" >/dev/null \

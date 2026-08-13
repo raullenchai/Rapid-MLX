@@ -900,6 +900,8 @@ def _emit_catalog(subcommand, alias):
         print(f"{FAKE_IMAGE_ALIAS}       4.6 GiB    [image:both] {FAKE_IMAGE_REPO}")
         return True
     if subcommand == "ls":
+        if _setting("FAKE_EMPTY_CACHE_NOTICE") == "1":
+            print("No models cached yet. Run 'rapid-mlx pull <alias>' or 'rapid-mlx chat <alias>' to download one.")
         print("Cached models")
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
