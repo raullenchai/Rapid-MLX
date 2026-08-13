@@ -74,6 +74,9 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
                 attachmentChanged = true
             }
             attachmentChanged = observeDocumentViewIfNeeded() || attachmentChanged
+            if isStreaming, documentHeightAtStreamStart == nil {
+                documentHeightAtStreamStart = documentView?.bounds.height
+            }
             // updateNSView runs for every streamed mutation. Document-frame
             // notifications own steady-state following; only a new attachment
             // needs an explicit initial anchor (#1877).
@@ -142,11 +145,17 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         /// Whether this stream has already handed control back to the reader.
         private var didReleaseForCurrentStream = false
         private var isStreaming = false
+        private var documentHeightAtStreamStart: CGFloat?
 
         func setStreaming(_ streaming: Bool) {
             guard streaming != isStreaming else { return }
             isStreaming = streaming
-            if streaming { didReleaseForCurrentStream = false }
+            if streaming {
+                didReleaseForCurrentStream = false
+                documentHeightAtStreamStart = documentView?.bounds.height
+            } else {
+                documentHeightAtStreamStart = nil
+            }
         }
 
         /// Stop following the moment a streamed answer grows taller than the
@@ -168,10 +177,14 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         /// Returns true when it released, meaning the caller must not scroll.
         private func releaseIfAnswerOutgrewViewport() -> Bool {
             guard isStreaming, !didReleaseForCurrentStream else { return false }
-            guard let scrollView, let documentView else { return false }
+            guard let scrollView, let documentView,
+                  let startingHeight = documentHeightAtStreamStart else { return false }
             let viewportHeight = scrollView.contentView.bounds.height
-            guard viewportHeight > 0,
-                  documentView.bounds.height > viewportHeight else { return false }
+            guard Self.answerOutgrewViewport(
+                documentHeight: documentView.bounds.height,
+                documentHeightAtStreamStart: startingHeight,
+                viewportHeight: viewportHeight
+            ) else { return false }
             didReleaseForCurrentStream = true
             // Not `setPinned(false)` — that helper is reserved for the
             // user-gesture path (`liveScrollWillStart` / `boundsDidChange`).
@@ -181,6 +194,15 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
                 isPinnedToBottom.wrappedValue = false
             }
             return true
+        }
+
+        nonisolated static func answerOutgrewViewport(
+            documentHeight: CGFloat,
+            documentHeightAtStreamStart: CGFloat,
+            viewportHeight: CGFloat
+        ) -> Bool {
+            viewportHeight > 0
+                && documentHeight - documentHeightAtStreamStart > viewportHeight
         }
 
         private func observeScrollView(_ scrollView: NSScrollView) {

@@ -115,6 +115,20 @@ final class MarkdownTextRenderer {
         return result
     }
 
+    /// Resolve a rendered link at a view-local point. TextKit's drawing-only
+    /// host has no NSTextView delegate to do this on our behalf.
+    func link(at point: CGPoint) -> URL? {
+        guard let storage = textContentStorage.textStorage else { return nil }
+        textLayoutManager.ensureLayout(for: textContentStorage.documentRange)
+        for offset in 0..<min(proseLength, storage.length) {
+            guard let rect = rect(forCharacterAt: offset), rect.contains(point),
+                  let url = storage.attribute(.link, at: offset, effectiveRange: nil) as? URL
+            else { continue }
+            return url
+        }
+        return nil
+    }
+
     /// Lay out at a given width and report the height the text needs.
     ///
     /// Deliberately usable with no view attached: this is the measurement path

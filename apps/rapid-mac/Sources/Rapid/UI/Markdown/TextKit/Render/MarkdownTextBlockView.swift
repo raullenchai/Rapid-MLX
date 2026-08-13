@@ -216,6 +216,28 @@ final class MarkdownTextBlockView: NSView {
         updateTypingDotLayer()
     }
 
+    public override func resetCursorRects() {
+        super.resetCursorRects()
+        for offset in 0..<renderer.proseLength {
+            guard let rect = renderer.rect(forCharacterAt: offset),
+                  renderer.link(at: CGPoint(x: rect.midX, y: rect.midY)) != nil else { continue }
+            addCursorRect(rect, cursor: .pointingHand)
+        }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let url = renderer.link(at: point) else {
+            super.mouseDown(with: event)
+            return
+        }
+        // This AppKit leaf cannot consume SwiftUI's OpenURLAction environment,
+        // so apply the same central policy before handing off to the system.
+        if case .allowed(let safeURL) = ChatLinkSafety.decide(url) {
+            NSWorkspace.shared.open(safeURL)
+        }
+    }
+
     /// Position the typing dot's layer at the spot the text system reserved.
     ///
     /// A persistent `CAShapeLayer` that is *moved*, not a circle redrawn every

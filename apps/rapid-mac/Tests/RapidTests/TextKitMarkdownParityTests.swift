@@ -29,6 +29,36 @@ struct TextKitMarkdownParityTests {
         #expect(view.accessibilityValue() as? String == "Hello from TextKit")
     }
 
+    @Test("Custom TextKit prose resolves rendered links for click handling")
+    @MainActor
+    func customTextKitLinkHitTesting() throws {
+        let result = MarkdownCompiler().compile("Read [Rapid](https://rapidmlx.ai) now")
+        let blocks = result.items.compactMap { item -> MarkdownItem.TextBlock? in
+            guard case .text(let block) = item else { return nil }
+            return block
+        }
+        let renderer = MarkdownTextRenderer(options: .assistantTranscript())
+        renderer.setBlocks(blocks)
+        _ = renderer.measureHeight(width: 400)
+        let linkedOffset = (renderer.accessibleText as NSString).range(of: "Rapid").location
+        let rect = try #require(renderer.rect(forCharacterAt: linkedOffset))
+        #expect(renderer.link(at: CGPoint(x: rect.midX, y: rect.midY))?.absoluteString == "https://rapidmlx.ai")
+    }
+
+    @Test("A long transcript does not release follow mode for a short new answer")
+    func followModeUsesCurrentAnswerGrowth() {
+        #expect(!TranscriptScrollPositionProbe.Coordinator.answerOutgrewViewport(
+            documentHeight: 5_300,
+            documentHeightAtStreamStart: 5_000,
+            viewportHeight: 800
+        ))
+        #expect(TranscriptScrollPositionProbe.Coordinator.answerOutgrewViewport(
+            documentHeight: 5_900,
+            documentHeightAtStreamStart: 5_000,
+            viewportHeight: 800
+        ))
+    }
+
     // MARK: - Structural parity with the MarkdownUI path
 
     @Test("Prose, code and tables compile to distinct blocks")
