@@ -152,7 +152,7 @@ struct ConversationSearchView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: RapidTheme.Layout.iconSlot)
                 Text(conversation.title)
-                    .font(RapidFont.body)
+                    .font(selected ? RapidFont.bodyEmphasis : RapidFont.body)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: RapidTheme.Space.sm)
@@ -167,14 +167,29 @@ struct ConversationSearchView: View {
             .frame(height: 40)
             .background(
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
-                    .fill(selected ? RapidTheme.brandPrimaryTint : (hovering ? RapidTheme.hoverFill : .clear))
+                    .fill(selected ? RapidTheme.selectionFill : (hovering ? RapidTheme.hoverFill : .clear))
             )
+            // Same selected treatment as the sidebar rows this panel is a
+            // fast path to — amber bar, neutral fill, semibold label. The
+            // search results ARE the conversation list, so answering
+            // "which row am I on?" differently in the two places would be
+            // two conventions for one question.
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule(style: .continuous)
+                        .fill(RapidTheme.selectionBar)
+                        .frame(
+                            width: RapidTheme.Layout.selectionBarWidth,
+                            height: RapidTheme.Layout.selectionBarHeight
+                        )
+                }
+            }
             .contentShape(
                 RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
             )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(selected ? RapidTheme.brandPrimaryDeep : Color.primary)
+        .foregroundStyle(Color.primary)
         .onHover {
             hoveredConversationID = $0 ? conversation.id : nil
             if $0 { selectedConversationID = conversation.id }

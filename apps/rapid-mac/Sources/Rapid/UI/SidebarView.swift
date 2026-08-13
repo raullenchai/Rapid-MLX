@@ -103,6 +103,7 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
+            brandLockup
             row(
                 title: "New Chat",
                 systemImage: "square.and.pencil",
@@ -212,6 +213,39 @@ struct SidebarView: View {
         }
     }
 
+    /// The product lockup at the top of the rail: the official Rapid `R`
+    /// beside the product name.
+    ///
+    /// Purely decorative, and marked so. The window already carries the
+    /// app name in its title bar and in the menu bar, so announcing it a
+    /// third time would put a redundant element ahead of "New Chat" in
+    /// every VoiceOver traversal of the sidebar — the rail's first
+    /// element should be the first thing you can DO in it. It is also
+    /// what keeps this addition free of any new accessibility identifier
+    /// or AX node for the identifier inventory to account for.
+    ///
+    /// The mark is ``RapidRMark``'s template image — the same geometry
+    /// the menu-bar status item renders, so the two brand surfaces cannot
+    /// drift apart. Template rendering means it tracks the label colour
+    /// in both appearances rather than needing a second asset for Dark.
+    private var brandLockup: some View {
+        HStack(spacing: RapidTheme.Space.sm) {
+            if let mark = RapidRMark.menuBarTemplateImage(height: 15) {
+                Image(nsImage: mark)
+                    .renderingMode(.template)
+                    .foregroundStyle(RapidTheme.textPrimary)
+                    .frame(width: RapidTheme.Layout.iconSlot, alignment: .center)
+            }
+            Text("Rapid-MLX")
+                .font(RapidFont.bodyEmphasis)
+                .foregroundStyle(RapidTheme.textPrimary)
+        }
+        .padding(.horizontal, RapidTheme.Space.sm)
+        .padding(.top, RapidTheme.Space.xs)
+        .padding(.bottom, RapidTheme.Space.md)
+        .accessibilityHidden(true)
+    }
+
     private func residencyFooter(
         _ snapshot: ModelResidencySnapshot,
         preferredAlias: String?
@@ -258,7 +292,18 @@ struct SidebarView: View {
             }
         }
         .padding(.horizontal, RapidTheme.Space.sm)
-        .padding(.vertical, RapidTheme.Space.sm)
+        .padding(.top, RapidTheme.Space.md)
+        .padding(.bottom, RapidTheme.Space.sm)
+        // A rule, not a gap. The residency block is the one part of the
+        // rail that describes the MACHINE rather than the app's
+        // navigation, and separating it by whitespace alone left it
+        // reading as a fifth, oddly-formatted nav group. A hairline says
+        // "different kind of thing" in the width of one pixel.
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(RapidTheme.hairline)
+                .frame(height: 1)
+        }
         .accessibilityIdentifier("Sidebar.Residency")
     }
 
@@ -490,7 +535,7 @@ struct SidebarView: View {
                     // inset as the nav rows above, so titles and nav labels
                     // align down one column instead of stepping in and out.
                     Text(conv.title)
-                        .font(RapidFont.body)
+                        .font(isActive ? RapidFont.bodyEmphasis : RapidFont.body)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .padding(.leading, RapidTheme.Layout.iconSlot + RapidTheme.Space.sm)
@@ -762,10 +807,14 @@ struct SidebarView: View {
         ) {
             HStack(spacing: RapidTheme.Space.sm) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 13, weight: .medium))
+                    // Semibold when selected, matching the label. The
+                    // glyph and its word are one object; letting only the
+                    // text thicken made the icon look like it belonged to
+                    // the row above.
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
                     .frame(width: RapidTheme.Layout.iconSlot, alignment: .center)
                 Text(title)
-                    .font(RapidFont.body)
+                    .font(isSelected ? RapidFont.bodyEmphasis : RapidFont.body)
                     .lineLimit(1)
             }
         }
@@ -773,13 +822,29 @@ struct SidebarView: View {
 }
 
 /// Shared chrome for every sidebar row: fixed height, one row radius,
-/// amber selection, neutral hover.
+/// one selected treatment, neutral hover.
 ///
-/// The selected treatment is the product's canonical "this is chosen"
-/// signal — amber tint fill plus the deep-amber label. Deep amber (not
-/// raw ``brandPrimary``) because a 13pt label in #EFA23A on the light
-/// tint is under 3:1; the deeper shade of the same hue clears AA while
-/// reading as the same colour.
+/// ## The selected treatment
+///
+/// A 3×18pt amber bar in the leading gutter, a neutral fill, and a
+/// graphite SEMIBOLD label. Three signals, none of which is a colour
+/// difference small enough to miss.
+///
+/// It replaces the v1.0 pairing of an amber TINT fill plus a deep-amber
+/// label, which failed for a reason worth recording: the tint
+/// (``brandPrimaryTint``) and the rail it sat on
+/// (``surfaceSidebar``) were within a few percent of each other, so on
+/// the rail — the one place selection matters most — the fill was
+/// effectively invisible, and the whole signal came down to a hue shift
+/// in a 13pt label. That is the single least robust way to encode state:
+/// it is the first thing lost to colour-blindness, to a dim display, and
+/// to peripheral vision.
+///
+/// The bar is a hard-edged shape, so it survives Increase Contrast and
+/// reads at a glance from across the desk; the semibold weight carries
+/// the row even in a screenshot with no colour at all. Amber is spent
+/// here rather than on the fill because the rail's whole budget is one
+/// small brand moment, and a bar is a smaller, sharper one than a slab.
 private struct SidebarRow<Content: View>: View {
     let isSelected: Bool
     let action: () -> Void
@@ -797,19 +862,38 @@ private struct SidebarRow<Content: View>: View {
                     RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
                         .fill(fill)
                 )
+                // The bar is an OVERLAY on the leading edge rather than a
+                // sibling in an HStack: as a sibling it would take layout
+                // width, so every label in the rail would shift sideways
+                // the moment a row became selected. An overlay marks the
+                // row without moving anything in it.
+                .overlay(alignment: .leading) {
+                    if isSelected {
+                        Capsule(style: .continuous)
+                            .fill(RapidTheme.selectionBar)
+                            .frame(
+                                width: RapidTheme.Layout.selectionBarWidth,
+                                height: RapidTheme.Layout.selectionBarHeight
+                            )
+                    }
+                }
                 .contentShape(
                     RoundedRectangle(cornerRadius: RapidTheme.Radius.row, style: .continuous)
                 )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? RapidTheme.brandPrimaryDeep : Color.primary)
+        // Graphite in both states. The label's WEIGHT now carries
+        // selection (see ``SidebarView.row`` and ``conversationRow``),
+        // which keeps every row in the rail at full reading contrast
+        // instead of tinting the selected one down to a brand hue.
+        .foregroundStyle(Color.primary)
         .onHover { hovering = $0 }
         .rapidAnimation(RapidMotion.quick, value: hovering)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var fill: Color {
-        if isSelected { return RapidTheme.brandPrimaryTint }
+        if isSelected { return RapidTheme.selectionFill }
         return hovering ? RapidTheme.hoverFill : .clear
     }
 }
