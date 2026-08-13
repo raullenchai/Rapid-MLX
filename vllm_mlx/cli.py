@@ -1673,6 +1673,10 @@ def _ensure_model_downloaded(
     try:
         from huggingface_hub import model_info, snapshot_download
 
+        from vllm_mlx._download_gate import (
+            _HF_RESOLVE_TIMEOUT_SECONDS,
+            call_with_deadline,
+        )
         from vllm_mlx.model_aliases import subfolder_allow_patterns
 
         # Repos that ship one folder per quantization: fetch and measure
@@ -1681,9 +1685,29 @@ def _ensure_model_downloaded(
         allow_patterns = subfolder_allow_patterns(model_name)
         _prefix = allow_patterns[0][:-1] if allow_patterns else None
 
+        # This bounded call is also the reachability gate for the unbounded one
+        # below. ``snapshot_download`` resolves the revision through httpx with
+        # an explicit ``timeout=None``, which *disables* the client timeout
+        # rather than inheriting it, so that call has no deadline and hangs
+        # indefinitely on a blackholed route — the desktop then sits at
+        # "Starting" until its 30-minute stall window. Proving the Hub answers
+        # within a deadline first turns that hang into an error.
+        #
+        # The sha is deliberately NOT pinned onto ``snapshot_download`` below,
+        # tempting as it looks (given a commit hash it skips its own lookup
+        # entirely): huggingface_hub only writes ``refs/main`` when the revision
+        # it was handed differs from the resolved commit, so pinning would leave
+        # every freshly downloaded model without the ref that ``is_repo_cached``
+        # requires — and every later start would go back to the network, undoing
+        # the warm-cache fix this is meant to complement.
         size_gb = 0.0
         try:
-            info = model_info(model_name, files_metadata=True)
+            info = call_with_deadline(
+                model_info,
+                _HF_RESOLVE_TIMEOUT_SECONDS,
+                model_name,
+                files_metadata=True,
+            )
             size_bytes = sum(
                 (s.size or 0)
                 for s in (getattr(info, "siblings", None) or [])
@@ -1691,7 +1715,29 @@ def _ensure_model_downloaded(
                 and (_prefix is None or s.rfilename.startswith(_prefix))
             )
             size_gb = size_bytes / (1024**3)
+        except TimeoutError:
+            # The Hub did not answer within the deadline. Falling through to
+            # ``snapshot_download`` would re-enter the unbounded lookup and
+            # hang; the desktop would sit at "Starting" until its 30-minute
+            # stall window. Abort via ``sys.exit`` rather than an exception:
+            # the generic handler at the bottom of this function turns any
+            # non-404 exception into "Pre-download skipped; server will retry"
+            # and lets the serve subprocess start, which would walk straight
+            # back into the same hang. ``SystemExit`` is re-raised there, which
+            # is the same escape hatch ``_check_disk_space`` already uses.
+            print(
+                f"\n  Error: could not reach HuggingFace to resolve "
+                f"{model_name} within {_HF_RESOLVE_TIMEOUT_SECONDS:.0f}s.\n"
+                "  The model is not fully downloaded yet, so it cannot be "
+                "started offline.\n"
+                "  Check your network or proxy settings and try again.\n",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except Exception:
+            # Any other metadata failure stays best-effort: an outage, a gated
+            # repo or a missing token costs us the size quote, and the download
+            # proceeds to fail (or succeed) with its own clearer error.
             pass
 
         is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
@@ -5720,6 +5766,24 @@ def pull_command(args):
     repo_id = args.model  # already alias-resolved by main()
     t0 = time.monotonic()
 
+    # Reclaim scratch files stranded by earlier interrupted pulls of THIS repo
+    # before adding more. huggingface_hub gives each attempt a uniquely-named
+    # ``.incomplete`` blob and removes it while unwinding, which a killed
+    # process never gets to do — so a cancel, quit or crash leaves one behind
+    # every time and nothing else ever collects them. Best-effort and
+    # age-gated; see the helper for why it cannot disturb a live download.
+    try:
+        from vllm_mlx._download_gate import _format_size, reap_orphan_incomplete_blobs
+
+        _reaped, _bytes = reap_orphan_incomplete_blobs(repo_id)
+        if _reaped:
+            print(
+                f"  Cleaned up {_reaped} abandoned download file(s) "
+                f"from earlier interrupted pulls ({_format_size(_bytes)})."
+            )
+    except Exception:
+        pass
+
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
@@ -5748,7 +5812,16 @@ def pull_command(args):
     # or one or more files failed both R2 and HF in the per-file pool.
     # snapshot_download will retry from HF with its own (more robust)
     # error reporting.
+    # Say plainly that this path does not resume. The mirror completes a
+    # partial ``.part`` with a ranged request, so an interrupted mirror pull
+    # picks up where it left off; huggingface_hub gives each attempt its own
+    # scratch file and never reuses one, so an interrupted HF pull starts the
+    # affected files over from zero. Silently switching between "resumes" and
+    # "restarts" is what makes a flaky connection read as "the download is
+    # stuck" — the bytes really do go back to the beginning each time.
     print(f"\n  Pulling {repo_id} from HuggingFace ...")
+    print("  Note: this path does not resume — interrupting it restarts the")
+    print("  files still in flight from the beginning.")
     try:
         from vllm_mlx.model_aliases import resolve_subfolder
 

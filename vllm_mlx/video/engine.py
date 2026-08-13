@@ -48,15 +48,25 @@ def _resolve_tokenizer_path(model_path: str, snapshot_download) -> str:
         "CogVideoX MLX checkpoint has no spiece.model; fetching tokenizer from %s",
         _COGVIDEOX_TOKENIZER_REPO,
     )
-    return snapshot_download(
-        _COGVIDEOX_TOKENIZER_REPO,
-        allow_patterns=[
-            "tokenizer/spiece.model",
-            "tokenizer/tokenizer_config.json",
-            "tokenizer/special_tokens_map.json",
-            "tokenizer/added_tokens.json",
-        ],
-    )
+    allow_patterns = [
+        "tokenizer/spiece.model",
+        "tokenizer/tokenizer_config.json",
+        "tokenizer/special_tokens_map.json",
+        "tokenizer/added_tokens.json",
+    ]
+    # The converted checkpoints omit ``spiece.model`` today, so this runs on
+    # every load — try the cache before the Hub, or each start pays an
+    # unbounded metadata round-trip for four small files it already has.
+    try:
+        return snapshot_download(
+            _COGVIDEOX_TOKENIZER_REPO,
+            allow_patterns=allow_patterns,
+            local_files_only=True,
+        )
+    except Exception:
+        return snapshot_download(
+            _COGVIDEOX_TOKENIZER_REPO, allow_patterns=allow_patterns
+        )
 
 
 class VideoBackendUnavailableError(RuntimeError):
@@ -204,7 +214,16 @@ class VideoGenerationEngine:
                 "Install them with: pip install 'rapid-mlx[video]'."
             ) from exc
 
-        model_path = snapshot_download(self.model_id)
+        # Prefer the cached snapshot outright. Passing the repo id makes
+        # huggingface_hub resolve the revision through the Hub on every load,
+        # warm cache included, and that request has no timeout of its own — on
+        # a blackholed route it hangs instead of failing fast. Falls back to
+        # the download whenever the cache can't be vouched for.
+        from .._download_gate import split_model_local_snapshot
+
+        model_path = split_model_local_snapshot(self.model_id) or snapshot_download(
+            self.model_id
+        )
         logger.info("Loading CogVideoX video pipeline from %s", model_path)
         vae = AutoencoderKLCogVideoX.from_pretrained(model_path)
         transformer = CogVideoXTransformer3DModel.from_pretrained(model_path)

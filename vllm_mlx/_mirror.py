@@ -1348,8 +1348,19 @@ def download_with_mirror_fallback(
     )
     from huggingface_hub.utils import RepositoryNotFoundError
 
+    from ._download_gate import _HF_RESOLVE_TIMEOUT_SECONDS, call_with_deadline
+
     try:
-        info = model_info(repo_id, files_metadata=True)
+        # Wrapped in a deadline rather than called bare: this request has no
+        # timeout of its own (huggingface_hub hands httpx an explicit
+        # ``timeout=None``, which disables the client's timeout instead of
+        # inheriting it), so on a blackholed route it hangs indefinitely rather
+        # than failing over to HF. ``TimeoutError`` is already in the except
+        # tuple below, so a lapsed deadline falls through to
+        # ``snapshot_download`` exactly like any other mirror miss.
+        info = call_with_deadline(
+            model_info, _HF_RESOLVE_TIMEOUT_SECONDS, repo_id, files_metadata=True
+        )
     except (
         EntryNotFoundError,
         RepositoryNotFoundError,

@@ -13,7 +13,10 @@ No test in this file hits the network — every HF API call is mocked.
 
 from __future__ import annotations
 
+import json
 import os
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1278,6 +1281,202 @@ def test_mflux_missing_weights_reports_non_string_index_without_raising(
     assert gate.mflux_missing_weights(repo) == [
         "transformer/model.safetensors.index.json"
     ]
+
+
+def _seed_blob(blobs_dir, name: str, *, size: int, age_seconds: float = 0.0):
+    blobs_dir.mkdir(parents=True, exist_ok=True)
+    path = blobs_dir / name
+    path.write_bytes(b"x" * size)
+    if age_seconds:
+        stamp = time.time() - age_seconds
+        os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_reap_removes_only_stale_incomplete_scratch_files(tmp_path, monkeypatch):
+    """Stale scratch files go; fresh ones and real blobs stay.
+
+    Each interrupted attempt strands one uniquely-named ``.incomplete`` blob
+    (huggingface_hub removes it while unwinding, which a killed process never
+    does), and nothing else in the cache collects them.
+    """
+    blobs = tmp_path / "models--org--repo" / "blobs"
+    stale = _seed_blob(
+        blobs, f"{'a' * 64}.deadbeef.incomplete", size=2048, age_seconds=99999
+    )
+    fresh = _seed_blob(blobs, f"{'b' * 64}.cafebabe.incomplete", size=99)
+    real = _seed_blob(blobs, "c" * 64, size=10)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert gate.reap_orphan_incomplete_blobs("org/repo") == (1, 2048)
+    assert not stale.exists()
+    assert fresh.exists()  # a live download's scratch file is untouchable
+    assert real.exists()  # and a finished blob is not scratch at all
+
+
+def test_reap_is_quiet_when_there_is_nothing_to_collect(tmp_path, monkeypatch):
+    """An unknown repo, or one with no scratch files, reclaims nothing."""
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert gate.reap_orphan_incomplete_blobs("org/never-pulled") == (0, 0)
+
+
+def test_reap_collects_every_attempt_for_one_blob(tmp_path, monkeypatch):
+    """The observed failure mode: one blob, several stranded attempts.
+
+    Measured on a developer machine as three files for a single blob written
+    49, 75 and 170 hours apart — not concurrency, just one file per interrupted
+    attempt with nothing ever reclaiming them.
+    """
+    blobs = tmp_path / "models--org--repo" / "blobs"
+    etag = "d" * 64
+    for suffix, age in (
+        ("595efb08", 49 * 3600),
+        ("5e932968", 75 * 3600),
+        ("8594cacd", 170 * 3600),
+    ):
+        _seed_blob(blobs, f"{etag}.{suffix}.incomplete", size=512, age_seconds=age)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert gate.reap_orphan_incomplete_blobs("org/repo") == (3, 1536)
+
+
+def test_reap_does_not_follow_symlinks(tmp_path, monkeypatch):
+    """A symlink shaped like scratch must not delete whatever it points at."""
+    blobs = tmp_path / "models--org--repo" / "blobs"
+    blobs.mkdir(parents=True)
+    victim = tmp_path / "precious.bin"
+    victim.write_bytes(b"keep me")
+    link = blobs / f"{'e' * 64}.12345678.incomplete"
+    link.symlink_to(victim)
+    stamp = time.time() - 99999
+    os.utime(link, (stamp, stamp), follow_symlinks=False)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path))
+
+    assert gate.reap_orphan_incomplete_blobs("org/repo") == (0, 0)
+    assert victim.exists()
+    assert link.is_symlink()
+
+
+def test_call_with_deadline_gives_up_on_a_hanging_call():
+    """A call that never returns must raise, not block its caller forever.
+
+    This is the only bound that holds on a huggingface_hub metadata request:
+    the library hands httpx an explicit ``timeout=None``, which disables the
+    client's own timeout rather than inheriting it, so configuring the client
+    does not help.
+    """
+    started = threading.Event()
+
+    def _hang():
+        started.set()
+        threading.Event().wait()  # never set
+
+    with pytest.raises(TimeoutError):
+        gate.call_with_deadline(_hang, 0.2)
+    assert started.is_set()  # it really did run, rather than failing early
+
+
+def test_call_with_deadline_passes_through_result_and_error():
+    """Within the deadline it is transparent — value out, exception out."""
+    assert gate.call_with_deadline(lambda a, b=0: a + b, 5, 1, b=2) == 3
+
+    def _boom():
+        raise ValueError("upstream")
+
+    with pytest.raises(ValueError, match="upstream"):
+        gate.call_with_deadline(_boom, 5)
+
+
+def _seed_split_model_snapshot(repo_root, sha: str, *, omit: str | None = None):
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    components = ["transformer", "text_encoder", "vae"]
+    (snap / "split_model.json").write_text(json.dumps({"components": components}))
+    for component in components:
+        if component != omit:
+            (snap / f"{component}.safetensors").write_bytes(b"w" * 4096)
+    _seed_refs_main(repo_root, sha)
+    return snap
+
+
+def test_split_model_local_snapshot_resolves_a_complete_checkpoint(
+    tmp_path, monkeypatch
+):
+    """A complete video checkpoint resolves locally, so the load stays offline."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
+    repo_root = cache_root / f"models--{repo.replace('/', '--')}"
+    snap = _seed_split_model_snapshot(repo_root, "1" * 40)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.split_model_local_snapshot(repo) == str(snap)
+
+
+def test_split_model_local_snapshot_declines_a_partial_checkpoint(
+    tmp_path, monkeypatch
+):
+    """A missing component must keep downloading rather than load half a model."""
+    cache_root = tmp_path / "hf-cache"
+    repo = "dgrauet/CogVideoX-Fun-V1.5-5b-InP-mlx-q4"
+    repo_root = cache_root / f"models--{repo.replace('/', '--')}"
+    _seed_split_model_snapshot(repo_root, "2" * 40, omit="vae")
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.split_model_local_snapshot(repo) is None
+
+
+def test_mflux_local_snapshot_resolves_a_complete_checkpoint(tmp_path, monkeypatch):
+    """A verified-complete mflux cache resolves to its snapshot directory.
+
+    Handing mflux this path instead of the repo id is what keeps a warm start
+    off the network — the resolution mflux would otherwise do has no timeout.
+    """
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    sha = "e" * 40
+    _seed_mflux_snapshot(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_local_snapshot(repo) == str(repo_root / "snapshots" / sha)
+
+
+def test_mflux_local_snapshot_declines_a_partial_checkpoint(tmp_path, monkeypatch):
+    """One missing shard means no local path — the caller must still pull.
+
+    The whole point of resolving locally is to skip the download; doing that
+    for a half-pulled checkpoint would boot mflux on randomly initialised
+    weights, which renders noise rather than failing.
+    """
+    cache_root = tmp_path / "hf-cache"
+    repo = "Runpod/FLUX.2-klein-4B-mflux-4bit"
+    repo_root = cache_root / "models--Runpod--FLUX.2-klein-4B-mflux-4bit"
+    _seed_mflux_snapshot(repo_root, "f" * 40, omit=("transformer", "1.safetensors"))
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.mflux_local_snapshot(repo) is None
+
+
+def test_mflux_local_snapshot_declines_when_there_is_no_verdict(tmp_path, monkeypatch):
+    """ "No verdict" (nothing cached, or not an image-gen alias) is not a path.
+
+    ``mflux_missing_weights`` returns ``None`` rather than ``[]`` here, and the
+    two must not collapse: only an explicit ``[]`` may short-circuit the pull.
+    """
+    monkeypatch.setattr(
+        "huggingface_hub.constants.HF_HUB_CACHE", str(tmp_path / "empty-cache")
+    )
+
+    assert gate.mflux_local_snapshot("Runpod/FLUX.2-klein-4B-mflux-4bit") is None
+    assert gate.mflux_local_snapshot("mlx-community/Qwen3-0.6B-4bit") is None
 
 
 def test_is_weightless_stub_true_for_partial_split_model_components(

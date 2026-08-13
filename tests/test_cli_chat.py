@@ -1534,6 +1534,45 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
     ]
 
 
+def test_ensure_model_downloaded_aborts_when_the_hub_wont_answer(monkeypatch):
+    """An unreachable Hub must abort the pre-download, not fall through to it.
+
+    ``snapshot_download``'s own revision lookup has no deadline — huggingface_hub
+    hands httpx an explicit ``timeout=None``, which disables the client timeout
+    rather than inheriting it — so entering it on a blackholed network hangs
+    until the desktop's 30-minute stall window. The bounded probe in front of it
+    is what turns that hang into an error, and it only helps if we stop here.
+
+    It must also exit rather than raise: the generic handler at the bottom of
+    ``_ensure_model_downloaded`` converts any non-404 exception into
+    "Pre-download skipped; server will retry" and starts the serve subprocess,
+    which walks straight back into the same unbounded lookup.
+    """
+    from vllm_mlx import _download_gate as gate
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr("os.path.exists", lambda _p: False)
+    monkeypatch.setattr(cli, "_check_disk_space", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gate, "_HF_RESOLVE_TIMEOUT_SECONDS", 0.2)
+
+    downloaded: list = []
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *a, **kw: downloaded.append(a) or "/tmp/fake",
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.model_info", lambda *_a, **_kw: threading.Event().wait()
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli._ensure_model_downloaded("mlx-community/Fake-Model-1B")
+
+    assert excinfo.value.code == 1
+    assert downloaded == []  # never entered the unbounded download
+
+
 def test_ensure_model_downloaded_uses_strict_cache_probe(monkeypatch):
     """Codex round-3 BLOCKING #2 (sibling fix): the chat REPL's pre-download
     probe used to short-circuit on cached ``config.json`` alone — same

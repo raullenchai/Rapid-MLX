@@ -258,3 +258,113 @@ def test_model_rejects_reference_text_without_audio():
             input="Bad pair",
             ref_text="orphan transcript",
         )
+
+
+# --------------------------------------------------------------------------- #
+# Snapshot resolution — a warm cache must not touch the network
+# --------------------------------------------------------------------------- #
+def _seed_indextts_snapshot(root: Path, *, shards=("model.safetensors",), index=None):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config.json").write_text("{}")
+    (root / "tokenizer.model").write_bytes(b"tok")
+    for shard in shards:
+        (root / shard).write_bytes(b"weights")
+    if index is not None:
+        (root / "model.safetensors.index.json").write_text(json.dumps(index))
+    return root
+
+
+def _patch_snapshot_download(monkeypatch, *, cached, networked):
+    """Route ``local_files_only`` at ``cached`` and everything else at ``networked``.
+
+    ``cached=None`` models a cache the Hub client cannot resolve at all (no
+    ``refs/main``), which is what an interrupted mirror pull leaves behind.
+    """
+    import huggingface_hub
+
+    calls: list[bool] = []
+
+    def _fake(model_name, allow_patterns=None, local_files_only=False, **kwargs):
+        calls.append(local_files_only)
+        if local_files_only:
+            if cached is None:
+                raise OSError("no resolvable local snapshot")
+            return str(cached)
+        return str(networked)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake)
+    return calls
+
+
+def test_warm_cache_resolves_without_a_network_call(monkeypatch, tmp_path):
+    """A complete cached snapshot is used as-is — no online resolve at all.
+
+    ``snapshot_download`` resolves ``main`` → sha through the Hub even when every
+    file is already on disk, and that lookup carries no timeout, so it is the
+    step that hangs a start on a hostile network.
+    """
+    from vllm_mlx.audio import tts
+
+    cached = _seed_indextts_snapshot(tmp_path / "cached")
+    calls = _patch_snapshot_download(
+        monkeypatch, cached=cached, networked=tmp_path / "networked"
+    )
+
+    assert tts._resolve_indextts_snapshot(INDEXTTS_REPO) == cached
+    assert calls == [True]  # the online resolve never ran
+
+
+def test_partial_cache_falls_back_to_the_network(monkeypatch, tmp_path):
+    """A snapshot missing an indexed shard must still complete its download.
+
+    huggingface_hub only judges completeness when it holds a cached tree
+    listing; a mirror-populated snapshot has none and is returned sight-unseen,
+    so the missing shard has to be caught here.
+    """
+    from vllm_mlx.audio import tts
+
+    cached = _seed_indextts_snapshot(
+        tmp_path / "cached",
+        shards=("0.safetensors",),
+        index={"weight_map": {"a": "0.safetensors", "b": "1.safetensors"}},
+    )
+    networked = tmp_path / "networked"
+    calls = _patch_snapshot_download(monkeypatch, cached=cached, networked=networked)
+
+    assert tts._resolve_indextts_snapshot(INDEXTTS_REPO) == networked
+    assert calls == [True, False]
+
+
+def test_unresolvable_cache_falls_back_to_the_network(monkeypatch, tmp_path):
+    """An unresolvable cache is today's path, not a hard failure."""
+    from vllm_mlx.audio import tts
+
+    networked = tmp_path / "networked"
+    calls = _patch_snapshot_download(monkeypatch, cached=None, networked=networked)
+
+    assert tts._resolve_indextts_snapshot(INDEXTTS_REPO) == networked
+    assert calls == [True, False]
+
+
+def test_complete_sharded_cache_is_accepted(tmp_path):
+    """Every shard the index names is present → the cache is usable."""
+    from vllm_mlx.audio import tts
+
+    snapshot = _seed_indextts_snapshot(
+        tmp_path / "cached",
+        shards=("0.safetensors", "1.safetensors"),
+        index={"weight_map": {"a": "0.safetensors", "b": "1.safetensors"}},
+    )
+
+    assert tts._cached_snapshot_holds_indextts(snapshot) is True
+
+
+@pytest.mark.parametrize("absent", ["config.json", "tokenizer.model"])
+def test_cache_missing_a_required_file_is_rejected(tmp_path, absent):
+    """The loader opens both of these directly; neither may be assumed."""
+    from vllm_mlx.audio import tts
+
+    snapshot = _seed_indextts_snapshot(tmp_path / "cached")
+    (snapshot / absent).unlink()
+
+    assert tts._cached_snapshot_holds_indextts(snapshot) is False

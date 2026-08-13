@@ -125,6 +125,51 @@ def test_canonical_repo_keeps_onload_quantize(hf_path):
 
 
 # --------------------------------------------------------------------------- #
+# ImageGenerationEngine._model_path_for_mflux
+# --------------------------------------------------------------------------- #
+def test_warm_cache_hands_mflux_a_local_directory(monkeypatch):
+    """A verified-complete cache is passed to mflux as a path, not a repo id.
+
+    mflux resolves a repo id through huggingface_hub on every build, and that
+    revision lookup has no timeout — on a poisoned-DNS network it hangs a start
+    whose weights are already on disk.
+    """
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_local_snapshot",
+        lambda repo: "/cache/snapshots/abc",
+    )
+
+    assert engine._model_path_for_mflux() == "/cache/snapshots/abc"
+
+
+def test_unresolvable_cache_still_hands_mflux_the_repo_id(monkeypatch):
+    """No local verdict → today's behavior, so a cold pull still happens."""
+    engine = ImageGenerationEngine("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.mflux_local_snapshot", lambda repo: None
+    )
+
+    assert engine._model_path_for_mflux() == "Runpod/FLUX.2-klein-4B-mflux-4bit"
+
+
+def test_canonical_repo_still_defers_to_model_config(monkeypatch):
+    """A non-prequantized repo keeps ``model_path=None``.
+
+    mflux selects those weights through ``ModelConfig`` and quantizes on load;
+    handing it a path instead would bypass that entirely.
+    """
+    engine = ImageGenerationEngine("black-forest-labs/FLUX.1-schnell")
+
+    def _unexpected(repo):  # pragma: no cover — must never be consulted
+        raise AssertionError("canonical repos must not probe the mflux cache")
+
+    monkeypatch.setattr("vllm_mlx._download_gate.mflux_local_snapshot", _unexpected)
+
+    assert engine._model_path_for_mflux() is None
+
+
+# --------------------------------------------------------------------------- #
 # ImageGenerationEngine.generate
 # --------------------------------------------------------------------------- #
 def test_generate_returns_png_bytes():

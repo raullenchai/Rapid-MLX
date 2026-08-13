@@ -217,14 +217,32 @@ class ImageGenerationEngine:
         with self._state_lock:
             return self._active_seq > 0 and self._cancel_seq >= self._active_seq
 
+    def _model_path_for_mflux(self) -> str | None:
+        """``model_path`` to hand mflux: a local directory whenever we have one.
+
+        A pre-quantized repo / local dir is handed to mflux verbatim; a canonical
+        repo is selected through ``ModelConfig`` instead (``None``) so mflux
+        downloads the official weights and quantizes on load.
+
+        Passing the bare repo id made mflux resolve it through
+        ``huggingface_hub`` on every start, including a fully cached one — and
+        that revision lookup has no timeout, so a poisoned-DNS network hangs the
+        start rather than failing fast. Resolving the cached snapshot ourselves
+        and passing the directory keeps a warm start entirely local. Falls back
+        to the repo id whenever the cache can't be vouched for, so a cold or
+        partial cache still pulls exactly as before.
+        """
+        if not self._prequantized:
+            return None
+        from .._download_gate import mflux_local_snapshot
+
+        return mflux_local_snapshot(self.model_name) or self.model_name
+
     def _build_model(self):
         """Instantiate the backing mflux model (import-lazy)."""
         from mflux.models.common.config.model_config import ModelConfig
 
-        # A pre-quantized repo / local dir is handed to mflux verbatim as
-        # ``model_path``; a canonical repo is selected through ``ModelConfig``
-        # so mflux downloads the official weights and quantizes on load.
-        model_path = self.model_name if self._prequantized else None
+        model_path = self._model_path_for_mflux()
 
         if self.family == "flux2-klein":
             from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
@@ -272,7 +290,7 @@ class ImageGenerationEngine:
                 Flux2KleinEdit,
             )
 
-            model_path = self.model_name if self._prequantized else None
+            model_path = self._model_path_for_mflux()
             return Flux2KleinEdit(
                 quantize=self._quantize,
                 model_path=model_path,

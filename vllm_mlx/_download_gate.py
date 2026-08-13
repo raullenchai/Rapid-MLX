@@ -84,6 +84,20 @@ _WEIGHT_ONLY_SUFFIXES: tuple[str, ...] = (".safetensors",)
 # signal we should fall through silently rather than block startup.
 _HF_API_TIMEOUT_SECONDS: float = 5.0
 
+# Cap on a metadata call whose failure ABORTS a download rather than merely
+# degrading it (resolving a revision, listing a repo for the mirror). Far more
+# generous than the best-effort probe above — a slow-but-working Hub must still
+# be allowed to serve a first-run pull — and far below the desktop's 30-minute
+# stall window, so a dead network surfaces as an error instead of a hang.
+#
+# A deadline is the ONLY thing that bounds these calls. huggingface_hub passes
+# ``timeout=None`` explicitly into its shared httpx client, and httpx treats an
+# explicit ``None`` as "disable the timeout" rather than "use the client
+# default" — so configuring the client (``set_client_factory``) does not bound
+# them, and measurably does not: a client built with a 2s timeout still hung
+# past 12s on a blackholed route when the call passed ``timeout=None``.
+_HF_RESOLVE_TIMEOUT_SECONDS: float = 30.0
+
 
 def _format_size(num_bytes: int) -> str:
     """Render ``num_bytes`` as a human-friendly string (e.g. ``42.3 GiB``).
@@ -131,6 +145,128 @@ def _sibling_size(sibling) -> int:
     if isinstance(raw, int) and raw > 0:
         return raw
     return 0
+
+
+# A download attempt that is killed rather than allowed to unwind leaves its
+# scratch file behind (see :func:`reap_orphan_incomplete_blobs`). Six hours of
+# no writes is the "no live writer" signal: an in-flight transfer touches its
+# scratch file continuously, and nothing legitimate goes quiet for this long
+# while still intending to finish.
+_ORPHAN_INCOMPLETE_MIN_AGE_SECONDS: float = 6 * 60 * 60
+
+
+def reap_orphan_incomplete_blobs(
+    repo_id: str,
+    *,
+    min_age_seconds: float = _ORPHAN_INCOMPLETE_MIN_AGE_SECONDS,
+    now: float | None = None,
+) -> tuple[int, int]:
+    """Delete abandoned ``blobs/*.incomplete`` scratch files for one repo.
+
+    Returns ``(files_removed, bytes_reclaimed)``; ``(0, 0)`` on any problem.
+
+    huggingface_hub downloads each blob to a per-attempt scratch file named
+    ``<etag>.<8 hex>.incomplete`` and unlinks it in a ``finally``. The unique
+    name is deliberate upstream (a shared name corrupts the cache on filesystems
+    where ``flock`` silently succeeds for every caller), but it means an
+    interrupted attempt is never resumed — and a process killed by a signal
+    never runs that ``finally``. The desktop cancels a download with SIGTERM and
+    then SIGKILL, so every cancel, quit or crash strands one file per blob that
+    was in flight, and nothing in the cache ever reclaims them. Measured on a
+    developer machine: three files for a single blob, written 49, 75 and 170
+    hours apart — one per interrupted attempt, days apart, with no concurrency
+    involved.
+
+    Deleting a model already removes its whole ``models--<repo>`` directory, so
+    this exists for the repos a user KEEPS, where the files would otherwise
+    accumulate for the life of the cache.
+
+    The age gate is the safety property. Concurrent writers to one repo's blobs
+    are possible (a background ``pull`` on the mirror path alongside a ``serve``
+    falling back to HF), and while unlinking a file another process holds open
+    does not corrupt anything on POSIX — the writer keeps its descriptor and
+    only fails at the final rename — it would still turn someone else's working
+    download into an error. Requiring a long silence removes that entirely.
+    """
+    import stat as _stat
+    import time
+
+    if now is None:
+        now = time.time()
+
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        blobs_dir = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+            "blobs",
+        )
+        names = os.listdir(blobs_dir)
+    except OSError:
+        return 0, 0
+
+    removed = 0
+    reclaimed = 0
+    for name in names:
+        if not name.endswith(".incomplete"):
+            continue
+        path = os.path.join(blobs_dir, name)
+        try:
+            # ``lstat``: never follow a symlink here. Real blobs are regular
+            # files and the scratch files are too; anything else in this
+            # directory shaped like one is not ours to delete.
+            info = os.lstat(path)
+            if not _stat.S_ISREG(info.st_mode):
+                continue
+            if now - info.st_mtime < min_age_seconds:
+                continue
+            size = info.st_size
+            os.remove(path)
+        except OSError:
+            # Racing writer, permissions, already gone — skip it. Reclaiming
+            # scratch space must never be able to fail a pull.
+            continue
+        removed += 1
+        reclaimed += size
+    return removed, reclaimed
+
+
+def call_with_deadline(fn, timeout: float, /, *args, **kwargs):
+    """Run ``fn`` in a worker thread and give up after ``timeout`` seconds.
+
+    A deadline is the ONLY thing that bounds a huggingface_hub metadata call.
+    The library passes ``timeout=None`` explicitly into its shared httpx client,
+    and httpx reads an explicit ``None`` as "disable the timeout" rather than
+    "inherit the client's" — so configuring the client does not bound these
+    calls, and measurably does not: a client built with a 2s timeout still hung
+    past 12s on a blackholed route once the call passed ``timeout=None``.
+
+    Takes the callable rather than importing one itself so callers keep
+    resolving their own symbol (``from huggingface_hub import model_info``
+    inside the function body), which is what makes these paths patchable in
+    tests. Worst case the daemon thread is leaked and reaped at interpreter
+    exit — acceptable for a process that is about to fail out anyway.
+
+    Raises ``TimeoutError`` if the deadline lapses; otherwise re-raises whatever
+    ``fn`` raised, or returns its value.
+    """
+    result: dict = {}
+
+    def _call() -> None:
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except Exception as exc:  # pragma: no cover - defensive
+            result["error"] = exc
+
+    worker = threading.Thread(target=_call, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(f"{getattr(fn, '__name__', fn)} exceeded {timeout}s")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _model_info_with_timeout(repo_id: str, timeout: float):
@@ -580,25 +716,46 @@ def _snapshot_is_complete_split_model(repo_id: str) -> bool:
         return False
 
 
-def mflux_missing_weights(repo_id: str) -> list[str] | None:
-    """Snapshot-relative paths of mflux weight files that are absent or empty.
+def split_model_local_snapshot(repo_id: str) -> str | None:
+    """Snapshot directory for a verified-complete cached video repo, else ``None``.
 
-    ``[]`` means every file the component indexes name is present and
-    non-empty. A non-empty list names what is missing, which is exactly what
-    an error message needs to be actionable.
+    The component-split analogue of :func:`mflux_local_snapshot`, and it exists
+    for the same reason: handing the loader a repo id makes huggingface_hub
+    resolve the revision on every start, warm cache included, and that lookup
+    has no deadline of its own — see :func:`call_with_deadline`.
 
-    ``None`` is the third state, and the reason this returns a list rather
-    than a bool: *no verdict*. It means ``repo_id`` is not a registered
-    image-gen alias, or nothing is cached under it yet — in which case mflux
-    pulls the whole snapshot itself and there is no partial checkpoint to
-    guard against. Callers that gate on this MUST treat ``None`` as "let it
-    through": a missing dependency or an unreadable cache is an environment
-    problem, and reporting it as a corrupt model would send the user off to
-    re-download perfectly good weights.
+    Gated on :func:`_snapshot_is_complete_split_model`, which walks the
+    ``split_model.json`` component list, so a half-pulled checkpoint keeps
+    downloading instead of being handed over as usable.
+    """
+    try:
+        if not _snapshot_is_complete_split_model(repo_id):
+            return None
+        from huggingface_hub.constants import HF_HUB_CACHE
 
-    Only expected filesystem/JSON errors are absorbed into ``None``; anything
-    else propagates so a real bug surfaces as a stack trace rather than a
-    phantom "your model is broken".
+        repo_root = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+        )
+        resolved_sha = _resolved_snapshot_sha(repo_root)
+        if resolved_sha is None:
+            return None
+        snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
+    except Exception:
+        return None
+    return snap_dir if os.path.isdir(snap_dir) else None
+
+
+def _mflux_snapshot_dir(repo_id: str) -> tuple[str, str] | None:
+    """``(repo_root, snapshot_dir)`` for a registered image-gen repo, or ``None``.
+
+    ``None`` means "no verdict is possible here" — not an image-gen alias, no
+    cache under it, or an ambiguous set of unpinned snapshots. Every caller
+    treats that as "let the normal online path run".
+
+    Shared by :func:`mflux_missing_weights` (which asks "is what's here
+    complete?") and :func:`mflux_local_snapshot` (which asks "where is it?"),
+    so the two can never disagree about *which* snapshot they are talking about.
     """
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -646,6 +803,71 @@ def mflux_missing_weights(repo_id: str) -> list[str] | None:
     snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
     if not os.path.isdir(snap_dir):
         return None
+    return repo_root, snap_dir
+
+
+def mflux_local_snapshot(repo_id: str) -> str | None:
+    """Snapshot directory for a verified-complete cached mflux repo, else ``None``.
+
+    Handing mflux this directory instead of the bare repo id keeps a warm start
+    entirely off the network. mflux resolves a repo id through
+    ``huggingface_hub``, whose revision lookup carries no timeout at all
+    (``HfApi.repo_info`` passes ``timeout=None`` into an ``httpx.Client`` built
+    with ``timeout=None``), so on a hostile DNS path it does not fail fast — it
+    sits in SYN_SENT while the UI shows "Starting".
+
+    Deliberately NOT implemented as ``snapshot_download(local_files_only=True)``.
+    That asks whether the *whole repo* is present, and judges it against HF's
+    cached tree listing — which names files the mirror never fetches. A complete
+    mflux checkpoint pulled through the R2 mirror fails that check on
+    ``.DS_Store`` / ``README.md`` / ``.gitattributes`` and would silently keep
+    the network round-trip this exists to remove (measured on
+    ``filipstrand/Z-Image-Turbo-mflux-4bit``). :func:`mflux_missing_weights` asks
+    the question that actually matters — are the weights mflux will load all
+    here — so gate on that and resolve the directory from the cache layout.
+
+    ``None`` on every uncertain path, so the caller falls back to today's
+    behavior rather than pointing the loader at a checkpoint we can't vouch for.
+    That includes the unexpected errors :func:`mflux_missing_weights` propagates
+    on purpose: swallowing them costs only this optimization, and the image
+    engine calls that function directly in ``_verify_weights_complete`` — ahead
+    of the build that reaches this one — so a real bug still surfaces there.
+    """
+    try:
+        if mflux_missing_weights(repo_id) != []:
+            return None
+        resolved = _mflux_snapshot_dir(repo_id)
+    except Exception:
+        return None
+    if resolved is None:
+        return None
+    return resolved[1]
+
+
+def mflux_missing_weights(repo_id: str) -> list[str] | None:
+    """Snapshot-relative paths of mflux weight files that are absent or empty.
+
+    ``[]`` means every file the component indexes name is present and
+    non-empty. A non-empty list names what is missing, which is exactly what
+    an error message needs to be actionable.
+
+    ``None`` is the third state, and the reason this returns a list rather
+    than a bool: *no verdict*. It means ``repo_id`` is not a registered
+    image-gen alias, or nothing is cached under it yet — in which case mflux
+    pulls the whole snapshot itself and there is no partial checkpoint to
+    guard against. Callers that gate on this MUST treat ``None`` as "let it
+    through": a missing dependency or an unreadable cache is an environment
+    problem, and reporting it as a corrupt model would send the user off to
+    re-download perfectly good weights.
+
+    Only expected filesystem/JSON errors are absorbed into ``None``; anything
+    else propagates so a real bug surfaces as a stack trace rather than a
+    phantom "your model is broken".
+    """
+    resolved = _mflux_snapshot_dir(repo_id)
+    if resolved is None:
+        return None
+    repo_root, snap_dir = resolved
 
     repo_root_real = os.path.realpath(repo_root)
 

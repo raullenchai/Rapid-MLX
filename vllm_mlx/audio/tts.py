@@ -150,6 +150,83 @@ def is_indextts_model(model_name: str) -> bool:
     return "indextts" in name_lower or "index-tts" in name_lower
 
 
+_INDEXTTS_ALLOW_PATTERNS = [
+    "config.json",
+    "tokenizer.model",
+    "*.safetensors",
+    "*.safetensors.index.json",
+]
+
+
+def _cached_snapshot_holds_indextts(snapshot: Path) -> bool:
+    """True when a cached snapshot holds everything the IndexTTS load opens.
+
+    ``huggingface_hub`` can only judge a local snapshot's completeness when it
+    has a cached tree listing for the repo. A snapshot populated by the R2
+    mirror has none, and is then returned sight-unseen — so check the files
+    ourselves rather than accept a half-pulled checkpoint as usable.
+    """
+
+    def _present(path: Path) -> bool:
+        try:
+            return path.is_file() and path.stat().st_size > 0
+        except OSError:
+            return False
+
+    if not all(
+        _present(snapshot / name) for name in ("config.json", "tokenizer.model")
+    ):
+        return False
+
+    index_path = snapshot / "model.safetensors.index.json"
+    if _present(index_path):
+        # Sharded checkpoint: the index names every shard the loader will open,
+        # so "some safetensors exist" is not enough.
+        try:
+            with open(index_path) as index_file:
+                weight_map = json.load(index_file).get("weight_map")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return False
+        if not isinstance(weight_map, dict) or not weight_map:
+            return False
+        shards = set(weight_map.values())
+        if not all(isinstance(shard, str) for shard in shards):
+            return False
+        return all(
+            Path(shard).name == shard and _present(snapshot / shard) for shard in shards
+        )
+
+    return any(_present(shard) for shard in snapshot.glob("*.safetensors"))
+
+
+def _resolve_indextts_snapshot(model_name: str) -> Path:
+    """Resolve the IndexTTS snapshot, preferring a warm cache over the network.
+
+    ``snapshot_download`` resolves ``main`` → sha through the Hub on every call,
+    even when every file is already on disk, and that lookup carries no timeout
+    (``HfApi.repo_info`` passes ``timeout=None`` into an ``httpx.Client`` built
+    with ``timeout=None``). On a poisoned-DNS network it therefore hangs in
+    SYN_SENT rather than failing fast, stalling a load whose weights are already
+    local. Try the cache first; reach for the network only when the cache cannot
+    satisfy the load, so a cold or partial checkpoint still pulls as before.
+    """
+    from huggingface_hub import snapshot_download
+
+    try:
+        cached = Path(
+            snapshot_download(
+                model_name,
+                allow_patterns=_INDEXTTS_ALLOW_PATTERNS,
+                local_files_only=True,
+            )
+        )
+    except Exception:
+        cached = None
+    if cached is not None and _cached_snapshot_holds_indextts(cached):
+        return cached
+    return Path(snapshot_download(model_name, allow_patterns=_INDEXTTS_ALLOW_PATTERNS))
+
+
 def _load_indextts_model(model_name: str):
     """Load IndexTTS without mutating its incomplete cached config.
 
@@ -158,24 +235,13 @@ def _load_indextts_model(model_name: str):
     in-memory copy and otherwise follow mlx-audio's normal load sequence.
     """
     import mlx.core as mx
-    from huggingface_hub import snapshot_download
     from mlx_audio.tts.models.indextts.indextts import Model
 
     local_path = Path(model_name).expanduser()
     if local_path.is_dir():
         model_path = local_path.resolve()
     else:
-        model_path = Path(
-            snapshot_download(
-                model_name,
-                allow_patterns=[
-                    "config.json",
-                    "tokenizer.model",
-                    "*.safetensors",
-                    "*.safetensors.index.json",
-                ],
-            )
-        )
+        model_path = _resolve_indextts_snapshot(model_name)
     with open(model_path / "config.json") as config_file:
         config = json.load(config_file)
 
