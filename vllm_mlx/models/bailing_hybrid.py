@@ -248,16 +248,20 @@ class BailingKDA(nn.Module):
         self.scale = float(self.head_dim) ** -0.5
 
         hidden = args.hidden_size
-        self.q_proj = nn.Linear(hidden, self.proj_dim, bias=False)
-        self.k_proj = nn.Linear(hidden, self.proj_dim, bias=False)
-        self.v_proj = nn.Linear(hidden, self.proj_dim, bias=False)
-        self.q_conv1d = ShortConv1d(self.proj_dim, self.conv_kernel)
-        self.k_conv1d = ShortConv1d(self.proj_dim, self.conv_kernel)
-        self.v_conv1d = ShortConv1d(self.proj_dim, self.conv_kernel)
+        # q/k/v (and, on no_kda_lora checkpoints, f/g) are independent
+        # full-rank projections in the checkpoint; decode is dominated
+        # by kernel-launch count at B=T=1, so they are served from
+        # row-concatenated fused weights (5 GEMVs + 3 depthwise convs
+        # -> 2 GEMVs + 1 conv, measured ~0.8 ms/token across the 18 KDA
+        # layers). Row concatenation is mathematically identical and —
+        # because every quantization scheme here packs per row — the
+        # fused quantized bytes are the source rows verbatim.
+        # ``sanitize`` performs the concat at load time.
+        self.qkv_proj = nn.Linear(hidden, 3 * self.proj_dim, bias=False)
+        self.qkv_conv1d = ShortConv1d(3 * self.proj_dim, self.conv_kernel)
 
         if self.no_kda_lora:
-            self.f_proj = nn.Linear(hidden, self.proj_dim, bias=False)
-            self.g_proj = nn.Linear(hidden, self.proj_dim, bias=False)
+            self.fg_proj = nn.Linear(hidden, 2 * self.proj_dim, bias=False)
         else:
             # Ling-2.6 / flash variants use LoRA pairs. The bottleneck is
             # head_dim BY DESIGN — the authoritative reference hard-codes
@@ -286,21 +290,18 @@ class BailingKDA(nn.Module):
         dtype = x.dtype
 
         if cache is not None:
-            q_state, k_state, v_state, ssm_state = cache
+            qkv_state, ssm_state = cache[0], cache[1]
         else:
-            q_state = k_state = v_state = ssm_state = None
+            qkv_state = ssm_state = None
 
-        q_conv, q_state = self.q_conv1d(self.q_proj(x), q_state)
-        k_conv, k_state = self.k_conv1d(self.k_proj(x), k_state)
-        v_conv, v_state = self.v_conv1d(self.v_proj(x), v_state)
+        qkv_conv, qkv_state = self.qkv_conv1d(self.qkv_proj(x), qkv_state)
         if cache is not None:
-            cache[0] = q_state
-            cache[1] = k_state
-            cache[2] = v_state
+            cache[0] = qkv_state
 
-        q = q_conv.reshape(B, T, self.num_heads, self.head_dim)
-        k = k_conv.reshape(B, T, self.num_heads, self.head_dim)
-        v = v_conv.reshape(B, T, self.num_heads, self.head_dim)
+        q, k, v = (
+            t.reshape(B, T, self.num_heads, self.head_dim)
+            for t in mx.split(qkv_conv, 3, axis=-1)
+        )
 
         # fla applies L2-norm to q/k in-kernel plus scale=d^-0.5. Use the
         # exact l2norm form (x / (||x|| + eps)) so the eps placement
@@ -312,8 +313,7 @@ class BailingKDA(nn.Module):
         k = kf / (mx.linalg.norm(kf, axis=-1, keepdims=True) + 1e-6)
 
         if self.no_kda_lora:
-            f = self.f_proj(x)
-            gate = self.g_proj(x)
+            f, gate = mx.split(self.fg_proj(x), 2, axis=-1)
         else:
             f = self.f_b_proj(self.f_a_proj(x))
             gate = self.g_b_proj(self.g_a_proj(x))
@@ -329,7 +329,7 @@ class BailingKDA(nn.Module):
 
         out, ssm_state = _kda_update(q, k, v, g, beta, ssm_state)
         if cache is not None:
-            cache[3] = ssm_state
+            cache[1] = ssm_state
 
         gate = gate.reshape(B, T, self.num_heads, self.head_dim)
         out = self.o_norm(out.astype(dtype)) * mx.sigmoid(gate)
@@ -663,6 +663,42 @@ class Model(nn.Module):
                 elif w.ndim == 3 and w.shape[1] == 1:
                     w = w.swapaxes(1, 2)
                 weights[k[: -len(".weight")] + ".conv.weight"] = w
+
+        # KDA fused serving layout: concatenate the checkpoint's separate
+        # q/k/v projections (+ their convs) and, on no_kda_lora
+        # checkpoints, f/g into single row-fused tensors. Row concat is
+        # exact for plain tensors AND for every per-row-packed quantized
+        # part (weight/scales/biases), so this is a pure relayout.
+        # Idempotent: already-fused checkpoints have no ``q_proj`` keys.
+        def _concat(dst: str, srcs: list[str]) -> None:
+            for part in ("weight", "scales", "biases"):
+                keys = [f"{s}.{part}" for s in srcs]
+                if keys[0] not in weights:
+                    continue
+                weights[f"{dst}.{part}"] = mx.concatenate(
+                    [weights.pop(k) for k in keys], axis=0
+                )
+
+        for li in range(n_layers):
+            attn = f"model.layers.{li}.attention"
+            # KDA layers ship all three of q/k/v; an MLA layer with
+            # q_lora_rank=None ships a lone q_proj (kv via kv_a/kv_b)
+            # and must not be touched.
+            if not all(
+                f"{attn}.{t}_proj.weight" in weights
+                or f"{attn}.{t}_proj.scales" in weights
+                for t in "qkv"
+            ):
+                continue
+            _concat(f"{attn}.qkv_proj", [f"{attn}.{t}_proj" for t in "qkv"])
+            _concat(
+                f"{attn}.qkv_conv1d.conv",
+                [f"{attn}.{t}_conv1d.conv" for t in "qkv"],
+            )
+            # f/g are full-rank (and fusable) only on no_kda_lora
+            # checkpoints; LoRA-pair variants keep f_a/f_b/g_a/g_b.
+            if f"{attn}.f_proj.weight" in weights or f"{attn}.f_proj.scales" in weights:
+                _concat(f"{attn}.fg_proj", [f"{attn}.f_proj", f"{attn}.g_proj"])
         return weights
 
     @property
@@ -670,8 +706,9 @@ class Model(nn.Module):
         return self.model.layers
 
     def make_cache(self):
+        # KDA layers hold [fused qkv conv state, KDA ssm state].
         return [
-            KVCache() if layer.is_mla else ArraysCache(size=4)
+            KVCache() if layer.is_mla else ArraysCache(size=2)
             for layer in self.model.layers
         ]
 

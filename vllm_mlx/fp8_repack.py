@@ -180,6 +180,13 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
         if marker in path:
             head, _, tail = path.partition(marker)
             return has_fp8(f"{head}{marker[:-1]}.0.{tail}")
+        # Fused KDA serving modules (see BailingKDA/sanitize): quantized
+        # iff their first source projection shipped fp8 — row concat of
+        # same-scheme sources is what sanitize produces.
+        if path.endswith(".qkv_proj"):
+            return has_fp8(path[: -len("qkv_proj")] + "q_proj")
+        if path.endswith(".fg_proj"):
+            return has_fp8(path[: -len("fg_proj")] + "f_proj")
         return has_fp8(path)
 
     # Both the skeleton's random init and this quantization graph stay

@@ -268,12 +268,14 @@ def test_online_load_repacks_and_runs(fp8_bailing_checkpoint):
     src, kept = fp8_bailing_checkpoint
     model = load_fp8_model_online(src)
 
-    # fp8-shipped linear became an mxfp8 quantized module with the exact
-    # source bytes...
-    q = model.model.layers[0].attention.q_proj
-    assert q.mode == "mxfp8" and q.group_size == 32 and q.bits == 8
-    src_bytes = kept["model.layers.0.attention.q_proj"]
-    got_bytes = np.array(q.weight).view(np.uint8).reshape(-1)
+    # fp8-shipped linears became one fused mxfp8 module holding the
+    # exact source bytes row-concatenated in q|k|v order...
+    qkv = model.model.layers[0].attention.qkv_proj
+    assert qkv.mode == "mxfp8" and qkv.group_size == 32 and qkv.bits == 8
+    src_bytes = np.concatenate(
+        [kept[f"model.layers.0.attention.{t}_proj"] for t in "qkv"]
+    )
+    got_bytes = np.array(qkv.weight).view(np.uint8).reshape(-1)
     np.testing.assert_array_equal(got_bytes, src_bytes)
 
     # ...bf16-shipped modules stayed plain (checkpoint fidelity the
@@ -302,7 +304,7 @@ def test_opt_in_lm_head_affine8(fp8_bailing_checkpoint, monkeypatch):
     assert hasattr(head, "scales") and head.bits == 8 and head.group_size == 64
     assert getattr(head, "mode", "affine") == "affine"
     # Everything else untouched: fp8 modules still mxfp8, router still fp.
-    assert model.model.layers[0].attention.q_proj.mode == "mxfp8"
+    assert model.model.layers[0].attention.qkv_proj.mode == "mxfp8"
     assert not hasattr(model.model.layers[1].mlp.gate, "scales")
     logits = model(mx.array([[1, 2, 3]]))
     mx.eval(logits)
