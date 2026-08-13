@@ -594,7 +594,28 @@ enum RapidTheme {
 
     /// The leading bar that marks a selected row. Amber, and the one
     /// amber element the rail is allowed.
-    static let selectionBar = brandPrimary
+    ///
+    /// A deeper step of the same hue in Light, raw ``brandPrimary`` in
+    /// Dark — and this is the token where that split is load-bearing
+    /// rather than a nicety. Measured against the rail:
+    ///
+    ///   * Dark: #EFA23A on #191B1E is 8.1:1. Nothing to fix.
+    ///   * Light: #EFA23A on #F3F3F1 is **1.9:1** — a light amber on a
+    ///     near-white plane. The bar carries the whole selection signal
+    ///     under the refined rule, so shipping it at 1.9:1 would have
+    ///     replaced one invisible selected row with another.
+    ///
+    /// #B87317 measures 3.4:1 against the rail and 3.3:1 against the
+    /// selected row's own fill, clearing the 3:1 non-text threshold with
+    /// margin at 3pt wide. It is deeper than ``brandPrimaryDeep``
+    /// (#C9821F, 2.8:1 here) because that token was tuned for TEXT, where
+    /// the glyph's own stroke width and the reader's foveal attention do
+    /// some of the work; a 3pt rule caught in peripheral vision has
+    /// neither.
+    static let selectionBar = Color(nsColor: .init(name: nil, dynamicProvider: { appearance in
+        appearance.isDark ? NSColor(deviceRed: 0xEF/255.0, green: 0xA2/255.0, blue: 0x3A/255.0, alpha: 1.0)
+                          : NSColor(deviceRed: 0xB8/255.0, green: 0x73/255.0, blue: 0x17/255.0, alpha: 1.0)
+    }))
 
     /// Hover wash over a neutral row or control.
     ///
