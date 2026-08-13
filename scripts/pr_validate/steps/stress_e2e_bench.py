@@ -192,7 +192,11 @@ class StressE2EBenchStep(Step):
                         manifest,
                         kind="bench",
                         choice=choice,
-                        status=bench_result["status"],
+                        status=(
+                            "preliminary"
+                            if _is_blocking_status(bench_result["status"])
+                            else bench_result["status"]
+                        ),
                         summary=bench_result["summary"],
                         artifact=bench_result.get("artifact"),
                     )
@@ -285,6 +289,35 @@ class StressE2EBenchStep(Step):
                 continue
 
             for kind, pr_result, agent in pending_failures:
+                if kind == "bench":
+                    result = _bench_ab_against_base(
+                        ctx, choice, pr_result, files_changed=ctx.files_changed
+                    )
+                    _record_manifest(
+                        manifest,
+                        kind="bench",
+                        choice=choice,
+                        status=result["status"],
+                        summary=result["summary"],
+                        artifact=result.get("artifact"),
+                        lane="base",
+                    )
+                    if result.get("artifact"):
+                        all_artifacts.append(result["artifact"])
+                    if result["status"] == "pass":
+                        preexisting_count += 1
+                        all_findings.append(
+                            f"[NOT-THIS-PR] bench on {choice.model_id}: {result['summary']}"
+                        )
+                    else:
+                        any_fail = True
+                        tag = (
+                            "INCONCLUSIVE" if result["status"] == "skip" else "BLOCKING"
+                        )
+                        all_findings.append(
+                            f"[{tag}] bench on {choice.model_id}: {result['summary']}"
+                        )
+                    continue
                 base_result = _run_base_check(ctx, choice, kind, agent)
                 _record_manifest(
                     manifest,
@@ -788,6 +821,155 @@ def _diff_defines_the_environment(files_changed: list[str]) -> bool:
     )
 
 
+AB_ROUNDS = 2
+
+
+def _bench_ab_against_base(
+    ctx: Context,
+    choice: ModelChoice,
+    pr_result: dict[str, Any],
+    *,
+    files_changed: list[str] | None = None,
+) -> dict[str, Any]:
+    """Counterbalanced, repeat-checked A/B for a baseline miss."""
+    if _diff_defines_the_environment(files_changed or []):
+        return {
+            "status": "fail",
+            "summary": "dependency/packaging changes cannot be cleared by a source-only base A/B",
+            "executed": False,
+        }
+    comparison = pr_result.get("bench_comparison") or pr_result
+    if "cold_threshold" not in comparison:
+        if "cold_request_ms_median" not in comparison:
+            return {
+                "status": "fail",
+                "summary": "missing preliminary bench metrics",
+                "executed": False,
+            }
+        comparison = {
+            "cold_threshold": comparison["cold_request_ms_median"],
+            "warm_threshold": comparison["warm_request_ms_median"],
+        }
+    base_ref = ctx.base_sha or ctx.base_branch
+    tmp = Path(tempfile.mkdtemp(prefix="pr_validate_bench_ab_"))
+    tmp.rmdir()
+    captures: dict[str, list[dict[str, float]]] = {"base": [], "pr": []}
+    try:
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(tmp), base_ref],
+            cwd=str(ctx.repo_root),
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+        for round_no in range(AB_ROUNDS):
+            order = ("base", "pr") if round_no % 2 == 0 else ("pr", "base")
+            for arm in order:
+                root = tmp if arm == "base" else ctx.repo_root
+                with _server_in_repo(
+                    choice,
+                    ctx,
+                    repo_root=root,
+                    artifact_prefix=f"ab-{arm}{round_no}-",
+                    isolate_pythonpath=True,
+                ):
+                    measured = _measure_bench(
+                        ctx,
+                        choice,
+                        artifact_prefix=f"ab-{arm}{round_no}-",
+                        run=round_no,
+                    )
+                captures[arm].append(measured["metrics"])
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "fail",
+            "summary": f"bench A/B could not run ({exc})",
+            "executed": False,
+        }
+    finally:
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(tmp)],
+                cwd=str(ctx.repo_root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except Exception as cleanup_error:  # noqa: BLE001
+            print(f"warning: could not remove {tmp}: {cleanup_error}", flush=True)
+
+    def values(arm: str, key: str) -> list[float]:
+        return [float(item[key]) for item in captures[arm]]
+
+    def spread(items: list[float]) -> float:
+        lo, hi = min(items), max(items)
+        return (hi / lo - 1) * 100 if lo else 0.0
+
+    thresholds = {
+        "cold": float(comparison["cold_threshold"]),
+        "warm": float(comparison["warm_threshold"]),
+    }
+    spreads = {
+        f"{arm}_{metric}": spread(values(arm, f"{metric}_request_ms_median"))
+        for arm in ("base", "pr")
+        for metric in ("cold", "warm")
+    }
+    noisy = [
+        f"{name} {value:.1f}%"
+        for name, value in spreads.items()
+        if value > thresholds[name.rsplit("_", 1)[1]]
+    ]
+    best = {
+        arm: {
+            metric: min(values(arm, f"{metric}_request_ms_median"))
+            for metric in ("cold", "warm")
+        }
+        for arm in ("base", "pr")
+    }
+    delta = {
+        metric: (best["pr"][metric] / best["base"][metric] - 1) * 100
+        for metric in ("cold", "warm")
+    }
+    artifact = ctx.artifact_path(f"bench-ab-{_safe_name(choice.model_id)}.json")
+    artifact.write_text(
+        json.dumps(
+            {
+                "model": choice.model_id,
+                "rounds": AB_ROUNDS,
+                "base_captures": captures["base"],
+                "pr_captures": captures["pr"],
+                "capture_spread_pct": spreads,
+                "best": best,
+                "delta_pct": delta,
+            },
+            indent=2,
+        )
+    )
+    detail = f"cold {delta['cold']:+.1f}%, warm {delta['warm']:+.1f}% vs base"
+    if noisy:
+        return {
+            "status": "skip",
+            "summary": f"machine not quiet enough to judge ({', '.join(noisy)}); {detail}",
+            "artifact": str(artifact),
+            "executed": True,
+        }
+    if any(delta[m] > thresholds[m] for m in ("cold", "warm")):
+        return {
+            "status": "fail",
+            "summary": f"perf regression confirmed: {detail}",
+            "artifact": str(artifact),
+            "executed": True,
+        }
+    return {
+        "status": "pass",
+        "summary": f"not this PR: {detail}",
+        "artifact": str(artifact),
+        "executed": True,
+    }
+
+
 def _resolve_bench_against_base(
     pr_result: dict[str, Any],
     base_result: dict[str, Any],
@@ -1082,7 +1264,11 @@ def _repo_python_env(
 
 
 def _measure_bench(
-    ctx: Context, choice: ModelChoice, *, artifact_prefix: str = ""
+    ctx: Context,
+    choice: ModelChoice,
+    *,
+    artifact_prefix: str = "",
+    run: int = 0,
 ) -> dict[str, Any]:
     """Measure cold + warm request medians against the server on
     ``BENCH_PORT``, write them as an artifact, and return them.
@@ -1135,7 +1321,7 @@ def _measure_bench(
     # Cold: 5 different prompts (no cache hits).
     cold_times = []
     for i in range(5):
-        dt, _ = call(f"Cold prompt #{i} — say something brief")
+        dt, _ = call(f"Cold prompt #{i}.{run} — say something brief")
         cold_times.append(dt)
 
     # Warm: 5 repeats of same prompt (full cache hit after warmup).
