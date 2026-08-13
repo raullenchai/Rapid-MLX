@@ -57,10 +57,32 @@ logger = logging.getLogger(__name__)
 
 _SCALE_SUFFIX = "_scale_inv"
 _MXFP8_GROUP = 32  # mlx mxfp8 group size (fixed by the format)
+_SUPPORTED_FP8_FORMAT = "e4m3"
+_SUPPORTED_SCALE_FORMAT = "ue8m0"
+
+
+def _supported_quantization_config(config: dict) -> bool:
+    """Whether ``config`` describes the exact byte formats we can repack.
+
+    ``quant_method=fp8`` alone is not a wire format: other publishers use
+    float scales, per-channel layouts, or different FP8 encodings. Claiming
+    those checkpoints here would divert them into a byte-level loader whose
+    assumptions do not hold.
+    """
+    qc = config.get("quantization_config") or {}
+    block = qc.get("weight_block_size")
+    return (
+        qc.get("quant_method") == "fp8"
+        and str(qc.get("fmt", "")).lower() == _SUPPORTED_FP8_FORMAT
+        and str(qc.get("scale_fmt", "")).lower() == _SUPPORTED_SCALE_FORMAT
+        and isinstance(block, list | tuple)
+        and len(block) == 2
+        and all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in block)
+    )
 
 
 def is_fp8_block_checkpoint(model_path: Path) -> bool:
-    """True when config.json declares DeepSeek-style fp8 block quant."""
+    """True only for the supported e4m3 + ue8m0 block-FP8 wire format."""
     cfg = model_path / "config.json"
     if not cfg.exists():
         return False
@@ -68,7 +90,7 @@ def is_fp8_block_checkpoint(model_path: Path) -> bool:
         qc = json.loads(cfg.read_text()).get("quantization_config") or {}
     except (OSError, json.JSONDecodeError):
         return False
-    return qc.get("quant_method") == "fp8"
+    return _supported_quantization_config({"quantization_config": qc})
 
 
 class _ShardReader:
@@ -80,18 +102,55 @@ class _ShardReader:
 
     def __init__(self, path: Path):
         self.path = path
+        file_size = path.stat().st_size
         with open(path, "rb") as f:
-            hlen = struct.unpack("<Q", f.read(8))[0]
+            prefix = f.read(8)
+            if len(prefix) != 8:
+                raise ValueError(f"invalid safetensors file (truncated header): {path}")
+            hlen = struct.unpack("<Q", prefix)[0]
+            if hlen > file_size - 8:
+                raise ValueError(f"invalid safetensors header length in {path}")
             self.header = json.loads(f.read(hlen))
+        if not isinstance(self.header, dict):
+            raise ValueError(f"invalid safetensors header in {path}")
         self.header.pop("__metadata__", None)
         self.data_start = 8 + hlen
+        data_size = file_size - self.data_start
+        for name, entry in self.header.items():
+            try:
+                off0, off1 = entry["data_offsets"]
+                shape = entry["shape"]
+                dtype = entry["dtype"]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"invalid safetensors entry {name!r} in {path}"
+                ) from exc
+            if (
+                not isinstance(off0, int)
+                or isinstance(off0, bool)
+                or not isinstance(off1, int)
+                or isinstance(off1, bool)
+                or off0 < 0
+                or off1 < off0
+                or off1 > data_size
+                or not isinstance(shape, list)
+                or any(
+                    not isinstance(dim, int) or isinstance(dim, bool) or dim < 0
+                    for dim in shape
+                )
+                or not isinstance(dtype, str)
+            ):
+                raise ValueError(f"invalid safetensors entry {name!r} in {path}")
 
     def read(self, name: str) -> tuple[np.ndarray, str, list[int]]:
         ent = self.header[name]
         off0, off1 = ent["data_offsets"]
         with open(self.path, "rb") as f:
             f.seek(self.data_start + off0)
-            raw = np.frombuffer(f.read(off1 - off0), dtype=np.uint8)
+            payload = f.read(off1 - off0)
+        if len(payload) != off1 - off0:
+            raise ValueError(f"truncated safetensors payload {name!r} in {self.path}")
+        raw = np.frombuffer(payload, dtype=np.uint8)
         return raw, ent["dtype"], ent["shape"]
 
 
@@ -111,13 +170,21 @@ def _open_shards(model_path: Path) -> tuple[dict[str, str], dict[str, _ShardRead
 
 def _raw_to_mx(raw: np.ndarray, dtype: str, shape: list[int]) -> mx.array:
     """Non-fp8 safetensors payload → mx array (byte-identical)."""
+    elements = int(np.prod(shape, dtype=np.int64))
+    bytes_per_element = {"BF16": 2, "F32": 4, "F16": 2}.get(dtype)
+    if bytes_per_element is None:
+        raise ValueError(f"unsupported non-fp8 dtype {dtype}")
+    if raw.size != elements * bytes_per_element:
+        raise ValueError(
+            f"invalid {dtype} payload size: got {raw.size} bytes for shape {shape}"
+        )
     if dtype == "BF16":
         return mx.array(raw.view(np.uint16)).view(mx.bfloat16).reshape(shape)
     if dtype == "F32":
         return mx.array(raw.view(np.float32)).reshape(shape)
     if dtype == "F16":
         return mx.array(raw.view(np.float16)).reshape(shape)
-    raise ValueError(f"unsupported non-fp8 dtype {dtype}")
+    raise AssertionError("unreachable")
 
 
 def _repack_fp8(
@@ -138,6 +205,17 @@ def _repack_fp8(
         raise ValueError(f"cols {cols} not divisible by mxfp8 group {_MXFP8_GROUP}")
     if bs_c % _MXFP8_GROUP:
         raise ValueError(f"block width {bs_c} not divisible by {_MXFP8_GROUP}")
+    if w_raw.size != rows * cols:
+        raise ValueError(
+            f"invalid F8_E4M3 payload size: got {w_raw.size} bytes for shape {w_shape}"
+        )
+    expected_scale_shape = [(rows + bs_r - 1) // bs_r, (cols + bs_c - 1) // bs_c]
+    if s_shape != expected_scale_shape or s_raw.size != int(np.prod(s_shape)):
+        raise ValueError(
+            "invalid F8_E8M0 scale layout: "
+            f"got shape {s_shape} for weight {w_shape}, block {block}; "
+            f"expected {expected_scale_shape}"
+        )
 
     wq = w_raw.reshape(rows, cols // 4, 4).view(np.uint32).reshape(rows, cols // 4)
 
@@ -152,9 +230,11 @@ def load_fp8_model_online(model_path: Path) -> nn.Module:
     """Build the model and load an fp8-block checkpoint via mxfp8 repack."""
     config = json.loads((model_path / "config.json").read_text())
     qc = config.get("quantization_config") or {}
-    if qc.get("quant_method") != "fp8":
-        raise ValueError(f"{model_path} is not an fp8 block-quantized checkpoint")
-    bs = qc.get("weight_block_size") or [128, 128]
+    if not _supported_quantization_config(config):
+        raise ValueError(
+            f"{model_path} is not a supported e4m3 + ue8m0 block-FP8 checkpoint"
+        )
+    bs = qc["weight_block_size"]
     block = (int(bs[0]), int(bs[1]))
     model_type = config["model_type"]
 

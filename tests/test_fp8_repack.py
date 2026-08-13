@@ -260,6 +260,44 @@ def test_is_fp8_block_checkpoint(fp8_bailing_checkpoint, tmp_path):
     assert not is_fp8_block_checkpoint(plain)
     assert not is_fp8_block_checkpoint(tmp_path / "missing")
 
+    # ``quant_method=fp8`` is not itself a wire format. Float-scaled and
+    # otherwise unspecified FP8 checkpoints must stay on their normal loader
+    # instead of being interpreted as e4m3 + ue8m0 bytes.
+    for name, quantization in {
+        "unspecified": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+        "float_scales": {
+            "quant_method": "fp8",
+            "fmt": "e4m3",
+            "scale_fmt": "float32",
+            "weight_block_size": [128, 128],
+        },
+    }.items():
+        candidate = tmp_path / name
+        candidate.mkdir()
+        (candidate / "config.json").write_text(
+            json.dumps({"quantization_config": quantization})
+        )
+        assert not is_fp8_block_checkpoint(candidate)
+
+
+def test_repack_rejects_payload_and_scale_shape_mismatches():
+    with pytest.raises(ValueError, match="payload size"):
+        _repack_fp8(
+            np.zeros(31, dtype=np.uint8),
+            [1, 32],
+            np.ones(1, dtype=np.uint8),
+            [1, 1],
+            (32, 32),
+        )
+    with pytest.raises(ValueError, match="scale layout"):
+        _repack_fp8(
+            np.zeros(64 * 64, dtype=np.uint8),
+            [64, 64],
+            np.ones(1, dtype=np.uint8),
+            [1, 1],
+            (32, 32),
+        )
+
 
 def test_online_load_repacks_and_runs(fp8_bailing_checkpoint):
     from vllm_mlx.utils.tokenizer import _register_vendored_archs
