@@ -1531,7 +1531,6 @@ struct QuickstartView: View {
             .accessibilityIdentifier("Quickstart.Ready.StartChatting")
             .accessibilityLabel("Start chatting with \(coordinator.selection.displayName)")
         }
-        .accessibilityIdentifier("Quickstart.Ready")
     }
 
     /// Run the Start chatting transaction.

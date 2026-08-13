@@ -438,7 +438,6 @@ struct AccessibilityIdentifierInventoryTests {
                 #""Quickstart.Memory.SwitchToLowMemory""#,
                 #""Quickstart.Memory.LoadAnyway""#,
                 #""Quickstart.Memory.Cancel""#,
-                #""Quickstart.Ready""#,
                 #""Quickstart.Ready.StartChatting""#,
             ],
             in: "Sources/Rapid/UI/QuickstartView.swift",

@@ -462,10 +462,10 @@ struct OnboardingCompletionBehaviorTests {
     @Test("Ready renders a Start chatting action with stable identifiers")
     func readyRendersConfirmationAction() throws {
         let body = try Self.strippedSource("Sources/Rapid/UI/QuickstartView.swift")
-        #expect(body.contains(#".accessibilityIdentifier("Quickstart.Ready")"#),
-                "the Ready surface must be addressable by the golden-flow harness")
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.Ready.StartChatting")"#),
                 "the completion action must be addressable by the golden-flow harness")
+        #expect(!body.contains(#".accessibilityIdentifier("Quickstart.Ready")"#),
+                "a container identifier would overwrite the child button's AX identifier")
         #expect(body.contains(#"Text("Startchatting")"#),
                 "the Ready screen must offer the Start chatting action")
         // The confirmation must run the coordinator transaction, not a

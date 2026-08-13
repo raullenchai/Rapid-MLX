@@ -1072,13 +1072,13 @@ flow_cached_quickstart() {
     wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.Progress")
-            | select(.description == "Setup progress, step 1 of 3")' "$OUT/welcome.json" >/dev/null \
+            | select(.description == "Setup progress, step 1 of 4")' "$OUT/welcome.json" >/dev/null \
         || die "Quickstart welcome does not expose honest step progress"
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/chooser.json"
     jq -e '.data.ui_elements[]?
             | select(.identifier == "Quickstart.Progress")
-            | select(.description == "Setup progress, step 2 of 3")' "$OUT/chooser.json" >/dev/null \
+            | select(.description == "Setup progress, step 2 of 4")' "$OUT/chooser.json" >/dev/null \
         || die "Quickstart chooser does not advance its honest step progress"
     press "$OUT/chooser.json" "Quickstart.CachedModel.$FAKE_ALIAS" "$OUT/select-cached.json"
     see_main "$OUT/selected.json"
@@ -1096,7 +1096,26 @@ flow_cached_quickstart() {
         || die "dogfood launch terminated the operator-owned :8000 server (#1618)"
     curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
         || die "operator-owned :8000 server stopped responding after dogfood launch"
+
+    # Ready is no longer completion: onboarding must hold the window until
+    # the user explicitly confirms the final step. Pin both halves so a
+    # future regression cannot silently restore the old auto-dismiss path.
+    wait_identifier Quickstart.Ready.StartChatting "$OUT/ready-confirmation.json"
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Progress")
+            | select(.description == "Setup progress, step 4 of 4")' \
+        "$OUT/ready-confirmation.json" >/dev/null \
+        || die "Quickstart Ready does not report the final onboarding step"
+    # SwiftUI sheets expose the covered window's AX descendants as well, so
+    # the background composer may still be present in this tree. The Ready
+    # action itself is the reliable contract: old auto-dismiss builds never
+    # expose it, and this press is the only route that completes onboarding.
+    press "$OUT/ready-confirmation.json" Quickstart.Ready.StartChatting \
+        "$OUT/start-chatting.json"
     wait_identifier rapid.chat.compose "$OUT/ready.json"
+    assert_tree_text "$OUT/ready.json" "chatting with fake-alias, running entirely on your Mac."
+    [[ "$(jq '[.data.ui_elements[]? | select(.value? | strings | startswith("You’re chatting with fake-alias, running entirely on your Mac."))] | length' "$OUT/ready.json")" == 1 ]] \
+        || die "Quickstart welcome was not seeded exactly once after confirmation"
     if jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
         "$OUT/fake-events.jsonl" >/dev/null; then
         die "cached Quickstart invoked rapid-mlx pull instead of the start-only path"
