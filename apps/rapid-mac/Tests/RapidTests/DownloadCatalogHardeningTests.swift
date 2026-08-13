@@ -219,6 +219,48 @@ struct DownloadCatalogHardeningTests {
         #expect(!available.contains(where: { $0.0 == "Size" }))
     }
 
+    @Test("empty-cache notice never parses as a phantom \"No\" model (#1918)")
+    func emptyCacheNoticeIsNotAModel() {
+        // `rapid-mlx ls` prints this in place of a "Cached models" table when
+        // the disk is cold. Its single-space prose used to tokenize (parseCached
+        // splits on any whitespace) into a selectable phantom — alias "No",
+        // repo "models", size "cached yet." — that dead-ended model start.
+        let notice = """
+
+              No models cached yet. Run 'rapid-mlx pull <alias>' or 'rapid-mlx chat <alias>' to download one.
+
+            """
+        #expect(ModelCatalog.parseCached(notice).isEmpty)
+        #expect(ModelCatalog.parseAvailable(notice).isEmpty)
+    }
+
+    @Test("a genuine alias literally named \"No\" is not blacklisted (#1918)")
+    func genuineNoAliasIsNotBlacklisted() {
+        // The fix matches the full "No models cached yet" notice, never the
+        // bare word "No", so a real model whose alias happens to be "No"
+        // (row = "No" + 2+ spaces + repo) must still reach the catalog.
+        let cached = ModelCatalog.parseCached(
+            """
+              Cached models (1 on disk)
+              ────────────────────────────────────────
+              Alias                 HuggingFace repo                         Size
+              No                    mlx-community/No-Model-4bit               2 GB
+            """
+        )
+        #expect(cached.map { $0.0 } == ["No"])
+        #expect(cached.first?.1 == "mlx-community/No-Model-4bit")
+
+        let available = ModelCatalog.parseAvailable(
+            """
+              Available models (1 aliases)
+              ────────────────────────────────────────
+              Alias                 Family
+              No                    experimental
+            """
+        )
+        #expect(available.map { $0.0 } == ["No"])
+    }
+
     @Test("ModelInfoCatalog sanitizes repo ids before UI link construction")
     func modelInfoSanitizesHuggingFaceRepo() {
         let safe = ModelInfoCatalog.info(for: "qwen3-8b", hfRepo: "mlx-community/Qwen3-8B-4bit")

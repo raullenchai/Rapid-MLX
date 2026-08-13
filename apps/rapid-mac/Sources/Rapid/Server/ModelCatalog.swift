@@ -770,10 +770,13 @@ enum ModelCatalog {
         return entries
     }
 
-    /// Log/banner lines the engine or its HTTP server can interleave
-    /// with table output. None of these are catalog rows, and every one
-    /// of them would otherwise yield a phantom alias from its first
-    /// token ("Loading", "INFO:", "Uvicorn", …).
+    /// Log/banner and catalog-notice lines the engine or its HTTP server
+    /// can share stdout with the table. None of these are catalog rows, and
+    /// every one of them would otherwise yield a phantom alias from its
+    /// first token ("Loading", "INFO:", "Uvicorn", "No", …).
+    ///
+    /// Shared by `parseCached` and `parseAvailable`, so a single entry here
+    /// fixes every consumer of the catalog (picker, Onboarding, Settings).
     ///
     /// Pure + `static` so the set is one list rather than a chain of
     /// `hasPrefix` calls buried in the parse loop.
@@ -793,6 +796,16 @@ enum ModelCatalog {
             "ERROR:",
             "Uvicorn running",
             "Traceback (",
+            // The empty-cache notice `rapid-mlx ls` prints in place of a
+            // "Cached models" table when the disk is cold:
+            //   "No models cached yet. Run 'rapid-mlx pull …' …"
+            // Its single-space prose tokenizes (parseCached splits on ANY
+            // whitespace) into alias "No", repo "models", size "cached yet." —
+            // a selectable phantom that dead-ends model start
+            // (raullenchai/Rapid-MLX#1918). Matching the full "No models
+            // cached yet" prefix (not the bare word "No") keeps a genuine
+            // alias named "No" — whose row is "No" + 2+ spaces + repo — safe.
+            "No models cached yet",
         ]
         return bannerPrefixes.contains { line.hasPrefix($0) }
     }
