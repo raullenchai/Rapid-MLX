@@ -1503,8 +1503,19 @@ def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = Fals
         model_path, enable_dspark=enable_dspark
     )
 
-    # Load model
-    model, _ = load_model(model_path, model_config=model_config)
+    # DeepSeek-style fp8 block checkpoints (Ling 3.0 fp8): mlx has no fp8
+    # dtype, so ``mx.load`` cannot open the shards at all. Repack the
+    # original e4m3 bytes + ue8m0 block scales into mlx's mxfp8 layout at
+    # load time — bit-lossless, no offline conversion needed (see
+    # ``vllm_mlx/fp8_repack.py``).
+    from ..fp8_repack import is_fp8_block_checkpoint, load_fp8_model_online
+
+    if is_fp8_block_checkpoint(model_path):
+        logger.info("fp8 block checkpoint detected — online mxfp8 repack")
+        model = load_fp8_model_online(model_path)
+    else:
+        # Load model
+        model, _ = load_model(model_path, model_config=model_config)
 
     # Try to load tokenizer from tokenizer.json directly
     tokenizer_json = model_path / "tokenizer.json"

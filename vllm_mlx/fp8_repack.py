@@ -1,0 +1,223 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Online (load-time) repack of DeepSeek-style fp8 checkpoints into mxfp8.
+
+Ling 3.0 fp8 checkpoints (``inclusionAI/Ling-3.0-tiny-fp8``) store weights
+as safetensors ``F8_E4M3`` bytes plus a ``<name>_scale_inv`` companion
+holding e8m0 (``ue8m0``) scales per 128x128 block. mlx has no fp8 dtype
+(ml-explore/mlx#1670), so ``mx.load`` cannot even open the shards.
+
+This module loads the ORIGINAL checkpoint directly, repacking at
+load time into mlx's ``mxfp8`` quantized layout — **bit-losslessly**:
+
+- mlx mxfp8 stores e4m3 bytes packed 4-per-uint32 plus one e8m0 byte per
+  32-element row group. The source's e4m3 weight bytes are copied
+  verbatim into the packed words, and each 128x128 block's e8m0 scale
+  byte is broadcast to its 4 covered column groups (128/32) and 128
+  covered rows. No value is decoded or re-rounded anywhere, so
+  ``mx.dequantize`` reproduces ``e4m3(w) * 2^(scale-127)`` exactly
+  (verified element-identical; contrast with offline
+  ``mx.quantize(mode="mxfp8")`` which re-derives scales per 32-group and
+  re-rounds, ~2^-12 max diff).
+- Tensors the publisher kept unquantized (``modules_to_not_convert``:
+  MLA q/kv LoRA projections, router, embeddings, lm_head, per-head
+  gates …) load as plain bf16/f32 — byte-identical too. The router even
+  stays bf16, which the offline path could not offer (mlx_lm quantizes
+  it 8-bit affine via the model's quant_predicate).
+
+Memory: the model skeleton's random init and the ``nn.quantize`` graph
+stay lazy (never evaluated); only the repacked arrays materialize, so
+peak RSS is about the checkpoint size (~8.4 GB for tiny), not the bf16
+size.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+import logging
+import struct
+from pathlib import Path
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+_SCALE_SUFFIX = "_scale_inv"
+_MXFP8_GROUP = 32  # mlx mxfp8 group size (fixed by the format)
+
+
+def is_fp8_block_checkpoint(model_path: Path) -> bool:
+    """True when config.json declares DeepSeek-style fp8 block quant."""
+    cfg = model_path / "config.json"
+    if not cfg.exists():
+        return False
+    try:
+        qc = json.loads(cfg.read_text()).get("quantization_config") or {}
+    except (OSError, json.JSONDecodeError):
+        return False
+    return qc.get("quant_method") == "fp8"
+
+
+class _ShardReader:
+    """Minimal safetensors reader returning raw little-endian bytes.
+
+    numpy-side only — deliberately no framework dtype mapping, since the
+    whole point is that mlx (0.31.x) cannot represent F8_E4M3/F8_E8M0.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        with open(path, "rb") as f:
+            hlen = struct.unpack("<Q", f.read(8))[0]
+            self.header = json.loads(f.read(hlen))
+        self.header.pop("__metadata__", None)
+        self.data_start = 8 + hlen
+
+    def read(self, name: str) -> tuple[np.ndarray, str, list[int]]:
+        ent = self.header[name]
+        off0, off1 = ent["data_offsets"]
+        with open(self.path, "rb") as f:
+            f.seek(self.data_start + off0)
+            raw = np.frombuffer(f.read(off1 - off0), dtype=np.uint8)
+        return raw, ent["dtype"], ent["shape"]
+
+
+def _open_shards(model_path: Path) -> tuple[dict[str, str], dict[str, _ShardReader]]:
+    index_path = model_path / "model.safetensors.index.json"
+    if index_path.exists():
+        weight_map = json.loads(index_path.read_text())["weight_map"]
+    else:
+        single = model_path / "model.safetensors"
+        weight_map = {n: single.name for n in _ShardReader(single).header}
+    shards = {
+        fname: _ShardReader(model_path / fname)
+        for fname in sorted(set(weight_map.values()))
+    }
+    return weight_map, shards
+
+
+def _raw_to_mx(raw: np.ndarray, dtype: str, shape: list[int]) -> mx.array:
+    """Non-fp8 safetensors payload → mx array (byte-identical)."""
+    if dtype == "BF16":
+        return mx.array(raw.view(np.uint16)).view(mx.bfloat16).reshape(shape)
+    if dtype == "F32":
+        return mx.array(raw.view(np.float32)).reshape(shape)
+    if dtype == "F16":
+        return mx.array(raw.view(np.float16)).reshape(shape)
+    raise ValueError(f"unsupported non-fp8 dtype {dtype}")
+
+
+def _repack_fp8(
+    w_raw: np.ndarray,
+    w_shape: list[int],
+    s_raw: np.ndarray,
+    s_shape: list[int],
+    block: tuple[int, int],
+) -> tuple[mx.array, mx.array]:
+    """(e4m3 bytes, block e8m0 scales) → mlx mxfp8 (packed weight, scales).
+
+    Pure byte moves: e4m3 bytes are packed 4-per-uint32 verbatim; each
+    block scale byte is repeated over the rows/column-groups it covers.
+    """
+    rows, cols = w_shape
+    bs_r, bs_c = block
+    if cols % _MXFP8_GROUP:
+        raise ValueError(f"cols {cols} not divisible by mxfp8 group {_MXFP8_GROUP}")
+    if bs_c % _MXFP8_GROUP:
+        raise ValueError(f"block width {bs_c} not divisible by {_MXFP8_GROUP}")
+
+    wq = w_raw.reshape(rows, cols // 4, 4).view(np.uint32).reshape(rows, cols // 4)
+
+    s = s_raw.reshape(s_shape)
+    scales = np.repeat(np.repeat(s, bs_r, axis=0)[:rows], bs_c // _MXFP8_GROUP, axis=1)
+    scales = scales[:, : cols // _MXFP8_GROUP]
+
+    return mx.array(wq), mx.array(scales)
+
+
+def load_fp8_model_online(model_path: Path) -> nn.Module:
+    """Build the model and load an fp8-block checkpoint via mxfp8 repack."""
+    config = json.loads((model_path / "config.json").read_text())
+    qc = config.get("quantization_config") or {}
+    if qc.get("quant_method") != "fp8":
+        raise ValueError(f"{model_path} is not an fp8 block-quantized checkpoint")
+    bs = qc.get("weight_block_size") or [128, 128]
+    block = (int(bs[0]), int(bs[1]))
+    model_type = config["model_type"]
+
+    arch = importlib.import_module(f"mlx_lm.models.{model_type}")
+    model = arch.Model(arch.ModelArgs.from_dict(config))
+
+    weight_map, shards = _open_shards(model_path)
+
+    def read(name: str):
+        return shards[weight_map[name]].read(name)
+
+    # Quantize exactly the modules the checkpoint shipped as fp8 — the
+    # scale companion's presence is the source of truth. Module paths
+    # mirror checkpoint names, except experts are a stacked SwitchLinear
+    # (`…mlp.experts.gate_proj`) standing in for per-expert tensors.
+    def has_fp8(name: str) -> bool:
+        return f"{name}.weight{_SCALE_SUFFIX}" in weight_map
+
+    def class_predicate(path: str, module: nn.Module) -> bool:
+        if not hasattr(module, "to_quantized"):
+            return False
+        marker = ".mlp.experts."
+        if marker in path:
+            head, _, tail = path.partition(marker)
+            return has_fp8(f"{head}{marker[:-1]}.0.{tail}")
+        return has_fp8(path)
+
+    # Both the skeleton's random init and this quantization graph stay
+    # lazy; load_weights below replaces every parameter before anything
+    # is evaluated, so neither ever materializes.
+    nn.quantize(
+        model,
+        group_size=_MXFP8_GROUP,
+        bits=8,
+        mode="mxfp8",
+        class_predicate=class_predicate,
+    )
+
+    weights: dict[str, mx.array] = {}
+    n_repacked = 0
+    for name in weight_map:
+        if name.endswith(_SCALE_SUFFIX):
+            continue
+        raw, dtype, shape = read(name)
+        if dtype == "F8_E4M3":
+            scale_name = name + _SCALE_SUFFIX
+            if scale_name not in weight_map:
+                raise ValueError(
+                    f"{name} is F8_E4M3 but has no {_SCALE_SUFFIX} companion"
+                )
+            s_raw, s_dtype, s_shape = read(scale_name)
+            if s_dtype != "F8_E8M0":
+                raise ValueError(
+                    f"{scale_name} is {s_dtype}; online mxfp8 repack supports ue8m0 "
+                    "(power-of-two) scales only — f32-scale fp8 sources are not "
+                    "supported yet"
+                )
+            wq, scales = _repack_fp8(raw, shape, s_raw, s_shape, block)
+            base = name[: -len(".weight")]
+            weights[f"{base}.weight"] = wq
+            weights[f"{base}.scales"] = scales
+            n_repacked += 1
+        else:
+            weights[name] = _raw_to_mx(raw, dtype, shape)
+
+    logger.info(
+        "fp8 online repack: %d tensors repacked to mxfp8 (bit-lossless), %d kept fp",
+        n_repacked,
+        len(weights) - 2 * n_repacked,
+    )
+
+    if hasattr(model, "sanitize"):
+        weights = model.sanitize(weights)
+    model.load_weights(list(weights.items()), strict=True)
+    mx.eval(model.parameters())
+    model.eval()
+    return model
