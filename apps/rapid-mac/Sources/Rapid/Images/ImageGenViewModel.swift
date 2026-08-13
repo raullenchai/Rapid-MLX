@@ -48,9 +48,18 @@ final class ImageGenViewModel {
         var longEdge: Int { rawValue }
     }
 
-    /// The two phases of a render, shown very differently: a reassuring
-    /// (indeterminate) cold-load, then a determinate denoise.
-    enum Phase: Equatable { case preparing, denoising }
+    /// User-visible phases of a render. A completed denoise is not a completed
+    /// request: VAE decode, image encoding, transport, and client decode still
+    /// happen after the final sampling step.
+    enum Phase: Equatable { case preparing, denoising, finalizing }
+
+    static func nextPhase(from current: Phase, progress: ImageClient.ImageProgress) -> Phase {
+        if progress.total > 0, progress.step >= progress.total {
+            return .finalizing
+        }
+        if progress.running { return .denoising }
+        return .preparing
+    }
 
     /// A few one-tap prompt starters to beat the blank page.
     static let starters: [String] = [
@@ -309,10 +318,11 @@ final class ImageGenViewModel {
                     port: port,
                     bearer: bearer
                 ) {
-                    self?.progress = snap
-                    self?.phase = snap.running ? .denoising : .preparing
-                    if snap.running, self?.denoiseStartedAt == nil {
-                        self?.denoiseStartedAt = Date()
+                    guard let self else { return }
+                    self.progress = snap
+                    self.phase = Self.nextPhase(from: self.phase, progress: snap)
+                    if snap.running, self.denoiseStartedAt == nil {
+                        self.denoiseStartedAt = Date()
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(300))

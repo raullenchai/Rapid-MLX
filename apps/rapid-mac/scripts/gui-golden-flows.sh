@@ -40,7 +40,7 @@ Flows: fresh-install, cached-quickstart, download-progress, settings-persistence
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, image-generation, all
+       browse-all-destination, image-generation, audio-readiness, all
 
 download-progress, chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
 restored-tools, tool-loop-budget and image-generation drive the app through
@@ -100,7 +100,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
-        slow-stream-stop|model-crash-recovery|image-generation|window-close-prompt|resident-load-rejected) return 1 ;;
+        slow-stream-stop|model-crash-recovery|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -2254,7 +2254,10 @@ flow_image_generation() {
     # key events on an unattended CI runner. The golden-mode gate means a real
     # user's launch — which never sets it — always gets the picker even if an
     # unrelated process leaked an import path into the environment.
+    # AX baseline normalization itself takes several seconds on a busy mini;
+    # keep the synthetic decode tail long enough to observe after it.
     start_persona image-generation FAKE_IMAGE_STEPS=8 FAKE_IMAGE_STEP_MS=300 \
+        FAKE_IMAGE_FINISH_MS=15000 \
         RAPID_GUI_GOLDEN_MODE=1 \
         RAPID_SIMULATED_IMPORT_PATH="$ROOT/Tests/RapidTests/__Snapshots__/cheetah-logo-96.png"
 
@@ -2342,6 +2345,22 @@ flow_image_generation() {
     [[ "$inflight" == 1 ]] \
         || die "no in-flight progress card: Images.Cancel never appeared during a render"
     baseline image-generation.inflight "$OUT/ig-inflight.json"
+
+    # Sampling completion is followed by VAE decode / encoding. That tail must
+    # be a named indeterminate phase, not a full 8/8 bar that appears stuck.
+    local finalizing=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/ig-finalizing.json"
+        if jq -e '.data.ui_elements[]?
+                  | select((.value // .label // "") == "Finalizing image…")' \
+               "$OUT/ig-finalizing.json" >/dev/null; then
+            finalizing=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$finalizing" == 1 ]] \
+        || die "the post-denoise tail never showed Finalizing image…"
+    baseline image-generation.finalizing "$OUT/ig-finalizing.json"
 
     wait_fake_event '.event == "image_request"' \
         "no image_request reached the sidecar — the prompt was never sent"
@@ -2819,6 +2838,54 @@ flow_launch_integrations() {
     cleanup_persona
 }
 
+flow_audio_readiness() {
+    log "flow: audio-readiness"
+    start_persona audio-readiness
+    dismiss_first_run
+    see_main "$OUT/chat.json"
+    press "$OUT/chat.json" Sidebar.Audio "$OUT/speech.json" \
+        || die "Sidebar.Audio is not pressable"
+
+    local i speech_ready=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/speech.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Audio.Speech.ModelPicker")' "$OUT/speech.json" >/dev/null \
+           && jq -e '.data.ui_elements[]?
+                     | select(.identifier == "Readiness.Action"
+                              and (.description // .value // .label // "") == "Download & start")' \
+                    "$OUT/speech.json" >/dev/null; then
+            speech_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$speech_ready" == 1 ]] \
+        || die "Speech did not expose Chat-equivalent Download & start readiness"
+    baseline audio-readiness.speech "$OUT/speech.json"
+
+    press "$OUT/speech.json" Audio.Mode.Transcription "$OUT/transcription.json" \
+        || die "Audio transcription segment is not pressable"
+    local transcription_ready=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/transcription.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Audio.Transcription.ModelPicker")' \
+                 "$OUT/transcription.json" >/dev/null \
+           && jq -e '.data.ui_elements[]?
+                     | select(.identifier == "Readiness.Action"
+                              and (.description // .value // .label // "") == "Download & start")' \
+                    "$OUT/transcription.json" >/dev/null; then
+            transcription_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$transcription_ready" == 1 ]] \
+        || die "Transcription did not expose Chat-equivalent Download & start readiness"
+    baseline audio-readiness.transcription "$OUT/transcription.json"
+    log "  audio-readiness OK"
+    cleanup_persona
+}
+
 
 if [[ -d "$OUT_ROOT" && -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
     RESULT_WRITTEN=1
@@ -2845,6 +2912,7 @@ case "$FLOW" in
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
     image-generation) flow_image_generation ;;
+    audio-readiness) flow_audio_readiness ;;
     resident-load-rejected) flow_resident_load_rejected ;;
     launch-integrations) flow_launch_integrations ;;
     all)
@@ -2866,6 +2934,7 @@ case "$FLOW" in
         flow_catalog_integrity
         flow_browse_all_destination
         flow_image_generation
+        flow_audio_readiness
         flow_resident_load_rejected
         flow_launch_integrations
         ;;

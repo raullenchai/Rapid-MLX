@@ -303,6 +303,7 @@ struct ImagesView: View {
             let phase = (context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: 1.6)) / 1.6
             let denoising = viewModel.phase == .denoising && viewModel.progress != nil
+            let finalizing = viewModel.phase == .finalizing
             let total = max(viewModel.progress?.total ?? 0, viewModel.estimatedSteps)
             let step = max(1, viewModel.progress?.step ?? 0)
             let fraction = (denoising && total > 0) ? min(1, Double(step) / Double(total)) : 0
@@ -315,7 +316,7 @@ struct ImagesView: View {
 
                 VStack(spacing: 14) {
                     HStack(spacing: 10) {
-                        if denoising {
+                        if denoising || finalizing {
                             // Breathing, and only when Reduce Motion is
                             // off: this is a perpetual loop, so it is
                             // fully suppressed rather than merely slowed.
@@ -335,7 +336,9 @@ struct ImagesView: View {
                                         ? 0.65 + 0.35 * (0.5 + 0.5 * sin(phase * .pi * 2))
                                         : 1
                                 )
-                            Text(viewModel.cancelling ? "Stopping…" : "Generating")
+                            Text(viewModel.cancelling
+                                 ? "Stopping…"
+                                 : (finalizing ? "Finalizing image…" : "Generating"))
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(RapidTheme.bandInk)
                         } else {
@@ -368,7 +371,11 @@ struct ImagesView: View {
                         .accessibilityIdentifier("Images.Cancel")
                     }
 
-                    ShimmerProgressBar(fraction: fraction, indeterminate: !denoising, phase: phase)
+                    ShimmerProgressBar(
+                        fraction: fraction,
+                        indeterminate: !denoising || finalizing,
+                        phase: phase
+                    )
                         .frame(height: 10)
 
                     HStack {
@@ -381,9 +388,12 @@ struct ImagesView: View {
                         // otherwise cold-load time inflates the per-step estimate.
                         let denoiseElapsed = viewModel.denoiseStartedAt
                             .map { context.date.timeIntervalSince($0) } ?? elapsed
-                        Text(denoising
-                             ? (etaText(step: step, total: total, elapsed: denoiseElapsed) ?? "finishing…")
-                             : "First run — only happens once")
+                        Text(finalizing
+                             ? "Decoding and saving…"
+                             : (denoising
+                                ? (etaText(step: step, total: total, elapsed: denoiseElapsed)
+                                   ?? "Finalizing next…")
+                                : "First run — only happens once"))
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(RapidTheme.bandInkSecondary)
                     }

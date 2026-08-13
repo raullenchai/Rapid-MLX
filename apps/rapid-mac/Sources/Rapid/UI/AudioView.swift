@@ -26,6 +26,49 @@ struct AudioView: View {
     private let controlLabelWidth: CGFloat = 80
     private let controlFieldWidth: CGFloat = 320
 
+    private var selectedAlias: String {
+        viewModel.mode == .speech
+            ? viewModel.selectedSpeechAlias
+            : viewModel.selectedTranscriptionAlias
+    }
+
+    private var selectedEntry: ModelEntry? {
+        viewModel.audioModels.first { $0.alias == selectedAlias }
+    }
+
+    /// Audio uses the same lifecycle SSOT and CTA semantics as Chat and
+    /// Images: choose → Download & start / Start → ready.
+    private var readiness: ModelReadiness {
+        if server.isResidentLoadInFlight(selectedAlias) {
+            return .starting(alias: selectedAlias, detail: "Downloading or loading the audio model…")
+        }
+        let cacheState: ModelReadiness.CacheState
+        if selectedAlias.isEmpty || !viewModel.catalogLoaded {
+            cacheState = .catalogPending
+        } else if let selectedEntry {
+            cacheState = selectedEntry.cached ? .onDisk : .notOnDisk
+        } else {
+            cacheState = .notInCatalog
+        }
+        let progress: ModelReadiness.ProgressSnapshot? = if case .starting = server.state {
+            .init(
+                activity: server.downloadProgress.startupActivity,
+                subtitle: server.downloadProgress.progressSubtitle,
+                fraction: server.downloadProgress.progressFraction
+            )
+        } else { nil }
+        return ModelReadiness.resolve(
+            serverState: server.readinessState(for: selectedAlias),
+            alias: selectedAlias,
+            cacheState: cacheState,
+            sizeText: selectedEntry?.sizeOnDisk,
+            progress: progress,
+            failure: server.residentLoadFailure(for: selectedAlias).map {
+                .init(message: $0.message, alias: $0.alias)
+            }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -55,7 +98,11 @@ struct AudioView: View {
             RapidSegmentedControl(
                 selection: $viewModel.mode,
                 options: AudioViewModel.Mode.allCases.map {
-                    .init(value: $0, title: $0.label)
+                    .init(
+                        value: $0,
+                        title: $0.label,
+                        identifier: "Audio.Mode.\($0.label)"
+                    )
                 },
                 accessibilityLabel: "Audio mode"
             )
@@ -119,6 +166,7 @@ struct AudioView: View {
                     entries: viewModel.transcriptionModels,
                     identifier: "Audio.Transcription.ModelPicker"
                 )
+                ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
                 swapNotice(alias: viewModel.selectedTranscriptionAlias)
                 operationNotice
                 HStack(spacing: RapidTheme.Space.md) {
@@ -138,6 +186,7 @@ struct AudioView: View {
                     .disabled(
                         viewModel.selectedFileURL == nil
                             || viewModel.selectedTranscriptionAlias.isEmpty
+                            || !readiness.sendAllowed
                             || viewModel.isBusy
                     )
                     .accessibilityIdentifier("Audio.Transcription.Run")
@@ -285,6 +334,7 @@ struct AudioView: View {
                 }
 
                 speechControls
+                ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
                 swapNotice(alias: viewModel.selectedSpeechAlias)
                 operationNotice
 
@@ -304,6 +354,7 @@ struct AudioView: View {
                     .disabled(
                         viewModel.speechText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                             || viewModel.selectedSpeechAlias.isEmpty
+                            || !readiness.sendAllowed
                             || viewModel.isBusy
                     )
                     .accessibilityIdentifier("Audio.Speech.Generate")
@@ -348,7 +399,11 @@ struct AudioView: View {
                         Task { _ = await viewModel.loadVoices() }
                     }
                     .buttonStyle(.rapidSecondaryCompactUtility)
-                    .disabled(viewModel.selectedSpeechAlias.isEmpty || viewModel.isBusy)
+                    .disabled(
+                        viewModel.selectedSpeechAlias.isEmpty
+                            || !readiness.sendAllowed
+                            || viewModel.isBusy
+                    )
                     .accessibilityIdentifier("Audio.Speech.LoadVoices")
                     if viewModel.isLoadingVoices {
                         ProgressView().controlSize(.small)
@@ -549,6 +604,36 @@ struct AudioView: View {
     private func modelTitle(_ entry: ModelEntry) -> String {
         let status = entry.cached ? "Downloaded" : "Not downloaded"
         return "\(entry.alias) - \(status)"
+    }
+
+    private func handleReadinessAction(_ action: ModelReadiness.Action) {
+        switch action {
+        case .chooseModel:
+            break
+        case .downloadAndStart(let alias), .start(let alias), .retry(let alias):
+            Task { await loadAudioModel(alias) }
+        case .restart(let alias):
+            Task {
+                await server.stop()
+                await loadAudioModel(alias)
+            }
+        case .openModelManagement:
+            openModelManagement()
+        }
+    }
+
+    private func loadAudioModel(_ alias: String) async {
+        let entry = viewModel.audioModels.first { $0.alias == alias }
+        _ = await server.ensureServing(
+            alias: alias,
+            hfPath: entry?.hfRepo,
+            estimatedMemoryGB: ModelSizing.residentEstimateGB(
+                alias: alias,
+                sizeText: entry?.sizeOnDisk
+            ),
+            residencyEligible: false
+        )
+        await viewModel.refreshCatalog()
     }
 
     @ViewBuilder

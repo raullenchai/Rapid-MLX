@@ -543,7 +543,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/models/residency":
             self._json(200, self._residency_snapshot())
             return
-        if self.path == "/v1/images/progress":
+        if self.path.partition("?")[0] == "/v1/images/progress":
             # Polled every few hundred ms while a render is in flight. Answer
             # it even when nothing is running: the client treats a transport
             # failure and "idle" identically, so a 404 here would be
@@ -697,6 +697,10 @@ class Handler(BaseHTTPRequestHandler):
             if RENDERS.advance():
                 cancelled = True
                 break
+        # Real image engines still perform VAE decode / PNG encoding after the
+        # last denoise step. Keep that tail observable for GUI phase coverage.
+        finish_ms = max(0, int(_setting("FAKE_IMAGE_FINISH_MS", 0)))
+        time.sleep(finish_ms / 1000)
         RENDERS.end()
         png = _one_pixel_png(((index * 70) % 256, (index * 130) % 256, (index * 190) % 256))
         encoded = base64.b64encode(png).decode("ascii")
@@ -901,6 +905,12 @@ def _emit_catalog(subcommand, alias):
         print("Alias                  Size       Kind        HF id")
         print("---------------------  ---------  ----------  ------")
         print(f"{FAKE_IMAGE_ALIAS}       4.6 GiB    [image:both] {FAKE_IMAGE_REPO}")
+        print()
+        print("Audio models (2 aliases)")
+        print("Alias                  Size       Kind        Family      HF id")
+        print("---------------------  ---------  ----------  ----------  ------")
+        print("fake-qwen3-tts         1.1 GiB    [audio:tts] qwen3_tts   fake/qwen3-tts")
+        print("fake-whisper-small     461 MiB    [audio:stt] whisper     fake/whisper-small")
         return True
     if subcommand == "ls":
         if _setting("FAKE_EMPTY_CACHE_NOTICE") == "1":
@@ -923,6 +933,8 @@ def _emit_catalog(subcommand, alias):
         repo = {
             FAKE_IMAGE_ALIAS: FAKE_IMAGE_REPO,
             "fake-video-alias": "fake/video-mlx",
+            "fake-qwen3-tts": "fake/qwen3-tts",
+            "fake-whisper-small": "fake/whisper-small",
         }.get(alias, FAKE_REPO)
         print(f"Alias: {alias} -> {repo}")
         return True
