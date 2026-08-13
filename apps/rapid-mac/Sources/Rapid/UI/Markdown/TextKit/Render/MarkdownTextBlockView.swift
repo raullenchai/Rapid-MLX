@@ -92,7 +92,13 @@ final class MarkdownTextBlockView: NSView {
             }
             animator.configuration = fadeConfiguration
             animator.textColor = options.textColor
-            if contentGrew || dotChanged { animator.contentDidGrow() }
+            if contentGrew || dotChanged {
+                animator.contentDidGrow()
+            } else {
+                // `setBlocks` above wiped the rendering attributes even though
+                // nothing changed. Without this the fade never comes back.
+                animator.storageDidReset()
+            }
         } else if let animator = fadeAnimator {
             // Streaming ended: leave the text fully visible rather than
             // replaying the reveal on the next render pass.
@@ -141,6 +147,10 @@ final class MarkdownTextBlockView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateTypingDotAnimation()
+        // The fade's display link can only bind once the view is on a screen,
+        // and content routinely arrives before SwiftUI mounts the
+        // representable. Re-arm here or the queue never drains.
+        fadeAnimator?.hostViewDidMoveToWindow()
     }
 
     /// Measure without rendering. Cheap enough to call for every offscreen row.

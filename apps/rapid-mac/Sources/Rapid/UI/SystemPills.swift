@@ -130,9 +130,17 @@ struct CPUPill: View {
 /// tiny elapsed). The user wants "how fast did my last answer
 /// arrive" — a clean post-stream measurement.
 struct TokensPerSecondPill: View {
-    /// The current conversation's messages, passed in by ``ContentView``
-    /// so the pill can read the most recent assistant turn's stats.
-    let messages: [ChatMessage]
+    /// The current conversation's messages, read lazily so the dependency
+    /// lands on THIS view rather than on ``ContentView``.
+    ///
+    /// Taking `[ChatMessage]` by value meant ContentView's body read
+    /// `chat.messages`, and under `@Observable` the reader owns the
+    /// dependency — so every streamed delta invalidated ContentView and,
+    /// through it, the sidebar, the model picker and the transcript. The
+    /// pill only ever needs the last assistant turn's `stats`, which is
+    /// written once when the stream ends. Profiling a 1920-character
+    /// stream found that cascade re-running four view bodies per delta.
+    let messages: () -> [ChatMessage]
 
     var body: some View {
         // Idle (no resolved value) renders at ``MetricChip.Level.none``,
@@ -161,7 +169,7 @@ struct TokensPerSecondPill: View {
     }
 
     private var lastAssistantStats: MessageStats? {
-        for message in messages.reversed()
+        for message in messages().reversed()
         where message.role == .assistant {
             if let stats = message.stats { return stats }
         }

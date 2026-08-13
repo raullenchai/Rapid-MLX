@@ -158,8 +158,8 @@ enum ModelPickerVisibility {
     /// rule (any sub-1B variant on the menu is the same first-
     /// impression risk).
     static func parseSmallestParamsBillions(_ alias: String) -> Double? {
-        let billionMatches = matchedNumbers(in: alias, suffix: "[bB]")
-        let millionMatches = matchedNumbers(in: alias, suffix: "[mM]").map { $0 / 1000.0 }
+        let billionMatches = matchedNumbers(in: alias, regex: billionsRegex)
+        let millionMatches = matchedNumbers(in: alias, regex: millionsRegex).map { $0 / 1000.0 }
         let candidates = billionMatches + millionMatches
         guard !candidates.isEmpty else { return nil }
         // Smallest > 0; the helper already filters out 0.
@@ -169,9 +169,19 @@ enum ModelPickerVisibility {
     /// Run a `\d+(\.\d+)?\s*<suffix>\b` regex over ``alias`` and
     /// return every captured numeric value. Empty array on regex
     /// compile failure or no match.
-    private static func matchedNumbers(in alias: String, suffix: String) -> [Double] {
-        let pattern = #"(\d+(?:\.\d+)?)\s*"# + suffix + #"\b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+    /// Compiled once per suffix. Both are reached once per alias per
+    /// ``ModelPickerBar`` body pass, and that bar rebuilds on every streamed
+    /// delta — compiling the pattern per call put ICU's ``uregex_open`` on
+    /// the hot path of every chat token.
+    private static let billionsRegex = try? NSRegularExpression(
+        pattern: #"(\d+(?:\.\d+)?)\s*[bB]\b"#
+    )
+    private static let millionsRegex = try? NSRegularExpression(
+        pattern: #"(\d+(?:\.\d+)?)\s*[mM]\b"#
+    )
+
+    private static func matchedNumbers(in alias: String, regex: NSRegularExpression?) -> [Double] {
+        guard let regex else { return [] }
         let nsAlias = alias as NSString
         let matches = regex.matches(in: alias, range: NSRange(location: 0, length: nsAlias.length))
         var values: [Double] = []

@@ -771,7 +771,7 @@ struct ContentView: View {
             .accessibilityIdentifier("ContentView.ToggleLogs")
             Spacer()
             ServerStatusPill(state: server.state)
-            TokensPerSecondPill(messages: chat.messages)
+            TokensPerSecondPill(messages: { chat.messages })
             CPUPill()
             GPUPill()
             MemoryPill()

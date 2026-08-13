@@ -26,6 +26,18 @@ final class ClosureDisplayLink {
         onTick: @escaping (CFTimeInterval) -> Void
     ) {
         guard link == nil else { return }
+        // `NSView.displayLink(target:selector:)` binds to the screen the view
+        // is on. Off-window there is no screen, and the link it hands back
+        // never fires — silently: `isRunning` reads true, every later start is
+        // skipped as redundant, and the animation sits queued forever while
+        // text appears fully opaque.
+        //
+        // This is the normal case, not an edge case: `NSViewRepresentable`
+        // builds its view before SwiftUI mounts it, so the first content
+        // almost always arrives before the window does. Refusing to start
+        // here, plus `TextFadeAnimator.hostViewDidMoveToWindow()` from
+        // `viewDidMoveToWindow`, is what makes the fade work at all.
+        guard view.window != nil else { return }
         self.onTick = onTick
         let link = view.displayLink(target: self, selector: #selector(step(_:)))
         // A range rather than a fixed rate: the compositor can drop to the

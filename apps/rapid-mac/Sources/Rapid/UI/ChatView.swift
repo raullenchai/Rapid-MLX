@@ -180,6 +180,11 @@ private func copySanitizedToPasteboard(_ raw: String) {
 /// or attachments.
 struct ChatView: View {
     @Bindable var viewModel: ChatViewModel
+    /// Compiled blocks for the streaming message. Keeps the raw streamed
+    /// string out of the streaming view's inputs — see
+    /// `StreamingMarkdownStore`. (`MessageRow` still receives the raw
+    /// `ChatMessage` for non-markdown concerns like tool chips.)
+    @State private var streamingMarkdown = StreamingMarkdownStore()
     @Bindable var server: ServerManager
     @Binding var alias: String
     /// The single readiness value for this window, resolved once by
@@ -284,10 +289,24 @@ struct ChatView: View {
         } else {
             ScrollView {
                 transcriptRows
+                    .onChange(of: viewModel.streamingBody) { _, body in
+                        // The one place the raw string is fed into the
+                        // debounced compiler. The row itself is still
+                        // invalidated per SSE batch — `MessageRow` holds the
+                        // raw `ChatMessage` — but the expensive part (markdown
+                        // parse + block rebuild) now runs on the store's
+                        // 100 ms beat instead of once per delta.
+                        if let body {
+                            streamingMarkdown.enqueue(id: body.id, text: body.text)
+                        } else {
+                            streamingMarkdown.finish()
+                        }
+                    }
                     .background(
                         TranscriptScrollPositionProbe(
                             isPinnedToBottom: $isPinnedToBottom,
-                            bottomResumeSlack: bottomResumeSlack
+                            bottomResumeSlack: bottomResumeSlack,
+                            isStreaming: viewModel.isStreaming
                         )
                     )
             }
@@ -304,6 +323,24 @@ struct ChatView: View {
             .onChange(of: viewModel.activeConversationID) { _, _ in
                 isPinnedToBottom = true
             }
+            .overlay(alignment: .bottom) { jumpToBottomOverlay }
+        }
+    }
+
+    /// Offered whenever the reader has scrolled away from the tip — the same
+    /// basis native-chat uses ("there is somewhere below to go"), rather than
+    /// gating on streaming, so "get me back" is never a state the reader has
+    /// to infer.
+    @ViewBuilder
+    private var jumpToBottomOverlay: some View {
+        if !isPinnedToBottom {
+            JumpToBottomButton(isStreaming: viewModel.isStreaming) {
+                // The probe owns positioning: re-pinning re-enters
+                // `updateNSView` → `attach`, which scrolls to the bottom.
+                isPinnedToBottom = true
+            }
+            .padding(.bottom, RapidTheme.Space.md)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
         }
     }
 
@@ -316,12 +353,35 @@ struct ChatView: View {
         // them (as an expandable chip), never as standalone transcript rows —
         // a raw JSON blob in the scroll reads as debug output.
         let toolResults = ChatView.toolResultsByCallID(messages)
-        LazyVStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+        // `VStack`, not `LazyVStack`.
+        //
+        // Lazy row building is what made the transcript's own height a
+        // moving target: a row scrolled out of view is released and reports an
+        // *estimate*, so the same transcript measured 3 439 pt from the top
+        // and 5 174 pt from the bottom. Every "scroll to the end" then aimed
+        // at a length that changed the moment it got there, which is why
+        // jumping back from the top landed mid-document or in space that had
+        // not been built.
+        //
+        // ChatGPT keeps laziness AND correctness by pairing an
+        // `NSCollectionView` with a persistent per-item height cache
+        // (`ChatCollectionViewLayout.itemPlacements`), so a recycled row still
+        // reports its real height. Reproducing that is a transcript rewrite;
+        // building every row is the same guarantee for a fraction of the work,
+        // and the cost is bounded by conversation length rather than
+        // transcript length. Settled rows are not recompiled on streamed
+        // deltas — `ForEach` re-instantiates only the row whose identity
+        // changed, and their markdown views read no per-delta state; profiled
+        // at ~0.2 % of the main thread during a stream. `MessageRow` itself
+        // still re-evaluates per delta (it holds the raw `ChatMessage`), but
+        // its expensive part, the markdown compile, is what this keeps cheap.
+        VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
             ForEach(messages) { message in
                 if message.role != .tool {
                     MessageRow(
                         message: message,
                         isStreaming: viewModel.isStreaming,
+                        streamingMarkdown: streamingMarkdown,
                         toolResults: toolResults,
                         onEdit: { newContent in
                             // Edit and Retry re-enter ``send`` inside the view
@@ -848,6 +908,7 @@ struct ChatView: View {
 private struct MessageRow: View {
     let message: ChatMessage
     let isStreaming: Bool
+    let streamingMarkdown: StreamingMarkdownStore
     /// Tool-result rows keyed by the ``ToolCall.id`` they answer. Used to
     /// pair each dispatched call with its outcome inside this row.
     var toolResults: [String: ChatMessage] = [:]
@@ -1082,21 +1143,21 @@ private struct MessageRow: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if !message.content.isEmpty {
-                // #1843: settled messages render through TextKit 2; anything
-                // still streaming stays on MarkdownUI.
+                // #1843: both paths now render through TextKit 2.
                 //
-                // The switch is per-message (`message.status`), not the view
-                // model's `isStreaming` — that flag is true for the whole
-                // transcript while the last answer arrives, and keying off it
-                // would re-render every earlier message the moment a new one
-                // starts. `status` flips once, on the message that owns it.
+                // Streaming goes through a debounced compiler that caches per
+                // message, so a flush reparses on a 100 ms beat instead of
+                // rebuilding a SwiftUI subtree from the whole accumulated
+                // string every time. That is the O(length²) term `8f7e0847`
+                // could only bound rather than remove.
                 //
-                // PR 1 deliberately changes nothing about streaming: the
-                // streaming path is byte-for-byte what it was, and the
-                // incremental-render work that motivated #1843 lands in PR 2.
+                // The split is per-message (`message.status`), not the view
+                // model's `isStreaming` — the latter is true for the whole
+                // transcript while the last answer arrives, so keying off it
+                // would swap every earlier message's renderer the moment a new
+                // one starts.
                 if message.status == .streaming {
-                    LaTeXMarkdownView(content: message.content)
-                        .textSelection(.enabled)
+                    StreamingTextKitMarkdownView(store: streamingMarkdown)
                 } else {
                     TextKitMarkdownView(content: message.content)
                 }
@@ -1193,6 +1254,19 @@ private struct MessageRow: View {
     /// it holds for every round of a multi-round turn, and for a row
     /// still streaming its follow-up prose.
     private var showsAssistantActions: Bool {
+        // Not until the answer is finished. Copy and Select Text would hand
+        // back a half-written response, and Retry was already dead here (it
+        // carries `.disabled(isStreaming …)`) — a row of controls that either
+        // lie about what they will give you or visibly do nothing is worse
+        // than no row at all. ChatGPT gates the same way: its
+        // `MessageRowInlineActionsPart` carries both a `streaming` flag and a
+        // `streamingAppearanceDelay`.
+        //
+        // Keyed on THIS message's `status`, not the view model's
+        // `isStreaming`: the latter is true for the whole transcript while the
+        // last answer arrives, so it would also strip the actions from every
+        // earlier, settled message.
+        guard message.status != .streaming else { return false }
         guard let calls = message.toolCalls, !calls.isEmpty else { return true }
         return !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

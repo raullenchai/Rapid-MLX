@@ -162,10 +162,25 @@ struct SSEDeltaCoalescerTests {
     /// Both directions are asserted deliberately. A "fix" that simply
     /// slowed everything down would pass (2) and fail (1), and would be
     /// a visible regression on every ordinary answer.
-    @Test("#1743: the coalescing window widens once the message is long")
+    /// #1743 was a real incident: a long answer pinned the main thread at
+    /// 100 % with RSS climbing past 10 GB. The fix widened the coalescing
+    /// window with accumulated length, so a long message repainted less often.
+    ///
+    /// **#1843 removed the widening** — `maxWindowNs` is now equal to
+    /// `coalesceWindowNs`, so the window is flat at 16 ms for every length.
+    /// What changed is the cost being contained, not the risk assessment: the
+    /// repaint that was O(length²) through MarkdownUI is now a bounded
+    /// compile on its own 100 ms debounce (measured linear: 1.5 ms at 2 000
+    /// characters, 15 ms at 24 000). Throttling by length no longer buys
+    /// anything, and it was visible — words reached the fade animator in
+    /// bursts proportional to the window.
+    ///
+    /// This test now pins the flat cadence. If someone reintroduces widening
+    /// without also reintroducing an expensive render path, this fails.
+    @Test("#1843: the coalescing window stays flat regardless of length")
     @MainActor
-    func window_widens_with_accumulated_length() async {
-        // (1) Short message: 16 ms is still enough to flush.
+    func window_is_flat_across_lengths() async {
+        // (1) Short message: 16 ms cadence.
         let short = SSEDeltaCoalescer()
         let shortRec = EventRecorder()
         await short.appendContent("seed") { shortRec.capture($0) }   // first flush
@@ -174,17 +189,11 @@ struct SSEDeltaCoalescerTests {
         await short.appendContent("more") { shortRec.capture($0) }
         #expect(
             shortRec.events.count > afterSeed,
-            "a short message must still flush on the 16 ms cadence — widening it unconditionally would slow every normal reply"
+            "a short message must flush on the 16 ms cadence"
         )
 
-        // (2) Long message: the same 40 ms pause is no longer enough.
-        //
-        // Seed past the point where the window has reached its 250 ms
-        // ceiling in ONE flush, rather than creeping up to it over several.
-        // Creeping leaves the assertion comparing ~120 ms of sleeps against a
-        // ~128 ms window — 8 ms of slack, which a loaded CI runner eats, and
-        // the test then fails against correct code. From the ceiling the
-        // margin is 250 ms against 40 ms.
+        // (2) Long message: the SAME cadence. 64k characters used to push the
+        // window to its 250 ms ceiling; now it changes nothing.
         let long = SSEDeltaCoalescer()
         let longRec = EventRecorder()
         await long.appendContent(String(repeating: "x", count: 64_000)) { longRec.capture($0) }
@@ -193,8 +202,8 @@ struct SSEDeltaCoalescerTests {
         try? await Task.sleep(for: .milliseconds(40))
         await long.appendContent("tail") { longRec.capture($0) }
         #expect(
-            longRec.events.count == afterBulk,
-            "a 40 ms gap still flushed after 64k characters — the window did not widen, so the repaint rate is still O(length²) (#1743)"
+            longRec.events.count > afterBulk,
+            "64k characters must not slow the flush cadence — the widening curve is gone (#1843)"
         )
     }
 

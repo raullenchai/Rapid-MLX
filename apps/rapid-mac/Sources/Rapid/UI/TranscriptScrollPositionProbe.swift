@@ -7,6 +7,9 @@ import SwiftUI
 struct TranscriptScrollPositionProbe: NSViewRepresentable {
     @Binding var isPinnedToBottom: Bool
     let bottomResumeSlack: CGFloat
+    /// Whether an answer is currently being written. Drives the one-shot
+    /// release described on ``Coordinator/releaseIfAnswerOutgrewViewport()``.
+    var isStreaming: Bool = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -28,6 +31,7 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             isPinnedToBottom: $isPinnedToBottom,
             bottomResumeSlack: bottomResumeSlack
         )
+        context.coordinator.setStreaming(isStreaming)
         context.coordinator.attach(to: probe)
     }
 
@@ -131,7 +135,71 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
 
         @objc private func documentFrameDidChange(_ notification: Notification) {
             guard isPinnedToBottom.wrappedValue else { return }
+            if releaseIfAnswerOutgrewViewport() { return }
             requestScrollToBottom()
+        }
+
+        /// Whether this stream has already handed control back to the reader.
+        private var didReleaseForCurrentStream = false
+        private var isStreaming = false
+
+        func setStreaming(_ streaming: Bool) {
+            guard streaming != isStreaming else { return }
+            isStreaming = streaming
+            if streaming { didReleaseForCurrentStream = false }
+        }
+
+        /// Stop following the moment a streamed answer grows taller than the
+        /// viewport, once per stream.
+        ///
+        /// Following unconditionally is right while the answer still fits: the
+        /// text simply fills space the reader can already see, and nothing
+        /// appears to move. Past that point every batch drags the viewport
+        /// down, so the reader is held at the newest words and cannot read the
+        /// answer from its start without fighting the scroll — which is what
+        /// "keeps slamming into the bottom" describes.
+        ///
+        /// Releasing the pin instead leaves the text where the reader is
+        /// looking and surfaces ``JumpToBottomButton``, so catching up becomes
+        /// something they ask for rather than something done to them. One shot
+        /// per stream: after the reader presses the button they are pinned
+        /// again deliberately, and that choice is theirs to keep.
+        ///
+        /// Returns true when it released, meaning the caller must not scroll.
+        private func releaseIfAnswerOutgrewViewport() -> Bool {
+            guard isStreaming, !didReleaseForCurrentStream else { return false }
+            guard let scrollView, let documentView else { return false }
+            let viewportHeight = scrollView.contentView.bounds.height
+            guard viewportHeight > 0,
+                  documentView.bounds.height > viewportHeight else { return false }
+            didReleaseForCurrentStream = true
+            // Not `setPinned(false)` — that helper is reserved for the
+            // user-gesture path (`liveScrollWillStart` / `boundsDidChange`).
+            // This is the app deciding to stop following, and routing it
+            // through the same helper would blur who released the pin.
+            if isPinnedToBottom.wrappedValue {
+                isPinnedToBottom.wrappedValue = false
+            }
+            return true
+        }
+
+        /// Follow the bottom at most once per runloop turn.
+        ///
+        /// Both notifications fire many times per streamed batch — the
+        /// document grows as text is appended, the clip view resizes as rows
+        /// settle — and each `scrollToBottom` runs `clipView.scroll(to:)` plus
+        /// `reflectScrolledClipView`, which forces an AppKit layout pass.
+        ///
+        /// Measured on a 5 760-character answer before this coalescing:
+        /// 2 020 SSE flushes produced **6 200** scrolls, three per batch. The
+        /// main thread spent so long in those layout passes that the stream
+        /// reader's `await MainActor.run` waited 51 ms per hop (native-chat's
+        /// equivalent: 2.1 ms), so reading the SSE stream was itself throttled
+        /// by scrolling. The visible symptom was a 5 760-character reply
+        /// taking 181 s to render against an 18 s transmission.
+        ///
+        /// Scrolling more than once per frame cannot show the user anything —
+        /// only the last position of a runloop turn is ever drawn.
         }
 
         private func observeScrollView(_ scrollView: NSScrollView) {
@@ -204,7 +272,6 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         /// True while ``scrollToBottom`` is driving the clip view, so the
         /// bounds notification it emits is not mistaken for the user moving.
         private var isProgrammaticScroll = false
-
         /// SwiftUI can resize the document several times for one streamed
         /// token. Collapse those notifications into one end-of-run-loop scroll.
         private func requestScrollToBottom() {
@@ -239,11 +306,21 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             } else {
                 targetY = documentView.bounds.minY - scrollView.contentInsets.bottom
             }
+            // Clamp through AppKit rather than scrolling to the raw target.
+            // `constrainBoundsRect` is the scroll view's own answer to "where
+            // is this allowed to stop" — it picks up content insets and
+            // elasticity, and is defensive against a target that overshoots
+            // the document for any reason.
+            let proposed = NSRect(
+                origin: NSPoint(x: clipView.bounds.minX, y: targetY),
+                size: clipView.bounds.size
+            )
+            let constrained = clipView.constrainBoundsRect(proposed).origin
             // Scrolling to the current origin still emits AppKit notifications
             // and schedules SwiftUI layout. At streaming cadence that no-op can
             // become a self-sustaining AttributeGraph loop (#1877).
-            guard abs(clipView.bounds.minY - targetY) > 0.5 else { return }
-            clipView.scroll(to: NSPoint(x: clipView.bounds.minX, y: targetY))
+            guard abs(clipView.bounds.minY - constrained.y) > 0.5 else { return }
+            clipView.scroll(to: constrained)
             scrollView.reflectScrolledClipView(clipView)
         }
 

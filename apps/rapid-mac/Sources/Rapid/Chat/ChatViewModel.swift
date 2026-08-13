@@ -83,6 +83,23 @@ final class ChatViewModel {
 
     /// Set while a stream is in flight. UI reads this to show the stop
     /// button instead of send.
+    /// The assistant message currently streaming, as (id, text).
+    ///
+    /// A projection rather than a stored property: it exists so exactly one
+    /// view can observe the growing string, instead of every row observing
+    /// the whole `messages` array. Nil once nothing is streaming.
+    var streamingBody: StreamingBody? {
+        guard isStreaming,
+              let m = messages.last(where: { $0.role == .assistant && $0.status == .streaming })
+        else { return nil }
+        return StreamingBody(id: m.id, text: m.content)
+    }
+
+    struct StreamingBody: Equatable {
+        let id: UUID
+        let text: String
+    }
+
     private(set) var isStreaming: Bool = false {
         didSet {
             // A turn just ended (stream finished, failed, or was stopped) —

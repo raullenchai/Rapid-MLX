@@ -4,8 +4,9 @@ import SwiftUI
 /// The chat transcript's markdown surface, rendered through TextKit 2.
 ///
 /// Replaces the MarkdownUI-backed `LaTeXMarkdownView` for settled messages
-/// (#1843). Streaming still goes through the old path — PR 1 changes nothing
-/// about streaming, deliberately.
+/// (#1843). Streaming messages render through
+/// ``StreamingTextKitMarkdownView`` — a debounced compiler feeding the same
+/// block stack — so both paths are TextKit 2 now.
 ///
 /// ## What carries over unchanged
 ///
@@ -28,7 +29,7 @@ import SwiftUI
 ///   a resolved `CGFloat` — see `ChatView`'s `@ScaledMetric`. TextKit needs a
 ///   number, not a SwiftUI font, so the scaling happens once at the boundary
 ///   rather than being re-derived per block.
-struct TextKitMarkdownView: View {
+struct TextKitMarkdownView: View, Equatable {
     let content: String
 
     /// Body point size, scaled for Dynamic Type (#546).
@@ -46,6 +47,10 @@ struct TextKitMarkdownView: View {
     /// is now a fourth.
     @ScaledMetric(relativeTo: .body) private var basePointSize: CGFloat = 15
 
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.content == rhs.content
+    }
+
     var body: some View {
         MarkdownBlockStack(
             result: Self.compile(content),
@@ -59,7 +64,9 @@ struct TextKitMarkdownView: View {
         .chatLinkSafetyFilter()
     }
 
-    private var options: MarkdownOptions {
+    private var options: MarkdownOptions { Self.options(basePointSize: basePointSize) }
+
+    static func options(basePointSize: CGFloat) -> MarkdownOptions {
         var options = MarkdownOptions.assistantTranscript()
         options.textPointSize = basePointSize
         options.textColor = .labelColor

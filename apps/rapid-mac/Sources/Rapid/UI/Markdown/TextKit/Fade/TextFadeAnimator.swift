@@ -89,6 +89,33 @@ final class TextFadeAnimator {
     }
 
     /// Note that the document grew, and schedule the new text to fade in.
+    /// The renderer replaced the text storage without the document growing.
+    ///
+    /// `setBlocks` unconditionally calls `setAttributedString`, which drops
+    /// every rendering attribute — including the alphas of parts still mid-
+    /// fade. `contentDidGrow` already re-applies them from scratch for that
+    /// reason, but it only runs when the content actually changed. A render
+    /// pass that re-configures with identical blocks wipes the alphas and
+    /// nothing puts them back: the bucket cache still holds the value it
+    /// believes is on screen, so the next display-link tick sees no change and
+    /// skips the write. Mid-fade text then snaps to full opacity and stays
+    /// there.
+    ///
+    /// That is the common case here, not the rare one. `MessageRow` takes the
+    /// raw `ChatMessage`, so every SSE delta (~16 ms) re-renders it, while the
+    /// blocks only change on the compiler's 100 ms beat — five out of six
+    /// passes wipe without restoring. native-chat avoids it structurally by
+    /// handing its row a compiled, `Equatable` view model keyed on the
+    /// compile revision, so SwiftUI skips the pass entirely.
+    func storageDidReset() {
+        guard configuration.isEnabled, !fadingParts.isEmpty else { return }
+        for index in fadingParts.indices {
+            fadingParts[index].lastAppliedBucket = nil
+        }
+        applyPendingAlphaZero()
+        startDisplayLinkIfNeeded()
+    }
+
     public func contentDidGrow() {
         guard configuration.isEnabled else {
             markAllRevealed()
@@ -113,11 +140,13 @@ final class TextFadeAnimator {
 
         let newRange = NSRange(location: scheduledLength, length: length - scheduledLength)
         let now = CACurrentMediaTime()
-        updateWordRate(at: now)
 
         let units = enumerateUnits(in: newRange)
         scheduledLength = length
         guard !units.isEmpty else { return }
+        // After enumeration: the rate is units per second, so it needs the
+        // count this batch actually carried.
+        updateWordRate(at: now, unitCount: units.count)
 
         // Anchor the stagger after whatever is already queued, so a flush
         // carrying twenty words does not start them all at once.
@@ -169,15 +198,42 @@ final class TextFadeAnimator {
     private var adaptiveAdvanceDuration: CFTimeInterval {
         let rate = animationState.smoothedWordsPerSecond
         guard rate > 0.5 else { return configuration.advanceDuration }
-        return min(max(1.0 / rate, 0.015), 0.08)
+        // Floor at 4 ms (250 units/second).
+        //
+        // This was 15 ms — 67 units/second — which was set against an English
+        // estimate of ~120 tokens/second where a "unit" is a whole word. CJK
+        // has no spaces, so the segmenter emits roughly one unit per
+        // character, and the same engine produces several hundred units per
+        // second. The reveal then ran 5× slower than the text arrived and fell
+        // permanently behind: by the time the fifth heading was on screen the
+        // fourth was still half-grey.
+        //
+        // The clamp exists to stop a rate spike collapsing the animation to
+        // nothing, not to cap throughput. 4 ms is under one frame at 120 Hz,
+        // so each unit remains individually visible.
+        return min(max(1.0 / rate, 0.004), 0.08)
     }
 
-    private func updateWordRate(at now: CFTimeInterval) {
+    private func updateWordRate(at now: CFTimeInterval, unitCount: Int) {
         defer { lastGrowthTime = now }
         guard let last = lastGrowthTime else { return }
         let elapsed = now - last
-        guard elapsed > 0.001 else { return }
-        let instantaneous = 1.0 / elapsed
+        guard elapsed > 0.001, unitCount > 0 else { return }
+        // Units per second, not calls per second.
+        //
+        // This counted 1 per `contentDidGrow`, which measures how often the
+        // markdown compiler flushes — a fixed ~10 Hz — rather than how much
+        // text those flushes carry. A stream delivering 375 units/second in
+        // 10 batches was therefore measured as 10/second and smoothed to ~6,
+        // so `adaptiveAdvanceDuration` clamped to its 0.08 s CEILING and
+        // revealed 12 units/second against 375 arriving. The queue fell
+        // behind by a factor of thirty and stayed there: on screen, the fifth
+        // heading of an answer was fully drawn while the fourth was still
+        // half-grey.
+        //
+        // Dividing the batch across the interval that produced it measures the
+        // arrival rate the reveal actually has to match.
+        let instantaneous = Double(unitCount) / elapsed
         // EWMA over roughly a 2-second window.
         let alpha = 0.15
         animationState.smoothedWordsPerSecond =
@@ -244,6 +300,16 @@ final class TextFadeAnimator {
 
     // MARK: - Frame loop
 
+    /// Retry starting the frame loop after the host view joins a window.
+    ///
+    /// Content usually arrives before SwiftUI mounts the representable, so the
+    /// first `startDisplayLinkIfNeeded()` runs off-window and declines. Without
+    /// this the queue never drains and every fade lands fully opaque.
+    func hostViewDidMoveToWindow() {
+        guard !fadingParts.isEmpty else { return }
+        startDisplayLinkIfNeeded()
+    }
+
     private func startDisplayLinkIfNeeded() {
         guard !displayLink.isRunning, let view = hostView else { return }
         displayLink.start(
@@ -256,6 +322,7 @@ final class TextFadeAnimator {
     }
 
     private func tick(at now: CFTimeInterval) {
+
         guard !fadingParts.isEmpty else {
             displayLink.stop()
             return

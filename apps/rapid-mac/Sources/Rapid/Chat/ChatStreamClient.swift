@@ -1046,35 +1046,51 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
     /// of "write me a function" answers still lands under 2 000.
     private static let adaptiveThresholdChars: Int = 2_000
 
-    /// Ceiling on the widened window. At 250 ms a very long message
-    /// still repaints four times a second, which reads as "streaming"
-    /// rather than "frozen", at about a sixteenth of the callback rate a
-    /// flat 16 ms cadence costs (250 / 16).
-    private static let maxWindowNs: UInt64 = 250_000_000
+    /// Ceiling on the widened window.
+    ///
+    /// **2026-08 (#1843): 250 ms → 16 ms**, which collapses the widening curve
+    /// entirely — the window is now flat at `coalesceWindowNs` for every
+    /// message length. The ramp machinery is kept rather than deleted so the
+    /// behaviour can be restored by changing one number if a profile ever
+    /// justifies it again.
+    ///
+    /// The ramp existed to contain `LaTeXMarkdownView` re-parsing the whole
+    /// accumulated message through MarkdownUI on every flush — O(length²)
+    /// across a turn, which is what pinned the main thread in #1743. That
+    /// cost is bounded, not removed: the TextKit 2 path still re-parses the
+    /// full buffer, but on its own 100 ms debounce rather than at the SSE
+    /// flush rate, and the renderer appends without reflowing settled text.
+    /// Measured on the new path a compile is linear and cheap —
+    ///
+    ///     2 000 chars →  1.5 ms      12 000 chars →  7.9 ms
+    ///     6 000 chars →  4.0 ms      24 000 chars → 15.0 ms
+    ///
+    /// — so the flush rate is no longer coupled to message length at all.
+    ///
+    /// Keeping any ramp was visible in use. At the 250 ms cap a long answer
+    /// updated four times a second; at a 60 ms cap, ~17 times. Both read as
+    /// text arriving in slabs, and both make the word-by-word fade look like
+    /// it is chasing the text, because words enter its queue in bursts
+    /// proportional to the window. A flat 16 ms is what the native-chat
+    /// prototype this render layer came from has always used, and is the
+    /// cadence its streaming was tuned against.
+    private static let maxWindowNs: UInt64 = 16_000_000
 
     /// Total characters handed to the UI so far this turn.
     private var flushedCharacters: Int = 0
 
-    /// How long to coalesce before the next flush, given how much text
-    /// the message already holds.
+    /// How long to coalesce before the next flush, given how much text the
+    /// message already holds.
     ///
-    /// Every flush makes the chat view rebuild its body, and
-    /// ``LaTeXMarkdownView`` re-parses the ENTIRE accumulated message
-    /// through MarkdownUI on each rebuild — parsing is O(length), and a
-    /// fixed 16 ms cadence therefore costs O(length²) across a turn. On a
-    /// long answer that saturates the main thread: measured on a fake
-    /// stream, main-thread CPU climbed 47 % → 68 % → 94 % → 100 % as the
-    /// message grew, and a real 9-minute answer left the app pinned at
-    /// 100 % with the window gone and RSS climbing ~11 MB/s until it was
-    /// force-killed (#1743).
-    ///
-    /// Widening the window in proportion to the text bounds the repaint
-    /// RATE, which is the term that makes the cost quadratic. Below the
-    /// threshold the arithmetic is a no-op and short replies stream
-    /// exactly as they did before.
-    ///
-    /// This does not make a single parse cheaper — that is #1624, and it
-    /// is the real fix. This stops the app melting while that is done.
+    /// The widening logic below is currently INERT: `maxWindowNs` equals
+    /// `coalesceWindowNs` (see the decision note on `maxWindowNs`), so this
+    /// always returns the 16 ms floor. The ramp exists — and these comments
+    /// document it — because a fixed 16 ms cadence made `LaTeXMarkdownView`
+    /// re-parse the whole accumulated message on every flush: parsing is
+    /// O(length), so the cost across a turn was O(length²), and a long
+    /// answer saturated the main thread (#1743). The TextKit 2 streaming
+    /// path no longer has that coupling — it compiles on its own 100 ms
+    /// debounce — so the ramp was flattened.
     private func currentWindowNs() -> UInt64 {
         guard flushedCharacters > Self.adaptiveThresholdChars else {
             return Self.coalesceWindowNs
@@ -1090,12 +1106,13 @@ final class SSEDeltaCoalescer: @unchecked Sendable {
         // gets, and no masking operators are needed.
         //
         // Derive that clamp by solving for it, not by scaling the window
-        // ratio: `maxWindowNs / coalesceWindowNs` is 250/16, which floors to
-        // 15, capping at 30 000 characters and a 240 ms window — so
-        // `maxWindowNs` would never actually be reached and the ceiling the
-        // rest of this file talks about would not exist. The exact answer is
-        // 31 250. (250e6 * 2000 fits in UInt64 with ~7 orders of magnitude to
-        // spare, so the numerator here is safe.)
+        // ratio. With the former 250 ms `maxWindowNs`, 250/16 floors to 15,
+        // capping at 30 000 characters (a 240 ms window) — `maxWindowNs`
+        // would never be reached and the ceiling the older comments here
+        // reference would not exist. The exact answer is 31 250. (250e6 * 2000
+        // fits in UInt64 with ~7 orders of magnitude to spare, so the
+        // numerator here is safe.) With the current flattened value the clamp
+        // is 2 000 characters and the window never leaves the floor.
         let capCharacters = Int(
             Self.maxWindowNs * UInt64(Self.adaptiveThresholdChars) / Self.coalesceWindowNs
         )

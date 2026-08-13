@@ -322,14 +322,27 @@ enum ModelSizing {
     /// Extract the parameter count in billions from an alias.
     /// Handles ``qwen3.6-27b``, ``llama-3.1-8b-8bit``, ``smollm3-3b``,
     /// ``gemma-4-12b-qat`` — pulls the largest number followed by ``b``.
+    /// Compiled once. ``NSRegularExpression(pattern:)`` runs a full ICU
+    /// pattern compile on every call, and this is reached once per alias per
+    /// SwiftUI body pass (``ModelPickerBar`` rebuilds its ``Menu`` content
+    /// eagerly, even closed). Profiling a 1920-character stream put 48% of
+    /// the main thread inside ``uregex_open`` — the pattern is a literal, so
+    /// compiling it per call bought nothing.
+    private static let paramsBillionsRegex = try? NSRegularExpression(
+        pattern: #"(\d+(?:\.\d+)?)\s*[bB]\b"#
+    )
+
+    private static let bitsPerWeightRegex = try? NSRegularExpression(
+        pattern: #"(?<![0-9.])(\d{1,2})-?bit\b"#
+    )
+
     static func parseParamsBillions(_ alias: String) -> Double? {
         // Match patterns like "27b", "8.5b", "0.6b", "27B" — case
         // insensitive. We pick the LARGEST such match because aliases
         // like ``qwen3-coder-next-80b-a3b`` carry both the full-weight
         // size (80B — the one that matters for RAM) and the active
         // params (3B — what the model uses per token).
-        let pattern = #"(\d+(?:\.\d+)?)\s*[bB]\b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        guard let regex = paramsBillionsRegex else { return nil }
         let nsAlias = alias as NSString
         let matches = regex.matches(in: alias, range: NSRange(location: 0, length: nsAlias.length))
         var best: Double? = nil
@@ -363,8 +376,9 @@ enum ModelSizing {
         // "6-bit") and "1.58bit" as 8-bit. The leading lookbehind
         // rejects a digit/dot immediately before the width; the trailing
         // ``\b`` closes the token. #520.
-        let pattern = #"(?<![0-9.])(\d{1,2})-?bit\b"#
-        if let regex = try? NSRegularExpression(pattern: pattern) {
+        //
+        // Compiled once — see ``paramsBillionsRegex``.
+        if let regex = Self.bitsPerWeightRegex {
             let ns = lower as NSString
             if let match = regex.firstMatch(in: lower, range: NSRange(location: 0, length: ns.length)),
                match.numberOfRanges >= 2,
