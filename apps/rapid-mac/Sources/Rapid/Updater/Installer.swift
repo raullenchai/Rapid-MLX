@@ -50,10 +50,8 @@ let updateDownloadHostAllowlist: Set<String> = [
 /// every stage through ``stage`` so the UI can render real progress
 /// instead of a single opaque spinner. Modelled after Ollama's
 /// ``app/updater/updater_darwin.go`` flow — DMG → mount → copy →
-/// detached helper → relaunch — kept in-tree over Sparkle's
-/// installer-agent because the migration to Sparkle is tracked
-/// separately in issue #16 (see
-/// ``docs/plans/sparkle-migration-design.md``).
+/// detached helper → relaunch. It remains as the migration fallback for local
+/// and internal builds that do not carry a Sparkle public key.
 ///
 /// Threat model:
 ///   * The DMG URL comes from the update worker payload that
@@ -74,15 +72,14 @@ let updateDownloadHostAllowlist: Set<String> = [
 ///     ID``). The verify call catches a corrupt download, a
 ///     mid-flight bit flip, AND a structurally-tampered resource
 ///     payload (``--strict`` keeps the resource-rules check on).
-///     **Remaining gap (tracked by issue #16):** the verify call does
+///     **Remaining fallback-only gap:** the verify call does
 ///     NOT pass ``-R "anchor apple generic and identifier
 ///     \"com.rapidmlx.rapid\" and certificate leaf[subject.OU] =
 ///     73WQ7ZGSWC"``, so a DMG signed with a *different* valid
 ///     Developer ID team would also pass. The HTTPS host-allowlist
 ///     (see top of file) closes the network-substitution path that
-///     would otherwise let such a DMG reach this verifier; closing
-///     the residual identity-pin gap is part of the Sparkle migration
-///     (EdDSA appcast sig + ``SUPublicEDKey``).
+///     would otherwise let such a DMG reach this verifier. Signed production
+///     builds use Sparkle's EdDSA verification instead.
 ///   * The post-exit helper is a small bash script we write to disk
 ///     ourselves and exec via ``/bin/bash``. It never touches anything
 ///     outside of two paths the parent already chose (the staged copy
@@ -523,10 +520,9 @@ extension Installer {
     /// ``codesign`` re-derives the CDHash from the bundle contents
     /// and matches it against the embedded signature regardless of
     /// signing identity. Production releases are Developer ID signed
-    /// + notarised + stapled — see the file header threat model and
-    /// ``docs/plans/sparkle-migration-design.md`` for the residual
-    /// identity-pin gap (no ``-R`` requirement string passed yet)
-    /// that issue #16 tracks closing.
+    /// + notarised + stapled — see the file header threat model for this
+    /// fallback's residual identity-pin gap (no ``-R`` requirement string is
+    /// passed).
     ///
     /// We deliberately do NOT pass ``--no-strict`` (which the
     /// original implementation did): ``--no-strict`` disables the
@@ -546,13 +542,14 @@ extension Installer {
         // We deliberately do NOT pass a ``--requirement`` here yet:
         // production builds today are signed with Developer ID
         // (PR #13) but the requirement-string lives in the signing
-        // identity, not in code we can pin. Issue #16 (Sparkle
-        // migration) tracks adding ``-R "anchor apple generic and
+        // identity, not in code we can pin. The fallback could add
+        // ``-R "anchor apple generic and
         // identifier \"com.rapidmlx.rapid\" and certificate
         // leaf[subject.OU] = <TEAMID>"`` so a tampered DMG that
         // re-signs ad-hoc instead of Developer ID can't pass this
-        // gate. Until then the strict-deep verification still
-        // catches structural tampering and bit-flip corruption.
+        // gate. Signed production updates use Sparkle's EdDSA verification;
+        // this strict-deep fallback still catches structural tampering and
+        // bit-flip corruption.
         let (status, _, err) = try await runProcess(
             executable: "/usr/bin/codesign",
             arguments: ["--verify", "--strict", "--deep", app.path]

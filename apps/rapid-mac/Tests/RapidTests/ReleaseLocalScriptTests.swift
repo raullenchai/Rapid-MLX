@@ -17,6 +17,15 @@ struct ReleaseLocalScriptTests {
         #expect(!script.contains("git rev-parse origin/main"))
     }
 
+    @Test("Publish requires a monotonic CFBundleVersion for Sparkle ordering")
+    func sparkleBuildNumberGuard() throws {
+        let script = try String(contentsOf: Self.scriptURL, encoding: .utf8)
+        #expect(script.contains("Print :CFBundleVersion"))
+        #expect(script.contains(#"[[ "$PLIST_BUILD" =~ ^[1-9][0-9]*$ ]]"#))
+        #expect(script.contains("PREVIOUS_BUILD"))
+        #expect(script.contains("(( PLIST_BUILD > PREVIOUS_BUILD ))"))
+    }
+
     private static var scriptURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

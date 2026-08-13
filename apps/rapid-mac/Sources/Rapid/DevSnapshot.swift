@@ -71,6 +71,7 @@ enum DevSnapshot {
             approval: snapshotMCPApproval
         )
         let snapshotInstaller = Installer()
+        let snapshotSparkleUpdater = SparkleUpdateController(infoDictionary: [:])
         let snapshotWebSearch = WebSearchConfig()
         let snapshotPerfDefaults = UserDefaults(suiteName: "rapid.dev-snapshot.perf")!
         snapshotPerfDefaults.removePersistentDomain(forName: "rapid.dev-snapshot.perf")
@@ -592,6 +593,7 @@ enum DevSnapshot {
                     .environment(downloads)
                     .environment(updater)
                     .environment(snapshotInstaller)
+                    .environment(snapshotSparkleUpdater)
                     .environment(dockPromptStore)
                     .environment(snapshotWebSearch)
                     .environment(browseApproval)

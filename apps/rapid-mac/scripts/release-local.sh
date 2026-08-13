@@ -187,6 +187,9 @@ if [[ "$MODE" == "publish" ]]; then
     PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist 2>/dev/null || true)"
     [[ "$PLIST_VERSION" == "$VERSION" ]] \
         || fail "tag $TAG (=$VERSION) != Resources/Info.plist CFBundleShortVersionString ($PLIST_VERSION). Bump the plist first."
+    PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist 2>/dev/null || true)"
+    [[ "$PLIST_BUILD" =~ ^[1-9][0-9]*$ ]] \
+        || fail "Resources/Info.plist CFBundleVersion must be a positive integer for Sparkle (got '$PLIST_BUILD')."
 
     # NOT --quiet, and NOT bare: `git fetch --tags` exits non-zero when ANY tag
     # would clobber a local one, and `set -e` then killed this script with no
@@ -242,6 +245,12 @@ if [[ "$MODE" == "publish" ]]; then
     if [[ -n "$HIGHEST" ]]; then
         version_gt "$TAG" "$HIGHEST" \
             || fail "tag $TAG is not newer than the latest release $HIGHEST — refusing a backwards release."
+        PREVIOUS_BUILD="$(git show "${HIGHEST}:apps/rapid-mac/Resources/Info.plist" \
+            | plutil -extract CFBundleVersion raw -o - - 2>/dev/null || true)"
+        [[ "$PREVIOUS_BUILD" =~ ^[1-9][0-9]*$ ]] \
+            || fail "cannot read CFBundleVersion from $HIGHEST — Sparkle ordering cannot be verified."
+        (( PLIST_BUILD > PREVIOUS_BUILD )) \
+            || fail "CFBundleVersion $PLIST_BUILD must exceed $HIGHEST build $PREVIOUS_BUILD for Sparkle."
     fi
 
     # Public release RELIES on CI firing on the tag. Refuse if it can't.

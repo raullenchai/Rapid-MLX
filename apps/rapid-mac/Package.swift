@@ -8,6 +8,11 @@ let package = Package(
     name: "Rapid",
     platforms: [.macOS(.v14)],
     dependencies: [
+        // Sparkle owns signed desktop updates: background checks/downloads,
+        // install-on-quit, authorization when /Applications is not writable,
+        // and atomic replacement. Keep the in-tree updater as a migration
+        // fallback for builds that do not carry a Sparkle public key.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5"),
         // Block-level markdown rendering for assistant turns. Apple's
         // ``AttributedString(markdown:)`` only does inline formatting and
         // silently flattens headings, lists, fenced code, and tables.
@@ -55,6 +60,7 @@ let package = Package(
             dependencies: [
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Markdown", package: "swift-markdown"),
+                .product(name: "Sparkle", package: "Sparkle"),
                 "SwiftMath",
                 "RapidCrashHandler"
             ],

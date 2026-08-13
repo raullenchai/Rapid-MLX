@@ -40,6 +40,12 @@ time of writing. Run that command for the exact revisions in your build.
   https://github.com/gonzalezreal/swift-markdown-ui
   Block-level markdown rendering for assistant messages.
 
+* **Sparkle** — Sparkle Project contributors — MIT License
+  `exact: "2.9.5"`
+  https://github.com/sparkle-project/Sparkle
+  Signed application updates, background downloads, install-on-quit, and
+  atomic application replacement.
+
 * **SwiftMath** — Computer Inspirations — MIT License
   Vendored from 1.7.3 (`fa8244ed032f4a1ade4cb0571bf87d2f1a9fd2d7`)
   under `Vendor/SwiftMath` with a resource-resolution patch for the assembled
@@ -71,14 +77,10 @@ though the manifest does not name them.
 `Sources/RapidCrashHandler` is first-party C in this repository, not a
 third-party package.
 
-_Sparkle is on the roadmap as the eventual auto-update framework
-(see [issue #16](https://github.com/raullenchai/Rapid-MLX/issues/16))
-but is not bundled in the current release stream. The shipped
-updater is the in-tree `Sources/Rapid/Updater/UpdateChecker.swift`
-+ `Installer.swift` pair, which polls a Cloudflare Worker proxy of
-GitHub Releases and surfaces an "Update available" CTA — see
-[PRIVACY.md](PRIVACY.md#third-party-services). This file will list
-Sparkle once it actually lands in `Package.resolved`._
+The in-tree `UpdateChecker.swift` + `Installer.swift` pair remains temporarily
+as a migration fallback for builds without an injected Sparkle public key and
+as the existing UI's read-only release-status source. Signed production builds
+delegate archive verification and installation to Sparkle.
 
 ## Assets
 

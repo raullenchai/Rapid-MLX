@@ -189,8 +189,16 @@ final class MenuBarController: NSObject {
             AppDelegate.shared.chat?.newConversation()
             bringMainWindowForward()
         case .update:
-            openUpdateWindow()
+            if let sparkle = AppDelegate.shared.sparkleUpdater, sparkle.isEnabled {
+                sparkle.checkForUpdates()
+            } else {
+                openUpdateWindow()
+            }
         case .checkForUpdates:
+            if let sparkle = AppDelegate.shared.sparkleUpdater, sparkle.isEnabled {
+                sparkle.checkForUpdates()
+                return
+            }
             // Fire the check AND take the user somewhere that reports it.
             //
             // This used to be `Task { _ = await updater?.check() }` — result

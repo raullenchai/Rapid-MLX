@@ -1650,6 +1650,15 @@ flow_update_state() {
     [[ -n "$expected" ]] || die "could not read CFBundleShortVersionString"
     [[ "$shown" == *"$expected"* ]] \
         || die "update panel ($state) says '$shown' but the app is $expected"
+    # PR #1907: the automatic-update preference is part of the shipped App
+    # panel, not just updater plumbing. Local golden builds intentionally omit
+    # SUPublicEDKey, so the control is visible but disabled; signed release
+    # builds enable the same control and default it on through Info.plist.
+    jq -e '.data.ui_elements[]? | select(
+        .identifier == "Settings.App.AutomaticUpdatesToggle"
+    )' "$OUT/update-app-panel.json" >/dev/null \
+        || die "Settings > App does not expose automatic background updates"
+    baseline update-state.app-panel "$OUT/update-app-panel.json"
     log "  update state names the running version ($expected, via ${state##*.})"
     cleanup_persona
 

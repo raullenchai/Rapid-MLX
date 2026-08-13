@@ -41,6 +41,10 @@ struct RapidApp: App {
     @State private var updater: UpdateChecker
     /// In-app DMG installer that drives download → mount → swap → relaunch.
     @State private var installer: Installer
+    /// Sparkle is the production update path once a release build carries its
+    /// injected EdDSA public key. The legacy checker/installer above remains a
+    /// transition fallback for local builds and already-published clients.
+    @State private var sparkleUpdater: SparkleUpdateController
     /// Persisted sampling knobs exposed via Settings → Sampling.
     @State private var sampling: SamplingConfig
     /// App-wide custom instructions shared by Settings and every chat turn.
@@ -227,6 +231,7 @@ struct RapidApp: App {
             updateChecker = UpdateChecker()
         }
         let installerInstance = Installer()
+        let sparkleUpdateController = SparkleUpdateController()
         let downloadsInstance = DownloadManager(binaryPath: manager.binaryPath)
         // #253: let ``ServerManager.start(alias:)`` await any in-flight
         // background pull for the same alias before spawning serve.
@@ -243,6 +248,7 @@ struct RapidApp: App {
         _audio = State(initialValue: AudioViewModel(server: manager))
         _updater = State(initialValue: updateChecker)
         _installer = State(initialValue: installerInstance)
+        _sparkleUpdater = State(initialValue: sparkleUpdateController)
         _sampling = State(initialValue: samplingConfig)
         _customInstructions = State(initialValue: customInstructionsConfig)
         _appearance = State(initialValue: appearanceConfig)
@@ -254,6 +260,7 @@ struct RapidApp: App {
         AppDelegate.shared.downloads = downloadsInstance
         AppDelegate.shared.updater = updateChecker
         AppDelegate.shared.installer = installerInstance
+        AppDelegate.shared.sparkleUpdater = sparkleUpdateController
         AppDelegate.shared.chat = chat
         AppDelegate.shared.appearance = appearanceConfig
     }
@@ -271,6 +278,7 @@ struct RapidApp: App {
                 .environment(imageGen)
                 .environment(audio)
                 .environment(updater)
+                .environment(sparkleUpdater)
                 .environment(sampling)
                 .environment(customInstructions)
                 .environment(appearance)
@@ -321,8 +329,14 @@ struct RapidApp: App {
                     }
                 }
                 .task {
-                    // First update check on launch, then re-check every
-                    // 6 hours while the app is open.
+                    if sparkleUpdater.isEnabled {
+                        // Sparkle owns the six-hour schedule, background
+                        // download, signature validation, and install-on-quit.
+                        sparkleUpdater.start()
+                    }
+                    // Keep the legacy manifest as a read-only UI status source
+                    // during the migration. It no longer downloads or installs
+                    // production updates when Sparkle is configured.
                     await updater.check()
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 6 * 60 * 60 * 1_000_000_000)
@@ -404,6 +418,7 @@ struct RapidApp: App {
                 .environment(downloads)
                 .environment(updater)
                 .environment(installer)
+                .environment(sparkleUpdater)
                 .environment(dockPromptStore)
                 .environment(webSearch)
                 .environment(browseApproval)
@@ -474,6 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ``@State`` on ``RapidApp`` owns each for the app's lifetime.
     weak var updater: UpdateChecker?
     weak var installer: Installer?
+    weak var sparkleUpdater: SparkleUpdateController?
     /// The single AppKit menu-bar (tray) surface. Installed in
     /// ``applicationDidFinishLaunching`` and held strongly so the
     /// ``NSStatusItem`` slot stays alive for the app's lifetime —

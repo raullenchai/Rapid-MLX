@@ -40,6 +40,7 @@ struct SettingsView: View {
     /// "Failed: …" inline when the dedicated update window is
     /// closed.
     @Environment(Installer.self) private var appInstaller
+    @Environment(SparkleUpdateController.self) private var sparkleUpdater
     @Environment(\.dismissWindow) private var dismissWindow
     /// #260: persisted "hide Dock icon on close" choice. Settings →
     /// App surfaces a toggle so the user can change their mind
@@ -706,6 +707,15 @@ struct SettingsView: View {
             }
 
             SettingsSection("Updates") {
+                Toggle(isOn: automaticUpdateBinding) {
+                    Text("Automatically download updates")
+                }
+                .accessibilityIdentifier("Settings.App.AutomaticUpdatesToggle")
+                    .disabled(!sparkleUpdater.isEnabled)
+                    .help(sparkleUpdater.isEnabled
+                          ? "Downloaded updates are installed when Rapid-MLX quits."
+                          : "Automatic updates are enabled in signed release builds.")
+                SettingsRowDivider()
                 appUpdateActionRow
                 if let release = appUpdater.availableUpdate,
                    !release.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1023,7 +1033,11 @@ struct SettingsView: View {
     @ViewBuilder
     private var appUpdateRecheckButton: some View {
         Button {
-            Task { await appUpdater.check() }
+            if sparkleUpdater.isEnabled {
+                sparkleUpdater.checkForUpdates()
+            } else {
+                Task { await appUpdater.check() }
+            }
         } label: {
             if appUpdater.checking {
                 Label("Checking…", systemImage: "arrow.clockwise")
@@ -1032,8 +1046,21 @@ struct SettingsView: View {
             }
         }
         .buttonStyle(.rapidSecondaryCompact)
-        .disabled(appUpdater.checking)
+        .disabled(sparkleUpdater.isEnabled
+                  ? !sparkleUpdater.canCheckForUpdates
+                  : appUpdater.checking)
         .accessibilityIdentifier("Settings.App.RecheckCTA")
+    }
+
+    private var automaticUpdateBinding: Binding<Bool> {
+        Binding(
+            get: {
+                sparkleUpdater.automaticallyDownloadsUpdates
+            },
+            set: { enabled in
+                sparkleUpdater.setAutomaticallyDownloadsUpdates(enabled)
+            }
+        )
     }
 
     /// Release-notes preview inside ``appPanel``. The dedicated
@@ -1069,6 +1096,10 @@ struct SettingsView: View {
     /// mirror the same pattern (small sleep + activate first)
     /// for the same reason.
     private func appOpenUpdateWindow() {
+        if sparkleUpdater.isEnabled {
+            sparkleUpdater.checkForUpdates()
+            return
+        }
         Task { @MainActor in
             NSApp.activate(ignoringOtherApps: true)
             try? await Task.sleep(nanoseconds: 50_000_000)

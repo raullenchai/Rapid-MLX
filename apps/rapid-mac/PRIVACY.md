@@ -193,7 +193,15 @@ distributions are out of scope but we will help triage.
   Automatic Sentry diagnostics are disabled.
 * **Telemetry collector** — Cloudflare Workers + R2 storage. Subject
   to Cloudflare's data processing terms.
-* **Auto-update channel** — ``UpdateChecker`` polls
+* **Auto-update channel** — signed production builds use Sparkle to poll
+  `https://dl.rapidmlx.com/appcast.xml` every six hours. Sparkle sends a
+  standard app/version user agent but no system profile
+  (`SUSendsSystemProfile=false`), unique identifier, chat content, or usage
+  data. It verifies every update archive with the Ed25519 public key embedded
+  in the signed app, downloads in the background when enabled, and installs
+  the prepared update when Rapid-MLX next quits normally.
+
+  During the migration, ``UpdateChecker`` also polls
   `https://rapidmlx.com/api/desktop-update?v=<app-version>` on launch
   and every 6 hours while running. This is a thin Cloudflare Worker
   that returns the **byte-identical** release manifest the public R2
@@ -209,8 +217,10 @@ distributions are out of scope but we will help triage.
   which skips the request completely — no poll, no signal. No GitHub
   API call, no PAT, no proxy of GitHub — those were the v0.5 shape and
   were retired in v0.6.12 (PR rapid-desktop#225 + rapidmlx.com#8). When a newer release is available the app
-  surfaces an "Update available" entry. If you press "Install and
-  Restart" the in-app ``Installer`` (`Sources/Rapid/Updater/Installer.swift`)
+  surfaces the existing in-app version status. Builds without an injected
+  Sparkle public key (local development and unsigned internal builds) retain
+  the legacy "Install and Restart" fallback in
+  `Sources/Rapid/Updater/Installer.swift`, which
   drives the full download → mount → verify → swap → relaunch flow:
   * **HTTPS host allow-list** on the initial DMG URL **and** every
     HTTP redirect — only the R2 origin (`dl.rapidmlx.com`) and the
@@ -224,26 +234,18 @@ distributions are out of scope but we will help triage.
     v0.5.16 via `codesign -dvv` and `spctl --assess`. The verify
     catches a corrupt download, a mid-flight bit flip, and a
     structurally-tampered resource payload. The remaining gap (the
-    verify call doesn't yet pass `-R "… leaf[subject.OU] =
+    verify call doesn't pass `-R "… leaf[subject.OU] =
     73WQ7ZGSWC"`, so a DMG signed by a *different* valid Developer
-    ID team could also pass) is closed in practice by the HTTPS
-    host-allowlist above and tracked by
-    [issue #16](https://github.com/raullenchai/Rapid-MLX/issues/16)
-    for permanent fix via Sparkle's EdDSA appcast signing.
+    ID team could also pass) is limited to this legacy fallback and
+    mitigated by the HTTPS host allow-list above. Signed production builds
+    use Sparkle's EdDSA verification instead.
   * **No per-artifact SHA-256 enforcement yet.** The worker v1
     schema does not surface one; worker v2 (planned) will add
     `dmg_sha256` and the ``Installer.verifying`` stage will start
     enforcing it as a one-line wiring change.
-  * **Sparkle with EdDSA per-artifact signature verification is on
-    the roadmap** as
-    [issue #16](https://github.com/raullenchai/Rapid-MLX/issues/16).
-    Migration triggers (per the issue) are concrete operational
-    signals — telemetry showing repeat update failures, user-reported
-    silent misses, or a need for delta updates / staged rollout — not
-    a missing prerequisite. The Developer ID + notarisation chain
-    Sparkle assumes is already in place; the migration is a code
-    rewrite plus EdDSA key infrastructure. Design
-    spike: `docs/plans/sparkle-migration-design.md`.
+  * **Signed production builds close the legacy identity gap with Sparkle.**
+    Each ZIP carries an Ed25519 signature from the appcast, while Sparkle also
+    validates Apple code-signing continuity before atomic replacement.
 
   If you want to side-step the in-app installer entirely you can
   download the DMG from the

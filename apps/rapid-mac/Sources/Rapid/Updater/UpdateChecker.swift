@@ -83,9 +83,9 @@ import Observation
 ///     leaves the app on its current version (no alert, no crash),
 ///     and it is skipped entirely when the user has opted out (see
 ///     ``updateChecksEnabled``).
-///   * In-app install runs through ``Installer.swift``: downloads the
-///     versioned DMG, runs `codesign --verify`, mounts, swaps,
-///     relaunches.
+///   * Signed production builds delegate installation to Sparkle. Builds
+///     without an injected Sparkle public key retain ``Installer.swift`` as a
+///     migration fallback: download DMG, verify, mount, swap, relaunch.
 @MainActor
 @Observable
 final class UpdateChecker {
@@ -125,8 +125,7 @@ final class UpdateChecker {
         // ``BootstrapCoordinator.validateModelFields`` enforces the
         // contract for the install pipeline. UpdateChecker does not
         // surface them today; they live here purely for forward-
-        // compat decoding so a future client (e.g. Sparkle migration
-        // in slice 5 / task #1447) can consume them without
+        // compat decoding so a future client surface can consume them without
         // re-touching the type.
         let modelURL: String?
         let modelSHA256: String?

@@ -36,5 +36,21 @@
 	<true/>
 	<key>SentryDSN</key>
 	<string></string>
+	<!--
+	Sparkle's public key is injected by scripts/build.sh from
+	SPARKLE_PUBLIC_ED_KEY. Keeping it out of the source plist lets local and
+	unsigned builds fall back to the legacy updater instead of starting a
+	misconfigured Sparkle session.
+	-->
+	<key>SUFeedURL</key>
+	<string>https://dl.rapidmlx.com/appcast.xml</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>21600</integer>
+	<key>SUSendsSystemProfile</key>
+	<false/>
 </dict>
 </plist>

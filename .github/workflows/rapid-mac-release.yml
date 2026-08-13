@@ -22,6 +22,8 @@
 #   AC_API_KEY_ID                App Store Connect API key id (notarisation)
 #   AC_API_ISSUER_ID             App Store Connect issuer id
 #   AC_API_KEY_P8_BASE64         base64 of the AuthKey_XXX.p8
+#   SPARKLE_ED_PRIVATE_KEY       private Ed25519 key exported by Sparkle's
+#                                generate_keys tool (base64 text)
 #
 #   Required for tagged releases (the "mirror-dist" and
 #   "publish-updater-fallback" jobs at the bottom). NOTE: on a tag these are
@@ -43,6 +45,7 @@
 #   VARIABLES (not secrets), since they are config, not credentials:
 #   RAPID_MAC_DIST_R2_BUCKET     name of the R2 bucket to mirror the DMG into
 #   RAPID_MAC_DIST_CDN_BASE      public CDN base URL that fronts the bucket
+#   SPARKLE_PUBLIC_ED_KEY        SUPublicEDKey value printed by generate_keys
 #
 # NOTE: Sentry has been removed from the monorepo app; there is no
 # SENTRY_DSN secret here (the desktop workflow had one).
@@ -253,7 +256,18 @@ jobs:
         # from the engine at the repo root (RAPID_MLX_SOURCE defaults to
         # apps/rapid-mac/../.. — the monorepo root), and Developer-ID signs
         # the bundle with CODESIGN_IDENTITY (exported above).
-        run: bash scripts/build.sh
+        env:
+          # Only signed builds enable Sparkle. An ad-hoc build cannot update a
+          # Developer-ID-signed installation because code-signing continuity
+          # validation correctly rejects it.
+          SPARKLE_PUBLIC_ED_KEY: ${{ env.SIGNED == 'true' && vars.SPARKLE_PUBLIC_ED_KEY || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${SIGNED}" == "true" && -z "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
+            echo "::error::signed releases require the SPARKLE_PUBLIC_ED_KEY Actions variable"
+            exit 1
+          fi
+          bash scripts/build.sh
 
       - name: Bundle size gate (block if .app exceeds BUNDLE_SIZE_CAP_MB)
         # Runs BEFORE notarisation so an oversize bundle fails fast without
@@ -296,6 +310,109 @@ jobs:
           set -euo pipefail
           ditto -c -k --keepParent "build/Rapid-MLX Desktop.app" "build/Rapid-MLX-Desktop.zip"
           bash scripts/notarize.sh "build/Rapid-MLX-Desktop.zip" "build/Rapid-MLX Desktop.app"
+
+      - name: Build signed Sparkle archive and appcast
+        if: startsWith(github.ref, 'refs/tags/') && env.SIGNED == 'true'
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          CDN_BASE: ${{ vars.RAPID_MAC_DIST_CDN_BASE }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]] || {
+            echo "::error::signed releases require SPARKLE_ED_PRIVATE_KEY"
+            exit 1
+          }
+          [[ "$CDN_BASE" == "https://dl.rapidmlx.com" ]] || {
+            echo "::error::RAPID_MAC_DIST_CDN_BASE must be https://dl.rapidmlx.com"
+            exit 1
+          }
+          VERSION="${TAG#rapid-mac-v}"
+          APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+            'build/Rapid-MLX Desktop.app/Contents/Info.plist')"
+          [[ "$APP_BUILD" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::CFBundleVersion must be a positive integer for Sparkle"
+            exit 1
+          }
+          PREVIOUS_TAG="$(git tag -l 'rapid-mac-v*' --sort=v:refname \
+            | awk -v current="$TAG" \
+                '$0 ~ /^rapid-mac-v[0-9]+\.[0-9]+\.[0-9]+$/ { \
+                  if ($0 == current) { print previous; exit } \
+                  previous=$0 \
+                }')"
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            PREVIOUS_BUILD="$(git show \
+              "${PREVIOUS_TAG}:apps/rapid-mac/Resources/Info.plist" \
+              | plutil -extract CFBundleVersion raw -o - - 2>/dev/null || true)"
+            [[ "$PREVIOUS_BUILD" =~ ^[1-9][0-9]*$ ]] || {
+              echo "::error::cannot read CFBundleVersion from ${PREVIOUS_TAG}"
+              exit 1
+            }
+            (( APP_BUILD > PREVIOUS_BUILD )) || {
+              echo "::error::CFBundleVersion ${APP_BUILD} must exceed ${PREVIOUS_TAG} build ${PREVIOUS_BUILD} for Sparkle"
+              exit 1
+            }
+          fi
+          OUT="build/sparkle"
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          TEMP_ZIP="$OUT/Rapid-MLX-Desktop-${VERSION}.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Rapid-MLX Desktop.app" "$TEMP_ZIP"
+          ZIP_SHA256="$(shasum -a 256 "$TEMP_ZIP" | awk '{print $1}')"
+          ZIP_NAME="Rapid-MLX-Desktop-${VERSION}-${ZIP_SHA256}.zip"
+          mv "$TEMP_ZIP" "$OUT/$ZIP_NAME"
+          cp "$RELEASE_NOTES_FILE" "$OUT/${ZIP_NAME%.zip}.md"
+
+          GENERATE_APPCAST=".build/artifacts/sparkle/Sparkle/bin/generate_appcast"
+          [[ -x "$GENERATE_APPCAST" ]] || {
+            echo "::error::Sparkle generate_appcast tool missing"
+            exit 1
+          }
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" \
+            | "$GENERATE_APPCAST" --ed-key-file - \
+                --download-url-prefix "${CDN_BASE}/rapid-mac/${VERSION}/" \
+                --embed-release-notes --maximum-versions 1 --maximum-deltas 0 \
+                -o "$OUT/appcast.xml" "$OUT"
+          [[ -s "$OUT/appcast.xml" ]] || { echo "::error::appcast not generated"; exit 1; }
+          grep -Fq "sparkle:edSignature=" "$OUT/appcast.xml" || {
+            echo "::error::appcast enclosure has no EdDSA signature"
+            exit 1
+          }
+          EXPECTED_URL="${CDN_BASE}/rapid-mac/${VERSION}/${ZIP_NAME}"
+          APPCAST_VERSION="$(xmllint --xpath \
+            'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="version"])' \
+            "$OUT/appcast.xml")"
+          APPCAST_SHORT_VERSION="$(xmllint --xpath \
+            'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="shortVersionString"])' \
+            "$OUT/appcast.xml")"
+          APPCAST_URL="$(xmllint --xpath \
+            'string(/*[local-name()="rss"]/*[local-name()="channel"]/*[local-name()="item"][1]/*[local-name()="enclosure"]/@url)' \
+            "$OUT/appcast.xml")"
+          [[ "$APPCAST_VERSION" == "$APP_BUILD" ]] || {
+            echo "::error::appcast build version does not match the signed app"
+            exit 1
+          }
+          [[ "$APPCAST_SHORT_VERSION" == "$VERSION" ]] || {
+            echo "::error::appcast release version does not match the tag"
+            exit 1
+          }
+          [[ "$APPCAST_URL" == "$EXPECTED_URL" ]] || {
+            echo "::error::appcast URL does not match the mirrored Sparkle ZIP"
+            exit 1
+          }
+
+      - name: Upload Sparkle update artifact
+        if: startsWith(github.ref, 'refs/tags/') && env.SIGNED == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-mac-sparkle-update
+          path: |
+            apps/rapid-mac/build/sparkle/*.zip
+            apps/rapid-mac/build/sparkle/appcast.xml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build + sign rapid-mlx-desktop.dmg (from the stapled app)
         run: bash scripts/dmg.sh
@@ -396,7 +513,14 @@ jobs:
           name: rapid-mac-release-notes
           path: notes
 
-      - name: Mirror DMG and compose updater fallback
+      - name: Download the signed Sparkle update
+        if: needs.build.outputs.signed == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: rapid-mac-sparkle-update
+          path: sparkle
+
+      - name: Mirror update archives and compose updater fallback
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -441,6 +565,17 @@ jobs:
           npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/${VERSIONED_KEY}" \
             --file "$DMG" --content-type application/x-apple-diskimage --remote
 
+          if [[ "${{ needs.build.outputs.signed }}" == "true" ]]; then
+            SPARKLE_ZIP="$(find sparkle -maxdepth 1 -type f -name '*.zip' -print -quit)"
+            [[ -n "$SPARKLE_ZIP" && -f "$SPARKLE_ZIP" ]] || {
+              echo "::error::missing signed Sparkle ZIP"
+              exit 1
+            }
+            SPARKLE_KEY="rapid-mac/${VERSION}/$(basename "$SPARKLE_ZIP")"
+            npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/${SPARKLE_KEY}" \
+              --file "$SPARKLE_ZIP" --content-type application/zip --remote
+          fi
+
           # The GitHub Release does not exist yet — it is created only once this
           # manifest is live (see publish-updater-fallback), so a failure here
           # can no longer leave a published release pointing at a stale updater
@@ -478,6 +613,14 @@ jobs:
           path: dist/latest.json
           if-no-files-found: error
 
+      - name: Stage Sparkle appcast for serialized publication
+        if: needs.build.outputs.signed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: rapid-mac-sparkle-appcast
+          path: sparkle/appcast.xml
+          if-no-files-found: error
+
   # Every tag mirrors its immutable DMG above. Only the mutable pointer is
   # serialized here. Turnstyle queues every run (unlike native concurrency,
   # which keeps only one pending run and can drop an intermediate tag).
@@ -510,6 +653,13 @@ jobs:
         with:
           name: rapid-mac-release-notes
           path: notes
+
+      - name: Download staged Sparkle appcast
+        if: needs.build.outputs.signed == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: rapid-mac-sparkle-appcast
+          path: sparkle
 
       - name: Publish updater fallback monotonically
         env:
@@ -557,6 +707,13 @@ jobs:
             --file dist/latest.json --content-type application/json \
             --cache-control "no-cache, must-revalidate" --remote
 
+          if [[ "${{ needs.build.outputs.signed }}" == "true" ]]; then
+            [[ -s sparkle/appcast.xml ]] || { echo "::error::missing appcast.xml"; exit 1; }
+            npx --yes wrangler@4.120.0 r2 object put "${R2_BUCKET}/appcast.xml" \
+              --file sparkle/appcast.xml --content-type application/xml \
+              --cache-control "no-cache, must-revalidate" --remote
+          fi
+
           # Preserve the previously documented stable DMG URL only after the
           # canonical updater transaction succeeds. A failure here can leave
           # the compatibility URL old, but can never make latest.json point at
@@ -568,7 +725,10 @@ jobs:
 
           # Cache-Control governs new responses; purge any object cached under
           # the pre-fix policy so this release becomes visible immediately.
-          PURGE_PAYLOAD="$(jq -nc --arg url "${CDN_BASE}/latest.json" '{files: [$url]}')"
+          PURGE_PAYLOAD="$(jq -nc \
+            --arg latest "${CDN_BASE}/latest.json" \
+            --arg appcast "${CDN_BASE}/appcast.xml" \
+            '{files: [$latest, $appcast]}')"
           curl --fail-with-body --silent --show-error \
             --request POST \
             --url "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/purge_cache" \

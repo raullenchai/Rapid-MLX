@@ -48,10 +48,11 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
   Worker → R2) under one shared anonymous client ID so the app and the
   embedded engine never double-count an install. Paths are PII-redacted
   (`/Users/<name>/` scrubbed); chat content and attachments are never sent.
-- **Self-update.** On launch and every 6 hours the app checks
-  `https://rapidmlx.com/api/desktop-update?v=<app-version>`. The only value
-  sent is the app version; the Worker keeps aggregate version/country counts
-  and never stores the IP. Opt out with `RAPIDMLX_NO_UPDATE_CHECK=1` or
+- **Self-update.** Signed releases use Sparkle to check an EdDSA-signed appcast,
+  download updates in the background, and install them when Rapid-MLX quits.
+  During the migration the existing six-hour version-status request remains;
+  it sends only the app version and records aggregate counts without storing
+  the IP. Opt out of both requests with `RAPIDMLX_NO_UPDATE_CHECK=1` or
   `DO_NOT_TRACK=1`.
 
 See [PRIVACY.md](PRIVACY.md) for the full field list, reset behavior, and

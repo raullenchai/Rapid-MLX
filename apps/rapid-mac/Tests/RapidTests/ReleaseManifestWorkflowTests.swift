@@ -99,4 +99,48 @@ struct ReleaseManifestWorkflowTests {
         #expect(publishJob.contains("/purge_cache"))
         #expect(publishJob.contains(".success == true"))
     }
+
+    @Test("Sparkle archive is signed, mirrored, then advertised by the serialized appcast")
+    func sparklePublicationOrderAndSigning() throws {
+        let workflow = Self.workflow
+        let mirrorJob = Self.mirrorJob
+        let publishJob = Self.publishJob
+
+        #expect(workflow.contains("SPARKLE_PUBLIC_ED_KEY"))
+        #expect(workflow.contains("SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}"))
+        #expect(workflow.contains("printf '%s' \"$SPARKLE_ED_PRIVATE_KEY\""))
+        #expect(workflow.contains("--ed-key-file -"))
+        #expect(!workflow.contains("--ed-key-file $SPARKLE_ED_PRIVATE_KEY"))
+        #expect(workflow.contains("sparkle:edSignature="))
+        #expect(workflow.contains("Rapid-MLX-Desktop-${VERSION}-${ZIP_SHA256}.zip"))
+        #expect(workflow.contains(#"-o "$OUT/appcast.xml" "$OUT""#))
+        #expect(workflow.contains("APPCAST_VERSION"))
+        #expect(workflow.contains("appcast build version does not match the signed app"))
+        #expect(workflow.contains("APPCAST_SHORT_VERSION"))
+        #expect(workflow.contains("appcast release version does not match the tag"))
+        #expect(workflow.contains("APPCAST_URL"))
+        #expect(workflow.contains("appcast URL does not match the mirrored Sparkle ZIP"))
+        #expect(workflow.contains("PREVIOUS_TAG"))
+        #expect(workflow.contains("(( APP_BUILD > PREVIOUS_BUILD ))"))
+        #expect(workflow.contains("must exceed ${PREVIOUS_TAG} build"))
+
+        let zipUpload = try #require(
+            mirrorJob.range(of: #"r2 object put "${R2_BUCKET}/${SPARKLE_KEY}""#)
+        )
+        let appcastStaged = try #require(
+            mirrorJob.range(of: "name: rapid-mac-sparkle-appcast")
+        )
+        #expect(zipUpload.lowerBound < appcastStaged.lowerBound)
+
+        let rollbackGuard = try #require(publishJob.range(of: "dpkg --compare-versions"))
+        let appcastUpload = try #require(
+            publishJob.range(of: #"r2 object put "${R2_BUCKET}/appcast.xml""#)
+        )
+        let releaseCreation = try #require(
+            publishJob.range(of: "Create the GitHub Release (last")
+        )
+        #expect(rollbackGuard.lowerBound < appcastUpload.lowerBound)
+        #expect(appcastUpload.lowerBound < releaseCreation.lowerBound)
+        #expect(publishJob.contains(#"--cache-control "no-cache, must-revalidate""#))
+    }
 }
