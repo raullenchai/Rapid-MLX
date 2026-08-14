@@ -277,13 +277,39 @@ final class DeclinedToolDiagnosisTests {
         #expect(diagnosis.severity == .notice)
     }
 
-    @Test("Only a user decline is a notice; every other kind stays an error")
-    func onlyDeclineIsANotice() {
+    /// The quiet lane is exactly the outcomes the USER chose, and nothing else.
+    ///
+    /// Enumerated rather than derived so adding a kind cannot join the quiet
+    /// lane by accident: a new case lands on ``.error`` and fails here until
+    /// somebody states which lane it belongs on and why. Membership is a strong
+    /// claim — it removes the alarm from something that went wrong.
+    ///
+    /// ``downloadCancelled`` joined in the onboarding-recovery slice. It is the
+    /// user stopping a transfer they started, which is the same shape as
+    /// declining a permission prompt: nothing malfunctioned, so nothing should
+    /// be painted as though it had.
+    private static let noticeKinds: Set<FailureDiagnosis.Kind> = [
+        .userDeclined,
+        .downloadCancelled,
+    ]
+
+    @Test("Only the user's own choices are notices; every other kind stays an error")
+    func onlyUserChoicesAreNotices() {
         for kind in FailureDiagnosis.Kind.allCases {
-            let expected: FailureDiagnosis.Severity = kind == .userDeclined ? .notice : .error
+            let expected: FailureDiagnosis.Severity =
+                Self.noticeKinds.contains(kind) ? .notice : .error
             #expect(kind.severity == expected, "unexpected severity for \(kind.rawValue)")
             #expect(FailureDiagnoser.diagnosis(for: kind).severity == expected)
         }
+    }
+
+    @Test("A broken download stays an error even though a cancelled one does not")
+    func cancellationDoesNotDragTheFailureLaneWithIt() {
+        // The pair the split exists for. If these ever collapse back onto one
+        // severity, the copy has collapsed with them.
+        #expect(FailureDiagnosis.Kind.downloadCancelled.severity == .notice)
+        #expect(FailureDiagnosis.Kind.downloadFailed.severity == .error)
+        #expect(FailureDiagnosis.Kind.downloadSourceUnavailable.severity == .error)
     }
 
     @Test("A throttled backend is something that went wrong, not something the user chose")
