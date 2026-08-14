@@ -58,15 +58,7 @@ struct ConnectToolsView: View {
     /// no binary is resolved (dev snapshot) we fall back to the bare command.
     private var cliCommand: String {
         guard let binary = binaryPath else { return "rapid-mlx" }
-        return Self.shellQuote(binary.path)
-    }
-
-    /// Single-quote a shell word so spaces / special characters in an
-    /// absolute path (e.g. "Application Support") can't break a pasted
-    /// command. Embedded single quotes are escaped by closing, backslash-
-    /// escaping, and reopening.
-    static func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return IntegrationLaunchCommand.shellQuote(binary.path)
     }
 
     /// The model id to publish in a config, or ``nil`` when no real
@@ -370,7 +362,19 @@ enum AgentLaunchCommand {
     }
 }
 
+/// Merges the resolved off-PATH sidecar path into the launch/agent commands
+/// the Connect page hands the user. Kept out of any SwiftUI ``View`` so it is
+/// not inferred ``@MainActor`` — these are pure string functions callable from
+/// synchronous, nonisolated tests.
 enum IntegrationLaunchCommand {
+    /// Single-quote a shell word so spaces / special characters in an
+    /// absolute path (e.g. "Application Support") can't break a pasted
+    /// command. Embedded single quotes are escaped by closing, backslash-
+    /// escaping, and reopening. Pure string logic — deliberately not a UI type.
+    static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
+    }
+
     static func configWriter(id: String, serverURL: String, key: String, model: String, cli: String) -> String {
         "env RAPID_MLX_API_KEY=\(key) \(cli) launch \(id) --server-url \(serverURL) --model \(model)"
     }

@@ -19,7 +19,7 @@ struct AgentLaunchCommandTests {
     /// `command not found: rapid-mlx`.
     @Test("registry commands reference the off-PATH sidecar binary by absolute path when resolved")
     func registryCommandsUseResolvedBinaryPath() {
-        let cli = ConnectToolsView.shellQuote(
+        let cli = IntegrationLaunchCommand.shellQuote(
             "/Users/alice/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx"
         )
         #expect(cli == "'/Users/alice/Library/Application Support/Rapid/runtime-override/rapid-mlx/bin/rapid-mlx'")
@@ -51,12 +51,12 @@ struct AgentLaunchCommandTests {
 
     @Test("shell quoting escapes spaces and embedded single quotes")
     func shellQuoteHandlesSpacesAndApostrophes() {
-        let spaced = ConnectToolsView.shellQuote("/tmp/Rapid App Support/rapid-mlx")
+        let spaced = IntegrationLaunchCommand.shellQuote("/tmp/Rapid App Support/rapid-mlx")
         #expect(spaced == "'/tmp/Rapid App Support/rapid-mlx'")
 
         // A path containing a single quote must be escaped so the pasted
         // command still runs as a single argument.
-        let apostrophe = ConnectToolsView.shellQuote("/tmp/it's/rapid-mlx")
+        let apostrophe = IntegrationLaunchCommand.shellQuote("/tmp/it's/rapid-mlx")
         #expect(apostrophe == "'/tmp/it'\\''s/rapid-mlx'")
     }
 
