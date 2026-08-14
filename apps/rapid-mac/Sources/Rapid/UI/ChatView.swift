@@ -1725,6 +1725,14 @@ final class AutosizingTextView: NSTextView {
     /// underneath the candidate text the user was typing. Marked text is
     /// the only signal that the field is non-empty here.
     var onComposingChange: ((Bool) -> Void)?
+    private var lastReportedCompositionState = false
+
+    private func reportCompositionState() {
+        let isComposing = hasMarkedText()
+        guard isComposing != lastReportedCompositionState else { return }
+        lastReportedCompositionState = isComposing
+        onComposingChange?(isComposing)
+    }
 
     override func setMarkedText(
         _ string: Any,
@@ -1736,7 +1744,7 @@ final class AutosizingTextView: NSTextView {
             selectedRange: selectedRange,
             replacementRange: replacementRange
         )
-        onComposingChange?(hasMarkedText())
+        reportCompositionState()
         // Pre-edit text occupies real lines — a long pinyin run wraps
         // and must grow the field like committed text does.
         remeasure()
@@ -1744,7 +1752,7 @@ final class AutosizingTextView: NSTextView {
 
     override func unmarkText() {
         super.unmarkText()
-        onComposingChange?(false)
+        reportCompositionState()
         remeasure()
     }
 
@@ -1854,6 +1862,18 @@ struct ComposeTextEditor: NSViewRepresentable {
     /// can size the field to the draft.
     var onMeasuredHeight: (CGFloat) -> Void
 
+    /// Keep this decision pure so the IME regression stays testable without
+    /// constructing SwiftUI's private representable context. Marked text is
+    /// owned by AppKit until the input method commits it; the binding must not
+    /// overwrite that temporary editor value.
+    static func shouldApplyBindingText(
+        viewHasMarkedText: Bool,
+        editorText: String,
+        bindingText: String
+    ) -> Bool {
+        !viewHasMarkedText && editorText != bindingText
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
         let tv = AutosizingTextView()
         tv.delegate = context.coordinator
@@ -1920,7 +1940,11 @@ struct ComposeTextEditor: NSViewRepresentable {
         // assigning ``text`` would erase the pinyin mid-word. Any
         // unrelated SwiftUI update landing on this view — including the
         // placeholder's own state change — is enough to trigger it.
-        if !view.hasMarkedText(), view.string != text {
+        if Self.shouldApplyBindingText(
+            viewHasMarkedText: view.hasMarkedText(),
+            editorText: view.string,
+            bindingText: text
+        ) {
             view.string = text
             // A programmatic assignment does not fire ``didChangeText``,
             // so the parent would keep the height of the previous draft

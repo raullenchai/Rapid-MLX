@@ -14,6 +14,47 @@ import Testing
 @MainActor
 @Suite("ChatCompose accessibility shape")
 struct ChatComposeAccessibilityTests {
+    @Test("Marked text reports composition until AppKit unmarks it")
+    func markedTextReportsCompositionLifecycle() {
+        let tv = AutosizingTextView()
+        var states: [Bool] = []
+        tv.onComposingChange = { states.append($0) }
+
+        tv.setMarkedText(
+            "nihao",
+            selectedRange: NSRange(location: 5, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+
+        #expect(tv.hasMarkedText())
+        #expect(tv.string == "nihao")
+        #expect(states == [true])
+
+        tv.unmarkText()
+
+        #expect(!tv.hasMarkedText())
+        #expect(states == [true, false])
+    }
+
+    @Test("SwiftUI binding never overwrites input-method pre-edit text")
+    func bindingSyncYieldsToMarkedText() {
+        #expect(!ComposeTextEditor.shouldApplyBindingText(
+            viewHasMarkedText: true,
+            editorText: "nihao",
+            bindingText: ""
+        ))
+        #expect(ComposeTextEditor.shouldApplyBindingText(
+            viewHasMarkedText: false,
+            editorText: "stale draft",
+            bindingText: "restored draft"
+        ))
+        #expect(!ComposeTextEditor.shouldApplyBindingText(
+            viewHasMarkedText: false,
+            editorText: "same draft",
+            bindingText: "same draft"
+        ))
+    }
+
     @Test("Compose configurator sets label, identifier, role description")
     func applyComposeAccessibilitySetsAllThreeAttributes() {
         let tv = AutosizingTextView()
