@@ -2902,6 +2902,18 @@ flow_launch_integrations() {
         || die "Launch omitted config-writing target Cline"
     jq -e '.data.ui_elements[]? | select(.identifier == "Launch.Integration.Copy.smolagents")' "$OUT/launch.json" >/dev/null \
         || die "Launch omitted adapter profile smolagents"
+    # The two one-session launch commands are the useful fast path, not an
+    # implementation-detail registry order. Keep them first and in the product
+    # order promised by the Launch page.
+    local first_two
+    first_two="$(jq -r '[.data.ui_elements[]?
+                         | select((.identifier // "")
+                                  | startswith("Launch.Integration.Copy."))
+                         | .identifier]
+                        | .[0:2]
+                        | join(",")' "$OUT/launch.json")"
+    [[ "$first_two" == "Launch.Integration.Copy.claude-code,Launch.Integration.Copy.codex" ]] \
+        || die "Launch did not lead with Claude Code then Codex (got: $first_two)"
     # The card itself is not the action. Every visible row must publish a
     # distinct Copy button so AX/keyboard users can invoke the same command a
     # pointer user can, and every one is disabled honestly until a live model

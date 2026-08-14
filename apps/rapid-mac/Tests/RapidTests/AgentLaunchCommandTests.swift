@@ -113,7 +113,9 @@ struct AgentLaunchCommandTests {
     func codexInteractiveCommandUsesSupportedIsolation() {
         let command = AgentLaunchCommand.codex(baseURL: base, key: key, model: model)
 
-        #expect(command.contains(#"CODEX_HOME="$(mktemp -d)""#))
+        #expect(command.contains("d=$(mktemp -d)"))
+        #expect(command.contains(#"CODEX_HOME="$d""#))
+        #expect(command.contains(#"trap 'rm -rf "$d"' EXIT"#))
         #expect(command.contains(" codex -m qwen-test "))
         #expect(!command.contains("codex --ignore-user-config"))
         #expect(command.contains(#"wire_api="responses""#))

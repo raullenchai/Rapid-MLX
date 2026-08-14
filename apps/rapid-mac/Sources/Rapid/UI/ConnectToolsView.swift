@@ -440,7 +440,8 @@ enum AgentLaunchCommand {
     }
 
     static func codex(baseURL: String, key: String, model: String) -> String {
-        "env CODEX_HOME=\"$(mktemp -d)\" OPENAI_API_KEY=\(key) codex -m \(model) "
+        "d=$(mktemp -d) && trap 'rm -rf \"$d\"' EXIT && "
+            + "env CODEX_HOME=\"$d\" OPENAI_API_KEY=\(key) codex -m \(model) "
             + "-c 'model_provider=\"rapid-mlx\"' "
             + "-c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(baseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'"
     }

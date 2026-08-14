@@ -19,23 +19,27 @@ AXApplication title="Rapid-MLX"
             AXHeading desc="Endpoint" enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="doc.on.doc" desc="Copy OpenAI base URL" help="Copy OpenAI base URL" enabled=true
+            AXButton id="ConnectTools.Copy.OpenAI base URL" desc="Copy OpenAI base URL" help="Copy OpenAI base URL" enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="doc.on.doc" desc="Copy Anthropic base URL" help="Copy Anthropic base URL" enabled=true
+            AXButton id="ConnectTools.Copy.Anthropic base URL" desc="Copy Anthropic base URL" help="Copy Anthropic base URL" enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="doc.on.doc" desc="Copy API key" help="Start a model to generate a valid key and configuration." enabled=false
+            AXButton id="ConnectTools.Copy.API key" desc="Copy API key" help="Start a model to generate a valid key and configuration." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="doc.on.doc" desc="Copy Model" help="Copy Model" enabled=true
+            AXButton id="ConnectTools.Copy.Model" desc="Copy Model" help="Copy Model" enabled=true
             AXHeading desc="Editors and agents" enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.cline" desc="Copy Cline command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.claude-code" desc="Copy Claude Code command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.cline" desc="Copy Cline command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
@@ -48,10 +52,6 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.codex" desc="Copy Codex CLI command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
