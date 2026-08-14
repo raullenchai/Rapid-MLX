@@ -13,6 +13,13 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+
+- Normal chats now accept PDF, CSV, and TXT attachments. Rapid extracts document
+  text locally, keeps it with the conversation for follow-up questions, and
+  clearly marks large partial extracts. Scanned PDFs without selectable text
+  report that OCR is required instead of sending an empty prompt.
+
 ## [0.12.12] — 2026-08-13
 
 A vision and reliability release. Images get their first response noticeably

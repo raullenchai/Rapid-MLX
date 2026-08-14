@@ -126,6 +126,9 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// render it in a collapsed disclosure block.
     var content: String
     var imageAttachments: [ChatImageAttachment]
+    /// Locally extracted document text. Kept separate from ``content`` so a
+    /// multi-page source does not flood the transcript or copied user prose.
+    var fileAttachments: [ChatFileAttachment]
     /// Hybrid-thinking trace (mlx-lm ``reasoning_content`` field). Only
     /// populated for assistant messages from hybrid models; empty string
     /// is treated as "no trace" by the UI.
@@ -249,6 +252,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         role: Role,
         content: String = "",
         imageAttachments: [ChatImageAttachment] = [],
+        fileAttachments: [ChatFileAttachment] = [],
         reasoning: String = "",
         status: Status = .complete,
         errorMessage: String? = nil,
@@ -266,6 +270,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.role = role
         self.content = content
         self.imageAttachments = imageAttachments
+        self.fileAttachments = fileAttachments
         self.reasoning = reasoning
         self.status = status
         self.errorMessage = errorMessage
@@ -287,7 +292,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
     /// for that one key and defers all other fields to the standard
     /// container shape.
     enum CodingKeys: String, CodingKey {
-        case id, role, content, imageAttachments, reasoning, status
+        case id, role, content, imageAttachments, fileAttachments, reasoning, status
         case errorMessage, failureKind, toolCalls, toolCallID
         case stats, reasoningTruncated, contentTruncated
         case toolNotCalledFlagged
@@ -321,6 +326,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         try c.encode(role, forKey: .role)
         try c.encode(content, forKey: .content)
         try c.encode(imageAttachments, forKey: .imageAttachments)
+        try c.encode(fileAttachments, forKey: .fileAttachments)
         try c.encode(reasoning, forKey: .reasoning)
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(errorMessage, forKey: .errorMessage)
@@ -342,6 +348,7 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         self.role = try c.decode(Role.self, forKey: .role)
         self.content = try c.decode(String.self, forKey: .content)
         self.imageAttachments = try c.decodeIfPresent([ChatImageAttachment].self, forKey: .imageAttachments) ?? []
+        self.fileAttachments = try c.decodeIfPresent([ChatFileAttachment].self, forKey: .fileAttachments) ?? []
         self.reasoning = try c.decode(String.self, forKey: .reasoning)
         self.status = try c.decode(Status.self, forKey: .status)
         self.errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
@@ -372,6 +379,18 @@ struct ChatMessage: Identifiable, Codable, Equatable, Hashable {
         // transcripts decode cleanly.
         self.toolCallArtifactSuppressed = try c.decodeIfPresent(Bool.self, forKey: .toolCallArtifactSuppressed) ?? false
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+    }
+
+    /// Text sent to the model. Document extracts stay out of the visible
+    /// ``content`` property but remain part of this turn on every retry and
+    /// follow-up request.
+    var modelContent: String {
+        guard !fileAttachments.isEmpty else { return content }
+        let request = content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Analyze the attached file and summarize the important findings."
+            : content
+        return ([request] + fileAttachments.map(\.promptText))
+            .joined(separator: "\n\n")
     }
 
     /// Resolve a tool failure outside the SwiftUI render tree. This lets the

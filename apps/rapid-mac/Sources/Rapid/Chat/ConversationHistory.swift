@@ -183,6 +183,11 @@ enum ConversationStore {
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+        if collapsed.isEmpty, let filename = first.fileAttachments.first?.filename {
+            return filename.count > 42
+                ? String(filename.prefix(42)) + "…"
+                : filename
+        }
         if collapsed.isEmpty { return "New chat" }
         return collapsed.count > 42
             ? String(collapsed.prefix(42)) + "…"

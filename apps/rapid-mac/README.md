@@ -26,6 +26,9 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
 - **Chat, local-first.** Streaming responses with a `thinking` / `content`
   split for reasoning models (Qwen 3.5 / 3.6, GLM 4.7, DeepSeek V4). Markdown
   and code rendering, copy-as-markdown, copy-code.
+- **Document analysis in chat.** Attach text-based PDF, CSV, and TXT files to a
+  normal conversation, then summarize, compare, or ask follow-up questions.
+  Text extraction and parsing happen locally before the model sees the source.
 - **Zero-friction model lifecycle.** Pick a model in the composer and it
   starts on your first message — no start/stop buttons. Download models from
   the picker (cached vs. all, per-alias size + memory hints) and switch

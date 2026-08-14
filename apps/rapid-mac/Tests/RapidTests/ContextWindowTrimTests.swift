@@ -57,6 +57,28 @@ struct ContextWindowTrimTests {
         #expect(trimmed == history)
     }
 
+    @Test("Locally extracted document text participates in the context budget")
+    func documentTextCountsTowardBudget() throws {
+        let attachment = try ChatFileAttachment(
+            filename: "large.csv",
+            kind: .csv,
+            extractedText: String(repeating: "x", count: 8_000),
+            sourceByteCount: 8_000
+        )
+        let history: [ChatMessage] = [
+            ChatMessage(role: .user, content: "old question"),
+            ChatMessage(role: .assistant, content: "old answer"),
+            ChatMessage(role: .user, content: "analyze", fileAttachments: [attachment]),
+        ]
+
+        let trimmed = ChatViewModel.trimMessagesForContextWindow(
+            history,
+            contextWindow: 1_024
+        )
+        #expect(trimmed.count == 1)
+        #expect(trimmed.first?.fileAttachments == [attachment])
+    }
+
     // MARK: - Trimming behaviour
 
     @Test("Oldest turns are dropped when total exceeds the keep fraction")

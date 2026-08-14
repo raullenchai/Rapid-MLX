@@ -92,15 +92,16 @@ baselines rather than the run that wrote them.
 
 Getting there meant refreshing every structural baseline, and the reason is
 worth recording: they were last updated **2026-08-07** (#1666), while
-`Sidebar.Images` landed in #1705 and `ChatView.AddPhotos` in #1723 — both on
-**2026-08-09**. The suite had therefore been red on `main` through two merges
+`Sidebar.Images` landed in #1705 and the attachment control (then photo-only)
+landed in #1723, both on **2026-08-09**. The suite had therefore been red on
+`main` through two merges
 and nobody knew, because it runs by hand and not in CI. Every line in the
 refresh diff is one of exactly three things:
 
 | Added | Source |
 | --- | --- |
 | `Sidebar.Images` (×12) | #1705 |
-| `ChatView.AddPhotos` (×12) | #1723 |
+| `ChatView.AddAttachments` (×17) | document attachments |
 | `Settings.ModelManagement.CapabilityTabs` + its Chat/Image segments (×4) | this change — the fake now emits an `[image:gen]` alias, so the capability tabs have a second capability to show |
 
 One line changed rather than appeared: the sidebar conversation menu gained
@@ -235,7 +236,7 @@ the original live-memory snapshot against the fallback footprint and exposes
 promise or a warning loop; **Cancel** still returns to the chooser where the
 low-memory category remains visible.
 
-### Chat image attachment
+### Chat attachments
 
 `chat-image-attachment` covers image input inside the normal Chat tab. This is
 separate from `image-generation`: the former asks a VLM to understand an image;
@@ -244,7 +245,7 @@ the latter asks a diffusion model to create one.
 The deterministic lane should use a fake VLM alias and a small fixture PNG, and
 walk both halves of the capability boundary:
 
-1. select the fake VLM alias and assert `ChatView.AddPhotos` is present and
+1. select the fake VLM alias and assert `ChatView.AddAttachments` is present and
    enabled;
 2. add the fixture through the standard open panel, then assert the thumbnail's
    `ChatView.Attachment.Remove.<filename>` control is present;
@@ -253,8 +254,8 @@ walk both halves of the capability boundary:
    the typed text part;
 4. retry or regenerate the turn and assert the replay request still contains
    the attachment;
-5. switch to a text-only alias and assert `ChatView.AddPhotos` remains visible
-   but disabled with the “This model doesn't support images” help text;
+5. switch to a text-only alias and assert `ChatView.AddAttachments` remains
+   visible and enabled for PDF/CSV/TXT input;
 6. attempt image paste and drop, assert no thumbnail appears and no image bytes
    reach the fake sidecar. Historical image turns must also be reduced to text
    before a text-only request is encoded.

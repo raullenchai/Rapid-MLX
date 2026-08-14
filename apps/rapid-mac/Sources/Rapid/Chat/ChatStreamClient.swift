@@ -881,12 +881,13 @@ enum Wire {
 
         init(from message: ChatMessage, includeImages: Bool = true) {
             self.role = message.role.rawValue
+            let modelContent = message.modelContent
             if message.imageAttachments.isEmpty || !includeImages {
-                self.content = .text(message.content)
+                self.content = .text(modelContent)
             } else {
                 var parts: [ContentPart] = []
-                if !message.content.isEmpty {
-                    parts.append(.init(type: "text", text: message.content, image_url: nil))
+                if !modelContent.isEmpty {
+                    parts.append(.init(type: "text", text: modelContent, image_url: nil))
                 }
                 parts.append(contentsOf: message.imageAttachments.map {
                     .init(type: "image_url", text: nil, image_url: .init(url: $0.dataURL))

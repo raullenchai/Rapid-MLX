@@ -514,7 +514,7 @@ struct CoreWorkspaceVisualFoundationTests {
             ],
             "Sources/Rapid/UI/ChatView.swift": [
                 "ChatView.SendOrStopButton",
-                "ChatView.AddPhotos",
+                "ChatView.AddAttachments",
                 "ChatView.ConversationInstructions",
             ],
             "Sources/Rapid/UI/ImagesView.swift": [

@@ -475,10 +475,11 @@ final class ChatViewModel {
     func send(
         _ text: String,
         alias: String,
-        imageAttachments: [ChatImageAttachment] = []
+        imageAttachments: [ChatImageAttachment] = [],
+        fileAttachments: [ChatFileAttachment] = []
     ) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !imageAttachments.isEmpty else { return }
+        guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else { return }
         guard !isStreaming else { return }
 
         // Small local models are unreliable at the first step of tool use:
@@ -500,6 +501,7 @@ final class ChatViewModel {
             role: .user,
             content: trimmed,
             imageAttachments: imageAttachments,
+            fileAttachments: ChatFileAttachment.fittedForMessage(fileAttachments),
             status: .complete
         )
         _ = appendMessage(user)
@@ -1033,14 +1035,13 @@ final class ChatViewModel {
         // would slip past the budget because the trimming logic
         // saw a near-empty assistant turn. Fold the serialized
         // tool-call arguments into the per-row cost so the budget
-        // reflects the actual wire body. Attachments are already
-        // inlined into ``content`` by ``composeProseWithFileAttachments``
-        // at send-time, so the content-byte count already covers
-        // text attachments. Images use multimodal content parts and
+        // reflects the actual wire body. ``modelContent`` includes locally
+        // extracted document text while keeping it out of the visible chat
+        // bubble. Images use multimodal content parts and
         // are excluded here (token-count-per-image is model-specific
         // and not estimable from byte count alone).
         let perRowCost: (ChatMessage) -> Int = { msg in
-            let contentChars = msg.content.count
+            let contentChars = msg.modelContent.count
             let toolArgsChars = (msg.toolCalls ?? [])
                 .reduce(0) { $0 + $1.function.arguments.count }
             return max(1, (contentChars + toolArgsChars) / 4)
@@ -1217,11 +1218,19 @@ final class ChatViewModel {
     ) -> Bool {
         guard !isStreaming else { return false }
         guard let idx = messages.firstIndex(where: { $0.id == id && $0.role == .user }) else { return false }
-        let attachments = messages[idx].imageAttachments
+        let imageAttachments = messages[idx].imageAttachments
+        let fileAttachments = messages[idx].fileAttachments
         let trimmed = newContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty else { return false }
+        guard !trimmed.isEmpty || !imageAttachments.isEmpty || !fileAttachments.isEmpty else {
+            return false
+        }
         messages = Array(messages.prefix(idx))
-        send(trimmed, alias: alias, imageAttachments: attachments)
+        send(
+            trimmed,
+            alias: alias,
+            imageAttachments: imageAttachments,
+            fileAttachments: fileAttachments
+        )
         return true
     }
 
@@ -1236,7 +1245,8 @@ final class ChatViewModel {
         send(
             userMessage.content,
             alias: alias,
-            imageAttachments: userMessage.imageAttachments
+            imageAttachments: userMessage.imageAttachments,
+            fileAttachments: userMessage.fileAttachments
         )
     }
 
@@ -1256,7 +1266,8 @@ final class ChatViewModel {
 
         let userMessage = messages[userIndex]
         guard !userMessage.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !userMessage.imageAttachments.isEmpty else {
+                || !userMessage.imageAttachments.isEmpty
+                || !userMessage.fileAttachments.isEmpty else {
             return false
         }
         // In place, on the SAME conversation id — see ``editUserMessage``
@@ -1265,7 +1276,8 @@ final class ChatViewModel {
         send(
             userMessage.content,
             alias: alias,
-            imageAttachments: userMessage.imageAttachments
+            imageAttachments: userMessage.imageAttachments,
+            fileAttachments: userMessage.fileAttachments
         )
         return true
     }
