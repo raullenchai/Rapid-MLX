@@ -372,7 +372,7 @@ enum IntegrationLaunchCommand {
     /// command. Embedded single quotes are escaped by closing, backslash-
     /// escaping, and reopening. Pure string logic — deliberately not a UI type.
     static func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\''") + "'"
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     static func configWriter(id: String, serverURL: String, key: String, model: String, cli: String) -> String {
