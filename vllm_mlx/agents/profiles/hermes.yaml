@@ -23,7 +23,7 @@ models:
     - "qwen3.5-4b-4bit"
     - "qwen3.5-9b-4bit"
     - "gemma-4-26b-4bit"
-    - "qwen3.5-35b-a3b"
+    - "qwen3.5-35b-4bit"
     - "qwen3.6-35b-4bit"
 
 streaming:
