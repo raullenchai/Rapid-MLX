@@ -85,6 +85,7 @@ AXApplication title="Rapid-MLX"
         AXGroup id="Settings.ModelManagement.CapabilityTabs" desc="Model type" enabled=true
           AXButton desc="Chat models" enabled=true
           AXButton desc="Image models" enabled=true
+          AXButton desc="Audio models" enabled=true
         AXTextField id="Settings.ModelManagement.Search" value=empty enabled=true
         AXPopUpButton id="Settings.ModelManagement.SortMenu" title="Sort" enabled=true
         AXGroup id="Settings.ModelManagement.Filter" desc="Filter" enabled=true
