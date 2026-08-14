@@ -427,6 +427,35 @@ json.dump({"data": {"ui_elements": scoped}}, open(dst, "w"))
 PYEOF
 }
 
+# Extract the first complete AX subtree whose root has ROLE. The rapid-ax dump
+# is flat pre-order plus `depth`; taking the root and every following element
+# until depth returns to the root level preserves the hierarchy while excluding
+# covered background windows. Modal-sheet baselines must use this — AppKit keeps
+# the underlying split view in the application tree even though a user cannot
+# interact with it.
+role_subtree_only() {
+    python3 - "$1" "$2" "$3" <<'PYEOF'
+import json, sys
+src, role, dst = sys.argv[1:]
+els = json.load(open(src))["data"]["ui_elements"]
+start = next((i for i, e in enumerate(els) if e.get("role") == role), None)
+if start is None:
+    sys.exit(f"AX tree has no {role} subtree")
+root_depth = int(els[start].get("depth", 0))
+end = len(els)
+for i in range(start + 1, len(els)):
+    if int(els[i].get("depth", 0)) <= root_depth:
+        end = i
+        break
+scoped = []
+for element in els[start:end]:
+    element = dict(element)
+    element["depth"] = int(element.get("depth", root_depth)) - root_depth
+    scoped.append(element)
+json.dump({"data": {"ui_elements": scoped}}, open(dst, "w"))
+PYEOF
+}
+
 # Turn N's prompt is in the Nth USER message and turn N's answer is in the
 # Nth ASSISTANT message.
 #
@@ -1020,7 +1049,8 @@ flow_fresh_install() {
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
-    baseline fresh-install.consent "$OUT/consent-visible.json"
+    role_subtree_only "$OUT/consent-visible.json" AXSheet "$OUT/consent-sheet.json"
+    baseline fresh-install.consent "$OUT/consent-sheet.json"
     # #1560: merely launching a fresh install must not inspect model caches
     # behind the consent sheet. Give both SwiftUI catalog tasks time to run;
     # the fake sidecar records every non-serve command before it exits.

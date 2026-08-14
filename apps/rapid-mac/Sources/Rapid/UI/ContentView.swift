@@ -875,6 +875,14 @@ struct ContentView: View {
     // MARK: - Launch auto-start (Flow A/B)
 
     private func runLaunchAutoStart() async {
+        // Consent is the first user-controlled surface. Do not even inspect
+        // model caches behind it: the final AutoStartDecision also knows about
+        // this gate, but reaching that decision requires loading the catalog
+        // first (`rapid-mlx models` + `ls`). Besides doing work the user has not
+        // allowed the app to begin yet, that made first-launch UI depend on the
+        // operator's existing HF cache. The task is keyed on this value and
+        // runs again immediately after the user answers.
+        guard !telemetryConsentPending else { return }
         guard autoStartOnLaunch else {
             autoStartPendingDownload = nil
             return
