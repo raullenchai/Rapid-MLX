@@ -218,9 +218,9 @@ struct SidebarRenameFocusTests {
         )
         #expect(
             stripped.contains(
-                ".focused($editFieldFocused).task{awaitTask.yield()guard!Task.isCancelledelse{return}editFieldFocused=true}"
+                ".focused($editFieldFocused).accessibilityIdentifier(actionIdentifier(\"EditField\")).task{awaitTask.yield()guard!Task.isCancelledelse{return}editFieldFocused=true}"
             ),
-            "The sent-message editor must request focus from a .task attached to the editor, after a yield — a request made while the bubble is still switching branches is dropped and the editor opens unfocused."
+            "The sent-message editor must stay AX-addressable and request focus from a .task attached to the editor, after a yield — a request made while the bubble is still switching branches is dropped and the editor opens unfocused."
         )
         #expect(
             !stripped.contains(".task(id:isEditing){guardisEditingelse{return}editFieldFocused=true}"),
