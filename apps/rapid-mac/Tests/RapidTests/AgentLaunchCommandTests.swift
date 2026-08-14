@@ -83,11 +83,29 @@ struct AgentLaunchCommandTests {
         ]
 
         for command in commands {
-            #expect(command.hasPrefix("env "))
             #expect(!command.contains("export "))
             #expect(!command.contains("\n"))
             #expect(command.contains(key))
             #expect(command.contains(model))
+        }
+    }
+
+    /// The rule these commands exist to honour: nothing they touch survives
+    /// the process. `env` prefixes and `mktemp` scratch dirs both satisfy it;
+    /// a path under the user's home does not. This is the assertion that
+    /// actually distinguishes the two, so it names the home directories rather
+    /// than matching on a command prefix.
+    @Test("No command writes anywhere under the user's home")
+    func commandsStayOutOfTheUserHome() {
+        let commands = [
+            AgentLaunchCommand.claude(baseURL: base, key: key, model: model),
+            AgentLaunchCommand.codex(baseURL: base, key: key, model: model),
+            AgentLaunchCommand.hermes(baseURL: base, key: key, model: model),
+        ]
+
+        for command in commands {
+            #expect(!command.contains("~/"))
+            #expect(!command.contains("$HOME"))
         }
     }
 
@@ -101,13 +119,59 @@ struct AgentLaunchCommandTests {
         #expect(command.contains(#"wire_api="responses""#))
     }
 
-    @Test("Claude and Hermes retain their native provider variables")
-    func providerSpecificVariablesRemainComplete() {
+    /// Claude Code reads `settings.json` in preference to the environment for
+    /// `ANTHROPIC_BASE_URL`, so an `env`-only command is silently ignored for
+    /// any user who already routes Claude Code elsewhere. `--settings <file>`
+    /// is the supported way to win that precedence fight without editing the
+    /// file they own — the same mechanism amux uses.
+    @Test("Claude routes through a throwaway settings file, not the user's")
+    func claudeUsesTemporarySettingsFile() {
         let claude = AgentLaunchCommand.claude(baseURL: base, key: key, model: model)
-        #expect(claude.contains("ANTHROPIC_BASE_URL=\(base)"))
-        #expect(claude.contains("ANTHROPIC_API_KEY=\(key)"))
-        #expect(claude.hasSuffix("ANTHROPIC_MODEL=\(model) claude"))
 
+        #expect(claude.contains("mktemp -d"))
+        #expect(claude.contains("claude --settings "))
+        // The blob is JSON under `env`, which is where Claude Code reads these.
+        #expect(claude.contains("\"ANTHROPIC_BASE_URL\":\"\(base)\""))
+        #expect(claude.contains("\"ANTHROPIC_API_KEY\":\"\(key)\""))
+        #expect(claude.contains("\"ANTHROPIC_MODEL\":\"\(model)\""))
+        // Exactly one non-empty credential, so a shell that exports the other
+        // (CC Switch and friends do) cannot make Claude Code refuse to choose.
+        #expect(claude.contains("\"ANTHROPIC_AUTH_TOKEN\":\"\""))
+        // Cleaned up however the session ends, so the key does not outlive it.
+        #expect(claude.contains("trap "))
+        // The whole point: the user's own settings file is never named.
+        #expect(!claude.contains(".claude/settings.json"))
+    }
+
+    /// Codex and Hermes each accept a one-session connection, and the Launch
+    /// page must offer it rather than the registry's documentation printer.
+    ///
+    /// This is the regression the test exists for: the sidecar registry
+    /// classifies both as `adapter_profile`, so the page generated `rapid-mlx
+    /// agents codex ...` — a command that prints a setup guide. The button
+    /// said "run" and what ran was a page of Markdown; Codex never started,
+    /// even though the command that starts it was already written and sitting
+    /// unreachable in the fallback list.
+    @Test("Codex and Hermes launch the client, not a setup guide")
+    func sessionLaunchCommandsStartTheClient() {
+        let codex = AgentLaunchCommand.codex(baseURL: base, key: key, model: model)
+        #expect(codex.contains(" codex "))
+        #expect(!codex.contains(" agents "))
+
+        let hermes = AgentLaunchCommand.hermes(baseURL: base, key: key, model: model)
+        #expect(hermes.contains(" hermes "))
+        #expect(!hermes.contains(" agents "))
+
+        // The guide generator is what these must NOT be.
+        let guide = IntegrationLaunchCommand.adapterGuide(
+            id: "codex", baseURL: base, model: model, cli: "rapid-mlx"
+        )
+        #expect(guide.contains(" agents codex "))
+        #expect(codex != guide)
+    }
+
+    @Test("Hermes retains its native provider variables")
+    func providerSpecificVariablesRemainComplete() {
         let hermes = AgentLaunchCommand.hermes(baseURL: base, key: key, model: model)
         #expect(hermes.contains("OPENAI_BASE_URL=\(base)"))
         #expect(hermes.contains("HERMES_INFERENCE_MODEL=\(model)"))

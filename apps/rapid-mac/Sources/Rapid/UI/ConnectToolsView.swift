@@ -346,9 +346,56 @@ struct ConnectToolsView: View {
 /// has no top-level `--ignore-user-config` flag (that flag belongs only to the
 /// non-interactive `exec` subcommand in Codex 0.146). The temporary home keeps
 /// the Rapid provider isolated without rewriting `~/.codex/config.toml`.
+///
+/// `CODEX_HOME` isolates the config Codex *writes and reads by that name*, not
+/// everything it loads. `open -a Terminal` starts the script in the user's home
+/// directory, and Codex then treats `~/.codex/` as a PROJECT-local config dir —
+/// so hooks and MCP servers defined there still start, and their failures print
+/// before the prompt. Observed on a real machine: two broken MCP servers dumped
+/// tracebacks into a freshly launched session. Nothing is written and the
+/// provider override still wins (Codex refuses `model_provider` from a
+/// project-local config, so ours is the only one in play), but the session is
+/// not the clean room the name suggests. There is no cwd Rapid could pick that
+/// would be better — an agent CLI opened away from the user's code is worse
+/// than a noisy one.
 enum AgentLaunchCommand {
+    /// One-session Claude Code launch that leaves `~/.claude/settings.json`
+    /// alone.
+    ///
+    /// The alternative — `rapid-mlx launch claude-code` — patches the user's
+    /// GLOBAL settings file. Even done carefully (it merges and takes a
+    /// backup) that is the wrong default for a "try this now" button: it
+    /// changes the endpoint for every future Claude Code session, including
+    /// ones the user starts long after Rapid has quit and the local server is
+    /// gone. A bearer that rotates on each start is then baked into a config
+    /// that outlives it.
+    ///
+    /// `--settings <file>` is the escape hatch Claude Code provides for
+    /// exactly this. amux (`src/provider.rs:resolve_claude_settings`) drives
+    /// it the same way: render the blob, write it to a temp file, pass the
+    /// path. Scope ends with the process.
+    ///
+    /// Env vars alone would be simpler still, but `settings.json` beats the
+    /// shell environment when both set `ANTHROPIC_BASE_URL` — a user who
+    /// already routes Claude Code somewhere else (a proxy, another local
+    /// server) would see this command silently do nothing. The temp settings
+    /// file wins that precedence fight without touching their file.
+    /// `ANTHROPIC_AUTH_TOKEN` is blanked deliberately. A settings `env` entry
+    /// is applied OVER the inherited shell environment, and Claude Code
+    /// refuses to choose when both credentials are non-empty ("Both
+    /// ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may not work").
+    /// Proxy front-ends such as CC Switch export both as stubs, so a user of
+    /// one would hit that warning through no fault of their own. amux carries
+    /// the same workaround (`neutralize_conflicting_auth_token`) for the same
+    /// reason. Blanking is scoped to this launch like everything else here.
     static func claude(baseURL: String, key: String, model: String) -> String {
-        "env ANTHROPIC_BASE_URL=\(baseURL) ANTHROPIC_API_KEY=\(key) ANTHROPIC_MODEL=\(model) claude"
+        let settings = """
+        {"env":{"ANTHROPIC_BASE_URL":"\(baseURL)","ANTHROPIC_API_KEY":"\(key)","ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_MODEL":"\(model)"}}
+        """
+        // `mktemp -d` keeps the key out of a predictable path, and the trap
+        // removes it when the session ends however it ends.
+        return "d=$(mktemp -d) && printf '%s' '\(settings)' > \"$d/settings.json\" && "
+            + "trap 'rm -rf \"$d\"' EXIT && claude --settings \"$d/settings.json\""
     }
 
     static func codex(baseURL: String, key: String, model: String) -> String {
