@@ -5667,6 +5667,19 @@ def models_command(args):
     print("       `rapid-mlx serve <alias>` for an OpenAI-compatible server")
     if audio_entries:
         print("       `rapid-mlx serve kokoro|whisper-large-v3|parakeet` for audio")
+    # User mappings are rendered explicitly so support output never makes a
+    # private nickname look like an immutable catalog alias.
+    from vllm_mlx.model_aliases import list_builtin_aliases, user_alias_reserved_names
+    from vllm_mlx.user_aliases import validated_user_aliases
+
+    user_aliases = validated_user_aliases(
+        list_builtin_aliases(), user_alias_reserved_names()
+    )
+    if user_aliases:
+        print()
+        print(f"  User aliases ({len(user_aliases)})")
+        for name, target in sorted(user_aliases.items()):
+            print(f"  {name} -> {target}")
     print()
 
 
@@ -5935,6 +5948,41 @@ def rm_command(args):
     strategy = cache.delete_revisions(*revisions)
     strategy.execute()
     print(f"Freed {size_str}")
+
+
+def alias_command(args) -> None:
+    """Create, remove, or list user-owned model aliases."""
+    from vllm_mlx.model_aliases import list_builtin_aliases, user_alias_reserved_names
+    from vllm_mlx.user_aliases import (
+        UserAliasError,
+        remove_user_alias,
+        set_user_alias,
+        validated_user_aliases,
+    )
+
+    builtins = list_builtin_aliases()
+    reserved = user_alias_reserved_names()
+    try:
+        if args.alias_action == "set":
+            set_user_alias(args.name, args.target, builtins, reserved)
+            print(f"  User alias: {args.name} -> {args.target}")
+        elif args.alias_action == "remove":
+            if not remove_user_alias(args.name, builtins, reserved):
+                print(f"  User alias {args.name!r} does not exist.", file=sys.stderr)
+                raise SystemExit(1)
+            print(
+                f"  Removed user alias {args.name!r}; cached weights were not changed."
+            )
+        else:
+            aliases = validated_user_aliases(builtins, reserved)
+            if not aliases:
+                print("  No user aliases configured.")
+            else:
+                for name, target in sorted(aliases.items()):
+                    print(f"  {name} -> {target}")
+    except UserAliasError as exc:
+        print(f"\n  Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def ps_command(_args):
@@ -9708,6 +9756,18 @@ Examples:
         action="store_true",
         help="Skip the confirmation prompt and remove the model immediately.",
     )
+    alias_parser = subparsers.add_parser(
+        "alias", help="Manage user-owned model aliases"
+    )
+    alias_subparsers = alias_parser.add_subparsers(
+        dest="alias_action", required=True, help="Alias action"
+    )
+    alias_set = alias_subparsers.add_parser("set", help="Create or replace an alias")
+    alias_set.add_argument("name", help="Private alias name")
+    alias_set.add_argument("target", help="Built-in alias or Hugging Face repo id")
+    alias_remove = alias_subparsers.add_parser("remove", help="Remove an alias mapping")
+    alias_remove.add_argument("name", help="Private alias name")
+    alias_subparsers.add_parser("list", help="List user alias mappings")
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
     # Upgrade — detect install method and run the right upgrade command
@@ -10356,10 +10416,11 @@ def main():
         and getattr(args, "command", None) != "doctor"
     ):
         from vllm_mlx.model_aliases import RetiredModelAliasError, resolve_model
+        from vllm_mlx.user_aliases import UserAliasError
 
         try:
             resolved = resolve_model(args.model)
-        except RetiredModelAliasError as exc:
+        except (RetiredModelAliasError, UserAliasError) as exc:
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         if resolved != args.model:
@@ -10534,6 +10595,8 @@ def main():
         pull_command(args)
     elif args.command == "rm":
         rm_command(args)
+    elif args.command == "alias":
+        alias_command(args)
     elif args.command == "ps":
         ps_command(args)
     elif args.command in ("upgrade", "update"):

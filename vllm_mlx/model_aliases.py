@@ -645,6 +645,14 @@ def resolve_model(name: str) -> str:
         return name
     if reason := _RETIRED_MODEL_ALIASES.get(name):
         raise RetiredModelAliasError(reason)
+    from .user_aliases import validated_user_aliases
+
+    builtins = {alias: profile.hf_path for alias, profile in _load().items()}
+    if target := validated_user_aliases(builtins, user_alias_reserved_names()).get(
+        name
+    ):
+        profile = _load().get(target)
+        return profile.hf_path if profile is not None else target
     # Preserve the historical resolver hot path exactly unless the external
     # feature is configured. In particular, ordinary chat/serve resolution
     # must not introduce a cache/download-gate probe.
@@ -811,13 +819,43 @@ def _external_model_identifier_parts(name: str) -> list[str] | None:
 
 def list_aliases() -> dict[str, str]:
     """Return all aliases as ``{alias: hf_path}`` (legacy view)."""
+    builtins = {alias: profile.hf_path for alias, profile in _load().items()}
+    from .user_aliases import validated_user_aliases
+
+    users = validated_user_aliases(builtins, user_alias_reserved_names())
+    return builtins | {
+        alias: builtins.get(target, target) for alias, target in users.items()
+    }
+
+
+def list_builtin_aliases() -> dict[str, str]:
+    """Return the immutable catalog aliases, excluding user mappings."""
     return {alias: profile.hf_path for alias, profile in _load().items()}
+
+
+def user_alias_reserved_names() -> frozenset[str]:
+    """Names user aliases may not shadow, including retired catalog names."""
+    return frozenset(_load()) | frozenset(_RETIRED_MODEL_ALIASES)
 
 
 def list_profiles() -> dict[str, AliasProfile]:
     """Return all alias profiles. Use this when you need parser/capability
     info, not just the HF path."""
-    return dict(_load())
+    profiles = dict(_load())
+    from .user_aliases import validated_user_aliases
+
+    users = validated_user_aliases(
+        {alias: profile.hf_path for alias, profile in profiles.items()},
+        user_alias_reserved_names(),
+    )
+    for alias, target in users.items():
+        target_profile = profiles.get(target)
+        if target_profile is None and _hf_to_alias is not None:
+            canonical = _hf_to_alias.get(target)
+            if canonical is not None:
+                target_profile = profiles[canonical]
+        profiles[alias] = target_profile or AliasProfile(hf_path=target)
+    return profiles
 
 
 def resolve_profile(name: str) -> AliasProfile | None:
@@ -835,6 +873,19 @@ def resolve_profile(name: str) -> AliasProfile | None:
     direct = profiles.get(name)
     if direct is not None:
         return direct
+    from .user_aliases import validated_user_aliases
+
+    users = validated_user_aliases(
+        {alias: profile.hf_path for alias, profile in profiles.items()},
+        user_alias_reserved_names(),
+    )
+    if target := users.get(name):
+        target_profile = profiles.get(target)
+        if target_profile is None and _hf_to_alias is not None:
+            canonical = _hf_to_alias.get(target)
+            if canonical is not None:
+                target_profile = profiles[canonical]
+        return target_profile or AliasProfile(hf_path=target)
     if "/" in name and _hf_to_alias is not None:
         canonical = _hf_to_alias.get(name)
         if canonical is not None:
