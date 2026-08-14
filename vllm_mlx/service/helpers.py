@@ -4120,8 +4120,24 @@ async def _disconnect_guard(
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()
-        if anext_task and not anext_task.done():
-            anext_task.cancel()
+        if anext_task:
+            if not anext_task.done():
+                anext_task.cancel()
+            # Cancellation of the response task races the upstream async
+            # generator's own cancellation-to-exhaustion cleanup.  Always
+            # retrieve the terminal result: it may be CancelledError *or*
+            # StopAsyncIteration.  Leaving the latter on the task produces
+            # asyncio's noisy "Task exception was never retrieved" warning
+            # on the next GC cycle even though the request was handled.
+            try:
+                await anext_task
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+            except Exception:
+                # The streaming loop owns client-facing error translation.
+                # During teardown there is no live consumer, but retrieving
+                # the exception still prevents an orphan-task warning.
+                pass
         # Drive the cascade first: ``generator.aclose()`` propagates
         # ``GeneratorExit`` into the upstream so its ``finally`` runs
         # (calls ``stream_generate.finally`` → ``scheduler.abort_request``).

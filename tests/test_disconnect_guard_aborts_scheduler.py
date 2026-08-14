@@ -25,6 +25,7 @@ remains as belt-and-suspenders but is no longer the primary signal.
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 
 import pytest
@@ -97,6 +98,10 @@ async def test_response_task_cancellation_publishes_disconnect_state():
     from vllm_mlx.service.helpers import _disconnect_guard
 
     disconnect_state = [False]
+    orphaned_task_errors: list[dict] = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: orphaned_task_errors.append(context))
 
     async def _blocked_stream():
         yield "data: first\n\n"
@@ -112,13 +117,20 @@ async def test_response_task_cancellation_publishes_disconnect_state():
         ):
             pass
 
-    task = asyncio.create_task(_consume())
-    await asyncio.sleep(0.05)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        task = asyncio.create_task(_consume())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        del task
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
 
     assert disconnect_state == [True]
+    assert orphaned_task_errors == []
 
 
 # ---------------------------------------------------------------------------
