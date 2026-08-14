@@ -25,6 +25,10 @@ AXApplication title="Rapid-MLX"
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Download & start" enabled=true
             AXButton id="Audio.Transcription.Run" desc="Transcribe" enabled=false
+      AXImage id="checkmark.circle.fill" desc="Selected" enabled=true
+      AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXButton id="DownloadStrip.Dismiss.fake-qwen3-tts" desc="Dismiss fake-qwen3-tts status" help="Dismiss" enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
