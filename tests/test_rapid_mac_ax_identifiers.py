@@ -915,7 +915,9 @@ def test_shipping_tree_has_no_unlabelled_native_controls():
     current PR."""
     violations = []
     for path in _real_sources():
-        violations.extend(gate.find_violations(str(path), path.read_text(encoding="utf-8")))
+        violations.extend(
+            gate.find_violations(str(path), path.read_text(encoding="utf-8"))
+        )
     assert violations == [], "\n" + "\n".join(str(v) for v in violations)
 
 
