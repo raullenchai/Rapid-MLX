@@ -78,6 +78,35 @@ struct ModelResidencyTests {
         #expect(status.displayName(preferredAlias: "qwen3.5-4b-4bit") == "qwen3.5-4b-4bit")
     }
 
+    @Test("Connector restart prefers a resident text model over the process-owning audio alias")
+    func connectorRestartTextAlias() {
+        let text = ResidentModelStatus(
+            id: "qwen3.5-4b-4bit",
+            modelPath: "mlx-community/Qwen3.5-4B-MLX-4bit",
+            aliases: [],
+            modality: "text",
+            state: "resident",
+            pinned: false,
+            primary: false,
+            activeRequests: 0,
+            estimatedBytes: 1,
+            measuredBytes: nil,
+            idleSeconds: 0
+        )
+        let snapshot = ModelResidencySnapshot(
+            memoryLimitBytes: 1,
+            memoryUsedBytes: 1,
+            memoryAvailableBytes: 0,
+            idleTTLSeconds: 1,
+            loadsTotal: 1,
+            evictionsTotal: 0,
+            models: [text]
+        )
+
+        #expect(snapshot.preferredTextAlias(fallback: "qwen3-tts-4bit") == "qwen3.5-4b-4bit")
+        #expect(ModelResidencySnapshot.empty.preferredTextAlias(fallback: "legacy-chat") == "legacy-chat")
+    }
+
     @Test("Server readiness is resolved for every resident alias")
     func aliasSpecificReadiness() {
         let image = ResidentModelStatus(

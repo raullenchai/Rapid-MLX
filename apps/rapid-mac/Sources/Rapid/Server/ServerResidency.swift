@@ -121,6 +121,19 @@ struct ModelResidencySnapshot: Codable, Sendable, Equatable {
     func contains(_ alias: String) -> Bool {
         models.contains { $0.matches(alias) && $0.state != "evicting" }
     }
+
+    /// Pick the resident text model that can host chat-only subsystems such
+    /// as MCP. The process-owning alias may be an audio model after a user
+    /// visits Speech, even while a text engine is resident in that process.
+    func preferredTextAlias(fallback: String?) -> String? {
+        let textModels = models.filter {
+            $0.modality == "text" && $0.state != "evicting"
+        }
+        guard let model = textModels.first(where: { $0.primary }) ?? textModels.first else {
+            return fallback
+        }
+        return model.displayName(preferredAlias: fallback)
+    }
 }
 
 enum ResidentModelLoadResult: Sendable, Equatable {

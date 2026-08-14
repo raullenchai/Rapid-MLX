@@ -323,7 +323,14 @@ struct SettingsConnectorsPanel: View {
     /// Stop-then-start the current alias so the child is respawned WITH
     /// ``--mcp-config``. Mirrors the model-switch path in ``ContentView``.
     private func restartModel() {
-        guard let alias = server.launchedChildAlias else { return }
+        // Audio is intentionally non-resident and can own the sidecar after a
+        // trip through Speech. Restarting that launch alias cannot initialize
+        // MCP, even when a ready text model is resident beside it. Prefer the
+        // resident text engine; retain the launch alias for legacy engines
+        // that do not publish residency data.
+        guard let alias = server.residency.preferredTextAlias(
+            fallback: server.launchedChildAlias
+        ) else { return }
         isRestarting = true
         Task {
             await server.stop()
