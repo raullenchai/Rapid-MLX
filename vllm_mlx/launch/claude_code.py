@@ -3,7 +3,7 @@
 
 Unlike the VS Code-extension clients (Cline, Continue), the Claude Code
 CLI ships as a Node-based command-line tool (``claude``) that reads its
-config from ``~/.config/claude/settings.json`` and also honours a small
+config from ``~/.claude/settings.json`` and also honours a small
 set of environment variables — most importantly
 ``ANTHROPIC_BASE_URL`` and ``ANTHROPIC_API_KEY``.
 
@@ -35,9 +35,21 @@ from . import _common
 # Volta or asdf shim that's not in the parent shell's PATH).
 _CLAUDE_STATE_DIR = Path.home() / ".claude"
 
-# Canonical settings location. Anthropic's docs document this path on
-# both macOS and Linux; the CLI mkdir's it on first launch.
-_CONFIG_DIR = Path.home() / ".config" / "claude"
+# Canonical settings location: ``~/.claude/settings.json``.
+#
+# This used to point at ``~/.config/claude/``. That directory is not what
+# the CLI reads — on a machine with a real Claude Code install, ``~/.claude``
+# holds ``settings.json`` alongside ``CLAUDE.md``, ``agents/`` and
+# ``commands/``, while ``~/.config/claude/`` did not exist at all until this
+# adapter created it. The write therefore succeeded and changed nothing the
+# CLI would ever load, and — because the target was a fresh file — the
+# "merge into the user's existing settings" logic below had nothing to merge
+# with, so the result looked like an overwrite of a config that was in fact
+# untouched somewhere else.
+#
+# ``integrations.py`` already advertises ``~/.claude/settings.json`` to the
+# desktop UI, so the adapter was also contradicting its own catalogue entry.
+_CONFIG_DIR = Path.home() / ".claude"
 _CONFIG_FILENAME = "settings.json"
 
 
@@ -48,8 +60,7 @@ def detect() -> bool:
 
     * The ``claude`` executable resolves on PATH.
     * ``~/.claude`` exists (the CLI's state dir from a previous run).
-    * ``~/.config/claude/`` exists (the config dir, mkdir'd on first
-      launch on freshly installed boxes).
+    * ``~/.claude/`` exists (the CLI's state + config dir).
 
     Multiple signals exist because users install the CLI through wildly
     different package managers (npm-global, brew, official installer)
@@ -67,7 +78,7 @@ def detect() -> bool:
 
 
 def current_config_path() -> Path | None:
-    """Return ``~/.config/claude/settings.json``.
+    """Return ``~/.claude/settings.json``.
 
     Unlike Cline (where we *might* refuse to write when the extension
     isn't installed), Claude Code's settings file is safe to create
@@ -87,7 +98,7 @@ def write_or_patch_config(
     api_key: str = "sk-noop",
     config_path: Path | None = None,
 ) -> Path:
-    """Patch ``~/.config/claude/settings.json`` to route at the local
+    """Patch ``~/.claude/settings.json`` to route at the local
     rapid-mlx Anthropic-compatible endpoint.
 
     Keys we own (all under the top-level ``env`` object, which Anthropic
