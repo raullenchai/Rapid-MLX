@@ -221,9 +221,13 @@ private struct RapidButtonSurface: View {
                 // Hover and pressed are drawn as a wash ON TOP of the
                 // tier's own fill, so one pair of values reads correctly
                 // over amber, over white, and over nothing.
+                //
+                // Both values must therefore be translucent. ``hoverFill`` is
+                // not — it is the opaque plane colour rows paint behind their
+                // content — so this position takes ``hoverWash``.
                 if isEnabled, configuration.isPressed || hovering {
                     RoundedRectangle(cornerRadius: RapidTheme.Radius.button, style: .continuous)
-                        .fill(configuration.isPressed ? RapidTheme.pressedFill : RapidTheme.hoverFill)
+                        .fill(configuration.isPressed ? RapidTheme.pressedFill : RapidTheme.hoverWash)
                 }
             }
             .overlay {

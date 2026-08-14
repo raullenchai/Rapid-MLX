@@ -631,7 +631,26 @@ enum RapidTheme {
         appearance.isDark ? NSColor(deviceRed: 0x21/255.0, green: 0x24/255.0, blue: 0x29/255.0, alpha: 1.0)
                           : NSColor(deviceRed: 0xF0/255.0, green: 0xF0/255.0, blue: 0xED/255.0, alpha: 1.0)
     }))
-    /// Pressed wash — one step firmer than hover.
+    /// Hover wash for controls that draw it ON TOP of their own fill.
+    ///
+    /// ``hoverFill`` is an opaque plane colour, which is right for the rows
+    /// and chips that paint it BEHIND their content — that is what Phase UI-2
+    /// made it, so the same hover lands the same colour on all four surfaces.
+    /// A button cannot use it: ``RapidButtonSurface`` composites hover over an
+    /// amber or white fill it must not replace, so an opaque value there
+    /// covers the label instead of shading it. The button surface hovered to a
+    /// solid grey block with no text, and pressing it brought the text back —
+    /// ``pressedFill`` beside this is still translucent, so the same overlay
+    /// read as a wash on press and as a lid on hover.
+    ///
+    /// This is the value ``hoverFill`` carried before it became a plane, kept
+    /// here for the over-content case only. It composites differently across
+    /// surfaces — the reason Phase UI-2 moved off it — but a wash sitting on
+    /// the control's own fill is exactly where that behaviour is wanted.
+    static let hoverWash = Color.primary.opacity(0.055)
+    /// Pressed wash — one step firmer than ``hoverWash``, and drawn in the
+    /// same over-content position, which is why it is an opacity rather than
+    /// a plane colour.
     static let pressedFill = Color.primary.opacity(0.10)
     /// Multiplier applied to a control's opacity when disabled.
     ///
