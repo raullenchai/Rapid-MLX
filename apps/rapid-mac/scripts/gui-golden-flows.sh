@@ -851,7 +851,23 @@ dismiss_first_run() {
 }
 
 open_settings() {
-    pb menu click --app "PID:$APP_PID" --item 'Settings…' --json > "$OUT/open-settings.json"
+    if flow_requires_peekaboo; then
+        pb menu click --app "PID:$APP_PID" --item 'Settings…' --json > "$OUT/open-settings.json"
+    else
+        # Settings persistence is deliberately part of the unattended,
+        # AX-only suite. Use the standard macOS shortcut so that flow does
+        # not quietly depend on Peekaboo just to open the window.
+        osascript - "$APP_PID" > "$OUT/open-settings.json" <<'APPLESCRIPT'
+on run argv
+    set targetPID to (item 1 of argv) as integer
+    tell application "System Events"
+        set frontmost of first application process whose unix id is targetPID to true
+        keystroke "," using command down
+    end tell
+    return "{\"success\":true,\"method\":\"command-comma\"}"
+end run
+APPLESCRIPT
+    fi
     local probe=2 opened=0
     for _ in {1..40}; do
         probe=0
