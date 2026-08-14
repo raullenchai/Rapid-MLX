@@ -437,6 +437,35 @@ def test_whisper_cache_rejects_incomplete_npz_layout(tmp_path, monkeypatch, miss
     )
 
 
+@pytest.mark.parametrize("escaped_name", ["config.json", "weights.npz"])
+def test_whisper_cache_rejects_files_symlinked_outside_repo(
+    tmp_path, monkeypatch, escaped_name
+):
+    """A crafted cache symlink must not borrow proof from an unrelated file."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--whisper-small-mlx"
+    sha = "whisper789"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    files = {"config.json": b"{}", "weights.npz": b"weights"}
+    outside = tmp_path / f"outside-{escaped_name}"
+    outside.write_bytes(files[escaped_name])
+    for name, payload in files.items():
+        path = snap / name
+        if name == escaped_name:
+            path.symlink_to(outside)
+        else:
+            path.write_bytes(payload)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert (
+        gate._snapshot_is_complete_whisper_model("mlx-community/whisper-small-mlx")
+        is False
+    )
+
+
 def test_is_repo_cached_false_when_no_snapshot(tmp_path, monkeypatch):
     """Empty HF cache directory → False."""
     empty_cache = tmp_path / "hf-cache"

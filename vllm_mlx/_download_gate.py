@@ -723,9 +723,18 @@ def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
         if resolved_sha is None:
             return False
         snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
+        repo_root_real = os.path.realpath(repo_root)
         for name in ("config.json", "weights.npz"):
             path = os.path.join(snap_dir, name)
-            if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            if not os.path.isfile(path):
+                return False
+            # HF snapshot files normally point into this repo's own ``blobs``
+            # directory. Do not let an unrelated local file satisfy the cache
+            # gate through a crafted symlink.
+            real = os.path.realpath(path)
+            if real != repo_root_real and not real.startswith(repo_root_real + os.sep):
+                return False
+            if os.path.getsize(path) <= 0:
                 return False
         return True
     except Exception:

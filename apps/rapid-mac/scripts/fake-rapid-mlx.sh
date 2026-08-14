@@ -76,6 +76,17 @@ def _setting(name, default=None):
     return os.environ.get(name, FILE_CONFIG.get(name, default))
 
 
+def _pulled_audio_aliases():
+    state_path = _setting("FAKE_AUDIO_PULL_STATE")
+    if not state_path:
+        return set()
+    try:
+        with open(state_path) as stream:
+            return {line.strip() for line in stream if line.strip()}
+    except OSError:
+        return set()
+
+
 def _parse_args(argv):
     """Match the real rapid-mlx CLI shape closely enough that
     ServerManager's spawn arguments work unmodified.
@@ -923,12 +934,17 @@ def _emit_catalog(subcommand, alias):
         # Cached, so the Images tab resolves to it without a download path —
         # ``ImageGenViewModel.resolveAlias`` prefers a cached entry.
         print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")
-        if _setting("FAKE_PARTIAL_AUDIO_CACHE") == "1":
+        pulled_audio = _pulled_audio_aliases()
+        if "fake-qwen3-tts" in pulled_audio:
+            print("fake-qwen3-tts         fake/qwen3-tts        1.1 GiB")
+        elif _setting("FAKE_PARTIAL_AUDIO_CACHE") == "1":
             # A real interrupted multi-shard pull remains visible in `ls` for
             # disk cleanup, but its status alias must never make Audio render
             # Start. The audio-readiness flow clicks through this row and
             # requires a resumptive `pull fake-qwen3-tts`.
             print("(incomplete)           fake/qwen3-tts        633 MB")
+        if "fake-whisper-small" in pulled_audio:
+            print("fake-whisper-small     fake/whisper-small    461 MiB")
         return True
     if subcommand == "info":
         # Per-alias, not a constant: `ls`/`models` map fake-image-alias to its
@@ -999,6 +1015,10 @@ def main():
             # for the AX flow to inspect the in-flight progress card.
             print("[bytes] 663748608/590348288", flush=True)
             time.sleep(5)
+            state_path = _setting("FAKE_AUDIO_PULL_STATE")
+            if state_path and args.alias in {"fake-qwen3-tts", "fake-whisper-small"}:
+                with open(state_path, "a") as stream:
+                    stream.write(f"{args.alias}\n")
             sys.exit(0)
         _emit_catalog(args.subcommand, args.alias)
         sys.exit(0)

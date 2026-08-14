@@ -13,8 +13,10 @@ def test_audio_readiness_actions_start_both_selected_models_and_clear_the_gate()
     flow = source.split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]
 
     assert flow.count('press "$OUT/') >= 3
+    assert flow.count('.subcommand == "pull"') == 2
     assert '.alias == "fake-qwen3-tts"' in flow
     assert '.alias == "fake-whisper-small"' in flow
+    assert "before its pull completed" in flow
     assert "Speech stayed behind Download & start" in flow
     assert "Transcription stayed behind Download & start" in flow
 
