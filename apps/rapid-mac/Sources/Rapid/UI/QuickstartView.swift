@@ -420,6 +420,173 @@ Open the picker any time to switch models.
     }
     private(set) var stage: Stage = .welcome
 
+    /// Where inside **Step 2 · Choose a model** the user is (Paper 05.2.B —
+    /// "Five micro-stages inside one macro step").
+    ///
+    /// These are branches, not steps. Every one of them reports
+    /// ``Step/chooseModel``, so the rail reads `Step 2 of 4` throughout and
+    /// never gains a fifth row for the catalogue or for review. The public
+    /// four-step model introduced by PR #1917 is untouched: ``stage`` still
+    /// decides the macro step, and this enum is deliberately not consulted by
+    /// ``step(phase:stage:)`` at all — which is what makes "a micro-stage
+    /// cannot become a step" true by construction rather than by review.
+    ///
+    /// Ordering matches the user's path through Step 2, not a progress value;
+    /// nothing sub-numbers the kicker (`STEP 2.3 OF 4` is forbidden).
+    enum Step2Stage: String, CaseIterable, Equatable, Sendable {
+        /// 2a — reading this Mac's chip and unified memory.
+        ///
+        /// Real detection, never a simulated scan: ``MacHardware/detect()``
+        /// and ``MemoryProbe/snapshot(...)`` are synchronous sysctl reads, so
+        /// in production this resolves within the same render pass and is not
+        /// observably on screen. It is modelled anyway so the hardware read
+        /// has a named home inside Step 2 rather than being smuggled in
+        /// somewhere that could later claim its own step — and so nothing is
+        /// tempted to add a delay to make a stage "visible".
+        case checkingHardware
+        /// 2b — matching models to this Mac.
+        ///
+        /// The genuinely asynchronous one: the shortlist cannot say which
+        /// models are already on disk, and therefore cannot derive its footer
+        /// verb, until ``ModelCatalog/load(binary:hubCacheOverride:)`` has
+        /// answered. Indeterminate by nature — neither subprocess reports
+        /// progress, so nothing here may draw a determinate bar.
+        case findingFit
+        /// 2c — the recommended shortlist (cached rows, starter, low-memory
+        /// fallback, trade-ups, and a catalogue pick carried back as YOUR PICK).
+        case choosing
+        /// 2d — in-window Browse all models. The real catalogue, on the setup
+        /// canvas: no Settings window, no second window, no sheet.
+        case browsing
+        /// 2e — Review download: name the cost before spending it.
+        case reviewing
+    }
+
+    /// Which list a Review download was opened from, so Back can return to it
+    /// (Paper 05.2.J · S2 — the old "Secondary Back → Welcome" note is
+    /// superseded; Review returns to its origin, never to the hero).
+    enum ReviewOrigin: Equatable, Sendable {
+        case shortlist
+        case catalogue
+    }
+
+    private(set) var step2Stage: Step2Stage = .choosing
+
+    /// The list a Review download was entered from. Only meaningful while
+    /// ``step2Stage`` is ``Step2Stage/reviewing``; retained afterwards so the
+    /// value is stable for the duration of the Back that reads it.
+    private(set) var reviewOrigin: ReviewOrigin = .shortlist
+
+    // MARK: - Browse all models state (Paper 05.2.H — what must survive Back)
+    //
+    // All of it lives here rather than in `@State` for the same reason
+    // ``selection`` does: it has to survive a SwiftUI re-mount, and Back out of
+    // Review has to be able to restore a list the view may have torn down.
+    //
+    // None of it is persisted to UserDefaults. A relaunch starts Step 2 clean.
+
+    /// Catalogue search text, verbatim. Matched against alias AND Hugging Face
+    /// repo by ``ModelCacheActions/filter(_:by:query:)``.
+    var catalogQuery: String = ""
+
+    /// Catalogue filter segment. ``ModelCacheActions/FilterMode`` reused as-is.
+    var catalogFilter: ModelCacheActions.FilterMode = .all
+
+    /// Catalogue sort order. ``ModelCacheActions/SortOrder`` reused as-is.
+    var catalogSort: ModelCacheActions.SortOrder = .familyThenSize
+
+    /// Scroll anchor for the catalogue, as an **alias** rather than a pixel
+    /// offset — a pixel offset points at a different row after a filter or
+    /// sort change, which is exactly when restoring it matters.
+    var catalogScrollID: String?
+
+    /// Enter in-window Browse all models (Paper 05.2.H · T1).
+    ///
+    /// Carries the selection in and leaves query / filter / sort / scroll
+    /// exactly as the user last left them, so re-entering the catalogue is a
+    /// return rather than a reset.
+    func beginBrowsingCatalog() {
+        guard case .idle = phase else { return }
+        stage = .chooseModel
+        step2Stage = .browsing
+    }
+
+    /// Leave the catalogue for the recommended shortlist (Paper 05.2.H · T2).
+    ///
+    /// Retains every piece of catalogue state. The selection is not touched:
+    /// if it is a model the shortlist does not natively list, the shortlist
+    /// shows it as YOUR PICK (approved default D2) rather than silently
+    /// disagreeing with the footer.
+    func backToRecommendedModels() {
+        guard case .idle = phase else { return }
+        stage = .chooseModel
+        step2Stage = .choosing
+    }
+
+    /// Open Review download for the current selection (Paper 05.2.H · T3).
+    ///
+    /// ``origin`` decides the Back label and destination. Review is never the
+    /// origin of another Review, so a call made while already reviewing keeps
+    /// the original origin rather than pinning Review to itself.
+    func beginReviewDownload(origin: ReviewOrigin) {
+        guard case .idle = phase else { return }
+        guard step2Stage != .reviewing else { return }
+        stage = .chooseModel
+        reviewOrigin = origin
+        step2Stage = .reviewing
+    }
+
+    /// Back out of Review download to the list it was opened from.
+    ///
+    /// The caller re-derives the footer *after* this returns — the list is
+    /// rebuilt first, the selection revalidated second, the primary derived
+    /// third (Paper 05.2.G — "Return from Review restores origin").
+    func backFromReviewDownload() {
+        guard case .idle = phase else { return }
+        stage = .chooseModel
+        switch reviewOrigin {
+        case .shortlist: step2Stage = .choosing
+        case .catalogue: step2Stage = .browsing
+        }
+    }
+
+    /// Record the row the catalogue should be anchored on when it is restored.
+    func rememberCatalogAnchor(_ alias: String?) {
+        catalogScrollID = alias
+    }
+
+    /// Move one level closer to the shortlist, if the user is inside a Step 2
+    /// sub-stage. Returns `true` when it handled the request.
+    ///
+    /// This is the backstop for Paper 05.2.G's invariant — *"while the user is
+    /// inside Browse all models or Review download, Escape can only move them
+    /// one level closer to the shortlist; it can never leave setup from
+    /// there"*.
+    ///
+    /// The footer's `.cancelAction` Back normally consumes Escape before
+    /// anything else sees it. But onboarding is presented in a `.sheet`, and a
+    /// sheet dismissal is also reachable by swipe-down and by any future host
+    /// that decides Escape means "close this". Routing that request through
+    /// here first means it resolves to the SAME destination as the visible Back
+    /// control rather than skipping setup from two levels deep — so the
+    /// invariant holds no matter which layer wins the key.
+    @discardableResult
+    func retreatWithinStep2() -> Bool {
+        guard case .idle = phase, stage == .chooseModel else { return false }
+        switch step2Stage {
+        case .reviewing:
+            backFromReviewDownload()
+            return true
+        case .browsing:
+            backToRecommendedModels()
+            return true
+        case .checkingHardware, .findingFit, .choosing:
+            // The Step 2 root. Onboarding's own Skip/Back meaning resumes here
+            // and only here (Escape priority 4).
+            return false
+        }
+    }
+
     /// The public macro step the current (phase, stage) pair belongs to.
     ///
     /// Pure and static so the four-step mapping can be pinned exhaustively
@@ -455,10 +622,55 @@ Open the picker any time to switch models.
     var step: Step { Self.step(phase: phase, stage: stage) }
 
     /// Advance from the hero to the model chooser ("Get started").
-    func advanceToChooseModel() { stage = .chooseModel }
+    ///
+    /// Always enters at the top of Step 2. Catalogue query / filter / sort
+    /// survive — re-entering Step 2 should not silently retype the user's
+    /// search — but the surface they see is the one Step 2 opens on.
+    ///
+    /// Enters ``Step2Stage/checkingHardware`` rather than
+    /// ``Step2Stage/choosing`` because the shortlist genuinely cannot be drawn
+    /// truthfully yet: which of its models are already on disk, and therefore
+    /// what the footer verb is, comes from the catalogue snapshot.
+    /// ``resolveRecommendationLoading(catalogLoaded:)`` moves it on.
+    func advanceToChooseModel() {
+        stage = .chooseModel
+        step2Stage = .checkingHardware
+    }
+
+    /// Settle the two pre-shortlist micro-stages against real signals.
+    ///
+    /// Hardware detection is synchronous, so ``Step2Stage/checkingHardware``
+    /// leaves as soon as anything asks; the wait that actually exists is the
+    /// catalogue load behind ``Step2Stage/findingFit``. Nothing here invents a
+    /// duration — if the snapshot is already in hand on entry, Step 2 opens
+    /// straight onto the shortlist and neither loading surface is ever drawn.
+    ///
+    /// Navigational micro-stages are left alone: a catalogue that re-loads
+    /// under the user must not yank them out of Browse all models or Review.
+    func resolveRecommendationLoading(catalogLoaded: Bool) {
+        guard case .idle = phase, stage == .chooseModel else { return }
+        switch step2Stage {
+        case .checkingHardware, .findingFit:
+            step2Stage = catalogLoaded ? .choosing : .findingFit
+        case .choosing:
+            // The snapshot can be invalidated after the fact (a download
+            // completes and bumps the cache generation). Report that honestly
+            // rather than leaving a shortlist whose cached column is stale.
+            if !catalogLoaded { step2Stage = .findingFit }
+        case .browsing, .reviewing:
+            break
+        }
+    }
 
     /// Back out of the chooser to the hero ("Back").
-    func backToWelcome() { stage = .welcome }
+    ///
+    /// Only reachable from the Step 2 root: Browse all models and Review
+    /// download own the Back control while they are showing, so this cannot be
+    /// how a user leaves either of them.
+    func backToWelcome() {
+        stage = .welcome
+        step2Stage = .choosing
+    }
 
     /// Drop a serve that the pre-load memory guard declined back to the
     /// model chooser (#1503). The handoff to ``ServerManager.start`` parks
@@ -470,6 +682,13 @@ Open the picker any time to switch models.
     /// and NOT ``.idle``/``.welcome`` (they already chose a model), but the
     /// chooser, where they can free memory and retry, pick a smaller model,
     /// or browse all. Leaving ``.starting`` is what releases the sheet.
+    ///
+    /// ``step2Stage`` is deliberately NOT reset: it still holds the micro-stage
+    /// the user was on when they authorised the load, so declining returns them
+    /// to the shortlist, the catalogue or Review download — whichever they
+    /// actually left. Paper 05.2.J · S3 supersedes the old "Cancel lands on the
+    /// model chooser" note, which was only ever true while the chooser was
+    /// Step 2's single surface.
     func returnToChooser() {
         phase = .idle
         stage = .chooseModel
@@ -666,6 +885,12 @@ Open the picker any time to switch models.
         done = false
         phase = .idle
         stage = .welcome
+        step2Stage = .choosing
+        reviewOrigin = .shortlist
+        catalogQuery = ""
+        catalogFilter = .all
+        catalogSort = .familyThenSize
+        catalogScrollID = nil
         selection = Self.defaultChoice
         hasSeededWelcome = false
         awaitingWelcomeSeed = false
@@ -980,7 +1205,6 @@ Open the picker any time to switch models.
 /// ``QuickstartCoordinator`` reports the surface should show.
 struct QuickstartView: View {
     @Environment(SettingsRouter.self) private var settingsRouter
-    @Environment(\.dismiss) private var dismiss
 
     /// The ONLY mechanism that opens this app's Settings. It declares a real
     /// ``Window("Settings", id: "settings")`` and no SwiftUI ``Settings``
@@ -994,10 +1218,29 @@ struct QuickstartView: View {
     @Bindable var downloads: DownloadManager
     @Bindable var server: ServerManager
 
-    /// Chat models the shared catalogue has positively identified on disk.
-    /// Quickstart used to ignore this snapshot and offered only a download
-    /// path even when the user's first model was already present (#1793).
+    /// The shared catalogue snapshot — every alias the engine knows, with its
+    /// cached flag and size-on-disk. Named for its original single use (#1793:
+    /// spotting a model already present) and kept for call-site stability; it
+    /// has always carried the WHOLE catalogue, which is what lets in-window
+    /// Browse all models read the real thing without a second load.
     var cachedModels: [ModelEntry] = []
+
+    /// Whether that snapshot has actually landed.
+    ///
+    /// Load-bearing, not cosmetic: ``ModelCatalog/load(binary:hubCacheOverride:)``
+    /// returns `[]` on failure, so an empty array is ambiguous on its own —
+    /// "still loading" and "the subprocess failed" are different claims and
+    /// neither is evidence that a model is absent. Together with the array this
+    /// resolves ``catalogState``, which gates every Step 2 primary.
+    ///
+    /// Defaults to `true` so the many call sites that hand over a ready-made
+    /// fixture keep rendering a settled list; ContentView passes the real flag.
+    var catalogLoaded: Bool = true
+
+    /// This Mac, read once per view lifetime. Same pattern and same source as
+    /// ``ModelPickerBar`` and ``SettingsModelManagementPanel``, so onboarding's
+    /// "won't fit" decision is the one the rest of the app already makes.
+    @State private var hardware: MacHardware = .detect()
 
     /// Callback the parent supplies for "Skip for now". The parent
     /// dismisses the Quickstart surface for the current session (without
@@ -1013,9 +1256,6 @@ struct QuickstartView: View {
     /// on the alphabetical fallback (#1653). Browsing is handled in this view
     /// now, by ``browseAllModels()``.
     var onSkip: () -> Void
-
-    /// Temporarily lower the wizard while its Settings catalogue is open.
-    var onBrowseAll: () -> Void
 
     /// Callback the parent supplies for seeding the welcome message
     /// into the intended chat session. Closing over ``ChatViewModel``
@@ -1267,44 +1507,165 @@ struct QuickstartView: View {
         .padding(.horizontal, 44)
     }
 
-    /// Step 2 — the model chooser: recommended starter (default
-    /// selection) + an honest low-memory fallback + bigger trade-ups +
-    /// "Browse all models". The primary
-    /// footer button kicks off the download for the current selection.
+    // MARK: - Step 2 · Choose a model
+
+    /// Step 2's router over its five micro-stages (Paper 05.2.B).
+    ///
+    /// Every branch renders ``OnboardingTopBar(step: .chooseModel)`` through
+    /// the one shared scaffold, so the rail cannot drift off `Step 2 of 4` by
+    /// a screen forgetting which step it belongs to — the mistake the old
+    /// three-step model made twice.
     @ViewBuilder
     private var chooseModelStep: some View {
-        let choices = QuickstartCoordinator.onboardingChoices
-        let existing = Array(Self.quickstartCachedModels(cachedModels).prefix(6))
-        let existingAliases = Set(existing.map(\.alias))
-        let starterChoices = choices.filter { $0.isStarter && !existingAliases.contains($0.alias) }
-        let lowMemoryChoices = choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) }
-        let tradeUpChoices = choices.filter { $0.tier == .tradeUp && !existingAliases.contains($0.alias) }
+        Group {
+            switch coordinator.step2Stage {
+            case .checkingHardware:
+                recommendationLoadingStep(
+                    kicker: "CHECKING THIS MAC",
+                    title: "Reading this Mac…",
+                    identifier: "Quickstart.Step2.CheckingHardware"
+                )
+            case .findingFit:
+                recommendationLoadingStep(
+                    kicker: "FINDING THE BEST FIT",
+                    title: "Matching models to this Mac…",
+                    identifier: "Quickstart.Step2.FindingFit"
+                )
+            case .choosing:
+                recommendedShortlistStep
+            case .browsing:
+                browseAllStep
+            case .reviewing:
+                reviewDownloadStep
+            }
+        }
+        // Settle the two pre-shortlist micro-stages against the real catalogue
+        // signal rather than a timer. Re-fires when the snapshot lands.
+        .task(id: catalogLoaded) {
+            coordinator.resolveRecommendationLoading(catalogLoaded: catalogLoaded)
+        }
+    }
+
+    /// The chrome every Step 2 micro-stage shares.
+    ///
+    /// One rail (macro progress, always Step 2 of 4), one kicker (micro
+    /// progress, names the branch), one title, the content, and exactly one
+    /// footer lane holding at most one Back and one primary. No breadcrumb: a
+    /// trail would imply a depth this flow does not have.
+    @ViewBuilder
+    private func step2Scaffold<Content: View, Footer: View>(
+        kicker: String,
+        title: String,
+        subtitle: String?,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder footer: () -> Footer
+    ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             OnboardingTopBar(step: .chooseModel).padding(.top, 22)
 
-            Text("Choose your first model")
-                .scaledSystemFont(24, relativeTo: .title, weight: .bold)
-                .padding(.top, 22)
-            Text("Start small — you can download bigger models anytime in Settings.")
-                .scaledSystemFont(13).foregroundStyle(.secondary)
-                .padding(.top, 4).padding(.bottom, 18)
+            // Micro progress. The step number is repeated deliberately: this
+            // is the only element that names the branch, and it must not be
+            // mistaken for a step of its own. Never sub-numbered.
+            Text(Self.microStageKicker(kicker))
+                .scaledSystemFont(10, weight: .semibold).tracking(1)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 18)
+                .accessibilityIdentifier("Quickstart.Step2.Kicker")
 
+            Text(title)
+                .scaledSystemFont(24, relativeTo: .title, weight: .bold)
+                .padding(.top, 6)
+            if let subtitle {
+                Text(subtitle)
+                    .scaledSystemFont(13).foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            }
+
+            content()
+                .padding(.top, 16)
+
+            footer()
+                .padding(.top, 12)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Tighter than the welcome hero's 44pt inset: Step 2 holds rigid-column
+        // cards, and it lives in the split-view detail pane (~360pt at the
+        // 640pt window floor with the sidebar shown). 24pt keeps model names
+        // readable instead of squeezed to a sliver (memory #459/#464).
+        .padding(.horizontal, 24)
+        .padding(.bottom, 26)
+    }
+
+    /// `STEP 2 OF 4 · <MICRO-STAGE>`. Pure so a test can pin the format —
+    /// specifically that the count comes from ``QuickstartCoordinator/Step/total``
+    /// and that nothing sub-numbers it.
+    static func microStageKicker(_ stageName: String) -> String {
+        "STEP \(QuickstartCoordinator.Step.chooseModel.displayNumber) "
+            + "OF \(QuickstartCoordinator.Step.total) · \(stageName)"
+    }
+
+    // MARK: - 2a / 2b — hardware detection and recommendation loading
+
+    /// The pre-shortlist wait. Indeterminate on purpose: neither catalogue
+    /// subprocess reports progress, so a determinate bar would be a number we
+    /// made up. The footer is present but disabled — the user can still go
+    /// Back, and there is nothing yet to progress to.
+    @ViewBuilder
+    private func recommendationLoadingStep(
+        kicker: String,
+        title: String,
+        identifier: String
+    ) -> some View {
+        step2Scaffold(
+            kicker: kicker,
+            title: title,
+            subtitle: "Nothing is downloaded yet."
+        ) {
+            HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text("Reading the model catalogue…")
+                    .scaledSystemFont(12)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .accessibilityIdentifier(identifier)
+        } footer: {
+            OnboardingWizardFooter(
+                primaryTitle: OnboardingModelSelection.disabledPrimary.title,
+                primaryEnabled: false,
+                onBack: { coordinator.backToWelcome() },
+                onPrimary: {}
+            )
+        }
+    }
+
+    // MARK: - 2c — the recommended shortlist
+
+    /// The recommended shortlist: models already on this Mac, the starter, an
+    /// honest low-memory fallback, bigger trade-ups, a catalogue pick carried
+    /// back as YOUR PICK, and the link into the in-window catalogue.
+    @ViewBuilder
+    private var recommendedShortlistStep: some View {
+        let list = shortlist
+        let primary = primary(for: .shortlist)
+        step2Scaffold(
+            kicker: "CHOOSE A MODEL",
+            title: "Choose your first model",
+            subtitle: "Start small — you can download bigger models anytime in Settings."
+        ) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if !existing.isEmpty {
-                        Text("ALREADY ON THIS MAC")
-                            .scaledSystemFont(10, weight: .semibold).tracking(1)
-                            .foregroundStyle(.tertiary)
-                            .padding(.bottom, 9)
-
+                    if !list.cached.isEmpty {
+                        shortlistHeading("ALREADY ON THIS MAC")
                         VStack(spacing: 9) {
-                            ForEach(existing) { entry in
+                            ForEach(list.cached) { entry in
                                 let choice = Self.choice(forCachedModel: entry)
                                 QuickstartCompactCard(
                                     choice: choice,
                                     selected: coordinator.selection.alias == entry.alias,
                                     sizeText: entry.sizeOnDisk ?? "",
-                                    isCached: true
+                                    isCached: true,
+                                    onActivate: { activatePrimary(in: .shortlist) }
                                 ) { coordinator.select(choice) }
                                 .accessibilityIdentifier("Quickstart.CachedModel.\(entry.alias)")
                             }
@@ -1312,46 +1673,59 @@ struct QuickstartView: View {
                         .padding(.bottom, 16)
                     }
 
-                    ForEach(starterChoices) { choice in
+                    ForEach(list.starters) { choice in
                         QuickstartRecommendedCard(
                             choice: choice,
                             selected: coordinator.selection.alias == choice.alias,
-                            sizeText: Self.sizeText(for: choice)
+                            sizeText: Self.sizeText(for: choice),
+                            onActivate: { activatePrimary(in: .shortlist) }
                         ) { coordinator.select(choice) }
                         .padding(.bottom, 16)
                     }
 
-                    if !lowMemoryChoices.isEmpty {
-                        Text("NEED THE LIGHTEST OPTION?")
-                            .scaledSystemFont(10, weight: .semibold).tracking(1)
-                            .foregroundStyle(.tertiary)
-                            .padding(.bottom, 9)
-
-                        ForEach(lowMemoryChoices) { choice in
+                    if !list.lowMemory.isEmpty {
+                        shortlistHeading("NEED THE LIGHTEST OPTION?")
+                        ForEach(list.lowMemory) { choice in
                             QuickstartLowMemoryCard(
                                 choice: choice,
                                 selected: coordinator.selection.alias == choice.alias,
-                                sizeText: Self.sizeText(for: choice)
+                                sizeText: Self.sizeText(for: choice),
+                                onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
                             .padding(.bottom, 16)
                         }
                     }
 
-                    if !tradeUpChoices.isEmpty {
-                        Text("OR PICK A BIGGER ONE")
-                            .scaledSystemFont(10, weight: .semibold).tracking(1)
-                            .foregroundStyle(.tertiary)
-                            .padding(.bottom, 9)
-
+                    if !list.tradeUps.isEmpty {
+                        shortlistHeading("OR PICK A BIGGER ONE")
                         VStack(spacing: 9) {
-                            ForEach(tradeUpChoices) { choice in
+                            ForEach(list.tradeUps) { choice in
                                 QuickstartCompactCard(
                                     choice: choice,
                                     selected: coordinator.selection.alias == choice.alias,
-                                    sizeText: Self.sizeText(for: choice)
+                                    sizeText: Self.sizeText(for: choice),
+                                    onActivate: { activatePrimary(in: .shortlist) }
                                 ) { coordinator.select(choice) }
                             }
                         }
+                    }
+
+                    // Approved default D2. A model chosen in the catalogue that
+                    // the shortlist does not natively list comes back with the
+                    // user rather than vanishing — otherwise Back lands them on
+                    // a list that visibly disagrees with the footer, which
+                    // reads as "my choice was ignored".
+                    if let pick = list.yourPick {
+                        shortlistHeading("YOUR PICK").padding(.top, 16)
+                        let choice = Self.choice(forCatalogEntry: pick)
+                        QuickstartCompactCard(
+                            choice: choice,
+                            selected: coordinator.selection.alias == pick.alias,
+                            sizeText: Self.rowSizeText(for: pick),
+                            isCached: pick.cached,
+                            onActivate: { activatePrimary(in: .shortlist) }
+                        ) { coordinator.select(choice) }
+                        .accessibilityIdentifier("Quickstart.YourPick.\(pick.alias)")
                     }
 
                     Button {
@@ -1367,25 +1741,511 @@ struct QuickstartView: View {
                     .accessibilityLabel("Browse all models")
                 }
             }
-
+        } footer: {
             OnboardingWizardFooter(
-                primaryTitle: Self.canStartWithoutDownload(
-                    alias: coordinator.selection.alias,
-                    cachedModels: cachedModels
-                ) ? "Start existing model" : "Download & start",
+                primaryTitle: primary.title,
+                primaryEnabled: primary.isEnabled,
                 onBack: { coordinator.backToWelcome() },
-                onPrimary: { startQuickstart() }
+                onPrimary: { activatePrimary(in: .shortlist) }
             )
-            .padding(.top, 12)
+        }
+    }
+
+    @ViewBuilder
+    private func shortlistHeading(_ text: String) -> some View {
+        Text(text)
+            .scaledSystemFont(10, weight: .semibold).tracking(1)
+            .foregroundStyle(.tertiary)
+            .padding(.bottom, 9)
+    }
+
+    // MARK: - 2d — Browse all models, in window
+
+    /// The real catalogue on the setup canvas (Paper 05.2.C).
+    ///
+    /// It does not open Settings, does not open a second window, does not
+    /// present a sheet and does not dismiss onboarding — the whole point of
+    /// 05.2 is that browsing is a move inside Step 2, not a way out of it.
+    @ViewBuilder
+    private var browseAllStep: some View {
+        let entries = visibleCatalogEntries
+        let heading = ModelCacheActions.listHeading(
+            filter: coordinator.catalogFilter,
+            query: coordinator.catalogQuery,
+            visibleCount: entries.count,
+            totalCount: Self.onboardingCatalogModels(cachedModels).count
+        )
+        let primary = primary(for: .catalogue)
+        step2Scaffold(
+            kicker: "BROWSE ALL MODELS",
+            title: "All models",
+            subtitle: nil
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                catalogToolbar(heading: heading)
+                catalogBody(entries: entries)
+            }
+        } footer: {
+            OnboardingWizardFooter(
+                primaryTitle: primary.title,
+                primaryEnabled: primary.isEnabled,
+                backTitle: "← Back to recommended models",
+                onBack: { returnToRecommendedModels() },
+                onPrimary: { activatePrimary(in: .catalogue) }
+            )
+        }
+    }
+
+    /// Search, sort and filter. All three write straight to the coordinator so
+    /// they survive Review download and a SwiftUI re-mount.
+    @ViewBuilder
+    private func catalogToolbar(heading: ModelCacheActions.ListHeading) -> some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    TextField(
+                        "Search models or Hugging Face repo",
+                        text: $coordinator.catalogQuery
+                    )
+                    .textFieldStyle(.plain)
+                    // Escape priority 1. A search field holding text owns the
+                    // key and clears itself; empty, it declines so the event
+                    // reaches the footer's Back at priority 3. Without this,
+                    // one Escape would leave the catalogue with the user's
+                    // query still on screen behind them.
+                    .onKeyPress(.escape) {
+                        guard !coordinator.catalogQuery.isEmpty else { return .ignored }
+                        coordinator.catalogQuery = ""
+                        return .handled
+                    }
+                    .accessibilityIdentifier("Quickstart.BrowseAll.Search")
+                    .accessibilityLabel("Search models")
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                        .fill(RapidTheme.card)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                        .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
+                )
+
+                Menu {
+                    ForEach(ModelCacheActions.SortOrder.allCases) { order in
+                        Button {
+                            coordinator.catalogSort = order
+                        } label: {
+                            if coordinator.catalogSort == order {
+                                Label(order.displayLabel, systemImage: "checkmark")
+                            } else {
+                                Text(order.displayLabel)
+                            }
+                        }
+                        // Each order is its own control: the golden-flow
+                        // harness reaches menu items by identifier, so without
+                        // one per row it can open the menu but never choose.
+                        .accessibilityIdentifier("Quickstart.BrowseAll.Sort.\(order.rawValue)")
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                        .scaledSystemFont(12)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                // The scene tints app-wide amber and a borderless Menu's label
+                // reads the TINT, not the foreground style — without this the
+                // utility control renders as the page's primary action.
+                .tint(nil)
+                .foregroundStyle(RapidTheme.utilityActionLabel)
+                .accessibilityIdentifier("Quickstart.BrowseAll.SortMenu")
+            }
+
+            HStack(spacing: 10) {
+                RapidSegmentedControl(
+                    selection: $coordinator.catalogFilter,
+                    options: ModelCacheActions.FilterMode.allCases.map {
+                        .init(value: $0, title: $0.displayLabel)
+                    },
+                    accessibilityLabel: "Filter"
+                )
+                .accessibilityIdentifier("Quickstart.BrowseAll.Filter")
+                Spacer(minLength: 6)
+                Text(heading.countText)
+                    .scaledSystemFont(10, weight: .medium)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                    .fixedSize()
+                    .accessibilityIdentifier("Quickstart.BrowseAll.Count")
+                    .accessibilityLabel(heading.accessibilityLabel)
+            }
+        }
+    }
+
+    /// Which of the catalogue's five bodies to draw. The order matters: a list
+    /// that has not spoken cannot be reported empty, and an empty CACHE is a
+    /// different fact from a search that matched nothing.
+    @ViewBuilder
+    private func catalogBody(entries: [ModelEntry]) -> some View {
+        switch catalogState {
+        case .loading:
+            catalogNotice(
+                symbol: nil,
+                title: "Loading models…",
+                body: "Reading the catalogue from the engine.",
+                identifier: "Quickstart.BrowseAll.Loading"
+            )
+        case .failed:
+            catalogNotice(
+                symbol: "exclamationmark.triangle",
+                title: "Couldn't load the model catalogue",
+                body: "The engine didn't return a model list. "
+                    + "You can still start with a recommended model.",
+                identifier: "Quickstart.BrowseAll.Error"
+            )
+        case .ready:
+            if entries.isEmpty {
+                if coordinator.catalogFilter == .cached
+                    && coordinator.catalogQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    catalogNotice(
+                        symbol: "internaldrive",
+                        title: "No models on this Mac yet",
+                        body: "Nothing has been downloaded. "
+                            + "Switch to All to choose your first model.",
+                        identifier: "Quickstart.BrowseAll.EmptyCache"
+                    )
+                } else {
+                    catalogNotice(
+                        symbol: "magnifyingglass",
+                        title: "No models match",
+                        body: "Try a different search, or clear it to see everything.",
+                        identifier: "Quickstart.BrowseAll.NoResults"
+                    )
+                }
+            } else {
+                catalogList(entries: entries)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func catalogNotice(
+        symbol: String?,
+        title: String,
+        body: String,
+        identifier: String
+    ) -> some View {
+        VStack(spacing: 8) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text(title).scaledSystemFont(13, weight: .semibold)
+            Text(body)
+                .scaledSystemFont(12)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Tighter than the welcome hero's 44pt inset: the chooser holds
-        // rigid-column cards, and this step lives in the split-view detail
-        // pane (~360pt at the 640pt window floor with the sidebar shown).
-        // 24pt keeps the trade-up cards' names readable instead of
-        // squeezed to a sliver (memory #459/#464).
-        .padding(.horizontal, 24)
-        .padding(.bottom, 26)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(identifier)
+        .accessibilityLabel("\(title). \(body)")
+    }
+
+    /// One flat scroller. No pagination, no lazy-load spinner, no nested
+    /// scrollers — the catalogue is a few hundred rows at most.
+    @ViewBuilder
+    private func catalogList(entries: [ModelEntry]) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(entries) { entry in
+                        catalogRow(entry).id(entry.alias)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .accessibilityIdentifier("Quickstart.BrowseAll.List")
+            // Restore by ALIAS anchor, never a pixel offset: a pixel offset
+            // points at a different row after a filter or sort change, which
+            // is exactly the moment restoring it is supposed to help.
+            .onAppear {
+                guard let anchor = coordinator.catalogScrollID,
+                      entries.contains(where: { $0.alias == anchor })
+                else { return }
+                proxy.scrollTo(anchor, anchor: .center)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func catalogRow(_ entry: ModelEntry) -> some View {
+        let choice = Self.choice(forCatalogEntry: entry)
+        let available = OnboardingModelSelection.isAvailable(alias: entry.alias, hardware: hardware)
+        QuickstartCompactCard(
+            choice: choice,
+            selected: coordinator.selection.alias == entry.alias,
+            sizeText: Self.rowSizeText(for: entry),
+            isCached: entry.cached,
+            onActivate: { activatePrimary(in: .catalogue) }
+        ) {
+            coordinator.select(choice)
+            coordinator.rememberCatalogAnchor(entry.alias)
+        }
+        // Truthfully won't run here. A disabled Button takes no click, which is
+        // the "No-op" row of the activation truth table, enforced rather than
+        // merely drawn.
+        .disabled(!available)
+        .opacity(available ? 1 : 0.5)
+    }
+
+    /// Leave the catalogue, remembering where the user was.
+    private func returnToRecommendedModels() {
+        coordinator.rememberCatalogAnchor(coordinator.selection.alias)
+        coordinator.backToRecommendedModels()
+    }
+
+    // MARK: - 2e — Review download
+
+    /// Name the cost before spending it (Paper 05.2.D).
+    ///
+    /// Shows only what the product can truthfully state: identity, the size
+    /// estimate the rest of the app quotes, whether it is already on disk, and
+    /// the free space the pre-flight probe actually measured. No ETA, no
+    /// benchmark claim, no invented compatibility verdict.
+    @ViewBuilder
+    private var reviewDownloadStep: some View {
+        let alias = coordinator.selection.alias
+        let cached = Self.cachedModel(alias: alias, cachedModels: cachedModels)
+        let primary = primary(for: .review)
+        step2Scaffold(
+            kicker: "REVIEW DOWNLOAD",
+            title: coordinator.selection.displayName,
+            subtitle: cached == nil
+                ? "This downloads once and then runs entirely on your Mac."
+                : "Already on this Mac — nothing will be downloaded."
+        ) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    reviewFact("Model", alias, identifier: "Quickstart.Review.Alias")
+                    if let repo = Self.reviewRepo(alias: alias, cached: cached, cachedModels: cachedModels) {
+                        reviewFact("Hugging Face", repo, identifier: "Quickstart.Review.Repo")
+                    }
+                    reviewFact(
+                        cached == nil ? "Download size" : "Size on disk",
+                        Self.reviewSizeText(alias: alias, cached: cached),
+                        identifier: "Quickstart.Review.Size"
+                    )
+                    reviewFact(
+                        "On this Mac",
+                        cached == nil ? "Not downloaded yet" : "Already downloaded",
+                        identifier: "Quickstart.Review.CachedStatus"
+                    )
+                    if let free = Self.reviewFreeSpaceText(probe: freeBytesProbe) {
+                        reviewFact("Free space", free, identifier: "Quickstart.Review.FreeSpace")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } footer: {
+            OnboardingWizardFooter(
+                primaryTitle: primary.title,
+                primaryEnabled: primary.isEnabled,
+                backTitle: coordinator.reviewOrigin == .catalogue
+                    ? "← Back to all models"
+                    : "← Back to recommended models",
+                onBack: { coordinator.backFromReviewDownload() },
+                onPrimary: { activatePrimary(in: .review) }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func reviewFact(_ label: String, _ value: String, identifier: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .scaledSystemFont(11, weight: .medium)
+                .foregroundStyle(.tertiary)
+                .frame(width: 108, alignment: .leading)
+            Text(value)
+                .scaledSystemFont(12.5)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(RapidTheme.hairline).frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(identifier)
+        .accessibilityLabel("\(label): \(value)")
+    }
+
+    // MARK: - Step 2 derivation (pure seams)
+
+    /// The recommended shortlist exactly as it renders, in render order.
+    struct Shortlist: Equatable {
+        var cached: [ModelEntry] = []
+        var starters: [QuickstartModelChoice] = []
+        var lowMemory: [QuickstartModelChoice] = []
+        var tradeUps: [QuickstartModelChoice] = []
+        /// Approved default D2 — a catalogue pick carried back by Back.
+        var yourPick: ModelEntry?
+
+        /// Every alias the user can currently see and click, in render order.
+        /// This is the "visible" half of `selection ∩ visible rows`.
+        var visibleAliases: [String] {
+            cached.map(\.alias)
+                + starters.map(\.alias)
+                + lowMemory.map(\.alias)
+                + tradeUps.map(\.alias)
+                + (yourPick.map { [$0.alias] } ?? [])
+        }
+    }
+
+    /// Build the shortlist. Static and pure so the YOUR PICK rule and the
+    /// visible-alias set can be pinned without a SwiftUI host.
+    static func shortlist(catalog: [ModelEntry], selection: String) -> Shortlist {
+        let choices = QuickstartCoordinator.onboardingChoices
+        let existing = Array(quickstartCachedModels(catalog).prefix(6))
+        let existingAliases = Set(existing.map(\.alias))
+        var native = existingAliases
+        native.formUnion(choices.map(\.alias))
+        return Shortlist(
+            cached: existing,
+            starters: choices.filter { $0.isStarter && !existingAliases.contains($0.alias) },
+            lowMemory: choices.filter { $0.isLowMemory && !existingAliases.contains($0.alias) },
+            tradeUps: choices.filter { $0.tier == .tradeUp && !existingAliases.contains($0.alias) },
+            yourPick: native.contains(selection)
+                ? nil
+                : onboardingCatalogModels(catalog).first { $0.alias == selection }
+        )
+    }
+
+    private var shortlist: Shortlist {
+        Self.shortlist(catalog: cachedModels, selection: coordinator.selection.alias)
+    }
+
+    /// The catalogue slice onboarding may offer (approved default D4): chat
+    /// models only. Image, audio and video models are managed in Settings, not
+    /// chosen during first-run setup. Scoped to onboarding — Settings → Models
+    /// is deliberately unaffected.
+    static func onboardingCatalogModels(_ entries: [ModelEntry]) -> [ModelEntry] {
+        entries.filter { $0.kind == .chat }
+    }
+
+    /// The catalogue as the user currently sees it: chat-only, searched,
+    /// filtered and sorted, through the same primitives Settings → Models uses.
+    static func visibleCatalogEntries(
+        catalog: [ModelEntry],
+        query: String,
+        filter: ModelCacheActions.FilterMode,
+        sort: ModelCacheActions.SortOrder
+    ) -> [ModelEntry] {
+        let scoped = onboardingCatalogModels(catalog)
+        return ModelCacheActions.sorted(
+            ModelCacheActions.filter(scoped, by: filter, query: query),
+            order: sort
+        )
+    }
+
+    private var visibleCatalogEntries: [ModelEntry] {
+        Self.visibleCatalogEntries(
+            catalog: cachedModels,
+            query: coordinator.catalogQuery,
+            filter: coordinator.catalogFilter,
+            sort: coordinator.catalogSort
+        )
+    }
+
+    /// Resolve loading / failed / ready from the snapshot plus its landed flag.
+    static func catalogState(
+        catalog: [ModelEntry],
+        loaded: Bool
+    ) -> OnboardingModelSelection.CatalogState {
+        guard loaded else { return .loading }
+        // ``ModelCatalog.load`` returns `[]` when its subprocess failed, so an
+        // empty catalogue is that sentinel — NOT a Mac with nothing downloaded.
+        // An empty cache still lists every downloadable alias.
+        return onboardingCatalogModels(catalog).isEmpty ? .failed : .ready
+    }
+
+    private var catalogState: OnboardingModelSelection.CatalogState {
+        Self.catalogState(catalog: cachedModels, loaded: catalogLoaded)
+    }
+
+    /// The visible rows of one list context, as the CTA contract needs them.
+    private func visibleRows(
+        for context: OnboardingModelSelection.ListContext
+    ) -> [OnboardingModelSelection.Row] {
+        switch context {
+        case .shortlist:
+            let cachedAliases = Set(Self.quickstartCachedModels(cachedModels).map(\.alias))
+            return shortlist.visibleAliases.map { alias in
+                OnboardingModelSelection.Row(
+                    alias: alias,
+                    isCached: cachedAliases.contains(alias),
+                    isAvailable: OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware)
+                )
+            }
+        case .catalogue:
+            return OnboardingModelSelection.rows(for: visibleCatalogEntries, hardware: hardware)
+        case .review:
+            // Review shows exactly one model: the selection. Its cached-ness
+            // comes from the catalogue snapshot, never from the copy above it.
+            let alias = coordinator.selection.alias
+            guard !alias.isEmpty else { return [] }
+            return [OnboardingModelSelection.Row(
+                alias: alias,
+                isCached: Self.canStartWithoutDownload(alias: alias, cachedModels: cachedModels),
+                isAvailable: OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware)
+            )]
+        }
+    }
+
+    /// The footer primary for a list context. Re-derived on every render.
+    private func primary(
+        for context: OnboardingModelSelection.ListContext
+    ) -> OnboardingModelSelection.Primary {
+        OnboardingModelSelection.primary(
+            selection: coordinator.selection.alias,
+            visibleRows: visibleRows(for: context),
+            catalogState: catalogState,
+            context: context
+        )
+    }
+
+    /// The single activation path (Paper 05.2.G — "One action, three inputs").
+    ///
+    /// The footer primary, Return (via the footer's `.defaultAction`) and a
+    /// double-click on a row all land here, so no input can reach an action
+    /// the user cannot see. A disabled primary makes every one of them inert.
+    private func activatePrimary(in context: OnboardingModelSelection.ListContext) {
+        let primary = primary(for: context)
+        guard primary.isEnabled else { return }
+        switch primary.action {
+        case .reviewDownload:
+            coordinator.beginReviewDownload(
+                origin: context == .catalogue ? .catalogue : .shortlist
+            )
+        case .startExisting, .downloadAndStart:
+            // One production route for both. ``startQuickstart`` already
+            // branches on the same cached truth: a cached alias skips the
+            // download machinery entirely and hands straight to
+            // ``ServerManager.start`` (Step 4), an uncached one runs the disk
+            // pre-flight and then the pull (Step 3).
+            startQuickstart()
+        }
     }
 
     /// Human-readable download size for a choice card. MB under 1 GB
@@ -1428,6 +2288,73 @@ struct QuickstartView: View {
             blurb: entry.isExternal ? "Already downloaded by another MLX app." : "Already downloaded and ready to start.",
             tier: .tradeUp
         )
+    }
+
+    /// A wizard choice for any catalogue row, cached or not.
+    ///
+    /// The alias is the identity on both branches — never the display name,
+    /// never a curated label — so the same model picked from the shortlist and
+    /// from the catalogue is one selection, and `select` on either is the same
+    /// act. Uncached rows carry no blurb: the catalogue has no curated prose
+    /// for them and inventing one would be a claim we cannot support.
+    static func choice(forCatalogEntry entry: ModelEntry) -> QuickstartModelChoice {
+        guard !entry.cached else { return choice(forCachedModel: entry) }
+        return QuickstartModelChoice(
+            alias: entry.alias,
+            displayName: entry.alias,
+            hfRepo: entry.hfRepo,
+            blurb: "",
+            tier: .tradeUp
+        )
+    }
+
+    /// The size a catalogue row shows: what it occupies if it is here, what it
+    /// would cost if it is not.
+    static func rowSizeText(for entry: ModelEntry) -> String {
+        if entry.cached, let onDisk = entry.sizeOnDisk, !onDisk.isEmpty {
+            return onDisk
+        }
+        return sizeText(for: entry.alias)
+    }
+
+    // MARK: - Review download facts (pure)
+
+    /// The Hugging Face repo to quote on Review, when the catalogue knows one.
+    /// Prefers the cached entry (it came from `rapid-mlx ls`, which resolved
+    /// the repo) and falls back to the catalogue row.
+    static func reviewRepo(
+        alias: String,
+        cached: ModelEntry?,
+        cachedModels: [ModelEntry]
+    ) -> String? {
+        if let repo = cached?.hfRepo, !repo.isEmpty { return repo }
+        let repo = onboardingCatalogModels(cachedModels)
+            .first { $0.alias == alias }?
+            .hfRepo
+        guard let repo, !repo.isEmpty else { return nil }
+        return repo
+    }
+
+    /// Size for the Review screen. A cached model reports what it actually
+    /// occupies; an uncached one reports the same ``ModelSizing`` estimate the
+    /// rest of the app quotes, so no two surfaces name different numbers for
+    /// the same model. Returns an explicit "Unknown" rather than an empty row
+    /// when there is no estimate — a blank would read as "free".
+    static func reviewSizeText(alias: String, cached: ModelEntry?) -> String {
+        if let cached, let onDisk = cached.sizeOnDisk, !onDisk.isEmpty {
+            return onDisk
+        }
+        let estimate = sizeText(for: alias)
+        return estimate.isEmpty ? "Unknown" : estimate
+    }
+
+    /// Free space on the volume that holds the Hugging Face cache — the same
+    /// probe the download pre-flight runs, quoted before the commit rather
+    /// than only after it. `nil` when the probe has no signal, in which case
+    /// the row is omitted instead of claiming a number.
+    static func reviewFreeSpaceText(probe: () -> Int64?) -> String? {
+        guard let free = probe() else { return nil }
+        return "\(formatBytesForBanner(free)) available"
     }
 
     static func canStartWithoutDownload(alias: String, cachedModels: [ModelEntry]) -> Bool {
@@ -1765,28 +2692,30 @@ struct QuickstartView: View {
         .accessibilityIdentifier("Quickstart.Failure.BrowseAll")
     }
 
-    /// Open Settings on the model catalogue and restore Quickstart on return.
+    /// Enter in-window Browse all models — the ONE destination for every
+    /// "browse" affordance in onboarding.
     ///
-    /// The sheet's modal session must end before the separate Settings window
-    /// opens. The router restores the wizard when Settings closes, preserving
-    /// the user's existing pick. Without that handoff, browsing became a dead
-    /// end and fell back to an unrelated model (#1653).
+    /// ## What this replaces
     ///
-    /// Routed through ``SettingsRouter`` for its ordering rule (stage the tab,
-    /// THEN open), and through ``openWindow(id: "settings")`` rather than
-    /// ``openSettings()`` — see the ``openWindow`` property above.
+    /// Paper 05.2.J · S1 supersedes the shipped behaviour, which staged a
+    /// Settings tab, ended the wizard's modal session, waited out an AppKit
+    /// race and opened a second window. That was already the second attempt:
+    /// #1653 fixed a version where browsing simply dismissed the wizard and
+    /// discarded the pick. Both share a root cause — the catalogue lived
+    /// somewhere onboarding was not — and the fix is to stop leaving.
+    ///
+    /// So: no ``SettingsRouter``, no ``dismiss()``, no ``openWindow``, no
+    /// second window and no reset of the public step. The selection is carried
+    /// in, and the catalogue's own query / filter / sort / scroll anchor are
+    /// exactly where the user last left them.
+    ///
+    /// ``returnToChooser()`` runs first so the failure card's link works too.
+    /// That link is offered precisely when the user's chosen model failed —
+    /// the moment they most need to pick a different one — and its phase is
+    /// ``Phase/failed``, which ``beginBrowsingCatalog()`` correctly refuses.
     private func browseAllModels() {
-        settingsRouter.beginQuickstartCatalogRoundTrip()
-        onBrowseAll()
-        dismiss()
-        // End the sheet's AppKit modal session before opening another window.
-        // Opening synchronously leaves Settings visible to AX but unable to
-        // accept real foreground input until the stale modal session unwinds.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            settingsRouter.route(to: .modelManagement) {
-                openWindow(id: "settings")
-            }
-        }
+        coordinator.returnToChooser()
+        coordinator.beginBrowsingCatalog()
     }
 
     private func handleQuickstartFailureAction(_ action: FailureDiagnosis.Action) {

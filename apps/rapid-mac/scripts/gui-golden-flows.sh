@@ -1883,16 +1883,21 @@ flow_no_dead_controls() {
 }
 
 flow_browse_all_destination() {
-    # An advertised destination must actually be one, and must not cost the
-    # user what they already chose.
+    # An advertised destination must actually be one, must not cost the user
+    # what they already chose, and must not be a way out of setup.
     #
     # "Browse all models →" on Quickstart step 2 was implemented as one line
     # that set a dismiss flag (#1653). It was present, enabled, correctly
     # labelled and carried an AXIdentifier, so every structural check passed —
     # the wizard simply vanished, the user's pick was discarded, and they
     # landed on whatever the alphabetical fallback chose (a 7.6 GB download
-    # nobody asked for). None of that is visible in a tree dump. This flow
-    # presses the control and drives the whole round trip.
+    # nobody asked for). None of that is visible in a tree dump.
+    #
+    # The first fix sent the user to the Settings model catalogue: a second
+    # window, a staged tab, and a round trip back. Paper 05.2.J · S1
+    # supersedes it — the catalogue is now a micro-stage INSIDE Step 2. So the
+    # assertions below are the same three questions, asked of the new
+    # destination: did anything happen, did setup survive, did the pick.
     start_persona browse-all-destination
 
     # Only the consent sheet — the wizard has to stay up, it is the subject.
@@ -1954,117 +1959,70 @@ flow_browse_all_destination() {
     press "$OUT/ba-chosen.json" Quickstart.BrowseAll "$OUT/ba-press.json" \
         || die "Quickstart.BrowseAll is not pressable"
 
-    # 1. It opened the catalogue. `open_settings` drives the menu, so assert
-    #    the window the BUTTON opened rather than opening one ourselves.
-    local opened=0 probe=2
-    for ((i=0; i<40; i++)); do
-        probe=0; ax_window_present Settings "$OUT/ba-settings-window.json" || probe=$?
-        if [[ "$probe" == 0 ]]; then opened=1; break; fi
-        # probe == 2 is "we never got to look" — keep looking, and if the
-        # budget runs out still un-observed, blame the driver, not the button.
-        sleep 0.25
-    done
-    if [[ "$opened" != 1 ]]; then
-        if [[ "$probe" == 2 ]]; then
-            die "could not read the app's window list for 10s — the AX driver failed, so the button is untested"
+    # 1. It opened the catalogue, and it opened it HERE. Wait for one of the
+    #    catalogue's own surfaces rather than for the list specifically — a
+    #    persona with a fake engine may legitimately land on the empty-cache or
+    #    error body, and this flow is about the destination, not the contents.
+    local landed=0
+    for ((i=0; i<60; i++)); do
+        see_main "$OUT/ba-catalog.json"
+        if jq -e '[.data.ui_elements[]?
+                   | select((.identifier // "") | startswith("Quickstart.BrowseAll."))]
+                  | length > 0' "$OUT/ba-catalog.json" >/dev/null 2>&1; then
+            landed=1; break
         fi
-        die "Browse all models did not open anything — it is a dismiss button again (#1653)"
-    fi
-    # Only NOW ask peekaboo for the id, purely to target focus/click/menu at it.
-    # A poll rather than one read: AX publishes a new window before CGWindow
-    # hands out a targetable id, and a one-shot here fails the flow for a race
-    # that has nothing to do with the button under test.
-    SETTINGS_WINDOW_ID=""
-    for ((i=0; i<40; i++)); do
-        pb list windows --app "PID:$APP_PID" --json > "$OUT/ba-windows.json" 2>/dev/null || true
-        # `|| true` on the whole pipeline: a failed `pb` leaves empty or partial
-        # JSON, jq then exits non-zero, and under `set -euo pipefail` that would
-        # abort the very loop written to survive it.
-        SETTINGS_WINDOW_ID="$(jq -r '.data.windows[]? | select(.title == "Settings") | .window_id' \
-            "$OUT/ba-windows.json" 2>/dev/null | head -1 || true)"
-        if [[ -n "$SETTINGS_WINDOW_ID" ]]; then break; fi
         sleep 0.25
     done
-    [[ -n "$SETTINGS_WINDOW_ID" ]] || die "Settings is in the AX tree but peekaboo will not name its window"
+    [[ "$landed" == 1 ]] \
+        || die "Browse all models did not open the in-window catalogue — it is a dismiss button again (#1653)"
+    log "  landed on the in-window catalogue"
 
-    # 2. On the models tab, not merely "Settings somewhere". The wizard's own
-    #    copy promises the catalogue; landing on the user's last-used tab is a
-    #    different bug wearing the same green check.
-    wait_settings_stable "$OUT/ba-settings.json" Settings.Models.ShowAllModelsToggle
-    log "  landed on Model Management"
+    # 2. Setup is still on screen, at the same public step. The bug this
+    #    replaces dismissed the wizard; the fix it replaces opened a second
+    #    window. Neither may happen.
+    jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Progress")' \
+        "$OUT/ba-catalog.json" >/dev/null \
+        || die "the setup rail is gone — browsing dismissed onboarding"
+    jq -e '[.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Step2.Kicker")
+            | .value // .title // .label // ""]
+           | map(select(test("STEP 2 OF 4"; "i"))) | length > 0' \
+        "$OUT/ba-catalog.json" >/dev/null \
+        || die "the catalogue is not reporting Step 2 of 4 — a micro-stage became a step"
 
-    # 3. Settings is actually USABLE, not merely present. A window opened
-    #    behind a modal sheet still publishes its whole subtree to AX, and
-    #    AXUIElementPerformAction reaches it there too — so neither the tree
-    #    nor an AXPress can tell a usable window from a trapped one. Focus it,
-    #    click it the way a person would, and require the panel to change.
-    pb window focus --app "PID:$APP_PID" --window-id "$SETTINGS_WINDOW_ID" --json > "$OUT/ba-focus.json" \
-        || die "could not focus the Settings window the button opened"
-    # Coordinates re-read AFTER the focus, because focusing can raise or move
-    # the window and a stale point would click whatever now sits there.
-    see_settings "$OUT/ba-focused.json"
-    local cx cy
-    read -r cx cy < <(jq -r '.data.ui_elements[]
-                             | select(.identifier == "Settings.Category.privacy")
-                             | [(.bounds.x + .bounds.width / 2), (.bounds.y + .bounds.height / 2)]
-                             | @tsv' "$OUT/ba-focused.json")
-    [[ -n "$cx" && -n "$cy" ]] || die "Settings.Category.privacy has no bounds to click"
-    # ``--foreground`` is the whole point. Peekaboo's default is background
-    # delivery — a coordinate hit-test followed by an accessibility action,
-    # which reaches UI a person cannot, and is therefore exactly as blind to
-    # "trapped behind a modal sheet" as the AXPress this replaced.
-    # ``--window-id`` also pins the click to the Settings window rather than
-    # whatever else the app has on screen at that point.
-    pb_click_coords "$cx,$cy" \
-        --app "PID:$APP_PID" --window-id "$SETTINGS_WINDOW_ID" \
-        --json > "$OUT/ba-click.json" \
-        || die "the Settings window did not accept a real click — it is behind the wizard sheet"
-    # A real click that changed nothing is the same failure as no click at all,
-    # so require the panel's own control to appear, not merely that the press
-    # returned success.
-    wait_settings_stable "$OUT/ba-privacy.json" Settings.Privacy.TelemetryToggle
-    log "  Settings is focused and responds to a real click"
+    # 3. No second window. `ax_window_present` returns 1 for "read the list, not
+    #    there" and 2 for "could not look" — only an explicit 1 is evidence.
+    local probe=0
+    ax_window_present Settings "$OUT/ba-windows.json" || probe=$?
+    case "$probe" in
+        0) die "Browse all models opened a Settings window — Paper 05.2.J · S1 forbids it" ;;
+        2) die "could not read the app's window list, so 'no second window' is unverified" ;;
+    esac
+    log "  no Settings window, no second window"
 
-    # 4. Close it, the way the user would, and land back on the wizard with
-    #    the same pick. This is the half the bug actually broke.
-    #
-    press "$OUT/ba-privacy.json" Settings.BackToQuickstart "$OUT/ba-close.json" \
-        || die "could not activate Back to setup"
+    # 4. The pick survived the move. This is the half #1653 actually broke, and
+    #    the catalogue reuses Quickstart.Choice.<alias> for its rows precisely
+    #    so one identity scheme covers both lists.
+    jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
+        "$OUT/ba-catalog.json" >/dev/null \
+        || die "the catalogue lost the user's selection — browsing must not discard it (#1653)"
 
-    # The SwiftUI scene may retain an internal window object after dismissal,
-    # so ask AX whether a user-visible Settings window remains. Do not accept a
-    # failed dump as evidence that closing succeeded.
-    local closed=0
-    probe=2
-    for ((i=0; i<40; i++)); do
-        probe=0; ax_window_present Settings "$OUT/ba-windows-after.json" || probe=$?
-        # ONLY an explicit 1 — a dump we actually read that does not contain
-        # the window. Accepting 2 here would let one failed dump stand in for
-        # the close, which is exactly the mistake this helper exists to make
-        # impossible to write.
-        if [[ "$probe" == 1 ]]; then closed=1; break; fi
-        sleep 0.25
-    done
-    # Not a cosmetic check: with Settings still open, the app-wide AX dump
-    # below carries the wizard AND the Settings tree, so the round-trip
-    # assertion would pass without any round trip having happened.
-    if [[ "$closed" != 1 ]]; then
-        if [[ "$probe" == 2 ]]; then
-            die "could not read the app's window list for 10s — whether Settings closed is unknown, so the round trip below is untrustworthy"
-        fi
-        die "the Settings window did not close — the round trip below would be vacuous"
-    fi
-
+    # 5. Back, by the visible control, returns to the shortlist with the pick
+    #    intact. Escape is a shortcut for this same control, which is why the
+    #    control has to exist and has to work.
+    press "$OUT/ba-catalog.json" Quickstart.Footer.Back "$OUT/ba-back.json" \
+        || die "the catalogue's Back control is not pressable"
     wait_identifier Quickstart.BrowseAll "$OUT/ba-after.json"
-    jq -e '[.data.ui_elements[]? | select(.identifier == "Settings.BackToQuickstart")] | length == 0' \
-        "$OUT/ba-after.json" >/dev/null \
-        || die "Settings remained interactive after returning to setup"
+    jq -e '[.data.ui_elements[]?
+            | select((.identifier // "") | startswith("Quickstart.BrowseAll."))]
+           | length == 0' "$OUT/ba-after.json" >/dev/null \
+        || die "Back did not leave the catalogue"
     pb image --mode screen --screen-index 0 --path "$OUT/ba-after.png" --json \
         > "$OUT/ba-after-image.json"
     jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
         "$OUT/ba-after.json" >/dev/null \
-        || die "the wizard came back without the user's selection — browsing must not discard it (#1653)"
-    log "  back on the wizard, $chosen still selected"
+        || die "the shortlist came back without the user's selection — Back must not discard it"
+    log "  back on the shortlist, $chosen still selected"
     cleanup_persona
 }
 

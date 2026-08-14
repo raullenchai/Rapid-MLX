@@ -96,9 +96,27 @@ struct OnboardingTopBar: View {
 /// amber primary pill on the right. Wires Return → primary and (when
 /// Back is present) Escape → back, so every step gets identical keyboard
 /// behaviour for free.
+///
+/// Those two shortcuts are the whole of Step 2's keyboard contract, and they
+/// work because the footer is the only progression mechanism:
+///
+/// * **Return** carries `.defaultAction`, and `.disabled(!primaryEnabled)`
+///   means a disabled primary swallows it. So Return can never reach an
+///   action the user cannot see — the activation truth table's "No-op" rows
+///   are enforced by AppKit rather than re-implemented per screen.
+/// * **Escape** carries `.cancelAction` on Back. Because every Step 2
+///   micro-stage supplies its own Back, Escape resolves to the visible
+///   control at each depth: it clears a search field first (that field
+///   consumes the key itself), then leaves Review, then leaves the
+///   catalogue, and only at the Step 2 root does onboarding's own meaning
+///   resume. Every Escape destination therefore has a control on screen.
 struct OnboardingWizardFooter: View {
     let primaryTitle: String
     var primaryEnabled: Bool = true
+    /// Back's label. Named for its destination on the Step 2 micro-stages
+    /// ("← Back to recommended models") so the control says where it goes
+    /// instead of only that it goes back.
+    var backTitle: String = "Back"
     var onBack: (() -> Void)?
     let onPrimary: () -> Void
 
@@ -106,13 +124,14 @@ struct OnboardingWizardFooter: View {
         HStack {
             if let onBack {
                 Button(action: onBack) {
-                    Text("Back")
+                    Text(backTitle)
                         .scaledSystemFont(13, weight: .medium)
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
                 .accessibilityIdentifier("Quickstart.Footer.Back")
+                .accessibilityLabel(backTitle)
             }
             Spacer()
             Button(action: onPrimary) {
@@ -154,6 +173,34 @@ struct OnboardingAttrChip: View {
     }
 }
 
+// MARK: - Row activation
+
+extension View {
+    /// Wire the double-click half of the activation contract onto a selectable
+    /// model row.
+    ///
+    /// Paper 05.2.G — "One action, three inputs". A single click selects and
+    /// never navigates. A double-click performs whatever the visible footer
+    /// primary currently says — Review download on an uncached pick, Start
+    /// existing model on a cached one — and does nothing at all when that
+    /// primary is disabled.
+    ///
+    /// A *simultaneous* gesture, deliberately: the row's own Button still
+    /// fires on the first click, so a double-click selects and then activates.
+    /// That ordering is what keeps this a shortcut for the primary rather than
+    /// a second hidden route with rules of its own — the reading Paper 05.2.J
+    /// · S6 supersedes, where double-click always opened Review even for a
+    /// model already on disk.
+    @ViewBuilder
+    func modelRowActivation(_ onActivate: (() -> Void)?) -> some View {
+        if let onActivate {
+            simultaneousGesture(TapGesture(count: 2).onEnded { onActivate() })
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - Model choice cards
 
 /// The explicit below-quality-floor escape hatch. It looks distinct from
@@ -164,6 +211,8 @@ struct QuickstartLowMemoryCard: View {
     let choice: QuickstartModelChoice
     let selected: Bool
     let sizeText: String
+    /// Double-click activation. See ``View/modelRowActivation(_:)``.
+    var onActivate: (() -> Void)? = nil
     let onTap: () -> Void
 
     var body: some View {
@@ -196,6 +245,7 @@ struct QuickstartLowMemoryCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.pressableCard)
+        .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel("\(choice.displayName). Lowest memory. \(choice.blurb) Download \(sizeText)")
@@ -210,6 +260,8 @@ struct QuickstartRecommendedCard: View {
     let choice: QuickstartModelChoice
     let selected: Bool
     let sizeText: String
+    /// Double-click activation. See ``View/modelRowActivation(_:)``.
+    var onActivate: (() -> Void)? = nil
     let onTap: () -> Void
 
     var body: some View {
@@ -251,6 +303,7 @@ struct QuickstartRecommendedCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.pressableCard)
+        .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel(accessibilityText)
@@ -277,6 +330,8 @@ struct QuickstartCompactCard: View {
     let selected: Bool
     let sizeText: String
     var isCached: Bool = false
+    /// Double-click activation. See ``View/modelRowActivation(_:)``.
+    var onActivate: (() -> Void)? = nil
     let onTap: () -> Void
 
     private var accValue: String { ModelMeter.qualityMeter(for: choice.alias).formattedValue }
@@ -300,6 +355,7 @@ struct QuickstartCompactCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.pressableCard)
+        .modelRowActivation(onActivate)
         .accessibilityIdentifier("Quickstart.Choice.\(choice.alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel(accessibilityText)

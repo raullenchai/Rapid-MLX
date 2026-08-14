@@ -530,9 +530,14 @@ struct OnboardingCompletionBehaviorTests {
         // Skip is still the one genuine dismiss control, and still does not
         // write the completion flag.
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.Skip")"#))
-        // Browse all models still routes to the Settings catalogue.
+        // Browse all models still has a destination — now the in-window
+        // catalogue rather than the Settings window. Paper 05.2.J · S1
+        // supersedes the Settings round trip; the control and its identifier
+        // survive the change, which is the part this suite is guarding.
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.BrowseAll")"#))
-        #expect(body.contains("settingsRouter.beginQuickstartCatalogRoundTrip()"))
+        #expect(body.contains("coordinator.beginBrowsingCatalog()"))
+        #expect(!body.contains("settingsRouter.beginQuickstartCatalogRoundTrip()"),
+                "onboarding must not hand the catalogue to a second window any more")
         // The low-disk warning is still non-blocking with both exits.
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.LowDisk.Continue")"#))
         #expect(body.contains(#".accessibilityIdentifier("Quickstart.LowDisk.Cancel")"#))

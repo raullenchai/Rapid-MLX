@@ -575,7 +575,16 @@ struct ContentView: View {
                 // answered it, and returning them to it on the next launch
                 // would be re-asking. Safe on the completion path too — the
                 // record is already retired and this never touches ``done``.
+                //
+                // Browse all models and Review download are Step 2 sub-stages,
+                // and Paper 05.2.G's invariant is that Escape can only move the
+                // user one level closer to the shortlist from inside them —
+                // never out of setup. The footer's `.cancelAction` Back
+                // normally consumes the key first; asking the coordinator to
+                // retreat before treating this as a skip is what makes that
+                // true even when the sheet sees it anyway.
                 if !presented {
+                    if quickstart.retreatWithinStep2() { return }
                     quickstartDismissedThisSession = true
                     quickstart.skipForNow()
                 }
@@ -590,6 +599,7 @@ struct ContentView: View {
             downloads: downloads,
             server: server,
             cachedModels: catalogEntries,
+            catalogLoaded: catalogLoaded,
             onSkip: {
                 quickstartDismissedThisSession = true
                 // Skip keeps its existing meaning — no completion flag — but
@@ -597,7 +607,10 @@ struct ContentView: View {
                 // away is not re-asked on the next launch.
                 quickstart.skipForNow()
             },
-            onBrowseAll: { quickstartDismissedThisSession = true },
+            // No `onBrowseAll` any more. It existed to lower this sheet while a
+            // Settings window took over the catalogue; Browse all models is now
+            // a micro-stage inside Step 2, so there is nothing to lower and
+            // nothing for the parent to know about (Paper 05.2.J · S1).
             onSeedWelcome: seedQuickstartWelcome,
             onCompleted: finishOnboardingHandoff
         )
