@@ -22,7 +22,6 @@ AXApplication title="Rapid-MLX"
           AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
-          AXButton id="Transcript.JumpToBottom" desc="Jump to latest" enabled=true
           AXScrollArea
             AXStaticText value=text enabled=true
             AXButton id="ChatView.Message.Copy.<uuid>" desc="Copy message" help="Copy message" enabled=true

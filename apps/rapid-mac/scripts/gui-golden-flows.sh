@@ -1175,7 +1175,10 @@ flow_download_progress() {
     press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
     wait_identifier Quickstart.Footer.Primary "$OUT/chooser.json"
     assert_tree_text "$OUT/chooser.json" "~633 MB"
-    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/download-start.json"
+    press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/review-open.json"
+    wait_identifier Quickstart.Review.Alias "$OUT/review.json"
+    assert_tree_text "$OUT/review.json" "Download & start"
+    press "$OUT/review.json" Quickstart.Footer.Primary "$OUT/download-start.json"
 
     local observed=0
     for _ in {1..40}; do
