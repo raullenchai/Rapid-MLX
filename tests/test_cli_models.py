@@ -342,16 +342,64 @@ def test_cached_view_renders_alias_for_known_repo(tmp_path, monkeypatch, capsys)
 
 
 def test_cached_view_renders_unmapped_for_unknown_repo(monkeypatch, capsys):
-    """A cached HF repo with no alias entry must show ``(unmapped)``."""
+    """A complete cached HF repo with no alias entry shows ``(unmapped)``."""
     monkeypatch.setattr(
         cli,
         "_scan_hf_cache_models",
         lambda: [("some/totally-unmapped-repo", 1024, 0.0)],
     )
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: True)
     cli._print_cached_models()
     out = capsys.readouterr().out
     assert "(unmapped)" in out
     assert "totally-unmapped-repo" in out
+
+
+def test_cached_view_marks_unmapped_partial_repo_incomplete(monkeypatch, capsys):
+    """Partial Audio repos are usually unmapped but must not look runnable."""
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [("audio/partial-custom-voice", 611 * 1024 * 1024, 0.0)],
+    )
+    monkeypatch.setattr(cli, "_cache_entry_is_runnable", lambda _repo: False)
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+
+    assert "(incomplete)" in out
+    assert "(unmapped)" not in out
+    assert "audio/partial-custom-voice" in out
+
+
+def test_cached_view_recognizes_complete_unmapped_whisper_npz(
+    tmp_path, monkeypatch, capsys
+):
+    """A completed Whisper pull must remain usable despite having no safetensors."""
+    repo = "mlx-community/whisper-medium-mlx"
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--whisper-medium-mlx"
+    sha = "whisper123"
+    snapshot = repo_root / "snapshots" / sha
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "weights.npz").write_bytes(b"weights")
+    refs = repo_root / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(sha)
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+    monkeypatch.setattr(
+        cli,
+        "_scan_hf_cache_models",
+        lambda: [(repo, 1_524_925_180, 0.0)],
+    )
+
+    cli._print_cached_models()
+    out = capsys.readouterr().out
+
+    assert "(unmapped)" in out
+    assert "(incomplete)" not in out
+    assert repo in out
 
 
 def test_cached_view_marks_known_partial_repo_incomplete(tmp_path, monkeypatch, capsys):
@@ -1052,7 +1100,7 @@ def test_complete_external_copy_keeps_incomplete_hub_stub_visible_for_cleanup(
 
     assert out.count("mlx-community/Dup") == 2
     assert "(external)" in out
-    assert "(unmapped)" in out
+    assert "(incomplete)" in out
 
 
 def test_external_scan_measures_symlinked_weights_within_trusted_root(tmp_path):

@@ -353,6 +353,90 @@ def test_is_repo_cached_true_when_weight_file_present(tmp_path, monkeypatch):
     assert gate.is_repo_cached("foo/cached") is True
 
 
+def test_is_repo_cached_rejects_partial_numbered_shards_without_index(
+    tmp_path, monkeypatch
+):
+    """An interrupted pull may land shard 1 before the index manifest.
+
+    The numbered filename already proves this is a multi-file checkpoint, so
+    one non-empty shard cannot fall through to the single-file cache check.
+    """
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--audio--partial-tts"
+    sha = "audio123"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model-00001-of-00004.safetensors").write_bytes(b"x" * 2048)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("audio/partial-tts") is False
+
+
+def test_is_repo_cached_accepts_complete_numbered_shards_without_index(
+    tmp_path, monkeypatch
+):
+    """A complete inferred shard set stays usable if a repo omits the index."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--audio--complete-tts"
+    sha = "audio456"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    for index in range(1, 4):
+        name = f"model-{index:05d}-of-00003.safetensors"
+        (snap / name).write_bytes(b"x" * 2048)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert gate.is_repo_cached("audio/complete-tts") is True
+
+
+def test_whisper_cache_accepts_its_npz_checkpoint_layout(tmp_path, monkeypatch):
+    """mlx-audio Whisper uses config.json + weights.npz, not safetensors."""
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--whisper-medium-mlx"
+    sha = "whisper123"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    (snap / "config.json").write_text("{}")
+    (snap / "weights.npz").write_bytes(b"x" * 2048)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert (
+        gate._snapshot_is_complete_whisper_model("mlx-community/whisper-medium-mlx")
+        is True
+    )
+    # The generic text-model probe stays strict about NPZ-only repositories.
+    assert gate.is_repo_cached("mlx-community/whisper-medium-mlx") is False
+
+
+@pytest.mark.parametrize("missing", ["config.json", "weights.npz"])
+def test_whisper_cache_rejects_incomplete_npz_layout(tmp_path, monkeypatch, missing):
+    cache_root = tmp_path / "hf-cache"
+    repo_root = cache_root / "models--mlx-community--whisper-small-mlx"
+    sha = "whisper456"
+    snap = repo_root / "snapshots" / sha
+    snap.mkdir(parents=True)
+    files = {"config.json": b"{}", "weights.npz": b"weights"}
+    for name, payload in files.items():
+        if name != missing:
+            (snap / name).write_bytes(payload)
+    _seed_refs_main(repo_root, sha)
+
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(cache_root))
+
+    assert (
+        gate._snapshot_is_complete_whisper_model("mlx-community/whisper-small-mlx")
+        is False
+    )
+
+
 def test_is_repo_cached_false_when_no_snapshot(tmp_path, monkeypatch):
     """Empty HF cache directory → False."""
     empty_cache = tmp_path / "hf-cache"

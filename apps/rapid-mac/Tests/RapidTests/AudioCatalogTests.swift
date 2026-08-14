@@ -119,6 +119,87 @@ struct AudioCatalogTests {
                 "The desktop sidecar does not bundle ffmpeg for these formats.")
     }
 
+    @Test("audio model rows use the shared cache icons instead of status suffixes")
+    func pickerUsesCacheIcons() throws {
+        let source = try String(contentsOf: Self.audioViewURL, encoding: .utf8)
+
+        #expect(source.contains("ModelPickerBar.cacheGlyph(cached: entry.cached)"))
+        #expect(source.contains(".map(\\.alias) ?? \"Choose a model\""))
+        #expect(!source.contains("private func modelTitle(_ entry: ModelEntry)"),
+                "Keep visible audio model labels to the alias; the icon owns cache state.")
+    }
+
+    @Test("uncached audio ignores the lazy server's early ready signal")
+    @MainActor
+    func uncachedAudioNeedsARealDownload() {
+        let readiness = AudioView.audioDownloadReadiness(
+            alias: "qwen3-tts-4bit",
+            cached: false,
+            sizeText: "1.1 GiB",
+            job: nil,
+            activationInFlight: false
+        )
+
+        #expect(readiness == .needsDownload(alias: "qwen3-tts-4bit", sizeText: "1.1 GiB"))
+        #expect(readiness?.sendAllowed == false)
+    }
+
+    @Test("audio download job drives progress and failure instead of false ready")
+    @MainActor
+    func audioDownloadJobDrivesReadiness() throws {
+        let downloads = DownloadManager()
+        let alias = "whisper-medium"
+        let job = downloads._testingSeedJob(alias: alias)
+        downloads._testingIngestStderr(
+            alias: alias,
+            line: "Fetching 10 files:  30%|███       | 3/10 [00:03<00:07, 1.00it/s]"
+        )
+
+        let downloading = AudioView.audioDownloadReadiness(
+            alias: alias,
+            cached: false,
+            sizeText: "1.5 GiB",
+            job: job,
+            activationInFlight: true
+        )
+        guard case .downloading(let model, _, let fraction) = downloading else {
+            Issue.record("Expected the live pull to own audio readiness")
+            return
+        }
+        #expect(model == alias)
+        #expect(fraction == 0.3)
+
+        downloads._testingFinish(alias: alias, status: 1, reason: .exit)
+        let failed = AudioView.audioDownloadReadiness(
+            alias: alias,
+            cached: false,
+            sizeText: "1.5 GiB",
+            job: job,
+            activationInFlight: false
+        )
+        guard case .failed(let model, _, let action) = failed else {
+            Issue.record("Expected a failed pull to offer retry")
+            return
+        }
+        #expect(model == alias)
+        #expect(action == .retry(alias: alias))
+    }
+
+    @Test("audio activation pulls and verifies the cache before serving")
+    func activationOrdersDownloadBeforeServe() throws {
+        let source = try String(contentsOf: Self.audioViewURL, encoding: .utf8)
+        let pull = try #require(source.range(of: "downloads.startDownload("))
+        let wait = try #require(source.range(of: "downloads.awaitDownloadSettlement(alias: alias)"))
+        let cacheProof = try #require(source.range(
+            of: "guard viewModel.audioModels.first(where: { $0.alias == alias })?.cached == true"
+        ))
+        let serve = try #require(source.range(of: "_ = await server.ensureServing(", options: .backwards))
+
+        #expect(pull.lowerBound < wait.lowerBound)
+        #expect(wait.lowerBound < cacheProof.lowerBound)
+        #expect(cacheProof.lowerBound < serve.lowerBound)
+    }
+
     @Test("unmapped audio cache rows match their Hugging Face repo")
     func matchesUnmappedAudioCacheByRepo() async throws {
         let directory = FileManager.default.temporaryDirectory
@@ -150,6 +231,41 @@ struct AudioCatalogTests {
 
         #expect(qwen.cached)
         #expect(qwen.sizeOnDisk == "2.2 GiB")
+    }
+
+    @Test("incomplete audio cache rows remain downloadable")
+    @MainActor
+    func incompleteAudioCacheIsNotStartable() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-partial-audio-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let binary = directory.appendingPathComponent("rapid-mlx")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "models" ]; then
+          cat <<'EOF'
+          Audio models (1 aliases)
+          Alias               Size       Kind        Family      HF id
+          qwen3-tts-4bit      2.2 GiB    [audio:tts] qwen3_tts   mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit
+        EOF
+        else
+          cat <<'EOF'
+          Cached models (1 on disk)
+          Alias          HF repo                                              Size
+          (incomplete)   mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit   611 MiB
+        EOF
+        fi
+        """
+        try script.write(to: binary, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+
+        let entries = await ModelCatalog.audioEntries(binary: binary, hubCacheOverride: nil)
+        let qwen = try #require(entries.first { $0.alias == "qwen3-tts-4bit" })
+
+        #expect(!qwen.cached)
+        #expect(qwen.sizeOnDisk == "2.2 GiB")
+        #expect(ModelPickerBar.cacheGlyph(cached: qwen.cached) == "icloud.and.arrow.down")
     }
 
     private func audioEntry(

@@ -41,6 +41,7 @@ Design choices:
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 
@@ -416,6 +417,52 @@ def _is_model_weight_filename(name: str) -> bool:
     return name.startswith("model")
 
 
+_NUMBERED_MODEL_SHARD_RE = re.compile(r"^model-(\d+)-of-(\d+)\.safetensors$")
+
+
+def _numbered_shards_are_complete(snap_dir: str) -> bool | None:
+    """Validate an index-less ``model-N-of-M`` shard set.
+
+    ``snapshot_download`` does not promise that
+    ``model.safetensors.index.json`` lands before the weight files. If a pull
+    is interrupted after shard 1 arrives but before the index, the generic
+    ``model*.safetensors`` fallback must not mistake that one shard for a
+    complete single-file checkpoint.
+
+    Returns ``None`` when the snapshot has no numbered shard names, preserving
+    the ordinary ``model.safetensors`` / ``model-q4.safetensors`` path. When
+    numbered shards are present, every name must agree on one positive total
+    and cover the indices 1...total exactly once. File type and non-zero size
+    remain the responsibility of ``_root_model_files_all_non_empty`` below.
+    """
+    try:
+        names = os.listdir(snap_dir)
+    except OSError:
+        return False
+
+    numbered: list[tuple[int, int]] = []
+    for name in names:
+        match = _NUMBERED_MODEL_SHARD_RE.fullmatch(name)
+        if match is None:
+            continue
+        numbered.append((int(match.group(1)), int(match.group(2))))
+    if not numbered:
+        return None
+
+    totals = {total for _, total in numbered}
+    if len(totals) != 1:
+        return False
+    total = totals.pop()
+    indices = {index for index, _ in numbered}
+    return (
+        total > 0
+        and len(numbered) == total
+        and len(indices) == total
+        and min(indices) == 1
+        and max(indices) == total
+    )
+
+
 def _snapshot_is_complete(snap_dir: str) -> bool:
     """True if ``snap_dir`` looks like a fully-downloaded model snapshot.
 
@@ -434,8 +481,11 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
       1. ``model.safetensors.index.json`` present → parse ``weight_map``
          and require every referenced shard to exist with non-zero
          size. Codex round-4 BLOCKING #1.
-      2. Otherwise, a single non-empty ``model*.safetensors`` is
-         sufficient (covers single-file non-sharded models).
+      2. Without an index, numbered ``model-N-of-M`` files must form the
+         complete 1...M set. This covers an interrupted pull where one shard
+         lands before the index file.
+      3. Otherwise, a single non-empty ``model*.safetensors`` is sufficient
+         (covers single-file non-sharded models).
 
     Index-but-no-shards (Codex round-5 BLOCKING #1): when an
     ``model.safetensors.index.json`` exists but yields no shard names
@@ -499,7 +549,14 @@ def _snapshot_is_complete(snap_dir: str) -> bool:
             return False
         return True
 
-    # Single-file (non-sharded) model. Match mlx-lm's actual loader
+    # The index can arrive after the first weight shard. Infer completeness
+    # from the standard shard filenames in that window instead of treating
+    # shard 1/N as an ordinary single-file checkpoint.
+    numbered_complete = _numbered_shards_are_complete(snap_dir)
+    if numbered_complete is False:
+        return False
+
+    # Single-file (or complete index-less sharded) model. Match mlx-lm's actual loader
     # glob — ``adapter.safetensors`` / ``embeddings.safetensors`` and
     # other sidecars don't count; only ``model*.safetensors`` at the
     # snapshot root (Codex round-7 BLOCKING #2: the glob is NOT
@@ -644,6 +701,35 @@ def is_repo_cached(repo_id: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def _snapshot_is_complete_whisper_model(repo_id: str) -> bool:
+    """True when a pinned mlx-audio Whisper snapshot can be loaded locally.
+
+    mlx-community Whisper checkpoints intentionally use ``weights.npz`` plus
+    ``config.json`` and contain no ``model*.safetensors``. The text-model
+    completeness probe therefore rejects a fully downloaded Whisper model.
+    Keep this family-specific so an arbitrary NPZ file cannot make a text or
+    unknown repository look runnable.
+    """
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        repo_root = os.path.join(
+            HF_HUB_CACHE,
+            f"models--{repo_id.replace('/', '--')}",
+        )
+        resolved_sha = _resolved_snapshot_sha(repo_root)
+        if resolved_sha is None:
+            return False
+        snap_dir = os.path.join(repo_root, "snapshots", resolved_sha)
+        for name in ("config.json", "weights.npz"):
+            path = os.path.join(snap_dir, name)
+            if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _snapshot_is_complete_split_model(repo_id: str) -> bool:

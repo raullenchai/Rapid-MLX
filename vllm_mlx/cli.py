@@ -5253,9 +5253,14 @@ def _cache_entry_is_runnable(repo: str) -> bool:
         from vllm_mlx._download_gate import (
             _snapshot_is_complete_mflux_model,
             _snapshot_is_complete_split_model,
+            _snapshot_is_complete_whisper_model,
             is_repo_cached,
         )
+        from vllm_mlx.audio.registry import resolve_audio_alias
 
+        audio_entry = resolve_audio_alias(repo)
+        if audio_entry is not None and audio_entry.family == "whisper":
+            return _snapshot_is_complete_whisper_model(repo)
         return (
             is_repo_cached(repo)
             or _snapshot_is_complete_split_model(repo)
@@ -5344,10 +5349,11 @@ def _print_cached_models() -> None:
         if is_external_row:
             alias = "(external)"
         # Keep partial directories visible for disk cleanup, but never label
-        # a known alias as downloaded/runnable. The desktop parser deliberately
-        # rejects parenthesized status rows, so this also prevents a 61 MiB
-        # metadata stub for a 26B model from receiving a green checkmark.
-        elif alias != "(unmapped)" and not _cache_entry_is_runnable(repo):
+        # one as downloaded/runnable. This includes unmapped audio repos: the
+        # desktop joins those to its audio registry by HF id, so leaving a
+        # partial row as `(unmapped)` gives it a green checkmark and Start.
+        # The desktop deliberately rejects `(incomplete)` status rows.
+        elif not _cache_entry_is_runnable(repo):
             alias = "(incomplete)"
         # Render modified as a human delta: "2 days ago" beats raw epoch.
         if mtime <= 0:

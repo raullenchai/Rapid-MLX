@@ -923,6 +923,12 @@ def _emit_catalog(subcommand, alias):
         # Cached, so the Images tab resolves to it without a download path —
         # ``ImageGenViewModel.resolveAlias`` prefers a cached entry.
         print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")
+        if _setting("FAKE_PARTIAL_AUDIO_CACHE") == "1":
+            # A real interrupted multi-shard pull remains visible in `ls` for
+            # disk cleanup, but its status alias must never make Audio render
+            # Start. The audio-readiness flow clicks through this row and
+            # requires a resumptive `pull fake-qwen3-tts`.
+            print("(incomplete)           fake/qwen3-tts        633 MB")
         return True
     if subcommand == "info":
         # Per-alias, not a constant: `ls`/`models` map fake-image-alias to its

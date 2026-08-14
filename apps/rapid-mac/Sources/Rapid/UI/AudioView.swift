@@ -21,6 +21,7 @@ struct AudioView: View {
     @State private var playingPreviewVoice: String?
     @State private var voicePreviewTask: Task<Void, Never>?
     @State private var voicePreviewRequestID: UUID?
+    @State private var modelLoadsInFlight: Set<String> = []
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
     private let controlLabelWidth: CGFloat = 80
@@ -39,6 +40,21 @@ struct AudioView: View {
     /// Audio uses the same lifecycle SSOT and CTA semantics as Chat and
     /// Images: choose → Download & start / Start → ready.
     private var readiness: ModelReadiness {
+        // Audio-only `serve` processes intentionally report healthy before
+        // loading their lazy STT/TTS engine. For an uncached model that
+        // process-level signal is not readiness: the first audio request would
+        // still begin the weight download. The explicit DownloadManager job is
+        // authoritative until the catalog confirms the weights are on disk.
+        if let selectedEntry,
+           let downloadReadiness = Self.audioDownloadReadiness(
+               alias: selectedAlias,
+               cached: selectedEntry.cached,
+               sizeText: selectedEntry.sizeOnDisk,
+               job: downloads.job(for: selectedAlias),
+               activationInFlight: modelLoadsInFlight.contains(selectedAlias)
+           ) {
+            return downloadReadiness
+        }
         if server.isResidentLoadInFlight(selectedAlias) {
             return .starting(alias: selectedAlias, detail: "Downloading or loading the audio model…")
         }
@@ -67,6 +83,39 @@ struct AudioView: View {
                 .init(message: $0.message, alias: $0.alias)
             }
         )
+    }
+
+    @MainActor
+    static func audioDownloadReadiness(
+        alias: String,
+        cached: Bool,
+        sizeText: String?,
+        job: DownloadManager.Job?,
+        activationInFlight: Bool
+    ) -> ModelReadiness? {
+        guard !alias.isEmpty, !cached else { return nil }
+        if let job {
+            switch job.status {
+            case .running:
+                return .downloading(
+                    alias: alias,
+                    detail: job.progress.progressSubtitle,
+                    fraction: job.progress.progressFraction
+                )
+            case .failed(let message):
+                return .failed(alias: alias, message: message, action: .retry(alias: alias))
+            case .completed:
+                if activationInFlight {
+                    return .starting(alias: alias, detail: "Finishing the download…")
+                }
+            case .cancelled:
+                break
+            }
+        }
+        if activationInFlight {
+            return .downloading(alias: alias, detail: "Starting the download…", fraction: nil)
+        }
+        return .needsDownload(alias: alias, sizeText: sizeText)
     }
 
     var body: some View {
@@ -501,18 +550,23 @@ struct AudioView: View {
                 Button {
                     selection.wrappedValue = entry.alias
                 } label: {
-                    if selection.wrappedValue == entry.alias {
-                        Label(modelTitle(entry), systemImage: "checkmark")
-                    } else {
-                        Text(modelTitle(entry))
-                    }
+                    Label(
+                        entry.alias,
+                        systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
+                    )
                 }
                 .accessibilityIdentifier("\(identifier).\(entry.alias)")
+                .accessibilityLabel(
+                    "\(entry.alias), \(entry.cached ? "Downloaded" : "Not downloaded")"
+                )
+                .accessibilityAddTraits(
+                    selection.wrappedValue == entry.alias ? .isSelected : []
+                )
             }
         } label: {
             popupControlLabel(
                 entries.first(where: { $0.alias == selection.wrappedValue })
-                    .map(modelTitle) ?? "Choose a model"
+                    .map(\.alias) ?? "Choose a model"
             )
         }
         .menuStyle(.button)
@@ -601,11 +655,6 @@ struct AudioView: View {
             .frame(width: controlLabelWidth, alignment: .leading)
     }
 
-    private func modelTitle(_ entry: ModelEntry) -> String {
-        let status = entry.cached ? "Downloaded" : "Not downloaded"
-        return "\(entry.alias) - \(status)"
-    }
-
     private func handleReadinessAction(_ action: ModelReadiness.Action) {
         switch action {
         case .chooseModel:
@@ -623,6 +672,64 @@ struct AudioView: View {
     }
 
     private func loadAudioModel(_ alias: String) async {
+        guard !modelLoadsInFlight.contains(alias),
+              let initialEntry = viewModel.audioModels.first(where: { $0.alias == alias }) else {
+            return
+        }
+        modelLoadsInFlight.insert(alias)
+        defer { modelLoadsInFlight.remove(alias) }
+        viewModel.errorMessage = nil
+
+        // `Start` may have been rendered from a catalog snapshot taken before
+        // an interrupted pull left only some numbered weight shards behind.
+        // Re-probe before trusting cached=true; the engine's cache listing
+        // validates that every shard is present and turns a partial back into
+        // Download & start.
+        if initialEntry.cached {
+            await viewModel.refreshCatalog()
+            guard !Task.isCancelled else { return }
+        }
+        guard let currentEntry = viewModel.audioModels.first(where: { $0.alias == alias }) else {
+            return
+        }
+
+        if !currentEntry.cached {
+            // A completed job may have landed while this view's catalog
+            // snapshot was stale. Refresh before deciding to pull it again.
+            if downloads.job(for: alias)?.status == .completed {
+                await viewModel.refreshCatalog()
+            }
+
+            if viewModel.audioModels.first(where: { $0.alias == alias })?.cached != true {
+                if let job = downloads.job(for: alias), job.status != .running {
+                    downloads.dismissJob(alias: alias)
+                }
+                if !downloads.isDownloading(alias) {
+                    _ = downloads.startDownload(
+                        alias: alias,
+                        hfPath: currentEntry.hfRepo,
+                        totalBytes: ModelCacheActions.parseSizeBytes(currentEntry.sizeOnDisk)
+                    )
+                }
+                await downloads.awaitDownloadSettlement(alias: alias)
+                guard !Task.isCancelled else { return }
+                guard downloads.job(for: alias)?.status == .completed else { return }
+                await viewModel.refreshCatalog()
+            }
+
+            // `rapid-mlx pull` exiting successfully is necessary, but the
+            // catalog is the final proof that the concrete HF snapshot is
+            // usable. Never turn the audio server's lazy health response into
+            // a false Ready state when that proof is absent.
+            guard viewModel.audioModels.first(where: { $0.alias == alias })?.cached == true else {
+                viewModel.errorMessage = "The download finished, but Rapid couldn't find the model on disk. Try downloading it again."
+                return
+            }
+        }
+
+        // A download may finish after the user selects a different audio
+        // model. Keep the completed cache, but do not start the stale choice.
+        guard selectedAlias == alias else { return }
         let entry = viewModel.audioModels.first { $0.alias == alias }
         _ = await server.ensureServing(
             alias: alias,

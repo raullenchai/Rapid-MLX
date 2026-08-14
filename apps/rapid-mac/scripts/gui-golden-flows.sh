@@ -2925,7 +2925,12 @@ flow_launch_integrations() {
 
 flow_audio_readiness() {
     log "flow: audio-readiness"
-    start_persona audio-readiness
+    # Keep `pull` alive long enough to prove Audio owns a real download job.
+    # The audio server reports /healthz before its lazy engine has weights, so
+    # a UI-only Ready assertion would miss the regression this flow guards.
+    start_persona audio-readiness \
+        FAKE_DOWNLOAD_OVERRUN=1 \
+        FAKE_PARTIAL_AUDIO_CACHE=1
     dismiss_first_run
     see_main "$OUT/chat.json"
     press "$OUT/chat.json" Sidebar.Audio "$OUT/speech.json" \
@@ -2948,8 +2953,37 @@ flow_audio_readiness() {
         || die "Speech did not expose Chat-equivalent Download & start readiness"
     baseline audio-readiness.speech "$OUT/speech.json"
 
-    press "$OUT/speech.json" Readiness.Action "$OUT/speech-start.json" \
+    press "$OUT/speech.json" Readiness.Action "$OUT/speech-download-start.json" \
         || die "Speech Download & start is not pressable"
+    wait_fake_event \
+        '.event == "command" and .subcommand == "pull" and .alias == "fake-qwen3-tts"' \
+        "Speech Download & start did not invoke pull for fake-qwen3-tts"
+
+    # Sample several fresh AX trees inside the fake's five-second pull window.
+    # An early healthy audio sidecar must never turn that window into Ready.
+    local speech_downloading=0
+    for ((i=0; i<8; i++)); do
+        see_main "$OUT/speech-downloading.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(((.description // .value // .label // "") | tostring)
+                           | startswith("Downloading fake-qwen3-tts"))' \
+                 "$OUT/speech-downloading.json" >/dev/null; then
+            speech_downloading=1
+        fi
+        if jq -e '(.data.ui_elements | tostring)
+                  | contains("Ready — fake-qwen3-tts")' \
+                 "$OUT/speech-downloading.json" >/dev/null; then
+            die "Speech reported Ready while fake-qwen3-tts was still downloading"
+        fi
+        sleep 0.25
+    done
+    [[ "$speech_downloading" == 1 ]] \
+        || die "Speech never exposed Downloading after Download & start"
+    if jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-qwen3-tts")' \
+        "$OUT/fake-events.jsonl" >/dev/null; then
+        die "Speech started fake-qwen3-tts before its pull completed and cache was verified"
+    fi
+
     wait_fake_event \
         '.event == "server_started" and .alias == "fake-qwen3-tts"' \
         "Speech Download & start did not start its selected model"
