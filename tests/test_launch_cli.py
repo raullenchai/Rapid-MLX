@@ -60,7 +60,7 @@ def fake_home(tmp_path, monkeypatch) -> Path:
 
     # claude_code: replace the two module constants.
     monkeypatch.setattr(claude_code, "_CLAUDE_STATE_DIR", tmp_path / ".claude")
-    monkeypatch.setattr(claude_code, "_CONFIG_DIR", tmp_path / ".config/claude")
+    monkeypatch.setattr(claude_code, "_CONFIG_DIR", tmp_path / ".claude")
 
     # continue_dev: replace the config dir.
     monkeypatch.setattr(continue_dev, "_CONFIG_DIR", tmp_path / ".continue")
@@ -191,7 +191,11 @@ class TestClaudeCode:
             json.dumps(
                 {
                     "permissions": {"allow": ["Bash(git:*)"]},
-                    "env": {"OTHER_VAR": "preserved", "ANTHROPIC_BASE_URL": "old"},
+                    "env": {
+                        "OTHER_VAR": "preserved",
+                        "ANTHROPIC_BASE_URL": "old",
+                        "ANTHROPIC_AUTH_TOKEN": "proxy-token",
+                    },
                 }
             )
         )
@@ -202,6 +206,7 @@ class TestClaudeCode:
         assert data["env"]["OTHER_VAR"] == "preserved"
         # Overwritten.
         assert data["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8000"
+        assert data["env"]["ANTHROPIC_AUTH_TOKEN"] == ""
 
     def test_backup_created(self, fake_home):
         cfg = claude_code.current_config_path()

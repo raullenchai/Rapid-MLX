@@ -110,6 +110,8 @@ def write_or_patch_config(
       correct, ``http://127.0.0.1:8000/v1`` produces 404 on
       ``/v1/v1/messages``).
     * ``env.ANTHROPIC_API_KEY`` → ``<api_key>``
+    * ``env.ANTHROPIC_AUTH_TOKEN`` → ``""`` so a token inherited from a
+      proxy/switcher cannot conflict with the API key above.
     * ``env.ANTHROPIC_MODEL`` → ``<model>`` (Claude Code reads this as
       the default model id; the rapid-mlx server accepts any
       ``claude-*`` model name and routes to the actually-loaded engine,
@@ -151,6 +153,7 @@ def patched_config(
     env = dict(existing.get("env", {}))
     env["ANTHROPIC_BASE_URL"] = base_url
     env["ANTHROPIC_API_KEY"] = api_key
+    env["ANTHROPIC_AUTH_TOKEN"] = ""
     env["ANTHROPIC_MODEL"] = model
     existing["env"] = env
 
