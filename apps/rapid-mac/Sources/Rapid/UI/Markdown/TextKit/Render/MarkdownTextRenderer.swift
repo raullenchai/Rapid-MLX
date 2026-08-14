@@ -120,13 +120,55 @@ final class MarkdownTextRenderer {
     func link(at point: CGPoint) -> URL? {
         guard let storage = textContentStorage.textStorage else { return nil }
         textLayoutManager.ensureLayout(for: textContentStorage.documentRange)
-        for offset in 0..<min(proseLength, storage.length) {
-            guard let rect = rect(forCharacterAt: offset), rect.contains(point),
-                  let url = storage.attribute(.link, at: offset, effectiveRange: nil) as? URL
-            else { continue }
-            return url
+        // Enumerate link runs, not characters: a document with no links costs
+        // one pass and zero rect calculations, and one with links only measures
+        // the runs themselves. Scanning every offset made this O(n) per hit
+        // test, which `resetCursorRects` then called O(n) times.
+        var found: URL?
+        storage.enumerateAttribute(
+            .link,
+            in: NSRange(location: 0, length: min(proseLength, storage.length))
+        ) { value, range, stop in
+            guard let url = value as? URL else { return }
+            for offset in range.location..<NSMaxRange(range) {
+                if let rect = rect(forCharacterAt: offset), rect.contains(point) {
+                    found = url
+                    stop.pointee = true
+                    return
+                }
+            }
         }
-        return nil
+        return found
+    }
+
+    /// Bounding rects of every link run, for cursor tracking.
+    ///
+    /// One rect per run rather than per character: adjacent character rects on
+    /// the same line are merged, so a link is a single tracking area instead of
+    /// dozens.
+    func linkRects() -> [CGRect] {
+        guard let storage = textContentStorage.textStorage else { return [] }
+        textLayoutManager.ensureLayout(for: textContentStorage.documentRange)
+        var rects: [CGRect] = []
+        storage.enumerateAttribute(
+            .link,
+            in: NSRange(location: 0, length: min(proseLength, storage.length))
+        ) { value, range, _ in
+            guard value is URL else { return }
+            var line: CGRect?
+            for offset in range.location..<NSMaxRange(range) {
+                guard let rect = rect(forCharacterAt: offset) else { continue }
+                if var current = line, abs(current.minY - rect.minY) < 1 {
+                    current = current.union(rect)
+                    line = current
+                } else {
+                    if let current = line { rects.append(current) }
+                    line = rect
+                }
+            }
+            if let current = line { rects.append(current) }
+        }
+        return rects
     }
 
     /// Lay out at a given width and report the height the text needs.

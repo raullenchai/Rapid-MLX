@@ -218,9 +218,17 @@ final class MarkdownTextBlockView: NSView {
 
     public override func resetCursorRects() {
         super.resetCursorRects()
-        for offset in 0..<renderer.proseLength {
-            guard let rect = renderer.rect(forCharacterAt: offset),
-                  renderer.link(at: CGPoint(x: rect.midX, y: rect.midY)) != nil else { continue }
+        // Ask the storage where the links ARE, rather than asking every
+        // character whether it is one.
+        //
+        // The previous shape walked all `proseLength` offsets and called
+        // `renderer.link(at:)` on each, and that call is itself a linear scan
+        // over the same offsets — O(n²) with an `ensureLayout` inside the inner
+        // loop. AppKit re-runs `resetCursorRects` after every layout and every
+        // scroll, so opening a 6 000-character answer put 86% of the main
+        // thread in this one method (sampled). Enumerating the `.link`
+        // attribute visits only the ranges that actually carry a link.
+        for rect in renderer.linkRects() {
             addCursorRect(rect, cursor: .pointingHand)
         }
     }
