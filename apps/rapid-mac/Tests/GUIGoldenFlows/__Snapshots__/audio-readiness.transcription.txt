@@ -25,7 +25,7 @@ AXApplication title="Rapid-MLX"
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Download & start" enabled=true
             AXButton id="Audio.Transcription.Run" desc="Transcribe" enabled=false
-      AXButton desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
       AXUnknown desc="Tokens per second: no data yet" enabled=true

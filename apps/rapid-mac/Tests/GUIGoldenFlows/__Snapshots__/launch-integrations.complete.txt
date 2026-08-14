@@ -92,7 +92,7 @@ AXApplication title="Rapid-MLX"
               AXButton subrole=AXDecrementArrow
               AXButton subrole=AXIncrementPage
               AXButton subrole=AXDecrementPage
-      AXButton desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
       AXUnknown desc="Tokens per second: no data yet" enabled=true

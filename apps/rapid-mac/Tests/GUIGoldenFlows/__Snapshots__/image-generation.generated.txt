@@ -39,7 +39,7 @@ AXApplication title="Rapid-MLX"
           AXButton id="Images.Edit.Import" desc="Import image to edit" help="Import image to edit" enabled=true
           AXPopUpButton id="Images.ModelPicker" desc="<model>" help="Model: <model>" enabled=true
           AXButton id="Images.Generate" desc="Up" help="Generate" enabled=false
-      AXButton desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true
       AXUnknown desc="Tokens per second: no data yet" enabled=true
