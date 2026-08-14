@@ -586,23 +586,22 @@ private struct ConnectToolRow: View {
 
                 Spacer(minLength: RapidTheme.Space.md)
 
-                Button(action: copy) {
-                    Label(copied ? "Copied" : "Copy command",
-                          systemImage: copied ? "checkmark" : "doc.on.doc")
-                }
-                .buttonStyle(RapidSecondaryButtonStyle(
-                    utility: true,
-                    height: RapidTheme.ControlHeight.small,
-                    foreground: copied ? RapidTheme.utilityActionSuccess : nil
-                ))
+                // Icon only, and the same ``QuietIconButton`` the endpoint
+                // rows above use. The labelled variant did not fit: pinned to
+                // 132pt it rendered "Copy comm…" — the fixed width was chosen
+                // to stop the row reflowing when the label flips to "Copied",
+                // and it truncated the resting label to buy that. It also put
+                // the button's hit area and its drawn pill at different sizes,
+                // since the frame sat outside the button style. An icon has
+                // one width in both states, so none of that arises.
+                QuietIconButton(
+                    symbol: copied ? "checkmark" : "doc.on.doc",
+                    label: copied ? "Copied \(tool.name) command" : "Copy \(tool.name) command",
+                    help: copyHelp,
+                    tint: copied ? RapidTheme.utilityActionSuccess : nil,
+                    action: copy
+                )
                 .disabled(!isReady)
-                // Fixed width so all three buttons form a clean right
-                // column instead of each sizing to its own label (the
-                // "Copied" flip would otherwise resize the button and
-                // shift the row).
-                .frame(width: 132)
-                .help(copyHelp)
-                .accessibilityLabel(copied ? "Copied \(tool.name) command" : "Copy \(tool.name) command")
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
 
             }
