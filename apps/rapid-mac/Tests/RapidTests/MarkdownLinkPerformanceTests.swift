@@ -20,7 +20,7 @@ struct MarkdownLinkPerformanceTests {
         options.textColor = .black
         let renderer = MarkdownTextRenderer(options: options)
         renderer.setBlocks(blocks)
-        renderer.measureHeight(width: 600)
+        _ = renderer.measureHeight(width: 600)
         return renderer
     }
 
@@ -52,6 +52,36 @@ struct MarkdownLinkPerformanceTests {
             rects.count <= 2,
             "\(rects.count) rects for a 9-character link — merging by line regressed"
         )
+    }
+
+    @Test("A wrapped link exposes one clickable rect per rendered line")
+    func wrappedLinkSegmentsRemainClickable() throws {
+        let url = try #require(URL(string: "https://example.com/wrapped"))
+        var linked = InlineRun(text: String(repeating: "wrapped link ", count: 20))
+        linked.link = url
+        let renderer = renderer([.init(runs: [linked], kind: .paragraph)])
+
+        let rects = renderer.linkRects()
+        #expect(rects.count > 1, "fixture must wrap across lines")
+        for rect in rects {
+            #expect(renderer.link(at: CGPoint(x: rect.midX, y: rect.midY)) == url)
+        }
+    }
+
+    @Test("Adjacent links keep their own hit targets")
+    func adjacentLinksDoNotMerge() throws {
+        let firstURL = try #require(URL(string: "https://one.example"))
+        let secondURL = try #require(URL(string: "https://two.example"))
+        var first = InlineRun(text: "one")
+        first.link = firstURL
+        var second = InlineRun(text: "two")
+        second.link = secondURL
+        let renderer = renderer([.init(runs: [first, second], kind: .paragraph)])
+
+        let rects = renderer.linkRects()
+        #expect(rects.count == 2)
+        #expect(renderer.link(at: CGPoint(x: rects[0].midX, y: rects[0].midY)) == firstURL)
+        #expect(renderer.link(at: CGPoint(x: rects[1].midX, y: rects[1].midY)) == secondURL)
     }
 
     @Test("Hit testing a link-free document is cheap")

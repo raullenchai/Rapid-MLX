@@ -118,27 +118,7 @@ final class MarkdownTextRenderer {
     /// Resolve a rendered link at a view-local point. TextKit's drawing-only
     /// host has no NSTextView delegate to do this on our behalf.
     func link(at point: CGPoint) -> URL? {
-        guard let storage = textContentStorage.textStorage else { return nil }
-        textLayoutManager.ensureLayout(for: textContentStorage.documentRange)
-        // Enumerate link runs, not characters: a document with no links costs
-        // one pass and zero rect calculations, and one with links only measures
-        // the runs themselves. Scanning every offset made this O(n) per hit
-        // test, which `resetCursorRects` then called O(n) times.
-        var found: URL?
-        storage.enumerateAttribute(
-            .link,
-            in: NSRange(location: 0, length: min(proseLength, storage.length))
-        ) { value, range, stop in
-            guard let url = value as? URL else { return }
-            for offset in range.location..<NSMaxRange(range) {
-                if let rect = rect(forCharacterAt: offset), rect.contains(point) {
-                    found = url
-                    stop.pointee = true
-                    return
-                }
-            }
-        }
-        return found
+        linkRegions().first { $0.rect.contains(point) }?.url
     }
 
     /// Bounding rects of every link run, for cursor tracking.
@@ -147,28 +127,39 @@ final class MarkdownTextRenderer {
     /// the same line are merged, so a link is a single tracking area instead of
     /// dozens.
     func linkRects() -> [CGRect] {
+        linkRegions().map(\.rect)
+    }
+
+    /// Geometry for each laid-out line segment carrying a link.
+    ///
+    /// TextKit already splits an attributed range at line boundaries. Asking
+    /// it for those segments avoids both per-character geometry calls and the
+    /// fragile `minY` tolerance previously used to merge character rects.
+    private func linkRegions() -> [(url: URL, rect: CGRect)] {
         guard let storage = textContentStorage.textStorage else { return [] }
         textLayoutManager.ensureLayout(for: textContentStorage.documentRange)
-        var rects: [CGRect] = []
+        var regions: [(url: URL, rect: CGRect)] = []
         storage.enumerateAttribute(
             .link,
             in: NSRange(location: 0, length: min(proseLength, storage.length))
         ) { value, range, _ in
-            guard value is URL else { return }
-            var line: CGRect?
-            for offset in range.location..<NSMaxRange(range) {
-                guard let rect = rect(forCharacterAt: offset) else { continue }
-                if var current = line, abs(current.minY - rect.minY) < 1 {
-                    current = current.union(rect)
-                    line = current
-                } else {
-                    if let current = line { rects.append(current) }
-                    line = rect
-                }
+            guard let url = value as? URL,
+                  let start = textContentStorage.location(
+                    textContentStorage.documentRange.location,
+                    offsetBy: range.location
+                  ),
+                  let end = textContentStorage.location(start, offsetBy: range.length),
+                  let textRange = NSTextRange(location: start, end: end)
+            else { return }
+
+            textLayoutManager.enumerateTextSegments(
+                in: textRange, type: .standard, options: []
+            ) { _, frame, _, _ in
+                regions.append((url, frame))
+                return true
             }
-            if let current = line { rects.append(current) }
         }
-        return rects
+        return regions
     }
 
     /// Lay out at a given width and report the height the text needs.
