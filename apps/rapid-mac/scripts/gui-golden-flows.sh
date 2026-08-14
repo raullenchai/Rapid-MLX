@@ -2948,7 +2948,25 @@ flow_audio_readiness() {
         || die "Speech did not expose Chat-equivalent Download & start readiness"
     baseline audio-readiness.speech "$OUT/speech.json"
 
-    press "$OUT/speech.json" Audio.Mode.Transcription "$OUT/transcription.json" \
+    press "$OUT/speech.json" Readiness.Action "$OUT/speech-start.json" \
+        || die "Speech Download & start is not pressable"
+    wait_fake_event \
+        '.event == "server_started" and .alias == "fake-qwen3-tts"' \
+        "Speech Download & start did not start its selected model"
+    local speech_loaded=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/speech-loaded.json"
+        if ! jq -e '.data.ui_elements[]?
+                    | select(.identifier == "Readiness.Action")' \
+                   "$OUT/speech-loaded.json" >/dev/null; then
+            speech_loaded=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$speech_loaded" == 1 ]] \
+        || die "Speech stayed behind Download & start after its model became ready"
+
+    press "$OUT/speech-loaded.json" Audio.Mode.Transcription "$OUT/transcription.json" \
         || die "Audio transcription segment is not pressable"
     local transcription_ready=0
     for ((i=0; i<40; i++)); do
@@ -2967,6 +2985,27 @@ flow_audio_readiness() {
     [[ "$transcription_ready" == 1 ]] \
         || die "Transcription did not expose Chat-equivalent Download & start readiness"
     baseline audio-readiness.transcription "$OUT/transcription.json"
+
+    press "$OUT/transcription.json" Readiness.Action "$OUT/transcription-start.json" \
+        || die "Transcription Download & start is not pressable"
+    wait_fake_event \
+        '.event == "server_started" and .alias == "fake-whisper-small"' \
+        "Transcription Download & start did not switch to its selected model"
+    local transcription_loaded=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/transcription-loaded.json"
+        if ! jq -e '.data.ui_elements[]?
+                    | select(.identifier == "Readiness.Action")' \
+                   "$OUT/transcription-loaded.json" >/dev/null; then
+            transcription_loaded=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$transcription_loaded" == 1 ]] \
+        || die "Transcription stayed behind Download & start after its model became ready"
+    jq -n '{success: true,
+            assertion: "Speech and Transcription each start the selected model and leave readiness"}' \
+        > "$OUT/audio-readiness-actions.json"
     log "  audio-readiness OK"
     cleanup_persona
 }
