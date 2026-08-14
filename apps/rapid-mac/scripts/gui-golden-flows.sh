@@ -40,7 +40,7 @@ Flows: fresh-install, cached-quickstart, download-progress, settings-persistence
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
-       browse-all-destination, image-generation, audio-readiness, all
+       browse-all-destination, chat-document-attachment, image-generation, audio-readiness, all
 
 download-progress, chat-restore, chat-depth, slow-stream-stop, model-crash-recovery,
 restored-tools, tool-loop-budget and image-generation drive the app through
@@ -100,7 +100,7 @@ flow_requires_screen_recording() {
 flow_requires_peekaboo() {
     case "$FLOW" in
         cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
-        slow-stream-stop|model-crash-recovery|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -2250,6 +2250,72 @@ flow_catalog_integrity() {
     cleanup_persona
 }
 
+flow_chat_document_attachment() {
+    start_persona chat-document-attachment
+    dismiss_first_run
+    start_model
+
+    local fixture="$ROOT/Tests/GUIGoldenFlows/Fixtures/chat-document.txt"
+    see_main "$OUT/document-compose.json"
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
+        > "$OUT/document-paste.json"
+
+    wait_identifier ChatView.Attachment.Remove.chat-document.txt \
+        "$OUT/document-attached.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ChatView.Attachment.Remove.chat-document.txt")' \
+        "$OUT/document-attached.json" >/dev/null \
+        || die "the pasted TXT file did not become a removable attachment chip"
+
+    send_prompt "Which region is in this document?" document
+    for _ in {1..40}; do
+        if jq -e -s 'any(.[]; .event == "chat_request"
+                       and any(.user_texts[]?;
+                           contains("BEGIN RAPID ATTACHMENT")
+                           and contains("Revenue: 42")
+                           and contains("Region: APAC")))' \
+            "$OUT/fake-events.jsonl" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.25
+    done
+    jq -e -s 'any(.[]; .event == "chat_request"
+                   and any(.user_texts[]?;
+                       contains("BEGIN RAPID ATTACHMENT")
+                       and contains("Revenue: 42")
+                       and contains("Region: APAC")))' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "the document chip sent no extracted local text to the model"
+
+    relaunch_persona
+    dismiss_first_run
+    wait_identifier Sidebar.NewChat "$OUT/document-restored-root.json"
+    local conversation_id
+    conversation_id="$(jq -r '.data.ui_elements[] | (.identifier // "")
+        | select(test("^Sidebar\\.Conversation\\.[0-9A-Fa-f-]{36}$"))' \
+        "$OUT/document-restored-root.json" | head -1)"
+    [[ -n "$conversation_id" ]] || die "document conversation did not persist"
+    press "$OUT/document-restored-root.json" "$conversation_id" \
+        "$OUT/document-open-restored.json"
+    local restored=0
+    for _ in {1..40}; do
+        see_main "$OUT/document-restored.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("chat-document.txt")' \
+            "$OUT/document-restored.json" >/dev/null; then
+            restored=1
+            break
+        fi
+        sleep 0.25
+    done
+    [[ "$restored" == 1 ]] || die "the restored transcript lost the document chip"
+    assert_tree_text "$OUT/document-restored.json" "chat-document.txt"
+    if jq -e '(.data.ui_elements | tostring) | contains("Revenue: 42")' \
+        "$OUT/document-restored.json" >/dev/null; then
+        die "extracted document contents leaked into the visible transcript"
+    fi
+    cleanup_persona
+}
+
 # Wait until the fake has recorded an event matching a jq predicate.
 #
 # The event log is the independent witness. Every "did it work?" question in
@@ -3102,6 +3168,7 @@ case "$FLOW" in
     no-dead-controls) flow_no_dead_controls ;;
     catalog-integrity) flow_catalog_integrity ;;
     browse-all-destination) flow_browse_all_destination ;;
+    chat-document-attachment) flow_chat_document_attachment ;;
     image-generation) flow_image_generation ;;
     audio-readiness) flow_audio_readiness ;;
     resident-load-rejected) flow_resident_load_rejected ;;
@@ -3124,6 +3191,7 @@ case "$FLOW" in
         flow_no_dead_controls
         flow_catalog_integrity
         flow_browse_all_destination
+        flow_chat_document_attachment
         flow_image_generation
         flow_audio_readiness
         flow_resident_load_rejected

@@ -910,8 +910,7 @@ struct ChatView: View {
             }
         }
         if !fileURLs.isEmpty {
-            addFileURLs(fileURLs)
-            accepted = true
+            accepted = addFileURLs(fileURLs) || accepted
         }
         if unsupported {
             attachmentNotice = "Choose PDF, CSV, TXT, PNG, JPEG, or GIF files."
@@ -930,13 +929,22 @@ struct ChatView: View {
         attachmentNotice = rejection
     }
 
-    private func addFileURLs(_ urls: [URL]) {
+    @discardableResult
+    private func addFileURLs(_ urls: [URL]) -> Bool {
+        let selection = ChatFileAttachment.importCandidates(
+            urls,
+            existingCount: fileAttachments.count
+        )
+        guard !selection.accepted.isEmpty else {
+            attachmentNotice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
+            return false
+        }
         isImportingFiles = true
         Task { @MainActor in
             let outcome = await Task.detached(priority: .userInitiated) {
                 var accepted: [ChatFileAttachment] = []
                 var rejection: String?
-                for url in urls {
+                for url in selection.accepted {
                     let accessed = url.startAccessingSecurityScopedResource()
                     defer {
                         if accessed { url.stopAccessingSecurityScopedResource() }
@@ -949,13 +957,14 @@ struct ChatView: View {
 
             let combined = fileAttachments + outcome.0
             fileAttachments = ChatFileAttachment.fittedForMessage(combined)
-            if combined.count > ChatFileAttachment.maxAttachmentsPerMessage {
+            if selection.rejectedCount > 0 {
                 attachmentNotice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
             } else {
                 attachmentNotice = outcome.1
             }
             isImportingFiles = false
         }
+        return true
     }
 
     private func pasteAttachmentsFromClipboard() -> Bool {
@@ -1853,6 +1862,10 @@ final class AutosizingTextView: NSTextView {
     /// underneath the candidate text the user was typing. Marked text is
     /// the only signal that the field is non-empty here.
     var onComposingChange: ((Bool) -> Void)?
+    /// Gives the chat composer first refusal on file/image pasteboard items.
+    /// AppKit routes Command-V through ``paste(_:)`` directly; it does not
+    /// reliably consult the text-view delegate's ``doCommandBy`` hook.
+    var onPasteAttachments: (() -> Bool)?
     private var lastReportedCompositionState = false
 
     private func reportCompositionState() {
@@ -1882,6 +1895,11 @@ final class AutosizingTextView: NSTextView {
         super.unmarkText()
         reportCompositionState()
         remeasure()
+    }
+
+    override func paste(_ sender: Any?) {
+        if onPasteAttachments?() == true { return }
+        super.paste(sender)
     }
 
     /// Height of the laid-out text plus the editor's vertical insets.
@@ -2034,6 +2052,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         )
         tv.onMeasuredHeight = onMeasuredHeight
         tv.onComposingChange = onComposingChange
+        tv.onPasteAttachments = onPasteAttachments
         // Bug 3-A residual P2: NSTextView already advertises role
         // ``.textArea`` by default, but with no label / identifier
         // AppleScript and cliclick can't tell which text area is the
@@ -2081,6 +2100,7 @@ struct ComposeTextEditor: NSViewRepresentable {
         }
         view.onMeasuredHeight = onMeasuredHeight
         view.onComposingChange = onComposingChange
+        view.onPasteAttachments = onPasteAttachments
         context.coordinator.onSubmit = onSubmit
         context.coordinator.onCancel = onCancel
         context.coordinator.onPasteAttachments = onPasteAttachments

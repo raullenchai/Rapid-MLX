@@ -190,6 +190,33 @@ struct ChatFileAttachmentTests {
         #expect(fitted.allSatisfy { $0.wasTruncated })
     }
 
+    @Test("Import work is bounded before any selected file is opened")
+    func importCandidatesRespectRemainingSlots() {
+        let urls = (0..<100).map { URL(fileURLWithPath: "/tmp/\($0).txt") }
+        let selection = ChatFileAttachment.importCandidates(urls, existingCount: 2)
+        #expect(selection.accepted == Array(urls.prefix(2)))
+        #expect(selection.rejectedCount == 98)
+
+        let full = ChatFileAttachment.importCandidates(urls, existingCount: 4)
+        #expect(full.accepted.isEmpty)
+        #expect(full.rejectedCount == 100)
+    }
+
+    @Test("The native paste action offers clipboard files to the attachment importer")
+    func nativePasteActionUsesAttachmentImporter() {
+        let textView = AutosizingTextView()
+        var calls = 0
+        textView.onPasteAttachments = {
+            calls += 1
+            return true
+        }
+
+        textView.paste(nil)
+
+        #expect(calls == 1)
+        #expect(textView.string.isEmpty)
+    }
+
     @Test("Retry preserves the locally extracted source")
     func retryPreservesAttachment() throws {
         let attachment = try ChatFileAttachment(

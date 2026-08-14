@@ -98,6 +98,7 @@ def test_peekaboo_requirement_is_default_deny():
         "math-rendering",
         "slow-stream-stop",
         "model-crash-recovery",
+        "chat-document-attachment",
         "image-generation",
         "audio-readiness",
         "window-close-prompt",

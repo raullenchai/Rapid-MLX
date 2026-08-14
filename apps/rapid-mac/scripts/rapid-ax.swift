@@ -1,7 +1,8 @@
 #!/usr/bin/env swift
 // Minimal native Accessibility driver for deterministic Rapid GUI journeys.
 // It deliberately exposes only semantic operations: dump, press, set-value,
-// and closing a named native window through its AXCloseButton.
+// paste-file, and closing a named native window through its AXCloseButton.
+import AppKit
 import ApplicationServices
 import Foundation
 
@@ -110,7 +111,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|set-value|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -320,6 +321,39 @@ case "set-value":
     guard focusResult == .success else { fail("focus \(identifier) failed: \(focusResult.rawValue)") }
     let result = AXUIElementSetAttributeValue(target, kAXValueAttribute as CFString, value)
     guard result == .success else { fail("set value \(identifier) failed: \(result.rawValue)") }
+case "paste-file":
+    guard CommandLine.arguments.count > 4 else { fail("paste-file requires a path") }
+    let url = URL(fileURLWithPath: CommandLine.arguments[4])
+    guard FileManager.default.fileExists(atPath: url.path) else {
+        fail("paste-file path does not exist: \(url.path)")
+    }
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    guard pasteboard.writeObjects([url as NSURL]) else {
+        fail("could not write file URL to the pasteboard")
+    }
+    guard let running = NSRunningApplication(processIdentifier: pid) else {
+        fail("target application is no longer running")
+    }
+    running.activate(options: [.activateAllWindows])
+    // Activating the app can replace its first responder. Make activation
+    // real first, then focus the compose field immediately before posting the
+    // shortcut so Command-V cannot land in this short-lived driver instead.
+    usleep(150_000)
+    let focusResult = AXUIElementSetAttributeValue(
+        target, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    guard focusResult == .success else {
+        fail("focus \(identifier) failed: \(focusResult.rawValue)")
+    }
+    usleep(50_000)
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: 9, keyDown: false)
+    else { fail("could not create Command-V events") }
+    down.flags = .maskCommand
+    up.flags = .maskCommand
+    down.post(tap: .cghidEventTap)
+    up.post(tap: .cghidEventTap)
+    usleep(150_000)
 default:
     fail("unknown command: \(command)")
 }

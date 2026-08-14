@@ -55,6 +55,19 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         ["pdf", "csv", "txt"].contains(url.pathExtension.lowercased())
     }
 
+    /// Bound work before opening any selected files. The per-file byte limit
+    /// is not enough on its own: a user can select hundreds of individually
+    /// valid files in one panel/drop, and reading all of them before trimming
+    /// the result to four would turn a small attachment action into unbounded
+    /// disk and PDF parsing work.
+    static func importCandidates(_ urls: [URL], existingCount: Int) -> (
+        accepted: [URL], rejectedCount: Int
+    ) {
+        let remaining = max(0, maxAttachmentsPerMessage - max(0, existingCount))
+        let accepted = Array(urls.prefix(remaining))
+        return (accepted, max(0, urls.count - accepted.count))
+    }
+
     init(
         id: UUID = UUID(),
         filename: String,

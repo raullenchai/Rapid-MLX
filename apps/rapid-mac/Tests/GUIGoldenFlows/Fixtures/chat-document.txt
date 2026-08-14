@@ -1,0 +1,3 @@
+Rapid document golden fixture.
+Revenue: 42
+Region: APAC
