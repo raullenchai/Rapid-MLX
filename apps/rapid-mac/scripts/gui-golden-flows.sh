@@ -76,7 +76,7 @@ die() { printf '[gui-golden] FAIL: %s\n' "$*" >&2; exit 1; }
 pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
 flow_requires_screen_recording() {
     case "$FLOW" in
-        all|fresh-install|low-memory-choice|browse-all-destination) return 0 ;;
+        all|fresh-install|low-memory-choice) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering) return 1 ;;
+        cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination) return 1 ;;
         slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -2000,12 +2000,18 @@ flow_browse_all_destination() {
     esac
     log "  no Settings window, no second window"
 
-    # 4. The pick survived the move. This is the half #1653 actually broke, and
-    #    the catalogue reuses Quickstart.Choice.<alias> for its rows precisely
-    #    so one identity scheme covers both lists.
-    jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
-        "$OUT/ba-catalog.json" >/dev/null \
-        || die "the catalogue lost the user's selection — browsing must not discard it (#1653)"
+    # 4. If this fixture's intentionally tiny fake catalogue contains the
+    #    shortlist pick, the matching row must expose the shared selection.
+    #    Usually it does not: the fake reports only fake-alias rows, while the
+    #    shortlist deliberately exercises the real recommended aliases. The
+    #    unconditional proof that selection survived is therefore after Back,
+    #    where the chosen row is guaranteed to exist.
+    if jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id)' \
+        "$OUT/ba-catalog.json" >/dev/null; then
+        jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
+            "$OUT/ba-catalog.json" >/dev/null \
+            || die "the matching catalogue row lost the user's selection (#1653)"
+    fi
 
     # 5. Back, by the visible control, returns to the shortlist with the pick
     #    intact. Escape is a shortcut for this same control, which is why the
@@ -2017,8 +2023,6 @@ flow_browse_all_destination() {
             | select((.identifier // "") | startswith("Quickstart.BrowseAll."))]
            | length == 0' "$OUT/ba-after.json" >/dev/null \
         || die "Back did not leave the catalogue"
-    pb image --mode screen --screen-index 0 --path "$OUT/ba-after.png" --json \
-        > "$OUT/ba-after-image.json"
     jq -e --arg id "$chosen" '.data.ui_elements[]? | select(.identifier == $id) | select(.selected == true)' \
         "$OUT/ba-after.json" >/dev/null \
         || die "the shortlist came back without the user's selection — Back must not discard it"

@@ -275,7 +275,7 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(coord.selection.alias == "qwen3.5-9b-4bit", "the alias is retained, not dropped")
         #expect(!OnboardingModelSelection.isActionable(
             selection: coord.selection.alias,
-            visibleRows: OnboardingModelSelection.rows(for: visible, hardware: .detect()),
+            visibleRows: visible.map { Self.row($0.alias, cached: $0.cached) },
             catalogState: .ready
         ))
 
@@ -289,7 +289,7 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(coord.selection.alias == "qwen3.5-9b-4bit")
         #expect(OnboardingModelSelection.isActionable(
             selection: coord.selection.alias,
-            visibleRows: OnboardingModelSelection.rows(for: visible, hardware: .detect()),
+            visibleRows: visible.map { Self.row($0.alias, cached: $0.cached) },
             catalogState: .ready
         ))
         coord._testingReset()
@@ -429,15 +429,16 @@ struct Step2ModelSelectionBehaviorTests {
     @Test("Switching list context revalidates rather than assuming")
     func contextSwitchRevalidates() {
         let catalog = [Self.entry("exotic-13b"), Self.entry("gemma3-1b")]
-        let hardware = MacHardware.detect()
 
-        // Visible in the catalogue.
-        let catalogueRows = OnboardingModelSelection.rows(
-            for: QuickstartView.visibleCatalogEntries(
-                catalog: catalog, query: "", filter: .all, sort: .nameAscending
-            ),
-            hardware: hardware
-        )
+        // This test is about context revalidation, not this runner's RAM.
+        // Make availability explicit: `exotic-13b` correctly becomes too big
+        // on smaller CI/Mini hardware, which made the old fixture machine-
+        // dependent and turned a product truth into a false test failure.
+        let catalogueRows = QuickstartView.visibleCatalogEntries(
+            catalog: catalog, query: "", filter: .all, sort: .nameAscending
+        ).map {
+            OnboardingModelSelection.Row(alias: $0.alias, isCached: false, isAvailable: true)
+        }
         #expect(OnboardingModelSelection.isActionable(
             selection: "exotic-13b", visibleRows: catalogueRows, catalogState: .ready
         ))
@@ -606,10 +607,22 @@ struct Step2ModelSelectionBehaviorTests {
         )
         #expect(OnboardingModelSelection.isActionable(
             selection: coord.selection.alias,
-            visibleRows: OnboardingModelSelection.rows(for: visible, hardware: .detect()),
+            visibleRows: visible.map { Self.row($0.alias, cached: $0.cached) },
             catalogState: .ready
         ))
         coord._testingReset()
+    }
+
+    @Test("The catalogue records its visible alias anchor, not just the selection")
+    func catalogueWiresRealScrollPosition() throws {
+        let body = Self.stripped(try Self.quickstartSource)
+        #expect(body.contains(".scrollTargetLayout()"))
+        #expect(body.contains(".scrollPosition(id:catalogScrollPosition,anchor:.center)"))
+        #expect(body.contains("ifletalias{coordinator.rememberCatalogAnchor(alias)}"))
+        #expect(
+            !body.contains("privatefuncreturnToRecommendedModels(){coordinator.rememberCatalogAnchor(coordinator.selection.alias)"),
+            "Back must not replace the actual scroll anchor with the selected row"
+        )
     }
 
     /// Order matters: rebuild, revalidate, then derive. If the alias is no

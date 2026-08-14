@@ -96,6 +96,7 @@ def test_peekaboo_requirement_is_default_deny():
         "tool-loop-budget",
         "chat-depth",
         "math-rendering",
+        "browse-all-destination",
         "slow-stream-stop",
         "model-crash-recovery",
         "chat-document-attachment",

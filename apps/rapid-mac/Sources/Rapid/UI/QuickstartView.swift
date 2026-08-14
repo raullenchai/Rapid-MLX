@@ -1963,28 +1963,34 @@ struct QuickstartView: View {
 
     /// One flat scroller. No pagination, no lazy-load spinner, no nested
     /// scrollers — the catalogue is a few hundred rows at most.
+    private var catalogScrollPosition: Binding<String?> {
+        Binding(
+            get: { coordinator.catalogScrollID },
+            set: { alias in
+                // SwiftUI may publish nil while a search/filter temporarily
+                // removes the anchored row. Keep the last real alias so
+                // clearing that filter can restore the user's position.
+                if let alias { coordinator.rememberCatalogAnchor(alias) }
+            }
+        )
+    }
+
     @ViewBuilder
     private func catalogList(entries: [ModelEntry]) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(entries) { entry in
-                        catalogRow(entry).id(entry.alias)
-                    }
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(entries) { entry in
+                    catalogRow(entry).id(entry.alias)
                 }
-                .padding(.vertical, 2)
             }
-            .accessibilityIdentifier("Quickstart.BrowseAll.List")
-            // Restore by ALIAS anchor, never a pixel offset: a pixel offset
-            // points at a different row after a filter or sort change, which
-            // is exactly the moment restoring it is supposed to help.
-            .onAppear {
-                guard let anchor = coordinator.catalogScrollID,
-                      entries.contains(where: { $0.alias == anchor })
-                else { return }
-                proxy.scrollTo(anchor, anchor: .center)
-            }
+            .padding(.vertical, 2)
+            .scrollTargetLayout()
         }
+        // This is the actual visible scroll anchor, not merely the selected
+        // row. It updates as the user scrolls and lives on the coordinator, so
+        // Review/remount can restore it by stable alias rather than by pixels.
+        .scrollPosition(id: catalogScrollPosition, anchor: .center)
+        .accessibilityIdentifier("Quickstart.BrowseAll.List")
     }
 
     @ViewBuilder
@@ -2010,7 +2016,6 @@ struct QuickstartView: View {
 
     /// Leave the catalogue, remembering where the user was.
     private func returnToRecommendedModels() {
-        coordinator.rememberCatalogAnchor(coordinator.selection.alias)
         coordinator.backToRecommendedModels()
     }
 
