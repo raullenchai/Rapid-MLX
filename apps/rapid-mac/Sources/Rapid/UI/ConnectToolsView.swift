@@ -259,38 +259,79 @@ struct ConnectToolsView: View {
 
     // MARK: - Tool definitions
 
+    /// A one-session launch command for the clients Rapid can drive directly,
+    /// or ``nil`` for the rest.
+    ///
+    /// The sidecar registry classifies every target as either a config writer
+    /// or an adapter profile, and neither classification carries the thing
+    /// this page most wants to offer: a command that connects the client for
+    /// one session and leaves nothing behind. Three clients accept one —
+    /// Claude Code via `--settings`, Codex via `CODEX_HOME`, Hermes via
+    /// `--ignore-user-config` — so those rows take it in preference to
+    /// whatever the registry would have generated.
+    ///
+    /// This is a deliberate override, not a gap in the registry: the registry
+    /// entries stay valid for `rapid-mlx launch` / `rapid-mlx agents`, which
+    /// are still the right answer for a persistent setup.
+    private func sessionLaunchCommand(id: String, key: String) -> String? {
+        switch id {
+        case "claude-code":
+            return AgentLaunchCommand.claude(baseURL: anthropicBaseURL, key: key, model: snippetModel)
+        case "codex":
+            return AgentLaunchCommand.codex(baseURL: openAIBaseURL, key: key, model: snippetModel)
+        case "hermes":
+            return AgentLaunchCommand.hermes(baseURL: openAIBaseURL, key: key, model: snippetModel)
+        default:
+            return nil
+        }
+    }
+
     private var tools: [ConnectTool] {
         guard !integrationTargets.isEmpty else { return legacyTools }
-        return integrationTargets.map { target in
-            let isWriter = target.kind == .configWriter
-            let command: String
-            let displayCommand: String
-            if isWriter {
-                command = IntegrationLaunchCommand.configWriter(
-                    id: target.id, serverURL: serverOrigin, key: snippetKey, model: snippetModel, cli: cliCommand
+        return IntegrationCatalog.displayOrdered(integrationTargets).map { target in
+            if let command = sessionLaunchCommand(id: target.id, key: snippetKey) {
+                return ConnectTool(
+                    id: target.id,
+                    name: target.name,
+                    symbol: "terminal",
+                    blurb: "Launch with this connection for one session. Your configuration files and shell environment stay unchanged.",
+                    snippet: command,
+                    displaySnippet: sessionLaunchCommand(id: target.id, key: snippetKeyMasked) ?? command,
+                    action: .launch
                 )
-                displayCommand = IntegrationLaunchCommand.configWriter(
-                    id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel, cli: cliCommand
-                )
-            } else {
-                command = IntegrationLaunchCommand.adapterGuide(
-                    id: target.id, baseURL: openAIBaseURL, model: snippetModel, cli: cliCommand
-                )
-                displayCommand = command
             }
-            let destination = target.configPath.map { " It writes \($0)." } ?? ""
-            let cursorCaveat = target.id == "cursor"
-                ? " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend."
-                : ""
+            if target.kind == .configWriter {
+                let destination = target.configPath.map { " It writes \($0)." } ?? ""
+                let cursorCaveat = target.id == "cursor"
+                    ? " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend."
+                    : ""
+                return ConnectTool(
+                    id: target.id,
+                    name: target.name,
+                    symbol: "slider.horizontal.3",
+                    blurb: "Configure this client to use Rapid-MLX.\(destination)\(cursorCaveat)",
+                    snippet: IntegrationLaunchCommand.configWriter(
+                        id: target.id, serverURL: serverOrigin, key: snippetKey, model: snippetModel, cli: cliCommand
+                    ),
+                    displaySnippet: IntegrationLaunchCommand.configWriter(
+                        id: target.id, serverURL: serverOrigin, key: snippetKeyMasked, model: snippetModel, cli: cliCommand
+                    ),
+                    action: .rewriteConfig
+                )
+            }
+            // Everything else prints setup instructions. The command carries no
+            // key because it contacts nothing — see ``ConnectTool.Action.guide``.
+            let command = IntegrationLaunchCommand.adapterGuide(
+                id: target.id, baseURL: openAIBaseURL, model: snippetModel, cli: cliCommand
+            )
             return ConnectTool(
                 id: target.id,
                 name: target.name,
-                symbol: isWriter ? "slider.horizontal.3" : "point.3.connected.trianglepath.dotted",
-                blurb: isWriter
-                    ? "Configure this client to use Rapid-MLX.\(destination)\(cursorCaveat)"
-                    : "View this adapter's setup guide for the local endpoint.",
+                symbol: "point.3.connected.trianglepath.dotted",
+                blurb: "Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you.",
                 snippet: command,
-                displaySnippet: displayCommand
+                displaySnippet: command,
+                action: .guide
             )
         }
     }
@@ -475,6 +516,22 @@ private struct ConnectTool: Identifiable {
     /// The same command with the key masked — the ONLY form painted on screen,
     /// so a screenshot can't leak the bearer.
     let displaySnippet: String
+    /// What the row's command actually does when the user runs it. The three
+    /// cases are not interchangeable — one starts a client, one rewrites a
+    /// file the user owns, one only prints documentation — and the row's icon
+    /// and Copy tooltip both say which.
+    enum Action: Equatable {
+        /// Connects the client for one session and leaves nothing behind.
+        case launch
+        /// Edits a config file the user owns. The edit outlives both the
+        /// session and the bearer it records, which is why this is something
+        /// the user pastes deliberately rather than something a button fires.
+        case rewriteConfig
+        /// Prints setup instructions rather than starting anything.
+        case guide
+    }
+
+    var action: Action = .launch
 }
 
 /// One agent row: icon, name, description, a Copy action, and its launch
@@ -544,11 +601,10 @@ private struct ConnectToolRow: View {
                 // "Copied" flip would otherwise resize the button and
                 // shift the row).
                 .frame(width: 132)
-                .help(isReady
-                      ? "Copy this agent's one-session launch command"
-                      : "Start a model to generate a valid key and launch command.")
+                .help(copyHelp)
                 .accessibilityLabel(copied ? "Copied \(tool.name) command" : "Copy \(tool.name) command")
                 .accessibilityIdentifier("Launch.Integration.Copy.\(tool.id)")
+
             }
 
             // Description and snippet share the title's column.
@@ -585,6 +641,17 @@ private struct ConnectToolRow: View {
         .padding(.vertical, RapidTheme.Space.lg + 1)
     }
 
+    private var copyHelp: String {
+        guard isReady else {
+            return "Start a model to generate a valid key and launch command."
+        }
+        switch tool.action {
+        case .launch:        return "Copy this agent's one-session launch command"
+        case .rewriteConfig: return "Copy the command that configures \(tool.name)"
+        case .guide:         return "Copy the command that prints \(tool.name)'s setup guide"
+        }
+    }
+
     private func copy() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(tool.snippet, forType: .string)
@@ -594,6 +661,7 @@ private struct ConnectToolRow: View {
             withAnimation { copied = false }
         }
     }
+
 }
 
 /// A labelled value with a trailing copy button; masks secrets by default.
