@@ -85,6 +85,42 @@ class _NeverDisconnectsRequest:
         return False
 
 
+@pytest.mark.asyncio
+async def test_response_task_cancellation_publishes_disconnect_state():
+    """Uvicorn commonly reports a dead socket by cancelling Starlette's
+    response-body task before ``Request.is_disconnected()`` observes it.
+
+    The route-level stream finalizer must see that signal before the guard
+    closes it; otherwise it synthesizes a misleading missing-finish warning
+    and terminal frame for a connection that no longer exists.
+    """
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    disconnect_state = [False]
+
+    async def _blocked_stream():
+        yield "data: first\n\n"
+        await asyncio.sleep(60.0)
+
+    async def _consume():
+        async for _ in _disconnect_guard(
+            _blocked_stream(),
+            _NeverDisconnectsRequest(),
+            poll_interval=0.05,
+            keepalive_seconds=0.0,
+            disconnect_state=disconnect_state,
+        ):
+            pass
+
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert disconnect_state == [True]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------

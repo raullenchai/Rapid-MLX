@@ -3777,6 +3777,7 @@ async def _disconnect_guard(
     keepalive_seconds: float | None = None,
     request_id_holder: list | None = None,
     keepalive_factory=None,
+    disconnect_state: list[bool] | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -3913,6 +3914,8 @@ async def _disconnect_guard(
                 **wait_kwargs,
             )
             if disconnect_task in done:
+                if disconnect_state is not None:
+                    disconnect_state[0] = True
                 logger.info(
                     f"[disconnect_guard] CLIENT DISCONNECTED after "
                     f"{chunk_count} chunks ({keepalive_count} keepalives), "
@@ -4075,7 +4078,27 @@ async def _disconnect_guard(
             # consumer has pulled this chunk. Do NOT eagerly schedule
             # the next ``__anext__`` here — see the docstring at loop
             # entry for the rationale (codex r3 BLOCKING).
+    except asyncio.CancelledError:
+        # Starlette cancels the StreamingResponse body task when the socket
+        # disappears.  On current uvicorn/anyio this is the common disconnect
+        # signal; neither ``Request.is_disconnected()`` nor ``GeneratorExit``
+        # is guaranteed to win the race first.  Publish the state before the
+        # finally block closes the upstream generator so route-level
+        # finalizers do not manufacture a terminal SSE frame for a dead
+        # connection.
+        if disconnect_state is not None:
+            disconnect_state[0] = True
+        logger.info(
+            f"[disconnect_guard] CancelledError after {chunk_count} chunks, "
+            f"elapsed={_elapsed()}"
+        )
+        if anext_task is not None and not anext_task.done():
+            anext_task.cancel()
+        _force_abort_request(engine, request_id_holder)
+        raise
     except GeneratorExit:
+        if disconnect_state is not None:
+            disconnect_state[0] = True
         logger.info(
             f"[disconnect_guard] GeneratorExit after {chunk_count} chunks, elapsed={_elapsed()}"
         )

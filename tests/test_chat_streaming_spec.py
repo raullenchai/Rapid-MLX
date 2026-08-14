@@ -40,6 +40,7 @@ already supports.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from typing import Any
@@ -48,9 +49,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vllm_mlx.api.models import ChatCompletionRequest
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.routes.chat import router as chat_router
+from vllm_mlx.routes.chat import stream_chat_completion
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers.abstract_tool_parser import (
     ExtractedToolCallInformation,
@@ -1378,6 +1381,60 @@ def test_r11a_v2_synthetic_finish_fires_when_no_inline_finish():
         f"R11-V2 regression: expected synthetic finish_reason=stop "
         f"when engine never emitted a finished chunk; got {finish_chunks!r}"
     )
+
+
+def test_confirmed_disconnect_does_not_synthesize_missing_finish(caplog):
+    """Expected client cancellation must not masquerade as a broken SSE stream.
+
+    The disconnect guard cancels the in-flight engine iteration. Batched engines
+    deliberately turn that cancellation into clean iterator exhaustion after
+    aborting the scheduler request, which previously made the route emit the
+    R11-V2 warning and construct a terminal chunk for an already-dead socket.
+    """
+
+    class _CancelledEngine:
+        preserve_native_tool_format = False
+        is_mllm = False
+        supports_guided_generation = False
+        tokenizer = None
+
+        async def stream_chat(self, messages, **kwargs):
+            yield GenerationOutput(
+                text="partial",
+                new_text="partial",
+                prompt_tokens=4,
+                completion_tokens=1,
+                finished=False,
+                finish_reason=None,
+                channel=None,
+            )
+
+    cfg = reset_config()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    state = [True]
+    request = ChatCompletionRequest(
+        model="test-model",
+        stream=True,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+
+    async def _collect():
+        return [
+            chunk
+            async for chunk in stream_chat_completion(
+                _CancelledEngine(),
+                request.messages,
+                request,
+                _client_disconnect_state=state,
+            )
+        ]
+
+    chunks = asyncio.run(_collect())
+    assert not any("finish_reason" in chunk for chunk in chunks)
+    assert not any("[DONE]" in chunk for chunk in chunks)
+    assert "SSE-MISSING-FINISH-R11V2" not in caplog.text
 
 
 if __name__ == "__main__":
