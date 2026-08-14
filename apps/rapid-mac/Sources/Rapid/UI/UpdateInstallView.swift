@@ -154,9 +154,11 @@ struct UpdateInstallView: View {
             HStack {
                 Button("Open release page") { openReleasePage() }
                     .buttonStyle(.bordered)
+                    .accessibilityIdentifier("UpdateInstall.OpenReleasePage")
                 Spacer()
                 Button("Later") { dismissWindow(id: "update-install") }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("UpdateInstall.Later")
                 Button {
                     startInstall()
                 } label: {
@@ -165,6 +167,7 @@ struct UpdateInstallView: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canInstall)
+                .accessibilityIdentifier("UpdateInstall.InstallAndRestart")
             }
             if !canInstall {
                 Text("This release doesn't ship a DMG yet — use the release page link to download manually.")
@@ -190,6 +193,7 @@ struct UpdateInstallView: View {
                 Spacer()
                 Button("Open release page") { openReleasePage() }
                     .buttonStyle(.link)
+                    .accessibilityIdentifier("UpdateInstall.Progress.OpenReleasePage")
             }
         }
     }
@@ -241,6 +245,7 @@ struct UpdateInstallView: View {
             HStack {
                 Button("Open release page") { openReleasePage() }
                     .buttonStyle(.bordered)
+                    .accessibilityIdentifier("UpdateInstall.Failure.OpenReleasePage")
                 Spacer()
                 Button("Try again") {
                     installer.reset()
@@ -248,6 +253,7 @@ struct UpdateInstallView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canInstall)
+                .accessibilityIdentifier("UpdateInstall.TryAgain")
             }
         }
     }

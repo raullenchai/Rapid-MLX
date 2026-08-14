@@ -44,6 +44,7 @@ struct SelectTextSheet: View {
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("SelectText.Done")
             }
             .padding(16)
             Divider()

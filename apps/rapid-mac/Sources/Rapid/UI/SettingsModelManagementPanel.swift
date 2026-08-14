@@ -143,6 +143,7 @@ struct SettingsModelManagementPanel: View {
                     message: lastError,
                     tone: .error,
                     actionTitle: "Dismiss",
+                    actionIdentifier: "Settings.ModelManagement.DismissError",
                     action: { self.lastError = nil }
                 )
             }
@@ -151,6 +152,7 @@ struct SettingsModelManagementPanel: View {
                     message: lastFreed,
                     tone: .success,
                     actionTitle: "Dismiss",
+                    actionIdentifier: "Settings.ModelManagement.DismissSuccess",
                     action: { self.lastFreed = nil }
                 )
             }
@@ -208,6 +210,7 @@ struct SettingsModelManagementPanel: View {
             Button("Keep on disk", role: .cancel) {
                 pendingDeletion = nil
             }
+            .accessibilityIdentifier("Settings.ModelManagement.KeepOnDisk")
         } message: { entry in
             Text(ModelCacheActions.deletionConfirmation(
                 for: entry,
@@ -472,6 +475,7 @@ struct SettingsModelManagementPanel: View {
                         ) {
                             query = ""
                         }
+                        .accessibilityIdentifier("Settings.ModelManagement.ClearSearch")
                     }
                 }
                 .padding(.horizontal, RapidTheme.Space.sm)
@@ -500,6 +504,7 @@ struct SettingsModelManagementPanel: View {
                                 Text(order.displayLabel)
                             }
                         }
+                        .accessibilityIdentifier("Settings.ModelManagement.Sort.\(order.rawValue)")
                     }
                 } label: {
                     Label("Sort", systemImage: "arrow.up.arrow.down")

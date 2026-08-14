@@ -233,6 +233,7 @@ struct DownloadStrip: View {
             .buttonStyle(.plain)
             .help("Cancel download (partial files stay in the HuggingFace cache and can resume on retry).")
             .accessibilityLabel("Cancel download of \(job.alias)")
+            .accessibilityIdentifier("DownloadStrip.Cancel.\(job.alias)")
         case .completed, .cancelled, .failed:
             Button {
                 downloads.dismissJob(alias: job.alias)
@@ -244,6 +245,7 @@ struct DownloadStrip: View {
             .buttonStyle(.plain)
             .help("Dismiss")
             .accessibilityLabel("Dismiss \(job.alias) status")
+            .accessibilityIdentifier("DownloadStrip.Dismiss.\(job.alias)")
         }
     }
 }

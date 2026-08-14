@@ -69,6 +69,7 @@ struct InlineNotice: View {
     let message: String
     var tone: Tone = .warning
     var actionTitle: String? = nil
+    var actionIdentifier: String? = nil
     var action: (() -> Void)? = nil
 
     var body: some View {
@@ -91,6 +92,7 @@ struct InlineNotice: View {
                         height: RapidTheme.ControlHeight.mini
                     ))
                     .fixedSize()
+                    .accessibilityIdentifier(actionIdentifier ?? "InlineNotice.Action")
             }
         }
         .padding(.horizontal, RapidTheme.Space.md)

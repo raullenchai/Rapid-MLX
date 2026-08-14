@@ -166,6 +166,7 @@ struct SettingsPerformancePanel: View {
             message: "Reload \(alias) to apply. Other resident models will stay available.",
             tone: .warning,
             actionTitle: isReloading ? "Reloading…" : "Reload model",
+            actionIdentifier: "Settings.Performance.ReloadModel",
             action: { reload(alias: alias) }
         )
         .disabled(isReloading)

@@ -10,6 +10,7 @@ through the masker to catch a lexer desync on Swift the fixtures do not model.
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -873,7 +874,7 @@ def test_disclosure_group_is_a_control():
 
 
 # --------------------------------------------------------------------------
-# The real tree. Not a coverage assertion — a lexer soak test.
+# The real tree. Lexer soak plus the paid-down backlog contract.
 # --------------------------------------------------------------------------
 
 
@@ -905,3 +906,34 @@ def test_gate_runs_over_the_real_tree_without_exploding():
             assert 1 <= v.line <= len(lines)
             assert v.source == lines[v.line - 1].strip()
             assert ".accessibilityIdentifier" not in v.source
+
+
+def test_shipping_tree_has_no_unlabelled_native_controls():
+    """The diff gate deliberately grandfathered the old backlog. That backlog
+    is now zero, so keep it zero: every shipping native SwiftUI control must be
+    reachable by the assembled-app AX harness, not only controls added by the
+    current PR."""
+    violations = []
+    for path in _real_sources():
+        violations.extend(gate.find_violations(str(path), path.read_text(encoding="utf-8")))
+    assert violations == [], "\n" + "\n".join(str(v) for v in violations)
+
+
+def test_shipping_control_wrappers_are_identified_at_each_call_site():
+    """Native controls inside these wrappers are intentionally identified by
+    the caller, where the surface/entity name is known. Pin that second half of
+    the contract so the wrapper exemptions cannot hide an unreachable use."""
+    wrapper = re.compile(
+        r"(?<![A-Za-z0-9_])(QuietIconButton|SheetCloseButton|RapidTextField)\s*([({])"
+    )
+    missing = []
+    for path in _real_sources():
+        src = path.read_text(encoding="utf-8")
+        masked, _, _ = gate._mask(src)
+        for match in wrapper.finditer(masked):
+            delimiter = match.end() - 1
+            end = gate._expression_end(masked, delimiter)
+            if not gate._has_own_identifier(masked, delimiter, end):
+                line = masked.count("\n", 0, match.start()) + 1
+                missing.append(f"{path}:{line}: {match.group(1)}")
+    assert missing == [], "\n" + "\n".join(missing)

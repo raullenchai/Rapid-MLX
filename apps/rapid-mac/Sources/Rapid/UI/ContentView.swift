@@ -210,9 +210,11 @@ struct ContentView: View {
                 if let running = runningAlias { alias = running }
                 server.cancelPendingMemoryLoad(warning)
             }
+            .accessibilityIdentifier("MemoryWarning.Cancel")
             Button(warning.confirmTitle, role: .destructive) {
                 server.confirmPendingMemoryLoad(warning)
             }
+            .accessibilityIdentifier("MemoryWarning.Confirm")
         } message: { warning in
             Text(warning.message)
         }
@@ -801,19 +803,24 @@ struct ContentView: View {
                             NSWorkspace.shared.open(downloadURL)
                         }
                         .buttonStyle(.rapidPrimaryWide)
+                        .accessibilityIdentifier("MissingRuntime.DownloadUpdate")
                         HStack(spacing: RapidTheme.Space.sm) {
                             Button("Recheck") { server.refreshBinary() }
                                 .buttonStyle(.rapidSecondary)
+                                .accessibilityIdentifier("MissingRuntime.Recheck")
                             Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
                                 .buttonStyle(.rapidSecondary)
+                                .accessibilityIdentifier("MissingRuntime.Quit")
                         }
                     }
                 } else {
                     HStack(spacing: RapidTheme.Space.sm) {
                         Button("Recheck") { server.refreshBinary() }
                             .buttonStyle(.rapidPrimary)
+                            .accessibilityIdentifier("MissingRuntime.Recheck")
                         Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
                             .buttonStyle(.rapidSecondary)
+                            .accessibilityIdentifier("MissingRuntime.Quit")
                     }
                 }
                 Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
@@ -1266,6 +1273,7 @@ struct SettingsGearButton: View {
         .buttonStyle(.borderless)
         .help("Settings — ⌘,")
         .accessibilityLabel("Settings")
+        .accessibilityIdentifier("ContentView.Settings")
     }
 }
 

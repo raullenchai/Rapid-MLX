@@ -536,6 +536,7 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
+                .accessibilityIdentifier("Settings.Appearance.ThemePicker")
             }
         }
     }

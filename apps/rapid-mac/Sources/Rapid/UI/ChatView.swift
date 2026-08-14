@@ -1028,6 +1028,7 @@ private struct MessageRow: View {
             .foregroundStyle(RapidTheme.userBubbleText)
             .scrollContentBackground(.hidden)
             .focused($editFieldFocused)
+            .accessibilityIdentifier(actionIdentifier("EditField"))
             .task {
                 await Task.yield()
                 guard !Task.isCancelled else { return }
@@ -1321,6 +1322,7 @@ private struct MessageRow: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(reasoningAccessibilityLabel)
         }
+        .accessibilityIdentifier(actionIdentifier("ReasoningDisclosure"))
         .onAppear {
             // Auto-expand a truncated reasoning-only turn so the user
             // sees the partial trace instead of an empty bubble.
@@ -1555,6 +1557,7 @@ private struct ToolCallChip: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Tool call \(call.function.name)")
+            .accessibilityIdentifier("ToolCallChip.Toggle.\(call.id)")
 
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
@@ -2384,6 +2387,9 @@ private struct CodeBlockWithCopy: View {
         }
         .buttonStyle(.plain)
         .help("Copy code")
+        .accessibilityIdentifier(
+            "ChatView.CodeBlock.Copy.\(config.content.utf8.count)"
+        )
         .task(id: copiedRecently) {
             guard copiedRecently else { return }
             // 1.2 s feels like ChatGPT Desktop's flash; long enough

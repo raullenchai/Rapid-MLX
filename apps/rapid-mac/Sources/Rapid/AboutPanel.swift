@@ -199,7 +199,9 @@ private struct AboutView: View {
     private func aboutLink(_ label: String, _ urlString: String) -> some View {
         Group {
             if let url = URL(string: urlString) {
-                Link(label, destination: url).tint(RapidTheme.brand)
+                Link(label, destination: url)
+                    .tint(RapidTheme.brand)
+                    .accessibilityIdentifier("About.Link.\(label)")
             } else {
                 Text(label)
             }

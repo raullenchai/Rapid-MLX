@@ -41,6 +41,7 @@ struct QuietIconButton: View {
     private var resolvedOpacity: Double { isEnabled ? 1.0 : 0.55 }
 
     var body: some View {
+        // ax-exempt: callers attach action/entity-specific identifiers to this wrapper
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: symbolSize, weight: .medium))
@@ -75,5 +76,6 @@ struct SheetCloseButton: View {
             help: "Close — Esc",
             action: action
         )
+        .accessibilityIdentifier("Sheet.Close")
     }
 }

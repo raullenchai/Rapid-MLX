@@ -1762,6 +1762,7 @@ struct QuickstartView: View {
                 .font(.callout)
         }
         .buttonStyle(.borderless)
+        .accessibilityIdentifier("Quickstart.Failure.BrowseAll")
     }
 
     /// Open Settings on the model catalogue and restore Quickstart on return.

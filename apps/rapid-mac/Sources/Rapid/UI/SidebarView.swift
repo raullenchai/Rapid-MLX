@@ -491,6 +491,7 @@ struct SidebarView: View {
             .padding(.horizontal, RapidTheme.Space.sm)
             .padding(.top, RapidTheme.Space.lg)
             .padding(.bottom, RapidTheme.Space.xs)
+            .accessibilityIdentifier("Sidebar.Archived.Toggle")
 
             if showArchived {
                 ForEach(archived) { conv in
@@ -745,6 +746,7 @@ struct SidebarView: View {
                 endRename()
             }
             .onExitCommand { cancelRename() }
+            .accessibilityIdentifier("Sidebar.Conversation.Rename.\(conv.id.uuidString)")
             .task(id: renameSession) {
                 renameFieldDidFocus = false
                 // Defer the request to the next scheduling point, so it lands
@@ -853,6 +855,7 @@ private struct SidebarRow<Content: View>: View {
     @State private var hovering = false
 
     var body: some View {
+        // ax-exempt: each caller attaches its entity-specific identifier to SidebarRow
         Button(action: action) {
             content
                 .frame(maxWidth: .infinity, alignment: .leading)

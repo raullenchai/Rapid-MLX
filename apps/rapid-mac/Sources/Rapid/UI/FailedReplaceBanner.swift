@@ -66,11 +66,13 @@ struct FailedReplaceBanner: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .accessibilityIdentifier("FailedReplace.OpenUpdate")
                         Button("Dismiss") {
                             installTracker.dismiss()
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
+                        .accessibilityIdentifier("FailedReplace.Dismiss")
                     }
                     .padding(.top, 2)
                 }

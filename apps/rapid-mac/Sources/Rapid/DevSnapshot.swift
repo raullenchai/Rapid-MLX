@@ -1091,7 +1091,9 @@ private struct SettingsControlProofSheet: View {
                         .accessibilityIdentifier("DevSnapshot.Specimen.DestructiveCompact")
                     QuietIconButton(symbol: "trash", label: "Delete",
                                     tint: RapidTheme.statusError) {}
+                        .accessibilityIdentifier("DevSnapshot.Specimen.Icon.Delete")
                     QuietIconButton(symbol: "arrow.down.circle", label: "Download") {}
+                        .accessibilityIdentifier("DevSnapshot.Specimen.Icon.Download")
                 }
                 HStack(spacing: RapidTheme.Space.sm) {
                     Button("Disabled primary") {}.buttonStyle(.rapidPrimary).disabled(true)

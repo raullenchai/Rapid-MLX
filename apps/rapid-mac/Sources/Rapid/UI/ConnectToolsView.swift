@@ -192,6 +192,7 @@ struct ConnectToolsView: View {
             Spacer()
             if showsCloseButton {
                 SheetCloseButton(action: onClose)
+                    .accessibilityIdentifier("ConnectTools.Close")
             }
         }
         .frame(maxWidth: RapidTheme.Layout.pageMaxWidth, alignment: .leading)
@@ -602,6 +603,7 @@ private struct CopyableRow: View {
                 ) {
                     reveal.toggle()
                 }
+                .accessibilityIdentifier("ConnectTools.Reveal.\(label)")
             }
             QuietIconButton(
                 symbol: copied ? "checkmark" : "doc.on.doc",
@@ -621,6 +623,7 @@ private struct CopyableRow: View {
                 }
             }
             .disabled(!hasValue)
+            .accessibilityIdentifier("ConnectTools.Copy.\(label)")
         }
         .padding(.horizontal, RapidTheme.Space.md)
         .frame(height: RapidTheme.ControlHeight.medium)

@@ -29,6 +29,7 @@ struct RapidTextField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        // ax-exempt: the caller owns the surface-specific identifier on this wrapper
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
             .font(RapidFont.body)

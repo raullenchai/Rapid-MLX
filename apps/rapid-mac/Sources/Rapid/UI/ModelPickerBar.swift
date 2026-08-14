@@ -349,9 +349,11 @@ struct ModelPickerBar: View {
                 Task { await runDeletion(of: entry) }
                 pendingDeletion = nil
             }
+            .accessibilityIdentifier("ModelPickerBar.Delete.Confirm")
             Button("Keep on disk", role: .cancel) {
                 pendingDeletion = nil
             }
+            .accessibilityIdentifier("ModelPickerBar.Delete.Cancel")
         } message: { entry in
             Text("Removes this model from your Mac. You can download it again later by selecting it.\(entry.sizeOnDisk.map { " Frees \($0)." } ?? "")")
         }
@@ -399,6 +401,7 @@ struct ModelPickerBar: View {
                 Text("Fetching models…")
                 Divider()
                 Button("Type a model name…") { showCustom = true }
+                    .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
             } else if !hasSelectableRows {
                 // v0.4.29: previously this state was a dead end — a
                 // failed first-load (bootstrapper still installing
@@ -423,7 +426,9 @@ struct ModelPickerBar: View {
                 Button("Refresh catalog") {
                     Task { await refreshCatalog(force: true) }
                 }
+                .accessibilityIdentifier("ModelPickerBar.RefreshCatalog")
                 Button("Type a model name…") { showCustom = true }
+                    .accessibilityIdentifier("ModelPickerBar.CustomAlias.Open")
             } else {
                 // v0.6.9: dropped the separate "Cached" section. Users
                 // skim the picker by alias name, not by cache-state —
@@ -610,6 +615,7 @@ struct ModelPickerBar: View {
             Image(systemName: "info.circle")
                 .font(.system(size: 14))
         }
+        .accessibilityIdentifier("ModelPickerBar.ModelInfo")
         .buttonStyle(.plain)
         .disabled(alias.isEmpty)
         .help("Show model details")
@@ -714,6 +720,7 @@ struct ModelPickerBar: View {
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
+        .accessibilityIdentifier("ModelPickerBar.Quickstart.\(entry.alias)")
         .disabled(deleting == entry.alias)
         .help(ModelPickerBar.quickstartSubtitle)
         .accessibilityLabel(ModelPickerBar.quickstartRowAccessibilityLabel(
@@ -958,6 +965,7 @@ struct ModelPickerBar: View {
             // section where that matters most.
             Label(title, systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached))
         }
+        .accessibilityIdentifier("ModelPickerBar.Recommended.\(entry.alias)")
         .disabled(deleting == entry.alias)
         // The recommendation shows only the curated capability / speed
         // tagline — the single source of truth for a pick. The per-axis
@@ -1082,6 +1090,7 @@ struct ModelPickerBar: View {
                 systemImage: ModelPickerBar.cacheGlyph(cached: entry.cached)
             )
         }
+        .accessibilityIdentifier("ModelPickerBar.Alias.\(entry.alias)")
         .disabled(deleting == entry.alias)
         // cycle-10: rows in the .tiny (< 1B) and .small (>= 1B,
         // cycle-11 < 3B) buckets get a richer hover tooltip surfacing
@@ -1128,6 +1137,7 @@ struct ModelPickerBar: View {
                         Text("Delete from disk")
                     }
                 }
+                .accessibilityIdentifier("ModelPickerBar.Context.Delete.\(entry.alias)")
             }
             // v0.5.7: side-car download affordance. Only offered when
             // the alias isn't cached and isn't already being pulled.
@@ -1141,6 +1151,7 @@ struct ModelPickerBar: View {
                 } label: {
                     Text("Download in background")
                 }
+                .accessibilityIdentifier("ModelPickerBar.Context.Download.\(entry.alias)")
             }
         }
     }
@@ -1625,17 +1636,20 @@ struct ModelPickerBar: View {
                 text: $customDraft,
                 onSubmit: commitCustomAlias
             )
+            .accessibilityIdentifier("ModelPickerBar.CustomAlias.Field")
 
             HStack(spacing: RapidTheme.Space.sm) {
                 Spacer()
                 Button("Cancel") { showCustom = false }
                     .buttonStyle(.rapidSecondary)
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("ModelPickerBar.CustomAlias.Cancel")
                 Button("Use", action: commitCustomAlias)
                     .buttonStyle(RapidPrimaryButtonStyle(
                         height: RapidTheme.ControlHeight.medium
                     ))
                     .keyboardShortcut(.return, modifiers: [])
+                    .accessibilityIdentifier("ModelPickerBar.CustomAlias.Use")
             }
             .padding(.top, RapidTheme.Space.xs)
         }
@@ -2039,6 +2053,7 @@ struct ModelInfoPopover: View {
                 }
                 .help("Open on Hugging Face")
                 .accessibilityLabel("Open Hugging Face page")
+                .accessibilityIdentifier("ModelPickerBar.HuggingFace.\(repo)")
             }
         }
     }
