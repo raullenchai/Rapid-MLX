@@ -101,7 +101,9 @@ async def test_response_task_cancellation_publishes_disconnect_state():
     orphaned_task_errors: list[dict] = []
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: orphaned_task_errors.append(context))
+    loop.set_exception_handler(
+        lambda _loop, context: orphaned_task_errors.append(context)
+    )
 
     async def _blocked_stream():
         yield "data: first\n\n"
