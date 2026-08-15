@@ -303,9 +303,7 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
             fallback_waveform = load_audio(audio_path)
             if getattr(fallback_waveform, "shape", (0,))[-1] == 0:
                 return _VADTrimResult(skipped=False, has_speech=False)
-            if not _rms_above_floor(
-                fallback_waveform, _VAD_NO_SPEECH_RMS_FLOOR
-            ):
+            if not _rms_above_floor(fallback_waveform, _VAD_NO_SPEECH_RMS_FLOOR):
                 return _VADTrimResult(skipped=False, has_speech=False)
         except Exception:  # noqa: BLE001
             pass
