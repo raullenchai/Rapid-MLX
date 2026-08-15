@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DRIVER = ROOT / "apps/rapid-mac/scripts/rapid-ax.swift"
 HARNESS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 DOGFOOD = ROOT / "apps/rapid-mac/scripts/dogfood-isolate.sh"
+FAKE_SIDECAR = ROOT / "apps/rapid-mac/scripts/fake-rapid-mlx.sh"
 
 
 def test_trust_command_checks_permission_reach_and_lock():
@@ -146,3 +147,31 @@ def test_harness_reaps_its_own_fake_before_relaunch_without_global_sweep():
     assert relaunch.index("cleanup_fake_sidecars") < relaunch.index(
         '"$PERSONA/launch.sh"'
     )
+
+
+def test_fresh_install_fixture_contains_the_real_starter():
+    """The starter assertion is meaningless if the fake catalog omits it."""
+    flow = HARNESS.read_text().split("flow_fresh_install() {", 1)[1].split("\n}", 1)[0]
+    fake = FAKE_SIDECAR.read_text()
+    assert "start_persona fresh-install FAKE_INCLUDE_STARTER=1" in flow
+    assert 'if _setting("FAKE_INCLUDE_STARTER") == "1":' in fake
+    assert 'print("lfm2.5-1b-4bit' in fake
+
+
+def test_audio_baseline_waits_for_residency_poll_to_settle():
+    flow = (
+        HARNESS.read_text().split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]
+    )
+    correlated_row = "any(range(1; $elements | length);"
+    resident_alias = '$elements[.].value == "fake-qwen3-tts"'
+    resident_lock = '$elements[. - 1].description == "Lock"'
+    settled_guard = '[[ "$speech_resident" == 1 ]]'
+    switch = 'press "$OUT/speech-resident.json" Audio.Mode.Transcription'
+    assert correlated_row in flow
+    assert resident_alias in flow
+    assert resident_lock in flow
+    assert settled_guard in flow
+    assert switch in flow
+    assert flow.index(resident_alias) < flow.index(switch)
+    assert flow.index(resident_lock) < flow.index(switch)
+    assert flow.index(settled_guard) < flow.index(switch)

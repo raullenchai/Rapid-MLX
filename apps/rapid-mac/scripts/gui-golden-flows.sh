@@ -1075,7 +1075,10 @@ wait_send_idle() {
 
 flow_fresh_install() {
     log "1/6 fresh install and onboarding"
-    start_persona fresh-install
+    # The real engine registry always contains the starter. Without this row,
+    # the fake catalog makes the app correctly fall back to its only chat row
+    # and the assertion below can never prove the production first-run rule.
+    start_persona fresh-install FAKE_INCLUDE_STARTER=1
     see_main "$OUT/consent-visible.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' "$OUT/consent-visible.json" >/dev/null \
         || die "fresh install did not show telemetry consent"
@@ -3058,7 +3061,30 @@ flow_audio_readiness() {
     [[ "$speech_loaded" == 1 ]] \
         || die "Speech stayed behind Download & start after its model became ready"
 
-    press "$OUT/speech-loaded.json" Audio.Mode.Transcription "$OUT/transcription.json" \
+    # Residency is polled independently from Audio readiness. The sidecar can
+    # be ready several frames before the sidebar's first residency snapshot;
+    # switching tabs immediately made the transcription baseline alternate
+    # between "no resident" and the correctly resident TTS model depending on
+    # poll timing. Wait for the user-visible state that must follow readiness
+    # before recording the next settled screen.
+    local speech_resident=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/speech-resident.json"
+        if jq -e '.data.ui_elements as $elements
+                  | any(range(1; $elements | length);
+                        $elements[.].identifier == "Sidebar.Residency"
+                        and $elements[.].value == "fake-qwen3-tts"
+                        and $elements[. - 1].identifier == "Sidebar.Residency"
+                        and $elements[. - 1].description == "Lock")' \
+                 "$OUT/speech-resident.json" >/dev/null; then
+            speech_resident=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$speech_resident" == 1 ]] \
+        || die "ready fake-qwen3-tts never appeared as the locked resident model"
+
+    press "$OUT/speech-resident.json" Audio.Mode.Transcription "$OUT/transcription.json" \
         || die "Audio transcription segment is not pressable"
     local transcription_ready=0
     for ((i=0; i<40; i++)); do

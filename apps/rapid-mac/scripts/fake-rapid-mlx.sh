@@ -893,6 +893,12 @@ def _emit_catalog(subcommand, alias):
         print("Available models")
         print("Alias                  Parser           Reasoning")
         print("---------------------  ---------------  ---------")
+        if _setting("FAKE_INCLUDE_STARTER") == "1":
+            # A production catalog always contains the onboarding starter.
+            # Most flows deliberately keep the compact single-chat-row
+            # fixture, but fresh-install must exercise the real default
+            # selection contract rather than falling back to fake-alias.
+            print("lfm2.5-1b-4bit        hermes           none")
         print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
         # A video-generation row, in the tagged section the real engine
