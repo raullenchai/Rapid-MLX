@@ -166,12 +166,17 @@ def test_audio_baseline_waits_for_residency_poll_to_settle():
     resident_alias = '$elements[.].value == "fake-qwen3-tts"'
     resident_lock = '$elements[. - 1].description == "Lock"'
     settled_guard = '[[ "$speech_resident" == 1 ]]'
-    switch = 'press "$OUT/speech-resident.json" Audio.Mode.Transcription'
+    launch_check = 'press "$OUT/speech-resident.json" Sidebar.Launch'
+    return_to_audio = 'press "$OUT/launch-from-audio.json" Sidebar.Audio'
+    switch = 'press "$OUT/audio-after-launch.json" Audio.Mode.Transcription'
     assert correlated_row in flow
     assert resident_alias in flow
     assert resident_lock in flow
     assert settled_guard in flow
+    assert launch_check in flow
+    assert return_to_audio in flow
     assert switch in flow
-    assert flow.index(resident_alias) < flow.index(switch)
-    assert flow.index(resident_lock) < flow.index(switch)
-    assert flow.index(settled_guard) < flow.index(switch)
+    assert flow.index(resident_alias) < flow.index(launch_check)
+    assert flow.index(resident_lock) < flow.index(launch_check)
+    assert flow.index(settled_guard) < flow.index(launch_check)
+    assert flow.index(launch_check) < flow.index(return_to_audio) < flow.index(switch)
