@@ -3068,19 +3068,65 @@ def test_mtp_controller_key_separates_sidecars():
     assert _mtp_controller_key("", "mlx-community/Head-A") is None
 
 
-def test_scheduler_config_model_name_is_the_last_field():
-    """``SchedulerConfig`` is constructed positionally by external
-    callers, so a field added mid-list silently rebinds every argument
-    after it. ``model_name`` must stay at the end.
-    """
+def test_scheduler_config_preserves_the_historical_positional_prefix():
+    """New fields append after, rather than shifting, the historical tail."""
     from vllm_mlx.scheduler import SchedulerConfig
 
     names = [f.name for f in dataclasses.fields(SchedulerConfig)]
-    assert names[-1] == "model_name", (
-        f"model_name must be the last field to preserve positional "
-        f"construction; it is at index {names.index('model_name')} of "
-        f"{len(names)}"
-    )
+    historical_prefix = [
+        "max_num_seqs",
+        "prefill_batch_size",
+        "completion_batch_size",
+        "prefill_step_size",
+        "enable_prefix_cache",
+        "prefix_cache_size",
+        "prefix_cache_index",
+        "use_memory_aware_cache",
+        "cache_memory_mb",
+        "cache_memory_percent",
+        "kv_cache_dtype",
+        "kv_cache_quantization",
+        "kv_cache_quantization_bits",
+        "kv_cache_quantization_group_size",
+        "kv_cache_min_quantize_tokens",
+        "kv_cache_turboquant",
+        "kv_cache_turboquant_bits",
+        "kv_cache_turboquant_group_size",
+        "kv_cache_turboquant_mode",
+        "kv_disk_checkpoint_interval",
+        "use_paged_cache",
+        "paged_cache_block_size",
+        "max_cache_blocks",
+        "hybrid_cache_entries",
+        "spec_decode",
+        "enable_mtp",
+        "mtp_num_draft_tokens",
+        "mtp_optimistic",
+        "dflash_drafter_path",
+        "enable_suffix_decoding",
+        "suffix_max_draft",
+        "suffix_max_suffix_len",
+        "suffix_min_confidence",
+        "suffix_min_draft_len",
+        "max_concurrent_requests",
+        "gpu_memory_utilization",
+        "metal_pressure_evict_fraction",
+        "metal_cap_kv_bytes_per_token",
+        "pflash_config",
+        "mtp_sidecar",
+        "mtp_model_type",
+        "mtp_max_k",
+        "mtp_disable_auto_k",
+        "response_cache_entries",
+        "non_trimmable_exact_prefix_reuse",
+        "dspark_num_speculative_tokens",
+        "adaptive_prefill",
+        "adaptive_prefill_min_tokens",
+        "adaptive_prefill_min_chunk_size",
+        "model_name",
+    ]
+    assert names[:50] == historical_prefix
+    assert names[49:] == ["model_name", "vision_min_pixels", "vision_max_pixels"]
 
 
 def test_fixed_k_observer_leaves_the_ceiling_to_whoever_selects_depth():

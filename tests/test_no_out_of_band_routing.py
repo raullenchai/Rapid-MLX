@@ -1044,6 +1044,18 @@ def _check_env_constant(
                 "external-model discovery/resolution boundary."
             )
         return
+    if value == "RAPID_MLX_USER_ALIASES_FILE":
+        # Narrow test-isolation/config-location exception for user aliases.
+        # The file's CONTENT can affect alias resolution, so this is not a
+        # general non-routing allowlist entry: only the persistence module may
+        # read the override. Any engine/router consumer is a new hidden routing
+        # surface and must fail this gate.
+        if rel != "user_aliases.py":
+            offenders.append(
+                f"{rel}:{lineno} references `{value}` outside the approved "
+                "user-alias persistence boundary."
+            )
+        return
     if value in ALLOWED_RAPID_MLX_ENV_VARS:
         return
     if ENV_VAR_ROUTING_PATTERN.match(value):

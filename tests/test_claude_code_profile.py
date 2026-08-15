@@ -1,5 +1,6 @@
 """Regression coverage for the Claude Code agent discovery surface (#1531)."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from vllm_mlx.agents import get_profile, list_profiles, load_profiles
@@ -48,11 +49,21 @@ def test_claude_code_profile_has_runnable_test_command():
     )
 
 
-def test_claude_code_e2e_receives_rendered_environment():
+def test_claude_code_e2e_receives_rendered_environment(tmp_path):
     profile = get_profile("claude-code")
     assert profile is not None
+    isolated_home = tmp_path / "isolated-claude-home"
+    isolated_home.mkdir()
+    temporary_home = SimpleNamespace(
+        name=str(isolated_home),
+        cleanup=lambda: None,
+    )
 
     with (
+        patch(
+            "vllm_mlx.agents.testing.tempfile.TemporaryDirectory",
+            return_value=temporary_home,
+        ),
         patch(
             "vllm_mlx.agents.testing.AgentTestRunner._server_available",
             return_value=True,
@@ -85,8 +96,14 @@ def test_claude_code_e2e_receives_rendered_environment():
             model_id="qwen3.5-9b-4bit",
         ).run()
 
-    assert e2e_chat.call_args.kwargs["env_overrides"] == {
+    env = e2e_chat.call_args.kwargs["env_overrides"]
+    assert {
+        key: env[key]
+        for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL")
+    } == {
         "ANTHROPIC_BASE_URL": "http://localhost:8000",
         "ANTHROPIC_API_KEY": "not-needed",
         "ANTHROPIC_MODEL": "qwen3.5-9b-4bit",
     }
+    assert env["HOME"] == str(isolated_home)
+    assert env["CLAUDE_CONFIG_DIR"] == f"{env['HOME']}/.claude"
