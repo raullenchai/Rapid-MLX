@@ -211,6 +211,7 @@ MODELS_INCOMPATIBLE_WITH_TURBOQUANT: dict[str, str] = {
     # TurboQuant V-side codebook assumes contiguous tokens.
     r"gemma[-_]?3": SKIP_REASON_SLIDING,
     r"gpt[-_]?oss": SKIP_REASON_SLIDING,
+    r"granite[-_]?swash": SKIP_REASON_SLIDING,
     # Multi-head Latent Attention — K projection is already compressed
     # via q_lora_rank / kv_lora_rank, stacking quant on top compounds
     # error on reasoning workloads.

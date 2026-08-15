@@ -2349,6 +2349,27 @@ class TestCheckpointMetadataFallback:
         assert config.is_moe is True
         assert config.supports_spec_decode is False
 
+    def test_granitemoe_swa_metadata_uses_granite_and_mixed_cache_gates(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {"model_type": "granitemoe_swa", "sliding_window": 128},
+                '<|tool_call|>[{"name": "example", "arguments": {}}]',
+            ),
+        )
+
+        config = detect_model_config("publisher/repacked-granite-swash")
+
+        assert config is not None
+        assert config.tool_call_parser == "granite"
+        assert config.reasoning_parser is None
+        assert config.is_hybrid is False
+        assert config.is_moe is True
+        assert config.supports_spec_decode is False
+
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the
         # XML tool contract is genuinely INCOMPLETE: it opens

@@ -69,6 +69,8 @@ _SLIDING_WINDOW_PATTERNS: tuple[str, ...] = (
     "gemma3",
     "gpt-oss",
     "gpt_oss",
+    "granite-swash",
+    "granite_swash",
 )
 
 # Multi-head Latent Attention families. The K projection is already
