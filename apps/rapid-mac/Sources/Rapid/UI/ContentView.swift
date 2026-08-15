@@ -166,7 +166,17 @@ struct ContentView: View {
         .onChange(of: server.state) { _, newState in
             // Sync the picker breadcrumb when the server lands in
             // ``.ready(<alias>)`` against a different alias than shown.
-            if case .ready(let serving) = newState, !serving.isEmpty, serving != alias {
+            if case .ready(let serving) = newState,
+               !serving.isEmpty,
+               serving != alias,
+               ContentView.shouldSyncChatAlias(
+                   serving: serving,
+                   catalogEntries: catalogEntries,
+                   knownMediaAliases: Set(
+                       audio.audioModels.map(\.alias) + imageGen.imageModels.map(\.alias)
+                   ),
+                   section: section
+               ) {
                 alias = serving
             }
             // Retire pending-Ready provenance the moment the app serves some
@@ -723,6 +733,24 @@ struct ContentView: View {
 
     static func quickstartCanPresent(in section: SidebarSection) -> Bool {
         section == .chat
+    }
+
+    /// A process-wide server transition must not overwrite the Chat model
+    /// selection when Audio, Images, or Video starts its own resident model.
+    /// Unknown aliases remain eligible because custom text model ids are not
+    /// necessarily present in the catalog snapshot.
+    static func shouldSyncChatAlias(
+        serving: String,
+        catalogEntries: [ModelEntry],
+        knownMediaAliases: Set<String> = [],
+        section: SidebarSection
+    ) -> Bool {
+        guard section == .chat else { return false }
+        guard !knownMediaAliases.contains(serving) else { return false }
+        guard let entry = catalogEntries.first(where: { $0.alias == serving }) else {
+            return true
+        }
+        return entry.kind == .chat
     }
 
     /// True when the Quickstart sheet is up AND owns the pending

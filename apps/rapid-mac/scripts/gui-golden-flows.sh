@@ -3091,7 +3091,44 @@ flow_audio_readiness() {
     [[ "$speech_resident" == 1 ]] \
         || die "ready fake-qwen3-tts never appeared as the locked resident model"
 
-    press "$OUT/speech-resident.json" Audio.Mode.Transcription "$OUT/transcription.json" \
+    # A media resident is process-wide state, not the Chat model selection.
+    # Launch commands must neither advertise the TTS alias to coding agents
+    # nor remain copyable while their selected chat model is not serving.
+    press "$OUT/speech-resident.json" Sidebar.Launch "$OUT/launch-from-audio.json" \
+        || die "Sidebar.Launch is not pressable from an Audio residency"
+    local launch_copy_count=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/launch-from-audio.json"
+        launch_copy_count="$(jq '[.data.ui_elements[]?
+                                  | (.identifier // "")
+                                  | select(startswith("Launch.Integration.Copy."))]
+                                 | unique | length' "$OUT/launch-from-audio.json")"
+        [[ "$launch_copy_count" == 14 ]] && break
+        sleep 0.25
+    done
+    [[ "$launch_copy_count" == 14 ]] \
+        || die "Launch did not finish loading integrations from Audio"
+    if jq -e '[.data.ui_elements[]?
+               | select(((.identifier // "") | startswith("Launch.Integration.Copy."))
+                        and .enabled == true)] | length > 0' \
+            "$OUT/launch-from-audio.json" >/dev/null; then
+        die "Launch enabled agent commands while an Audio model was serving"
+    fi
+    if jq -e '[.data.ui_elements[]? | .value? | strings]
+              | any(contains("fake-qwen3-tts")
+                    and (contains("--model")
+                         or contains(" -m ")
+                         or contains("ANTHROPIC_MODEL")
+                         or contains("HERMES_INFERENCE_MODEL")))' \
+            "$OUT/launch-from-audio.json" >/dev/null; then
+        die "Launch leaked the resident Audio alias into an agent command"
+    fi
+    press "$OUT/launch-from-audio.json" Sidebar.Audio "$OUT/audio-after-launch.json" \
+        || die "Sidebar.Audio is not pressable after checking Launch"
+    wait_identifier Audio.Mode.Transcription "$OUT/audio-after-launch.json" \
+        || die "Audio did not settle after returning from Launch"
+
+    press "$OUT/audio-after-launch.json" Audio.Mode.Transcription "$OUT/transcription.json" \
         || die "Audio transcription segment is not pressable"
     local transcription_ready=0
     for ((i=0; i<40; i++)); do
