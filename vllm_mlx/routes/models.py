@@ -174,6 +174,59 @@ def _served_engine_is_mllm(model_id: str) -> bool | None:
         return None
 
 
+def _engine_is_hybrid_or_none(engine: object | None) -> bool | None:
+    """Return the loaded engine's runtime hybrid classification.
+
+    Batched engines may refine an alias profile after weights are loaded (for
+    example LFM2.5 exposes ``ArraysCache`` layers). The runtime probe is more
+    authoritative than the static alias row, just as live ``is_mllm`` is for
+    modality.
+    """
+    if engine is None:
+        return None
+    probe = getattr(engine, "_is_hybrid_model", None)
+    if not callable(probe):
+        return None
+    try:
+        value = probe()
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, bool) else None
+
+
+def _reported_hybrid(model_id: str, static: bool | None) -> bool | None:
+    """Return the live hybrid verdict, or ``static`` for discovery-only ids.
+
+    A matching live engine is authoritative even when its probe is missing or
+    fails: in that case the truthful answer is ``None`` (unknown), not stale
+    alias metadata.  Static metadata remains useful only when no live engine is
+    serving this id.
+    """
+    try:
+        cfg = get_config()
+        if cfg.model_registry is not None:
+            try:
+                entry = cfg.model_registry.get_entry(model_id)
+            except KeyError:
+                return static
+            if entry is not None and entry.matches(model_id):
+                engine = getattr(entry, "engine", None)
+                # Registry entries exist before their engine is mounted. That
+                # state is discovery-only, so the curated alias value is still
+                # the best answer; only an attached engine owns the live truth.
+                if engine is None:
+                    return static
+                return _engine_is_hybrid_or_none(engine)
+            return static
+        candidate = getattr(cfg, "engine", None)
+        served = {cfg.model_name, cfg.model_alias} - {None}
+        if candidate is not None and model_id in served:
+            return _engine_is_hybrid_or_none(candidate)
+        return static
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _reported_modality(
     model_id: str, profile_modality: str, is_text_only: bool = False
 ) -> str:
@@ -734,6 +787,9 @@ def _build_model_info(model_id: str) -> ModelInfo:
     covers raw HF paths too, not just registered aliases).
     """
     profile = resolve_profile(model_id)
+    reported_hybrid = _reported_hybrid(
+        model_id, profile.is_hybrid if profile is not None else None
+    )
     # ``context_window`` is engine-derived (not profile-derived) so it
     # surfaces even for unregistered operator-supplied ids when an
     # engine is loaded for them. Resolution is best-effort: probe
@@ -802,7 +858,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         return ModelInfo(
             id=model_id,
             recommended_sampling=sampling,
-            is_hybrid=profile.is_hybrid,
+            is_hybrid=reported_hybrid,
             is_moe=profile.is_moe,
             tool_call_parser=eff_tool,
             reasoning_parser=eff_reasoning,
@@ -855,6 +911,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             pass
         return ModelInfo(
             id=model_id,
+            is_hybrid=reported_hybrid,
             capabilities=capabilities,
             tool_call_parser=eff_tool,
             reasoning_parser=eff_reasoning,
@@ -892,7 +949,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
     return ModelInfo(
         id=model_id,
         recommended_sampling=sampling,
-        is_hybrid=profile.is_hybrid,
+        is_hybrid=reported_hybrid,
         is_moe=profile.is_moe,
         tool_call_parser=eff_tool,
         reasoning_parser=eff_reasoning,
