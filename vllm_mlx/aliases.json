@@ -312,6 +312,13 @@
     "is_hybrid": true,
     "supports_spec_decode": false
   },
+  "qwen3.8-27b-mixed-3.5bpw": {
+    "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false
+  },
   "qwen3.6-35b-nvfp4": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",
     "tool_call_parser": "qwen3_coder_xml",
