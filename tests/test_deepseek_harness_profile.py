@@ -121,17 +121,16 @@ def test_dsh_setup_apply_is_atomic_and_backed_up(tmp_path, monkeypatch):
     settings.write_text("ui-theme:\n  theme: dark\n")
     monkeypatch.setenv("DSH_HOME", str(dsh_home))
 
-    plan = build_setup_plan(
-        "dsh", "http://127.0.0.1:8152/v1", "qwen3.5-9b-4bit", 65536
-    )
+    plan = build_setup_plan("dsh", "http://127.0.0.1:8152/v1", "qwen3.5-9b-4bit", 65536)
     apply_setup_plan(plan)
 
     written = yaml.safe_load(settings.read_text())
     assert written["ui-theme"] == {"theme": "dark"}
     assert written["agent-default-model"]["provider"] == "rapid-mlx"
-    assert written["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0][
-        "contextWindow"
-    ] == 65536
+    assert (
+        written["llm-pi-ai"]["providers"]["rapid-mlx"]["models"][0]["contextWindow"]
+        == 65536
+    )
     assert len(list(dsh_home.glob("settings.yaml.bak.*"))) == 1
     credentials = dsh_home / ".credentials.yaml"
     assert yaml.safe_load(credentials.read_text()) == {
@@ -180,9 +179,7 @@ def test_dsh_setup_preserves_and_redacts_existing_credentials(tmp_path, monkeypa
         encoding="utf-8",
     )
 
-    plan = build_setup_plan(
-        "dsh", "http://127.0.0.1:8000/v1", "test-model", 65536
-    )
+    plan = build_setup_plan("dsh", "http://127.0.0.1:8000/v1", "test-model", 65536)
     assert plan.credentials_after == {
         "RAPID_MLX_API_KEY": secret,
         "REMOTE_PROVIDER_KEY": "other-secret",
@@ -231,9 +228,7 @@ def test_dsh_test_runner_supplies_only_dummy_loopback_credential(monkeypatch):
         lambda *_args, **_kwargs: TestResult("plain_chat", TestStatus.PASS),
     )
     monkeypatch.setattr("vllm_mlx.agents.testing._test_e2e_chat", capture)
-    monkeypatch.setattr(
-        "vllm_mlx.agents.testing._test_e2e_file_read", capture
-    )
+    monkeypatch.setattr("vllm_mlx.agents.testing._test_e2e_file_read", capture)
     monkeypatch.setattr("vllm_mlx.agents.testing._test_e2e_terminal", capture)
     monkeypatch.setattr(
         "vllm_mlx.agents.testing._test_single_tool_call",
@@ -274,9 +269,9 @@ def test_dsh_test_runner_supplies_only_dummy_loopback_credential(monkeypatch):
 
     AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
     assert observed["RAPID_MLX_API_KEY"] == "not-needed"
-    assert observed["DSH_HOME"].startswith("/var/") or "rapid-mlx-" in observed[
-        "DSH_HOME"
-    ]
+    assert (
+        observed["DSH_HOME"].startswith("/var/") or "rapid-mlx-" in observed["DSH_HOME"]
+    )
 
 
 def test_dsh_reports_old_node_before_opaque_plugin_boot_failure():
