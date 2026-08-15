@@ -14,13 +14,29 @@ stars: 25500
 # file when running as the standalone CLI.
 config:
   type: json
-  path: "~/.config/kilo-code/settings.json"
+  path: "~/.config/kilo/kilo.json"
   template: |
     {
-      "apiProvider": "openai",
-      "openAiBaseUrl": "{base_url}",
-      "openAiApiKey": "not-needed",
-      "openAiModelId": "{model_id}"
+      "$schema": "https://app.kilo.ai/config.json",
+      "model": "rapid-mlx/{model_id}",
+      "provider": {
+        "rapid-mlx": {
+          "npm": "@ai-sdk/openai-compatible",
+          "name": "Rapid-MLX",
+          "options": {
+            "apiKey": "not-needed",
+            "baseURL": "{base_url}"
+          },
+          "models": {
+            "{model_id}": {
+              "name": "{model_id} (Rapid-MLX)",
+              "tool_call": true,
+              "reasoning": true,
+              "limit": {"context": {context_length}, "output": 8192}
+            }
+          }
+        }
+      }
     }
 
 models:
@@ -42,9 +58,13 @@ testing:
   binary: kilo
   # Kilo CLI has a one-shot mode via `kilo run '<prompt>'` on 0.3.0+;
   # older builds are interactive-only.
-  query_cmd: "kilo run '{query}'"
+  # Pin the throwaway test workspace explicitly: Kilo otherwise reuses its
+  # last project root and can read the caller's real checkout despite the
+  # child process cwd. `--pure` also prevents user-installed plugins from
+  # entering a compatibility/supply-chain test.
+  query_cmd: "kilo run --dir '{cwd}' --pure '{query}'"
   query_timeout: 180
-  install_cmd: "brew install kilo-org/kilo/kilo-code  # or: npm install -g kilo-code"
+  install_cmd: "npm install -g @kilocode/cli"
 
 capabilities:
   function_calling: true

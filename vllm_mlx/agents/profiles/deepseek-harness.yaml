@@ -1,0 +1,62 @@
+name: deepseek-harness
+display_name: "DeepSeek Harness"
+repo: "deepseek-ai/deepseek-harness"
+stars: 1000
+
+# DSH reads machine-local provider configuration from $DSH_HOME/settings.yaml.
+# Its generic pi-ai adapter is the correct route for Rapid-MLX: using the
+# native deepseek-official adapter would require a fake API key and claim the
+# local endpoint has the official service's model/capacity contract.
+config:
+  type: yaml
+  path: "~/.dsh/settings.yaml"
+  home_env: DSH_HOME
+  template: |
+    llm-pi-ai:
+      providers:
+        rapid-mlx:
+          displayName: "Rapid-MLX Local"
+          apiKeyEnv: RAPID_MLX_API_KEY
+          api: openai-completions
+          baseURL: "{base_url}"
+          defaultContextWindow: {context_length}
+          defaultMaxTokens: 8192
+          compat:
+            supportsReasoningEffort: true
+          models:
+            - id: "{model_id}"
+              name: "{model_id} (Rapid-MLX)"
+              contextWindow: {context_length}
+              maxTokens: 8192
+              reasoningEfforts:
+                off: none
+                low: low
+                medium: medium
+                high: high
+    agent-default-model:
+      provider: rapid-mlx
+      model: "{model_id}"
+
+models:
+  recommended:
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-9b-4bit"
+
+streaming:
+  extra_tool_tags: []
+  max_tools: 64
+
+testing:
+  binary: dsh
+  query_cmd: "dsh --profile headless '{query}'"
+  query_timeout: 240
+  install_cmd: "npm install -g @deepseek-ai/dsh"
+
+capabilities:
+  function_calling: true
+  streaming: true
+
+known_issues:
+  - "DeepSeek Harness is currently a developer preview and may make compatibility-breaking configuration changes."
+  - "The current DSH release requires Node's Zstd stream API (Node 22.15+ works) but does not declare that minimum in its npm manifest."
+  - "Use the generic openai-completions provider, not deepseek-official, for a local Rapid-MLX endpoint."

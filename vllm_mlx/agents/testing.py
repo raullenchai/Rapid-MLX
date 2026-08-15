@@ -725,7 +725,12 @@ def _test_tag_suppression(
 # answer that merely mentions the project — or reads some other file —
 # satisfies without ever having read the line the test asks for.
 E2E_FIRST_LINE_TOKEN = "rapid-mlx-e2e-first-line-sentinel"
-E2E_FIRST_LINE = f"# {E2E_FIRST_LINE_TOKEN}"
+# Keep the sentinel as a semantic TOML assignment rather than a comment.
+# Several competent agents (Kilo and DSH among them) interpret "first line"
+# as "first meaningful config line" and intentionally omit comments even
+# when asked not to.  A unique top-level key remains impossible to guess while
+# making the expected evidence part of the document rather than trivia.
+E2E_FIRST_LINE = f"{E2E_FIRST_LINE_TOKEN} = true"
 
 
 @contextlib.contextmanager
@@ -749,13 +754,11 @@ def _e2e_workspace():
     left lying around. Starting it in a directory we just created, holding
     one file we wrote, makes that set knowable.
 
-    **This is not a sandbox and does not pretend to be.** The agent still
-    runs as the user, with the user's environment and `$HOME`, and can
-    read anything the user can by absolute path. Isolating that would take
-    a real filesystem sandbox with its own home; what this gives is a
-    deterministic *working directory*, which is what the e2e tests depend
-    on. Codex additionally runs its own commands under Seatbelt on macOS,
-    which is its business, not something arranged here.
+    **This is not a sandbox and does not pretend to be.** The runner gives the
+    child a throwaway HOME and deterministic working directory, but the agent
+    still runs as the same OS user and can read anything that user can via an
+    absolute path. Codex additionally runs its own commands under Seatbelt on
+    macOS, which is its business, not something arranged here.
     """
     workdir = tempfile.mkdtemp(prefix="rapid-mlx-agent-e2e-")
     try:
@@ -860,7 +863,10 @@ def _agent_query(
     except ValueError:
         # Fallback: simple split if shlex can't parse
         cmd_parts = query_cmd.split()
-    cmd_parts = [part.replace("{query}", query) for part in cmd_parts]
+    cmd_parts = [
+        part.replace("{query}", query).replace("{cwd}", cwd or os.getcwd())
+        for part in cmd_parts
+    ]
     # Replace first part with full binary path
     cmd_parts[0] = binary_path
 
@@ -872,6 +878,33 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
+
+    # DSH rc.6 imports Node's Zstd stream API during profile boot but its npm
+    # manifest declares no minimum Node engine.  Node 23.6 therefore installs
+    # cleanly and then crashes with an opaque ESM export stack.  Probe the
+    # capability selected by the exact child PATH and report the actionable
+    # runtime mismatch before launching the harness.
+    if Path(binary_path).name == "dsh":
+        node = shutil.which("node", path=child_env.get("PATH"))
+        if node is None:
+            return None, "DeepSeek Harness requires Node.js on PATH"
+        probe = subprocess.run(
+            [
+                node,
+                "-e",
+                "process.exit(typeof require('node:zlib').createZstdDecompress === 'function' ? 0 : 1)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+            env=child_env,
+        )
+        if probe.returncode != 0:
+            return None, (
+                "DeepSeek Harness requires a Node.js runtime with the Zstd "
+                "stream API; update Node (Node 22.15+ works)"
+            )
 
     try:
         proc = subprocess.run(
@@ -1067,7 +1100,10 @@ def _test_e2e_file_read(
         out, err = _agent_query(
             binary,
             query_cmd,
-            "Read the first line of pyproject.toml",
+            (
+                "Read pyproject.toml and copy its first physical line exactly, "
+                "including any leading punctuation. Do not skip comment lines."
+            ),
             timeout,
             workdir,
             env_overrides,
@@ -1287,18 +1323,18 @@ class AgentTestRunner:
             )
             return report
 
-        # File-config agents are driven from a throwaway home.  In particular,
-        # Codex must not inherit the operator's plugins, skills, history, or
-        # config: those change its context budget and made #1598 depend on the
-        # contents of ``~/.codex``.  The same override also prevents this test
-        # runner from merging into the operator's real config.
+        # Every agent is driven from a throwaway home.  Limiting isolation to
+        # profiles with a dedicated ``home_env`` left env-configured CLIs
+        # (notably Claude Code) free to load the operator's plugins, hooks,
+        # history and credentials.  It also let file-config agents without a
+        # relocation variable (OpenCode/Qwen Code/Kilo) refresh the real
+        # ``~/.config`` during ``--test``.  HOME is therefore the universal
+        # boundary; tool-specific relocation variables are layered on top.
         active_config = self.profile.get_config_for_version(self.agent_version)
-        isolated_config_home: tempfile.TemporaryDirectory[str] | None = None
+        isolated_config_home = tempfile.TemporaryDirectory(
+            prefix=f"rapid-mlx-{self.profile.name}-home-"
+        )
         config_home_env = active_config.home_env
-        if config_home_env:
-            isolated_config_home = tempfile.TemporaryDirectory(
-                prefix=f"rapid-mlx-{self.profile.name}-home-"
-            )
 
         # Refresh the agent's on-disk config (e.g. ``~/.hermes/config.yaml``)
         # so e2e tests run against the CURRENT model_id + base_url instead
@@ -1310,30 +1346,29 @@ class AgentTestRunner:
         # ``setup_agent_config`` is a no-op for env-var-style profiles
         # (codex, opencode, aider) since those carry config via env only.
         try:
-            from .adapter import setup_agent_config
+            from .adapter import fetch_context_window, setup_agent_config
 
-            if isolated_config_home and config_home_env:
-                previous = os.environ.get(config_home_env)
-                os.environ[config_home_env] = isolated_config_home.name
-                try:
-                    setup_agent_config(
-                        self.profile,
-                        base_url=self.base_url,
-                        model_id=self.model_id,
-                        agent_version=self.agent_version,
-                    )
-                finally:
-                    if previous is None:
-                        os.environ.pop(config_home_env, None)
-                    else:
-                        os.environ[config_home_env] = previous
-            else:
+            context_length = fetch_context_window(self.base_url, self.model_id)
+
+            redirected = {"HOME": isolated_config_home.name}
+            if config_home_env:
+                redirected[config_home_env] = isolated_config_home.name
+            previous = {key: os.environ.get(key) for key in redirected}
+            os.environ.update(redirected)
+            try:
                 setup_agent_config(
                     self.profile,
                     base_url=self.base_url,
                     model_id=self.model_id,
                     agent_version=self.agent_version,
+                    context_length=context_length,
                 )
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
         except Exception as exc:  # noqa: BLE001 — config refresh must never abort the sweep
             logger.warning(
                 "could not refresh %s config before harness sweep: %s",
@@ -1344,18 +1379,43 @@ class AgentTestRunner:
         t0 = time.time()
         streaming = self.profile.get_streaming_for_version(self.agent_version)
         testing = self.profile.get_testing_for_version(self.agent_version)
+        # Use the same server-advertised capacity for env-style profiles.
+        # File-style profiles consumed it above during setup; rendering env
+        # profiles with the 32K fallback here would make the test sweep and
+        # `agents --setup` exercise materially different configurations.
+        try:
+            from .adapter import fetch_context_window
+
+            context_length = fetch_context_window(self.base_url, self.model_id)
+        except Exception:  # noqa: BLE001 — retain the documented fallback
+            context_length = None
         rendered_config = self.profile.render_config(
             self.base_url,
             self.model_id,
             self.agent_version,
+            context_length=context_length,
         )
         env_overrides = (
             {str(key): str(value) for key, value in rendered_config.items()}
             if active_config.type == "env" and isinstance(rendered_config, dict)
             else None
         )
-        if isolated_config_home and config_home_env:
-            env_overrides = dict(env_overrides or {})
+        env_overrides = dict(env_overrides or {})
+        env_overrides["HOME"] = isolated_config_home.name
+        # Claude Code documents CLAUDE_CONFIG_DIR as its supported config
+        # relocation.  Set it even though HOME is redirected: some packaged
+        # launchers resolve the account home before applying the child env.
+        if self.profile.name == "claude-code":
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                Path(isolated_config_home.name) / ".claude"
+            )
+        # DSH's pi-ai OpenAI transport currently insists on resolving a
+        # credential even for a loopback endpoint.  The first-class setup
+        # stores this non-secret sentinel in DSH's managed credential file;
+        # the ephemeral test home gets the equivalent process-local value.
+        if self.profile.name == "deepseek-harness":
+            env_overrides["RAPID_MLX_API_KEY"] = "not-needed"
+        if config_home_env:
             env_overrides[config_home_env] = isolated_config_home.name
 
         # --- API tests ---
@@ -1471,7 +1531,6 @@ class AgentTestRunner:
         Returns:
             List of TestResult from the specific test module.
         """
-        import importlib.util
         import re
         from pathlib import Path
 
@@ -1533,13 +1592,6 @@ class AgentTestRunner:
 
         t0 = time.time()
         try:
-            # Load and execute the test module
-            spec = importlib.util.spec_from_file_location(
-                f"specific_test_{test_module_name}",
-                test_path,
-            )
-            mod = importlib.util.module_from_spec(spec)
-
             # Set base URL env var so specific test modules use the right server
             import sys
 
@@ -1548,10 +1600,24 @@ class AgentTestRunner:
             # Suppress sys.exit (test modules call exit() at the end)
             original_exit = sys.exit
             exec_error = None
+            namespace: dict = {}
             sys.exit = lambda *a: None
             try:
-                spec.loader.exec_module(mod)
-                run_suite = getattr(mod, "run_suite", None)
+                # Integration files are executable test programs. Some expose
+                # module-level results, while others intentionally guard the
+                # suite with ``if __name__ == "__main__"``. Importing under a
+                # synthetic module name silently skipped the latter (notably
+                # PydanticAI) and then reported a harness error without making
+                # a single SDK call. Execute with script semantics and collect
+                # the resulting globals for both styles.
+                namespace = {
+                    "__name__": "__main__",
+                    "__file__": str(test_path),
+                    "__builtins__": __builtins__,
+                }
+                source = test_path.read_bytes()
+                exec(compile(source, str(test_path), "exec"), namespace)
+                run_suite = namespace.get("run_suite")
                 if callable(run_suite):
                     run_suite()
             except SystemExit:
@@ -1597,7 +1663,7 @@ class AgentTestRunner:
                 ]
 
             # Extract results dict
-            results_dict = getattr(mod, "results", {})
+            results_dict = namespace.get("results", {})
             if not results_dict:
                 return [
                     TestResult(

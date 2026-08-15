@@ -7894,7 +7894,7 @@ def agents_command(args):
         # write atomically, and verify the server afterwards. Keep the generic
         # profile writer below for the remaining integrations until each one
         # receives an equally precise adapter.
-        if profile.name in {"claude-code", "continue"}:
+        if profile.name in {"claude-code", "continue", "deepseek-harness"}:
             from vllm_mlx.agents.setup import (
                 apply_setup_plan,
                 build_setup_plan,
@@ -7903,7 +7903,12 @@ def agents_command(args):
             )
 
             try:
-                plan = build_setup_plan(profile.name, base_url, model_id)
+                plan = build_setup_plan(
+                    profile.name,
+                    base_url,
+                    model_id,
+                    context_length=context_length,
+                )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
                 sys.exit(1)
