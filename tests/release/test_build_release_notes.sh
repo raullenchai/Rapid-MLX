@@ -105,6 +105,13 @@ contains "$BODY" "Install:" "no highlights: install line present"
 # --- 2b. highlights file present ---
 cat > docs/release-notes/v1.2.0.md <<'MD'
 <!-- drafting note that must not ship -->
+<!-- Scratch space for the next release's notes. Append as you land work; in the
+     version-bump PR, `git mv` this to vX.Y.Z.md and recreate this file empty.
+     Whole-line HTML comments like this one are stripped before publishing.
+     See README.md in this directory for what good notes look like. -->
+<!-- inline drafting note --> Visible inline release note.
+IMPORTANT RELEASE NOTE
+<!-- later whole-line drafting note must not ship -->
 This release is about speculative decoding.
 
 ## Highlights
@@ -116,6 +123,9 @@ does not consistently gain, so the adaptive controller parks speculation there.
 | -------- | --: | -: | -----: | ---------: |
 | Code     |  42 | 88 |  +110% |        71% |
 | Prose    |  44 | 45 |    +2% |     32-57% |
+
+<!-- unmatched drafting note stays visible rather than swallowing notes
+Visible after unmatched opener.
 MD
 commit e.txt 1 "feat: delta (#4)"   # picks up the notes file too (git add -A)
 commit f.txt 1 "chore: bump version to 1.2.0"
@@ -130,6 +140,13 @@ contains "$BODY" "does not consistently gain" "highlights: negative result intac
 contains "$BODY" "<details>" "highlights: commit list collapsed"
 contains "$BODY" "<summary>All changes</summary>" "highlights: <details> summary"
 lacks "$BODY" "drafting note that must not ship" "highlights: HTML comments stripped"
+lacks "$BODY" "Scratch space for the next release's notes" "highlights: multi-line HTML comments stripped"
+lacks "$BODY" "version-bump PR" "highlights: multi-line HTML comment body stripped"
+contains "$BODY" "<!-- inline drafting note --> Visible inline release note." "highlights: inline comment with visible suffix is preserved"
+contains "$BODY" "IMPORTANT RELEASE NOTE" "highlights: inline comment does not swallow following notes"
+lacks "$BODY" "later whole-line drafting note" "highlights: later whole-line comment is still stripped"
+contains "$BODY" "<!-- unmatched drafting note" "highlights: unmatched comment opener fails safe"
+contains "$BODY" "Visible after unmatched opener." "highlights: unmatched comment does not swallow following notes"
 contains "$BODY" "Install:" "highlights: install line still last"
 # order: prose before <details> before Install
 check "highlights: prose is above All changes" \
