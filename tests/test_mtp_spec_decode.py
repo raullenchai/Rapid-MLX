@@ -2398,27 +2398,6 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     assert snap.tokens_saved == 1
 
 
-def test_lazy_residual_distribution_matches_leviathan_chen_formula():
-    from vllm_mlx.spec_decode.mtp.generator import _residual_distribution
-
-    target = mx.array([0.6, 0.3, 0.1])
-    draft = mx.array([0.2, 0.5, 0.3])
-    actual = _residual_distribution(mx.log(target), mx.log(draft))
-    expected = mx.array([1.0, 0.0, 0.0])
-    mx.eval(actual)
-    assert bool(mx.allclose(actual, expected, atol=1e-6).item())
-    assert float(actual.sum().item()) == pytest.approx(1.0)
-
-
-def test_lazy_residual_falls_back_to_target_when_draft_matches():
-    from vllm_mlx.spec_decode.mtp.generator import _residual_distribution
-
-    probs = mx.array([0.25, 0.5, 0.25])
-    actual = _residual_distribution(mx.log(probs), mx.log(probs))
-    mx.eval(actual)
-    assert bool(mx.allclose(actual, probs, atol=1e-6).item())
-
-
 def test_prompt_lookup_point_mass_residual_removes_proposed_token():
     from vllm_mlx.spec_decode.mtp.generator import (
         _point_mass_residual_distribution,

@@ -63,17 +63,6 @@ logger = logging.getLogger(__name__)
 _CACHE_CLEAR_INTERVAL = 256
 
 
-def _residual_distribution(
-    target_logprobs: mx.array, draft_logprobs: mx.array
-) -> mx.array:
-    """Return the exact normalized speculative-rejection distribution."""
-    target = mx.exp(target_logprobs)
-    draft = mx.exp(draft_logprobs)
-    residual = mx.maximum(target - draft, 0.0)
-    total = residual.sum(axis=-1, keepdims=True)
-    return mx.where(total > 0, residual / mx.maximum(total, 1e-30), target)
-
-
 def _point_mass_residual_distribution(
     target_logprobs: mx.array, proposed_tokens: mx.array
 ) -> mx.array:
@@ -330,9 +319,6 @@ def mtp_generate_step(
         mtp_cache = prompt_cache[n_main:] or model.make_mtp_cache()
 
     _is_greedy = temp == 0
-    _lazy_residual = os.environ.get(
-        "RAPID_MLX_MTP_LAZY_RESIDUAL", "1"
-    ).strip().lower() not in {"0", "false", "off", "no"}
     _prompt_lookup_enabled = os.environ.get(
         "RAPID_MLX_MTP_PROMPT_LOOKUP", "1"
     ).strip().lower() not in {"0", "false", "off", "no"}
@@ -972,24 +958,17 @@ def mtp_generate_step(
                     log_accept = v_at - d_at  # (K,)
                 accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
 
-                if _lazy_residual:
-                    # Most verify windows accept every draft, so building K
-                    # full-vocabulary residual distributions eagerly wastes
-                    # both bandwidth and memory. Materialize only the accept
-                    # mask here; a rejected row builds its exact residual
-                    # below after the first failing position is known. This
-                    # is the high-value data-flow optimization behind
-                    # MTPLX_LAZY_TARGET_DISTRIBUTIONS, adapted to Rapid's
-                    # lossless log-probability verifier.
-                    residual_toks_arr = None
+                if pending_is_prompt_lookup:
+                    dist = _point_mass_residual_distribution(v_alps, drafts_i32)
                 else:
-                    # Legacy one-sync path: pre-sample every residual row.
-                    dist = (
-                        _point_mass_residual_distribution(v_alps, drafts_i32)
-                        if pending_is_prompt_lookup
-                        else _residual_distribution(v_alps, d_alps_stack)
-                    )
-                    residual_toks_arr = mx.random.categorical(mx.log(dist))
+                    # Existing MTP residual: max(p_target - p_draft, 0),
+                    # falling back to p_target if the clamp zeroed the row.
+                    p_target = mx.exp(v_alps)
+                    p_draft = mx.exp(d_alps_stack)
+                    residual = mx.maximum(p_target - p_draft, 0.0)
+                    z = residual.sum(axis=-1, keepdims=True)
+                    dist = mx.where(z > 0, residual, p_target)
+                residual_toks_arr = mx.random.categorical(mx.log(dist))
                 # Bonus already sampled per-position inside _step_backbone
                 # for temp>0 (categorical over target distro at position K).
                 bonus_tok_arr = toks[k_len]
@@ -998,16 +977,7 @@ def mtp_generate_step(
             accepted_count = 0
             try:
                 _verify_sync_started = time.perf_counter()
-                if residual_toks_arr is None:
-                    mx.eval(toks, accept_mask_arr, bonus_tok_arr, u)
-                else:
-                    mx.eval(
-                        toks,
-                        accept_mask_arr,
-                        residual_toks_arr,
-                        bonus_tok_arr,
-                        u,
-                    )
+                mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
                 _timing_add(
                     "verify_sync_seconds",
                     time.perf_counter() - _verify_sync_started,
@@ -1016,11 +986,7 @@ def mtp_generate_step(
 
                 # ------- Host-side read (all values already resident) -------
                 accept_flags = accept_mask_arr.tolist()
-                residual_ids = (
-                    residual_toks_arr.tolist()
-                    if residual_toks_arr is not None
-                    else None
-                )
+                residual_ids = residual_toks_arr.tolist()
                 bonus_id = int(bonus_tok_arr.item())
                 draft_ids = drafts_arr.tolist()
             except BaseException:
@@ -1144,32 +1110,7 @@ def mtp_generate_step(
                     # _step_backbone during the batched verify).
                     prev_tokens = prev_tokens[:-n_to_drop]
 
-                if residual_ids is None:
-                    # Exact Leviathan-Chen residual for only the first
-                    # rejected row. This adds a sync on rejection, but avoids
-                    # K full-vocabulary exp/subtract/sample rows on the much
-                    # more common all-accept path.
-                    row_dist = (
-                        _point_mass_residual_distribution(
-                            accept_lps[accepted_count : accepted_count + 1],
-                            drafts_i32[accepted_count : accepted_count + 1],
-                        )[0]
-                        if pending_is_prompt_lookup
-                        else _residual_distribution(
-                            accept_lps[accepted_count],
-                            draft_alps_arr[accepted_count],
-                        )
-                    )
-                    residual_tok = mx.random.categorical(mx.log(row_dist))
-                    _residual_started = time.perf_counter()
-                    mx.eval(residual_tok)
-                    _timing_add(
-                        "residual_sync_seconds",
-                        time.perf_counter() - _residual_started,
-                    )
-                    verify_tok_id = int(residual_tok.item())
-                else:
-                    verify_tok_id = int(residual_ids[accepted_count])
+                verify_tok_id = int(residual_ids[accepted_count])
 
                 ntoks += 1
                 generated_token_ids.append(verify_tok_id)
