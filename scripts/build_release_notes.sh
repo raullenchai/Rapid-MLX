@@ -130,9 +130,38 @@ HIGHLIGHTS_PATH="$HIGHLIGHTS_DIR/$TAG.md"
 if git cat-file -e "$RELEASE_SHA:$HIGHLIGHTS_PATH" 2>/dev/null; then
   HIGHLIGHTS=$(
     git show "$RELEASE_SHA:$HIGHLIGHTS_PATH" |
-      # Drop whole-line HTML comments so drafting guidance left in the template
-      # can never ship, then trim leading blank lines ($( ) trims trailing ones).
-      sed -E '/^[[:space:]]*<!--.*-->[[:space:]]*$/d' |
+      # Drop complete whole-line HTML comment blocks so drafting guidance left
+      # in the template can never ship. Buffer until the closing marker so an
+      # unmatched opener fails safe instead of swallowing the remaining notes.
+      awk '
+        function flush_pending(    i) {
+          for (i = 1; i <= pending_count; i++) print pending[i]
+          pending_count = 0
+        }
+        in_comment {
+          pending[++pending_count] = $0
+          if ($0 ~ /-->/) {
+            in_comment = 0
+            if ($0 ~ /-->[[:space:]]*$/) pending_count = 0
+            else flush_pending()
+          }
+          next
+        }
+        /^[[:space:]]*<!--/ {
+          if ($0 ~ /-->/) {
+            if ($0 !~ /-->[[:space:]]*$/) print
+            next
+          }
+          in_comment = 1
+          pending[++pending_count] = $0
+          next
+        }
+        { print }
+        END {
+          if (in_comment) flush_pending()
+        }
+      ' |
+      # Trim leading blank lines ($( ) trims trailing ones).
       sed -e '/./,$!d'
   )
   if [ -n "$HIGHLIGHTS" ]; then
