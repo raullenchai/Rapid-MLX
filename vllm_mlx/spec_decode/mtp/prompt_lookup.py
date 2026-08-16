@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from MTPLX context_copy.py.
-# Copyright 2026 Youssef Aloui and MTPLX contributors.
+# Copyright 2026 Youssof Altoukhi and MTPLX contributors.
 """Prompt-lookup proposals for high-overlap speculative decoding."""
 
 from __future__ import annotations

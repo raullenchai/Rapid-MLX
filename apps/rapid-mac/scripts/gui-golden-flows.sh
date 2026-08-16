@@ -1877,7 +1877,9 @@ flow_no_dead_controls() {
     press "$OUT/dead-appearance-light.json" Settings.Category.privacy "$OUT/dead-open-privacy-actions.json" \
         || die "Privacy category is not pressable"
     see_main "$OUT/dead-privacy-before.json"
-    element_index "$OUT/dead-privacy-before.json" Settings.Privacy.Link.MTPLX >/dev/null \
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Privacy.Link.MTPLX")' \
+        "$OUT/dead-privacy-before.json" >/dev/null \
         || die "MTPLX attribution link is missing from Settings → Privacy"
     [[ "$(element_field "$OUT/dead-privacy-before.json" Settings.Privacy.Link.MTPLX enabled)" == "true" ]] \
         || die "MTPLX attribution link is disabled"

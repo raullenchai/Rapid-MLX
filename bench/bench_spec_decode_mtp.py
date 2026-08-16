@@ -353,11 +353,6 @@ def _run_once(
         # generator and ``mtp_forward`` reference.
         if hasattr(model, "language_model"):
             model = model.language_model
-        from vllm_mlx.spec_decode.mtp.nax_verify import stats as verify_kernel_stats
-
-        verify_before = verify_kernel_stats()
-    else:
-        verify_before = {"calls": 0, "fallbacks": 0}
 
     prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
     mx.random.seed(seed)
@@ -407,11 +402,6 @@ def _run_once(
 
     elapsed = time.perf_counter() - t0
 
-    if condition == "mtp":
-        verify_after = verify_kernel_stats()
-    else:
-        verify_after = verify_before
-
     snap = counter.snapshot()
     if condition != "mtp":
         # ``none`` path doesn't touch the counter; report 0/0.
@@ -437,9 +427,8 @@ def _run_once(
         token_sha256=hashlib.sha256(
             ",".join(str(token) for token in emitted_token_ids).encode("ascii")
         ).hexdigest(),
-        verify_kernel_calls=int(verify_after["calls"]) - int(verify_before["calls"]),
-        verify_kernel_fallbacks=int(verify_after["fallbacks"])
-        - int(verify_before["fallbacks"]),
+        verify_kernel_calls=0,
+        verify_kernel_fallbacks=0,
         verify_sync_seconds=timing_stats.get("verify_sync_seconds", 0.0),
         draft_seconds=timing_stats.get("draft_seconds", 0.0),
         residual_sync_seconds=timing_stats.get("residual_sync_seconds", 0.0),
