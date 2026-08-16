@@ -444,18 +444,14 @@ def _run_once(
         draft_seconds=timing_stats.get("draft_seconds", 0.0),
         residual_sync_seconds=timing_stats.get("residual_sync_seconds", 0.0),
         verify_calls=int(timing_stats.get("verify_calls", 0.0)),
-        prompt_lookup_proposals=int(
-            timing_stats.get("prompt_lookup_proposals", 0.0)
-        ),
+        prompt_lookup_proposals=int(timing_stats.get("prompt_lookup_proposals", 0.0)),
         prompt_lookup_drafted_tokens=int(
             timing_stats.get("prompt_lookup_drafted_tokens", 0.0)
         ),
         prompt_lookup_accepted_tokens=int(
             timing_stats.get("prompt_lookup_accepted_tokens", 0.0)
         ),
-        prompt_lookup_rejections=int(
-            timing_stats.get("prompt_lookup_rejections", 0.0)
-        ),
+        prompt_lookup_rejections=int(timing_stats.get("prompt_lookup_rejections", 0.0)),
         prompt_lookup_mtp_sync_seconds=timing_stats.get(
             "prompt_lookup_mtp_sync_seconds", 0.0
         ),
@@ -591,9 +587,7 @@ def main() -> int:
                     prompt_lookup_drafted_tokens=res.prompt_lookup_drafted_tokens,
                     prompt_lookup_accepted_tokens=res.prompt_lookup_accepted_tokens,
                     prompt_lookup_rejections=res.prompt_lookup_rejections,
-                    prompt_lookup_mtp_sync_seconds=(
-                        res.prompt_lookup_mtp_sync_seconds
-                    ),
+                    prompt_lookup_mtp_sync_seconds=(res.prompt_lookup_mtp_sync_seconds),
                 )
                 all_results[condition].append(res)
                 print(

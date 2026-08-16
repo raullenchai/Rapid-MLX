@@ -14,6 +14,11 @@ so this document and the shipped bundle cannot silently disagree (#1596).
 This is the document the app's **Settings → Privacy → "Open-source
 credits"** link opens.
 
+* **MTPLX** — Youssof Altoukhi — Apache License 2.0
+  Rapid's prompt-lookup speculative decoding adapts MTPLX's context-copy
+  design. The required in-product attribution appears in Settings → Privacy.
+  https://github.com/youssofal/mtplx
+
 **Scope.** Components this project declares directly: the Swift packages
 in `Package.swift` (plus the transitive ones actually linked into the
 binary), the engine requirements in the monorepo's root `pyproject.toml`,

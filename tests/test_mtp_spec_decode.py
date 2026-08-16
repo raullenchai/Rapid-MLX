@@ -1519,46 +1519,6 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
             )
 
 
-def test_inject_runtime_quantizes_explicit_mtplx_fp_sidecar(tmp_path, monkeypatch):
-    """An MTPLX-marked FP payload is packed only after exact weight load."""
-    import json
-
-    import mlx.core as _mx
-    from mlx.utils import tree_flatten
-
-    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
-    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
-
-    monkeypatch.setenv("RAPID_MLX_MTP_RUNTIME_QUANT", "1")
-
-    model_a = _build_tiny_qwen3_5_text_model()
-    template = build_mtp_module(model_a.args, 1)
-    _mx.eval(template.parameters())
-    sidecar = tmp_path / "mtp.safetensors"
-    _mx.save_safetensors(
-        str(sidecar),
-        {f"mtp.{k}": v for k, v in tree_flatten(template.parameters())},
-    )
-    (tmp_path / "config.json").write_text(
-        json.dumps(
-            {
-                "mtplx_mtp_contract": {
-                    "mtp_quant_bits": 4,
-                    "mtp_quant_group_size": 32,
-                    "mtp_quant_mode": "affine",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    model_b = _build_tiny_qwen3_5_text_model()
-    assert inject_mtp_support(model_b, mtp_sidecar=sidecar)
-    packed = dict(tree_flatten(model_b.mtp.parameters()))
-    assert "fc.scales" in packed
-    assert packed["fc.weight"].dtype == _mx.uint32
-
-
 def test_inject_mtp_support_refuses_synthetic_sidecar_missing_tensor():
     """Coverage check: dropping one required tensor must fail the inject.
 

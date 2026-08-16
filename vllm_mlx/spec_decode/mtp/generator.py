@@ -54,7 +54,6 @@ from .accept_counter import get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
 from .draft_k_controller_v2 import DepthController, get_or_create_controller
 from .prompt_lookup import PromptLookupIndex
-from .verify_context import target_verify
 
 patch_arrays_cache_rollback_state()
 
@@ -334,15 +333,14 @@ def mtp_generate_step(
     _lazy_residual = os.environ.get(
         "RAPID_MLX_MTP_LAZY_RESIDUAL", "1"
     ).strip().lower() not in {"0", "false", "off", "no"}
-    _prompt_lookup_enabled = (
-        os.environ.get("RAPID_MLX_MTP_PROMPT_LOOKUP", "0").strip().lower()
-        in {"1", "true", "on", "yes"}
-    )
+    _prompt_lookup_enabled = os.environ.get(
+        "RAPID_MLX_MTP_PROMPT_LOOKUP", "1"
+    ).strip().lower() not in {"0", "false", "off", "no"}
     _prompt_lookup_max_tokens = max(
         1, int(os.environ.get("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "24"))
     )
     _prompt_lookup_min_ngram = max(
-        2, int(os.environ.get("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "6"))
+        2, int(os.environ.get("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "8"))
     )
     _prompt_lookup_max_ngram = max(
         _prompt_lookup_min_ngram,
@@ -682,9 +680,7 @@ def mtp_generate_step(
             lookup_logits,
             [c.state for c in mtp_cache if hasattr(c, "state")],
         )
-        _timing_add(
-            "prompt_lookup_mtp_sync_seconds", time.perf_counter() - started
-        )
+        _timing_add("prompt_lookup_mtp_sync_seconds", time.perf_counter() - started)
 
     with mx.stream(generation_stream):
         y = _prefill(y, input_embeddings)
@@ -802,20 +798,15 @@ def mtp_generate_step(
         )
         if match is None:
             return None
-        extension = max(
-            0, match.matched_suffix - _prompt_lookup_index.min_ngram
-        )
+        extension = max(0, match.matched_suffix - _prompt_lookup_index.min_ngram)
         confidence_ladder = (8, 12, 16, 24, 32)
-        confidence_cap = confidence_ladder[
-            min(extension, len(confidence_ladder) - 1)
-        ]
+        confidence_cap = confidence_ladder[min(extension, len(confidence_ladder) - 1)]
         proposed_tokens = match.tokens[:confidence_cap]
         _timing_add("prompt_lookup_proposals", 1.0)
         _timing_add("prompt_lookup_drafted_tokens", float(len(proposed_tokens)))
         _timing_add("prompt_lookup_matched_suffix_tokens", float(match.matched_suffix))
         return [
-            (mx.array(token, mx.uint32), None, None, None)
-            for token in proposed_tokens
+            (mx.array(token, mx.uint32), None, None, None) for token in proposed_tokens
         ]
 
     def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
@@ -931,16 +922,15 @@ def mtp_generate_step(
             )
             y_with_drafts = mx.concatenate([y, drafts_arr])
 
-            with target_verify():
-                toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
-                    y_with_drafts,
-                    prev_tokens,
-                    n_predict=k_len + 1,
-                    # Any positive value activates per-position SSM snapshots;
-                    # k_len preserves the legacy K=1 boundary semantics too.
-                    n_confirmed=k_len,
-                    xtc_draw=first_xtc_draw,
-                )
+            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
+                y_with_drafts,
+                prev_tokens,
+                n_predict=k_len + 1,
+                # Any positive value activates per-position SSM snapshots;
+                # k_len preserves the legacy K=1 boundary semantics too.
+                n_confirmed=k_len,
+                xtc_draw=first_xtc_draw,
+            )
 
             # One shared uniform for all positions' probabilistic
             # accept tests. Ollama uses a per-position Bernoulli draw;
@@ -978,9 +968,7 @@ def mtp_generate_step(
                     d_alps_stack = None
                 else:
                     d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
-                    d_at = mx.take_along_axis(
-                        d_alps_stack, idx, axis=1
-                    ).squeeze(-1)
+                    d_at = mx.take_along_axis(d_alps_stack, idx, axis=1).squeeze(-1)
                     log_accept = v_at - d_at  # (K,)
                 accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
 
@@ -1127,9 +1115,7 @@ def mtp_generate_step(
                 # (target's prediction one past the last draft).
                 _clear_rollback()
                 if pending_is_prompt_lookup:
-                    _sync_prompt_lookup_history(
-                        hidden, y, drafts_arr, accepted_count
-                    )
+                    _sync_prompt_lookup_history(hidden, y, drafts_arr, accepted_count)
                 ntoks += 1
                 generated_token_ids.append(bonus_id)
                 yield bonus_id, lps[k_len], False
@@ -1148,9 +1134,7 @@ def mtp_generate_step(
                 n_to_drop = k_len - accepted_count
                 if pending_is_prompt_lookup:
                     _rollback_draft(n_to_drop, verify_size=k_len + 1)
-                    _sync_prompt_lookup_history(
-                        hidden, y, drafts_arr, accepted_count
-                    )
+                    _sync_prompt_lookup_history(hidden, y, drafts_arr, accepted_count)
                 else:
                     _rollback_verify_round(n_to_drop, verify_size=k_len + 1)
                 accept_counter.record_reject()

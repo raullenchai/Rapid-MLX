@@ -610,6 +610,12 @@ struct SettingsView: View {
             // other link in the app used the steel-blue link token.
             .foregroundStyle(RapidTheme.linkLabel)
 
+            Link("Powered by MTPLX",
+                 destination: URL(string: "https://github.com/youssofal/mtplx")!)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.linkLabel)
+                .accessibilityIdentifier("Settings.Privacy.Link.MTPLX")
+
             Spacer(minLength: 0)
         }
     }
