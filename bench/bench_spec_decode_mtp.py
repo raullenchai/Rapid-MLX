@@ -39,6 +39,7 @@ the script wires up cleanly without burning GPU cycles.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import statistics
 import sys
@@ -98,6 +99,18 @@ class RunResult:
     accept_attempts: int
     accept_count: int
     elapsed_seconds: float
+    token_sha256: str = ""
+    verify_kernel_calls: int = 0
+    verify_kernel_fallbacks: int = 0
+    verify_sync_seconds: float = 0.0
+    draft_seconds: float = 0.0
+    residual_sync_seconds: float = 0.0
+    verify_calls: int = 0
+    prompt_lookup_proposals: int = 0
+    prompt_lookup_drafted_tokens: int = 0
+    prompt_lookup_accepted_tokens: int = 0
+    prompt_lookup_rejections: int = 0
+    prompt_lookup_mtp_sync_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +160,12 @@ def _parse_args() -> argparse.Namespace:
         help="Decode budget per prompt (default: 256).",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="MLX sampling seed reset before every measured generation (default: 0).",
+    )
+    parser.add_argument(
         "--temp",
         type=float,
         default=0.0,
@@ -156,6 +175,8 @@ def _parse_args() -> argparse.Namespace:
             "temp=0 / 0.6 / 1.0."
         ),
     )
+    parser.add_argument("--top-p", type=float, default=0.0)
+    parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument(
         "--format",
         choices=["json", "markdown"],
@@ -180,6 +201,11 @@ def _parse_args() -> argparse.Namespace:
             "= full PR #990 mix). Lower values cut wall time at the "
             "cost of reduced workload coverage."
         ),
+    )
+    parser.add_argument(
+        "--prompt-text",
+        default=None,
+        help="Run one explicit prompt instead of the built-in suite.",
     )
     parser.add_argument(
         "--mtp-sidecar",
@@ -254,7 +280,10 @@ def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
         "model": args.model,
         "runs_per_condition": args.runs,
         "max_tokens": args.max_tokens,
+        "seed": args.seed,
         "temp": args.temp,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
         "mtp_max_k": args.mtp_max_k,
         "mtp_disable_auto_k": args.mtp_disable_auto_k,
         "conditions": ["none", "mtp"],
@@ -273,9 +302,12 @@ def _run_once(
     prompt: str,
     max_tokens: int,
     temp: float,
+    top_p: float = 0.0,
+    top_k: int = 0,
     mtp_sidecar: str | None = None,
     mtp_max_k: int = 3,
     mtp_disable_auto_k: bool = False,
+    seed: int = 0,
 ) -> RunResult:
     """Run one generation under the requested condition.
 
@@ -321,8 +353,14 @@ def _run_once(
         # generator and ``mtp_forward`` reference.
         if hasattr(model, "language_model"):
             model = model.language_model
+        from vllm_mlx.spec_decode.mtp.nax_verify import stats as verify_kernel_stats
+
+        verify_before = verify_kernel_stats()
+    else:
+        verify_before = {"calls": 0, "fallbacks": 0}
 
     prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
+    mx.random.seed(seed)
     counter = MTPAcceptCounter()
     # Replace global counter for the duration of THIS run so the
     # ``accept_attempts`` / ``accept_count`` we report only reflects
@@ -332,32 +370,47 @@ def _run_once(
 
     t0 = time.perf_counter()
     n = 0
+    emitted_token_ids: list[int] = []
     if condition == "mtp":
+        timing_stats: dict[str, float] = {}
         gen = mtp_generate_step(
             prompt_ids,
             model,
             max_tokens=max_tokens,
             temp=temp,
+            top_p=top_p,
+            top_k=top_k,
             accept_counter=counter,
             max_k=mtp_max_k,
             disable_auto_k=mtp_disable_auto_k,
+            timing_stats=timing_stats,
         )
-        for _ in gen:
+        for token, _logprobs, _from_draft in gen:
             n += 1
+            emitted_token_ids.append(int(token))
     else:
+        timing_stats = {}
         from mlx_lm.generate import stream_generate
+        from mlx_lm.sample_utils import make_sampler
 
         for resp in stream_generate(
             model,
             tokenizer,
             prompt,
             max_tokens=max_tokens,
+            sampler=make_sampler(temp=temp, top_p=top_p, top_k=top_k),
         ):
             n += 1
+            emitted_token_ids.append(int(resp.token))
             if n >= max_tokens:
                 break
 
     elapsed = time.perf_counter() - t0
+
+    if condition == "mtp":
+        verify_after = verify_kernel_stats()
+    else:
+        verify_after = verify_before
 
     snap = counter.snapshot()
     if condition != "mtp":
@@ -381,6 +434,31 @@ def _run_once(
         accept_attempts=snap_attempts,
         accept_count=snap_accepts,
         elapsed_seconds=elapsed,
+        token_sha256=hashlib.sha256(
+            ",".join(str(token) for token in emitted_token_ids).encode("ascii")
+        ).hexdigest(),
+        verify_kernel_calls=int(verify_after["calls"]) - int(verify_before["calls"]),
+        verify_kernel_fallbacks=int(verify_after["fallbacks"])
+        - int(verify_before["fallbacks"]),
+        verify_sync_seconds=timing_stats.get("verify_sync_seconds", 0.0),
+        draft_seconds=timing_stats.get("draft_seconds", 0.0),
+        residual_sync_seconds=timing_stats.get("residual_sync_seconds", 0.0),
+        verify_calls=int(timing_stats.get("verify_calls", 0.0)),
+        prompt_lookup_proposals=int(
+            timing_stats.get("prompt_lookup_proposals", 0.0)
+        ),
+        prompt_lookup_drafted_tokens=int(
+            timing_stats.get("prompt_lookup_drafted_tokens", 0.0)
+        ),
+        prompt_lookup_accepted_tokens=int(
+            timing_stats.get("prompt_lookup_accepted_tokens", 0.0)
+        ),
+        prompt_lookup_rejections=int(
+            timing_stats.get("prompt_lookup_rejections", 0.0)
+        ),
+        prompt_lookup_mtp_sync_seconds=timing_stats.get(
+            "prompt_lookup_mtp_sync_seconds", 0.0
+        ),
     )
 
 
@@ -445,8 +523,12 @@ def main() -> int:
             print(json.dumps(plan, indent=2))
         return 0
 
-    n_prompts = min(args.prompts, len(_BENCH_PROMPTS))
-    prompts = list(_BENCH_PROMPTS[:n_prompts])
+    if args.prompt_text is not None:
+        prompts = [args.prompt_text]
+    else:
+        n_selected = min(args.prompts, len(_BENCH_PROMPTS))
+        prompts = list(_BENCH_PROMPTS[:n_selected])
+    n_prompts = len(prompts)
 
     mtp_sidecar = _resolve_mtp_sidecar(args.model, args.mtp_sidecar)
     conditions: tuple[str, ...] = ("mtp",) if args.mtp_only else ("none", "mtp")
@@ -454,6 +536,8 @@ def main() -> int:
     print(
         f"[bench_spec_decode_mtp] model={args.model} runs={args.runs} "
         f"prompts={n_prompts} max_tokens={args.max_tokens} temp={args.temp} "
+        f"top_p={args.top_p} top_k={args.top_k} "
+        f"seed={args.seed} "
         f"mtp_max_k={args.mtp_max_k} fixed_k={args.mtp_disable_auto_k} "
         f"mtp_sidecar={mtp_sidecar!r} conditions={conditions}",
         file=sys.stderr,
@@ -472,9 +556,12 @@ def main() -> int:
                         prompt=prompt,
                         max_tokens=args.max_tokens,
                         temp=args.temp,
+                        top_p=args.top_p,
+                        top_k=args.top_k,
                         mtp_sidecar=mtp_sidecar,
                         mtp_max_k=args.mtp_max_k,
                         mtp_disable_auto_k=args.mtp_disable_auto_k,
+                        seed=args.seed,
                     )
                 except Exception as exc:  # pragma: no cover — bench
                     print(
@@ -493,12 +580,35 @@ def main() -> int:
                     accept_attempts=res.accept_attempts,
                     accept_count=res.accept_count,
                     elapsed_seconds=res.elapsed_seconds,
+                    token_sha256=res.token_sha256,
+                    verify_kernel_calls=res.verify_kernel_calls,
+                    verify_kernel_fallbacks=res.verify_kernel_fallbacks,
+                    verify_sync_seconds=res.verify_sync_seconds,
+                    draft_seconds=res.draft_seconds,
+                    residual_sync_seconds=res.residual_sync_seconds,
+                    verify_calls=res.verify_calls,
+                    prompt_lookup_proposals=res.prompt_lookup_proposals,
+                    prompt_lookup_drafted_tokens=res.prompt_lookup_drafted_tokens,
+                    prompt_lookup_accepted_tokens=res.prompt_lookup_accepted_tokens,
+                    prompt_lookup_rejections=res.prompt_lookup_rejections,
+                    prompt_lookup_mtp_sync_seconds=(
+                        res.prompt_lookup_mtp_sync_seconds
+                    ),
                 )
                 all_results[condition].append(res)
                 print(
                     f"[bench_spec_decode_mtp] {condition} run={run_idx} "
                     f"prompt={prompt_idx} {res.decode_tok_per_sec:.1f} tok/s "
-                    f"({res.n_tokens} tokens in {res.elapsed_seconds:.1f}s)",
+                    f"({res.n_tokens} tokens in {res.elapsed_seconds:.1f}s; "
+                    f"verify-kernel calls={res.verify_kernel_calls} "
+                    f"fallbacks={res.verify_kernel_fallbacks}; "
+                    f"verify-sync={res.verify_sync_seconds:.3f}s "
+                    f"draft={res.draft_seconds:.3f}s "
+                    f"residual={res.residual_sync_seconds:.3f}s; "
+                    f"lookup={res.prompt_lookup_proposals}/"
+                    f"{res.prompt_lookup_drafted_tokens}/"
+                    f"{res.prompt_lookup_accepted_tokens} "
+                    f"sync={res.prompt_lookup_mtp_sync_seconds:.3f}s)",
                     file=sys.stderr,
                 )
 
@@ -511,6 +621,9 @@ def main() -> int:
         "model": args.model,
         "max_tokens": args.max_tokens,
         "temp": args.temp,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "seed": args.seed,
         "summaries": [asdict(baseline_summary), asdict(mtp_summary)],
         "raw_runs": [asdict(r) for c in all_results.values() for r in c],
     }

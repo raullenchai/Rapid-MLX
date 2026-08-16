@@ -1,0 +1,41 @@
+MTPLX
+Copyright 2026 Youssof Altoukhi
+
+MTPLX is a native MTP speculative decoding project for Apple Silicon.
+
+ATTRIBUTION REQUIREMENT
+
+This NOTICE file is part of the Apache License 2.0 terms for MTPLX (see
+section 4(d) of the LICENSE). Any product, application, service, or
+distribution that includes, embeds, or is built on MTPLX, in whole or in
+part, modified or unmodified, must display the following attribution within
+the product itself, in a place a user of that product can see (for example an
+About screen, a credits or acknowledgements screen, a settings or help page,
+documentation shipped with the product, or the startup banner of a command
+line tool):
+
+  Powered by MTPLX
+  https://github.com/youssofal/mtplx
+
+Attribution in a source repository, a README, or a marketing page alone does
+not satisfy this requirement. The words "Powered by MTPLX" must appear
+in-product. The link is required wherever the display medium supports it.
+
+Public benchmarks, articles, and research that use or build on MTPLX should
+credit "MTPLX by Youssof Altoukhi" with the same link.
+
+If MTPLX informs academic or technical writing, please cite the repository using
+the included CITATION.cff metadata.
+
+This distribution includes a vendored standalone subset of vllm-metal's
+Apache-2.0 licensed Metal paged-attention kernels under vllm_metal/metal.
+The vendored subset is used only for local MLX/Metal kernel dispatch and does
+not include or depend on the vLLM serving stack.
+
+This product includes Metal kernel code adapted from dflash-mlx
+(https://github.com/bstnxbt/dflash-mlx), Copyright dflash-mlx contributors,
+licensed under the Apache License 2.0. See mtplx/nax_verify.py for details.
+
+This product includes the Apache-2.0 licensed MLX implementation for
+Laguna-S-2.1 from PipeNetwork, Copyright 2026 PipeNetwork, under
+mtplx/models/laguna.py.
