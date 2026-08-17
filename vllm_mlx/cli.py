@@ -1893,6 +1893,42 @@ def _build_benchmark_context(target_tokens: int) -> str:
     return (block * repeats).strip()
 
 
+def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
+    """Return ``(mtp_draft_model, mtp_speculative_tokens)`` declared by an alias.
+
+    ``(None, None)`` when the model is not a known alias, declares no MTP
+    sidecar, or the registry cannot be read. Resolution is best-effort by
+    design: this only supplies DEFAULTS for a request that already asked for
+    MTP, so a registry problem must degrade to "no default" and let the
+    injector's own hard-fail speak — never turn a serve into a crash of its
+    own (#1998).
+
+    ``mtp_speculative_tokens`` is returned only when it is a positive int. The
+    alias schema already rejects the alternatives (``model_aliases`` requires
+    ``mtp_draft_model`` alongside it), so this is belt-and-braces against a
+    hand-edited registry rather than a live shape.
+    """
+    if not model_name:
+        return None, None
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 — see docstring: never fail the serve here
+        return None, None
+    if profile is None:
+        return None, None
+    sidecar = (getattr(profile, "mtp_draft_model", None) or "").strip() or None
+    if sidecar is None:
+        # Depth without a sidecar is meaningless — the injector has nothing to
+        # load — so don't hand back a lone K either.
+        return None, None
+    depth = getattr(profile, "mtp_speculative_tokens", None)
+    if not isinstance(depth, int) or isinstance(depth, bool) or depth <= 0:
+        depth = None
+    return sidecar, depth
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2201,9 +2237,23 @@ def _normalize_speculative_config_or_exit(args):
                 args.mtp_num_draft_tokens = config.num_speculative_tokens
             if legacy_mtp_optimistic_requested:
                 args.mtp_optimistic = True
-        args.mtp_sidecar = config.model
+        # #1998: an alias may DECLARE its own MTP sidecar and draft depth
+        # (``mtp_draft_model`` / ``mtp_speculative_tokens``). Those were
+        # rendered by ``rapid-mlx models`` as ``✓ MTP  MTP@<repo>@<k>`` and
+        # then read NOWHERE on the serve path, so the command that listing
+        # implies — ``serve <alias> --speculative-config '{"method":"mtp"}'``
+        # — reached the injector with ``sidecar=None`` and hard-failed at
+        # boot, quoting an unrelated model in the remedy. Fill ONLY what the
+        # request left unset; an explicit ``model`` /
+        # ``num_speculative_tokens`` in the JSON always wins.
+        alias_sidecar, alias_k = _alias_mtp_declaration(getattr(args, "model", None))
+        args.mtp_sidecar = config.model or alias_sidecar
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens
+        elif alias_k is not None:
+            # A depth the alias declares for THIS checkpoint beats the generic
+            # --force-spec-decode fallback below: it is the more specific fact.
+            args.mtp_max_k = alias_k
         elif getattr(args, "force_spec_decode", False):
             # User explicitly opted into spec-decode via --force-spec-decode
             # but didn't pin a draft depth. K=1 chain-of-1 carries draft

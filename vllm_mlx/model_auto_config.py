@@ -2164,6 +2164,16 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
     Derivation is from the resolved profile only (no ``config.json``
     read), keeping the ``rapid-mlx info`` path weight-free.
     """
+    if (getattr(cfg, "mtp_draft_model", None) or "").strip():
+        # #1998: the alias DECLARES its own MTP sidecar, and that declaration
+        # now drives the serve path, so MTP genuinely runs for this checkpoint
+        # — including on a hybrid one, where ``supports_spec_decode`` is False.
+        # That flag gates the STANDARD spec-decode lane (hybrids cannot use
+        # it); the MTP sidecar lane is separate and was verified end-to-end on
+        # Qwen3.8-27B. Checked BEFORE the flag, because reporting "disabled"
+        # for a model that decodes with MTP is exactly the registry-vs-reality
+        # mismatch #1998 was about. Names the opt-in, mirroring the DFlash row.
+        return "sidecar (opt-in: --speculative-config)"
     if not cfg.supports_spec_decode:
         # Honest: the profile has spec decode gated off (hybrid arch, or
         # no MTP head/drafter registered for this alias). Even for a
