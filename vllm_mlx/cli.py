@@ -1918,7 +1918,12 @@ def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
         return None, None
     if profile is None:
         return None, None
-    sidecar = (getattr(profile, "mtp_draft_model", None) or "").strip() or None
+    # Type-check BEFORE ``.strip()``: the value reaches us straight off a
+    # profile object, and a non-str there would raise ``AttributeError`` out of
+    # this helper — breaking the totality the docstring promises, in the exact
+    # hand-edited-registry case it promises it for (codex nit).
+    raw_sidecar = getattr(profile, "mtp_draft_model", None)
+    sidecar = raw_sidecar.strip() or None if isinstance(raw_sidecar, str) else None
     if sidecar is None:
         # Depth without a sidecar is meaningless — the injector has nothing to
         # load — so don't hand back a lone K either.

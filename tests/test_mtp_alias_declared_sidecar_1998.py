@@ -194,6 +194,20 @@ def test_declaration_lookup_never_raises_when_the_registry_is_broken(monkeypatch
     assert _alias_mtp_declaration(ALIAS_WITH_MTP) == (None, None)
 
 
+@pytest.mark.parametrize("bad", [7, ["org/repo"], {"a": 1}, object()])
+def test_a_non_string_sidecar_does_not_raise(monkeypatch, bad):
+    """Totality has to survive the value being the wrong TYPE, not just absent."""
+    import vllm_mlx.model_aliases as aliases
+    from vllm_mlx.cli import _alias_mtp_declaration
+
+    monkeypatch.setattr(
+        aliases,
+        "resolve_profile",
+        lambda _n: SimpleNamespace(mtp_draft_model=bad, mtp_speculative_tokens=3),
+    )
+    assert _alias_mtp_declaration(ALIAS_WITH_MTP) == (None, None)
+
+
 def test_depth_without_a_sidecar_yields_neither(monkeypatch):
     """A hand-edited registry could carry a depth alone; it is meaningless."""
     import vllm_mlx.model_aliases as aliases
