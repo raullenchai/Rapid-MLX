@@ -83,17 +83,19 @@ struct ContextWindowTrimTests {
 
     @Test("Oldest turns are dropped when total exceeds the keep fraction")
     func dropsOldestTurnsOverBudget() {
-        // chars/4 estimate. Budget = 4 * 0.75 = 3 tokens. Each msg is
-        // 4 chars = 1 token. Last user msg must always survive.
+        // Each 4-char ASCII message costs ceil(4 * 0.42) = 2 estimated tokens,
+        // so five messages cost 10. A window of 8 gives a budget of
+        // 8 * 0.75 = 6 tokens = three messages. The last user turn always
+        // survives, so the two oldest drop.
         let history: [ChatMessage] = [
-            ChatMessage(role: .user, content: "AAAA"),       // 1 tok — drops
-            ChatMessage(role: .assistant, content: "BBBB"),  // 1 tok — drops
-            ChatMessage(role: .user, content: "CCCC"),       // 1 tok — keeps
-            ChatMessage(role: .assistant, content: "DDDD"),  // 1 tok — keeps
-            ChatMessage(role: .user, content: "EEEE"),       // 1 tok — keeps (always)
+            ChatMessage(role: .user, content: "AAAA"),       // 2 tok — drops
+            ChatMessage(role: .assistant, content: "BBBB"),  // 2 tok — drops
+            ChatMessage(role: .user, content: "CCCC"),       // 2 tok — keeps
+            ChatMessage(role: .assistant, content: "DDDD"),  // 2 tok — keeps
+            ChatMessage(role: .user, content: "EEEE"),       // 2 tok — keeps (always)
         ]
         let trimmed = ChatViewModel.trimMessagesForContextWindow(
-            history, contextWindow: 4
+            history, contextWindow: 8
         )
         #expect(trimmed.count == 3)
         #expect(trimmed.first?.content == "CCCC")

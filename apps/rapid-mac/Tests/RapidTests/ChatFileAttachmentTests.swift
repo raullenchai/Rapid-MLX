@@ -169,7 +169,7 @@ struct ChatFileAttachmentTests {
         #expect(restored.fileAttachments.first?.extractedText == "cell value")
     }
 
-    @Test("Multiple documents share one bounded context budget")
+    @Test("Multiple documents share one bounded preview budget without losing text")
     func combinedBudget() throws {
         let first = try ChatFileAttachment(
             filename: "one.csv",
@@ -185,9 +185,13 @@ struct ChatFileAttachmentTests {
         )
         let fitted = ChatFileAttachment.fittedForMessage([first, second])
         #expect(fitted.count == 2)
-        #expect(fitted.reduce(0) { $0 + $1.extractedText.count }
-            <= ChatFileAttachment.maxCombinedCharacters)
-        #expect(fitted.allSatisfy { $0.wasTruncated })
+        #expect(fitted.reduce(0) { TokenEstimate.tokens(in: $1.extractedText) + $0 }
+            <= ChatFileAttachment.maxCombinedTokens)
+        // Shrinking a preview is not truncation: every document keeps its full
+        // character count and stays reachable through read_document.
+        #expect(fitted.allSatisfy { $0.hasUnshownContent })
+        #expect(fitted.allSatisfy { !$0.wasTruncated })
+        #expect(fitted.allSatisfy { $0.totalCharacterCount == 20_000 })
     }
 
     @Test("Import work is bounded before any selected file is opened")

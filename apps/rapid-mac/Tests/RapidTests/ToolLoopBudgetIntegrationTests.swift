@@ -67,19 +67,82 @@ struct ToolLoopBudgetIntegrationTests {
         #expect(toolRows.count == 5)
         #expect(toolRows.filter { $0.content.contains("budget exhausted") }.count == 2)
     }
+    @Test("read_document draws on its own budget instead of the general three")
+    func documentReadsDoNotSpendTheGeneralBudget() async throws {
+        // Paging a long attachment is inherently multi-call. If those calls
+        // were charged to maxToolExecutions, four pages would exhaust the
+        // budget the search-and-verify loop needs — the exact starvation the
+        // separate document quota exists to prevent.
+        ToolLoopBudgetProtocol.reset(documentReads: 6)
+        let registry = CountingToolRegistry(toolName: "read_document")
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://tool-loop")!,
+                session: ToolLoopBudgetProtocol.session()
+            ),
+            tools: registry,
+            persistsConversations: false
+        )
+
+        model.send("Summarize the attached report", alias: "test-model")
+        for _ in 0..<200 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!model.isStreaming)
+        // All six ran: past three, and none refused for want of budget.
+        #expect(registry.runCount == 6)
+        #expect(model.messages.last?.content == "Here is the answer from the evidence.")
+        #expect(model.messages.last?.status == .complete)
+        let toolRows = model.messages.filter { $0.role == .tool }
+        #expect(toolRows.allSatisfy { !$0.content.contains("budget exhausted") })
+    }
+
+    @Test("The document budget is finite and reports its own exhaustion")
+    func documentBudgetIsItselfCapped() async throws {
+        // A model that keeps paging forever must still be stopped — and told
+        // which budget ran out, so it can say what it has not read.
+        ToolLoopBudgetProtocol.reset(documentReads: 40)
+        let registry = CountingToolRegistry(toolName: "read_document")
+        let model = ChatViewModel(
+            client: ChatStreamClient(
+                baseURL: URL(string: "fake://tool-loop")!,
+                session: ToolLoopBudgetProtocol.session()
+            ),
+            tools: registry,
+            persistsConversations: false
+        )
+
+        model.send("Read the whole thing", alias: "test-model")
+        for _ in 0..<400 where model.isStreaming {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(!model.isStreaming)
+        #expect(registry.runCount == 12)
+        let toolRows = model.messages.filter { $0.role == .tool }
+        #expect(toolRows.contains { $0.content.contains("Document-read budget exhausted") })
+    }
 }
 
 @MainActor
 private final class CountingToolRegistry: ToolRegistry {
     private(set) var runCount = 0
+    private let toolName: String
 
-    let definitions = [
-        ToolDefinition(
-            name: "lookup",
-            description: "Look up evidence",
-            parameters: .object(["type": .string("object")])
-        )
-    ]
+    init(toolName: String = "lookup") {
+        self.toolName = toolName
+    }
+
+    var definitions: [ToolDefinition] {
+        [
+            ToolDefinition(
+                name: toolName,
+                description: "Look up evidence",
+                parameters: .object(["type": .string("object")])
+            )
+        ]
+    }
 
     func run(_ call: ToolCall) async -> ToolCallResult {
         runCount += 1
@@ -93,10 +156,20 @@ private final class CountingToolRegistry: ToolRegistry {
 private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestBodies: [Data] = []
     nonisolated(unsafe) static var sendsBatchedCalls = false
+    /// Name the stub emits calls for, and how many rounds it keeps asking.
+    nonisolated(unsafe) static var toolName = "lookup"
+    nonisolated(unsafe) static var toolRounds = 3
 
-    static func reset(batched: Bool = false) {
+    static func reset(batched: Bool = false, documentReads: Int? = nil) {
         requestBodies = []
         sendsBatchedCalls = batched
+        if let documentReads {
+            toolName = "read_document"
+            toolRounds = documentReads
+        } else {
+            toolName = "lookup"
+            toolRounds = 3
+        }
     }
 
     static func session() -> URLSession {
@@ -123,7 +196,7 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
         let stream: String
         if Self.sendsBatchedCalls, requestNumber == 1 {
             let calls = (1...5).map { index in
-                "{\"index\":\(index - 1),\"id\":\"call_\(index)\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}"
+                "{\"index\":\(index - 1),\"id\":\"call_\(index)\",\"type\":\"function\",\"function\":{\"name\":\"\(Self.toolName)\",\"arguments\":\"{}\"}}"
             }.joined(separator: ",")
             stream = """
             data: {"choices":[{"delta":{"tool_calls":[\(calls)]},"finish_reason":"tool_calls"}]}
@@ -131,9 +204,9 @@ private final class ToolLoopBudgetProtocol: URLProtocol, @unchecked Sendable {
             data: [DONE]
 
             """
-        } else if !Self.sendsBatchedCalls, requestNumber <= 3 {
+        } else if !Self.sendsBatchedCalls, requestNumber <= Self.toolRounds {
             stream = """
-            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_\(requestNumber)","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+            data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_\(requestNumber)","type":"function","function":{"name":"\(Self.toolName)","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
 
             data: [DONE]
 

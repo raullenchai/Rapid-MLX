@@ -160,6 +160,24 @@ final class ChatViewModel {
     /// we give the model one tools-disabled round to synthesize what it has.
     private let maxToolExecutions: Int = 3
 
+    /// Separate budget for ``read_document``, spent instead of the general one.
+    ///
+    /// Reading a long document is inherently multi-call — page, page again,
+    /// grep, page around a hit — and charging that to ``maxToolExecutions``
+    /// would let a two-page read starve the search-and-verify budget the cap
+    /// exists to protect. The two are different risks: three bounds how much
+    /// the model may reach OUT and act, while paging a file the user already
+    /// attached reaches nothing new and costs only context and local time.
+    ///
+    /// Twelve slices of ``ReadDocumentTool/charBudget`` cover ~180k characters
+    /// read sequentially, and far more when the model greps first.
+    private let maxDocumentReads: Int = 12
+
+    /// Tools charged against ``maxDocumentReads`` rather than the general
+    /// budget. A set so the exemption is declared once instead of being
+    /// respelled as a name comparison at each dispatch site.
+    nonisolated static let documentToolNames: Set<String> = ["read_document"]
+
     nonisolated private static let toolBudgetSynthesisPreamble = """
     The tool-use budget for this turn is exhausted. Do not request or describe any more tool calls. Answer the user's question now using the evidence already present in the conversation. If that evidence is insufficient, say what remains uncertain.
     """
@@ -1722,10 +1740,12 @@ final class ChatViewModel {
     ///     a 400 with most chat templates).
     ///   * Re-attach the system row at index 0 if one was present.
     ///
-    /// Token estimate is ``content.count / 4`` per message —
-    /// OpenAI's published English rule-of-thumb. Order-of-magnitude
-    /// is enough; the goal is keeping quality high, not hitting a
-    /// precise count.
+    /// Token estimate is ``TokenEstimate/tokens(in:)`` — a per-script
+    /// weighted count. It replaced a flat ``content.count / 4``
+    /// (OpenAI's ENGLISH rule of thumb), which under-counted CJK
+    /// text by ~2.2x and so let this trim conclude an over-window
+    /// body fitted. Order-of-magnitude is still all that is needed;
+    /// being wrong per-script was not.
     static func trimMessagesForContextWindow(
         _ messages: [ChatMessage],
         contextWindow: Int?,
@@ -1747,10 +1767,11 @@ final class ChatViewModel {
         // are excluded here (token-count-per-image is model-specific
         // and not estimable from byte count alone).
         let perRowCost: (ChatMessage) -> Int = { msg in
-            let contentChars = msg.modelContent.count
-            let toolArgsChars = (msg.toolCalls ?? [])
-                .reduce(0) { $0 + $1.function.arguments.count }
-            return max(1, (contentChars + toolArgsChars) / 4)
+            let toolArgs = (msg.toolCalls ?? [])
+                .map(\.function.arguments)
+                .joined()
+            return max(1, TokenEstimate.tokens(in: msg.modelContent)
+                + (toolArgs.isEmpty ? 0 : TokenEstimate.tokens(in: toolArgs)))
         }
         let totalTokens = max(1, messages.reduce(0) { $0 + perRowCost($1) })
         if totalTokens <= budget { return messages }
@@ -2316,6 +2337,7 @@ final class ChatViewModel {
             }
         }
         var toolExecutionsLeft = maxToolExecutions
+        var documentReadsLeft = maxDocumentReads
         let toolExecutor = NativeToolCallExecutor(registry: tools)
         var appGroundingSources: [GroundingSource] = []
         var isFinalSynthesisRound = false
@@ -2330,7 +2352,10 @@ final class ChatViewModel {
         // a blank message.
         var draftBeforeCorrection: String?
 
-        while toolExecutionsLeft > 0 || isFinalSynthesisRound {
+        // Either budget can keep the loop alive: a model that has spent its
+        // general allowance may still have a document left to page through,
+        // and cutting it off there would strand it mid-read.
+        while toolExecutionsLeft > 0 || documentReadsLeft > 0 || isFinalSynthesisRound {
             // History for this request: everything BEFORE the streaming
             // placeholder. The placeholder itself is excluded because the
             // assistant hasn't said anything yet.
@@ -2350,10 +2375,22 @@ final class ChatViewModel {
             // ``servingAlias`` is the protected startup/default engine and is
             // no longer authoritative once secondary models are resident.
             let wireAlias = alias
-            let definitions = isFinalSynthesisRound ? [] : ChatViewModel.wireDefinitions(
-                forAlias: wireAlias,
-                enabled: enabledDefinitions
-            )
+            // Once the general budget is spent the surface NARROWS to the
+            // document tools rather than staying whole: the separate document
+            // allowance exists to finish reading an attachment, not to hand
+            // back a second general budget. Advertising a tool we would then
+            // refuse at dispatch would just burn a round on a rejected call.
+            var offered = enabledDefinitions
+            if toolExecutionsLeft == 0 {
+                offered = offered.filter { Self.documentToolNames.contains($0.function.name) }
+            }
+            // Nothing left to offer is the same state as a spent budget: enter
+            // the synthesis round so the model is told to answer, instead of
+            // being sent a toolless request it has no instruction to conclude.
+            if offered.isEmpty { isFinalSynthesisRound = true }
+            let definitions = isFinalSynthesisRound
+                ? []
+                : ChatViewModel.wireDefinitions(forAlias: wireAlias, enabled: offered)
             // Ambient anti-confabulation guidance, prepended for the wire body
             // only (never appended to the transcript) so the user's history
             // stays prose-only. Skipped when no tools are advertised and — the
@@ -2560,16 +2597,39 @@ final class ChatViewModel {
                     // Enforce the budget per requested call, and still emit a
                     // matching result for every skipped call so the transcript
                     // remains a valid assistant(tool_calls) → tool sequence.
-                    guard toolExecutionsLeft > 0 else {
-                        results.append(ToolCallResult(
-                            toolCallID: call.id,
-                            content: "Tool budget exhausted. Answer using the results already available.",
-                            isError: true,
-                            failureKind: .toolFailed
-                        ))
-                        continue
+                    //
+                    // Document reads draw on their own allowance so paging a
+                    // long attachment cannot consume the general budget (or be
+                    // blocked once that budget is gone).
+                    let isDocumentRead = Self.documentToolNames.contains(call.function.name)
+                    if isDocumentRead {
+                        guard documentReadsLeft > 0 else {
+                            results.append(ToolCallResult(
+                                toolCallID: call.id,
+                                content: "Document-read budget exhausted for this turn. Answer using the parts of the document already read, and say which parts you have not seen.",
+                                isError: true,
+                                failureKind: .toolFailed
+                            ))
+                            continue
+                        }
+                        documentReadsLeft -= 1
+                    } else {
+                        guard toolExecutionsLeft > 0 else {
+                            results.append(ToolCallResult(
+                                toolCallID: call.id,
+                                content: "Tool budget exhausted. Answer using the results already available.",
+                                isError: true,
+                                failureKind: .toolFailed
+                            ))
+                            continue
+                        }
+                        toolExecutionsLeft -= 1
                     }
-                    toolExecutionsLeft -= 1
+                    // The executor is the single dispatch boundary: it refuses
+                    // any tool that was not advertised this round (a malformed
+                    // model can emit a tool_call for a tool we never offered)
+                    // and normalises the arguments against the advertised
+                    // schema before running it.
                     let r = await toolExecutor.execute(call, advertised: definitions)
                     results.append(r)
                     if call.function.name == "web_search" {
@@ -2604,7 +2664,11 @@ final class ChatViewModel {
                 }
                 // Open the next assistant placeholder and loop.
                 currentPlaceholder = appendMessage(ChatMessage(role: .assistant, status: .streaming))
-                if toolExecutionsLeft == 0 {
+                // Both budgets gone means nothing can be offered next round.
+                // The top of the loop reaches the same conclusion from an empty
+                // `offered`; setting it here too keeps the exhausted case
+                // explicit rather than implied by a filter result.
+                if toolExecutionsLeft == 0 && documentReadsLeft == 0 {
                     isFinalSynthesisRound = true
                 }
             }

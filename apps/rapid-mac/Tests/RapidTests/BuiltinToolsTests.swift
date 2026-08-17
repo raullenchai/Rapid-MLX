@@ -5,10 +5,12 @@ import Testing
 /// Contracts for the built-in tool surface: what the registry exposes, what
 /// reaches the wire, and what is refused at dispatch.
 ///
-/// The three shipped tools (``web_search``, ``browse``, ``weather``) are all
+/// Three of the shipped tools (``web_search``, ``browse``, ``weather``) are
 /// network-facing, so the gates below are load-bearing rather than cosmetic:
 /// a tool stripped from the request body can STILL be named by a malformed
 /// model, and only the dispatch-side refusal stops it running.
+/// ``read_document`` reaches no network and no path — only documents the user
+/// attached — but is held to the same dispatch contract.
 @MainActor
 @Suite("Built-in tools")
 final class BuiltinToolsTests {
@@ -32,10 +34,10 @@ final class BuiltinToolsTests {
 
     // MARK: - Registry surface
 
-    @Test("Registry exposes exactly web_search, browse, and weather")
+    @Test("Registry exposes exactly web_search, browse, weather, and read_document")
     func registryDefinitions() {
         let names = makeRegistry().definitions.map { $0.function.name }
-        #expect(names == ["web_search", "browse", "weather"])
+        #expect(names == ["web_search", "browse", "weather", "read_document"])
     }
 
     @Test("An unknown tool name returns an error result naming what IS available")
@@ -98,11 +100,13 @@ final class BuiltinToolsTests {
 
     @Test("A tool toggled off is stripped from the definitions sent to the model")
     func disabledToolIsStrippedFromWire() {
-        let vm = ChatViewModel(tools: makeRegistry(), toolDefaults: freshDefaults())
-        #expect(vm.enabledDefinitions.count == 3)
+        let registry = makeRegistry()
+        let total = registry.definitions.count
+        let vm = ChatViewModel(tools: registry, toolDefaults: freshDefaults())
+        #expect(vm.enabledDefinitions.count == total)
         vm.setToolEnabled("browse", false)
         #expect(!vm.enabledDefinitions.contains { $0.function.name == "browse" })
-        #expect(vm.enabledDefinitions.count == 2)
+        #expect(vm.enabledDefinitions.count == total - 1)
     }
 
     @Test("Tool toggles persist across a fresh view model on the same defaults")

@@ -1,0 +1,468 @@
+import AppKit
+import Foundation
+import PDFKit
+import Testing
+@testable import Rapid
+
+/// Contracts for ``read_document`` — the tool that makes a large attachment
+/// analyzable without forcing its whole text into the prompt.
+///
+/// The security-relevant assertion is ``unknownDocumentIsRefused``: the tool
+/// takes no path, so the ONLY documents it can reach are those the user
+/// attached and Rapid cached. Everything else is a miss.
+@MainActor
+@Suite("read_document")
+struct ReadDocumentToolTests {
+    /// Memory-only cache so tests never touch the real Application Support tree.
+    private func freshCache() -> DocumentContentCache {
+        DocumentContentCache(diskDirectory: nil)
+    }
+
+    private func store(
+        _ text: String,
+        filename: String = "report.pdf",
+        pageCount: Int? = nil,
+        outline: [DocumentContentCache.OutlineNode] = [],
+        in cache: DocumentContentCache
+    ) -> UUID {
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(
+            filename: filename,
+            text: text,
+            pageCount: pageCount,
+            outline: outline
+        ))
+        return id
+    }
+
+    private func run(
+        _ arguments: [String: Any],
+        cache: DocumentContentCache
+    ) async -> ToolCallResult {
+        let data = try! JSONSerialization.data(withJSONObject: arguments)
+        return await ReadDocumentTool.run(
+            arguments: String(data: data, encoding: .utf8)!,
+            cache: cache
+        )
+    }
+
+    private func payload(_ result: ToolCallResult) throws -> [String: Any] {
+        try #require(
+            JSONSerialization.jsonObject(with: Data(result.content.utf8)) as? [String: Any]
+        )
+    }
+
+    // MARK: - Reach
+
+    @Test("A document id that was never attached is refused, not looked up")
+    func unknownDocumentIsRefused() async throws {
+        let cache = freshCache()
+        _ = store("attached content", in: cache)
+
+        // A well-formed id nobody registered: the cache is the whole namespace,
+        // so this can only miss.
+        let result = await run(["document_id": UUID().uuidString], cache: cache)
+        #expect(result.isError)
+        #expect(result.content.contains("no attached document"))
+        #expect(!result.content.contains("attached content"))
+    }
+
+    @Test("A path-shaped argument is rejected — this tool addresses no filesystem")
+    func pathArgumentIsRejected() async throws {
+        let cache = freshCache()
+        let result = await run(["document_id": "/etc/passwd"], cache: cache)
+        #expect(result.isError)
+        #expect(result.content.contains("not a valid document id"))
+    }
+
+    // MARK: - Sequential paging
+
+    @Test("A short document is returned whole with no continuation cursor")
+    func shortDocumentHasNoNextOffset() async throws {
+        let cache = freshCache()
+        let id = store("all of it", filename: "notes.txt", in: cache)
+
+        let json = try payload(await run(["document_id": id.uuidString], cache: cache))
+        #expect(json["content"] as? String == "all of it")
+        #expect(json["has_more"] as? Bool == false)
+        #expect(json["next_offset"] == nil)
+        #expect(json["filename"] as? String == "notes.txt")
+    }
+
+    @Test("A long document pages through its whole text via next_offset")
+    func paginationCoversEveryCharacter() async throws {
+        let cache = freshCache()
+        // Line-broken so the boundary snap has somewhere to land.
+        let text = (0..<4000).map { "line \($0) of the document" }.joined(separator: "\n")
+        let id = store(text, in: cache)
+
+        var assembled = ""
+        var offset = 0
+        var calls = 0
+        while true {
+            calls += 1
+            #expect(calls < 100)   // guards an infinite loop if the cursor stalls
+            let json = try payload(
+                await run(["document_id": id.uuidString, "offset": offset], cache: cache)
+            )
+            assembled += try #require(json["content"] as? String)
+            #expect(json["total_chars"] as? Int == text.count)
+            guard json["has_more"] as? Bool == true else { break }
+            let next = try #require(json["next_offset"] as? Int)
+            #expect(next > offset)   // a cursor that doesn't advance would hang the model
+            offset = next
+        }
+        // The point of the whole feature: nothing is lost past the preview.
+        #expect(assembled == text)
+        #expect(calls > 1)
+    }
+
+    @Test("An offset past the end reports the end instead of erroring")
+    func offsetPastEndIsNotAnError() async throws {
+        let cache = freshCache()
+        let id = store("short", in: cache)
+
+        let json = try payload(
+            await run(["document_id": id.uuidString, "offset": 9_000], cache: cache)
+        )
+        #expect(!(json["has_more"] as? Bool ?? true))
+        #expect((json["note"] as? String)?.contains("past the end") == true)
+    }
+
+    // MARK: - Grep
+
+    @Test("grep returns matching passages with reusable offsets")
+    func grepFindsPassagesAndOffsets() async throws {
+        let cache = freshCache()
+        let filler = String(repeating: "padding text\n", count: 3_000)
+        let text = filler + "The NET REVENUE for Q4 was 12.5M.\n" + filler
+        let id = store(text, in: cache)
+
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "net revenue"], cache: cache)
+        )
+        #expect(json["match_count"] as? Int == 1)
+        let passages = try #require(json["passages"] as? [[String: Any]])
+        #expect(passages.count == 1)
+        // Case-insensitive by default, and the surrounding context comes along.
+        #expect((passages[0]["text"] as? String)?.contains("NET REVENUE for Q4") == true)
+
+        // The reported offset must be reusable as a sequential cursor.
+        let offset = try #require(passages[0]["offset"] as? Int)
+        let follow = try payload(
+            await run(["document_id": id.uuidString, "offset": offset], cache: cache)
+        )
+        #expect((follow["content"] as? String)?.contains("NET REVENUE") == true)
+    }
+
+    @Test("grep offsets stay correct for non-ASCII text")
+    func grepOffsetsSurviveMultibyteText() async throws {
+        let cache = freshCache()
+        // NSRegularExpression reports UTF-16 ranges while pagination counts
+        // Characters. An emoji (surrogate pair) plus CJK text would desync the
+        // two if the conversion were skipped, handing back an unusable cursor.
+        let text = String(repeating: "文档内容 🎉\n", count: 500)
+            + "TARGET LINE\n"
+            + String(repeating: "更多内容 🎉\n", count: 500)
+        let id = store(text, in: cache)
+
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "TARGET LINE"], cache: cache)
+        )
+        let passages = try #require(json["passages"] as? [[String: Any]])
+        let offset = try #require(passages[0]["offset"] as? Int)
+
+        let follow = try payload(
+            await run(["document_id": id.uuidString, "offset": offset], cache: cache)
+        )
+        #expect((follow["content"] as? String)?.contains("TARGET LINE") == true)
+    }
+
+    @Test("A pattern with no match says so instead of returning the first page")
+    func grepMissIsExplicit() async throws {
+        let cache = freshCache()
+        let id = store("alpha beta gamma", in: cache)
+
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "omega"], cache: cache)
+        )
+        #expect(json["match_count"] as? Int == 0)
+        #expect(json["passages"] == nil)
+        #expect((json["note"] as? String)?.contains("No match") == true)
+    }
+
+    @Test("An invalid regular expression is a recoverable error, not a crash")
+    func invalidRegexIsRecoverable() async throws {
+        let cache = freshCache()
+        let id = store("content", in: cache)
+
+        let result = await run(["document_id": id.uuidString, "grep": "([unclosed"], cache: cache)
+        #expect(result.isError)
+        #expect(result.content.contains("invalid regular expression"))
+    }
+
+    @Test("A pattern matching everywhere stays within the character budget")
+    func grepIsBudgeted() async throws {
+        let cache = freshCache()
+        let id = store(String(repeating: "a\n", count: 100_000), in: cache)
+
+        let json = try payload(
+            await run(["document_id": id.uuidString, "grep": "a"], cache: cache)
+        )
+        let passages = try #require(json["passages"] as? [[String: Any]])
+        #expect(passages.count <= ReadDocumentTool.maxGrepMatches)
+        let emitted = passages.reduce(0) { $0 + (($1["text"] as? String)?.count ?? 0) }
+        #expect(emitted <= ReadDocumentTool.charBudget)
+    }
+
+    // MARK: - Cache round-trip
+
+    @Test("An attached document is registered so read_document can reach it")
+    func attachmentRegistersFullTextForTheTool() async throws {
+        let cache = freshCache()
+        let body = (0..<5_000).map { "row \($0)" }.joined(separator: "\n")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("txt")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(body.utf8).write(to: url)
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        // The prompt carries only a preview, but the whole document is reachable.
+        #expect(attachment.hasUnshownContent)
+        #expect(attachment.extractedText.count < body.count)
+        #expect(attachment.totalCharacterCount == body.count)
+        #expect(attachment.promptText.contains("read_document"))
+        #expect(attachment.promptText.contains(attachment.id.uuidString))
+
+        let json = try payload(
+            await run(["document_id": attachment.id.uuidString, "grep": "row 4999"], cache: cache)
+        )
+        #expect(json["match_count"] as? Int == 1)
+    }
+
+    // MARK: - Deferred extraction
+
+    /// Multi-page PDF whose every page carries findable text.
+    private func makePDF(pages: Int) -> Data {
+        let doc = PDFDocument()
+        for index in 0..<pages {
+            let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+            view.string = "PAGEMARK\(index) content for page \(index)."
+            guard let page = PDFDocument(data: view.dataWithPDF(inside: view.bounds))?.page(at: 0) else {
+                continue
+            }
+            doc.insert(page, at: doc.pageCount)
+        }
+        return doc.dataRepresentation() ?? Data()
+    }
+
+    private func writePDF(pages: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("pdf")
+        try makePDF(pages: pages).write(to: url)
+        return url
+    }
+
+    @Test("Attaching a long PDF does not extract every page up front")
+    func attachExtractsOnlyThePreviewWindow() async throws {
+        // The perceived-stall fix: extracting all 302 pages of a real book
+        // cost ~1.9s while the send button was disabled. Only the eager
+        // window is read synchronously; the rest lands in the background.
+        let cache = freshCache()
+        let url = try writePDF(pages: 40)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.pageCount == 40)
+        // Page count comes from PDFDocument, which is cheap; the tail's TEXT
+        // is not read yet, so the total length is honestly unknown.
+        #expect(attachment.totalCharacterCount == nil)
+        #expect(attachment.hasUnshownContent)
+        // The envelope must not print "nil" at the model.
+        #expect(!attachment.promptText.contains("nil"))
+        #expect(attachment.promptText.contains("read_document"))
+    }
+
+    @Test("read_document waits for the background pass and sees the last page")
+    func deferredExtractionCompletesForTheTool() async throws {
+        let cache = freshCache()
+        let url = try writePDF(pages: 40)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        // Text from beyond the eager window is reachable: the tool blocks on
+        // the in-flight extraction rather than reporting a missing document.
+        let json = try payload(
+            await run(["document_id": attachment.id.uuidString, "grep": "PAGEMARK39"], cache: cache)
+        )
+        #expect(json["match_count"] as? Int == 1)
+    }
+
+    @Test("A short PDF is complete on attach with no pending work")
+    func shortPDFNeedsNoBackgroundPass() async throws {
+        // Below the eager window nothing is deferred, so the total is known
+        // immediately and behaviour is exactly as before the split.
+        let cache = freshCache()
+        let url = try writePDF(pages: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.pageCount == 3)
+        #expect(attachment.totalCharacterCount != nil)
+        #expect(!attachment.hasUnshownContent)
+    }
+
+    // MARK: - Outline
+
+    @Test("Outline mode returns the bookmark map in a single call")
+    func outlineFromBookmarks() async throws {
+        // The whole point: one call yields the shape of a document that would
+        // take ~33 sequential slices to read, and each row carries an offset
+        // the model can read from next.
+        let cache = freshCache()
+        let id = store(
+            "[Page 1]\nIntro body\n\n[Page 2]\nChapter body",
+            pageCount: 2,
+            outline: [
+                .init(title: "Introduction", depth: 0, page: 1, offset: 0),
+                .init(title: "Background", depth: 1, page: 1, offset: 9),
+                .init(title: "Chapter 1", depth: 0, page: 2, offset: 21),
+            ],
+            in: cache
+        )
+
+        let json = try payload(await run(["document_id": id.uuidString, "mode": "outline"], cache: cache))
+        #expect(json["outline_source"] as? String == "bookmarks")
+        let rows = try #require(json["outline"] as? [[String: Any]])
+        #expect(rows.count == 3)
+        #expect(rows[0]["title"] as? String == "Introduction")
+        #expect(rows[1]["depth"] as? Int == 1)
+        #expect(rows[2]["offset"] as? Int == 21)
+        #expect(json["total_pages"] as? Int == 2)
+    }
+
+    @Test("An outline offset can be read back as a sequential cursor")
+    func outlineOffsetsAreReadable() async throws {
+        let cache = freshCache()
+        let body = "[Page 1]\n" + String(repeating: "front matter\n", count: 100) + "TARGET SECTION starts here"
+        let target = body.distance(from: body.startIndex, to: body.range(of: "TARGET SECTION")!.lowerBound)
+        let id = store(
+            body,
+            outline: [.init(title: "Target", depth: 0, page: 1, offset: target)],
+            in: cache
+        )
+
+        let outline = try payload(await run(["document_id": id.uuidString, "mode": "outline"], cache: cache))
+        let rows = try #require(outline["outline"] as? [[String: Any]])
+        let offset = try #require(rows[0]["offset"] as? Int)
+
+        let read = try payload(await run(["document_id": id.uuidString, "offset": offset], cache: cache))
+        #expect((read["content"] as? String)?.hasPrefix("TARGET SECTION") == true)
+    }
+
+    @Test("A large outline is trimmed by depth, keeping the document's shape")
+    func outlineIsBudgetedByDepth() async throws {
+        // Dropping the deepest levels first keeps every chapter visible. The
+        // alternative — truncating in order — would return the first 40
+        // sub-sub-sections of chapter one and nothing after it.
+        let cache = freshCache()
+        var nodes: [DocumentContentCache.OutlineNode] = []
+        for chapter in 0..<40 {
+            nodes.append(.init(title: "Chapter \(chapter) of the document", depth: 0, page: chapter + 1, offset: chapter * 100))
+            for section in 0..<20 {
+                nodes.append(.init(title: "Section \(chapter).\(section) with a reasonably long heading", depth: 1, page: chapter + 1, offset: chapter * 100 + section))
+            }
+        }
+        let id = store("body", outline: nodes, in: cache)
+
+        let json = try payload(await run(["document_id": id.uuidString, "mode": "outline"], cache: cache))
+        let rows = try #require(json["outline"] as? [[String: Any]])
+        #expect(rows.count < nodes.count)
+        #expect(json["entries_omitted"] as? Int == nodes.count - rows.count)
+        // Every top-level chapter survived; only the depth-1 rows went.
+        #expect(rows.allSatisfy { ($0["depth"] as? Int) == 0 })
+        #expect(rows.count == 40)
+    }
+
+    @Test("A document without bookmarks gets an inferred outline")
+    func outlineFallsBackToInference() async throws {
+        let cache = freshCache()
+        let body = """
+        [Page 1]
+        第 1 章 开始
+        正文内容在这里，这一行不是标题因为它足够长而且没有编号前缀。
+        1.1 第一节标题
+        更多正文。
+        第 2 章 继续
+        2.1 另一节
+        """
+        let id = store(body, in: cache)
+
+        let json = try payload(await run(["document_id": id.uuidString, "mode": "outline"], cache: cache))
+        #expect(json["outline_source"] as? String == "inferred")
+        let titles = try #require(json["outline"] as? [[String: Any]]).compactMap { $0["title"] as? String }
+        #expect(titles.contains("第 1 章 开始"))
+        #expect(titles.contains("1.1 第一节标题"))
+        #expect(titles.contains("第 2 章 继续"))
+        // Prose must not be mistaken for a heading.
+        #expect(!titles.contains { $0.hasPrefix("正文内容") })
+        #expect((json["note"] as? String)?.contains("inferred") == true)
+    }
+
+    @Test("A document with no structure at all says so instead of returning nothing")
+    func outlineReportsAbsenceOfStructure() async throws {
+        let cache = freshCache()
+        let id = store("Just some prose with no headings whatsoever, running on for a while.", in: cache)
+
+        let json = try payload(await run(["document_id": id.uuidString, "mode": "outline"], cache: cache))
+        let rows = try #require(json["outline"] as? [[String: Any]])
+        #expect(rows.isEmpty)
+        #expect((json["note"] as? String)?.contains("no detectable section structure") == true)
+        // Not an error: "this document is flat" is a real answer.
+        #expect((json["total_chars"] as? Int) ?? 0 > 0)
+    }
+
+    @Test("A real PDF's bookmarks survive attach and the Codable round trip")
+    func outlineSurvivesAttachAndPersistence() async throws {
+        let cache = freshCache()
+        let url = try writePDF(pages: 5)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let entry = try #require(cache.get(attachment.id))
+        // The generated fixture carries no bookmarks, so the cached outline is
+        // empty — and must round-trip as empty rather than failing to decode.
+        let encoded = try JSONEncoder().encode(entry)
+        let decoded = try JSONDecoder().decode(DocumentContentCache.Entry.self, from: encoded)
+        #expect(decoded.outline == entry.outline)
+        #expect(decoded.text == entry.text)
+    }
+
+    @Test("An entry stored before outline support still decodes")
+    func outlineIsBackwardCompatible() throws {
+        // Older cache files have no "outline" key; a required field would make
+        // every previously-cached document undecodable after upgrade.
+        let legacy = #"{"filename":"old.pdf","text":"body","pageCount":3}"#
+        let decoded = try JSONDecoder().decode(
+            DocumentContentCache.Entry.self,
+            from: Data(legacy.utf8)
+        )
+        #expect(decoded.outline.isEmpty)
+        #expect(decoded.text == "body")
+        #expect(decoded.pageCount == 3)
+    }
+
+    @Test("The attachment envelope steers whole-document questions to outline")
+    func envelopePointsAtOutlineMode() async throws {
+        let cache = freshCache()
+        let url = try writePDF(pages: 40)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        let prompt = attachment.promptText
+        #expect(prompt.contains("mode=\"outline\""))
+        #expect(prompt.contains("AS A WHOLE"))
+    }
+}
