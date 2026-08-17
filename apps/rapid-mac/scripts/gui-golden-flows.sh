@@ -1213,7 +1213,14 @@ flow_download_progress() {
     press "$OUT/chooser.json" Quickstart.Footer.Primary "$OUT/review-open.json"
     wait_identifier Quickstart.Review.Alias "$OUT/review.json"
     assert_tree_text "$OUT/review.json" "Download & start"
-    press "$OUT/review.json" Quickstart.Footer.Primary "$OUT/download-start.json"
+    # AXPress is normally immediate, but AppKit can synchronously hold the
+    # accessibility action until the pull task yields.  In the full suite the
+    # fake pull can therefore finish before a synchronous `press` returns,
+    # making the harness miss the exact in-flight state it exists to verify.
+    # Drive the action concurrently with observation, then still require the
+    # action itself to have succeeded.
+    press "$OUT/review.json" Quickstart.Footer.Primary "$OUT/download-start.json" &
+    local press_pid=$!
 
     local observed=0
     for _ in {1..40}; do
@@ -1225,6 +1232,8 @@ flow_download_progress() {
         fi
         sleep 0.1
     done
+    wait "$press_pid" \
+        || die "AXPress failed while starting the download-progress fixture"
     [[ "$observed" == 1 ]] \
         || die "overrun fixture never reached a truthful bytes-downloaded state"
     if jq -e '(.data.ui_elements | tostring)

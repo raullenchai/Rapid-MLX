@@ -83,6 +83,10 @@ AXApplication title="Rapid-MLX"
             AXRadioButton desc="TurboQuant V4" value=bool:false enabled=true
             AXRadioButton desc="TurboQuant K8V4" value=bool:false enabled=true
           AXStaticText value=text enabled=true
+          AXHeading desc="Speculative decoding, Drafts candidate tokens and verifies them with the full model." enabled=true
+          AXStaticText value=text enabled=false
+          AXCheckBox subrole=AXSwitch id="Settings.Performance.SpeculativeDecoding.Enabled" value=bool:false enabled=false
+          AXStaticText value=text enabled=true
           AXHeading desc="Prefix cache, Reuses computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts." enabled=true
           AXGroup id="Settings.Performance.PrefixCache" desc="Prefix cache" enabled=true
             AXButton id="Settings.Performance.Prefix.Default" desc="Engine default" enabled=true
