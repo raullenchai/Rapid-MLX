@@ -150,9 +150,9 @@ def _warn_if_mtp_quantization_mismatch(
 
     logger.warning(
         "[mtp.inject] MTP sidecar quantization (%d-bit, group_size=%d) "
-        "differs from base model (%d-bit, group_size=%d): mixed pairing "
-        "has been measured slower than no speculation (#1258). Matched "
-        "precision is recommended.",
+        "differs from base model (%d-bit, group_size=%d): pairing effects "
+        "are model-dependent: slower than no speculation on Qwen3.6 "
+        "(#1258), faster on Qwen3.8-27B. Benchmark your pairing.",
         sidecar_quant["bits"],
         sidecar_quant["group_size"],
         base_quant["bits"],

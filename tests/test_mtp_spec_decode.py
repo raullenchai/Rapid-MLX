@@ -1648,9 +1648,9 @@ def test_mtp_quantization_pairing_warning_for_mismatch_only(caplog):
 
     assert [record.getMessage() for record in caplog.records] == [
         "[mtp.inject] MTP sidecar quantization (4-bit, group_size=64) "
-        "differs from base model (8-bit, group_size=64): mixed pairing "
-        "has been measured slower than no speculation (#1258). Matched "
-        "precision is recommended."
+        "differs from base model (8-bit, group_size=64): pairing effects "
+        "are model-dependent: slower than no speculation on Qwen3.6 "
+        "(#1258), faster on Qwen3.8-27B. Benchmark your pairing."
     ]
 
     caplog.clear()
