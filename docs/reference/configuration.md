@@ -207,6 +207,11 @@ Pair each head with a base of the same size class: `Qwen3.6-27B-MTP-4bit`
 with a `qwen3.6-27b-*` base, and `Qwen3.6-35B-A3B-MTP-4bit` with a
 `qwen3.6-35b-*` base.
 
+Match the sidecar and base precision for performance. In
+[#1258](https://github.com/raullenchai/Rapid-MLX/issues/1258), a matched 4-bit
+base / 4-bit sidecar improved throughput by 14%, while a mixed 8-bit base /
+4-bit sidecar reduced throughput by 8% versus no speculation.
+
 ### MCP Options
 
 | Option | Description | Default |

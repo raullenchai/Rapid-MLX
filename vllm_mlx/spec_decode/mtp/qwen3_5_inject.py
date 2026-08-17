@@ -141,6 +141,25 @@ def _detect_base_quantization(inner: Any) -> dict | None:
     return None
 
 
+def _warn_if_mtp_quantization_mismatch(
+    base_quant: dict | None, sidecar_quant: dict | None
+) -> None:
+    """Recommend matched MTP precision when both quantizations are known."""
+    if base_quant is None or sidecar_quant is None or base_quant == sidecar_quant:
+        return
+
+    logger.warning(
+        "[mtp.inject] MTP sidecar quantization (%d-bit, group_size=%d) "
+        "differs from base model (%d-bit, group_size=%d): mixed pairing "
+        "has been measured slower than no speculation (#1258). Matched "
+        "precision is recommended.",
+        sidecar_quant["bits"],
+        sidecar_quant["group_size"],
+        base_quant["bits"],
+        base_quant["group_size"],
+    )
+
+
 # MLX affine quantization's practical value set. Every mlx-community
 # checkpoint (base + MTP sidecar alike) uses one of these — the shipped
 # Qwen3.6 pairing is 4-/8-bit at group_size 64. A sidecar whose tensors
@@ -746,6 +765,9 @@ def inject_mtp_support(
             len(expected_keys),
             weights_file.name,
             f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
+        )
+        _warn_if_mtp_quantization_mismatch(
+            _detect_base_quantization(inner), sidecar_quant
         )
     else:
         # No sidecar.
