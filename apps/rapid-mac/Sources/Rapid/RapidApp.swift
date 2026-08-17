@@ -414,6 +414,11 @@ struct RapidApp: App {
                 .environment(appearance)
                 .environment(settingsRouter)
                 .environment(server)
+                // Settings → Developer resets the wizard, and SwiftUI traps
+                // rather than warns when an @Environment observable is
+                // missing — so the Settings scene needs this even though the
+                // panel that reads it only exists in a debug build.
+                .environment(quickstart)
                 .environment(downloads)
                 .environment(updater)
                 .environment(sparkleUpdater)

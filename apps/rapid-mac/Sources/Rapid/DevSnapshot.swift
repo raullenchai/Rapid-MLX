@@ -610,6 +610,10 @@ enum DevSnapshot {
                     .environment(appearance)
                     .environment(settingsRouter)
                     .environment(server)
+                    // The capture loop walks Category.allCases, which in a
+                    // debug build includes Developer — and that panel reads
+                    // the coordinator.
+                    .environment(quickstart)
                     .environment(downloads)
                     .environment(updater)
                     .environment(snapshotSparkleUpdater)

@@ -817,6 +817,19 @@ final class ServerManager {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    /// Drop the last-served alias without going through a stop.
+    ///
+    /// ``stop()`` clears it, but only along the path that actually terminates
+    /// a child — `guard child != nil else { return }` means an idle app's
+    /// Stop is a no-op and the alias survives. That is right for Stop and
+    /// wrong for re-onboarding, which has to reach a state the wizard
+    /// considers fresh whether or not a model happened to be running
+    /// (``QuickstartCoordinator.isEligible`` gates on this alias
+    /// independently of its own flags). See ``ReonboardingReset``.
+    nonisolated static func forgetLastServedAlias(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: lastServedAliasKey)
+    }
+
     /// Bring the embedded child to ``.ready(alias)`` regardless of
     /// where the state machine currently sits.
     ///

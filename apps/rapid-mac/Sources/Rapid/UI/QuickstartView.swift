@@ -877,11 +877,18 @@ Open the picker any time to switch models.
         UserDefaults.standard.set(true, forKey: Self.storageKey)
     }
 
-    /// Test-only reset so the suite can drive the state machine from
-    /// scratch in every case without leaking flag state across runs.
-    /// NOT exposed in any production UI; the design contract is that
-    /// Quickstart is one-shot per Mac.
-    internal func _testingReset() {
+    /// Put the wizard back to the state a Mac has before it has ever run.
+    ///
+    /// Quickstart is one-shot per Mac by design, and no shipping UI offers a
+    /// way back — the only callers are the test suite, ``DevSnapshot``, and
+    /// the debug-only Settings → Developer panel, which exists so that flow
+    /// can be rehearsed without faking `$HOME`.
+    ///
+    /// This does NOT clear `rapid.serve.lastAlias`, which gates the wizard
+    /// independently of these flags (see ``isEligible``). Callers wanting a
+    /// true first-run state must stop the server too; ``ReonboardingReset``
+    /// does exactly that.
+    internal func resetForReonboarding() {
         done = false
         phase = .idle
         stage = .welcome
@@ -900,6 +907,11 @@ Open the picker any time to switch models.
         UserDefaults.standard.removeObject(forKey: Self.awaitingSeedAliasKey)
         UserDefaults.standard.removeObject(forKey: Self.pendingReadyAliasKey)
     }
+
+    /// The name 44 call sites in the suite and ``DevSnapshot`` already use.
+    /// Kept as an alias rather than renamed at every site, so this change
+    /// stays reviewable as "the reset grew a second caller".
+    internal func _testingReset() { resetForReonboarding() }
 
     /// Drop the record of an unconfirmed Ready flow. Idempotent.
     func clearPendingReady() {

@@ -87,6 +87,13 @@ struct SettingsView: View {
         /// Rapid-MLX Desktop app updates. The .app self-update is the
         /// only correct way to bump the bundled engine.
         case app
+        #if DEBUG
+        /// Debug builds only — state-erasing actions for rehearsing flows
+        /// that are one-shot per Mac, chiefly Quickstart. Compiled out of
+        /// release entirely rather than hidden at the rail, so the copy and
+        /// the erase logic cannot ship even unreachable.
+        case developer
+        #endif
 
         var id: String { rawValue }
         var title: String {
@@ -99,6 +106,9 @@ struct SettingsView: View {
             case .appearance: return "Appearance"
             case .privacy: return "Privacy"
             case .app: return "App"
+            #if DEBUG
+            case .developer: return "Developer"
+            #endif
             }
         }
         var iconName: String {
@@ -111,6 +121,9 @@ struct SettingsView: View {
             case .appearance: return "paintpalette.fill"
             case .privacy: return "lock.shield.fill"
             case .app: return "app.badge.fill"
+            #if DEBUG
+            case .developer: return "hammer.fill"
+            #endif
             }
         }
     }
@@ -475,6 +488,10 @@ struct SettingsView: View {
             privacyPanel
         case .app:
             appPanel
+        #if DEBUG
+        case .developer:
+            SettingsDeveloperPanel()
+        #endif
         }
     }
 
