@@ -10,22 +10,23 @@ instead of a whole-object ``%json``. These tests prove that path WITHOUT a model
 or a decode loop:
 
   * ``build_tool_lark`` golden output for ``arg_style="xml"`` (function/parameter
-    frame, string values as the LAZY ``xml_param_value`` rule, enum alternation,
-    ``%json`` scalars with ``$defs``/``$ref`` propagation, required vs optional
-    ``( )?``);
-  * GAP #1 (the E3 fix): a string parameter value containing a literal ``<``
-    (a ``code`` arg such as ``a < b``, ``<html>...``, C++ ``vector<int>``) is
-    ACCEPTED and terminates at the real ``</parameter>`` — the pilot's
-    ``XMLSTR: /[^<]*/`` terminal SILENTLY TRUNCATED such a value at the first
-    ``<``. The fix ports llguidance's own ``[lazy]`` lexeme idiom (the one
-    ``StructTag.to_grammar`` uses for "text until a tag"), matching XGrammar's
-    ``qwen_xml`` semantics: value = any text up to the FIRST ``</parameter>``;
+    frame, enum alternation, ``%json`` values with ``$defs``/``$ref``
+    propagation, required vs optional ``( )?``);
+  * the #1996 boundary: a tool with a TOP-LEVEL free-form string is not
+    constrained at all. The value has no delimiter of its own and this wire's
+    close is ordinary text, so no terminal can be lexed against it — the value
+    rule this file once tested (first ``/[^<]*/``, then a lazy lexeme, finally
+    ``%json``) has no correct form, and forcing ``%json`` silently truncated real
+    output. Enforcement therefore drives ``XML_TOOLS_CONSTRAINABLE`` (enum +
+    scalars + frame, no free string); ``test_qwen3coder_xml_freeform_string_1996``
+    owns the opt-out itself;
   * grammar ENFORCEMENT via llguidance ``LLMatcher`` on the REAL Qwen3-Coder
     tokenizer: a valid XML call is accepted + terminal, prose before a forced
     call is masked at token 0, and a bad enum / off-schema scalar is rejected;
-  * ROUND-TRIP: the ``qwen3_coder_xml`` parser parses the constrained wire back
-    to ``{name, arguments}`` with correct types (str-with-``<`` / int / bool /
-    nested object);
+  * ROUND-TRIP: the ``qwen3_coder_xml`` parser parses the wire back to
+    ``{name, arguments}`` with correct types (str / int / bool / nested object).
+    The PARSER still accepts both the raw and the quoted surface — only the
+    grammar stopped forcing the quoted one;
   * REGRESSION GUARD: an ``arg_style="json"`` (hermes/qwen/harmony) build is
     byte-identical to before — it never emits the XML string constructs
     (``XML_PARAM_TEXT`` / ``xml_param_value``) and still uses ``%json``.
@@ -55,8 +56,10 @@ _TOKENIZER_MODEL = "mlx-community/Qwen3-Coder-Next-4bit"
 _TOKENIZER_REVISION = "7b9321eabb85ce79625cac3f61ea691e4ea984b5"
 
 # A representative XML tool: required string + required enum + optional int +
-# optional bool — exercises every ``_emit_xml_param_value`` branch (lazy string
-# rule, enum alternation, ``%json`` scalar) AND required-vs-optional framing.
+# optional bool — exercises every ``_emit_xml_param_value`` branch AND
+# required-vs-optional framing at the EMITTER level. Since #1996 its top-level
+# ``code`` string means the GUARD opts it out, so it drives the golden/emitter
+# tests and the opt-out test, never the enforcement tests.
 XML_TOOLS = [
     {
         "name": "run_code",
@@ -69,6 +72,28 @@ XML_TOOLS = [
                 "verbose": {"type": "boolean"},
             },
             "required": ["code", "language"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+# The same tool WITHOUT a top-level free-form string. Since #1996 that string is
+# what opts a tool out of grammar entirely (the wire cannot frame a bare value —
+# see ``test_qwen3coder_xml_freeform_string_1996.py``), so every ENFORCEMENT test
+# below drives this shape instead: it still exercises the required enum, the
+# optional ``%json`` scalars, and the call frame — everything the grammar can
+# still constrain.
+XML_TOOLS_CONSTRAINABLE = [
+    {
+        "name": "run_code",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "language": {"type": "string", "enum": ["python", "cpp"]},
+                "timeout": {"type": "integer"},
+                "verbose": {"type": "boolean"},
+            },
+            "required": ["language"],
             "additionalProperties": False,
         },
     },
@@ -100,11 +125,10 @@ XML_REF_TOOL = [
 ]
 
 
-# A tool whose ONLY property is a ``$ref`` resolving to a STRING (F3). Before the
-# fix, ``$defs`` were attached only AFTER the string-vs-``%json`` decision, so this
-# ``$ref`` fell through to ``%json`` and emitted QUOTED JSON the parser returned
-# with quotes preserved (``"\\"Paris\\""``). The fix resolves the ``$ref`` FIRST so
-# it takes the RAW lazy path and round-trips WITHOUT quotes.
+# A tool whose ONLY property is a ``$ref`` resolving to a STRING (F3). The fix
+# resolves the ``$ref`` BEFORE the string-vs-``%json`` decision, so it is treated
+# exactly like an inline string. Since #1996 that means it opts OUT of grammar —
+# resolution order still decides, it just now decides opt-out.
 XML_REF_STRING_TOOL = [
     {
         "name": "geo",
@@ -517,6 +541,20 @@ def _wire(code, *, language="python", timeout=None, verbose=None):
     return s
 
 
+def _wire_c(*, language="python", timeout=None, verbose=None):
+    """The ``XML_TOOLS_CONSTRAINABLE`` wire — same frame, no free-form string."""
+    s = (
+        "<tool_call>\n<function=run_code>\n"
+        f"<parameter=language>\n{language}\n</parameter>\n"
+    )
+    if timeout is not None:
+        s += f"<parameter=timeout>\n{timeout}\n</parameter>\n"
+    if verbose is not None:
+        s += f"<parameter=verbose>\n{verbose}\n</parameter>\n"
+    s += "</function>\n</tool_call>"
+    return s
+
+
 @_requires_llguidance
 def test_finding5_tokenizer_llguidance_integration_not_broken(tok):
     # FINDING 5: with llguidance importable AND the tokenizer loaded (cached), the
@@ -537,66 +575,36 @@ def test_finding5_tokenizer_llguidance_integration_not_broken(tok):
 
 @_requires_llguidance
 def test_xml_valid_call_accepted_and_terminates(tok, lltok):
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
+    grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
     assert grammar is not None
-    accepted, total, accepting = _consume(grammar, lltok, tok, _wire("print(1)"))
+    accepted, total, accepting = _consume(grammar, lltok, tok, _wire_c())
     assert accepted == total, f"valid XML call rejected ({accepted}/{total})"
     assert accepting, "valid complete XML call is not an accepting (terminal) state"
 
 
 @_requires_llguidance
-@pytest.mark.parametrize(
-    "code",
-    [
-        "a < b && c > d",
-        "<html><body>x</body></html>",
-        "vector<int> v",
-        "if (a < b) { return a; }",
-        "for (int i = 0; i < n; i++) x[i] <<= 1;",
-    ],
-)
-def test_xml_string_value_with_angle_bracket_is_accepted(code, tok, lltok):
-    # GAP #1 — the E3 fix. A ``code`` arg containing a literal ``<`` must be
-    # ACCEPTED in full and terminate at the real ``</parameter>``. The pilot's
-    # ``/[^<]*/`` terminal masked the first ``<`` and SILENTLY TRUNCATED here.
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
-    assert grammar is not None
-    accepted, total, accepting = _consume(grammar, lltok, tok, _wire(code))
-    assert accepted == total, (
-        f"`<`-containing code value rejected ({accepted}/{total}) for {code!r} — "
-        "gap #1 truncation is back (string value stops at the first `<`)"
-    )
-    assert accepting, f"`<`-containing value {code!r} is not a terminal state"
+def test_xml_tool_with_a_freeform_string_is_not_constrained_at_all(tok):
+    """#1996, on the real tokenizer through the real builder.
 
-
-@_requires_llguidance
-def test_xml_normal_value_still_round_trips_no_regression(tok, lltok):
-    # A plain value (no ``<``) must still be accepted + terminal — the lazy rule
-    # is a strict superset of the old raw terminal for non-``<`` values.
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
-    accepted, total, accepting = _consume(grammar, lltok, tok, _wire("Paris"))
-    assert accepted == total and accepting, (
-        f"plain value regressed ({accepted}/{total}, accepting={accepting})"
-    )
-
-
-@_requires_llguidance
-def test_xml_value_containing_close_tag_is_data_not_a_delimiter(tok, lltok):
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
-    wire = _wire("a</parameter>b")
-    accepted, total, accepting = _consume(grammar, lltok, tok, wire)
-    assert accepted == total and accepting
-    _, args = _parse(wire, XML_TOOLS)
-    assert args["code"] == "a</parameter>b"
+    ``XML_TOOLS`` carries a top-level free-form ``code`` string. The wire cannot
+    frame a bare value there and the ``%json`` surface silently truncated real
+    output, so the whole request must fall back to free-form. This supersedes the
+    three enforcement tests that used to drive string values through this
+    grammar (``<``-containing code, a plain value, an embedded ``</parameter>``):
+    those exercised a constrained string path that no longer exists — the
+    property they were protecting (a value is never truncated) is now held by
+    NOT constraining it. See ``test_qwen3coder_xml_freeform_string_1996.py``.
+    """
+    assert _xml_grammar(XML_TOOLS, "required", tok) is None
 
 
 @_requires_llguidance
 def test_xml_optional_and_scalar_params_enforced(tok, lltok):
     # Optional int/bool params present with valid scalar surface forms are
     # accepted + terminal; the enum on the required ``language`` is honored.
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
+    grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
     accepted, total, accepting = _consume(
-        grammar, lltok, tok, _wire("x=1", language="cpp", timeout=30, verbose="true")
+        grammar, lltok, tok, _wire_c(language="cpp", timeout=30, verbose="true")
     )
     assert accepted == total and accepting, (
         f"valid call with optional scalars rejected ({accepted}/{total})"
@@ -606,18 +614,17 @@ def test_xml_optional_and_scalar_params_enforced(tok, lltok):
 @_requires_llguidance
 def test_xml_bad_enum_value_is_rejected(tok, lltok):
     # ``language`` enum is {python, cpp}; "rust" must be masked.
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
-    accepted, total, _ = _consume(grammar, lltok, tok, _wire("x", language="rust"))
+    grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
+    accepted, total, _ = _consume(grammar, lltok, tok, _wire_c(language="rust"))
     assert accepted < total, "invalid enum value was NOT rejected by the grammar"
 
 
 @_requires_llguidance
 def test_xml_off_schema_scalar_is_rejected(tok, lltok):
     # ``timeout`` is an integer; a non-numeric value must be masked by ``%json``.
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
+    grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
     bad = (
         "<tool_call>\n<function=run_code>\n"
-        "<parameter=code>\nx\n</parameter>\n"
         "<parameter=language>\npython\n</parameter>\n"
         "<parameter=timeout>\nnot_an_int"
     )
@@ -629,9 +636,9 @@ def test_xml_off_schema_scalar_is_rejected(tok, lltok):
 def test_xml_forced_rejects_prose_before_the_call(tok, lltok):
     # Forced (required) non-reasoning: the first call sits AT the trigger with no
     # free prefix, so bare prose before it is masked at token 0.
-    grammar = _xml_grammar(XML_TOOLS, "required", tok)
+    grammar = _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok)
     assert grammar is not None
-    prose_then_call = "Sure, let me run that. " + _wire("print(1)")
+    prose_then_call = "Sure, let me run that. " + _wire_c()
     accepted, _total, _ = _consume(grammar, lltok, tok, prose_then_call)
     assert accepted == 0, (
         f"forced XML grammar accepted {accepted} prose token(s) before the "
@@ -718,11 +725,14 @@ def test_representable_common_and_noarg_schemas():
     # regression): typed properties, enums, required + optional, empty body.
     from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
 
-    assert rep(XML_TOOLS[0]["parameters"]) is True
+    assert rep(XML_TOOLS_CONSTRAINABLE[0]["parameters"]) is True
     assert rep(XML_REF_TOOL[0]["parameters"]) is True  # $ref -> object
-    assert rep(XML_REF_STRING_TOOL[0]["parameters"]) is True  # $ref -> string
     assert rep({"type": "object", "properties": {}, "additionalProperties": False})
     assert rep({}) is True  # allow-any / no-arg
+    # #1996: a top-level free-form string — direct or behind a ``$ref`` — is NOT
+    # representable on this wire, so these two are opt-outs, not regressions.
+    assert rep(XML_TOOLS[0]["parameters"]) is False
+    assert rep(XML_REF_STRING_TOOL[0]["parameters"]) is False
 
 
 def test_representable_rejects_f1_property_less_but_nontrivial():
@@ -785,10 +795,13 @@ def test_representable_rejects_f4_object_level_keywords():
 def test_representable_rejects_f5_delimiter_unsafe_keys():
     from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
 
+    # The property type is an INTEGER here on purpose: since #1996 a top-level
+    # string opts out on its own, which would make every case below pass for the
+    # wrong reason and the control unsatisfiable. An integer isolates KEY safety.
     for bad in ("x>y", "x<y", "a:b", "a,b", "a b", "a\nb", "a{b", "a}b"):
-        assert rep({"properties": {bad: {"type": "string"}}}) is False, bad
+        assert rep({"properties": {bad: {"type": "integer"}}}) is False, bad
     # A normal [\w-]+ key stays representable.
-    assert rep({"properties": {"my_key-1": {"type": "string"}}}) is True
+    assert rep({"properties": {"my_key-1": {"type": "integer"}}}) is True
 
 
 def test_representable_unresolvable_ref_opts_out():
@@ -806,21 +819,22 @@ def test_representable_unresolvable_ref_opts_out():
 # not in the allowlist), plus a positive control that the common case is intact.
 def test_representable_allowlist_positive_control():
     # The normal shape a blacklist would let through unchanged MUST still be fully
-    # constrained: typed scalars + string + enum + a nested OBJECT via `$ref` +
+    # constrained: typed scalars + enum + a nested OBJECT via `$ref` +
     # required ⊆ properties + closed additionalProperties. Guards against the
-    # allowlist over-opting-out the common case.
+    # allowlist over-opting-out the common case. A top-level free-form string is
+    # deliberately absent — #1996 made that the one shape this wire opts out of,
+    # and its own test owns that case.
     from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
 
     schema = {
         "type": "object",
         "properties": {
-            "code": {"type": "string"},
             "language": {"type": "string", "enum": ["python", "cpp"]},
             "retries": {"type": "integer"},
             "verbose": {"type": "boolean"},
             "origin": {"$ref": "#/$defs/point"},
         },
-        "required": ["code", "language"],
+        "required": ["language"],
         "additionalProperties": False,
         "$defs": {
             "point": {
@@ -893,7 +907,9 @@ def test_representable_rejects_round2_additional_properties_schema():
     # XML wire -> opt out; only a literal `False` is representable.
     from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
 
-    base = {"type": "object", "properties": {"a": {"type": "string"}}}
+    # Integer prop: a top-level string would opt out on its own (#1996) and the
+    # ``False`` control could never be True.
+    base = {"type": "object", "properties": {"a": {"type": "integer"}}}
     assert rep({**base, "additionalProperties": {"type": "string"}}) is False
     assert rep({**base, "additionalProperties": True}) is False
     assert rep({**base, "additionalProperties": False}) is True  # control
@@ -987,7 +1003,9 @@ def test_representable_total_required_guard_never_raises():
     # OUTSIDE the builder's exception handling -> a 500 on arbitrary client JSON.
     from vllm_mlx.api.tool_grammar import _xml_schema_representable as rep
 
-    base = {"type": "object", "properties": {"a": {"type": "string"}}}
+    # Integer prop for the same reason as above (#1996): the control at the end
+    # of this test asserts a well-formed ``required`` stays representable.
+    base = {"type": "object", "properties": {"a": {"type": "integer"}}}
     # ``required`` not a list -> opt out (no raise).
     assert rep({**base, "required": "a"}) is False
     assert rep({**base, "required": 123}) is False
@@ -1027,22 +1045,18 @@ def test_xml_ref_to_object_still_uses_json():
 
 
 @_requires_llguidance
-def test_xml_ref_to_string_roundtrips_without_quotes(tok, lltok):
-    # F3 end-to-end on the REAL tokenizer: the grammar for a `$ref` -> string
-    # param ACCEPTS a RAW unquoted value and is terminal (before the fix it forced
-    # a QUOTED `%json` string, so raw `Paris` would be rejected), and the parser
-    # round-trips it to the clean value `Paris` — NOT `"Paris"` (quotes preserved).
-    grammar = _xml_grammar(XML_REF_STRING_TOOL, "required", tok)
-    assert grammar is not None
+def test_xml_ref_to_string_opts_out_and_still_parses_raw(tok):
+    # F3 resolved the ``$ref`` BEFORE the string-vs-``%json`` decision so a
+    # ``$ref`` -> string takes the same path as an inline string. Since #1996
+    # that path is "not representable", so this tool opts out too — resolution
+    # order still matters, it just now decides opt-out rather than which value
+    # rule to emit. The PARSER half of F3 is unchanged and still asserted: a raw
+    # unquoted value round-trips to a clean ``Paris``, no quotes preserved.
+    assert _xml_grammar(XML_REF_STRING_TOOL, "required", tok) is None
     wire = (
         "<tool_call>\n<function=geo>\n"
-        '<parameter=city>\n"Paris"\n</parameter>\n'
+        "<parameter=city>\nParis\n</parameter>\n"
         "</function>\n</tool_call>"
-    )
-    accepted, total, accepting = _consume(grammar, lltok, tok, wire)
-    assert accepted == total and accepting, (
-        f"$ref->string raw value rejected ({accepted}/{total}, "
-        f"accepting={accepting}) — F3 regression (still on the quoted %json path)"
     )
     name, args = _parse(wire, XML_REF_STRING_TOOL)
     assert name == "geo"
@@ -1054,7 +1068,7 @@ def test_xml_ref_to_string_roundtrips_without_quotes(tok, lltok):
 def test_build_tool_grammar_opts_out_f1_toplevel_ref(tok):
     # Control: a representable XML tool DOES build a grammar (proves the opt-out
     # below is the guard, not a generic build failure).
-    assert _xml_grammar(XML_TOOLS, "required", tok) is not None
+    assert _xml_grammar(XML_TOOLS_CONSTRAINABLE, "required", tok) is not None
     # F1: a top-level `$ref` (no inline properties) would collapse to an EMPTY
     # body allowing `{}` even though the schema requires fields -> opt out.
     ref_tool = [
@@ -1152,13 +1166,17 @@ def test_build_tool_grammar_opts_out_r3_bad_enum(tok):
     # codex r3 #2/#3: an enum type-mismatch / unsupported sibling / delimiter-bearing
     # value each opt the whole request out of grammar; a clean string enum builds.
     def _tool(enum_schema):
+        # ``n`` is an INTEGER, not a string: since #1996 a top-level free-form
+        # string opts out on its own, which would make every assertion below pass
+        # for the wrong reason and the control unsatisfiable. The enum is the
+        # only thing under test here.
         return [
             {
                 "name": "run_code",
                 "parameters": {
                     "type": "object",
-                    "properties": {"code": {"type": "string"}, "e": enum_schema},
-                    "required": ["code"],
+                    "properties": {"n": {"type": "integer"}, "e": enum_schema},
+                    "required": ["n"],
                 },
             }
         ]
