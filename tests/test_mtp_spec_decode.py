@@ -1633,6 +1633,35 @@ def test_infer_sidecar_fc_quantization_full_precision_returns_none():
     assert _infer_sidecar_fc_quantization(flat, fc_out_dims, fc_in_dims) is None
 
 
+def test_mtp_quantization_pairing_warning_for_mismatch_only(caplog):
+    """Known mixed precision warns once; a matched pairing stays silent."""
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _warn_if_mtp_quantization_mismatch,
+    )
+
+    logger_name = "vllm_mlx.spec_decode.mtp.qwen3_5_inject"
+    with caplog.at_level("WARNING", logger=logger_name):
+        _warn_if_mtp_quantization_mismatch(
+            {"bits": 8, "group_size": 64},
+            {"bits": 4, "group_size": 64},
+        )
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "[mtp.inject] MTP sidecar quantization (4-bit, group_size=64) "
+        "differs from base model (8-bit, group_size=64): mixed pairing "
+        "has been measured slower than no speculation (#1258). Matched "
+        "precision is recommended."
+    ]
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=logger_name):
+        _warn_if_mtp_quantization_mismatch(
+            {"bits": 4, "group_size": 64},
+            {"bits": 4, "group_size": 64},
+        )
+    assert caplog.records == []
+
+
 def test_infer_sidecar_fc_quantization_raises_on_malformed_packing():
     """``fc.scales`` present but a packing we cannot interpret — an
     unsupported derived width, or a missing companion ``fc.weight`` —
