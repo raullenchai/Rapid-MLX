@@ -35,12 +35,14 @@ exec /usr/bin/env python3 - "$@" <<'PYEOF'
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import struct
 import sys
 import threading
 import time
+import wave
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -561,6 +563,10 @@ class Handler(BaseHTTPRequestHandler):
             # indistinguishable from the daemon being down.
             self._json(200, RENDERS.snapshot())
             return
+        if self.path.partition("?")[0] == "/v1/audio/voices":
+            _event("audio_voices")
+            self._json(200, {"voices": ["Golden", "Harbor"]})
+            return
         self._json(404, {"error": "not_found"})
 
     def _residency_snapshot(self):
@@ -745,6 +751,42 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/images/edits":
             self._images_generate(editing=True)
+            return
+        if self.path == "/v1/audio/speech":
+            length = int(self.headers.get("content-length", "0") or "0")
+            body = json.loads(self.rfile.read(length) or b"{}")
+            _event(
+                "audio_speech",
+                model=body.get("model"),
+                voice=body.get("voice"),
+                speed=body.get("speed"),
+                text=body.get("input"),
+            )
+            audio = io.BytesIO()
+            with wave.open(audio, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                # Long enough for the AX flow to observe Play -> Stop, while
+                # still tiny and silent for unattended GUI tests.
+                wav.writeframes(b"\x00\x00" * 32000)
+            payload = audio.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/v1/audio/transcriptions":
+            length = int(self.headers.get("content-length", "0") or "0")
+            if length:
+                self.rfile.read(length)
+            _event("audio_transcription")
+            self._json(200, {
+                "text": "Golden transcription result.",
+                "language": "en",
+                "duration": 0.1,
+            })
             return
         if self.path != "/v1/chat/completions":
             self._json(404, {"error": "not_found"})

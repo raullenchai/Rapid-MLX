@@ -73,7 +73,8 @@ AXApplication title="Rapid-MLX"
           AXColumn id="ListColumn"
       AXScrollArea
         AXHeading desc="Custom Instructions, Set preferences for how the assistant responds in every conversation." enabled=true
-        AXHeading id="Settings.Instructions.Clear" desc="Global, Used in every conversation. A conversation can add more specific direction." help="Clear global instructions" enabled=true
+        AXHeading desc="Global, Used in every conversation. A conversation can add more specific direction." enabled=true
+        AXButton id="Settings.Instructions.Clear" desc="Clear global instructions" help="Clear global instructions" enabled=true
         AXScrollArea
           AXTextArea id="Settings.Instructions.GlobalEditor" value=text
           AXScrollBar value=number enabled=false

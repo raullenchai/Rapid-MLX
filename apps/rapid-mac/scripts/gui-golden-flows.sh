@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, cached-curated-tradeup, download-progress, settings-persistence, settings-mtp, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
+Flows: fresh-install, cached-quickstart, cached-curated-tradeup, download-progress, settings-persistence, settings-mtp, chat-restore, message-actions, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
+        cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
         slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -835,6 +835,39 @@ press() {
         || { printf '[gui-golden] AXPress failed: %s\n' "$identifier" >&2; return 1; }
 }
 
+round_trip_toggle() {
+    local identifier="$1" stem="$2"
+    local before after restored
+    see_main "$OUT/$stem-before.json"
+    before="$(element_field "$OUT/$stem-before.json" "$identifier" value)"
+    [[ -n "$before" ]] || die "$identifier exposes no AX value before its press"
+    press "$OUT/$stem-before.json" "$identifier" "$OUT/$stem-press.json" \
+        || die "$identifier is not pressable"
+    see_main "$OUT/$stem-after.json"
+    after="$(element_field "$OUT/$stem-after.json" "$identifier" value)"
+    [[ -n "$after" && "$after" != "$before" ]] \
+        || die "$identifier accepted AXPress but did not change value"
+    press "$OUT/$stem-after.json" "$identifier" "$OUT/$stem-restore-press.json" \
+        || die "$identifier could not be restored"
+    see_main "$OUT/$stem-restored.json"
+    restored="$(element_field "$OUT/$stem-restored.json" "$identifier" value)"
+    [[ "$restored" == "$before" ]] \
+        || die "$identifier did not round-trip to its original value"
+}
+
+press_and_require_selected() {
+    local identifier="$1" stem="$2"
+    see_main "$OUT/$stem-before.json"
+    press "$OUT/$stem-before.json" "$identifier" "$OUT/$stem-press.json" \
+        || die "$identifier is not pressable"
+    see_main "$OUT/$stem-after.json"
+    jq -e --arg identifier "$identifier" \
+        '.data.ui_elements[]? | select(.identifier == $identifier)
+         | select(.selected == true or .value == 1 or .value == "1")' \
+        "$OUT/$stem-after.json" >/dev/null \
+        || die "$identifier accepted AXPress but did not become selected"
+}
+
 dismiss_first_run() {
     local tree="$OUT/first-run.json"
     see_main "$tree"
@@ -1509,6 +1542,29 @@ flow_chat_restore() {
     sleep 0.2
     see_main "$OUT/chat-restored-transcript.json"
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
+    local conversation_suffix pin_id unpin_id
+    conversation_suffix="${conversation_id##*.}"
+    pin_id="Sidebar.Conversation.Pin.$conversation_suffix"
+    unpin_id="Sidebar.Conversation.Unpin.$conversation_suffix"
+    if jq -e --arg identifier "$pin_id" \
+        '.data.ui_elements[]? | select(.identifier == $identifier)' \
+        "$OUT/chat-restored-transcript.json" >/dev/null; then
+        press "$OUT/chat-restored-transcript.json" "$pin_id" "$OUT/pin-press.json" \
+            || die "Pin conversation is not pressable"
+        wait_identifier "$unpin_id" "$OUT/pinned.json"
+        press "$OUT/pinned.json" "$unpin_id" "$OUT/unpin-press.json" \
+            || die "Unpin conversation is not pressable"
+        wait_identifier "$pin_id" "$OUT/unpinned.json"
+    else
+        jq -e --arg identifier "$unpin_id" \
+            '.data.ui_elements[]? | select(.identifier == $identifier)' \
+            "$OUT/chat-restored-transcript.json" >/dev/null \
+            || die "active conversation exposes neither Pin nor Unpin"
+        press "$OUT/chat-restored-transcript.json" "$unpin_id" "$OUT/unpin-first-press.json"
+        wait_identifier "$pin_id" "$OUT/unpinned-first.json"
+        press "$OUT/unpinned-first.json" "$pin_id" "$OUT/pin-restore-press.json"
+        wait_identifier "$unpin_id" "$OUT/pinned-restored.json"
+    fi
     wait_send_idle "$OUT/chat-restored-settled.json"
     press "$OUT/chat-restored-settled.json" ChatView.ConversationInstructions \
         "$OUT/conversation-instructions-reopen-press.json"
@@ -1556,6 +1612,186 @@ flow_chat_restore() {
         sleep 0.1
     done
     assert_tree_text "$OUT/select-text-sheet.json" "Selection here crosses paragraphs"
+    press "$OUT/select-text-sheet.json" SelectText.Done "$OUT/select-text-done.json" \
+        || die "Select text Done button is not pressable"
+
+    wait_identifier Toolbar.SearchChats "$OUT/search-actions-ready.json"
+    press "$OUT/search-actions-ready.json" Toolbar.SearchChats "$OUT/search-actions-open-press.json"
+    wait_identifier ConversationSearch.Field "$OUT/search-actions-open.json"
+    "$AX_DRIVER" set-value "$APP_PID" ConversationSearch.Field "golden" \
+        > "$OUT/search-actions-type.json"
+    wait_identifier ConversationSearch.Clear "$OUT/search-actions-filtered.json"
+    press "$OUT/search-actions-filtered.json" ConversationSearch.Clear \
+        "$OUT/search-actions-clear-press.json" \
+        || die "conversation search Clear is not pressable"
+    see_main "$OUT/search-actions-cleared.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "ConversationSearch.Field" and .value == "")' \
+        "$OUT/search-actions-cleared.json" >/dev/null \
+        || die "conversation search Clear did not empty the query"
+    press "$OUT/search-actions-cleared.json" ConversationSearch.Close \
+        "$OUT/search-actions-close-press.json" \
+        || die "conversation search Close is not pressable"
+    wait_identifier Toolbar.SearchChats "$OUT/search-actions-closed.json"
+
+    press "$OUT/search-actions-closed.json" Toolbar.SearchChats \
+        "$OUT/search-new-chat-open-press.json"
+    wait_identifier ConversationSearch.NewChat "$OUT/search-new-chat-open.json"
+    press "$OUT/search-new-chat-open.json" ConversationSearch.NewChat \
+        "$OUT/search-new-chat-press.json" \
+        || die "conversation search New chat is not pressable"
+    wait_identifier Sidebar.NewChat "$OUT/search-new-chat-landed.json"
+    jq -e '[.data.ui_elements[]? | select(.identifier == "ConversationSearch.Field")]
+           | length == 0' "$OUT/search-new-chat-landed.json" >/dev/null \
+        || die "New chat did not dismiss conversation search"
+    log "  conversation Pin/Unpin and search Clear/Close/New chat all produced effects"
+    cleanup_persona
+}
+
+flow_message_actions() {
+    # Every inline message action must produce its advertised result. Dynamic
+    # UUID suffixes are discovered from the live tree so this drives the same
+    # controls a user sees instead of a test-only entry point.
+    start_persona message-actions
+    dismiss_first_run
+    start_model
+    see_main "$OUT/message-actions-model-info-before.json"
+    press "$OUT/message-actions-model-info-before.json" ModelPickerBar.ModelInfo \
+        "$OUT/message-actions-model-info-press.json" \
+        || die "Model info button is not pressable"
+    wait_tree_text "Parameters" "$OUT/message-actions-model-info-open.json" 40
+    assert_tree_text "$OUT/message-actions-model-info-open.json" "$FAKE_ALIAS"
+    # Clicking the anchor again dismisses its popover and proves it is not a
+    # one-way overlay that traps the rest of the composer.
+    press "$OUT/message-actions-model-info-open.json" ModelPickerBar.ModelInfo \
+        "$OUT/message-actions-model-info-close-press.json" \
+        || die "Model info popover cannot be dismissed from its anchor"
+    send_prompt "original message action prompt" message-actions
+    wait_send_idle "$OUT/message-actions-settled.json"
+    see_main "$OUT/message-actions-before.json"
+
+    local assistant_copy assistant_select assistant_retry user_edit suffix
+    assistant_copy="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+        | select(startswith("ChatView.Message.Copy."))' \
+        "$OUT/message-actions-before.json" | tail -1)"
+    assistant_select="${assistant_copy/Message.Copy./Message.SelectText.}"
+    assistant_retry="${assistant_copy/Message.Copy./Message.Retry.}"
+    user_edit="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+        | select(startswith("ChatView.Message.Edit."))' \
+        "$OUT/message-actions-before.json" | head -1)"
+    [[ -n "$assistant_copy" && -n "$user_edit" ]] \
+        || die "completed turn exposes no assistant and user message actions"
+
+    pbcopy < /dev/null
+    press "$OUT/message-actions-before.json" "$assistant_copy" \
+        "$OUT/message-actions-copy-press.json" \
+        || die "Copy response is not pressable"
+    [[ -n "$(pbpaste)" ]] || die "Copy response left the pasteboard empty"
+
+    see_main "$OUT/message-actions-after-copy.json"
+    press "$OUT/message-actions-after-copy.json" "$assistant_select" \
+        "$OUT/message-actions-select-press.json" \
+        || die "Select text is not pressable"
+    wait_identifier SelectText.Done "$OUT/message-actions-select-sheet.json"
+    press "$OUT/message-actions-select-sheet.json" SelectText.Done \
+        "$OUT/message-actions-select-done-press.json" \
+        || die "Select text sheet cannot be dismissed"
+    for _ in {1..40}; do
+        see_main "$OUT/message-actions-select-closed.json"
+        if jq -e '.data.walk.complete == true
+                  and ([.data.ui_elements[]? | .identifier // ""]
+                       | index("SelectText.Done")) == null' \
+            "$OUT/message-actions-select-closed.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    jq -e '([.data.ui_elements[]? | .identifier // ""]
+            | index("SelectText.Done")) == null' \
+        "$OUT/message-actions-select-closed.json" >/dev/null \
+        || die "Done did not dismiss the Select text sheet"
+
+    # Copy's checkmark reverts after 1.2s. SwiftUI may replace the action-row
+    # backing elements during that symbol transition; wait for the stable copy
+    # state so this journey measures Edit itself rather than an intentionally
+    # transient sibling animation.
+    for _ in {1..40}; do
+        see_main "$OUT/message-actions-copy-settled.json"
+        if jq -e --arg identifier "$assistant_copy" \
+            '.data.ui_elements[]? | select(.identifier == $identifier)
+             | select(.selected != true)' \
+            "$OUT/message-actions-copy-settled.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    see_main "$OUT/message-actions-before-edit.json"
+    suffix="${user_edit##*.}"
+    if ! press "$OUT/message-actions-before-edit.json" "$user_edit" \
+        "$OUT/message-actions-edit-press.json"; then
+        # AXUIElementPerformAction may report cannotComplete even if SwiftUI
+        # committed the synchronous state mutation. Read the outcome before
+        # calling it dead; if no editor appeared, this is a product failure.
+        sleep 0.2
+        see_main "$OUT/message-actions-edit-failed-outcome.json"
+        jq -e --arg identifier "ChatView.Message.EditField.$suffix" \
+            '.data.ui_elements[]? | select(.identifier == $identifier)' \
+            "$OUT/message-actions-edit-failed-outcome.json" >/dev/null \
+            || die "Edit message is not pressable"
+    fi
+    wait_identifier "ChatView.Message.EditField.$suffix" \
+        "$OUT/message-actions-editor.json"
+    "$AX_DRIVER" set-value "$APP_PID" "ChatView.Message.EditField.$suffix" \
+        "cancelled edit must not send" > "$OUT/message-actions-edit-type.json"
+    see_main "$OUT/message-actions-edit-draft.json"
+    press "$OUT/message-actions-edit-draft.json" \
+        "ChatView.Message.CancelEdit.$suffix" \
+        "$OUT/message-actions-edit-cancel-press.json" \
+        || die "Cancel editing is not pressable"
+    wait_identifier "$user_edit" "$OUT/message-actions-edit-cancelled.json"
+    grep -q 'cancelled edit must not send' "$OUT/fake-events.jsonl" 2>/dev/null \
+        && die "cancelling a message edit sent the draft"
+
+    local requests_before requests_after
+    requests_before="$(grep -c '"event": "chat_request"' "$OUT/fake-events.jsonl")"
+    see_main "$OUT/message-actions-before-retry.json"
+    press "$OUT/message-actions-before-retry.json" "$assistant_retry" \
+        "$OUT/message-actions-retry-press.json" \
+        || die "Retry response is not pressable"
+    for _ in {1..80}; do
+        requests_after="$(grep -c '"event": "chat_request"' "$OUT/fake-events.jsonl")"
+        [[ "$requests_after" -gt "$requests_before" ]] && break
+        sleep 0.1
+    done
+    [[ "$requests_after" -gt "$requests_before" ]] \
+        || die "Retry response did not send a replacement request"
+    wait_send_idle "$OUT/message-actions-retried.json"
+
+    see_main "$OUT/message-actions-before-save-edit.json"
+    user_edit="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+        | select(startswith("ChatView.Message.Edit."))' \
+        "$OUT/message-actions-before-save-edit.json" | head -1)"
+    [[ -n "$user_edit" ]] || die "retried turn exposes no Edit message action"
+    suffix="${user_edit##*.}"
+    press "$OUT/message-actions-before-save-edit.json" "$user_edit" \
+        "$OUT/message-actions-save-edit-open-press.json" || true
+    wait_identifier "ChatView.Message.EditField.$suffix" \
+        "$OUT/message-actions-save-editor.json"
+    "$AX_DRIVER" set-value "$APP_PID" "ChatView.Message.EditField.$suffix" \
+        "saved edited message prompt" > "$OUT/message-actions-save-edit-type.json"
+    see_main "$OUT/message-actions-save-edit-draft.json"
+    press "$OUT/message-actions-save-edit-draft.json" \
+        "ChatView.Message.SaveEdit.$suffix" \
+        "$OUT/message-actions-save-edit-press.json" \
+        || die "Save edited message is not pressable"
+    for _ in {1..80}; do
+        if jq -e 'select(.event == "chat_request")
+                  | select(.user_texts | index("saved edited message prompt"))' \
+            "$OUT/fake-events.jsonl" >/dev/null 2>&1; then break; fi
+        sleep 0.1
+    done
+    jq -e 'select(.event == "chat_request")
+           | select(.user_texts | index("saved edited message prompt"))' \
+        "$OUT/fake-events.jsonl" >/dev/null \
+        || die "Save edited message did not resend the edited turn"
+    wait_send_idle "$OUT/message-actions-saved-edit-settled.json"
+    log "  message Copy, Select text/Done, Edit/Cancel, Edit/Save, and Retry all produced effects"
     cleanup_persona
 }
 
@@ -1921,7 +2157,13 @@ flow_no_dead_controls() {
     see_main "$OUT/dead-before.json"
 
     local category
-    for category in modelManagement instructions tools connectors performance appearance privacy app; do
+    local settings_categories=(modelManagement instructions tools connectors performance appearance privacy app)
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Settings.Category.developer")' \
+        "$OUT/dead-before.json" >/dev/null; then
+        settings_categories+=(developer)
+    fi
+    for category in "${settings_categories[@]}"; do
         press "$OUT/dead-before.json" "Settings.Category.$category" \
             "$OUT/dead-open-$category.json" \
             || die "Settings category $category is not pressable"
@@ -2001,6 +2243,156 @@ flow_no_dead_controls() {
             || die "$identifier has no readable VoiceOver label"
     done
     log "  Settings toggles expose readable VoiceOver labels"
+
+    # Dogfood every reversible Settings control, not merely its presence.
+    # Each toggle must change and then restore its persisted value. Segmented
+    # controls must publish the selection they accepted. Disclosure buttons
+    # must add and then remove their body. This keeps an AXPress that only
+    # produces a hover/highlight from masquerading as working UI.
+    see_main "$OUT/dead-actions-start.json"
+    press "$OUT/dead-actions-start.json" Settings.Category.modelManagement \
+        "$OUT/dead-actions-models-open.json"
+    round_trip_toggle Settings.Models.ShowAllModelsToggle dead-actions-show-all
+    round_trip_toggle Settings.Models.AutoStartOnLaunchToggle dead-actions-auto-start
+
+    see_main "$OUT/dead-actions-models-favorite-before.json"
+    local favorite_before favorite_after favorite_restored
+    favorite_before="$(element_field "$OUT/dead-actions-models-favorite-before.json" \
+        Settings.ModelManagement.Favorite.fake-alias description)"
+    press "$OUT/dead-actions-models-favorite-before.json" \
+        Settings.ModelManagement.Favorite.fake-alias \
+        "$OUT/dead-actions-models-favorite-press.json"
+    see_main "$OUT/dead-actions-models-favorite-after.json"
+    favorite_after="$(element_field "$OUT/dead-actions-models-favorite-after.json" \
+        Settings.ModelManagement.Favorite.fake-alias description)"
+    [[ -n "$favorite_after" && "$favorite_after" != "$favorite_before" ]] \
+        || die "favorite button accepted AXPress but did not change Pin/Unpin state"
+    press "$OUT/dead-actions-models-favorite-after.json" \
+        Settings.ModelManagement.Favorite.fake-alias \
+        "$OUT/dead-actions-models-favorite-restore-press.json"
+    see_main "$OUT/dead-actions-models-favorite-restored.json"
+    favorite_restored="$(element_field "$OUT/dead-actions-models-favorite-restored.json" \
+        Settings.ModelManagement.Favorite.fake-alias description)"
+    [[ "$favorite_restored" == "$favorite_before" ]] \
+        || die "favorite button did not restore its original Pin/Unpin state"
+
+    press "$OUT/dead-actions-models-favorite-restored.json" Settings.Category.tools \
+        "$OUT/dead-actions-tools-open.json"
+    local tool_name
+    for tool_name in web_search browse weather; do
+        round_trip_toggle "Settings.Tools.Toggle.$tool_name" "dead-actions-tool-$tool_name"
+        see_main "$OUT/dead-actions-details-$tool_name-before.json"
+        press "$OUT/dead-actions-details-$tool_name-before.json" \
+            "Settings.Tools.Details.$tool_name" \
+            "$OUT/dead-actions-details-$tool_name-press.json"
+        see_main "$OUT/dead-actions-details-$tool_name-open.json"
+        jq -e --arg identifier "Settings.Tools.DetailsBody.$tool_name" \
+            '.data.ui_elements[]? | select(.identifier == $identifier)' \
+            "$OUT/dead-actions-details-$tool_name-open.json" >/dev/null \
+            || die "Details for $tool_name pressed but revealed no body"
+        press "$OUT/dead-actions-details-$tool_name-open.json" \
+            "Settings.Tools.Details.$tool_name" \
+            "$OUT/dead-actions-details-$tool_name-close-press.json"
+        see_main "$OUT/dead-actions-details-$tool_name-closed.json"
+        jq -e --arg identifier "Settings.Tools.DetailsBody.$tool_name" \
+            '[.data.ui_elements[]? | select(.identifier == $identifier)] | length == 0' \
+            "$OUT/dead-actions-details-$tool_name-closed.json" >/dev/null \
+            || die "Details for $tool_name did not collapse"
+    done
+    round_trip_toggle Settings.Tools.Browse.AutoApproveToggle dead-actions-auto-approve
+    press_and_require_selected Settings.Tools.WebSearch.Backend.brave dead-actions-backend-brave
+    press_and_require_selected Settings.Tools.WebSearch.Backend.tavily dead-actions-backend-tavily
+    press_and_require_selected Settings.Tools.WebSearch.Backend.duckduckgo dead-actions-backend-restore
+
+    see_main "$OUT/dead-actions-tools-done.json"
+    press "$OUT/dead-actions-tools-done.json" Settings.Category.connectors \
+        "$OUT/dead-actions-connectors-open.json"
+    round_trip_toggle Settings.Connectors.MasterToggle dead-actions-connectors-master
+
+    see_main "$OUT/dead-actions-connectors-done.json"
+    press "$OUT/dead-actions-connectors-done.json" Settings.Category.performance \
+        "$OUT/dead-actions-performance-open.json"
+    press_and_require_selected Settings.Performance.Prefix.On dead-actions-prefix-on
+    press_and_require_selected Settings.Performance.Prefix.Off dead-actions-prefix-off
+    press_and_require_selected Settings.Performance.Prefix.Default dead-actions-prefix-default
+    see_main "$OUT/dead-actions-cache-before.json"
+    local cache_before cache_after
+    cache_before="$(element_field "$OUT/dead-actions-cache-before.json" \
+        Settings.Performance.CacheBudget value)"
+    "$AX_DRIVER" increment "$APP_PID" Settings.Performance.CacheBudget \
+        > "$OUT/dead-actions-cache-increment.json" \
+        || die "Cache budget slider rejected its native AXIncrement action"
+    see_main "$OUT/dead-actions-cache-after.json"
+    cache_after="$(element_field "$OUT/dead-actions-cache-after.json" \
+        Settings.Performance.CacheBudget value)"
+    [[ -n "$cache_after" && "$cache_after" != "$cache_before" ]] \
+        || die "Cache budget slider accepted AXIncrement but stayed at $cache_after"
+    "$AX_DRIVER" decrement "$APP_PID" Settings.Performance.CacheBudget \
+        > "$OUT/dead-actions-cache-decrement.json" \
+        || die "Cache budget slider rejected its native AXDecrement action"
+    see_main "$OUT/dead-actions-cache-restored.json"
+    [[ "$(element_field "$OUT/dead-actions-cache-restored.json" \
+            Settings.Performance.CacheBudget value)" == "$cache_before" ]] \
+        || die "Cache budget slider did not restore $cache_before"
+
+    see_main "$OUT/dead-actions-performance-done.json"
+    press "$OUT/dead-actions-performance-done.json" Settings.Category.app \
+        "$OUT/dead-actions-app-open.json"
+    round_trip_toggle Settings.App.HideDockOnCloseToggle dead-actions-hide-dock
+    see_main "$OUT/dead-actions-app-before-recheck.json"
+    press "$OUT/dead-actions-app-before-recheck.json" Settings.App.RecheckCTA \
+        "$OUT/dead-actions-app-recheck-press.json" \
+        || die "Check for updates is not pressable"
+    local update_feedback=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/dead-actions-app-checked.json"
+        if jq -e '(.data.ui_elements | tostring)
+                  | contains("Checking for updates") or contains("Up to date")' \
+            "$OUT/dead-actions-app-checked.json" >/dev/null; then
+            update_feedback=1
+            break
+        fi
+        sleep 0.25
+    done
+    [[ "$update_feedback" == 1 ]] \
+        || die "Check for updates produced no visible state"
+
+    # Developer exists only in debug builds. Its destructive reset is unit
+    # tested separately; here the GUI contract is that every scope toggle
+    # round-trips and the action opens a cancellable confirmation rather than
+    # erasing immediately.
+    see_main "$OUT/dead-actions-after-update.json"
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Settings.Category.developer")' \
+        "$OUT/dead-actions-after-update.json" >/dev/null; then
+        press "$OUT/dead-actions-after-update.json" Settings.Category.developer \
+            "$OUT/dead-actions-developer-open.json"
+        round_trip_toggle Settings.Developer.Scope.Preferences dead-actions-developer-preferences
+        round_trip_toggle Settings.Developer.Scope.Conversations dead-actions-developer-conversations
+        round_trip_toggle Settings.Developer.Scope.Telemetry dead-actions-developer-telemetry
+        see_main "$OUT/dead-actions-developer-before-confirm.json"
+        press "$OUT/dead-actions-developer-before-confirm.json" Settings.Developer.Reonboard \
+            "$OUT/dead-actions-developer-dialog-press.json" \
+            || die "Erase and restart is not pressable"
+        wait_identifier Settings.Developer.CancelReonboard \
+            "$OUT/dead-actions-developer-dialog.json"
+        press "$OUT/dead-actions-developer-dialog.json" Settings.Developer.CancelReonboard \
+            "$OUT/dead-actions-developer-cancel.json" \
+            || die "re-onboarding confirmation Cancel is not pressable"
+        local dialog_closed=0
+        for ((i=0; i<40; i++)); do
+            see_main "$OUT/dead-actions-developer-cancelled.json"
+            if ! jq -e '.data.ui_elements[]?
+                        | select(.identifier == "Settings.Developer.CancelReonboard")' \
+                "$OUT/dead-actions-developer-cancelled.json" >/dev/null; then
+                dialog_closed=1; break
+            fi
+            sleep 0.25
+        done
+        [[ "$dialog_closed" == 1 ]] \
+            || die "re-onboarding confirmation stayed open after Cancel"
+    fi
+    log "  reversible Settings controls all changed state and restored"
     cleanup_persona
 }
 
@@ -2514,11 +2906,36 @@ flow_image_generation() {
     # "No model chosen" on busy CI runners. Wait for the cached model's Start
     # action so the baseline describes one coherent state.
     wait_identifier Readiness.Action "$OUT/ig-empty.json"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/ig-empty.json" >/dev/null \
-        || die "Images.Aspect is missing — no way to choose an aspect ratio"
+    jq -e '[.data.ui_elements[]? | select((.identifier // "")
+                                           | startswith("Images.Aspect."))]
+           | length == 3' "$OUT/ig-empty.json" >/dev/null \
+        || die "Images aspect options are not independently addressable"
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Resolution")' "$OUT/ig-empty.json" >/dev/null \
         || die "Images.Resolution is missing — no way to choose an output resolution"
     baseline image-generation.empty "$OUT/ig-empty.json"
+
+    local starter_id starter_prompt
+    for starter_id in Images.Starter.0 Images.Starter.1 Images.Starter.2 Images.Starter.3; do
+        see_main "$OUT/ig-starter-before.json"
+        starter_prompt="$(element_field "$OUT/ig-starter-before.json" "$starter_id" description)"
+        [[ -n "$starter_prompt" ]] || die "$starter_id has no readable prompt"
+        press "$OUT/ig-starter-before.json" "$starter_id" \
+            "$OUT/ig-${starter_id##*.}-press.json" \
+            || die "$starter_id is not pressable"
+        see_main "$OUT/ig-starter-filled.json"
+        jq -e --arg prompt "$starter_prompt" \
+            '.data.ui_elements[]?
+             | select(.identifier == "rapid.images.compose" and .value == $prompt)' \
+            "$OUT/ig-starter-filled.json" >/dev/null \
+            || die "$starter_id did not fill the image prompt"
+        "$AX_DRIVER" set-value "$APP_PID" rapid.images.compose "" \
+            > "$OUT/ig-starter-clear.json"
+        wait_identifier "$starter_id" "$OUT/ig-starter-restored.json"
+    done
+    press_and_require_selected Images.Aspect.portrait ig-aspect-portrait
+    press_and_require_selected Images.Aspect.landscape ig-aspect-landscape
+    press_and_require_selected Images.Aspect.square ig-aspect-square
+    log "  all starter prompts and aspect buttons changed the composer state"
 
     # 3. Load the model. rapid-mlx serves one model per process, so opening the
     #    tab cannot silently inherit a ready server: the readiness gate holds
@@ -2667,11 +3084,10 @@ flow_image_generation() {
     # identifier `Images.Aspect` and all three are always present, so
     # "there is a 1:1 button" is true no matter which one is active — an
     # assertion that cannot fail. Only the selected flag distinguishes them.
-    jq -e '[.data.ui_elements[]? | select(.identifier == "Images.Aspect")
-            | select(.selected == true)
-            | (.description // .title // "")] == ["1:1"]' \
+    jq -e '[.data.ui_elements[]? | select(.identifier == "Images.Aspect.square")
+            | select(.selected == true)] | length == 1' \
         "$OUT/ig-result-2.json" >/dev/null \
-        || die "the selected aspect is not the square one the requests were sent with: $(jq -c '[.data.ui_elements[]? | select(.identifier == "Images.Aspect") | {d: (.description // .title), selected}]' "$OUT/ig-result-2.json")"
+        || die "the selected aspect is not the square one the requests were sent with"
 
     # Two thumbnails is not two renders — and the two ways that can go wrong
     # need two different witnesses.
@@ -2787,7 +3203,7 @@ flow_image_generation() {
         if jq -e '.success == true and .data.walk.complete == true
                   and ([.data.ui_elements[]? | .identifier // ""] as $ids
                        | ($ids | index("Images.Edit.Source")) == null
-                         and ($ids | index("Images.Aspect")) != null)' \
+                         and ($ids | index("Images.Aspect.square")) != null)' \
                "$OUT/ig-edit-exited.json" >/dev/null; then
             exited=1; break
         fi
@@ -2911,7 +3327,7 @@ flow_image_generation() {
         if jq -e '.success == true and .data.walk.complete == true
                   and ([.data.ui_elements[]? | .identifier // ""] as $ids
                        | ($ids | index("Images.Edit.Source")) == null
-                         and ($ids | index("Images.Aspect")) != null)' \
+                         and ($ids | index("Images.Aspect.square")) != null)' \
                "$OUT/ig-import-exited.json" >/dev/null; then
             import_exited=1; break
         fi
@@ -2981,7 +3397,7 @@ flow_resident_load_rejected() {
     done
     [[ "$resolved" == 1 ]] \
         || die "Images.ModelPicker never resolved to $FAKE_IMAGE_ALIAS - the Images tab has no model to load"
-    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/rlr-ig-empty.json" >/dev/null \
+    jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect.square")' "$OUT/rlr-ig-empty.json" >/dev/null \
         || die "Images.Aspect is missing - the picker did not finish resolving"
 
     # 3. The readiness action routes through ensureServing and hits the
@@ -3087,6 +3503,41 @@ flow_launch_integrations() {
     [[ "$enabled_copy_count" == 0 ]] \
         || die "Launch enabled $enabled_copy_count copy commands before a model was ready"
     baseline launch-integrations.complete "$OUT/launch.json"
+
+    press "$OUT/launch.json" Sidebar.NewChat "$OUT/launch-chat.json" \
+        || die "Sidebar.NewChat is not pressable from Launch"
+    start_model
+    see_main "$OUT/launch-model-ready.json"
+    press "$OUT/launch-model-ready.json" Sidebar.Launch "$OUT/launch-ready-open.json"
+    local i ready_copies=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/launch-ready.json"
+        ready_copies="$(jq '[.data.ui_elements[]?
+                              | select(((.identifier // "")
+                                        | startswith("Launch.Integration.Copy."))
+                                       and .enabled == true)]
+                             | length' "$OUT/launch-ready.json")"
+        [[ "$ready_copies" == 14 ]] && break
+        sleep 0.1
+    done
+    [[ "$ready_copies" == 14 ]] \
+        || die "Launch enabled $ready_copies of 14 copy commands after the chat model was ready"
+    local integration_id copied_command
+    while IFS= read -r integration_id; do
+        pbcopy < /dev/null
+        see_main "$OUT/launch-copy-before.json"
+        press "$OUT/launch-copy-before.json" "$integration_id" \
+            "$OUT/launch-copy-${integration_id##*.}.json" \
+            || die "$integration_id is not pressable"
+        copied_command="$(pbpaste)"
+        [[ -n "$copied_command" ]] \
+            || die "$integration_id pressed but copied no command"
+    done < <(jq -r '[.data.ui_elements[]?
+                      | select(((.identifier // "")
+                                | startswith("Launch.Integration.Copy."))
+                               and .enabled == true)
+                      | .identifier] | unique[]' "$OUT/launch-ready.json")
+    log "  all 14 integration buttons copied a non-empty ready command"
     log "  launch-integrations OK"
     cleanup_persona
 }
@@ -3099,7 +3550,11 @@ flow_audio_readiness() {
     start_persona audio-readiness \
         FAKE_DOWNLOAD_OVERRUN=1 \
         FAKE_PARTIAL_AUDIO_CACHE=1 \
-        FAKE_AUDIO_PULL_STATE="$OUT_ROOT/audio-readiness/pulled-audio.txt"
+        FAKE_AUDIO_PULL_STATE="$OUT_ROOT/audio-readiness/pulled-audio.txt" \
+        RAPID_GUI_GOLDEN_MODE=1 \
+        RAPID_SIMULATED_AUDIO_PATH="$ROOT/../../examples/assistant_bank_en.wav" \
+        RAPID_SIMULATED_SPEECH_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-speech.wav" \
+        RAPID_SIMULATED_TRANSCRIPTION_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-transcription.txt"
     dismiss_first_run
     see_main "$OUT/chat.json"
     press "$OUT/chat.json" Sidebar.Audio "$OUT/speech.json" \
@@ -3168,6 +3623,104 @@ flow_audio_readiness() {
     done
     [[ "$speech_loaded" == 1 ]] \
         || die "Speech stayed behind Download & start after its model became ready"
+
+    local speech_controls_ready=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/speech-controls-before.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Audio.Speech.LoadVoices"
+                           and .enabled == true)' \
+            "$OUT/speech-controls-before.json" >/dev/null; then
+            speech_controls_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$speech_controls_ready" == 1 ]] \
+        || die "Speech became ready but Load Voices stayed disabled"
+    press "$OUT/speech-controls-before.json" Audio.Speech.LoadVoices \
+        "$OUT/speech-load-voices-press.json" \
+        || die "Load Voices is not pressable"
+    wait_fake_event '.event == "audio_voices"' \
+        "Load Voices never reached the audio server"
+    local voices_loaded=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/speech-voices-loaded.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Audio.Speech.VoicePicker"
+                           and .value == "Golden")' \
+            "$OUT/speech-voices-loaded.json" >/dev/null; then
+            voices_loaded=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$voices_loaded" == 1 ]] \
+        || die "Load Voices produced no selected voice"
+    press "$OUT/speech-voices-loaded.json" Audio.Speech.VoicePicker \
+        "$OUT/speech-voice-picker-press.json" \
+        || die "Voice picker is not pressable"
+    wait_identifier Audio.Speech.VoiceOption.Harbor "$OUT/speech-voice-options.json"
+    press "$OUT/speech-voice-options.json" Audio.Speech.VoiceOption.Harbor \
+        "$OUT/speech-voice-harbor-press.json" \
+        || die "Harbor voice option is not pressable"
+    see_main "$OUT/speech-voice-harbor.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Audio.Speech.VoicePicker" and .value == "Harbor")' \
+        "$OUT/speech-voice-harbor.json" >/dev/null \
+        || die "voice picker did not select Harbor"
+
+    local speed_before speed_after
+    speed_before="$(element_field "$OUT/speech-voice-harbor.json" Audio.Speech.Speed value)"
+    "$AX_DRIVER" increment "$APP_PID" Audio.Speech.Speed \
+        > "$OUT/speech-speed-increment.json" \
+        || die "speech speed rejected AXIncrement"
+    see_main "$OUT/speech-speed-after.json"
+    speed_after="$(element_field "$OUT/speech-speed-after.json" Audio.Speech.Speed value)"
+    [[ -n "$speed_after" && "$speed_after" != "$speed_before" ]] \
+        || die "speech speed accepted AXIncrement but did not change"
+    "$AX_DRIVER" set-value "$APP_PID" Audio.Speech.Text "golden speech controls" \
+        > "$OUT/speech-text-type.json"
+    see_main "$OUT/speech-generate-ready.json"
+    press "$OUT/speech-generate-ready.json" Audio.Speech.Generate \
+        "$OUT/speech-generate-press.json" \
+        || die "Generate Speech is not pressable"
+    wait_fake_event '.event == "audio_speech"
+                     and .voice == "Harbor"
+                     and .text == "golden speech controls"' \
+        "Generate Speech did not send the selected voice and text"
+    wait_identifier Audio.Speech.Play "$OUT/speech-result.json"
+    "$AX_DRIVER" click-center "$APP_PID" Audio.Speech.Save \
+        > "$OUT/speech-save-click.json" \
+        || die "Save speech is not clickable"
+    local speech_saved=0
+    for ((i=0; i<40; i++)); do
+        if [[ -s "$OUT_ROOT/audio-readiness/saved-speech.wav" ]]; then
+            speech_saved=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$speech_saved" == 1 ]] \
+        || die "Save speech did not write the generated WAV"
+    see_main "$OUT/speech-before-play.json"
+    "$AX_DRIVER" click-center "$APP_PID" Audio.Speech.Play \
+        > "$OUT/speech-play-click.json" \
+        || die "Play speech is not clickable"
+    local playback_started=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/speech-playing.json"
+        if [[ "$(element_field "$OUT/speech-playing.json" Audio.Speech.Play description)" == "Stop playback" ]]; then
+            playback_started=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$playback_started" == 1 ]] \
+        || die "Play speech did not enter playback state"
+    "$AX_DRIVER" decrement "$APP_PID" Audio.Speech.Speed \
+        > "$OUT/speech-speed-decrement.json" \
+        || die "speech speed rejected AXDecrement"
+    see_main "$OUT/speech-speed-restored.json"
+    [[ "$(element_field "$OUT/speech-speed-restored.json" Audio.Speech.Speed value)" == "$speed_before" ]] \
+        || die "speech speed did not restore its original value"
+    log "  voices, voice selection, speed, and Generate Speech produced effects"
 
     # Residency is polled independently from Audio readiness. The sidecar can
     # be ready several frames before the sidebar's first residency snapshot;
@@ -3286,8 +3839,52 @@ flow_audio_readiness() {
     done
     [[ "$transcription_loaded" == 1 ]] \
         || die "Transcription stayed behind Download & start after its model became ready"
+
+    see_main "$OUT/transcription-controls-before.json"
+    press "$OUT/transcription-controls-before.json" Audio.Transcription.FilePicker \
+        "$OUT/transcription-file-press.json" \
+        || die "Choose File is not pressable"
+    local file_selected=0
+    for ((i=0; i<40; i++)); do
+        see_main "$OUT/transcription-file-selected.json"
+        if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
+                  and any(.data.ui_elements[]?;
+                          .identifier == "Audio.Transcription.Run"
+                          and .enabled == true)' \
+            "$OUT/transcription-file-selected.json" >/dev/null; then
+            file_selected=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$file_selected" == 1 ]] \
+        || die "Choose File selected no usable audio file or Transcribe stayed disabled"
+    press "$OUT/transcription-file-selected.json" Audio.Transcription.Run \
+        "$OUT/transcription-run-press.json" \
+        || die "Transcribe is not pressable after selecting a file"
+    wait_fake_event '.event == "audio_transcription"' \
+        "Transcribe did not send the selected audio file"
+    wait_identifier Audio.Transcription.Result "$OUT/transcription-result.json"
+    assert_tree_text "$OUT/transcription-result.json" "Golden transcription result."
+    press "$OUT/transcription-result.json" Audio.Transcription.Copy \
+        "$OUT/transcription-copy-press.json" \
+        || die "Copy transcription is not pressable"
+    [[ "$(pbpaste)" == "Golden transcription result." ]] \
+        || die "Copy transcription did not place the result on the clipboard"
+    see_main "$OUT/transcription-before-save.json"
+    press "$OUT/transcription-before-save.json" Audio.Transcription.Save \
+        "$OUT/transcription-save-press.json" \
+        || die "Save transcription is not pressable"
+    local transcription_saved=0
+    for ((i=0; i<40; i++)); do
+        if [[ "$(cat "$OUT_ROOT/audio-readiness/saved-transcription.txt" 2>/dev/null || true)" == "Golden transcription result." ]]; then
+            transcription_saved=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$transcription_saved" == 1 ]] \
+        || die "Save transcription did not write the exact result"
     jq -n '{success: true,
-            assertion: "Speech and Transcription each start the selected model and leave readiness"}' \
+            assertion: "Speech and Transcription controls produce their visible and persisted effects"}' \
         > "$OUT/audio-readiness-actions.json"
     log "  audio-readiness OK"
     cleanup_persona
@@ -3308,6 +3905,7 @@ case "$FLOW" in
     settings-persistence) flow_settings_persistence ;;
     settings-mtp) flow_settings_mtp ;;
     chat-restore) flow_chat_restore ;;
+    message-actions) flow_message_actions ;;
     restored-tools) flow_restored_tools ;;
     tool-loop-budget) flow_tool_loop_budget ;;
     chat-depth) flow_chat_depth ;;
@@ -3333,6 +3931,7 @@ case "$FLOW" in
         flow_settings_persistence
         flow_settings_mtp
         flow_chat_restore
+        flow_message_actions
         flow_restored_tools
         flow_tool_loop_budget
         flow_chat_depth

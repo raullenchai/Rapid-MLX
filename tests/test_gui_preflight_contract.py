@@ -90,6 +90,7 @@ def test_peekaboo_requirement_is_default_deny():
     assert "*) return 0 ;;" in body, "the catch-all must REQUIRE peekaboo"
     peekaboo_free = {
         "chat-restore",
+        "message-actions",
         "cached-quickstart",
         "cached-curated-tradeup",
         "download-progress",
