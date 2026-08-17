@@ -112,7 +112,34 @@ cat > docs/release-notes/v1.2.0.md <<'MD'
 <!-- inline drafting note --> Visible inline release note.
 IMPORTANT RELEASE NOTE
 <!-- later whole-line drafting note must not ship -->
+<!-- solo open --> KEEP SOLO NOTE -->
+<!-- multi open
+--> KEEP MULTI NOTE -->
+<!-- twin one --> <!-- twin two -->
+<!-- lead comment --> KEEP TWIN TAIL <!-- trailing comment -->
 This release is about speculative decoding.
+
+Example markup:
+
+```html
+<!-- generated marker
+FENCED COMMENT BODY stays visible -->
+```
+
+Nested-delimiter example:
+
+~~~text
+```
+<!-- inner marker
+NESTED FENCE BODY stays visible -->
+```
+~~~
+
+Indented-code example:
+
+    <!-- indented marker
+    INDENTED CODE COMMENT stays visible -->
+    plain indented code line
 
 ## Highlights
 
@@ -144,6 +171,17 @@ lacks "$BODY" "Scratch space for the next release's notes" "highlights: multi-li
 lacks "$BODY" "version-bump PR" "highlights: multi-line HTML comment body stripped"
 contains "$BODY" "<!-- inline drafting note --> Visible inline release note." "highlights: inline comment with visible suffix is preserved"
 contains "$BODY" "IMPORTANT RELEASE NOTE" "highlights: inline comment does not swallow following notes"
+contains "$BODY" "KEEP SOLO NOTE" "highlights: note after the first --> on an opener line is preserved"
+contains "$BODY" "KEEP MULTI NOTE" "highlights: note after the first --> closing a multi-line comment is preserved"
+lacks "$BODY" "twin one" "highlights: an all-comment line with two comments is fully stripped"
+lacks "$BODY" "twin two" "highlights: the second comment on an all-comment line is stripped"
+contains "$BODY" "KEEP TWIN TAIL" "highlights: visible text between two comments is preserved"
+contains "$BODY" "FENCED COMMENT BODY stays visible" "highlights: HTML comments inside a code fence are not stripped"
+contains "$BODY" "<!-- generated marker" "highlights: code-fence comment opener is preserved verbatim"
+contains "$BODY" "NESTED FENCE BODY stays visible" "highlights: a shorter delimiter inside a tilde fence does not close it, comment survives"
+contains "$BODY" "<!-- inner marker" "highlights: nested-fence comment opener is preserved verbatim"
+contains "$BODY" "INDENTED CODE COMMENT stays visible" "highlights: HTML comments in a 4-space indented code block are not stripped"
+contains "$BODY" "<!-- indented marker" "highlights: indented-code comment opener is preserved verbatim"
 lacks "$BODY" "later whole-line drafting note" "highlights: later whole-line comment is still stripped"
 contains "$BODY" "<!-- unmatched drafting note" "highlights: unmatched comment opener fails safe"
 contains "$BODY" "Visible after unmatched opener." "highlights: unmatched comment does not swallow following notes"
