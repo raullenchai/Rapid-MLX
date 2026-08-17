@@ -691,8 +691,10 @@ def mtp_generate_step(
         )
         _timing_add("prompt_lookup_mtp_sync_seconds", time.perf_counter() - started)
 
+    _prefill_started = time.perf_counter()
     with mx.stream(generation_stream):
         y = _prefill(y, input_embeddings)
+    _timing_add("prompt_eval_seconds", time.perf_counter() - _prefill_started)
 
     ntoks = 0
     last_cache_block = 0

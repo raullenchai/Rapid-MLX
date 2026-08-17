@@ -87,6 +87,15 @@ _BENCH_PROMPTS: tuple[str, ...] = (
 )
 
 
+def _tokenizer_stop_tokens(tokenizer: Any) -> set[int]:
+    """Return the same EOS token set mlx-lm uses for stream termination."""
+    plural = getattr(tokenizer, "eos_token_ids", None)
+    if plural is not None:
+        return {int(token) for token in plural if token is not None}
+    singular = getattr(tokenizer, "eos_token_id", None)
+    return {int(singular)} if singular is not None else set()
+
+
 @dataclass(frozen=True)
 class RunResult:
     """One ``(condition, run_idx, prompt_idx)`` measurement."""
@@ -99,6 +108,9 @@ class RunResult:
     accept_attempts: int
     accept_count: int
     elapsed_seconds: float
+    decode_elapsed_seconds: float
+    prompt_eval_seconds: float
+    end_to_end_tok_per_sec: float
     token_sha256: str = ""
     verify_kernel_calls: int = 0
     verify_kernel_fallbacks: int = 0
@@ -394,6 +406,7 @@ def _run_once(
 
     model, tokenizer = load(model_alias)
 
+    last_response = None
     if condition == "mtp":
         from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
         from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
@@ -421,6 +434,7 @@ def _run_once(
             model = model.language_model
 
     prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
+    stop_tokens = _tokenizer_stop_tokens(tokenizer)
     mx.random.seed(seed)
     counter = MTPAcceptCounter()
     # Replace global counter for the duration of THIS run so the
@@ -449,11 +463,18 @@ def _run_once(
             accept_counter=counter,
             max_k=mtp_max_k,
             disable_auto_k=mtp_disable_auto_k,
+            stop_tokens=stop_tokens,
             timing_stats=timing_stats,
         )
         for token, _logprobs, _from_draft in gen:
             n += 1
-            emitted_token_ids.append(int(token))
+            token_id = int(token)
+            emitted_token_ids.append(token_id)
+            # Production consumers stop pulling the generator at EOS. The
+            # standalone bench must mirror that contract, including when EOS
+            # is a target bonus/residual rather than an accepted draft.
+            if token_id in stop_tokens:
+                break
     else:
         timing_stats = {}
         from mlx_lm.generate import stream_generate
@@ -467,6 +488,7 @@ def _run_once(
             sampler=make_sampler(temp=temp, top_p=top_p, top_k=top_k),
         ):
             n += 1
+            last_response = resp
             emitted_token_ids.append(int(resp.token))
             if n >= max_tokens:
                 break
@@ -491,7 +513,23 @@ def _run_once(
     assert get_global_counter().snapshot().attempts == prior_attempts
     assert get_global_counter().snapshot().accepts == prior_accepts
 
-    tok_per_sec = n / elapsed if elapsed > 0 else 0.0
+    if condition == "mtp":
+        prompt_eval_seconds = timing_stats.get("prompt_eval_seconds", 0.0)
+        decode_elapsed = max(0.0, elapsed - prompt_eval_seconds)
+        tok_per_sec = n / decode_elapsed if decode_elapsed > 0 else 0.0
+    else:
+        prompt_eval_seconds = (
+            last_response.prompt_tokens / last_response.prompt_tps
+            if last_response is not None and last_response.prompt_tps > 0
+            else 0.0
+        )
+        decode_elapsed = (
+            n / last_response.generation_tps
+            if last_response is not None and last_response.generation_tps > 0
+            else max(0.0, elapsed - prompt_eval_seconds)
+        )
+        tok_per_sec = n / decode_elapsed if decode_elapsed > 0 else 0.0
+    end_to_end_tok_per_sec = n / elapsed if elapsed > 0 else 0.0
     return RunResult(
         condition=condition,
         run_idx=-1,  # patched up by the caller
@@ -501,6 +539,9 @@ def _run_once(
         accept_attempts=snap_attempts,
         accept_count=snap_accepts,
         elapsed_seconds=elapsed,
+        decode_elapsed_seconds=decode_elapsed,
+        prompt_eval_seconds=prompt_eval_seconds,
+        end_to_end_tok_per_sec=end_to_end_tok_per_sec,
         token_sha256=hashlib.sha256(
             ",".join(str(token) for token in emitted_token_ids).encode("ascii")
         ).hexdigest(),
@@ -543,7 +584,7 @@ def _summarize(
             notes="no runs recorded",
         )
     total_tokens = sum(r.n_tokens for r in results)
-    total_elapsed = sum(r.elapsed_seconds for r in results)
+    total_elapsed = sum(r.decode_elapsed_seconds for r in results)
     pooled = total_tokens / total_elapsed if total_elapsed > 0 else 0.0
     per_run = sorted(r.decode_tok_per_sec for r in results)
     p50 = statistics.median(per_run)
@@ -650,7 +691,8 @@ def main() -> int:
                 print(
                     f"[bench_spec_decode_mtp] {condition} run={run_idx} "
                     f"prompt={prompt_idx} {res.decode_tok_per_sec:.1f} tok/s "
-                    f"({res.n_tokens} tokens in {res.elapsed_seconds:.1f}s; "
+                    f"({res.n_tokens} tokens in {res.decode_elapsed_seconds:.1f}s "
+                    f"decode, {res.elapsed_seconds:.1f}s end-to-end; "
                     f"verify-kernel calls={res.verify_kernel_calls} "
                     f"fallbacks={res.verify_kernel_fallbacks}; "
                     f"verify-sync={res.verify_sync_seconds:.3f}s "
