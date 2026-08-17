@@ -44,7 +44,7 @@ import json
 import statistics
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 # The 8 diverse prompts from PR #990's bench script. Kept verbatim so
@@ -111,6 +111,7 @@ class RunResult:
     prompt_lookup_accepted_tokens: int = 0
     prompt_lookup_rejections: int = 0
     prompt_lookup_mtp_sync_seconds: float = 0.0
+    k_histogram: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -387,6 +388,9 @@ def _run_once(
         MTPAcceptCounter,
         get_global_counter,
     )
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        sum_across_controllers,
+    )
 
     model, tokenizer = load(model_alias)
 
@@ -425,6 +429,11 @@ def _run_once(
     prior_attempts = get_global_counter().snapshot().attempts
     prior_accepts = get_global_counter().snapshot().accepts
 
+    # Controllers intentionally persist across requests. Capture a delta so
+    # each result exposes the K values this prompt actually exercised.
+    # This benchmark runs generations serially, so no other request can
+    # contaminate the process-global counters between these snapshots.
+    _rounds_before, _parks_before, k_hist_before = sum_across_controllers()
     t0 = time.perf_counter()
     n = 0
     emitted_token_ids: list[int] = []
@@ -463,6 +472,12 @@ def _run_once(
                 break
 
     elapsed = time.perf_counter() - t0
+    _rounds_after, _parks_after, k_hist_after = sum_across_controllers()
+    k_histogram = {
+        k: k_hist_after.get(k, 0) - k_hist_before.get(k, 0)
+        for k in k_hist_after.keys() | k_hist_before.keys()
+        if k_hist_after.get(k, 0) != k_hist_before.get(k, 0)
+    }
 
     snap = counter.snapshot()
     if condition != "mtp":
@@ -506,6 +521,7 @@ def _run_once(
         prompt_lookup_mtp_sync_seconds=timing_stats.get(
             "prompt_lookup_mtp_sync_seconds", 0.0
         ),
+        k_histogram=k_histogram if condition == "mtp" else {},
     )
 
 
@@ -626,29 +642,10 @@ def main() -> int:
                         file=sys.stderr,
                     )
                     continue
-                # Patch indices for the JSON output.
-                res = RunResult(
-                    condition=condition,
-                    run_idx=run_idx,
-                    prompt_idx=prompt_idx,
-                    decode_tok_per_sec=res.decode_tok_per_sec,
-                    n_tokens=res.n_tokens,
-                    accept_attempts=res.accept_attempts,
-                    accept_count=res.accept_count,
-                    elapsed_seconds=res.elapsed_seconds,
-                    token_sha256=res.token_sha256,
-                    verify_kernel_calls=res.verify_kernel_calls,
-                    verify_kernel_fallbacks=res.verify_kernel_fallbacks,
-                    verify_sync_seconds=res.verify_sync_seconds,
-                    draft_seconds=res.draft_seconds,
-                    residual_sync_seconds=res.residual_sync_seconds,
-                    verify_calls=res.verify_calls,
-                    prompt_lookup_proposals=res.prompt_lookup_proposals,
-                    prompt_lookup_drafted_tokens=res.prompt_lookup_drafted_tokens,
-                    prompt_lookup_accepted_tokens=res.prompt_lookup_accepted_tokens,
-                    prompt_lookup_rejections=res.prompt_lookup_rejections,
-                    prompt_lookup_mtp_sync_seconds=(res.prompt_lookup_mtp_sync_seconds),
-                )
+                # Patch indices without manually copying every measurement
+                # field. A hand-maintained reconstruction previously made new
+                # diagnostics disappear silently from the final JSON.
+                res = replace(res, run_idx=run_idx, prompt_idx=prompt_idx)
                 all_results[condition].append(res)
                 print(
                     f"[bench_spec_decode_mtp] {condition} run={run_idx} "
@@ -662,7 +659,8 @@ def main() -> int:
                     f"lookup={res.prompt_lookup_proposals}/"
                     f"{res.prompt_lookup_drafted_tokens}/"
                     f"{res.prompt_lookup_accepted_tokens} "
-                    f"sync={res.prompt_lookup_mtp_sync_seconds:.3f}s)",
+                    f"sync={res.prompt_lookup_mtp_sync_seconds:.3f}s; "
+                    f"K={res.k_histogram})",
                     file=sys.stderr,
                 )
 
