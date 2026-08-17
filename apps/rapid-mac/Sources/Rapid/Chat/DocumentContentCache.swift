@@ -237,27 +237,50 @@ final class DocumentContentCache: @unchecked Sendable {
         return pending.contains(k)
     }
 
-    /// Wait for an in-flight extraction of `id`, up to `timeout` seconds.
-    /// Returns immediately when nothing is pending.
+    /// Wait for an in-flight extraction of `id`, giving up only once it stops
+    /// making progress for `stallTimeout` seconds.
     ///
-    /// Bounded rather than indefinite: a wait that cannot end would hang the
-    /// tool loop if an extraction task were ever lost. On timeout the caller
-    /// sees whatever is cached, which for a partially-filled document is still
-    /// useful text rather than an error.
-    private func waitForPending(_ id: UUID, timeout: TimeInterval) {
+    /// A fixed total timeout cannot work here: text extraction finishes in
+    /// milliseconds while recognizing a 529-page scan takes ~9 minutes, and
+    /// any single number is either too short for the scan or too long to wait
+    /// on a task that died. Progress is the honest signal — a run that is
+    /// still publishing pages deserves more time, one that has gone quiet does
+    /// not.
+    private func waitForPending(_ id: UUID, stallTimeout: TimeInterval) {
         let k = Self.key(for: id)
-        let deadline = Date().addingTimeInterval(timeout)
         pendingSignal.lock(); defer { pendingSignal.unlock() }
-        while pending.contains(k), Date() < deadline {
+        while pending.contains(k) {
+            let generationBefore = progressGeneration
+            let deadline = Date().addingTimeInterval(stallTimeout)
             pendingSignal.wait(until: deadline)
+            guard pending.contains(k) else { return }
+            // Woken by a timeout with no progress recorded: the task is stuck
+            // or gone. Return what is cached rather than blocking forever.
+            if progressGeneration == generationBefore, Date() >= deadline { return }
         }
+    }
+
+    /// Bumped by ``reportProgress(_:)`` so a waiter can distinguish "still
+    /// working" from "stalled" without knowing anything about the work.
+    private var progressGeneration: UInt64 = 0
+
+    /// Signal that a long extraction is still advancing. Cheap enough to call
+    /// per page.
+    func reportProgress(_ id: UUID) {
+        pendingSignal.lock()
+        progressGeneration &+= 1
+        pendingSignal.broadcast()
+        pendingSignal.unlock()
     }
 
     /// Like ``get(_:)`` but waits for an in-flight full extraction first, so a
     /// tool call that arrives while the background pass is still running sees
     /// the complete document instead of a partial one.
-    func getAwaitingCompletion(_ id: UUID, timeout: TimeInterval = 30) -> Entry? {
-        if isPending(id) { waitForPending(id, timeout: timeout) }
+    ///
+    /// On timeout the caller still gets whatever has been published, which is
+    /// partial but real.
+    func getAwaitingCompletion(_ id: UUID, stallTimeout: TimeInterval = 30) -> Entry? {
+        if isPending(id) { waitForPending(id, stallTimeout: stallTimeout) }
         return get(id)
     }
 

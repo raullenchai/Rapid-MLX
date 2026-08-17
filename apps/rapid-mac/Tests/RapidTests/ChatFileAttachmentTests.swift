@@ -73,8 +73,12 @@ struct ChatFileAttachmentTests {
         #expect(attachment.extractedText.contains("[Page 1]"))
     }
 
-    @Test("Image-only PDF explains that OCR is required")
-    func scannedPDFRequiresOCR() throws {
+    @Test("A PDF with no legible content is rejected with an accurate reason")
+    func unreadablePDFIsRejected() throws {
+        // A blank page has no text layer AND nothing to recognize. Scanned
+        // PDFs are supported now, so reaching the error means recognition
+        // itself came back empty — the message must say that rather than
+        // telling the user to go and OCR the file themselves.
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         let url = temporaryURL(extension: "pdf")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -82,10 +86,10 @@ struct ChatFileAttachmentTests {
 
         do {
             _ = try ChatFileAttachment(contentsOf: url)
-            Issue.record("Expected an image-only PDF to be rejected")
+            Issue.record("Expected a PDF with no legible content to be rejected")
         } catch let error as ChatFileAttachment.ValidationError {
             #expect(error == .noExtractableText(.pdf))
-            #expect(error.localizedDescription.contains("OCR"))
+            #expect(error.localizedDescription.contains("No readable text"))
         }
     }
 

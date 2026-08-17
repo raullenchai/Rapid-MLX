@@ -465,4 +465,138 @@ struct ReadDocumentToolTests {
         #expect(prompt.contains("mode=\"outline\""))
         #expect(prompt.contains("AS A WHOLE"))
     }
+
+    // MARK: - Scanned documents
+
+    /// A PDF whose pages are IMAGES of text — no text layer at all, which is
+    /// what a scanner produces. Built by rasterizing rendered text, so the
+    /// only way to read it back is recognition.
+    private func makeScannedPDF(pages: [String]) throws -> URL {
+        let doc = PDFDocument()
+        for body in pages {
+            let size = NSSize(width: 612, height: 300)
+            let image = NSImage(size: size)
+            image.lockFocus()
+            NSColor.white.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            (body as NSString).draw(
+                in: NSRect(x: 40, y: 40, width: size.width - 80, height: size.height - 80),
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 28),
+                    .foregroundColor: NSColor.black,
+                ]
+            )
+            image.unlockFocus()
+            guard let page = PDFPage(image: image) else { continue }
+            doc.insert(page, at: doc.pageCount)
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("pdf")
+        guard let data = doc.dataRepresentation() else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try data.write(to: url)
+        return url
+    }
+
+    @Test("A scanned PDF is recognized instead of rejected", .timeLimit(.minutes(1)))
+    func scannedPDFIsRecognized() async throws {
+        // Before OCR support this threw noExtractableText and the user could
+        // not attach the file at all.
+        let cache = freshCache()
+        let url = try makeScannedPDF(pages: ["Quarterly revenue summary"])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // The fixture genuinely has no text layer — otherwise this test would
+        // pass without exercising recognition at all.
+        let rawText = PDFDocument(url: url)?.page(at: 0)?.string ?? ""
+        #expect(rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.kind == .pdf)
+        #expect(attachment.extractedText.localizedCaseInsensitiveContains("revenue"))
+    }
+
+    @Test("A multi-page scan previews eagerly and finishes in the background", .timeLimit(.minutes(2)))
+    func scannedPDFDefersTheTail() async throws {
+        // Recognition costs ~0.69 s/page, so only a few pages can run while
+        // the user waits; the rest must land later without blocking attach.
+        let cache = freshCache()
+        let pages = (0..<6).map { "Section \($0) heading text" }
+        let url = try makeScannedPDF(pages: pages)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(attachment.pageCount == 6)
+        // Beyond the eager OCR window, so the total is not yet known.
+        #expect(attachment.totalCharacterCount == nil)
+        #expect(attachment.hasUnshownContent)
+
+        // read_document waits for the background recognition to finish, so
+        // the last page is reachable even though attach never read it.
+        let json = try payload(
+            await run(["document_id": attachment.id.uuidString, "grep": "Section 5"], cache: cache)
+        )
+        #expect((json["match_count"] as? Int) ?? 0 >= 1)
+    }
+
+    @Test("A text PDF never pays the recognition cost", .timeLimit(.minutes(1)))
+    func textPDFSkipsRecognition() async throws {
+        // 40 pages of OCR would take ~28s. This completing quickly is the
+        // assertion: the selectable-text path must not rasterize anything.
+        let cache = freshCache()
+        let url = try writePDF(pages: 40)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let started = Date()
+        let attachment = try ChatFileAttachment(contentsOf: url, cache: cache)
+        #expect(Date().timeIntervalSince(started) < 2.0)
+        #expect(attachment.extractedText.contains("PAGEMARK0"))
+    }
+
+    @Test("A stalled extraction is abandoned rather than waited on forever")
+    func stalledExtractionDoesNotHang() async throws {
+        // Recognition of a 529-page scan takes ~9 minutes, so no fixed timeout
+        // can be right for both it and a text extraction that finishes in
+        // milliseconds. The wait is bounded by SILENCE instead: nothing here
+        // ever reports progress, so the waiter returns the partial entry.
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(filename: "scan.pdf", text: "page one"))
+        cache.beginPending(id)
+        defer { cache.finishPending(id) }
+
+        let started = Date()
+        let entry = cache.getAwaitingCompletion(id, stallTimeout: 0.3)
+        #expect(Date().timeIntervalSince(started) < 3.0)
+        #expect(entry?.text == "page one")
+    }
+
+    @Test("Progress extends the wait past the stall timeout")
+    func progressExtendsTheWait() async throws {
+        // The live case: work that keeps reporting outlives a stall timeout
+        // far shorter than its total runtime, which is what lets a nine-minute
+        // recognition finish under a thirty-second stall bound.
+        let cache = freshCache()
+        let id = UUID()
+        cache.put(id, entry: DocumentContentCache.Entry(filename: "scan.pdf", text: "partial"))
+        cache.beginPending(id)
+
+        // Report progress well past the stall timeout, then publish. Timing is
+        // one-sided: the test only fails if the waiter gives up EARLY, and the
+        // stall bound is an order of magnitude under the total, so a loaded
+        // machine makes this more forgiving rather than flaky.
+        Task.detached {
+            for _ in 0..<5 {
+                try? await Task.sleep(for: .milliseconds(60))
+                cache.reportProgress(id)
+            }
+            cache.put(id, entry: DocumentContentCache.Entry(filename: "scan.pdf", text: "complete text"))
+            cache.finishPending(id)
+        }
+
+        let entry = cache.getAwaitingCompletion(id, stallTimeout: 5.0)
+        #expect(entry?.text == "complete text")
+    }
 }

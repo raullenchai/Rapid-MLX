@@ -275,6 +275,16 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
     /// imperceptible.
     private static let eagerPageCount = 24
 
+    /// Pages OCR'd synchronously when a PDF has no text layer.
+    ///
+    /// Far smaller than ``eagerPageCount`` because the two cost wildly
+    /// different amounts: reading selectable text is ~0.006 s/page, while
+    /// recognition measured ~0.69 s/page on a real scan. Twenty-four pages of
+    /// OCR would be a 17-second stall with the send button disabled; four is
+    /// under three seconds and still yields a usable preview. The rest is
+    /// recognized on the same background pass that finishes text PDFs.
+    private static let eagerOCRPageCount = 4
+
     /// Upper bound on captured outline rows. A real 302-page book has 289;
     /// this stops a generated PDF with a pathological bookmark tree from
     /// bloating the cached entry.
@@ -303,20 +313,14 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         let eagerLimit = min(Self.eagerPageCount, document.pageCount)
         let head = Self.extractPages(document, range: 0..<eagerLimit)
         guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            // Every eagerly-read page was image-only. Checking the whole
-            // document here would reintroduce the stall, but reporting
-            // "needs OCR" off a handful of pages would be wrong for a book
-            // with scanned front matter — so scan the rest before deciding.
-            let tail = Self.extractPages(document, range: eagerLimit..<document.pageCount)
-            guard !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw ValidationError.noExtractableText(.pdf)
-            }
+            // No selectable text in the eager window: this is a scan. Recognize
+            // a few pages so the turn has a preview, and leave the rest to the
+            // background pass — at ~0.69 s/page a 529-page book is ~6 minutes,
+            // which can never run while the user waits.
             try self.init(
-                fullText: Self.collapsingLayoutNoise(tail),
+                scannedPDF: document,
                 filename: filename,
-                kind: .pdf,
-                sourceByteCount: data.count,
-                pageCount: document.pageCount,
+                data: data,
                 cache: cache,
                 outline: outline
             )
@@ -348,14 +352,95 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
         cache.beginPending(id)
         Task.detached(priority: .utility) {
             defer { cache.finishPending(id) }
+            // ``recognizePages`` passes selectable text straight through and
+            // only rasterizes pages that have none, so a mostly-typeset book
+            // pays the OCR cost for its scanned plates alone and nothing else.
             let full = Self.collapsingLayoutNoise(
-                Self.extractPages(document, range: 0..<pageCount)
+                PDFTextRecognizer.recognizePages(
+                    of: document,
+                    range: 0..<pageCount,
+                    onPageComplete: { cache.reportProgress(id) }
+                )
             )
             let bounded = String(
                 full.trimmingCharacters(in: .whitespacesAndNewlines)
                     .prefix(Self.maxExtractedCharacters)
             )
             guard !bounded.isEmpty else { return }
+            cache.put(id, entry: DocumentContentCache.Entry(
+                filename: filename,
+                text: bounded,
+                pageCount: pageCount,
+                outline: Self.resolvingOutlineOffsets(outline, in: bounded)
+            ))
+        }
+    }
+
+    /// Import a PDF with no text layer by recognizing its pages.
+    ///
+    /// Split out from the text path because the economics are different by two
+    /// orders of magnitude: reading selectable text is ~0.006 s/page, while
+    /// recognition is ~0.69 s/page. Only ``eagerOCRPageCount`` pages are
+    /// recognized synchronously — enough for a preview — and the remainder
+    /// runs on the same background pass a large text PDF uses.
+    private init(
+        scannedPDF document: PDFDocument,
+        filename: String,
+        data: Data,
+        cache: DocumentContentCache,
+        outline: [DocumentContentCache.OutlineNode]
+    ) throws {
+        let eagerLimit = min(Self.eagerOCRPageCount, document.pageCount)
+        let head = PDFTextRecognizer.recognizePages(of: document, range: 0..<eagerLimit)
+        guard !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // Recognition found nothing legible on the opening pages. This is
+            // the honest "cannot read this" case: blank scans, pure diagrams,
+            // or a language Vision does not cover.
+            throw ValidationError.noExtractableText(.pdf)
+        }
+
+        let isComplete = eagerLimit == document.pageCount
+        try self.init(
+            fullText: Self.collapsingLayoutNoise(head),
+            filename: filename,
+            kind: .pdf,
+            sourceByteCount: data.count,
+            pageCount: document.pageCount,
+            cache: cache,
+            totalIsKnown: isComplete,
+            outline: outline
+        )
+        guard !isComplete else { return }
+
+        let id = self.id
+        let pageCount = document.pageCount
+        let previewLength = head.count
+        cache.beginPending(id)
+        // `document` is handed over to the task and never touched here again,
+        // so the transfer is safe even though PDFDocument is not Sendable.
+        // Re-opening it inside the task instead would re-parse a 33 MB file.
+        nonisolated(unsafe) let handoff = document
+        // `.utility`, not `.background`: the model may ask to read this
+        // document seconds from now and blocks until recognition finishes.
+        // `.background` is for work nobody awaits, and macOS throttles it hard
+        // enough that even a six-page scan can overrun the tool's wait.
+        Task.detached(priority: .utility) {
+            defer { cache.finishPending(id) }
+            let full = Self.collapsingLayoutNoise(
+                PDFTextRecognizer.recognizePages(
+                    of: handoff,
+                    range: 0..<pageCount,
+                    onPageComplete: { cache.reportProgress(id) }
+                )
+            )
+            let bounded = String(
+                full.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .prefix(Self.maxExtractedCharacters)
+            )
+            // A cancelled run returns only the pages it reached. Publishing
+            // that is right — partial recognized text beats none — but never
+            // publish something SHORTER than the preview already on screen.
+            guard bounded.count > previewLength else { return }
             cache.put(id, entry: DocumentContentCache.Entry(
                 filename: filename,
                 text: bounded,
@@ -669,7 +754,11 @@ struct ChatFileAttachment: Codable, Equatable, Hashable, Identifiable, Sendable 
                 return "This CSV has an unterminated quoted field."
             case .noExtractableText(let kind):
                 if kind == .pdf {
-                    return "This PDF has no selectable text. Scanned PDFs need OCR before they can be analyzed."
+                    // Scanned PDFs ARE supported now — they are recognized on
+                    // import. Reaching here means recognition itself found
+                    // nothing: a blank scan, pure imagery, or a script Vision
+                    // does not cover.
+                    return "No readable text could be recognized in this PDF. It may be blank, contain only images or diagrams, or be in a language Rapid cannot read."
                 }
                 return "This file contains no readable data."
             }
