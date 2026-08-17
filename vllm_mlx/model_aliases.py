@@ -173,6 +173,8 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "is_hybrid_explicit",
             "is_moe",
             "supports_spec_decode",
+            "mtp_draft_model",
+            "mtp_speculative_tokens",
             "default_max_tokens",
             "suffix_decoding_tier",
             "suffix_bench_speedup",
@@ -503,6 +505,29 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"modality={modality!r} (DDTree is AR-only)"
             )
 
+    mtp_draft_model = value.get("mtp_draft_model")
+    if mtp_draft_model is not None and (
+        not isinstance(mtp_draft_model, str)
+        or not mtp_draft_model.strip()
+        or "/" not in mtp_draft_model
+    ):
+        raise ValueError(
+            f"alias {alias!r}: mtp_draft_model must use non-empty 'org/repo' format"
+        )
+    if "mtp_speculative_tokens" in value and mtp_draft_model is None:
+        raise ValueError(
+            f"alias {alias!r}: mtp_speculative_tokens requires mtp_draft_model"
+        )
+    mtp_speculative_tokens = value.get("mtp_speculative_tokens", 3)
+    if (
+        isinstance(mtp_speculative_tokens, bool)
+        or not isinstance(mtp_speculative_tokens, int)
+        or mtp_speculative_tokens <= 0
+    ):
+        raise ValueError(
+            f"alias {alias!r}: mtp_speculative_tokens must be a positive integer"
+        )
+
     return AliasProfile(
         hf_path=hf_path,
         subfolder=subfolder,
@@ -514,6 +539,8 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         is_hybrid_explicit=_strict_bool("is_hybrid_explicit", False),
         is_moe=_strict_bool("is_moe", False),
         supports_spec_decode=_strict_bool("supports_spec_decode", True),
+        mtp_draft_model=mtp_draft_model,
+        mtp_speculative_tokens=mtp_speculative_tokens,
         default_max_tokens=value.get("default_max_tokens"),
         suffix_decoding_tier=tier,
         suffix_bench_speedup=speedup,

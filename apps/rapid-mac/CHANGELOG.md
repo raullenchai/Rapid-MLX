@@ -13,6 +13,13 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+
+- Qwen3.8-27B users can explicitly opt into MTP acceleration from
+  Settings → Performance. It remains off by default because the measured
+  speedup varies by Mac, and is available for both Rapid's standard 4-bit and
+  mixed-precision builds.
+
 ## [0.12.14] — 2026-08-15
 
 Adds a Rapid-built version of Qwen3.8-27B, lets you give models your own names,

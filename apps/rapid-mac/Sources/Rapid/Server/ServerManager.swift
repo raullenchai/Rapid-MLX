@@ -379,6 +379,20 @@ final class ServerManager {
     /// first model in the sidecar (#1717 + #1788).
     var perfConfigProvider: ((String) -> ModelPerfConfig?)?
 
+    /// Exact performance argv applied to the process-owning model. Dynamic
+    /// residency can apply KV/prefix settings per engine, but speculative
+    /// decoding patches the model during process startup, so Settings decides
+    /// whether a speculative-decoding change needs a real restart.
+    private(set) var launchedPerformanceAlias: String?
+    private(set) var launchedPerformanceFlags: [String] = []
+
+    func hasAppliedSpeculativeDecoding(forAlias alias: String) -> Bool {
+        guard child != nil,
+              launchedPerformanceAlias?.caseInsensitiveCompare(alias) == .orderedSame
+        else { return false }
+        return launchedPerformanceFlags.contains("--speculative-config")
+    }
+
     /// Health-check budget — interpreted as a **stall window** since
     /// v0.7.13, not a wall-clock-from-launch cap. The deadline slides
     /// forward every time ``downloadProgress`` reports forward motion
@@ -866,15 +880,21 @@ final class ServerManager {
     ) async -> Bool {
         let trimmed = alias.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        let requestedPerformanceFlags = perfLaunchFlagsProvider?(trimmed) ?? []
+        let speculativeRequested = requestedPerformanceFlags.contains("--speculative-config")
+        let speculativeApplied = hasAppliedSpeculativeDecoding(forAlias: trimmed)
+        let speculativeSettingChanged = speculativeRequested != speculativeApplied
         // Replacement policy matters only when loading a different model.
         // The requested alias is already the active assistant, so asking the
         // residency endpoint to replace it is redundant and breaks legacy
         // sidecars: their 404 fallback stops and restarts the model on every
         // chat send before the request can leave the app.
-        if case .ready(let current) = state, current == trimmed {
+        if case .ready(let current) = state, current == trimmed, !speculativeSettingChanged {
             return true
         }
-        if replacementGroup == nil, isModelResident(trimmed) { return true }
+        if replacementGroup == nil, isModelResident(trimmed), !speculativeSettingChanged {
+            return true
+        }
 
         // Any fresh load attempt — resident, cold start, or the legacy
         // stop/start fallback — supersedes a stale rejection for THIS alias so
@@ -901,7 +921,10 @@ final class ServerManager {
         // surface as a hard failure instead of the process swap they actually
         // need — audio runs as its own ``serve <alias>`` (audio-mode) process.
         let readyWithChild: Bool = { if case .ready = state, child != nil { return true }; return false }()
-        if Self.residencyLoadApplies(residencyEligible: residencyEligible, readyWithChild: readyWithChild) {
+        if Self.residencyLoadApplies(
+            residencyEligible: residencyEligible && !speculativeRequested && !speculativeSettingChanged,
+            readyWithChild: readyWithChild
+        ) {
             // Publish before crossing the network await so SwiftUI replaces
             // the still-pressable CTA with an honest working state in the
             // same run-loop turn. Count rather than coalescing here: callers
@@ -1044,6 +1067,14 @@ final class ServerManager {
             await refreshResidency()
         }
         return result
+    }
+
+    /// Speculative decoding is installed while the process-owning engine
+    /// starts, unlike the resident API's per-engine KV/prefix knobs. Rebuild
+    /// one setting changes; conversations and downloaded weights remain.
+    func restartForSpeculativePerformance(alias: String, hfPath: String? = nil) async -> Bool {
+        await stop()
+        return await ensureServing(alias: alias, hfPath: hfPath, residencyEligible: false)
     }
 
     /// True when the child is serving exactly this alias.
@@ -1510,13 +1541,14 @@ final class ServerManager {
         // HERE, alongside the recommendation, for the same reason it is
         // computed here — every start path reaches `start(alias:)` and none of
         // them thread flags.
-        var extraFlags = Self.mergedPerformanceFlags(
+        let performanceFlags = Self.mergedPerformanceFlags(
             recommended: RAMBucketedDefault.launchFlags(
                 forAlias: trimmedAlias,
                 physicalRAMGB: hardware.physicalRAMGB
             ),
             userOverrides: perfLaunchFlagsProvider?(trimmedAlias) ?? []
         )
+        var extraFlags = performanceFlags
         extraFlags.append(contentsOf: [
             "--resident-memory-limit-gb",
             String(format: "%.0f", ModelSizing.residentMemoryCeilingGB(on: hardware)),
@@ -1673,6 +1705,8 @@ final class ServerManager {
         }
 
         self.child = process
+        self.launchedPerformanceAlias = trimmedAlias
+        self.launchedPerformanceFlags = performanceFlags
         // Codex r1 P3 (#17): only publish the bearer after the spawn
         // has succeeded — see comment at the bearer guard above.
         self.activeBearer = bearer
@@ -2628,6 +2662,7 @@ final class ServerManager {
     /// token after them when the user's override supersedes them.
     nonisolated private static let perfValueCarryingFlags: Set<String> = [
         "--kv-cache-dtype", "--kv-cache-turboquant", "--cache-memory-mb",
+        "--speculative-config",
     ]
 
     /// Flags that move as a unit: an override for any member supersedes the
@@ -2643,6 +2678,7 @@ final class ServerManager {
         ["--kv-cache-dtype", "--kv-cache-turboquant"],
         ["--enable-prefix-cache", "--disable-prefix-cache"],
         ["--cache-memory-mb"],
+        ["--speculative-config"],
     ]
 
     /// Merge the RAM-tier recommendation with the user's per-model overrides.

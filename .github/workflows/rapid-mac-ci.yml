@@ -304,7 +304,7 @@ jobs:
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
       #
-      # These eleven drive the app through `rapid-ax` alone (see
+      # These flows drive the app through `rapid-ax` alone (see
       # `flow_requires_peekaboo` in the harness). Most other flows shell out to
       # peekaboo — a third-party install whose bridge socket comes from the
       # Peekaboo app rather than its CLI, with its own permission surface. The
@@ -343,6 +343,11 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow audio-readiness
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/audio-readiness
+
+      - name: 'Golden flow: settings-mtp'
+        run: ./scripts/gui-golden-flows.sh --flow settings-mtp
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/settings-mtp
 
       - name: 'Golden flow: window-close-prompt'
         run: ./scripts/gui-golden-flows.sh --flow window-close-prompt

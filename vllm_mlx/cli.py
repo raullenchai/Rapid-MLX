@@ -5517,7 +5517,7 @@ def models_command(args):
     # floor — never shrink below it so short rows still feel padded.
     # Other widths sized to fit values currently in aliases.json:
     # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
-    # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7.
+    # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7, preset 8.
     alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
     # Size ("438.3 GiB" is the widest current value) comes right after the
     # alias so the "how big before I pull?" answer is the first thing a user
@@ -5532,6 +5532,7 @@ def models_command(args):
         ("Suffix Tier", 11),
         ("DFlash", 7),
         ("DDTree", 7),
+        ("Preset", 8),
     )
     width = sum(w for _, w in cols) + len(cols) - 1
     sep = "  " + "─" * width
@@ -5544,7 +5545,11 @@ def models_command(args):
         p = profiles[alias]
         tools = p.tool_call_parser or "—"
         reasoning = p.reasoning_parser or "—"
-        if p.is_hybrid:
+        if p.mtp_draft_model:
+            spec = "✓ MTP"
+            tier = "n/a"
+            preset = f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}"
+        elif p.is_hybrid:
             # Hybrid models cannot use spec-decode or suffix-decode regardless
             # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
             spec = "✗ hybrid"
@@ -5552,6 +5557,9 @@ def models_command(args):
         else:
             spec = "✓" if p.supports_spec_decode else "✗"
             tier = p.suffix_decoding_tier
+            preset = "Suffix" if p.supports_spec_decode else "—"
+        if p.is_hybrid and not p.mtp_draft_model:
+            preset = "—"
         # DFlash column — eligible aliases show ✓, everything else "—" so
         # the visual scan immediately surfaces what supports it. We don't
         # re-run the eligibility gate here (which would also check that
@@ -5562,7 +5570,7 @@ def models_command(args):
         size = format_size(p.hf_path)
         row = (
             f"  {alias:<{alias_width}} {size:<10} {tools:<16} {reasoning:<12} "
-            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7}"
+            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<8}"
         )
         print(row)
 

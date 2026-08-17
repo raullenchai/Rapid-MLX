@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
+Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, settings-mtp, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|download-progress|settings-persistence|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
+        cached-quickstart|download-progress|settings-persistence|settings-mtp|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
         slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -1339,6 +1339,59 @@ PY
     cleanup_persona
 }
 
+flow_settings_mtp() {
+    log "settings Qwen3.8 MTP opt-in"
+    start_persona settings-mtp FAKE_SETTINGS_MTP=1
+    dismiss_first_run
+    open_settings
+    wait_settings_stable "$OUT/settings-root.json"
+    press "$OUT/settings-root.json" Settings.Category.performance "$OUT/performance-open-press.json"
+    wait_identifier Settings.Performance.SpeculativeDecoding.Enabled "$OUT/performance-mtp-off.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Performance.ModelPicker"
+                    and .value == "qwen3.8-27b-4bit")' \
+        "$OUT/performance-mtp-off.json" >/dev/null \
+        || die "Performance did not select the cached Qwen3.8 MTP fixture"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Performance.SpeculativeDecoding.Enabled"
+                    and .enabled == true and .value == 0)' \
+        "$OUT/performance-mtp-off.json" >/dev/null \
+        || die "Qwen3.8 MTP switch was missing, disabled, or defaulted on"
+    press "$OUT/performance-mtp-off.json" Settings.Performance.SpeculativeDecoding.Enabled \
+        "$OUT/performance-mtp-press.json"
+    wait_settings_stable "$OUT/performance-mtp-on.json" Settings.Performance.SpeculativeDecoding.Enabled
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Performance.SpeculativeDecoding.Enabled" and .value == 1)' \
+        "$OUT/performance-mtp-on.json" >/dev/null \
+        || die "Qwen3.8 MTP switch did not stay enabled after pressing"
+    baseline settings-mtp.enabled "$OUT/performance-mtp-on.json"
+    cleanup_persona
+
+    # Every chat model gets the same stable control surface. An alias without
+    # an audited registry preset must fail closed instead of hiding the row or
+    # letting the user enable an unverified combination.
+    start_persona settings-spec-unsupported
+    dismiss_first_run
+    open_settings
+    wait_settings_stable "$OUT/settings-unsupported-root.json"
+    press "$OUT/settings-unsupported-root.json" Settings.Category.performance \
+        "$OUT/performance-unsupported-open-press.json"
+    wait_identifier Settings.Performance.SpeculativeDecoding.Enabled \
+        "$OUT/performance-spec-unsupported.json"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Performance.ModelPicker"
+                    and .value == "fake-alias")' \
+        "$OUT/performance-spec-unsupported.json" >/dev/null \
+        || die "Performance did not select the unsupported chat fixture"
+    jq -e '.data.ui_elements[]?
+           | select(.identifier == "Settings.Performance.SpeculativeDecoding.Enabled"
+                    and .enabled == false and .value == 0)' \
+        "$OUT/performance-spec-unsupported.json" >/dev/null \
+        || die "Unsupported alias did not expose a disabled speculative control"
+    baseline settings-mtp.unsupported "$OUT/performance-spec-unsupported.json"
+    cleanup_persona
+}
+
 flow_chat_restore() {
     log "3/6 basic chat and session restore"
     start_persona chat-restore
@@ -2419,6 +2472,12 @@ flow_image_generation() {
     done
     [[ "$resolved" == 1 ]] \
         || die "Images.ModelPicker never resolved to $FAKE_IMAGE_ALIAS — the tab has no model to render with"
+    # The picker and readiness banner are fed by separate async state. A
+    # resolved picker does not guarantee that the banner has consumed the
+    # same catalog refresh yet; snapshotting here used to race and capture
+    # "No model chosen" on busy CI runners. Wait for the cached model's Start
+    # action so the baseline describes one coherent state.
+    wait_identifier Readiness.Action "$OUT/ig-empty.json"
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Aspect")' "$OUT/ig-empty.json" >/dev/null \
         || die "Images.Aspect is missing — no way to choose an aspect ratio"
     jq -e '.data.ui_elements[]? | select(.identifier == "Images.Resolution")' "$OUT/ig-empty.json" >/dev/null \
@@ -3210,6 +3269,7 @@ case "$FLOW" in
     cached-quickstart) flow_cached_quickstart ;;
     download-progress) flow_download_progress ;;
     settings-persistence) flow_settings_persistence ;;
+    settings-mtp) flow_settings_mtp ;;
     chat-restore) flow_chat_restore ;;
     restored-tools) flow_restored_tools ;;
     tool-loop-budget) flow_tool_loop_budget ;;
@@ -3233,6 +3293,7 @@ case "$FLOW" in
         flow_cached_quickstart
         flow_download_progress
         flow_settings_persistence
+        flow_settings_mtp
         flow_chat_restore
         flow_restored_tools
         flow_tool_loop_budget

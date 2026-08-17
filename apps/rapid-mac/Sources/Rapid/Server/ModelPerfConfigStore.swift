@@ -105,7 +105,7 @@ final class ModelPerfConfigStore {
     /// `serve` argv contributed by this alias's override. Empty when the user
     /// has no opinion — the untouched-install path.
     func launchFlags(forAlias alias: String) -> [String] {
-        config(forAlias: alias).launchFlags
+        config(forAlias: alias).launchFlags(forAlias: alias)
     }
 
     // MARK: - Internals

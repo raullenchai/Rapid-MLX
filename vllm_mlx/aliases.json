@@ -306,18 +306,22 @@
     "is_moe": true
   },
   "qwen3.8-27b-4bit": {
-    "hf_path": "mlx-community/Qwen3.8-27B-4bit",
+    "hf_path": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+    "mtp_speculative_tokens": 3
   },
   "qwen3.8-27b-mixed-3.5bpw": {
     "hf_path": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
     "tool_call_parser": "hermes",
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "mtp_draft_model": "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
+    "mtp_speculative_tokens": 3
   },
   "qwen3.6-35b-nvfp4": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",

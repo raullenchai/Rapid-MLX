@@ -891,8 +891,8 @@ def _emit_catalog(subcommand, alias):
     """
     if subcommand == "models":
         print("Available models")
-        print("Alias                  Parser           Reasoning")
-        print("---------------------  ---------------  ---------")
+        print("Alias                  Parser           Reasoning        Preset")
+        print("---------------------  ---------------  ---------------  --------")
         if _setting("FAKE_INCLUDE_STARTER") == "1":
             # A production catalog always contains the onboarding starter.
             # Most flows deliberately keep the compact single-chat-row
@@ -901,6 +901,8 @@ def _emit_catalog(subcommand, alias):
             print("lfm2.5-1b-4bit        hermes           none")
         print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
+        if _setting("FAKE_SETTINGS_MTP") == "1":
+            print("qwen3.8-27b-4bit       hermes           qwen3           MTP@rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3")
         # A video-generation row, in the tagged section the real engine
         # emits (#1607). It has no tokenizer and cannot answer a chat
         # request, so the desktop must filter it out of every catalog
@@ -935,8 +937,11 @@ def _emit_catalog(subcommand, alias):
         print("Cached models")
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
-        print(f"fake-alias             {FAKE_REPO}        1.2 GB")
-        print("(external)             fake-external-alias     2.4 GB")
+        if _setting("FAKE_SETTINGS_MTP") != "1":
+            print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+            print("(external)             fake-external-alias     2.4 GB")
+        if _setting("FAKE_SETTINGS_MTP") == "1":
+            print("qwen3.8-27b-4bit       rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX  15.2 GB")
         # Cached, so the Images tab resolves to it without a download path —
         # ``ImageGenViewModel.resolveAlias`` prefers a cached entry.
         print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")
@@ -963,6 +968,7 @@ def _emit_catalog(subcommand, alias):
             "fake-video-alias": "fake/video-mlx",
             "fake-qwen3-tts": "fake/qwen3-tts",
             "fake-whisper-small": "fake/whisper-small",
+            "qwen3.8-27b-4bit": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
         }.get(alias, FAKE_REPO)
         print(f"Alias: {alias} -> {repo}")
         return True
