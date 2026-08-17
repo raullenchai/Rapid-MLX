@@ -261,7 +261,8 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
     Accepts:
 
     * An absolute / relative path to a directory containing a
-      ``model.safetensors`` or ``model-mtp.safetensors`` file
+      ``model.safetensors``, ``model-mtp.safetensors``, or
+      ``mtp/model.safetensors`` file
       (operators with a pre-downloaded HF snapshot).
     * An absolute / relative path to a ``*.safetensors`` file
       directly (operators with a hand-assembled sidecar; the
@@ -269,7 +270,9 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
       names).
     * An HF Hub repo name like ``mlx-community/Qwen3.5-9B-MTP-4bit``
       (downloaded via ``snapshot_download`` to the HF cache, then
-      probed for ``model.safetensors`` / ``model-mtp.safetensors``).
+      probed for the layouts above). The nested ``mtp/`` layout lets a
+      single repository contain target and drafter weights without
+      ``mlx_lm.load`` mistaking the drafter for a target-model shard.
 
     Returns ``None`` if the reference cannot be resolved — caller
     treats this as a soft failure and logs.
@@ -314,6 +317,7 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
     """
     candidates = (
         sidecar_dir / "model-mtp.safetensors",
+        sidecar_dir / "mtp" / "model.safetensors",
         sidecar_dir / "model.safetensors",
     )
     for c in candidates:
@@ -449,8 +453,9 @@ def inject_mtp_support(
                 "[mtp.inject] sidecar %r could not be resolved to a "
                 "safetensors file; skipping MTP injection. "
                 "Pass either a repo id (mlx-community/Qwen3.5-9B-MTP-4bit), "
-                "a directory containing model.safetensors / "
-                "model-mtp.safetensors, or the file path directly.",
+                "a directory containing model-mtp.safetensors, "
+                "mtp/model.safetensors, or model.safetensors, or the "
+                "file path directly.",
                 mtp_sidecar,
             )
             return False
