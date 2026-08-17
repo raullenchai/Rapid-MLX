@@ -1700,10 +1700,15 @@ struct QuickstartView: View {
                         shortlistHeading("OR PICK A BIGGER ONE")
                         VStack(spacing: 9) {
                             ForEach(list.tradeUps) { choice in
+                                let cached = Self.cachedModel(
+                                    alias: choice.alias,
+                                    cachedModels: cachedModels
+                                )
                                 QuickstartCompactCard(
                                     choice: choice,
                                     selected: coordinator.selection.alias == choice.alias,
-                                    sizeText: Self.sizeText(for: choice),
+                                    sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
+                                    isCached: cached != nil,
                                     onActivate: { activatePrimary(in: .shortlist) }
                                 ) { coordinator.select(choice) }
                             }

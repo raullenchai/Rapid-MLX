@@ -36,7 +36,7 @@ usage() {
     cat <<'EOF'
 Usage: gui-golden-flows.sh [--flow NAME] [--keep] [--update-baselines]
 
-Flows: fresh-install, cached-quickstart, download-progress, settings-persistence, settings-mtp, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
+Flows: fresh-install, cached-quickstart, cached-curated-tradeup, download-progress, settings-persistence, settings-mtp, chat-restore, restored-tools, tool-loop-budget, chat-depth, math-rendering, launch-integrations,
        slow-stream-stop,
        model-crash-recovery, low-memory-choice,
        update-state, window-close-prompt, no-dead-controls, catalog-integrity,
@@ -99,7 +99,7 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|download-progress|settings-persistence|settings-mtp|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
+        cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
         slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
@@ -1193,6 +1193,33 @@ flow_cached_quickstart() {
     fi
     cleanup_persona
     cleanup_operator_server
+}
+
+flow_cached_curated_tradeup() {
+    log "cached curated trade-up keeps its on-disk state past the six-row cap"
+    start_persona cached-curated-tradeup FAKE_CACHED_CURATED_TRADEUP=1
+    see_main "$OUT/consent.json"
+    if jq -e '.data.ui_elements[]? | select(.identifier == "TelemetryConsent.DontShare")' \
+        "$OUT/consent.json" >/dev/null; then
+        press "$OUT/consent.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    fi
+
+    # Six alphabetically earlier cached rows consume the bounded "Already on
+    # this Mac" presentation. Qwen remains a native curated trade-up, so this
+    # pins the exact seam where cached provenance used to be discarded.
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+    press "$OUT/welcome.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_identifier Quickstart.Choice.qwen3.5-4b-4bit "$OUT/chooser.json"
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Choice.qwen3.5-4b-4bit")
+            | select((.description // "") | contains("on disk 2.9 GB"))
+            | select(((.description // "") | contains("download")) | not)' \
+        "$OUT/chooser.json" >/dev/null \
+        || die "cached curated trade-up still advertises a download"
+    press "$OUT/chooser.json" Quickstart.Choice.qwen3.5-4b-4bit "$OUT/select.json"
+    see_main "$OUT/selected.json"
+    assert_tree_text "$OUT/selected.json" "Start existing model"
+    cleanup_persona
 }
 
 flow_download_progress() {
@@ -3276,6 +3303,7 @@ require_tools
 case "$FLOW" in
     fresh-install) flow_fresh_install ;;
     cached-quickstart) flow_cached_quickstart ;;
+    cached-curated-tradeup) flow_cached_curated_tradeup ;;
     download-progress) flow_download_progress ;;
     settings-persistence) flow_settings_persistence ;;
     settings-mtp) flow_settings_mtp ;;
@@ -3300,6 +3328,7 @@ case "$FLOW" in
     all)
         flow_fresh_install
         flow_cached_quickstart
+        flow_cached_curated_tradeup
         flow_download_progress
         flow_settings_persistence
         flow_settings_mtp

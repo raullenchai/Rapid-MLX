@@ -91,6 +91,7 @@ def test_peekaboo_requirement_is_default_deny():
     peekaboo_free = {
         "chat-restore",
         "cached-quickstart",
+        "cached-curated-tradeup",
         "download-progress",
         "settings-persistence",
         "settings-mtp",

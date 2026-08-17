@@ -899,6 +899,10 @@ def _emit_catalog(subcommand, alias):
             # fixture, but fresh-install must exercise the real default
             # selection contract rather than falling back to fake-alias.
             print("lfm2.5-1b-4bit        hermes           none")
+        if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+            for index in range(6):
+                print(f"a-cached-{index}             hermes           none")
+            print("qwen3.5-4b-4bit       hermes           qwen3")
         print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
         if _setting("FAKE_SETTINGS_MTP") == "1":
@@ -940,6 +944,10 @@ def _emit_catalog(subcommand, alias):
         if _setting("FAKE_SETTINGS_MTP") != "1":
             print(f"fake-alias             {FAKE_REPO}        1.2 GB")
             print("(external)             fake-external-alias     2.4 GB")
+        if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+            for index in range(6):
+                print(f"a-cached-{index}             fake-org/a-cached-{index}        100 MB")
+            print("qwen3.5-4b-4bit       mlx-community/Qwen3.5-4B-MLX-4bit  2.9 GB")
         if _setting("FAKE_SETTINGS_MTP") == "1":
             print("qwen3.8-27b-4bit       rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX  15.2 GB")
         # Cached, so the Images tab resolves to it without a download path —
