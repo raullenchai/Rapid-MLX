@@ -199,6 +199,10 @@ enum DevSnapshot {
         // whether HF_HUB_CACHE points at a populated cache).
         render(contentView(width: 900, height: 640), to: "\(dir)/content-idle.png")
         render(contentView(width: 640, height: 560), to: "\(dir)/content-min.png")
+        // Narrow window: the status footer sheds its readouts through
+        // ViewThatFits rather than squeezing them to ellipses, and the version
+        // pill must stay on one line. Only a width this small exercises it.
+        render(contentView(width: 380, height: 560), to: "\(dir)/content-narrow.png")
         // Images tab (empty state — no results, catalog not yet resolved).
         render(imagesView(width: 700, height: 640), to: "\(dir)/images-empty.png")
         // Narrow composer: the canvas controls wrap to the two-row
