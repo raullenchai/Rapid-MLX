@@ -145,25 +145,30 @@ def test_with_gradio_present_module_exposes_it():
 
 # ----------------------------------------------------------- end to end (real)
 def test_real_subprocess_bare_fallback_reaches_the_repl_path():
-    """Belt-and-braces: a REAL interpreter with gradio blocked, bare argv.
+    """Belt-and-braces: a REAL interpreter, the REAL argument parser.
 
-    The fake cli.main above proves the wiring; this proves the import-block
-    trick didn't diverge from reality. The REPL would try to reach a server,
-    so cut it off at cli.main with an injected stub via sitecustomize-less
-    -c driver: we only assert the fallback NOTICE appears on stderr and the
-    process does NOT die with the hard gradio error.
+    Only the terminal boundary (``chat_command``) is stubbed — codex (r3 on
+    #2030) rightly flagged that stubbing ``cli.main`` wholesale left the
+    fallback argv unvalidated: rename ``chat`` or ``--port`` and a lambda
+    stub stays green while the fallback dies for users. Here the argv must
+    survive real argparse and dispatch to the chat entry with the parsed
+    port, or the subprocess exits non-zero / never prints the marker. The
+    stub keeps the test off the network — with no positional model the
+    pre-dispatch download gate never fires, and stdin is not a tty.
     """
     code = (
-        "import sys, types\n"
+        "import sys\n"
         "sys.modules['gradio'] = None\n"
         "import vllm_mlx.cli as cli\n"
-        "cli.main = lambda argv=None: 0\n"
+        "def _record(args):\n"
+        "    print(f'REPL-DISPATCH port={args.port}')\n"
+        "cli.chat_command = _record\n"
         "sys.argv = ['rapid-mlx-chat']\n"
         "import vllm_mlx.gradio_app as g\n"
         "try:\n"
         "    g.main()\n"
         "except SystemExit as e:\n"
-        "    sys.exit(e.code)\n"
+        "    sys.exit(e.code if isinstance(e.code, int) or e.code is None else 1)\n"
     )
     r = subprocess.run(
         [sys.executable, "-c", code],
@@ -172,6 +177,10 @@ def test_real_subprocess_bare_fallback_reaches_the_repl_path():
         timeout=120,
         cwd=str(REPO),
     )
-    assert r.returncode == 0, r.stderr[-400:]
+    assert r.returncode == 0, (r.stdout + r.stderr)[-600:]
+    assert "REPL-DISPATCH port=8000" in r.stdout, (
+        "the fallback argv did not reach chat_command through the real "
+        f"parser; stdout={r.stdout[-300:]!r} stderr={r.stderr[-300:]!r}"
+    )
     assert "terminal chat" in r.stderr
     assert "Error: gradio is required" not in r.stdout
