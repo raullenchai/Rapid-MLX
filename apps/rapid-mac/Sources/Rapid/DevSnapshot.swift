@@ -220,7 +220,7 @@ enum DevSnapshot {
         // Scenario 1: the app as launched (idle / first-run, depending on
         // whether HF_HUB_CACHE points at a populated cache).
         render(contentView(width: 900, height: 640), to: "\(dir)/content-idle.png")
-        render(contentView(width: 640, height: 560), to: "\(dir)/content-min.png")
+        render(contentView(width: 720, height: 560), to: "\(dir)/content-min.png")
         // Narrow window: the status footer sheds its readouts through
         // ViewThatFits rather than squeezing them to ellipses, and the version
         // pill must stay on one line. Only a width this small exercises it.
@@ -265,26 +265,26 @@ enum DevSnapshot {
         // matrix the Phase-1 review runs on. Chat and Launch are the two
         // surfaces this phase repaints, so both are captured at the
         // 900x640 review size in both appearances, plus one shot each at
-        // the 640x560 window floor to prove the layout survives it.
+        // the 720x560 window floor to prove the layout survives it.
         let reviewSize = CGSize(width: 900, height: 640)
-        let floorSize = CGSize(width: 640, height: 560)
+        let floorSize = CGSize(width: 720, height: 560)
 
         renderHosted(contentView(width: 900, height: 640), size: reviewSize,
                      appearance: .aqua, to: "\(dir)/chat-900x640-light.png")
         renderHosted(contentView(width: 900, height: 640), size: reviewSize,
                      appearance: .darkAqua, to: "\(dir)/chat-900x640-dark.png")
-        renderHosted(contentView(width: 640, height: 560), size: floorSize,
-                     appearance: .aqua, to: "\(dir)/chat-640x560-light.png")
-        renderHosted(contentView(width: 640, height: 560), size: floorSize,
-                     appearance: .darkAqua, to: "\(dir)/chat-640x560-dark.png")
+        renderHosted(contentView(width: 720, height: 560), size: floorSize,
+                     appearance: .aqua, to: "\(dir)/chat-720x560-light.png")
+        renderHosted(contentView(width: 720, height: 560), size: floorSize,
+                     appearance: .darkAqua, to: "\(dir)/chat-720x560-dark.png")
         renderHosted(launchView(width: 900, height: 640), size: reviewSize,
                      appearance: .aqua, to: "\(dir)/launch-900x640-light.png")
         renderHosted(launchView(width: 900, height: 640), size: reviewSize,
                      appearance: .darkAqua, to: "\(dir)/launch-900x640-dark.png")
-        renderHosted(launchView(width: 640, height: 560), size: floorSize,
-                     appearance: .aqua, to: "\(dir)/launch-640x560-light.png")
-        renderHosted(launchView(width: 640, height: 560), size: floorSize,
-                     appearance: .darkAqua, to: "\(dir)/launch-640x560-dark.png")
+        renderHosted(launchView(width: 720, height: 560), size: floorSize,
+                     appearance: .aqua, to: "\(dir)/launch-720x560-light.png")
+        renderHosted(launchView(width: 720, height: 560), size: floorSize,
+                     appearance: .darkAqua, to: "\(dir)/launch-720x560-dark.png")
 
         // Scenario 1c (Paper 05.2): the Step 2 model-selection review matrix.
         //
@@ -388,7 +388,7 @@ enum DevSnapshot {
         // MARK: UI-2 Slice 1 — the core-workspace review matrix
         //
         // The captures above review Chat and Launch at 900x640 and at the
-        // 640x560 window floor, which were the sizes the v1.0 pass was
+        // 720x560 window floor, which were the sizes the v1.0 pass was
         // signed off at. Slice 1 is reviewed at three DIFFERENT widths —
         // 1440, 1000 and 720 — because that is where the lifecycle band
         // changes shape, and a 900pt capture would silently review only

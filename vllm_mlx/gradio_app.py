@@ -23,17 +23,10 @@ from pathlib import Path
 try:
     import gradio as gr
 except ImportError:
-    import sys
-
-    print(
-        "Error: gradio is required for the chat UI.\n"
-        "Install it with: pip install 'rapid-mlx[chat]'\n"
-        "\n"
-        "The rapid-mlx-chat command requires the [chat] extra which\n"
-        "includes gradio and pytz. It is not installed by default to\n"
-        "keep the base package small."
-    )
-    sys.exit(1)
+    # Deliberately no side effects at import time — the fallback decision
+    # lives in main(), so `import vllm_mlx.gradio_app` from a test can never
+    # launch a REPL or exit the interpreter.
+    gr = None
 import requests
 
 
@@ -260,6 +253,37 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
 
 def main():
     """Run the Gradio app."""
+    if gr is None:
+        import sys
+
+        if len(sys.argv) == 1:
+            # The installer's quick-start (and muscle memory) reach for
+            # `rapid-mlx-chat` on a base install, where the [chat] extra is
+            # deliberately absent. A bare invocation asked for "chat", so
+            # give them chat: the terminal REPL against the same default
+            # server this UI would have used (http://localhost:8000). Any
+            # explicit argument means the user wanted THIS UI specifically
+            # (a share link, another server-url) — no silent substitute.
+            print(
+                "rapid-mlx-chat is the web chat UI and needs the [chat] extra:\n"
+                "    pip install 'rapid-mlx[chat]'\n"
+                "Starting the terminal chat against http://localhost:8000 instead...\n",
+                file=sys.stderr,
+            )
+            from vllm_mlx import cli
+
+            sys.argv = ["rapid-mlx", "chat", "--port", "8000"]
+            sys.exit(cli.main())
+        print(
+            "Error: gradio is required for the chat UI.\n"
+            "Install it with: pip install 'rapid-mlx[chat]'\n"
+            "\n"
+            "The rapid-mlx-chat command requires the [chat] extra which\n"
+            "includes gradio and pytz. It is not installed by default to\n"
+            "keep the base package small.\n"
+            "For a no-extra terminal chat, run: rapid-mlx chat"
+        )
+        sys.exit(1)
     parser = argparse.ArgumentParser(
         description="Gradio Multimodal Chat Interface for rapid-mlx",
         formatter_class=argparse.RawDescriptionHelpFormatter,
