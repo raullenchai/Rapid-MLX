@@ -34,28 +34,38 @@ def _quickstart_block() -> str:
     return (REPO / "install.sh").read_text()
 
 
+def _chat_echo_lines() -> list[str]:
+    """Every echo line in install.sh that mentions either chat command."""
+    return [
+        ln
+        for ln in _quickstart_block().splitlines()
+        if ln.strip().startswith("echo")
+        and ("rapid-mlx chat" in ln or "rapid-mlx-chat" in ln)
+    ]
+
+
 def test_installer_recommends_a_command_that_works_on_a_base_install():
-    s = _quickstart_block()
-    assert "rapid-mlx chat --port 8000" in s, (
-        "quick-start must lead with the terminal REPL, which needs no extras"
+    """ORDER matters, not mere presence (codex on #2030): a restored bare
+    rapid-mlx-chat line ABOVE the terminal one would re-open the papercut
+    while a substring check stayed green. The zero-extra terminal REPL must
+    be the FIRST chat command the quick-start prints."""
+    lines = _chat_echo_lines()
+    assert lines, "quick-start no longer prints any chat command at all"
+    assert "rapid-mlx chat --port 8000" in lines[0], (
+        "the first chat command the installer prints must be the terminal "
+        f"REPL (works on a base install); got: {lines[0]!r}"
     )
 
 
-def test_installer_labels_the_web_ui_with_its_extra():
-    s = _quickstart_block()
-    line = next(
-        (
-            ln
-            for ln in s.splitlines()
-            if "rapid-mlx-chat" in ln and ln.strip().startswith("echo")
-        ),
-        "",
-    )
-    assert "rapid-mlx[chat]" in line, (
-        "if the quick-start mentions rapid-mlx-chat at all, the same line must "
-        "say it needs the [chat] extra — recommending an out-of-the-box error "
-        "is the exact papercut this guards against"
-    )
+def test_installer_labels_every_web_ui_mention_with_its_extra():
+    """EVERY echo line naming rapid-mlx-chat must carry the prerequisite on
+    that same line — one unlabeled mention anywhere is the papercut back."""
+    web_lines = [ln for ln in _chat_echo_lines() if "rapid-mlx-chat" in ln]
+    for ln in web_lines:
+        assert "rapid-mlx[chat]" in ln, (
+            "web-UI mention without its [chat]-extra prerequisite on the same "
+            f"line: {ln!r}"
+        )
 
 
 # ------------------------------------------------------- gradio_app fallback
