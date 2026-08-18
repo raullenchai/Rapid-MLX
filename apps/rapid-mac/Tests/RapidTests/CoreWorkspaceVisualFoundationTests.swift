@@ -614,6 +614,39 @@ struct CoreWorkspaceVisualFoundationTests {
         #expect(1440 - SidebarView.columnIdealWidth == RapidTheme.Layout.Breakpoint.wide)
     }
 
+    /// A declared floor the shell never applies is not a floor.
+    ///
+    /// ``ContentView/minWindowWidth`` spent a while as a constant read only by
+    /// the test below, while the window's real minimum came from whatever the
+    /// rail's 176pt column minimum and the 440pt detail floor happened to add
+    /// up to — about 616pt. The number and the window could disagree
+    /// indefinitely and nothing would notice. `.windowResizability` reads the
+    /// content's minimum size, so the shell has to state it.
+    ///
+    /// ViewInspector is not in this target (#1492), so this is a source guard
+    /// in the same shape as ``AccessibilityIdentifierInventoryTests``.
+    @Test("The declared window floor is applied to the shell")
+    func windowFloorIsEnforced() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Rapid/UI/ContentView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let stripped = CapabilityChipRenderGateSourceGuardTests
+            .stripCommentsAndWhitespace(source)
+        // Reduced to a Bool before the expectation: `#expect` prints the
+        // expression it was given, and handing it the stripped source dumps
+        // the whole of ContentView into the failure output.
+        let applied = stripped.contains(
+            ".frame(minWidth:Self.minWindowWidth,minHeight:Self.minWindowHeight)"
+        )
+        #expect(
+            applied,
+            "ContentView declares minWindowWidth but no longer applies it — .windowResizability(.contentMinSize) takes the window floor from the content, so without this the constant is decoration."
+        )
+    }
+
     /// The detail pane's floor plus the widest rail has to fit inside the
     /// window floor, or the shell clips horizontally before any surface
     /// gets a say.
