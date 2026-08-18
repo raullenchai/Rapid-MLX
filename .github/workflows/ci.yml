@@ -204,6 +204,7 @@ jobs:
             tests/test_validate_release_subject.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \
+            tests/test_no_out_of_band_routing.py \
             tests/test_microbench_parsers.py \
             tests/test_telemetry_emit.py \
             tests/test_telemetry_consent.py \

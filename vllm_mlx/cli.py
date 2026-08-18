@@ -6233,6 +6233,7 @@ def _spawn_chat_server(
     *,
     register_in: list | None = None,
     log_handle=None,
+    disable_prefix_cache: bool = False,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
@@ -6285,6 +6286,8 @@ def _spawn_chat_server(
     ]
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
+    if disable_prefix_cache:
+        cmd.append("--disable-prefix-cache")
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
     # Tell the child main() that the parent already gated (or that this is
     # an internal spawn, where prompting would deadlock anyway because the
@@ -7196,6 +7199,8 @@ def chat_command(args):
         pass
     atexit.register(_cleanup)
 
+    attached_to_existing = bool(args.base_url or args.port is not None)
+
     if args.base_url:
         base_url = args.base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -7249,12 +7254,18 @@ def chat_command(args):
             # If main() resolved an alias, expose the alias as the API model name
             # so the chat request body matches what the user typed.
             original = getattr(args, "_original_alias", None)
+            privacy_kwargs = (
+                {"disable_prefix_cache": True}
+                if getattr(args, "disable_prefix_cache", False)
+                else {}
+            )
             proc, base_url = _spawn_chat_server(
                 args.model,
                 log_path,
                 served_name=original,
                 register_in=_active_procs,
                 log_handle=_log_handle,
+                **privacy_kwargs,
             )
 
         try:
@@ -7263,6 +7274,37 @@ def chat_command(args):
             print(f"\n  {RED}Failed to start server:{RESET} {e}")
             sys.exit(1)
         print(f"  {GREEN}✓ Ready.{RESET}\n")
+
+    # When attaching without an explicit model, trust the server's advertised
+    # model instead of the client's independently configured starter alias.
+    # The latter commonly differs from a manually started server and turns the
+    # very first request into an avoidable 404. Direct callers predating this
+    # marker are treated as explicit to preserve their existing behavior.
+    if attached_to_existing and not getattr(args, "_model_was_explicit", True):
+        try:
+            import requests
+
+            response = requests.get(f"{base_url}/v1/models", timeout=2)
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("data", []) if isinstance(payload, dict) else []
+            discovered = next(
+                (
+                    item.get("id")
+                    for item in models
+                    if isinstance(item, dict)
+                    and isinstance(item.get("id"), str)
+                    and item["id"].strip()
+                ),
+                None,
+            )
+        except (requests.RequestException, ValueError, TypeError):
+            discovered = None
+        if discovered:
+            args.model = discovered
+            if hasattr(args, "_original_alias"):
+                delattr(args, "_original_alias")
+            print(f"  Connected model: {discovered} (discovered from server)")
 
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
@@ -7534,12 +7576,18 @@ def chat_command(args):
             # readiness wait, before any further Python statement runs in
             # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
             # load tears the child down via the cleanup walk.
+            privacy_kwargs = (
+                {"disable_prefix_cache": True}
+                if getattr(args, "disable_prefix_cache", False)
+                else {}
+            )
             new_proc, new_base_url = _spawn_chat_server(
                 resolved,
                 new_log_path,
                 served_name=new_alias,
                 register_in=_active_procs,
                 log_handle=_new_log_handle,
+                **privacy_kwargs,
             )
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
@@ -10207,6 +10255,15 @@ Examples:
             "(default: 8). Multi-step tasks may need more."
         ),
     )
+    chat_parser.add_argument(
+        "--disable-prefix-cache",
+        action="store_true",
+        help=(
+            "Disable reusable prefix-cache persistence in the server spawned "
+            "by chat, so prompt token IDs are not written to disk. Has no "
+            "effect with --port or --base-url; configure that server directly."
+        ),
+    )
 
     # Info command — show the per-model profile (parsers + capability gates)
     info_parser = subparsers.add_parser(
@@ -10463,6 +10520,8 @@ def main():
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
     args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    if getattr(args, "command", None) in ("chat", "run"):
+        args._model_was_explicit = getattr(args, "model", None) is not None
 
     # First-run consent prompt — fires at most once per machine, only on
     # interactive subcommands when stdin is a tty. Safe no-op otherwise.
@@ -10658,7 +10717,7 @@ def main():
         _cmd = getattr(args, "command", "chat")
         _sel_alias, _starter_cached = select_chat_default()
         args.model = _sel_alias
-        if sys.stdin.isatty():
+        if sys.stdin.isatty() and not (args.base_url or args.port is not None):
             if _starter_cached:
                 print(
                     f"  No model specified — using {_sel_alias} (already downloaded)."

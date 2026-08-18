@@ -69,6 +69,7 @@ class _FakeChatHandler(BaseHTTPRequestHandler):
     # and round 2 returns the final answer.
     canned_rounds: list[list[dict]] = []
     received_payloads: list[dict] = []
+    advertised_models: list[str] = ["served-model"]
 
     def log_message(self, *_args, **_kwargs):  # silence stderr
         pass
@@ -95,6 +96,15 @@ class _FakeChatHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
+        elif self.path == "/v1/models":
+            body = json.dumps(
+                {"object": "list", "data": [{"id": m} for m in self.advertised_models]}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
@@ -124,6 +134,21 @@ def test_chat_subcommand_registered_in_cli():
     ):
         cli.main()
     assert exc.value.code == 0
+
+
+def test_chat_disable_prefix_cache_flag_is_registered():
+    captured: list = []
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--disable-prefix-cache"],
+        ),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+
+    assert captured[0].disable_prefix_cache is True
 
 
 def test_chat_no_model_defaults_to_qwen35_4b():
@@ -159,6 +184,7 @@ def test_chat_no_model_defaults_to_qwen35_4b():
         args.model == "qwen3.5-4b-4bit"
         or getattr(args, "_original_alias", None) == "qwen3.5-4b-4bit"
     )
+    assert args._model_was_explicit is False
 
 
 def test_chat_with_alias_overrides_default():
@@ -175,6 +201,7 @@ def test_chat_with_alias_overrides_default():
         args.model == "smollm3-3b-4bit"
         or getattr(args, "_original_alias", None) == "smollm3-3b-4bit"
     )
+    assert args._model_was_explicit is True
 
 
 def test_chat_mcp_config_flag_is_scoped_to_chat():
@@ -667,6 +694,32 @@ def test_chat_command_repl_multi_turn(monkeypatch, capsys):
     assert payloads[0]["messages"] == [{"role": "user", "content": "hello"}]
     # After /reset and "again", history should NOT contain "hello".
     assert payloads[1]["messages"] == [{"role": "user", "content": "again"}]
+
+
+def test_chat_attach_without_model_discovers_server_model(monkeypatch, capsys):
+    with _fake_server([_delta("ok")]) as (port, payloads):
+        inputs = iter(["hello", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        ns = _ns_for_chat(port)
+        ns._model_was_explicit = False
+
+        cli.chat_command(ns)
+
+    assert payloads[0]["model"] == "served-model"
+    assert "Connected model: served-model" in capsys.readouterr().out
+
+
+def test_chat_attach_with_explicit_model_does_not_override_it(monkeypatch):
+    with _fake_server([_delta("ok")]) as (port, payloads):
+        inputs = iter(["hello", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        ns = _ns_for_chat(port)
+        ns.model = "explicit-model"
+        ns._model_was_explicit = True
+
+        cli.chat_command(ns)
+
+    assert payloads[0]["model"] == "explicit-model"
 
 
 # ----------------------------------------------------------------------
@@ -2607,6 +2660,44 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
     assert "--mcp-config" not in captured["cmd"]
+
+
+def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    cli._spawn_chat_server(
+        "qwen3.5-4b-4bit",
+        str(tmp_path / "fake.log"),
+        disable_prefix_cache=True,
+    )
+
+    assert captured["cmd"].count("--disable-prefix-cache") == 1
 
 
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):
