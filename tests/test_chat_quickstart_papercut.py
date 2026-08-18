@@ -158,7 +158,17 @@ def test_real_subprocess_bare_fallback_reaches_the_repl_path():
     it failed on the hosted validate runner, which has no models), and
     routing ``chat`` to ``chat_command`` is cli's own dispatch contract,
     covered by the CLI suite.
+
+    Building the real parser needs the package's own core deps:
+    ``build_parser`` registers the ``share`` subcommand, whose module hard-
+    imports ``websockets`` (a declared install dep — every pip install has
+    it). pr_validate's minimal CI env does not, so probe and skip there
+    rather than fail on an environment no user runs.
     """
+    pytest.importorskip(
+        "websockets",
+        reason="cli.build_parser() needs the share subcommand's core dep",
+    )
     code = (
         "import sys\n"
         "sys.modules['gradio'] = None\n"
