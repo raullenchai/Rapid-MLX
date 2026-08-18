@@ -858,7 +858,7 @@ struct ContentView: View {
                         .buttonStyle(.rapidPrimaryWide)
                         .accessibilityIdentifier("MissingRuntime.DownloadUpdate")
                         HStack(spacing: RapidTheme.Space.sm) {
-                            Button("Recheck") { server.refreshBinary() }
+                            Button("Recheck") { recheckEngine() }
                                 .buttonStyle(.rapidSecondary)
                                 .accessibilityIdentifier("MissingRuntime.Recheck")
                             Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
@@ -868,13 +868,25 @@ struct ContentView: View {
                     }
                 } else {
                     HStack(spacing: RapidTheme.Space.sm) {
-                        Button("Recheck") { server.refreshBinary() }
+                        Button("Recheck") { recheckEngine() }
                             .buttonStyle(.rapidPrimary)
                             .accessibilityIdentifier("MissingRuntime.Recheck")
                         Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
                             .buttonStyle(.rapidSecondary)
                             .accessibilityIdentifier("MissingRuntime.Quit")
                     }
+                }
+                // Recheck's result, once there is one. Without this the
+                // control is genuinely working — a full ``ServerLocator``
+                // re-resolution — and yet reads as dead, because a still-
+                // missing engine leaves every visible thing unchanged.
+                if let status = ServerManager.recheckStatusMessage(for: server.lastBinaryRecheck) {
+                    Text(status)
+                        .font(RapidFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("MissingRuntime.RecheckStatus")
                 }
                 Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
                     .font(RapidFont.caption)
@@ -898,6 +910,21 @@ struct ContentView: View {
         .padding(.horizontal, RapidTheme.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LeopardSpots(opacity: 0.06))
+    }
+
+    /// The missing-engine screen's Recheck.
+    ///
+    /// The re-resolution itself is real and always was; what this adds is
+    /// saying so. The announcement matters more here than almost anywhere
+    /// else in the app — the sighted feedback is a single line of text that
+    /// may render identically to the last one, and a VoiceOver user pressing
+    /// a button that reports nothing has no way to tell it apart from a
+    /// button that does nothing.
+    private func recheckEngine() {
+        server.refreshBinary(userInitiated: true)
+        if let status = ServerManager.recheckStatusMessage(for: server.lastBinaryRecheck) {
+            VoiceOverAnnouncer.announce(status)
+        }
     }
 
     // MARK: - Status footer

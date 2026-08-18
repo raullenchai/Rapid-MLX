@@ -635,6 +635,11 @@ Open the picker any time to switch models.
     func advanceToChooseModel() {
         stage = .chooseModel
         step2Stage = .checkingHardware
+        // From here on, a launch that finds setup unfinished knows the user
+        // has been here before. Written on entry rather than on the first
+        // download because entering Step 2 is already the point at which
+        // "Get started" stops being a truthful thing to offer them next time.
+        setupBegun = true
     }
 
     /// Settle the two pre-shortlist micro-stages against real signals.
@@ -805,6 +810,47 @@ Open the picker any time to switch models.
     /// and ``_testingReset``.
     static let pendingReadyAliasKey: String = "rapid.quickstart.v1.pendingReadyAlias"
 
+    /// Provenance for "this install has been inside setup before and never
+    /// finished it" (Paper 05.1 state 18 — "Relaunch, setup incomplete").
+    ///
+    /// ## Why a third key
+    ///
+    /// The two existing persisted signals answer different questions.
+    /// ``storageKey`` says setup was COMPLETED; ``pendingReadyAliasKey`` says
+    /// a specific model reached Ready and is owed a confirmation. Between them
+    /// sits the common interruption: somebody opened the app, walked into
+    /// Step 2, maybe started a download, and quit. Nothing recorded that, so
+    /// the next launch greeted them with "Get started" — a first-run
+    /// invitation offered to somebody who is not on their first run.
+    ///
+    /// ## What it deliberately does NOT do
+    ///
+    /// It carries nothing forward. No selection, no job record, no partial-
+    /// download bookkeeping — Paper is explicit that the app holds none of
+    /// that across a relaunch, and that whether the underlying pull reuses
+    /// bytes already in the Hugging Face cache is a property of the
+    /// downloader that Rapid-MLX cannot promise. So this flag changes what
+    /// the welcome screen CALLS its primary and nothing else: the model is
+    /// still chosen from scratch and the download still starts as a fresh
+    /// pull. It is a fact about history, never a restored transfer.
+    ///
+    /// Written when the user first enters Step 2. Cleared only by completion
+    /// and by ``_testingReset()`` — a Skip does not clear it, because setup is
+    /// still owed and "Continue setup" is still the truthful label.
+    static let setupBegunKey: String = "rapid.quickstart.v1.setupBegun"
+
+    private(set) var setupBegun: Bool {
+        didSet { defaults.set(setupBegun, forKey: Self.setupBegunKey) }
+    }
+
+    /// Whether the welcome screen is greeting a returning, unfinished setup
+    /// rather than a first run.
+    ///
+    /// Not persisted separately — it is the question the two persisted flags
+    /// already answer together, asked in one place so the screen cannot get
+    /// the conjunction wrong.
+    var isResumingIncompleteSetup: Bool { setupBegun && !done }
+
     /// Alias of an unconfirmed Ready flow, or ``nil`` when there is none.
     private(set) var pendingReadyAlias: String? {
         didSet {
@@ -829,6 +875,11 @@ Open the picker any time to switch models.
         self.defaults = defaults
         self.done = defaults.bool(forKey: Self.storageKey)
         self.legacyDone = defaults.bool(forKey: Self.legacyStorageKey)
+        // History only. Nothing below reconstructs a phase, a selection or a
+        // job from it — a relaunch always starts at ``.idle``, which is what
+        // makes "never restore a fake active transfer" true by construction
+        // rather than by remembering to avoid it.
+        self.setupBegun = defaults.bool(forKey: Self.setupBegunKey)
         // Codex r5: read the persisted awaiting-seed flag so a
         // quit-mid-deferred-flow relaunch can resume the welcome
         // injection once an active session lands. (Assigning a stored
@@ -882,6 +933,12 @@ Open the picker any time to switch models.
     func markDone() {
         done = true
         defaults.set(true, forKey: Self.storageKey)
+        // Setup is finished, so there is no unfinished setup to resume.
+        // Retired rather than left set: ``isResumingIncompleteSetup`` already
+        // guards on ``done``, but a stale true here would come back to life if
+        // a future ``storageKey`` bump ever re-opened onboarding, and offer to
+        // "continue" a run that completed on an older version.
+        setupBegun = false
     }
 
     /// Put the wizard back to the state a Mac has before it has ever run.
@@ -909,6 +966,14 @@ Open the picker any time to switch models.
         hasSeededWelcome = false
         awaitingWelcomeSeed = false
         pendingReadyAlias = nil
+        // Union of both sides of the #1946 merge, not either one: each
+        // cleared a flag the other did not, and dropping either leaves the
+        // reset silently incomplete.
+        setupBegun = false
+        // #1946's resume marker. Without this the relaunch this reset
+        // triggers greets the user with "Continue setup" — the exact
+        // untruthful state that PR exists to remove.
+        defaults.removeObject(forKey: Self.setupBegunKey)
         defaults.removeObject(forKey: Self.storageKey)
         // Clear the legacy v1 flag too. A user upgraded from a build that
         // wrote ``rapid.quickstart.v1.done`` would otherwise relaunch reading
@@ -977,10 +1042,17 @@ Open the picker any time to switch models.
         phase = .lowDiskWarning(freeBytes: freeBytes, requiredBytes: requiredBytes)
     }
 
-    /// User chose Cancel on the low-disk warning — return to the hero
-    /// card so they can either close the window or click Get started
-    /// again after freeing space. Distinct from ``enterFailed`` because
-    /// this isn't a failure shape — the download never started.
+    /// User chose Cancel on the low-disk warning.
+    ///
+    /// Returns to the Step 2 micro-stage the pull was authorised from —
+    /// shortlist, catalogue or Review download — because ``stage`` and
+    /// ``step2Stage`` were never touched on the way in and leaving ``phase``
+    /// is the whole of the way out. Paper 05.2.D states the destination
+    /// explicitly: "Cancel returns here, not to Welcome."
+    ///
+    /// Distinct from ``enterFailed(message:origin:)`` because this isn't a
+    /// failure shape — the download never started, and nothing about the
+    /// user's selection has been invalidated.
     func cancelLowDiskWarning() {
         phase = .idle
     }
@@ -1269,6 +1341,19 @@ struct QuickstartView: View {
     /// "won't fit" decision is the one the rest of the app already makes.
     @State private var hardware: MacHardware = .detect()
 
+    /// The alias a Step 3 cancellation has already been requested for.
+    ///
+    /// Keyed by alias rather than held as a `Bool` so it cannot leak across
+    /// models: a user who cancels one download, goes back, picks a different
+    /// model and starts again must get a live Cancel control on the new pull,
+    /// not a control suppressed by the previous one's request.
+    ///
+    /// View state, not coordinator state, on purpose — it is about one
+    /// on-screen control's press, and it must NOT survive a re-mount the way
+    /// the download itself does. The authoritative record of what happened to
+    /// the transfer is the job's own status.
+    @State private var cancelRequestedAlias: String?
+
     /// Callback the parent supplies for "Skip for now". The parent
     /// dismisses the Quickstart surface for the current session (without
     /// flipping the persisted flag) so the existing picker becomes visible.
@@ -1488,12 +1573,29 @@ struct QuickstartView: View {
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
 
+            // Setup was entered on an earlier launch and never finished. Say
+            // so, and say what is and is not carried over — nothing is, and a
+            // screen that stayed silent about it while offering to "continue"
+            // would let the user assume a download picked up where it left
+            // off. Paper 05.1 state 18: "The copy promises a fresh download,
+            // never a resume."
+            if coordinator.isResumingIncompleteSetup {
+                Text("Setup didn't finish last time. Nothing was carried over — "
+                     + "choose a model and it downloads from here.")
+                    .scaledSystemFont(12)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 12)
+                    .accessibilityIdentifier("Quickstart.ResumeNotice")
+            }
+
             Spacer()
 
             Button {
                 coordinator.advanceToChooseModel()
             } label: {
-                Text("Get started")
+                Text(Self.welcomePrimaryTitle(resuming: coordinator.isResumingIncompleteSetup))
                     .scaledSystemFont(15, weight: .semibold)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 34).padding(.vertical, 12)
@@ -1502,7 +1604,11 @@ struct QuickstartView: View {
             .buttonStyle(.plain)
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("Quickstart.GetStarted")
-            .accessibilityLabel("Get started — choose your first model")
+            .accessibilityLabel(
+                coordinator.isResumingIncompleteSetup
+                    ? "Continue setup — choose your first model"
+                    : "Get started — choose your first model"
+            )
             .padding(.bottom, 10)
 
             // #549 (§16 wayfinding): the hero must answer "how do I get
@@ -1532,6 +1638,19 @@ struct QuickstartView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 44)
+    }
+
+    /// The welcome primary's verb.
+    ///
+    /// Both labels lead to exactly the same place — the model chooser — and
+    /// that is the point: the difference is what the app is willing to CLAIM
+    /// about the user, not what the button does. "Get started" told a
+    /// returning, half-finished user they had not started, which is the one
+    /// thing the screen knows to be false. Pure so the pairing can be pinned
+    /// without a SwiftUI host (Paper 05.1 state 18 — "Primary Continue setup →
+    /// the model chooser").
+    static func welcomePrimaryTitle(resuming: Bool) -> String {
+        resuming ? "Continue setup" : "Get started"
     }
 
     // MARK: - Step 2 · Choose a model
@@ -2438,6 +2557,80 @@ struct QuickstartView: View {
             .foregroundStyle(.tertiary)
             .multilineTextAlignment(.center)
             .padding(.top, 4)
+
+        // The way out of Step 3.
+        //
+        // Onboarding is a full-window sheet, so ``DownloadStrip`` — the app's
+        // ordinary cancel affordance — is behind it and unreachable for the
+        // entire pull. Without this control the only exits from a download the
+        // user no longer wants are quitting the app or waiting it out, and a
+        // multi-gigabyte trade-up makes "wait it out" a very long time to be
+        // stuck. The cancellation RECOVERY path already existed and was
+        // reachable (an app quit reaches it); what did not exist was any way
+        // to ask for it from the screen that is actually on top.
+        if let cancelAlias = Self.downloadCancelTarget(
+            jobStatus: job?.status,
+            selectionAlias: coordinator.selection.alias,
+            alreadyRequested: cancelRequestedAlias == coordinator.selection.alias
+        ) {
+            Button {
+                cancelRequestedAlias = cancelAlias
+                downloads.cancelDownload(alias: cancelAlias)
+            } label: {
+                Text("Cancel download")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            // Deliberately NO keyboard shortcut.
+            //
+            // `.defaultAction` would put a destructive action on Return, on a
+            // screen whose whole job is waiting — the single most likely
+            // stray keypress here. `.cancelAction` is no better: Escape
+            // already has a meaning inside this sheet (retreat within Step 2,
+            // else leave setup, see ``ContentView.quickstartSheetPresented``),
+            // and quietly redefining it to "destroy the running transfer"
+            // would make one key do two very different things depending on a
+            // phase the user cannot see. Click, Tab-then-Space, and VoiceOver
+            // all reach it; nothing needs a shortcut to be reachable.
+            .accessibilityIdentifier("Quickstart.Download.Cancel")
+            .accessibilityLabel("Cancel download of \(coordinator.selection.displayName)")
+            // Says what is lost, without claiming anything about bytes
+            // already on disk — see ``FailureDiagnosis/Kind/downloadCancelled``.
+            .accessibilityHint("Stops the download. The model will not be installed.")
+        }
+    }
+
+    /// Which alias, if any, the Step 3 card should offer to cancel.
+    ///
+    /// Pure so "an active download exposes a cancel action, and a settled one
+    /// does not" can be pinned without a SwiftUI host — the exact property a
+    /// rendered-only control cannot be tested for, and the one that was
+    /// missing.
+    ///
+    /// Returns `nil` — meaning draw no control at all — in four cases, each of
+    /// which would otherwise put a button on screen that does nothing:
+    ///
+    ///   * **No job.** Nothing has started, or the record is already gone.
+    ///   * **Not running.** Completed, failed, or already cancelled.
+    ///     ``DownloadManager/cancelDownload(alias:)`` is a no-op against all
+    ///     three, and offering to stop something that already stopped is the
+    ///     "looks actionable while doing nothing" defect in miniature.
+    ///   * **Already requested.** The optimistic flip to ``Status/cancelled``
+    ///     lands on the same run-loop turn, but a second click in the same
+    ///     frame would still re-signal a process that is mid-SIGTERM and start
+    ///     a second hard-kill timer. One request per job, enforced here.
+    ///   * **No selection.** Defensive; there is nothing to name.
+    static func downloadCancelTarget(
+        jobStatus: DownloadManager.Job.Status?,
+        selectionAlias: String,
+        alreadyRequested: Bool
+    ) -> String? {
+        guard !selectionAlias.isEmpty else { return nil }
+        guard !alreadyRequested else { return nil }
+        guard let jobStatus else { return nil }
+        guard case .running = jobStatus else { return nil }
+        return selectionAlias
     }
 
     @ViewBuilder
@@ -2692,26 +2885,24 @@ struct QuickstartView: View {
         .controlSize(.large)
         .keyboardShortcut(.cancelAction)
         .accessibilityIdentifier("Quickstart.LowDisk.Cancel")
-        .accessibilityLabel("Cancel — return to Quickstart without downloading")
+        .accessibilityLabel("Cancel — go back to choosing a model without downloading")
     }
 
     @ViewBuilder
     private func failedCard(message: String) -> some View {
-        Text("Quickstart didn't finish")
+        let job = downloads.job(for: coordinator.selection.alias)
+        let kind = Self.failureKind(
+            jobFailureKind: job?.failureKind,
+            jobUsesMirror: job?.source != .huggingFace,
+            serverState: server.state,
+            selectionAlias: coordinator.selection.alias,
+            message: message
+        )
+        let diagnosis = FailureDiagnoser.diagnosis(for: kind)
+
+        Text(Self.failureTitle(for: kind))
             .font(.title3.weight(.semibold))
 
-        let job = downloads.job(for: coordinator.selection.alias)
-        let kind: FailureDiagnosis.Kind = {
-            if case .crashed(let alias, let serverMessage) = server.state,
-               alias == coordinator.selection.alias {
-                return FailureDiagnoser.modelLoadFailureKind(raw: serverMessage)
-            }
-            return job?.failureKind ?? FailureDiagnoser.downloadFailureKind(
-                raw: message,
-                usingMirror: job?.source != .huggingFace
-            )
-        }()
-        let diagnosis = FailureDiagnoser.diagnosis(for: kind)
         FailureDiagnosisView(
             diagnosis: diagnosis,
             onAction: handleQuickstartFailureAction,
@@ -2719,14 +2910,136 @@ struct QuickstartView: View {
             actionAccessibilityIdentifier: quickstartActionIdentifier(for: diagnosis.action)
         )
 
+        // The way back to choosing. Every failure and every cancellation is
+        // one model's problem, so the user must be able to go pick a
+        // different one — and land where they actually were, not on a
+        // catalogue they may never have opened. Stays inside onboarding: it
+        // does not dismiss setup and it does not open Settings.
         Button {
-            browseAllModels()
+            returnToModelSelection()
         } label: {
-            Text("or browse all models →")
+            Text(Self.failureBackTitle(for: coordinator.step2Stage))
                 .font(.callout)
         }
         .buttonStyle(.borderless)
-        .accessibilityIdentifier("Quickstart.Failure.BrowseAll")
+        .accessibilityIdentifier("Quickstart.Failure.BackToModelSelection")
+        .accessibilityLabel(Self.failureBackAccessibilityLabel(for: coordinator.step2Stage))
+    }
+
+    /// Classify a Quickstart failure. Pure so the one inference that matters —
+    /// a cancelled download must NOT read as a network fault — can be pinned
+    /// without a SwiftUI host.
+    ///
+    /// Order is the contract. A crashed serve for OUR alias is a load failure
+    /// whatever the download did, because the weights are already on disk.
+    /// Otherwise the job's own recorded kind wins: ``DownloadManager`` knows
+    /// whether it was cancelled or broke, and that knowledge must never be
+    /// re-derived from prose. Only when there is no job left to ask does this
+    /// fall back to classifying the message.
+    static func failureKind(
+        jobFailureKind: FailureDiagnosis.Kind?,
+        jobUsesMirror: Bool,
+        serverState: ServerState,
+        selectionAlias: String,
+        message: String
+    ) -> FailureDiagnosis.Kind {
+        if case .crashed(let alias, let serverMessage) = serverState,
+           alias == selectionAlias {
+            return FailureDiagnoser.modelLoadFailureKind(raw: serverMessage)
+        }
+        if let jobFailureKind { return jobFailureKind }
+        // The job was reaped (a relaunch, a dismissal) but the phase survived.
+        // The cancellation message is one this app wrote, so recognising it
+        // here is reading our own record rather than parsing subprocess prose.
+        if message == FailureDiagnoser.diagnosis(for: .downloadCancelled).message {
+            return .downloadCancelled
+        }
+        return FailureDiagnoser.downloadFailureKind(raw: message, usingMirror: jobUsesMirror)
+    }
+
+    /// The failure card's heading.
+    ///
+    /// "Quickstart didn't finish" is a fault report, and a cancellation is not
+    /// a fault — the user is the one who stopped it. Everything else keeps the
+    /// shipped title unchanged.
+    static func failureTitle(for kind: FailureDiagnosis.Kind) -> String {
+        kind == .downloadCancelled ? "Download stopped" : "Quickstart didn't finish"
+    }
+
+    /// Name the destination the way every other Step 2 Back does, so the
+    /// control says where it goes rather than only that it goes back.
+    static func failureBackTitle(for stage: QuickstartCoordinator.Step2Stage) -> String {
+        switch stage {
+        case .browsing:  return "← Back to all models"
+        case .reviewing: return "← Back to review download"
+        case .checkingHardware, .findingFit, .choosing:
+            return "← Back to recommended models"
+        }
+    }
+
+    /// The same destination, spoken.
+    ///
+    /// Derived from ``failureBackTitle(for:)`` rather than written out a
+    /// second time, so the two can never name different destinations — but
+    /// with the leading arrow removed. VoiceOver reads U+2190 aloud as
+    /// "left-pointing arrow", which turns a control whose whole job is to
+    /// state where it goes into one that opens with a glyph name.
+    static func failureBackAccessibilityLabel(
+        for stage: QuickstartCoordinator.Step2Stage
+    ) -> String {
+        failureBackTitle(for: stage)
+            .replacingOccurrences(of: "←", with: "")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// What VoiceOver says when onboarding lands on a recovery screen.
+    ///
+    /// ## Why an announcement is required here at all
+    ///
+    /// Both ways into this screen are silent for a VoiceOver user otherwise.
+    /// A cancellation replaces the control the user just pressed, so focus has
+    /// nowhere to return to and the press reads as having done nothing — the
+    /// same defect the Recheck button had. A genuine failure is worse: it
+    /// arrives asynchronously, with no interaction at that instant, so the
+    /// screen changes under a user who receives no signal that it did.
+    ///
+    /// macOS SwiftUI has no live region (see ``VoiceOverAnnouncer``), so the
+    /// AppKit announcement is the only reliable path.
+    ///
+    /// Composed from the SAME `kind` the card renders from, so what is spoken
+    /// and what is drawn cannot drift: heading, the diagnosis message, and the
+    /// one action offered.
+    static func recoveryAnnouncement(for kind: FailureDiagnosis.Kind) -> String {
+        let diagnosis = FailureDiagnoser.diagnosis(for: kind)
+        var parts = [failureTitle(for: kind), diagnosis.message]
+        if let action = diagnosis.action {
+            parts.append("Action: \(action.title).")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// Leave a failure for the Step 2 micro-stage the user actually left.
+    ///
+    /// ``QuickstartCoordinator/returnToChooser()`` deliberately does not touch
+    /// ``QuickstartCoordinator/step2Stage``, so the shortlist, the catalogue
+    /// (with its query, filter, sort and scroll anchor) or Review download all
+    /// come back exactly as they were, with the selection still made.
+    ///
+    /// The ``dismissTerminalState`` call is what keeps the move INSIDE
+    /// onboarding after a load failure. Returning to Step 2 puts the phase
+    /// back to ``QuickstartCoordinator/Phase/idle``, and at that point the
+    /// parent's visibility predicate is the only thing holding the surface up
+    /// — but ``QuickstartCoordinator/isEligible(done:legacyDone:lastServedAlias:serverState:)``
+    /// reports ineligible while ``ServerState/crashed`` is live, so the sheet
+    /// would close and drop the user into the shell mid-setup. Clearing the
+    /// terminal state is also the honest reading of the click: the user has
+    /// seen the crash and is going to choose something else, which is exactly
+    /// what ``ServerManager/dismissTerminalState()`` is for — it additionally
+    /// cancels the pending auto-respawn that would otherwise reload the very
+    /// model they are walking away from.
+    private func returnToModelSelection() {
+        server.dismissTerminalState()
+        coordinator.returnToChooser()
     }
 
     /// Enter in-window Browse all models — the ONE destination for every
@@ -2746,19 +3059,33 @@ struct QuickstartView: View {
     /// in, and the catalogue's own query / filter / sort / scroll anchor are
     /// exactly where the user last left them.
     ///
-    /// ``returnToChooser()`` runs first so the failure card's link works too.
-    /// That link is offered precisely when the user's chosen model failed —
-    /// the moment they most need to pick a different one — and its phase is
-    /// ``Phase/failed``, which ``beginBrowsingCatalog()`` correctly refuses.
+    /// ``returnToChooser()`` runs first because ``beginBrowsingCatalog()``
+    /// correctly refuses any phase but ``Phase/idle``. The failure card used
+    /// to be the other caller that needed it; it now returns to the
+    /// micro-stage the user actually left instead of forcing everyone into the
+    /// catalogue — see ``returnToModelSelection()``.
     private func browseAllModels() {
         coordinator.returnToChooser()
         coordinator.beginBrowsingCatalog()
     }
 
+    /// Enter Step 3, and re-arm the Cancel control.
+    ///
+    /// Every route into a download goes through here — first attempt, Retry,
+    /// and Switch source. Clearing ``cancelRequestedAlias`` is what makes the
+    /// second pull of the SAME alias cancellable: without it, a user who
+    /// cancelled `lfm2.5-1b-4bit` and then retried it would get a live
+    /// download with its Cancel control suppressed by the previous attempt's
+    /// request, which is the original trap wearing a different hat.
+    private func beginDownloadPhase() {
+        cancelRequestedAlias = nil
+        coordinator.enterDownloading()
+    }
+
     private func handleQuickstartFailureAction(_ action: FailureDiagnosis.Action) {
         switch action {
         case .switchDownloadSource:
-            coordinator.enterDownloading()
+            beginDownloadPhase()
             if downloads.job(for: coordinator.selection.alias) != nil {
                 _ = downloads.retryDownload(
                     alias: coordinator.selection.alias,
@@ -2773,7 +3100,7 @@ struct QuickstartView: View {
             }
         case .retry:
             if downloads.job(for: coordinator.selection.alias) != nil {
-                coordinator.enterDownloading()
+                beginDownloadPhase()
                 _ = downloads.retryDownload(alias: coordinator.selection.alias)
             } else {
                 startQuickstart()
@@ -2888,7 +3215,7 @@ struct QuickstartView: View {
     /// the unlikely race where the disk filled further in the few
     /// seconds the banner was on screen, trap them in a warning loop).
     private func kickoffDownload() {
-        coordinator.enterDownloading()
+        beginDownloadPhase()
         // ``hfPath`` wires the cache-directory byte monitor so the
         // progress card reads true bytes-on-disk, not just tqdm file
         // counts. Without this the bar could sit at "0/1 files" for
@@ -2943,16 +3270,46 @@ struct QuickstartView: View {
                 )
             }
         case .cancelled:
-            coordinator.enterFailed(
-                message: "Download was cancelled.",
+            // The user stopped it. Still ``.failed`` — that is the phase the
+            // recovery screen lives on and it keeps the rail on Step 3 where
+            // the user actually is — but the message comes from the
+            // cancellation diagnosis, so nothing downstream has to infer the
+            // cause from a string. Paper 05.1 state 10.
+            enterRecovery(
+                kind: .downloadCancelled,
+                message: FailureDiagnoser.diagnosis(for: .downloadCancelled).message,
                 origin: .download
             )
         case .failed(let message):
-            coordinator.enterFailed(
+            enterRecovery(
+                kind: job.failureKind ?? FailureDiagnoser.downloadFailureKind(
+                    raw: message,
+                    usingMirror: job.source != .huggingFace
+                ),
                 message: QuickstartView.friendlyFailureMessage(raw: message),
                 origin: .download
             )
         }
+    }
+
+    /// Move onto a recovery screen and say so.
+    ///
+    /// One call site shape for every route in, because the announcement is
+    /// exactly as load-bearing as the phase change: the surface swaps under
+    /// the user, and on macOS SwiftUI nothing else tells a VoiceOver user
+    /// that it did.
+    ///
+    /// Naturally fires once per arrival — every caller sits behind a phase
+    /// guard that the ``enterFailed`` below invalidates, so a re-mount or a
+    /// republished status lands on an early return rather than a second
+    /// announcement.
+    private func enterRecovery(
+        kind: FailureDiagnosis.Kind,
+        message: String,
+        origin: QuickstartCoordinator.FailureOrigin
+    ) {
+        coordinator.enterFailed(message: message, origin: origin)
+        VoiceOverAnnouncer.announce(Self.recoveryAnnouncement(for: kind))
     }
 
     private func handleServerStateChange() {
@@ -3007,7 +3364,8 @@ struct QuickstartView: View {
             // The weights are on disk; it is the load that failed. Keeping
             // the origin means the rail still reads Step 4 rather than
             // sending the user back through the download.
-            coordinator.enterFailed(
+            enterRecovery(
+                kind: FailureDiagnoser.modelLoadFailureKind(raw: message),
                 message: QuickstartView.friendlyFailureMessage(raw: message),
                 origin: .start
             )
@@ -3052,12 +3410,24 @@ struct QuickstartView: View {
     /// unit test can pin the copy + numeric rendering without standing
     /// up SwiftUI. Matches the FU-4 spec text shape but with both
     /// numbers filled in from the actual probe.
+    /// The number in this copy is ``DiskSpaceProbe/quickstartRequiredBytes`` —
+    /// a flat pre-flight floor that is the same for every model. The shipped
+    /// wording attributed it to "\<model\> weights + safety margin", which
+    /// reads as a per-model measurement and is wrong by a wide margin at both
+    /// ends: the starter is ~0.6 GB against a 2 GiB floor, and a large
+    /// trade-up needs far more than the floor. Paper 05.1 state 12 states the
+    /// rule directly — "Needed is the flat 2 GiB pre-flight floor, not the
+    /// model size — the copy says so."
+    ///
+    /// ``displayName`` is still named, because the contrast is the point: the
+    /// user is being asked about *this* download and needs to know the number
+    /// is not about it.
     static func lowDiskBannerBody(freeBytes: Int64, requiredBytes: Int64, displayName: String) -> String {
         let free = formatBytesForBanner(freeBytes)
         let need = formatBytesForBanner(requiredBytes)
         return "\(free) free on the volume that holds your Hugging Face cache. " +
-               "This download needs ~\(need) (\(displayName) " +
-               "weights + safety margin). Continue anyway?"
+               "Setup asks for at least \(need) free before any download — " +
+               "a flat floor, not the size of \(displayName). Continue anyway?"
     }
 
     /// VoiceOver label for the warning card. The banner body is repeated
@@ -3068,9 +3438,10 @@ struct QuickstartView: View {
         let free = formatBytesForBanner(freeBytes)
         let need = formatBytesForBanner(requiredBytes)
         return "Low disk space warning. \(free) free on the volume that holds " +
-               "your Hugging Face cache; this download needs about \(need) for " +
-               "\(displayName) weights plus a safety margin. " +
-               "Choose Continue anyway to start the download, or Cancel to return."
+               "your Hugging Face cache; setup asks for at least \(need) free " +
+               "before any download, which is a flat floor rather than the size " +
+               "of \(displayName). " +
+               "Choose Continue anyway to start the download, or Cancel to go back."
     }
 
     /// Build the progress subtitle the downloading card shows. Pure

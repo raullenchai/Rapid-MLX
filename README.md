@@ -371,6 +371,25 @@ Every avatar here shipped something in rapid-mlx — model support, tool-call pa
 
 ---
 
+## Acknowledgements
+
+Rapid-MLX began as **[vLLM-MLX](https://github.com/waybarrios/vllm-mlx)** by
+[Wayner Barrios](https://github.com/waybarrios), which is where this repository's
+history starts and where the engine's paged KV cache, prefix cache, and
+continuous batching were first built. It was renamed to Rapid-MLX in March 2026
+and has been heavily modified since. Thank you.
+
+It stands on Apple's MLX stack and the runtimes built around it:
+
+- **[MLX](https://github.com/ml-explore/mlx)** — Apple's array framework for Apple Silicon
+- **[mlx-lm](https://github.com/ml-explore/mlx-lm)** — LLM inference, KV cache, quantization
+- **[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)** — vision-language models
+- **[mlx-audio](https://github.com/Blaizzy/mlx-audio)** — speech and audio models
+
+Vendored third-party components and their licenses are listed in
+[NOTICE](NOTICE); what the macOS app ships is enumerated in
+[apps/rapid-mac/THIRD_PARTY.md](apps/rapid-mac/THIRD_PARTY.md).
+
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

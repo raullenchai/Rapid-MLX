@@ -1,6 +1,20 @@
 CogVideoX-Fun MLX runtime
 
 Vendored from https://github.com/dgrauet/VideoX-Fun-mlx at commit
-26326e7d52e6762375227b320d77003dac764d14.
+26326e7d52e6762375227b320d77003dac764d14 (2026-07-21).
 
-Copyright and license terms are provided in LICENSE.
+That repository is itself a fork of the original VideoX-Fun, developed by the
+Alibaba PAI team:
+
+    https://github.com/aigc-apps/VideoX-Fun
+
+Both are licensed under the Apache License, Version 2.0. The upstream projects
+publish no NOTICE file and assert no copyright line in their LICENSE; the
+LICENSE file in this directory is a verbatim copy of the upstream Apache-2.0
+text and has not been modified.
+
+The sources in this directory are an MLX port and have been changed relative to
+the original VideoX-Fun. Neither upstream project endorses this distribution.
+
+Model weights are not distributed here — they are downloaded at runtime from
+their publishers under their own separate licenses.
