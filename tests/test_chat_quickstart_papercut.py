@@ -61,6 +61,10 @@ def test_installer_labels_every_web_ui_mention_with_its_extra():
     """EVERY echo line naming rapid-mlx-chat must carry the prerequisite on
     that same line — one unlabeled mention anywhere is the papercut back."""
     web_lines = [ln for ln in _chat_echo_lines() if "rapid-mlx-chat" in ln]
+    assert web_lines, (
+        "the quick-start no longer mentions rapid-mlx-chat at all — the web "
+        "UI must stay discoverable, labeled with its prerequisite"
+    )
     for ln in web_lines:
         assert "rapid-mlx[chat]" in ln, (
             "web-UI mention without its [chat]-extra prerequisite on the same "
@@ -81,9 +85,15 @@ def gradio_app_without_gradio(monkeypatch):
     sys.modules.pop("vllm_mlx.gradio_app", None)
 
 
-def test_import_without_gradio_has_no_side_effects(gradio_app_without_gradio):
+def test_import_without_gradio_has_no_side_effects(gradio_app_without_gradio, capsys):
     """Importing the module must never print, exec a REPL, or exit."""
+    importlib.reload(gradio_app_without_gradio)  # top-level runs under capsys
     assert gradio_app_without_gradio.gr is None
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == "", (
+        "importing gradio_app produced output — the module must stay "
+        "side-effect free so console_scripts resolution never prints"
+    )
 
 
 def test_bare_invocation_falls_back_to_the_terminal_repl(
