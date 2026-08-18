@@ -153,6 +153,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # these cannot alter emitted tokens either. Read only by
         # ``vllm_mlx.spec_decode.mtp.generator``.
         #
+        # ``RAPID_MLX_MIRROR_MIN_MBPS`` (#2015 / #2010) is the download
+        # throughput floor: below it a shard's R2 attempt is abandoned and the
+        # file is finished from HuggingFace. It selects a download SOURCE for
+        # identical bytes (sha256-verified either way), never a routing/decode
+        # path; 0 disables the guard.
+        "RAPID_MLX_MIRROR_MIN_MBPS",
         # ``RAPID_MLX_MTP_PROMPT_LOOKUP`` is the explicit opt-in (default
         # OFF) held until Qwen's hybrid SSM target path is proven
         # token-lossless across verification chunk boundaries; the other
