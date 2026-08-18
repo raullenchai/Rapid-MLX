@@ -14,6 +14,8 @@ struct DictationView: View {
 
     @State private var newTerm = ""
     @State private var fixTarget: DictationHistory.Entry?
+    @State private var scratch = ""
+    @FocusState private var scratchFocused: Bool
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
 
@@ -23,6 +25,8 @@ struct DictationView: View {
                 intro
                 if controller.readinessSnapshot.isReady && controller.isEnabled {
                     readyBanner
+                    errorRow
+                    tryItHere
                 } else {
                     setupCard
                 }
@@ -148,12 +152,19 @@ struct DictationView: View {
             Divider().overlay(RapidTheme.hairline)
 
             HStack {
+                // Must read the same snapshot the checkmarks above render from.
+                // Reading live `readiness` here instead let the two disagree:
+                // three green ticks with a greyed-out switch and nothing on
+                // screen explaining why.
                 Toggle("Enable dictation", isOn: $controller.isEnabled)
                     .toggleStyle(.switch)
-                    .disabled(!controller.readiness.microphone
-                              || !controller.readiness.accessibility
-                              || controller.modelAlias.isEmpty)
+                    .disabled(!controller.readinessSnapshot.isReady)
                     .accessibilityIdentifier("Dictation.Enable")
+                if !controller.readinessSnapshot.isReady {
+                    Text(blockingReason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
             }
             .padding(RapidTheme.Space.lg)
@@ -163,6 +174,16 @@ struct DictationView: View {
             RoundedRectangle(cornerRadius: RapidTheme.cardRadius)
                 .strokeBorder(RapidTheme.hairline)
         )
+    }
+
+    /// Names the one thing still missing. A disabled control with no stated
+    /// reason is the worst version of this screen.
+    private var blockingReason: String {
+        let missing = controller.readinessSnapshot
+        if missing.modelSelected == false { return "Choose a model first." }
+        if missing.microphone == false { return "Microphone access is still needed." }
+        if missing.accessibility == false { return "Accessibility access is still needed." }
+        return ""
     }
 
     private var modelDetail: String {
@@ -234,12 +255,92 @@ struct DictationView: View {
         .accessibilityIdentifier("Dictation.ReadyBanner")
     }
 
+    @ViewBuilder
+    private var errorRow: some View {
+        if let error = controller.lastError {
+            HStack(alignment: .top, spacing: RapidTheme.Space.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.system(size: 12))
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, RapidTheme.Space.md)
+            .padding(.vertical, RapidTheme.Space.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color.orange.opacity(0.10),
+                in: RoundedRectangle(cornerRadius: RapidTheme.Radius.input)
+            )
+            .accessibilityIdentifier("Dictation.Error")
+        }
+    }
+
+    /// A place to prove the feature works without leaving the app.
+    ///
+    /// Dictation types into whatever holds focus, so a focused field right here
+    /// is a real end-to-end run, not a simulation — and it removes the awkward
+    /// first step of "go find another app, then come back if it didn't work".
+    private var tryItHere: some View {
+        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Try it here").font(.subheadline.weight(.semibold))
+                Spacer()
+                if !scratch.isEmpty {
+                    Button("Clear") { scratch = "" }
+                        .buttonStyle(.rapidTertiary)
+                        .accessibilityIdentifier("Dictation.ScratchClear")
+                }
+            }
+
+            TextEditor(text: $scratch)
+                .focused($scratchFocused)
+                .font(.callout)
+                .scrollContentBackground(.hidden)
+                .padding(RapidTheme.Space.sm)
+                .frame(height: 76)
+                .background(
+                    RapidTheme.card,
+                    in: RoundedRectangle(cornerRadius: RapidTheme.Radius.input)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input)
+                        .strokeBorder(
+                            scratchFocused ? RapidTheme.brandAmber.opacity(0.55) : RapidTheme.hairline
+                        )
+                )
+                .overlay(alignment: .topLeading) {
+                    if scratch.isEmpty {
+                        Text("Click here, then press \(controller.trigger.label) and speak.")
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, RapidTheme.Space.md)
+                            .padding(.vertical, RapidTheme.Space.md)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .accessibilityIdentifier("Dictation.Scratch")
+
+            if let latency = controller.lastLatency {
+                Text(String(format: "Last transcription took %.2f s.", latency))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    /// Steady-state only. An error is not a subtitle for the word "Ready" —
+    /// it gets its own row below, where it reads as a problem rather than as a
+    /// description of a working feature.
     private var readyDetail: String {
         var parts = [controller.modelAlias]
         if let latency = controller.lastLatency {
             parts.append(String(format: "%.2f s last", latency))
         }
-        if let error = controller.lastError { parts = [error] }
         return parts.joined(separator: " · ")
     }
 

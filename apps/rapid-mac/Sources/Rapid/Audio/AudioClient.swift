@@ -67,6 +67,30 @@ struct AudioClient {
         let text: String
         let language: String?
         let duration: Double?
+
+        private enum CodingKeys: String, CodingKey {
+            case text, language, duration
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            text = try container.decode(String.self, forKey: .text)
+            duration = try? container.decodeIfPresent(Double.self, forKey: .duration)
+
+            // `language` is not one shape across backends: Whisper reports a
+            // single code ("zh"), Qwen3-ASR reports a list (["Chinese"]) because
+            // it detects per segment. Decoding it as a plain String made the
+            // WHOLE response fail to decode against a Qwen3-ASR reply, which the
+            // UI then reported as "the audio server returned an unreadable
+            // response" — pointing at the server for a client-side type error.
+            if let single = try? container.decodeIfPresent(String.self, forKey: .language) {
+                language = single
+            } else if let many = try? container.decodeIfPresent([String].self, forKey: .language) {
+                language = many.first
+            } else {
+                language = nil
+            }
+        }
     }
 
     private struct VoicesWire: Decodable { let voices: [String] }

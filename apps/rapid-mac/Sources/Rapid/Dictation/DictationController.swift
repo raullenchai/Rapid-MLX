@@ -58,6 +58,10 @@ final class DictationController {
         didSet {
             guard modelAlias != oldValue else { return }
             UserDefaults.standard.set(modelAlias, forKey: Keys.model)
+            // `modelSelected` is part of readiness, so the snapshot the UI
+            // renders from has to move with it — otherwise picking a model
+            // leaves the Enable switch stuck until something else refreshes.
+            refreshReadiness()
         }
     }
 
