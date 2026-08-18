@@ -1136,6 +1136,15 @@ flow_fresh_install() {
     done
     baseline fresh-install.steady "$OUT/steady.json"
     pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/final.png" --json > "$OUT/final-image.json"
+    # Exercise the scene/content contract, not only the constant. Before the
+    # fix the declared floor was never applied and AppKit accepted ~616pt.
+    # Asking for 500pt must be clamped by the live window to at least 720pt.
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX 500x500 \
+        > "$OUT/window-floor.json" \
+        || die "the main window rejected a native resize request"
+    jq -e '.actual.width >= 720 and .actual.height >= 560' \
+        "$OUT/window-floor.json" >/dev/null \
+        || die "the live main window did not enforce its 720x560 floor: $(jq -c .actual "$OUT/window-floor.json")"
     cleanup_persona
 }
 

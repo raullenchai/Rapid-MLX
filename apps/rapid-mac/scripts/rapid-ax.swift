@@ -111,7 +111,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|click-center|increment|decrement|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|click-center|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -281,6 +281,51 @@ if command == "close-window" {
     let result = AXUIElementPerformAction(closeButton as! AXUIElement, kAXPressAction as CFString)
     guard result == .success else { fail("AXPress close window \(wanted) failed: \(result.rawValue)") }
     print("{\"success\":true,\"window\":\"\(wanted)\",\"action\":\"close-window\"}")
+    exit(0)
+}
+
+if command == "set-window-size" {
+    guard let wanted else { fail("set-window-size requires a window title") }
+    guard CommandLine.arguments.count > 4 else {
+        fail("set-window-size requires WIDTHxHEIGHT")
+    }
+    let parts = CommandLine.arguments[4].split(separator: "x", maxSplits: 1)
+    guard parts.count == 2,
+          let width = Double(parts[0]),
+          let height = Double(parts[1]),
+          width > 0, height > 0 else {
+        fail("set-window-size requires positive WIDTHxHEIGHT")
+    }
+    guard let window = windowElements.first(where: {
+        string($0, kAXTitleAttribute as CFString) == wanted
+    }) else {
+        fail("window not found: \(wanted)")
+    }
+    var requested = CGSize(width: width, height: height)
+    guard let value = AXValueCreate(.cgSize, &requested) else {
+        fail("could not encode requested window size")
+    }
+    let result = AXUIElementSetAttributeValue(
+        window, kAXSizeAttribute as CFString, value
+    )
+    guard result == .success else {
+        fail("setting window size failed: \(result.rawValue)")
+    }
+    usleep(300_000)
+    guard let actual = size(window, kAXSizeAttribute as CFString) else {
+        fail("window size could not be read after resize")
+    }
+    let payload: [String: Any] = [
+        "success": true,
+        "window": wanted,
+        "requested": ["width": width, "height": height],
+        "actual": ["width": actual.width, "height": actual.height],
+    ]
+    let data = try! JSONSerialization.data(
+        withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]
+    )
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
     exit(0)
 }
 
