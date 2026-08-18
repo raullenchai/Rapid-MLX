@@ -247,4 +247,4 @@ distributions are out of scope but we will help triage.
 
 ## Contact
 
-privacy@machinefi.com
+privacy@rapidmlx.com
