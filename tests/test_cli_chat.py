@@ -282,6 +282,41 @@ def test_complete_chat_with_mcp_runs_standard_tool_loop():
     ]
 
 
+def test_complete_chat_with_mcp_reassembles_arguments_split_mid_string():
+    """Argument JSON split at hostile offsets still reassembles exactly.
+
+    vLLM and the OpenAI API fragment ``function.arguments`` at arbitrary byte
+    offsets — inside a key, inside a quoted value, between a colon and its
+    number. Only the concatenation is valid JSON, so any accumulator that
+    overwrites instead of appending yields a fragment that cannot parse.
+    The local MLX server happens to emit each call whole, so nothing else in
+    this suite exercises the fragmented shape end to end.
+    """
+    rounds = [
+        [
+            _tool_call_delta(call_id="call-frag", name="files__read"),
+            _tool_call_delta(arguments='{"pa'),
+            _tool_call_delta(arguments='th": "/a'),
+            _tool_call_delta(arguments='.txt", "he'),
+            _tool_call_delta(arguments='ad": '),
+            _tool_call_delta(arguments="20}", finish_reason="tool_calls"),
+        ],
+        [_delta("done"), {"choices": [{"finish_reason": "stop"}]}],
+    ]
+    runtime = _FakeMCPRuntime()
+
+    with _fake_server([], rounds=rounds) as (port, _payloads):
+        cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": [{"role": "user", "content": "go"}]},
+            runtime,
+            timeout_s=10,
+        )
+
+    dispatched = runtime.calls[0][0]["function"]["arguments"]
+    assert json.loads(dispatched) == {"path": "/a.txt", "head": 20}
+
+
 def test_complete_chat_with_mcp_assembles_interleaved_parallel_calls():
     """Two calls streamed at once are kept apart by ``index``, not ``id``.
 
