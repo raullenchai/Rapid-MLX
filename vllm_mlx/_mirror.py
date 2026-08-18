@@ -460,10 +460,26 @@ def _mirror_base() -> str:
     return os.environ.get("RAPID_MLX_MODEL_MIRROR", MIRROR_DEFAULT).strip()
 
 
+def fetch_catalog(
+    base: str, timeout: float = _CATALOG_TIMEOUT
+) -> dict[str, Any] | None:
+    """Fetch ``GET <base>/api/models`` and return the parsed JSON.
+
+    Returns ``None`` on any failure (network, 5xx, malformed JSON) — the
+    caller treats this as "skip R2, go straight to HF".
+
+    Most callers want to know WHY the catalog isn't available — use
+    :func:`fetch_catalog_with_status` to get the HTTP status code
+    alongside the body (codex round-6 NIT #3).
+    """
+    data, _ = fetch_catalog_with_status(base, timeout=timeout)
+    return data
+
+
 def fetch_catalog_with_status(
     base: str, timeout: float = _CATALOG_TIMEOUT
 ) -> tuple[dict[str, Any] | None, int | None]:
-    """Fetch the catalog and return the parsed JSON plus the HTTP status code.
+    """Like :func:`fetch_catalog` but also returns the HTTP status code.
 
     Returned status:
     * 200 on success (with parsed body).
