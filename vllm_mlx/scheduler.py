@@ -13,6 +13,7 @@ The scheduler follows vLLM's design with:
 
 import inspect
 import logging
+import math
 import os
 import threading
 import time
@@ -452,9 +453,10 @@ class SchedulerConfig:
         if self.response_cache_entries < 0:
             raise ValueError("response_cache_entries must be >= 0")
         if self.idle_cache_clear_seconds is not None and (
-            self.idle_cache_clear_seconds < 0
+            not math.isfinite(self.idle_cache_clear_seconds)
+            or self.idle_cache_clear_seconds < 0
         ):
-            raise ValueError("idle_cache_clear_seconds must be >= 0")
+            raise ValueError("idle_cache_clear_seconds must be finite and >= 0")
         if self.enable_mtp:
             import warnings
 

@@ -2938,12 +2938,13 @@ def serve_command(args):
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
         sys.exit(1)
-    if (
-        getattr(args, "idle_cache_clear_seconds", None) is not None
-        and getattr(args, "idle_cache_clear_seconds", 0.0) < 0
-    ):
-        print("Error: --idle-cache-clear-seconds must be >= 0")
-        sys.exit(1)
+    idle_cache_clear_seconds = getattr(args, "idle_cache_clear_seconds", None)
+    if idle_cache_clear_seconds is not None:
+        import math
+
+        if not math.isfinite(idle_cache_clear_seconds) or idle_cache_clear_seconds < 0:
+            print("Error: --idle-cache-clear-seconds must be finite and >= 0")
+            sys.exit(1)
 
     # Validate PFlash config and reject unsupported model combinations
     # at startup. Done here (not lazily in the scheduler) so a typo in

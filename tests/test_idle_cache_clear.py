@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from vllm_mlx.engine_core import EngineCore
 from vllm_mlx.memory_cache import (
     CacheStats,
@@ -24,6 +26,10 @@ def test_idle_cache_clear_seconds_is_opt_in_and_validated():
         assert "idle_cache_clear_seconds" in str(exc)
     else:  # pragma: no cover - assertion branch
         raise AssertionError("negative idle-cache interval was accepted")
+
+    for invalid in (float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite"):
+            SchedulerConfig(idle_cache_clear_seconds=invalid)
 
 
 def test_idle_clear_preserves_cumulative_cache_counters():
