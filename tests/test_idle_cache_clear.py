@@ -9,7 +9,9 @@ from vllm_mlx.memory_cache import (
     MemoryAwarePrefixCache,
     MemoryCacheConfig,
 )
-from vllm_mlx.scheduler import SchedulerConfig
+from vllm_mlx.paged_cache import PagedCacheManager
+from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+from vllm_mlx.scheduler import Scheduler, SchedulerConfig
 
 
 def test_idle_cache_clear_seconds_is_opt_in_and_validated():
@@ -59,3 +61,38 @@ def test_engine_idle_clear_runs_scheduler_clear_on_worker():
 
     assert calls == [False]
     clear_cache.assert_called_once_with()
+
+
+def test_scheduler_refuses_clear_while_request_is_active():
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.has_requests = lambda: True
+
+    try:
+        scheduler.clear_prefix_cache(reset_stats=False)
+    except RuntimeError as exc:
+        assert "requests are active" in str(exc)
+    else:
+        raise AssertionError("active scheduler cache clear was accepted")
+
+
+def test_idle_clear_preserves_block_cache_cumulative_counters():
+    manager = PagedCacheManager(block_size=4, max_blocks=8)
+    cache = BlockAwarePrefixCache(object(), manager)
+    cache._hits = 5
+    cache._misses = 2
+    cache._tokens_saved = 40
+    manager.stats.cache_hits = 5
+    manager.stats.cache_misses = 2
+    manager.stats.cow_copies = 1
+    manager.stats.evictions = 3
+
+    cache.clear(reset_stats=False)
+
+    stats = cache.get_stats()
+    assert stats["hits"] == 5
+    assert stats["misses"] == 2
+    assert stats["tokens_saved"] == 40
+    assert manager.stats.cache_hits == 5
+    assert manager.stats.cache_misses == 2
+    assert manager.stats.cow_copies == 1
+    assert manager.stats.evictions == 3

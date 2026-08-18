@@ -278,13 +278,19 @@ async def clear_cache():
 
     clear_prefix_cache = getattr(cfg.engine, "clear_prefix_cache", None)
     if callable(clear_prefix_cache):
-        cleared = await asyncio.to_thread(clear_prefix_cache, reset_stats=False)
-        if cleared:
-            return {
-                "status": "ok",
-                "message": "Reusable prefix KV cache cleared",
-                "scheduler_cache_cleared": True,
-            }
+        try:
+            cleared = await asyncio.to_thread(clear_prefix_cache, reset_stats=False)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "status": "ok",
+            "message": (
+                "Reusable prefix KV cache cleared"
+                if cleared
+                else "No reusable prefix KV cache is configured"
+            ),
+            "scheduler_cache_cleared": cleared,
+        }
 
     model = getattr(cfg.engine, "_model", None)
     if model is not None and hasattr(model, "_prompt_cache"):

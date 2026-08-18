@@ -663,6 +663,20 @@ class TestHealthRoutes:
         finally:
             self._restore_config(orig)
 
+    def test_cache_clear_rejects_active_scheduler_requests(self, mock_engine):
+        mock_engine.clear_prefix_cache = MagicMock(
+            side_effect=RuntimeError("cannot clear prefix cache while requests are active")
+        )
+        orig = self._patch_config(engine=mock_engine)
+        try:
+            app = self._make_app()
+            client = TestClient(app, client=("127.0.0.1", 50000))
+            r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
+            assert r.status_code == 409
+            assert "requests are active" in r.json()["detail"]
+        finally:
+            self._restore_config(orig)
+
     def test_cache_stats_no_vlm(self):
         """Cache stats returns fallback when mlx_vlm not available."""
         app = self._make_app()

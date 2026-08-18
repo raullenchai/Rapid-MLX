@@ -159,6 +159,9 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # identical bytes (sha256-verified either way), never a routing/decode
         # path; 0 disables the guard.
         "RAPID_MLX_MIRROR_MIN_MBPS",
+        # Idle release of reusable prefix/KV state. This changes only cache
+        # retention after requests finish; it does not select a model or lane.
+        "RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS",
         # ``RAPID_MLX_MTP_PROMPT_LOOKUP`` is the explicit opt-in (default
         # OFF) held until Qwen's hybrid SSM target path is proven
         # token-lossless across verification chunk boundaries; the other

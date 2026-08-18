@@ -1186,7 +1186,7 @@ class BlockAwarePrefixCache:
         """Clear all cached data."""
         self._request_tables.clear()
         self._prefix_index.clear()
-        self.paged_cache.clear()
+        self.paged_cache.clear(reset_stats=reset_stats)
         if reset_stats:
             self.reset_stats()
 

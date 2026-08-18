@@ -1366,9 +1366,10 @@ class PagedCacheManager:
             logger.info("Prefix cache reset successfully")
             return True
 
-    def clear(self) -> None:
+    def clear(self, *, reset_stats: bool = True) -> None:
         """Clear all cached data."""
         with self._lock:
+            previous_stats = self.stats
             # Recreate blocks and queue
             self.blocks = [CacheBlock(block_id=i) for i in range(self.max_blocks)]
             self.free_block_queue = FreeKVCacheBlockQueue(self.blocks)
@@ -1388,6 +1389,10 @@ class PagedCacheManager:
                 total_blocks=self.max_blocks,
                 allocated_blocks=1,
                 free_blocks=self.max_blocks - 1,
+                cache_hits=0 if reset_stats else previous_stats.cache_hits,
+                cache_misses=0 if reset_stats else previous_stats.cache_misses,
+                cow_copies=0 if reset_stats else previous_stats.cow_copies,
+                evictions=0 if reset_stats else previous_stats.evictions,
             )
 
             logger.info("PagedCacheManager cleared")

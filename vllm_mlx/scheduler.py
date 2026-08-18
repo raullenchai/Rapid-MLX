@@ -8071,6 +8071,8 @@ class Scheduler:
 
     def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
         """Clear scheduler-owned reusable KV state without touching requests."""
+        if self.has_requests():
+            raise RuntimeError("cannot clear prefix cache while requests are active")
         cleared = False
         if self.block_aware_cache is not None:
             self.block_aware_cache.clear(reset_stats=reset_stats)
