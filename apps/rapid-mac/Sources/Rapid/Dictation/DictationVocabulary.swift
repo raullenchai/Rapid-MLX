@@ -184,14 +184,30 @@ final class DictationVocabulary {
         // is spelled, not spoken as an ordinary word.
         let interiorUppercase = name.dropFirst().rangeOfCharacter(from: .uppercaseLetters) != nil
 
-        return hasDigit || hasHyphen || interiorUppercase || !isDictionaryLike(name)
+        return hasDigit || hasHyphen || interiorUppercase || !isDictionaryWord(name)
     }
 
-    /// Cheap "looks like an ordinary English word" test — all lowercase ASCII
-    /// letters and short. Anything else is treated as a name worth hinting.
-    private nonisolated static func isDictionaryLike(_ name: String) -> Bool {
-        name.allSatisfy { $0.isLowercase && $0.isASCII && $0.isLetter } && name.count <= 8
+    /// Looks the name up in the system word list.
+    ///
+    /// The earlier shape of this test — "all lowercase and short, so probably a
+    /// real word" — rejected exactly the names worth hinting: `herdr` fit the
+    /// pattern perfectly and never got suggested, while being the kind of
+    /// invented spelling a recogniser reliably mangles. A real dictionary is
+    /// the only way to tell an ordinary word from a coined one.
+    private nonisolated static func isDictionaryWord(_ name: String) -> Bool {
+        systemWords.contains(name.lowercased())
     }
+
+    /// `/usr/share/dict/words` ships with macOS. Loaded once, lazily, and only
+    /// off the main actor (discovery already runs detached). An empty set is a
+    /// safe degradation: every candidate then falls through to the shape rules
+    /// above, which over-suggests rather than hiding real names.
+    private nonisolated static let systemWords: Set<String> = {
+        guard let contents = try? String(
+            contentsOfFile: "/usr/share/dict/words", encoding: .utf8
+        ) else { return [] }
+        return Set(contents.split(separator: "\n").map { $0.lowercased() })
+    }()
 
     private nonisolated static let commonWords: Set<String> = [
         "documents", "downloads", "desktop", "library", "pictures", "movies",

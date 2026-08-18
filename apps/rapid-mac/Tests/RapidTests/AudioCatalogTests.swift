@@ -23,14 +23,16 @@ struct AudioCatalogTests {
     """
 
     /// Order is load-bearing: the segmented control renders `allCases` directly.
-    /// Dictation goes last because it configures a background service rather
-    /// than being a workbench like the two before it.
-    @Test("audio mode control places Speech before Transcription, then Dictation")
+    /// Speech to Text comes first and is the default — it is the one people use
+    /// many times a day, while Text to Speech is occasional.
+    @Test("audio offers the two directions, defaulting to Speech to Text")
     @MainActor
     func modeOrder() {
-        #expect(AudioViewModel.Mode.allCases == [.speech, .transcription, .dictation])
+        #expect(AudioViewModel.Mode.allCases == [.speechToText, .textToSpeech])
+        #expect(AudioViewModel.Mode.speechToText.label == "Speech to Text")
+        #expect(AudioViewModel.Mode.textToSpeech.label == "Text to Speech")
         let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
-        #expect(viewModel.mode == .speech)
+        #expect(viewModel.mode == .speechToText)
     }
 
     @Test("Qwen voice labels and previews follow each speaker's primary language")
@@ -117,9 +119,10 @@ struct AudioCatalogTests {
         #expect(source.contains("@Environment(DownloadManager.self) private var downloads"))
         #expect(source.contains(".task(id: downloads.cacheGeneration)"),
                 "The Audio view may stay mounted while Settings downloads a model.")
-        #expect(source.contains("WAV, MP3, M4A, AAC, FLAC, or MP4 - up to 25 MB"))
-        #expect(!source.contains("OGG, Opus, WebM"),
-                "The desktop sidecar does not bundle ffmpeg for these formats.")
+        // The upload-format copy this used to pin went with the file
+        // transcription workbench; Speech to Text records its own audio.
+        #expect(!source.contains("NSOpenPanel"),
+                "Audio no longer takes files from disk.")
     }
 
     @Test("audio model rows use the shared cache icons instead of status suffixes")

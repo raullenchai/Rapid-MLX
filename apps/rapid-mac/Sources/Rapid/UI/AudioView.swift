@@ -16,7 +16,6 @@ struct AudioView: View {
     @Environment(DownloadManager.self) private var downloads
     @Environment(DictationController.self) private var dictation
 
-    @State private var copied = false
     @State private var playback = AudioPlaybackController()
     @State private var showVoicePicker = false
     @State private var playingPreviewVoice: String?
@@ -29,7 +28,7 @@ struct AudioView: View {
     private let controlFieldWidth: CGFloat = 320
 
     private var selectedAlias: String {
-        viewModel.mode == .speech
+        viewModel.mode == .textToSpeech
             ? viewModel.selectedSpeechAlias
             : viewModel.selectedTranscriptionAlias
     }
@@ -170,21 +169,15 @@ struct AudioView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             switch viewModel.mode {
-            case .transcription:
-                if viewModel.transcriptionModels.isEmpty {
-                    unavailableState(operation: "transcription")
-                } else {
-                    transcriptionSurface
-                }
-            case .speech:
+            case .textToSpeech:
                 if viewModel.speechModels.isEmpty {
                     unavailableState(operation: "speech")
                 } else {
                     speechSurface
                 }
-            case .dictation:
+            case .speechToText:
                 if viewModel.transcriptionModels.isEmpty {
-                    unavailableState(operation: "transcription")
+                    unavailableState(operation: "speech-to-text")
                 } else {
                     DictationView(
                         controller: dictation,
@@ -211,160 +204,6 @@ struct AudioView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("Audio.EmptyState")
-    }
-
-    private var transcriptionSurface: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
-                SectionHeader(
-                    "Transcription",
-                    subtitle: "Turn a local recording into text without uploading it."
-                )
-                filePicker
-                modelPicker(
-                    title: "Model",
-                    selection: $viewModel.selectedTranscriptionAlias,
-                    entries: viewModel.transcriptionModels,
-                    identifier: "Audio.Transcription.ModelPicker"
-                )
-                ReadinessBanner(readiness: readiness, onAction: handleReadinessAction)
-                swapNotice(alias: viewModel.selectedTranscriptionAlias)
-                operationNotice
-                HStack(spacing: RapidTheme.Space.md) {
-                    if viewModel.isTranscribing {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Loading model and transcribing...")
-                            .font(RapidFont.secondary)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: RapidTheme.Space.md)
-                    Button("Transcribe", systemImage: "text.badge.checkmark") {
-                        playback.stop()
-                        Task { await viewModel.transcribe() }
-                    }
-                    .buttonStyle(.rapidPrimary)
-                    .disabled(
-                        viewModel.selectedFileURL == nil
-                            || viewModel.selectedTranscriptionAlias.isEmpty
-                            || !readiness.sendAllowed
-                            || viewModel.isBusy
-                    )
-                    .accessibilityIdentifier("Audio.Transcription.Run")
-                }
-
-                if let result = viewModel.transcription {
-                    transcriptionResult(result)
-                }
-            }
-            .frame(maxWidth: contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity)
-            .padding(RapidTheme.Space.xl)
-        }
-    }
-
-    private var filePicker: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            HStack(spacing: RapidTheme.Space.md) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                    .frame(width: 34)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: RapidTheme.Space.xs) {
-                    Text(viewModel.selectedFileURL?.lastPathComponent ?? "Audio file")
-                        .font(RapidFont.body)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(fileCaption)
-                        .font(RapidFont.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: RapidTheme.Space.md)
-                Button("Choose File", systemImage: "folder") { chooseAudioFile() }
-                    .buttonStyle(.rapidSecondaryCompactUtility)
-                    .accessibilityIdentifier("Audio.Transcription.FilePicker")
-            }
-            .padding(RapidTheme.Space.lg)
-            .frame(maxWidth: .infinity, minHeight: 84)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .fill(RapidTheme.surfaceRaised)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .strokeBorder(RapidTheme.hairlineStrong, style: StrokeStyle(lineWidth: 1, dash: [5]))
-            )
-            .contentShape(Rectangle())
-            .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first(where: isAudioFile) else { return false }
-                viewModel.selectFile(url)
-                return true
-            }
-        }
-    }
-
-    private var fileCaption: String {
-        guard let url = viewModel.selectedFileURL else {
-            return "WAV, MP3, M4A, AAC, FLAC, or MP4 - up to 25 MB"
-        }
-        if let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-            return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-        }
-        return url.pathExtension.uppercased()
-    }
-
-    private func transcriptionResult(_ result: AudioTranscriptionResult) -> some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            SectionHeader("Result") {
-                HStack(spacing: RapidTheme.Space.xs) {
-                    QuietIconButton(
-                        symbol: copied ? "checkmark" : "doc.on.doc",
-                        label: copied ? "Copied" : "Copy transcription",
-                        tint: copied ? RapidTheme.statusReady : nil
-                    ) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(result.text, forType: .string)
-                        copied = true
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            copied = false
-                        }
-                    }
-                    .accessibilityIdentifier("Audio.Transcription.Copy")
-                    QuietIconButton(
-                        symbol: "square.and.arrow.down",
-                        label: "Save transcription"
-                    ) { saveTranscription(result.text) }
-                    .accessibilityIdentifier("Audio.Transcription.Save")
-                }
-            }
-
-            ScrollView {
-                Text(result.text)
-                    .font(RapidFont.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(RapidTheme.Space.lg)
-            }
-            .frame(minHeight: 130, maxHeight: 300)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .fill(RapidTheme.surfaceRaised)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .strokeBorder(RapidTheme.hairline, lineWidth: 1)
-            )
-            .accessibilityIdentifier("Audio.Transcription.Result")
-
-            if result.language != nil || result.duration != nil {
-                Text(resultMetadata(result))
-                    .font(RapidFont.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 
     private var speechSurface: some View {
@@ -782,50 +621,6 @@ struct AudioView: View {
         }
     }
 
-    private func chooseAudioFile() {
-        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
-           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_AUDIO_PATH"],
-           !simulated.isEmpty
-        {
-            viewModel.selectFile(URL(fileURLWithPath: simulated))
-            return
-        }
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.audio]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        viewModel.selectFile(url)
-    }
-
-    private func isAudioFile(_ url: URL) -> Bool {
-        UTType(filenameExtension: url.pathExtension)?.conforms(to: .audio) == true
-    }
-
-    private func saveTranscription(_ text: String) {
-        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
-           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_TRANSCRIPTION_SAVE_PATH"],
-           !simulated.isEmpty
-        {
-            do {
-                try text.write(to: URL(fileURLWithPath: simulated), atomically: true, encoding: .utf8)
-            } catch {
-                viewModel.errorMessage = "Couldn't save the transcription: \(error.localizedDescription)"
-            }
-            return
-        }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "transcription.txt"
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            viewModel.errorMessage = "Couldn't save the transcription: \(error.localizedDescription)"
-        }
-    }
-
     private func saveSpeech(_ audio: SynthesizedAudio) {
         if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
            let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_SPEECH_SAVE_PATH"],
@@ -850,17 +645,6 @@ struct AudioView: View {
         } catch {
             viewModel.errorMessage = "Couldn't save the audio: \(error.localizedDescription)"
         }
-    }
-
-    private func resultMetadata(_ result: AudioTranscriptionResult) -> String {
-        var parts: [String] = []
-        if let language = result.language, !language.isEmpty {
-            parts.append("Language: \(language)")
-        }
-        if let duration = result.duration {
-            parts.append("Duration: \(duration.formatted(.number.precision(.fractionLength(1)))) s")
-        }
-        return parts.joined(separator: "  |  ")
     }
 
     private func openModelManagement() {

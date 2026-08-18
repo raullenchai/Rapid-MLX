@@ -414,7 +414,7 @@ final class DictationController {
     /// Note the two separate replacements: `。` is three UTF-8 bytes, and folding
     /// both into one character class would let a byte-wise match strip only the
     /// final byte and leave mojibake behind.
-    static func tidy(_ raw: String) -> String {
+    nonisolated static func tidy(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasSuffix("。") { text.removeLast() }
         else if text.hasSuffix(".") && !text.hasSuffix("...") { text.removeLast() }

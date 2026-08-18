@@ -63,7 +63,7 @@ struct DictationView: View {
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-            Text("Dictation")
+            Text("Speech to Text")
                 .font(.headline)
             Text("Press a hotkey in any app, speak, and your words appear at the cursor. Audio is transcribed on this Mac.")
                 .font(.subheadline)

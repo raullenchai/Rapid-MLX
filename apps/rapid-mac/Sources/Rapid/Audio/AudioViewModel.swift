@@ -4,38 +4,35 @@ import Observation
 @MainActor
 @Observable
 final class AudioViewModel {
+    /// The two directions audio can travel. Naming them after the direction
+    /// rather than after a product term ("Dictation", "Synthesis") means nobody
+    /// has to learn our vocabulary to find the one they want.
     enum Mode: String, CaseIterable, Identifiable {
-        case speech
-        case transcription
-        /// Unlike the other two, this mode is not a workbench: it configures a
-        /// background service whose whole point is being used from *other* apps.
-        case dictation
+        /// Default: the one people reach for many times a day.
+        case speechToText
+        case textToSpeech
 
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .transcription: return "Transcription"
-            case .speech: return "Speech"
-            case .dictation: return "Dictation"
+            case .speechToText: return "Speech to Text"
+            case .textToSpeech: return "Text to Speech"
             }
         }
     }
 
-    var mode: Mode = .speech
+    var mode: Mode = .speechToText
     var audioModels: [ModelEntry] = []
     var catalogLoaded = false
     var selectedTranscriptionAlias = ""
     var selectedSpeechAlias = ""
 
-    var selectedFileURL: URL?
-    var transcription: AudioTranscriptionResult?
     var speechText = ""
     var voices: [String] = []
     var selectedVoice = ""
     var speed = 1.0
     var synthesizedAudio: SynthesizedAudio?
 
-    var isTranscribing = false
     var isLoadingVoices = false
     var isSynthesizing = false
     var previewingVoice: String?
@@ -49,6 +46,8 @@ final class AudioViewModel {
         self.client = client
     }
 
+    /// STT models. The file-transcription workbench is gone, but this list
+    /// still drives the Speech to Text model picker.
     var transcriptionModels: [ModelEntry] {
         audioModels.filter {
             $0.audioCapability?.supportsTranscription == true
@@ -68,7 +67,7 @@ final class AudioViewModel {
     }
 
     var isBusy: Bool {
-        isTranscribing || isLoadingVoices || isSynthesizing || previewingVoice != nil
+        isLoadingVoices || isSynthesizing || previewingVoice != nil
     }
 
     func refreshCatalog() async {
@@ -82,12 +81,6 @@ final class AudioViewModel {
         resolveSelections()
     }
 
-    func selectFile(_ url: URL) {
-        selectedFileURL = url
-        transcription = nil
-        errorMessage = nil
-    }
-
     func selectSpeechModel(_ alias: String) {
         guard alias != selectedSpeechAlias else { return }
         selectedSpeechAlias = alias
@@ -95,36 +88,6 @@ final class AudioViewModel {
         selectedVoice = ""
         synthesizedAudio = nil
         errorMessage = nil
-    }
-
-    func transcribe() async {
-        guard !isBusy,
-              let fileURL = selectedFileURL,
-              let entry = transcriptionModels.first(where: {
-                  $0.alias == selectedTranscriptionAlias
-              }) else { return }
-        isTranscribing = true
-        errorMessage = nil
-        transcription = nil
-        defer { isTranscribing = false }
-        guard await server.ensureServing(
-            alias: entry.alias,
-            hfPath: entry.hfRepo,
-            residencyEligible: false
-        ) else {
-            errorMessage = "The audio model couldn't start. Audio support may be unavailable in this app build."
-            return
-        }
-        do {
-            transcription = try await client.transcribe(
-                fileURL: fileURL,
-                model: entry.alias,
-                port: server.activePort,
-                bearer: server.activeBearer
-            )
-        } catch {
-            errorMessage = Self.message(for: error)
-        }
     }
 
     func loadVoices() async -> Bool {
