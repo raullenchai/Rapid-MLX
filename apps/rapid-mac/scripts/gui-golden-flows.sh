@@ -1791,7 +1791,61 @@ flow_message_actions() {
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "Save edited message did not resend the edited turn"
     wait_send_idle "$OUT/message-actions-saved-edit-settled.json"
-    log "  message Copy, Select text/Done, Edit/Cancel, Edit/Save, and Retry all produced effects"
+
+    # A finished answer no longer emits document-frame changes. This is the
+    # exact state where Jump to latest used to set the pinned flag but leave
+    # the transcript physically scrolled up. Drive a long, fully settled
+    # answer, move away from its tail, then require the same last-message
+    # action to return after pressing the button.
+    send_prompt "shape:long finished answer for jump-to-bottom" message-actions-long
+    wait_send_idle "$OUT/message-actions-long-settled.json"
+    local last_retry
+    last_retry="$(jq -r '.data.ui_elements[]? | (.identifier // "")
+        | select(startswith("ChatView.Message.Retry."))' \
+        "$OUT/message-actions-long-settled.json" | tail -1)"
+    [[ -n "$last_retry" ]] || die "long settled answer exposes no Retry action"
+    "$AX_DRIVER" scroll-wheel "$APP_PID" "$last_retry" 80 \
+        > "$OUT/message-actions-scroll-up.json" \
+        || die "could not scroll the settled transcript away from its tail"
+    local jump_visible=0
+    for _ in {1..60}; do
+        see_main "$OUT/message-actions-scrolled.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Transcript.JumpToBottom")' \
+            "$OUT/message-actions-scrolled.json" >/dev/null; then
+            jump_visible=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$jump_visible" == 1 ]] \
+        || die "scrolling up a settled transcript never exposed Jump to latest"
+    if jq -e --arg id "$last_retry" \
+        '.data.ui_elements[]? | select(.identifier == $id)' \
+        "$OUT/message-actions-scrolled.json" >/dev/null; then
+        die "scroll fixture did not move the last answer out of the realized transcript"
+    fi
+    press "$OUT/message-actions-scrolled.json" Transcript.JumpToBottom \
+        "$OUT/message-actions-jump-press.json" \
+        || die "Jump to latest is not pressable on a settled transcript"
+    local jumped=0
+    for _ in {1..60}; do
+        see_main "$OUT/message-actions-jumped.json"
+        if jq -e --arg id "$last_retry" \
+            '.data.ui_elements[]? | select(.identifier == $id)' \
+            "$OUT/message-actions-jumped.json" >/dev/null \
+            && ! jq -e '.data.ui_elements[]?
+                        | select(.identifier == "Transcript.JumpToBottom")' \
+                "$OUT/message-actions-jumped.json" >/dev/null; then
+            jumped=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$jumped" == 1 ]] \
+        || die "Jump to latest hid itself without returning the settled transcript to its tail"
+    jq -n '{success: true,
+            assertion: "a finished transcript scrolls back to its final answer"}' \
+        > "$OUT/message-actions-jump-assertion.json"
+    log "  message actions and finished-answer Jump to latest all produced effects"
     cleanup_persona
 }
 

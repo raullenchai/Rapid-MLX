@@ -111,7 +111,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|click-center|increment|decrement|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|click-center|scroll-wheel|increment|decrement|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -332,6 +332,30 @@ case "click-center":
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
     usleep(100_000)
+case "scroll-wheel":
+    guard CommandLine.arguments.count > 4,
+          let lines = Int32(CommandLine.arguments[4])
+    else { fail("scroll-wheel requires an integer line delta") }
+    guard let origin = point(target, kAXPositionAttribute as CFString),
+          let extent = size(target, kAXSizeAttribute as CFString)
+    else { fail("scroll-wheel \(identifier) has no readable bounds") }
+    guard let running = NSRunningApplication(processIdentifier: pid) else {
+        fail("target application is no longer running")
+    }
+    running.activate(options: [.activateAllWindows])
+    usleep(100_000)
+    let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
+    CGWarpMouseCursorPosition(center)
+    guard let event = CGEvent(
+        scrollWheelEvent2Source: nil,
+        units: .line,
+        wheelCount: 1,
+        wheel1: lines,
+        wheel2: 0,
+        wheel3: 0
+    ) else { fail("could not create scroll-wheel event") }
+    event.post(tap: .cghidEventTap)
+    usleep(150_000)
 case "increment":
     let result = AXUIElementPerformAction(target, kAXIncrementAction as CFString)
     guard result == .success else { fail("AXIncrement \(identifier) failed: \(result.rawValue)") }
