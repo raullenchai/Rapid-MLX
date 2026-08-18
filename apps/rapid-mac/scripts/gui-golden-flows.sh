@@ -3862,28 +3862,68 @@ flow_audio_readiness() {
     [[ "$transcription_loaded" == 1 ]] \
         || die "Transcription stayed behind Download & start after its model became ready"
 
+    # AXPress can return success for a SwiftUI button whose backing object is
+    # rebuilt before its closure runs — the Choose File button's backing churns
+    # as the Transcription pane settles (readiness → controls), so a press landing
+    # mid-rebuild silently no-ops the file selection and flipped this flow
+    # red↔green on the *same* build (#2008: a gate that reddens at random is no
+    # gate). No AX API exposes the backing's identity, so a single press cannot be
+    # made hermetic. Instead we make the loop robust: (1) never press while the
+    # pane is visibly churning — require the FilePicker/Run pair present exactly
+    # once with steady enabled states across two dumps; (2) treat the *rendered
+    # selection* (filename + enabled Run) as the only proof of success, re-pressing
+    # the idempotent picker until that proof appears. Retry absorbs the residual
+    # last-dump-to-press window that (1) narrows but cannot fully close. One
+    # wall-clock deadline bounds the whole thing so a genuinely broken picker
+    # fails fast with a specific diagnostic instead of amplifying CI time.
     see_main "$OUT/transcription-controls-before.json"
-    local file_selected=0
-    for ((i=0; i<40; i++)); do
-        # AXPress can return success for a SwiftUI button whose backing object
-        # is replaced before its closure runs. Resolve the current button on
-        # every attempt and require the actual selection + enabled Transcribe
-        # state instead of treating the AX result as proof of user-visible work.
+    local file_selected=0 ever_settled=0 sig_a sig_b p
+    # The pane renders FilePicker and Run unconditionally, so a settled picker has
+    # BOTH present exactly once with steady enabled states. Emit "" (never equal
+    # to a real signature) otherwise, so a transient half-tree — either control
+    # momentarily missing or duplicated during a rebuild — is never mistaken for a
+    # stable one.
+    local -r picker_sig='[.data.ui_elements[]?
+                 | select(.identifier == "Audio.Transcription.FilePicker"
+                          or .identifier == "Audio.Transcription.Run")
+                 | {id: .identifier, e: .enabled}]
+                | (map(.id) | sort) as $ids
+                | if $ids == ["Audio.Transcription.FilePicker", "Audio.Transcription.Run"]
+                  then (sort_by(.id) | tojson) else "" end'
+    local -r file_deadline=$((SECONDS + 45))
+    while (( SECONDS < file_deadline )); do
+        see_main "$OUT/transcription-settle-a.json"; sleep 0.15
+        see_main "$OUT/transcription-settle-b.json"
+        sig_a="$(jq -r "$picker_sig" "$OUT/transcription-settle-a.json")"
+        sig_b="$(jq -r "$picker_sig" "$OUT/transcription-settle-b.json")"
+        if [[ -z "$sig_a" || "$sig_a" != "$sig_b" ]]; then
+            sleep 0.1; continue   # pane mid-rebuild — do not press into it
+        fi
+        ever_settled=1
         "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
             > "$OUT/transcription-file-press.json" 2>/dev/null || true
-        sleep 0.1
-        see_main "$OUT/transcription-file-selected.json"
-        if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
-                  and any(.data.ui_elements[]?;
-                          .identifier == "Audio.Transcription.Run"
-                          and .enabled == true)' \
-            "$OUT/transcription-file-selected.json" >/dev/null; then
-            file_selected=1; break
-        fi
-        sleep 0.25
+        # A landed press renders the filename + enables Run within a beat; poll
+        # for that proof before re-pressing so a successful selection is not
+        # clobbered by an eager re-press.
+        for ((p=0; p<6 && SECONDS < file_deadline; p++)); do
+            sleep 0.2
+            see_main "$OUT/transcription-file-selected.json"
+            if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
+                      and any(.data.ui_elements[]?;
+                              .identifier == "Audio.Transcription.Run"
+                              and .enabled == true)' \
+                "$OUT/transcription-file-selected.json" >/dev/null; then
+                file_selected=1; break
+            fi
+        done
+        [[ "$file_selected" == 1 ]] && break
     done
-    [[ "$file_selected" == 1 ]] \
-        || die "Choose File selected no usable audio file or Transcribe stayed disabled"
+    if [[ "$file_selected" != 1 ]]; then
+        if [[ "$ever_settled" == 1 ]]; then
+            die "Choose File: picker settled but no press produced a selection (Transcribe stayed disabled)"
+        fi
+        die "Choose File: FilePicker/Run controls never settled — pane did not finish rendering"
+    fi
     press "$OUT/transcription-file-selected.json" Audio.Transcription.Run \
         "$OUT/transcription-run-press.json" \
         || die "Transcribe is not pressable after selecting a file"
