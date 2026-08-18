@@ -1314,7 +1314,28 @@ class BatchedEngine(BaseEngine):
         from ..utils.tokenizer import load_model_with_fallback
 
         # Build tokenizer config
-        tokenizer_config = {"trust_remote_code": self._trust_remote_code}
+        # Security hardening (opt-out): remote-code execution is on by default
+        # for community-model compatibility, but an operator may disable it
+        # process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0. When disabled, drop
+        # trust_remote_code so no repo model/tokenizer Python is downloaded and
+        # executed. The default stays on (no behavior change unless opted out).
+        import os as _os
+
+        _trust_remote_code = self._trust_remote_code
+        _env_trust = _os.environ.get("RAPID_MLX_TRUST_REMOTE_CODE")
+        if _env_trust is not None and _env_trust.lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            _trust_remote_code = False
+            logger.warning(
+                "RAPID_MLX_TRUST_REMOTE_CODE=%s: remote model/tokenizer code "
+                "execution disabled; loading only with trust_remote_code=False.",
+                _env_trust,
+            )
+        tokenizer_config = {"trust_remote_code": _trust_remote_code}
 
         # Qwen3 fix
         if "qwen3" in self._model_name.lower() or "Qwen3" in self._model_name:

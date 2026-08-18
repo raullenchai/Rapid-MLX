@@ -735,6 +735,8 @@ def _serve_audio_mode(args, entry) -> None:
 
     # CORS — same friendly default the text path uses.
     server.configure_cors_from_env(args.cors_origins)
+    # WH-1: OPT-IN Host-header allowlist (DNS-rebinding hardening).
+    server.configure_trusted_hosts(args.trusted_hosts)
     if args.rate_limit > 0:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
@@ -3196,6 +3198,9 @@ def serve_command(args):
     # when ``*`` is in the origin list. Operators who need cookie /
     # ``Authorization`` auto-forwarding must pin to specific origins.
     cors_origins = server.configure_cors_from_env(args.cors_origins)
+
+    # WH-1: OPT-IN Host-header allowlist (DNS-rebinding hardening).
+    server.configure_trusted_hosts(args.trusted_hosts)
 
     # Request logging middleware — installed AFTER CORS so it is the
     # outermost layer (Starlette prepends, so last install runs first).
@@ -6140,6 +6145,7 @@ def ps_command(_args):
             "--log-level",
             "--mcp-config",
             "--cors-origins",
+            "--trusted-hosts",
             "--served-model-name",
             "--max-tokens",
             "--gpu-memory-utilization",
@@ -9239,6 +9245,21 @@ Examples:
         help=(
             "Allowed CORS origins (default: * for all origins). "
             "Example: --cors-origins http://localhost:3000 https://myapp.com"
+        ),
+    )
+    serve_parser.add_argument(
+        "--trusted-hosts",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="HOST",
+        help=(
+            "OPT-IN Host-header allowlist (DNS-rebinding hardening): only "
+            "requests whose Host header matches one of these values are "
+            "accepted; everything else gets 400. Off by default so "
+            "rapid-mlx share and LAN access keep working. Example: "
+            "--trusted-hosts localhost 127.0.0.1 (also settable via "
+            "RAPID_MLX_TRUSTED_HOSTS)."
         ),
     )
     serve_parser.add_argument(

@@ -256,13 +256,41 @@ if [ -z "$PYTHON" ]; then
     else
         STANDALONE_DIR="${HOME}/.rapid-mlx-python"
         PY_VERSION="3.12.13"
-        # Fetch latest build tag dynamically
-        PY_BUILD=$(download "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" \
-            | grep -o '"tag_name":"[^"]*"' | head -1 | cut -d'"' -f4 2>/dev/null || echo "20260408")
+        # Pin to a FIXED release tag (not the moving "latest" API) so the
+        # tarball we fetch is a stable, reviewable artifact. The tag below is
+        # the concrete build this line ships against; bump it deliberately.
+        PY_BUILD="20260408"
         PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PY_BUILD}/cpython-${PY_VERSION}+${PY_BUILD}-aarch64-apple-darwin-install_only.tar.gz"
-        info "Downloading Python ${PY_VERSION}..."
+        PY_TAR_BASE="cpython-${PY_VERSION}+${PY_BUILD}-aarch64-apple-darwin-install_only.tar.gz"
+        info "Downloading Python ${PY_VERSION} (build ${PY_BUILD}) + verifying SHA256..."
         mkdir -p "$STANDALONE_DIR"
-        download "$PY_URL" | tar xz -C "$STANDALONE_DIR" --strip-components=1
+        # Verify the tarball against the publisher-published SHA256SUMS for this
+        # exact release BEFORE anything is extracted. A curl|bash install trusts
+        # the transport (HTTPS) for integrity; verifying the checksum removes the
+        # "trust whatever bytes came back" gap so a tampered / mis-served
+        # download fails closed instead of silently installing.
+        TMP_TAR="$(mktemp "${TMPDIR:-/tmp}/rapidmlx-py.XXXXXX.tar.gz")"
+        download "$PY_URL" > "$TMP_TAR"
+        EXPECTED="$(download "https://github.com/astral-sh/python-build-standalone/releases/download/${PY_BUILD}/SHA256SUMS" \
+            | awk -v f="$PY_TAR_BASE" '$2 == f || $2 == "./" f {print $1}' | head -1 || true)"
+        if [ -z "$EXPECTED" ]; then
+            err "Could not fetch SHA256 for ${PY_TAR_BASE} from the Python build server."
+            dim "Download not verified; aborted to avoid installing an unverified runtime."
+            rm -f "$TMP_TAR"
+            exit 1
+        fi
+        ACTUAL="$(shasum -a 256 "$TMP_TAR" | awk '{print $1}')"
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+            err "SHA256 mismatch for Python standalone tarball."
+            dim "Expected $EXPECTED"
+            dim "Got      $ACTUAL"
+            dim "Refusing to extract an unverified runtime."
+            rm -f "$TMP_TAR"
+            exit 1
+        fi
+        dim "SHA256 verified."
+        tar xzf "$TMP_TAR" -C "$STANDALONE_DIR" --strip-components=1
+        rm -f "$TMP_TAR"
         PYTHON="${STANDALONE_DIR}/bin/python3"
         if ! "$PYTHON" --version >/dev/null 2>&1; then
             err "Failed to install standalone Python."

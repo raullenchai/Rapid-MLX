@@ -586,6 +586,24 @@ def share_command(args: argparse.Namespace) -> None:
         extra_serve_args.extend(passthrough)
 
     api_key = secrets.token_hex(24)
+    # SH-1: if the operator has configured a serve API key (the standard
+    # path is RAPID_MLX_API_KEY, which server._resolve_api_key consumes),
+    # it does NOT protect this share. share mints its own fresh single-use
+    # bearer key below and overwrites that env var in the spawned serve, so
+    # the operator's configured key is ignored. More importantly, a live
+    # share tunnel forwards public-internet requests onto the loopback-bound
+    # serve, so any assumption that the serve is only reachable from this
+    # machine is broken while sharing.
+    if os.environ.get("RAPID_MLX_API_KEY"):
+        print(
+            "warning: RAPID_MLX_API_KEY is set, but `rapid-mlx share` "
+            "ignores it and mints a fresh single-use key (shown below). "
+            "The share tunnel also exposes this machine's loopback serve "
+            "to the public internet, so your configured API-key auth does "
+            "NOT protect the share — anyone holding the fresh key below can "
+            "use your compute. Press Ctrl-C to abort.",
+            file=sys.stderr,
+        )
     # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
     # parser-build time crashes ``rapid-mlx models`` (and every other
     # unrelated subcommand) when the env var is set to garbage.
