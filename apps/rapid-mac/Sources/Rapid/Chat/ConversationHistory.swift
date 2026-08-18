@@ -30,6 +30,14 @@ struct ChatConversation: Identifiable, Codable, Equatable {
     /// written before custom instructions shipped remains valid.
     var customInstructions: String? = nil
 
+    /// The user-created folder this conversation is filed under, if any.
+    ///
+    /// Optional for on-disk compatibility, and deliberately a soft reference:
+    /// an id pointing at a folder that no longer exists degrades to "unfiled"
+    /// at render time rather than hiding the row. See
+    /// ``SidebarView/folderSections(for:folders:)``.
+    var folderID: UUID? = nil
+
     init(
         id: UUID,
         title: String,
@@ -39,7 +47,8 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         isPinned: Bool = false,
         isArchived: Bool = false,
         hasCustomTitle: Bool = false,
-        customInstructions: String? = nil
+        customInstructions: String? = nil,
+        folderID: UUID? = nil
     ) {
         self.id = id
         self.title = title
@@ -50,6 +59,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         self.isArchived = isArchived
         self.hasCustomTitle = hasCustomTitle
         self.customInstructions = customInstructions
+        self.folderID = folderID
     }
 
     /// Hand-written so a history file written before pin/archive shipped
@@ -68,6 +78,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         hasCustomTitle = try c.decodeIfPresent(Bool.self, forKey: .hasCustomTitle) ?? false
         customInstructions = try c.decodeIfPresent(String.self, forKey: .customInstructions)
+        folderID = try c.decodeIfPresent(UUID.self, forKey: .folderID)
     }
 }
 

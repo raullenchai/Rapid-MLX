@@ -34,6 +34,29 @@
 	<string>Rapid needs access when you choose a removable drive for model storage or approve a file tool there. Click Allow to continue.</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<true/>
+	<!--
+	Private drag type for sidebar conversation rows (see
+	Sources/Rapid/Chat/ConversationTransfer.swift). Declared so the app owns
+	the identifier it exports; without this, drags still work but the system
+	logs an unregistered-type complaint on every gesture. Conforms to
+	public.data only — it is an in-app payload, not a file format, and must
+	never be offered to other applications as text.
+	-->
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.rapidmlx.rapid.conversation-row</string>
+			<key>UTTypeDescription</key>
+			<string>Rapid-MLX Conversation Row</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
 	<key>SentryDSN</key>
 	<string></string>
 	<!--
