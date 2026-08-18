@@ -243,6 +243,9 @@ struct ChatView: View {
     /// preference arrives after the scroll event, which leaves a window
     /// where the next streamed token can still yank the reader downward.
     @State private var isPinnedToBottom = true
+    /// Incremented to ask the probe for an explicit scroll — see
+    /// ``TranscriptScrollPositionProbe/scrollToBottomRequest``.
+    @State private var scrollToBottomRequest = 0
 
     private var messages: [ChatMessage] { viewModel.messages }
 
@@ -325,7 +328,8 @@ struct ChatView: View {
                         TranscriptScrollPositionProbe(
                             isPinnedToBottom: $isPinnedToBottom,
                             bottomResumeSlack: bottomResumeSlack,
-                            isStreaming: viewModel.isStreaming
+                            isStreaming: viewModel.isStreaming,
+                            scrollToBottomRequest: scrollToBottomRequest
                         )
                     )
             }
@@ -354,9 +358,11 @@ struct ChatView: View {
     private var jumpToBottomOverlay: some View {
         if !isPinnedToBottom {
             JumpToBottomButton(isStreaming: viewModel.isStreaming) {
-                // The probe owns positioning: re-pinning re-enters
-                // `updateNSView` → `attach`, which scrolls to the bottom.
+                // The probe owns positioning, so ask it — re-pinning alone
+                // only restores following, and following has nothing to react
+                // to once an answer has finished arriving.
                 isPinnedToBottom = true
+                scrollToBottomRequest += 1
             }
             .padding(.bottom, RapidTheme.Space.md)
             .transition(.opacity.combined(with: .scale(scale: 0.9)))
