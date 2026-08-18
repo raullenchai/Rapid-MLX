@@ -121,6 +121,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
+        # Security policy knobs, none of which selects a model, parser, tier,
+        # or engine route. TRUST_REMOTE_CODE only constrains whether an
+        # already-selected checkpoint may import repository Python;
+        # TRUSTED_HOSTS filters HTTP Host headers; ALLOW_UNSAFE_SA3_PICKLE is
+        # an explicit compatibility escape hatch after safe tensor loading
+        # rejects a legacy audio checkpoint.
+        "RAPID_MLX_TRUST_REMOTE_CODE",
+        "RAPID_MLX_TRUSTED_HOSTS",
+        "RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE",
         # Opt-out of the fused top-p/top-k/temperature sampler fast path
         # (PR #542). Same shape as DISABLE_VERSION_CHECK — a perf shortcut
         # toggle, not a routing decision. The math collapses to mlx-lm's
@@ -144,6 +153,12 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # these cannot alter emitted tokens either. Read only by
         # ``vllm_mlx.spec_decode.mtp.generator``.
         #
+        # ``RAPID_MLX_MIRROR_MIN_MBPS`` (#2015 / #2010) is the download
+        # throughput floor: below it a shard's R2 attempt is abandoned and the
+        # file is finished from HuggingFace. It selects a download SOURCE for
+        # identical bytes (sha256-verified either way), never a routing/decode
+        # path; 0 disables the guard.
+        "RAPID_MLX_MIRROR_MIN_MBPS",
         # ``RAPID_MLX_MTP_PROMPT_LOOKUP`` is the explicit opt-in (default
         # OFF) held until Qwen's hybrid SSM target path is proven
         # token-lossless across verification chunk boundaries; the other

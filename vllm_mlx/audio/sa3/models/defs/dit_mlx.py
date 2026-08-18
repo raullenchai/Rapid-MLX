@@ -15,6 +15,8 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 
+from .checkpoint_security import load_torch_checkpoint
+
 
 # Constants (sa3-sm-music)
 IO_CHANNELS = 256
@@ -271,10 +273,9 @@ class DiT(nn.Module):
 
 def convert_weights_from_torch_ckpt(ckpt_path):
     """Load sa3-sm-music ckpt (torch.load), strip 'model.model.' prefix, remap to MLX layout."""
-    import torch
     import numpy as np
 
-    raw = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    raw = load_torch_checkpoint(ckpt_path)
     sd = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
 
     prefix = "model.model."

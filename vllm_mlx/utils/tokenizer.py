@@ -9,12 +9,36 @@ directly from tokenizer.json.
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 from .model_file_guard import validate_local_model_file
 
 logger = logging.getLogger(__name__)
+
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def apply_remote_code_policy(
+    tokenizer_config: dict | None,
+) -> tuple[dict | None, bool]:
+    """Apply the process-wide remote-code opt-out without changing defaults.
+
+    ``None`` remains ``None`` when the environment variable is unset, which
+    preserves the loader's historical defaults for non-serve call sites.  An
+    explicit false value is authoritative across every caller of the shared
+    loader, including bench and disk-stream paths.
+    """
+    configured = tokenizer_config is not None
+    config = dict(tokenizer_config or {})
+    requested = bool(config.get("trust_remote_code", True))
+    raw = os.environ.get("RAPID_MLX_TRUST_REMOTE_CODE")
+    if raw is not None and raw.strip().lower() in _FALSE_ENV_VALUES:
+        config["trust_remote_code"] = False
+        return config, False
+    return (config if configured else None), requested
+
 
 # Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit). The hook is
@@ -1043,6 +1067,31 @@ def load_model_with_fallback(
     # or fallback loader runs.  Remote repository ids are intentionally a no-op
     # here; see validate_local_model_file for the containment boundary.
     validate_local_model_file(model_name)
+
+    tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
+
+    # Security hardening: when remote-code execution is enabled (the default,
+    # for maximal community-model compatibility) and this model actually needs
+    # it (its config declares ``auto_map``), say so BEFORE any repo code is
+    # downloaded and run. This turns silent code execution into an informed
+    # choice; opt out process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0 (see
+    # BatchedEngine). A probe failure is silent — never breaks loading.
+    if _model_requires_remote_code(model_name):
+        if trust_remote_code:
+            logger.warning(
+                "Security: model %r declares auto_map (custom Python code). "
+                "Loading may DOWNLOAD AND EXECUTE that repo's code locally. "
+                "Only continue if you trust this model's source. Disable with "
+                "RAPID_MLX_TRUST_REMOTE_CODE=0 if you do not need it.",
+                model_name,
+            )
+        else:
+            logger.warning(
+                "Model %r declares auto_map custom code, but remote code is "
+                "disabled; loading will continue with trust_remote_code=False.",
+                model_name,
+            )
+
     if lazy:
         from mlx_lm import load as _mlx_lm_load
 
@@ -1191,6 +1240,59 @@ def _read_tokenizer_config_json(model_name: str) -> dict | None:
     except Exception as e:  # noqa: BLE001 — a probe must not break loading
         logger.debug("tokenizer_config.json probe failed for %s: %s", model_name, e)
         return None
+
+
+def _read_model_config_json(model_name: str) -> dict | None:
+    """Best-effort read of a model's ``config.json``.
+
+    Mirrors :func:`_read_tokenizer_config_json` (local dir first, cache-only
+    hub fetch with a network fallback for a fresh ``serve <repo-id>``). Any
+    failure returns ``None`` so callers fall through to the unmodified load
+    path — this is a pre-load probe and must never itself break loading.
+    """
+    try:
+        local = Path(model_name)
+        if local.is_dir():
+            cfg_path = local / "config.json"
+            if not cfg_path.is_file():
+                return None
+        else:
+            from huggingface_hub import hf_hub_download
+
+            try:
+                cfg_path = Path(
+                    hf_hub_download(model_name, "config.json", local_files_only=True)
+                )
+            except Exception:
+                cfg_path = Path(hf_hub_download(model_name, "config.json"))
+        with open(cfg_path) as f:
+            return json.load(f)
+    except Exception as e:  # noqa: BLE001 — a probe must not break loading
+        logger.debug("config.json probe failed for %s: %s", model_name, e)
+        return None
+
+
+def _model_requires_remote_code(model_name: str) -> bool:
+    """Return True if the model's ``config.json`` / ``tokenizer_config.json``
+    declares ``auto_map`` custom code.
+
+    ``auto_map`` is HF transformers' opt-in for executing model/tokenizer
+    Python shipped inside a repo (the remote-code execution gate). When a
+    model declares it, loading with ``trust_remote_code=True`` will download
+    and run that code locally — so surfacing it lets operators make an
+    informed choice before the code executes. Any probe failure returns
+    ``False`` (no warning) so loading is never broken by the probe.
+    """
+    try:
+        tok_cfg = _read_tokenizer_config_json(model_name)
+        if tok_cfg and tok_cfg.get("auto_map"):
+            return True
+        model_cfg = _read_model_config_json(model_name)
+        if model_cfg and model_cfg.get("auto_map"):
+            return True
+    except Exception as e:  # noqa: BLE001 — a probe must never break loading
+        logger.debug("remote-code probe failed for %s: %s", model_name, e)
+    return False
 
 
 def _neutralize_unbundled_template_types(

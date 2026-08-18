@@ -216,8 +216,8 @@ jobs:
   # Drives the REAL .app through real user journeys and diffs the resulting
   # accessibility tree against committed structural baselines.
   #
-  # Why this job exists: apps/rapid-mac/scripts/gui-golden-flows.sh and the 12
-  # baselines under Tests/GUIGoldenFlows/__Snapshots__ ran in NO workflow at
+  # Why this job exists: apps/rapid-mac/scripts/gui-golden-flows.sh and its
+  # baselines under Tests/GUIGoldenFlows/__Snapshots__ once ran in NO workflow at
   # all. A regression net that only fires when a human remembers to run it is
   # not a net, and it had already failed: #1705 added the Images sidebar button
   # and left every one of the 12 baselines stale, with every check green.
@@ -235,8 +235,8 @@ jobs:
     # macos-15 for the same reason as the build job: Package.swift is
     # swift-tools-version 6.0, and macos-14 still defaults to Swift 5.x.
     runs-on: macos-15
-    # Build is ~the same cost as the build job; the four flows are seconds
-    # each (6-11 s on an M3 Ultra). 30 leaves room for a cold package resolve
+    # Build is ~the same cost as the build job; the flows are seconds each
+    # (6-11 s on an M3 Ultra). 30 leaves room for a cold package resolve
     # without letting a wedged app sit on the 6-hour default.
     timeout-minutes: 30
     defaults:
@@ -304,12 +304,10 @@ jobs:
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
       #
-      # These flows drive the app through `rapid-ax` alone (see
-      # `flow_requires_peekaboo` in the harness). Most other flows shell out to
-      # peekaboo — a third-party install whose bridge socket comes from the
-      # Peekaboo app rather than its CLI, with its own permission surface. The
-      # way to extend the set is to make those flows peekaboo-free (the menu
-      # click in `open_settings` is the main holdout), not to add peekaboo here.
+      # Every named flow below drives the app through `rapid-ax` alone (see
+      # `flow_requires_peekaboo` in the harness). The aggregate `all` mode still
+      # permits optional screenshot evidence through Peekaboo, but screenshots
+      # are not assertions and therefore are not a CI dependency.
       #
       # `chat-depth` is peekaboo-free but deliberately NOT run here. It asserts
       # that all five turns are present in the accessibility tree at once, and
@@ -318,72 +316,192 @@ jobs:
       # so the tree honestly reports 3 user + 4 model with a COMPLETE walk. That
       # is the app working as designed, not a regression, and it cannot be fixed
       # by a bigger window on a 1024x768 screen. Its assertions are only valid
-      # where the whole transcript fits, so it stays a local flow.
+      # where the whole transcript fits, so it is the ONE explicitly excluded
+      # named flow. `test_gui_golden_ci_coverage.py` fails if any other flow is
+      # absent from this job, or if this exception silently grows.
+      - name: 'Golden flow: fresh-install'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow fresh-install
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/fresh-install
+
+      - name: 'Golden flow: cached-quickstart'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow cached-quickstart
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/cached-quickstart
+
+      - name: 'Golden flow: cached-curated-tradeup'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow cached-curated-tradeup
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/cached-curated-tradeup
+
+      - name: 'Golden flow: download-progress'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow download-progress
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/download-progress
+
+      - name: 'Golden flow: settings-persistence'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow settings-persistence
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/settings-persistence
+
       - name: 'Golden flow: chat-restore'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow chat-restore
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-restore
 
+      - name: 'Golden flow: message-actions'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow message-actions
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/message-actions
+
+      - name: 'Golden flow: restored-tools'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow restored-tools
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/restored-tools
+
+      - name: 'Golden flow: tool-loop-budget'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow tool-loop-budget
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/tool-loop-budget
+
+      - name: 'Golden flow: math-rendering'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow math-rendering
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/math-rendering
+
       - name: 'Golden flow: slow-stream-stop'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow slow-stream-stop
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/slow-stream-stop
 
       - name: 'Golden flow: model-crash-recovery'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow model-crash-recovery
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/model-crash-recovery
 
+      - name: 'Golden flow: low-memory-choice'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow low-memory-choice
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/low-memory-choice
+
       - name: 'Golden flow: image-generation'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow image-generation
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/image-generation
 
       - name: 'Golden flow: audio-readiness'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow audio-readiness
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/audio-readiness
 
       - name: 'Golden flow: settings-mtp'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow settings-mtp
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/settings-mtp
 
       - name: 'Golden flow: window-close-prompt'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow window-close-prompt
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/window-close-prompt
 
       - name: 'Golden flow: resident-load-rejected'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow resident-load-rejected
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/resident-load-rejected
 
       - name: 'Golden flow: no-dead-controls'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow no-dead-controls
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/no-dead-controls
 
       - name: 'Golden flow: catalog-integrity'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow catalog-integrity
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/catalog-integrity
 
+      - name: 'Golden flow: browse-all-destination'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow browse-all-destination
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/browse-all-destination
+
+      - name: 'Golden flow: chat-document-attachment'
+        continue-on-error: true
+        run: ./scripts/gui-golden-flows.sh --flow chat-document-attachment
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/chat-document-attachment
+
       - name: 'Golden flow: update-state'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow update-state
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/update-state
 
       - name: 'Golden flow: launch-integrations'
+        continue-on-error: true
         run: ./scripts/gui-golden-flows.sh --flow launch-integrations
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/launch-integrations
 
-      # The harness stops at the FIRST mismatched baseline and the job stops at
-      # the first failing flow, so one red run reveals exactly one line. With 5
-      # baselines across 4 flows that is up to 5 push-and-wait cycles to see a
-      # difference that was fully visible on the runner the first time — which
-      # is precisely what the OS-variance round trip on PR #1721 cost.
+      # Individual steps continue so one runner reports every broken journey
+      # in a single pass. This final verdict is the gate: missing result files,
+      # malformed evidence, and any explicit failure all keep the PR red.
+      - name: Require every named golden flow
+        if: always()
+        env:
+          GOLDEN_ROOT: ${{ runner.temp }}/golden
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["GOLDEN_ROOT"])
+          expected = 24
+          results = sorted(root.glob("*/result.json"))
+          failures = []
+          for path in results:
+              try:
+                  payload = json.loads(path.read_text())
+              except (OSError, ValueError) as error:
+                  failures.append(f"{path.parent.name}: unreadable result ({error})")
+                  continue
+              if payload.get("status") != "pass":
+                  failures.append(
+                      f"{path.parent.name}: {payload.get('status', 'missing status')}"
+                  )
+          if len(results) != expected:
+              failures.append(f"expected {expected} result files, found {len(results)}")
+          if failures:
+              raise SystemExit("Golden flow gate failed:\n- " + "\n- ".join(failures))
+          print(f"All {expected} named GUI golden flows passed")
+          PY
+
+      # Each harness invocation stops at its FIRST mismatched baseline, so one
+      # red run can otherwise reveal only one structural difference per flow.
+      # Regenerate every CI-gated flow that actually owns a baseline;
+      # semantic-only flows have nothing to regenerate and rerunning them here
+      # used to turn a fast failure into a 10+ minute diagnostic.
       #
       # So on failure, regenerate the whole set against a throwaway baseline
       # directory and diff it against the committed one. The result is "here is
@@ -401,7 +519,7 @@ jobs:
           set -uo pipefail
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
-          for flow in chat-restore slow-stream-stop model-crash-recovery image-generation audio-readiness no-dead-controls catalog-integrity update-state launch-integrations; do
+          for flow in fresh-install settings-persistence settings-mtp chat-restore slow-stream-stop model-crash-recovery update-state image-generation audio-readiness launch-integrations; do
             RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
             RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
               ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true

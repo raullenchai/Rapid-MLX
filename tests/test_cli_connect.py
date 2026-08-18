@@ -123,10 +123,83 @@ def test_connect_no_target_renders_banner(monkeypatch):
         "resolve_endpoints",
         lambda **kw: connect.ServerEndpoints("localhost", 8000, model="m1"),
     )
+    # A live server is present for this shape check.
+    monkeypatch.setattr(connect, "probe_server_alive", lambda *a, **k: True)
     out = _run_connect()
     assert "Ready: http://localhost:8000" in out
     assert "Connect:" in out
     assert "OpenAI:" in out
+
+
+def test_probe_server_alive_keys_on_healthz_status_code(monkeypatch):
+    """#1999: /healthz is rapid-mlx-specific, so a non-404 response (2xx, or a
+    DDTree auth 401/403) counts as alive across all serving modes; a 404 (an
+    unrelated HTTP server) or a refused/timed-out connection does not. The body
+    is not inspected — the standard / DFlash / DDTree bodies differ."""
+    import urllib.error
+    import urllib.request
+
+    def _ok(url, timeout=None):
+        return object()  # urlopen returns without raising on 2xx
+
+    def _raise(code):
+        def _open(url, timeout=None):
+            raise urllib.error.HTTPError(url, code, "err", {}, None)
+
+        return _open
+
+    def _conn(url, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    # 2xx (any serving mode) → alive.
+    monkeypatch.setattr(urllib.request, "urlopen", _ok)
+    assert connect.probe_server_alive("localhost", 8000) is True
+
+    # Auth-gated DDTree /healthz answers 401/403 → still a server there.
+    for code in (401, 403):
+        monkeypatch.setattr(urllib.request, "urlopen", _raise(code))
+        assert connect.probe_server_alive("localhost", 8000) is True, code
+
+    # 404 (unrelated server), 503 (up but draining, refusing new work), and
+    # 500 (broken) are all "don't hand a client this endpoint".
+    for code in (404, 500, 503):
+        monkeypatch.setattr(urllib.request, "urlopen", _raise(code))
+        assert connect.probe_server_alive("localhost", 8000) is False, code
+
+    # Nothing listening: connection refused.
+    monkeypatch.setattr(urllib.request, "urlopen", _conn)
+    assert connect.probe_server_alive("localhost", 8000) is False
+
+    # A port occupied by a non-HTTP service (SSH, a DB) answers with garbage,
+    # which urllib surfaces as http.client.BadStatusLine — must not crash.
+    import http.client
+
+    def _bad_status(url, timeout=None):
+        raise http.client.BadStatusLine("\x00nonsense")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _bad_status)
+    assert connect.probe_server_alive("localhost", 8000) is False
+
+
+def test_connect_reports_no_server_when_nothing_listening(monkeypatch):
+    """#1999: connect must not announce Ready: for an address that refuses
+    connections; it says there is no server and drops the Connect cheat-sheet
+    that would otherwise wire a client to a dead endpoint."""
+    monkeypatch.setattr(
+        connect,
+        "resolve_endpoints",
+        lambda **kw: connect.ServerEndpoints("localhost", 8000, model=None),
+    )
+    monkeypatch.setattr(connect, "probe_server_alive", lambda *a, **k: False)
+    out = _run_connect()
+    assert "Ready:" not in out
+    assert "No rapid-mlx server on http://localhost:8000" in out
+    assert "rapid-mlx serve <model>" in out
+    # No cheat-sheet that points a client at the dead endpoint.
+    assert "Connect:" not in out
+    assert "--setup" not in out
+    # The prospective addresses are still shown, just not as "Ready".
+    assert "http://localhost:8000/v1" in out
 
 
 def test_connect_json_is_valid_and_stable(monkeypatch):
@@ -256,6 +329,7 @@ def test_ipv6_banner_renders_bracketed(monkeypatch):
         "resolve_endpoints",
         lambda **kw: connect.ServerEndpoints("::1", 8000, model=None),
     )
+    monkeypatch.setattr(connect, "probe_server_alive", lambda *a, **k: True)
     out = _run_connect()
     assert "Ready: http://[::1]:8000" in out
     assert "OpenAI:    http://[::1]:8000/v1" in out

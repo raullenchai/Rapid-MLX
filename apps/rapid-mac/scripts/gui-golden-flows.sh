@@ -76,7 +76,7 @@ die() { printf '[gui-golden] FAIL: %s\n' "$*" >&2; exit 1; }
 pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
 flow_requires_screen_recording() {
     case "$FLOW" in
-        all|fresh-install|low-memory-choice) return 0 ;;
+        all) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -99,8 +99,8 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
-        slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        fresh-install|cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
+        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -352,6 +352,22 @@ wait_tree_text() {
         sleep 0.25
     done
     die "timed out waiting for AX text: $needle"
+}
+
+wait_selected() {
+    local identifier="$1" destination="$2" attempts="${3:-80}"
+    for ((i=0; i<attempts; i++)); do
+        see_main "$destination"
+        if jq -e --arg id "$identifier" \
+            '.data.ui_elements[]?
+             | select(.identifier == $id)
+             | select(.selected == true or .value == 1 or .value == "1")' \
+            "$destination" >/dev/null; then
+            return
+        fi
+        sleep 0.25
+    done
+    die "timed out waiting for AX selection: $identifier"
 }
 
 # Is a window with this title in the app's OWN accessibility tree?
@@ -830,9 +846,25 @@ press() {
     local tree="$1" identifier="$2" evidence="$3"
     jq -e --arg id "$identifier" '.data.ui_elements[]? | select(.identifier == $id)' "$tree" >/dev/null \
         || { printf '[gui-golden] AX identifier missing: %s\n' "$identifier" >&2; return 1; }
-    "$AX_DRIVER" press "$APP_PID" "$identifier" > "$evidence" || return 1
-    jq -e '.success' "$evidence" >/dev/null \
-        || { printf '[gui-golden] AXPress failed: %s\n' "$identifier" >&2; return 1; }
+    # Retry the press itself. SwiftUI can replace the accessibility element
+    # backing a control between the dump above and the AXPress below, and the
+    # press then fails with a transient invalid-element / cannot-complete error
+    # (#2009 identified this and fixed three call sites inline; there are 126).
+    # A single transient miss on ANY of them failed the whole gate, which is why
+    # three consecutive runs of this suite failed at three DIFFERENT controls —
+    # Choose File twice, then Check for updates. The identifier precheck stays
+    # OUTSIDE the loop: a genuinely absent control must still fail immediately
+    # rather than costing three attempts.
+    local attempt
+    for attempt in 1 2 3; do
+        if "$AX_DRIVER" press "$APP_PID" "$identifier" > "$evidence" 2>/dev/null \
+            && jq -e '.success' "$evidence" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.4
+    done
+    printf '[gui-golden] AXPress failed after 3 attempts: %s\n' "$identifier" >&2
+    return 1
 }
 
 round_trip_toggle() {
@@ -1135,7 +1167,6 @@ flow_fresh_install() {
             || die "post-onboarding shell missing $id"
     done
     baseline fresh-install.steady "$OUT/steady.json"
-    pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/final.png" --json > "$OUT/final-image.json"
     # Exercise the scene/content contract, not only the constant. Before the
     # fix the declared floor was never applied and AppKit accepted ~616pt.
     # Asking for 500pt must be clamped by the live window to at least 720pt.
@@ -1151,25 +1182,78 @@ flow_fresh_install() {
 flow_cached_quickstart() {
     log "cached Quickstart starts without downloading (#1793)"
     # Reproduce #1618, not merely its configuration strings: an
-    # operator-owned rapid-mlx-shaped listener is alive on the default port
+    # operator-owned rapid-mlx-shaped listener is alive in the default port
+    # window
     # before the dogfood app launches. The isolated persona must bind its own
     # high port without sweeping or terminating this process.
+    # A server started in another Terminal owns a different process group.
+    # Non-interactive CI shells disable job control, though, so a bare `&`
+    # would put this fixture in the runner shell's group alongside the app and
+    # its child.  That makes an ownership-safe group shutdown look like it
+    # killed the operator fixture.  Give the fixture the same isolation a real
+    # operator-owned process has; `$!` remains its pid because Python execs the
+    # fake in place after setsid().
+    local operator_port=""
+    local candidate
+    for candidate in {8000..8009}; do
+        if ! /usr/sbin/lsof -nP -sTCP:LISTEN -ti :"$candidate" 2>/dev/null \
+            | grep -q .; then
+            operator_port="$candidate"
+            break
+        fi
+    done
+    [[ -n "$operator_port" ]] \
+        || die "no free port in the operator's default 8000-8009 window"
+
     FAKE_EVENT_LOG="$OUT_ROOT/operator-events.jsonl" \
+        /usr/bin/env python3 -c \
+        'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
         "$ROOT/scripts/fake-rapid-mlx.sh" serve operator-owned \
-        --host 127.0.0.1 --port 8000 > "$OUT_ROOT/operator-server.log" 2>&1 &
+        --host 127.0.0.1 --port "$operator_port" \
+        > "$OUT_ROOT/operator-server.log" 2>&1 &
     OPERATOR_SERVER_PID=$!
+    local operator_bound=0
     for _ in {1..40}; do
-        curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break
+        if kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
+            && curl -fsS "http://127.0.0.1:$operator_port/healthz" >/dev/null 2>&1; then
+            # The port was observed free immediately before spawn. Give a
+            # failed bind enough time to unwind before accepting the health
+            # response, so a racing listener cannot impersonate this fixture.
+            sleep 0.1
+            if kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null; then
+                operator_bound=1
+                break
+            fi
+        fi
         sleep 0.1
     done
-    curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
-        || die "operator-shaped server did not bind :8000 for the isolation repro"
-    kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
-        || die ":8000 was already occupied; cannot establish the owned-server isolation repro"
+    [[ "$operator_bound" == 1 ]] \
+        || die "operator fixture did not own :$operator_port; cannot establish the isolation repro"
+
+    start_persona operator-isolation
+
+    # #1618 is specifically a launch-sweep regression. Prove the operator's
+    # listener survived the isolated app launch, then release the canonical
+    # port window and this probe persona before exercising cached model
+    # startup. Keeping an unrelated server — or the app launched beside it —
+    # alive throughout onboarding adds no ownership coverage and couples two
+    # otherwise independent regression shapes.
+    if ! kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null; then
+        echo "=== isolated app log ===" >&2
+        tail -n 120 "$OUT/app.log" >&2 || true
+        echo "=== operator server log ===" >&2
+        tail -n 120 "$OUT_ROOT/operator-server.log" >&2 || true
+        die "dogfood launch terminated the operator-owned :$operator_port server (#1618)"
+    fi
+    curl -fsS "http://127.0.0.1:$operator_port/healthz" >/dev/null \
+        || die "operator-owned :$operator_port server stopped responding after dogfood launch"
+    cleanup_operator_server
 
     # Include the real cold-cache notice alongside the deterministic cached
     # fixture. Catalog output can be interleaved with prose; the chooser must
     # never promote that notice into a selectable model named "No" (#1918).
+    # A fresh persona keeps this onboarding assertion independent from the
+    # launch-sweep assertion above.
     start_persona cached-quickstart FAKE_EMPTY_CACHE_NOTICE=1
 
     see_main "$OUT/consent.json"
@@ -1205,11 +1289,18 @@ flow_cached_quickstart() {
               and .port >= 49152 and .port <= 65535)' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "isolated persona did not bind its selected high port"
-    kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
-        || die "dogfood launch terminated the operator-owned :8000 server (#1618)"
-    curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
-        || die "operator-owned :8000 server stopped responding after dogfood launch"
-
+    local sidecar_port
+    sidecar_port="$(jq -rs 'map(select(.event == "server_started" and .alias == "fake-alias")) | last | .port // empty' "$OUT/fake-events.jsonl")"
+    local sidecar_healthy=0
+    for _ in {1..40}; do
+        if curl -fsS "http://127.0.0.1:$sidecar_port/healthz" >/dev/null 2>&1; then
+            sidecar_healthy=1
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "$sidecar_healthy" == 1 ]] \
+        || die "cached Quickstart sidecar started but never served health on :$sidecar_port"
     # Ready is no longer completion: onboarding must hold the window until
     # the user explicitly confirms the final step. Pin both halves so a
     # future regression cannot silently restore the old auto-dismiss path.
@@ -1259,8 +1350,11 @@ flow_cached_curated_tradeup() {
         "$OUT/chooser.json" >/dev/null \
         || die "cached curated trade-up still advertises a download"
     press "$OUT/chooser.json" Quickstart.Choice.qwen3.5-4b-4bit "$OUT/select.json"
-    see_main "$OUT/selected.json"
-    assert_tree_text "$OUT/selected.json" "Start existing model"
+    # Verify the action's semantic result, not footer copy. The cached model's
+    # provenance is pinned above; after the press the durable contract is that
+    # this exact card becomes selected. Footer wording is presentation copy and
+    # is not required for the cached trade-up behavior under test.
+    wait_selected Quickstart.Choice.qwen3.5-4b-4bit "$OUT/selected.json"
     cleanup_persona
 }
 
@@ -2033,17 +2127,6 @@ flow_low_memory_choice() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Footer.Primary")' \
         "$OUT/low-memory-selected.json" >/dev/null \
         || die "selecting the low-memory choice left no Download & start action"
-    local sheet_region
-    sheet_region="$(jq -r '.data.ui_elements[] | select(.role == "AXSheet") | [.bounds.x, .bounds.y, .bounds.width, .bounds.height] | map(round) | @csv' "$OUT/low-memory-selected.json" | head -1)"
-    [[ -n "$sheet_region" ]] || die "Quickstart sheet bounds are absent from AX"
-    pb app switch --to "PID:$APP_PID" --verify --json > "$OUT/focus-before-image.json"
-    # Capture the containing window instead of relying on Peekaboo's newer
-    # area/region flags. The AX assertion above still proves that the sheet is
-    # present, while a window capture works with both v3.0 beta and current
-    # Peekaboo releases used across our dogfood Macs.
-    pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/low-memory-selected.png" --json \
-        > "$OUT/low-memory-selected-image.json"
-
     jq -n '{success: true, assertion: "onboarding exposes and selects an honestly labelled sub-1B low-memory fallback"}' \
         > "$OUT/low-memory-assertion.json"
     cleanup_persona
@@ -2349,22 +2432,40 @@ flow_no_dead_controls() {
         "$OUT/dead-actions-app-open.json"
     round_trip_toggle Settings.App.HideDockOnCloseToggle dead-actions-hide-dock
     see_main "$OUT/dead-actions-app-before-recheck.json"
-    press "$OUT/dead-actions-app-before-recheck.json" Settings.App.RecheckCTA \
-        "$OUT/dead-actions-app-recheck-press.json" \
-        || die "Check for updates is not pressable"
-    local update_feedback=0
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/dead-actions-app-checked.json"
-        if jq -e '(.data.ui_elements | tostring)
-                  | contains("Checking for updates") or contains("Up to date")' \
-            "$OUT/dead-actions-app-checked.json" >/dev/null; then
-            update_feedback=1
-            break
-        fi
-        sleep 0.25
-    done
-    [[ "$update_feedback" == 1 ]] \
-        || die "Check for updates produced no visible state"
+    # The App panel is a per-STATE tree (see the update-state flow above):
+    # ``AheadOfManifest`` — the build is newer than anything published — has NO
+    # ``Settings.App.RecheckCTA`` at all. That is precisely the state every
+    # version-bump PR builds into (app X.Y.Z+1, manifest X.Y.Z), so an
+    # unconditional press here failed 2 of 2 runs that reached this flow on the
+    # 0.12.15 bump while passing on every same-version PR. Mirror update-state:
+    # exercise the CTA when the panel renders it, and in AheadOfManifest assert
+    # the state marker instead — a dead control in UpToDate still dies, and a
+    # correctly-absent control no longer reads as one.
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Settings.App.RecheckCTA")' \
+        "$OUT/dead-actions-app-before-recheck.json" >/dev/null; then
+        press "$OUT/dead-actions-app-before-recheck.json" Settings.App.RecheckCTA \
+            "$OUT/dead-actions-app-recheck-press.json" \
+            || die "Check for updates is not pressable"
+        local update_feedback=0
+        for ((i=0; i<40; i++)); do
+            see_main "$OUT/dead-actions-app-checked.json"
+            if jq -e '(.data.ui_elements | tostring)
+                      | contains("Checking for updates") or contains("Up to date")' \
+                "$OUT/dead-actions-app-checked.json" >/dev/null; then
+                update_feedback=1
+                break
+            fi
+            sleep 0.25
+        done
+        [[ "$update_feedback" == 1 ]] \
+            || die "Check for updates produced no visible state"
+    else
+        jq -e '.data.ui_elements[]?
+               | select(.identifier == "Settings.App.AheadOfManifest")' \
+            "$OUT/dead-actions-app-before-recheck.json" >/dev/null \
+            || die "Settings > App shows neither Settings.App.RecheckCTA nor Settings.App.AheadOfManifest"
+    fi
 
     # Developer exists only in debug builds. Its destructive reset is unit
     # tested separately; here the GUI contract is that every scope toggle
@@ -2385,11 +2486,14 @@ flow_no_dead_controls() {
             || die "Erase and restart is not pressable"
         wait_identifier Settings.Developer.CancelReonboard \
             "$OUT/dead-actions-developer-dialog.json"
-        press "$OUT/dead-actions-developer-dialog.json" Settings.Developer.CancelReonboard \
-            "$OUT/dead-actions-developer-cancel.json" \
-            || die "re-onboarding confirmation Cancel is not pressable"
         local dialog_closed=0
         for ((i=0; i<40; i++)); do
+            # SwiftUI can replace a confirmation-dialog AX element between a
+            # tree dump and AXPress. Re-resolve and retry the semantic action;
+            # the observable contract is that the dialog disappears.
+            "$AX_DRIVER" press "$APP_PID" Settings.Developer.CancelReonboard \
+                > "$OUT/dead-actions-developer-cancel.json" 2>/dev/null || true
+            sleep 0.1
             see_main "$OUT/dead-actions-developer-cancelled.json"
             if ! jq -e '.data.ui_elements[]?
                         | select(.identifier == "Settings.Developer.CancelReonboard")' \
@@ -3697,11 +3801,14 @@ flow_audio_readiness() {
                      and .text == "golden speech controls"' \
         "Generate Speech did not send the selected voice and text"
     wait_identifier Audio.Speech.Play "$OUT/speech-result.json"
-    "$AX_DRIVER" click-center "$APP_PID" Audio.Speech.Save \
-        > "$OUT/speech-save-click.json" \
-        || die "Save speech is not clickable"
     local speech_saved=0
     for ((i=0; i<40; i++)); do
+        # Re-resolve the dynamic result button for every AXPress. A real
+        # semantic action is required here; CGEvent coordinate clicks are not
+        # trustworthy on unattended runners and can report success while TCC
+        # discards the event.
+        "$AX_DRIVER" press "$APP_PID" Audio.Speech.Save \
+            > "$OUT/speech-save-press.json" 2>/dev/null || true
         if [[ -s "$OUT_ROOT/audio-readiness/saved-speech.wav" ]]; then
             speech_saved=1; break
         fi
@@ -3710,11 +3817,11 @@ flow_audio_readiness() {
     [[ "$speech_saved" == 1 ]] \
         || die "Save speech did not write the generated WAV"
     see_main "$OUT/speech-before-play.json"
-    "$AX_DRIVER" click-center "$APP_PID" Audio.Speech.Play \
-        > "$OUT/speech-play-click.json" \
-        || die "Play speech is not clickable"
     local playback_started=0
     for ((i=0; i<40; i++)); do
+        "$AX_DRIVER" press "$APP_PID" Audio.Speech.Play \
+            > "$OUT/speech-play-press.json" 2>/dev/null || true
+        sleep 0.05
         see_main "$OUT/speech-playing.json"
         if [[ "$(element_field "$OUT/speech-playing.json" Audio.Speech.Play description)" == "Stop playback" ]]; then
             playback_started=1; break
@@ -3849,24 +3956,68 @@ flow_audio_readiness() {
     [[ "$transcription_loaded" == 1 ]] \
         || die "Transcription stayed behind Download & start after its model became ready"
 
+    # AXPress can return success for a SwiftUI button whose backing object is
+    # rebuilt before its closure runs — the Choose File button's backing churns
+    # as the Transcription pane settles (readiness → controls), so a press landing
+    # mid-rebuild silently no-ops the file selection and flipped this flow
+    # red↔green on the *same* build (#2008: a gate that reddens at random is no
+    # gate). No AX API exposes the backing's identity, so a single press cannot be
+    # made hermetic. Instead we make the loop robust: (1) never press while the
+    # pane is visibly churning — require the FilePicker/Run pair present exactly
+    # once with steady enabled states across two dumps; (2) treat the *rendered
+    # selection* (filename + enabled Run) as the only proof of success, re-pressing
+    # the idempotent picker until that proof appears. Retry absorbs the residual
+    # last-dump-to-press window that (1) narrows but cannot fully close. One
+    # wall-clock deadline bounds the whole thing so a genuinely broken picker
+    # fails fast with a specific diagnostic instead of amplifying CI time.
     see_main "$OUT/transcription-controls-before.json"
-    press "$OUT/transcription-controls-before.json" Audio.Transcription.FilePicker \
-        "$OUT/transcription-file-press.json" \
-        || die "Choose File is not pressable"
-    local file_selected=0
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/transcription-file-selected.json"
-        if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
-                  and any(.data.ui_elements[]?;
-                          .identifier == "Audio.Transcription.Run"
-                          and .enabled == true)' \
-            "$OUT/transcription-file-selected.json" >/dev/null; then
-            file_selected=1; break
+    local file_selected=0 ever_settled=0 sig_a sig_b p
+    # The pane renders FilePicker and Run unconditionally, so a settled picker has
+    # BOTH present exactly once with steady enabled states. Emit "" (never equal
+    # to a real signature) otherwise, so a transient half-tree — either control
+    # momentarily missing or duplicated during a rebuild — is never mistaken for a
+    # stable one.
+    local -r picker_sig='[.data.ui_elements[]?
+                 | select(.identifier == "Audio.Transcription.FilePicker"
+                          or .identifier == "Audio.Transcription.Run")
+                 | {id: .identifier, e: .enabled}]
+                | (map(.id) | sort) as $ids
+                | if $ids == ["Audio.Transcription.FilePicker", "Audio.Transcription.Run"]
+                  then (sort_by(.id) | tojson) else "" end'
+    local -r file_deadline=$((SECONDS + 45))
+    while (( SECONDS < file_deadline )); do
+        see_main "$OUT/transcription-settle-a.json"; sleep 0.15
+        see_main "$OUT/transcription-settle-b.json"
+        sig_a="$(jq -r "$picker_sig" "$OUT/transcription-settle-a.json")"
+        sig_b="$(jq -r "$picker_sig" "$OUT/transcription-settle-b.json")"
+        if [[ -z "$sig_a" || "$sig_a" != "$sig_b" ]]; then
+            sleep 0.1; continue   # pane mid-rebuild — do not press into it
         fi
-        sleep 0.25
+        ever_settled=1
+        "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
+            > "$OUT/transcription-file-press.json" 2>/dev/null || true
+        # A landed press renders the filename + enables Run within a beat; poll
+        # for that proof before re-pressing so a successful selection is not
+        # clobbered by an eager re-press.
+        for ((p=0; p<6 && SECONDS < file_deadline; p++)); do
+            sleep 0.2
+            see_main "$OUT/transcription-file-selected.json"
+            if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
+                      and any(.data.ui_elements[]?;
+                              .identifier == "Audio.Transcription.Run"
+                              and .enabled == true)' \
+                "$OUT/transcription-file-selected.json" >/dev/null; then
+                file_selected=1; break
+            fi
+        done
+        [[ "$file_selected" == 1 ]] && break
     done
-    [[ "$file_selected" == 1 ]] \
-        || die "Choose File selected no usable audio file or Transcribe stayed disabled"
+    if [[ "$file_selected" != 1 ]]; then
+        if [[ "$ever_settled" == 1 ]]; then
+            die "Choose File: picker settled but no press produced a selection (Transcribe stayed disabled)"
+        fi
+        die "Choose File: FilePicker/Run controls never settled — pane did not finish rendering"
+    fi
     press "$OUT/transcription-file-selected.json" Audio.Transcription.Run \
         "$OUT/transcription-run-press.json" \
         || die "Transcribe is not pressable after selecting a file"

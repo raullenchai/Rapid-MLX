@@ -90,6 +90,7 @@ def test_peekaboo_requirement_is_default_deny():
     assert "*) return 0 ;;" in body, "the catch-all must REQUIRE peekaboo"
     peekaboo_free = {
         "chat-restore",
+        "fresh-install",
         "message-actions",
         "cached-quickstart",
         "cached-curated-tradeup",
@@ -107,6 +108,7 @@ def test_peekaboo_requirement_is_default_deny():
         "launch-integrations",
         "slow-stream-stop",
         "model-crash-recovery",
+        "low-memory-choice",
         "chat-document-attachment",
         "image-generation",
         "audio-readiness",
@@ -133,12 +135,15 @@ def test_dogfood_launcher_isolates_port_and_disables_heuristic_sweep():
     assert "49152" in source and "65535" in source
 
     # The macOS GoldenFlow is the executable proof: it keeps an
-    # operator-shaped listener on :8000 while launching the persona, then
+    # operator-shaped listener in the default 8000-8009 window while launching
+    # the persona, then
     # checks both process survival and the persona's actual bound port.
     flow = (
         HARNESS.read_text().split("flow_cached_quickstart() {", 1)[1].split("\n}", 1)[0]
     )
     assert "serve operator-owned" in flow
+    assert "os.setsid()" in flow
+    assert "{8000..8009}" in flow
     assert 'kill -0 "$OPERATOR_SERVER_PID"' in flow
     assert ".port >= 49152 and .port <= 65535" in flow
 
