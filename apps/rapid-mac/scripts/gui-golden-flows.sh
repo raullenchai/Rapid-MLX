@@ -2942,6 +2942,27 @@ flow_chat_document_attachment() {
         "$OUT/document-attached.json" >/dev/null \
         || die "the pasted TXT file did not become a removable attachment chip"
 
+    # Paste the exact same path again through the real clipboard gesture. It
+    # must produce feedback without adding a second chip — otherwise the
+    # shared document budget is split across duplicate copies.
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
+        > "$OUT/document-duplicate-paste.json"
+    local duplicate_rejected=0
+    for _ in {1..40}; do
+        see_main "$OUT/document-duplicate-rejected.json"
+        if jq -e '([.data.ui_elements[]?
+                    | select(.identifier == "ChatView.Attachment.Remove.chat-document.txt")]
+                   | length) == 1
+                  and ((.data.ui_elements | tostring)
+                       | contains("That file is already attached."))' \
+            "$OUT/document-duplicate-rejected.json" >/dev/null; then
+            duplicate_rejected=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$duplicate_rejected" == 1 ]] \
+        || die "pasting the same document twice did not leave exactly one chip with duplicate feedback"
+
     send_prompt "Which region is in this document?" document
     for _ in {1..40}; do
         if jq -e -s 'any(.[]; .event == "chat_request"

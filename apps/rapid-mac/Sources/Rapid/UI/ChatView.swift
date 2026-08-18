@@ -220,6 +220,14 @@ struct ChatView: View {
     @State private var draft: String = ""
     @State private var imageAttachments: [ChatImageAttachment] = []
     @State private var fileAttachments: [ChatFileAttachment] = []
+    /// Source path per attachment, image or document, so the same file cannot
+    /// be added twice.
+    ///
+    /// Kept beside the attachments rather than on the attachment types: both
+    /// are `Codable` and persist with the conversation, and an absolute path
+    /// written into chat history carries the user's account name and stops
+    /// being true the moment the file moves.
+    @State private var attachedSourcePaths: [UUID: String] = [:]
     @State private var attachmentNotice: String?
     @State private var isAttachmentDropTarget = false
     @State private var isImportingFiles = false
@@ -796,6 +804,7 @@ struct ChatView: View {
         let files = fileAttachments
         imageAttachments = []
         fileAttachments = []
+        attachedSourcePaths = [:]
         attachmentNotice = nil
         composeFocusToken &+= 1
         viewModel.send(
@@ -824,6 +833,7 @@ struct ChatView: View {
                         }
                         Button {
                             imageAttachments.removeAll { $0.id == attachment.id }
+                            attachedSourcePaths[attachment.id] = nil
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .symbolRenderingMode(.palette)
@@ -854,6 +864,7 @@ struct ChatView: View {
                         }
                         Button {
                             fileAttachments.removeAll { $0.id == attachment.id }
+                            attachedSourcePaths[attachment.id] = nil
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
@@ -892,6 +903,21 @@ struct ChatView: View {
     @discardableResult
     private func addAttachmentURLs(_ urls: [URL]) -> Bool {
         guard !isImportingFiles else { return false }
+        // Filter before splitting, so images and documents get the same
+        // answer to "is this already here". Re-attaching is not merely
+        // redundant for a document: the per-message character budget is split
+        // evenly across attachments (``fittedForMessage``), so the same PDF
+        // added four times sends a quarter of it four times over instead of
+        // the whole thing once, and says so only with a "partial" chip.
+        let (urls, duplicates) = Self.withoutAlreadyAttached(
+            urls, attached: Set(attachedSourcePaths.values)
+        )
+        guard !urls.isEmpty else {
+            attachmentNotice = duplicates == 1
+                ? "That file is already attached."
+                : "Those files are already attached."
+            return false
+        }
         var imageURLs: [URL] = []
         var fileURLs: [URL] = []
         var unsupported = false
@@ -928,7 +954,11 @@ struct ChatView: View {
         var accepted: [ChatImageAttachment] = []
         var rejection: String?
         for url in urls {
-            do { accepted.append(try ChatImageAttachment(contentsOf: url)) }
+            do {
+                let attachment = try ChatImageAttachment(contentsOf: url)
+                attachedSourcePaths[attachment.id] = Self.attachmentKey(for: url)
+                accepted.append(attachment)
+            }
             catch { rejection = error.localizedDescription }
         }
         imageAttachments.append(contentsOf: accepted)
@@ -948,21 +978,16 @@ struct ChatView: View {
         isImportingFiles = true
         Task { @MainActor in
             let outcome = await Task.detached(priority: .userInitiated) {
-                var accepted: [ChatFileAttachment] = []
-                var rejection: String?
-                for url in selection.accepted {
-                    let accessed = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if accessed { url.stopAccessingSecurityScopedResource() }
-                    }
-                    do { accepted.append(try ChatFileAttachment(contentsOf: url)) }
-                    catch { rejection = error.localizedDescription }
-                }
-                return (accepted, rejection)
+                Self.loadFileAttachments(selection.accepted)
             }.value
 
-            let combined = fileAttachments + outcome.0
+            let combined = fileAttachments + outcome.0.map(\.attachment)
             fileAttachments = ChatFileAttachment.fittedForMessage(combined)
+            for imported in outcome.0 {
+                attachedSourcePaths[imported.attachment.id] = Self.attachmentKey(
+                    for: imported.sourceURL
+                )
+            }
             if selection.rejectedCount > 0 {
                 attachmentNotice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
             } else {
@@ -971,6 +996,35 @@ struct ChatView: View {
             isImportingFiles = false
         }
         return true
+    }
+
+    /// Parse candidates without losing which source produced each attachment.
+    /// Failed candidates may appear anywhere in the batch, so pairing a
+    /// filtered attachments array with the original URL array by index would
+    /// associate every success after a failure with the wrong path.
+    nonisolated static func loadFileAttachments(
+        _ urls: [URL]
+    ) -> (
+        accepted: [(attachment: ChatFileAttachment, sourceURL: URL)],
+        rejection: String?
+    ) {
+        var accepted: [(attachment: ChatFileAttachment, sourceURL: URL)] = []
+        var rejection: String?
+        for url in urls {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                accepted.append((
+                    attachment: try ChatFileAttachment(contentsOf: url),
+                    sourceURL: url
+                ))
+            } catch {
+                rejection = error.localizedDescription
+            }
+        }
+        return (accepted, rejection)
     }
 
     private func pasteAttachmentsFromClipboard() -> Bool {
@@ -1003,6 +1057,30 @@ struct ChatView: View {
             } catch { attachmentNotice = error.localizedDescription }
         }
         return true
+    }
+
+    /// Identity for "the same file". Symlinks and `..` segments are resolved
+    /// so two spellings of one path do not read as two files; the same bytes
+    /// living at two real paths deliberately still count as two, because
+    /// deciding otherwise would mean reading every candidate before we know
+    /// whether we want it.
+    nonisolated static func attachmentKey(for url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Split incoming URLs into ones not yet attached and a count of the rest.
+    /// Also collapses repeats WITHIN one batch — selecting the same file twice
+    /// in the open panel is the same mistake as pasting it twice.
+    nonisolated static func withoutAlreadyAttached(
+        _ urls: [URL], attached: Set<String>
+    ) -> (fresh: [URL], duplicates: Int) {
+        var seen = attached
+        var fresh: [URL] = []
+        for url in urls {
+            let key = attachmentKey(for: url)
+            if seen.insert(key).inserted { fresh.append(url) }
+        }
+        return (fresh, urls.count - fresh.count)
     }
 
     private func rejectImageInputForCurrentModel() {
