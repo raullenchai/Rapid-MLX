@@ -346,6 +346,7 @@ case "scroll-wheel":
           let extent = size(target, kAXSizeAttribute as CFString)
     else { fail("scroll-wheel \(identifier) has no readable bounds") }
     let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
+    NSRunningApplication(processIdentifier: pid)?.activate(options: [])
     CGWarpMouseCursorPosition(center)
     guard let event = CGEvent(
         scrollWheelEvent2Source: nil,
@@ -355,6 +356,10 @@ case "scroll-wheel":
         wheel2: 0,
         wheel3: 0
     ) else { fail("could not create scroll-wheel event") }
+    // A newly-created CG scroll event is not guaranteed to inherit the
+    // cursor's warped position. Pin the event itself to the semantic target;
+    // otherwise headless runners can deliver it at (0, 0), outside the app.
+    event.location = center
     event.post(tap: .cghidEventTap)
     usleep(150_000)
 case "increment":
