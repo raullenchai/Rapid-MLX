@@ -33,6 +33,9 @@ final class DictationController {
     private(set) var lastError: String?
     private(set) var lastLatency: TimeInterval?
     private(set) var elapsed: TimeInterval = 0
+    /// Set when the TCC row says Accessibility is granted but this process
+    /// still cannot install an event tap — i.e. the grant landed after launch.
+    private(set) var accessibilityNeedsRelaunch = false
 
     let vocabulary: DictationVocabulary
     let history: DictationHistory
@@ -148,6 +151,16 @@ final class DictationController {
         refreshReadiness()
     }
 
+    /// Relaunch so a post-launch Accessibility grant takes effect.
+    func relaunch() {
+        let url = Bundle.main.bundleURL
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in
+            Task { @MainActor in NSApp.terminate(nil) }
+        }
+    }
+
     func requestAccessibility() {
         DictationHotkey.requestAccessibilityPermission()
         // The prompt only appears once per app version; send returning users
@@ -163,13 +176,26 @@ final class DictationController {
         guard readinessSnapshot.accessibility else {
             lastError = "Dictation needs Accessibility access before the hotkey can be used."
             phase = .off
+            // Roll the switch back. Leaving it on while nothing works strands
+            // the user: the control reads "enabled", the hotkey is dead, and a
+            // readiness-gated `.disabled` would stop them turning it off again.
+            isEnabled = false
             return
         }
         guard hotkey.start() else {
-            lastError = "The dictation hotkey couldn't be registered."
+            // macOS does not apply an Accessibility grant to an already-running
+            // process, so this is the common shape right after the user flips
+            // the switch in System Settings: the TCC row says yes, this process
+            // still sees no. A relaunch is the fix, not another grant.
+            accessibilityNeedsRelaunch = DictationHotkey.hasAccessibilityPermission
+            lastError = accessibilityNeedsRelaunch
+                ? "Accessibility is granted, but this running copy hasn't picked it up. Relaunch Rapid to finish."
+                : "The dictation hotkey couldn't be registered."
             phase = .off
+            isEnabled = false
             return
         }
+        accessibilityNeedsRelaunch = false
         lastError = nil
         phase = .idle
     }

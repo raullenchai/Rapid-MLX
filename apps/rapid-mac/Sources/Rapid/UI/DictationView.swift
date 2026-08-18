@@ -128,7 +128,19 @@ struct DictationView: View {
                         .accessibilityIdentifier("Dictation.GrantAccessibility")
                 }
             } detail: {
-                Text("Needed to watch for the hotkey and to type into other apps.")
+                // A grant made while the app is running does not reach this
+                // process — macOS only consults TCC when the tap is installed.
+                // Saying "grant it again" here would send the user in a loop.
+                if controller.accessibilityNeedsRelaunch {
+                    HStack(spacing: RapidTheme.Space.sm) {
+                        Text("Granted in System Settings, but this running copy hasn't picked it up.")
+                        Button("Relaunch") { controller.relaunch() }
+                            .buttonStyle(.rapidTertiary)
+                            .accessibilityIdentifier("Dictation.Relaunch")
+                    }
+                } else {
+                    Text("Needed to watch for the hotkey and to type into other apps. macOS applies this at launch, so Rapid may need a relaunch afterwards.")
+                }
             }
 
             Divider().overlay(RapidTheme.hairline)
@@ -156,9 +168,13 @@ struct DictationView: View {
                 // Reading live `readiness` here instead let the two disagree:
                 // three green ticks with a greyed-out switch and nothing on
                 // screen explaining why.
+                // Gate turning it ON, never turning it OFF. Disabling on
+                // readiness alone strands anyone whose permissions lapsed after
+                // enabling: the switch reads "on", nothing works, and it cannot
+                // be switched back.
                 Toggle("Enable dictation", isOn: $controller.isEnabled)
                     .toggleStyle(.switch)
-                    .disabled(!controller.readinessSnapshot.isReady)
+                    .disabled(!controller.readinessSnapshot.isReady && !controller.isEnabled)
                     .accessibilityIdentifier("Dictation.Enable")
                 if !controller.readinessSnapshot.isReady {
                     Text(blockingReason)
