@@ -251,6 +251,7 @@ rapid-mlx chat [model] [options]
 | `--ready-timeout` | Seconds to wait for the spawned server to become ready | 600 |
 | `--response-timeout` | Seconds to wait for a single response | 600 |
 | `--mcp-config` | Load MCP tools into this chat agent | *(none)* |
+| `--disable-prefix-cache` | Disable reusable on-disk prefix caching for a server spawned by `chat` | off |
 
 > The REPL defaults to `--no-think` because reasoning models (Qwen3.5, etc.)
 > otherwise leak raw chain-of-thought and can loop until `max-tokens`. Pass
@@ -274,7 +275,13 @@ rapid-mlx chat qwen3.5-4b-4bit --system "You are a terse, friendly Mac shell tut
 
 # Give the built-in chat agent tools from one or more MCP servers
 rapid-mlx chat qwen3.5-4b-4bit --mcp-config mcp.json
+
+# Keep sensitive prompts out of the reusable on-disk prefix cache
+rapid-mlx chat qwen3.5-4b-4bit --disable-prefix-cache
 ```
+
+`--disable-prefix-cache` applies only when `chat` spawns its own server. When
+using `--port` or `--base-url`, start that server with the corresponding flag.
 
 When attaching with `--port` or `--base-url` and no model argument, `chat`
 discovers the model from the server's `/v1/models` response. An explicit model

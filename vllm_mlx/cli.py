@@ -6225,6 +6225,7 @@ def _spawn_chat_server(
     *,
     register_in: list | None = None,
     log_handle=None,
+    disable_prefix_cache: bool = False,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
@@ -6277,6 +6278,8 @@ def _spawn_chat_server(
     ]
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
+    if disable_prefix_cache:
+        cmd.append("--disable-prefix-cache")
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
     # Tell the child main() that the parent already gated (or that this is
     # an internal spawn, where prompting would deadlock anyway because the
@@ -7243,12 +7246,18 @@ def chat_command(args):
             # If main() resolved an alias, expose the alias as the API model name
             # so the chat request body matches what the user typed.
             original = getattr(args, "_original_alias", None)
+            privacy_kwargs = (
+                {"disable_prefix_cache": True}
+                if getattr(args, "disable_prefix_cache", False)
+                else {}
+            )
             proc, base_url = _spawn_chat_server(
                 args.model,
                 log_path,
                 served_name=original,
                 register_in=_active_procs,
                 log_handle=_log_handle,
+                **privacy_kwargs,
             )
 
         try:
@@ -7559,12 +7568,18 @@ def chat_command(args):
             # readiness wait, before any further Python statement runs in
             # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
             # load tears the child down via the cleanup walk.
+            privacy_kwargs = (
+                {"disable_prefix_cache": True}
+                if getattr(args, "disable_prefix_cache", False)
+                else {}
+            )
             new_proc, new_base_url = _spawn_chat_server(
                 resolved,
                 new_log_path,
                 served_name=new_alias,
                 register_in=_active_procs,
                 log_handle=_new_log_handle,
+                **privacy_kwargs,
             )
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
@@ -10220,6 +10235,15 @@ Examples:
         help=(
             "Maximum tool-call rounds per turn when --mcp-config is set "
             "(default: 8). Multi-step tasks may need more."
+        ),
+    )
+    chat_parser.add_argument(
+        "--disable-prefix-cache",
+        action="store_true",
+        help=(
+            "Disable reusable prefix-cache persistence in the server spawned "
+            "by chat, so prompt token IDs are not written to disk. Has no "
+            "effect with --port or --base-url; configure that server directly."
         ),
     )
 

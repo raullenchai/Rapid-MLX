@@ -136,6 +136,21 @@ def test_chat_subcommand_registered_in_cli():
     assert exc.value.code == 0
 
 
+def test_chat_disable_prefix_cache_flag_is_registered():
+    captured: list = []
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--disable-prefix-cache"],
+        ),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+
+    assert captured[0].disable_prefix_cache is True
+
+
 def test_chat_no_model_defaults_to_qwen35_4b():
     """`rapid-mlx chat` (no model) on a COLD cache routes chat_command with
     the first-run starter (qwen3.5-4b-4bit).
@@ -2645,6 +2660,44 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
     assert "--mcp-config" not in captured["cmd"]
+
+
+def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    cli._spawn_chat_server(
+        "qwen3.5-4b-4bit",
+        str(tmp_path / "fake.log"),
+        disable_prefix_cache=True,
+    )
+
+    assert captured["cmd"].count("--disable-prefix-cache") == 1
 
 
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):
