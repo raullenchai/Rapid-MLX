@@ -146,6 +146,19 @@ def non_negative_int(value: str) -> int:
     return n
 
 
+def positive_int(value: str) -> int:
+    """Argparse ``type`` callable: parse a strictly positive integer."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive integer, got {value!r}"
+        ) from None
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {n}")
+    return n
+
+
 def _vision_pixel_bounds_error(min_pixels: int, max_pixels: int) -> str | None:
     if min_pixels and max_pixels and min_pixels > max_pixels:
         return "--vision-min-pixels must not exceed --vision-max-pixels"
@@ -6638,6 +6651,7 @@ def _stream_chat_response(
     is_tty = supports_rich_output(sys.stdout)
     in_reasoning = False
     full = ""
+    full_reasoning = ""
     tool_call_parts: dict[int, dict] = {}
 
     # ----- Repetition guard ----------------------------------------------
@@ -6717,6 +6731,7 @@ def _stream_chat_response(
                 if isinstance(streamed_calls, list):
                     _accumulate_tool_call_deltas(tool_call_parts, streamed_calls)
             if reasoning:
+                full_reasoning += reasoning
                 if not in_reasoning:
                     if is_tty:
                         sys.stdout.write(f"{MAGENTA}[thinking]{RESET} {DIM}")
@@ -6801,6 +6816,8 @@ def _stream_chat_response(
         sys.stdout.flush()
     if tool_calls is not None:
         tool_calls.extend(_finalize_tool_calls(tool_call_parts))
+    if metrics is not None and full_reasoning:
+        metrics["reasoning_content"] = full_reasoning
     if repetition_aborted:
         msg = (
             f"\n\n  {DIM}(response cut: model began repeating itself — "
@@ -6895,13 +6912,16 @@ def _complete_chat_with_mcp(
                 }
             )
 
-        messages.append(
-            {
-                "role": "assistant",
-                "content": content or None,
-                "tool_calls": normalized_calls,
-            }
-        )
+        assistant_message = {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": normalized_calls,
+        }
+        if round_metrics.get("reasoning_content"):
+            assistant_message["reasoning_content"] = round_metrics[
+                "reasoning_content"
+            ]
+        messages.append(assistant_message)
         completed_messages = {}
 
         def _handle_tool_event(event, completed=completed_messages):
@@ -10164,7 +10184,7 @@ Examples:
     )
     chat_parser.add_argument(
         "--mcp-max-rounds",
-        type=int,
+        type=positive_int,
         default=8,
         help=(
             "Maximum tool-call rounds per turn when --mcp-config is set "

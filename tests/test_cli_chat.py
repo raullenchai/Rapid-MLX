@@ -282,6 +282,33 @@ def test_complete_chat_with_mcp_runs_standard_tool_loop():
     ]
 
 
+def test_complete_chat_with_mcp_preserves_reasoning_for_tool_followup():
+    rounds = [
+        [
+            {"choices": [{"delta": {"reasoning_content": "Need the file."}}]},
+            _tool_call_delta(call_id="call-1", name="files__read", arguments="{}"),
+        ],
+        [_delta("done"), {"choices": [{"finish_reason": "stop"}]}],
+    ]
+    runtime = _FakeMCPRuntime()
+
+    with _fake_server([], rounds=rounds) as (port, payloads):
+        cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": [{"role": "user", "content": "go"}]},
+            runtime,
+            timeout_s=10,
+        )
+
+    assert payloads[1]["messages"][-2]["reasoning_content"] == "Need the file."
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nope"])
+def test_mcp_max_rounds_requires_positive_integer(value):
+    with pytest.raises(__import__("argparse").ArgumentTypeError):
+        cli.positive_int(value)
+
+
 def test_complete_chat_with_mcp_reassembles_arguments_split_mid_string():
     """Argument JSON split at hostile offsets still reassembles exactly.
 

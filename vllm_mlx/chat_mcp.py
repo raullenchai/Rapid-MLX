@@ -507,6 +507,26 @@ class ChatMCPRuntime:
         return self._config.servers[server_name].timeout
 
 
+def _matches_json_type(value: Any, declared: str) -> bool:
+    """Return whether a Python value already satisfies one JSON scalar type."""
+
+    if declared == "null":
+        return value is None
+    if declared == "boolean":
+        return isinstance(value, bool)
+    if declared == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if declared == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if declared == "string":
+        return isinstance(value, str)
+    if declared == "array":
+        return isinstance(value, list)
+    if declared == "object":
+        return isinstance(value, dict)
+    return False
+
+
 def _coerce_scalar(value: Any, schema: dict[str, Any]) -> Any:
     """Nudge a JSON scalar toward the type its schema declares.
 
@@ -519,8 +539,19 @@ def _coerce_scalar(value: Any, schema: dict[str, Any]) -> Any:
 
     declared = schema.get("type")
     if isinstance(declared, list):
-        # A union that already admits the value needs no nudging.
-        declared = next((t for t in declared if t != "null"), None)
+        # A union that already admits the value needs no nudging. Choosing its
+        # first member unconditionally would turn a valid integer into a
+        # string for ``["string", "integer"]`` merely because string came
+        # first in the schema.
+        if any(
+            isinstance(candidate, str) and _matches_json_type(value, candidate)
+            for candidate in declared
+        ):
+            return value
+        non_null = [candidate for candidate in declared if candidate != "null"]
+        # Multiple possible coercion targets are ambiguous. Leave validation
+        # to report the mismatch instead of guessing which branch was meant.
+        declared = non_null[0] if len(non_null) == 1 else None
     if declared is None:
         return value
 

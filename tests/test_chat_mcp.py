@@ -17,6 +17,7 @@ import pytest
 from vllm_mlx.chat_mcp import (
     ChatMCPRuntime,
     ChatToolEvent,
+    _coerce_scalar,
     _mcp_server_stderr_to,
     _quiet_optional_component_warnings,
     _server_parameters,
@@ -43,6 +44,16 @@ class _FakeResult:
 
 class _LaneAbort(BaseException):
     pass
+
+
+def test_scalar_coercion_keeps_values_already_valid_for_union():
+    assert _coerce_scalar(5, {"type": ["string", "integer"]}) == 5
+    assert _coerce_scalar("5", {"type": ["integer", "string"]}) == "5"
+
+
+def test_scalar_coercion_does_not_guess_between_union_branches():
+    value = "true"
+    assert _coerce_scalar(value, {"type": ["boolean", "integer"]}) is value
 
 
 class _FakeSessionGroup:
