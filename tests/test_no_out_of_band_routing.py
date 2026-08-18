@@ -266,6 +266,14 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # default R2 URL; power users override with any URL or "" to disable.
         # Never consulted by the engine, scheduler, or routing layer.
         "RAPID_MLX_MODEL_MIRROR",
+        # Throughput floor (MB/s, float) for the mirror-download guard in
+        # ``vllm_mlx/_mirror.py``. When a shard from ``RAPID_MLX_MODEL_MIRROR``
+        # sustains below this rate the download aborts and retries the same
+        # bytes via huggingface_hub. ``0`` or a negative value disables the
+        # guard; unset uses the built-in default. Purely a download-speed knob —
+        # it only changes *how fast / from where* bytes arrive, never which
+        # model alias loads, which parser fires, or which tier engages.
+        "RAPID_MLX_MIRROR_MIN_MBPS",
         # SIGTERM-grace budget (seconds, float) for the lifespan prefix-cache
         # flush in ``vllm_mlx/runtime/cache.py``. Defaults to 3.5s so a
         # multi-GB save commits its partial snapshot before downstream
