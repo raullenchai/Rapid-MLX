@@ -51,6 +51,7 @@ GPU acceleration to local AI workloads by integrating:
 - [Qwen Code](agents/qwen-code.md)
 - [OpenHands](agents/openhands.md)
 - [Hermes Agent](agents/hermes-agent.md)
+- [DeepSeek Harness](agents/deepseek-harness.md)
 
 ### Reference
 - [CLI Commands](reference/cli.md)

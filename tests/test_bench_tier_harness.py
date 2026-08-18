@@ -887,7 +887,7 @@ def test_harness_profile_timeout_env_var_respected(monkeypatch):
 class TestHarnessProfilesFilter:
     """G12 (random-coverage) sets ``RAPID_MLX_HARNESS_PROFILES_FILTER``
     to scope a ``--tier harness`` sweep to a randomly-picked subset of
-    the 5 first-class harnesses. The filter must:
+    the first-class harnesses. The filter must:
       * accept a single profile (``"codex"``)
       * accept comma-separated multi (``"codex,aider"``)
       * tolerate whitespace + trailing commas

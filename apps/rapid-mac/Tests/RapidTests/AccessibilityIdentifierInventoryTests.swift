@@ -61,6 +61,30 @@ struct AccessibilityIdentifierInventoryTests {
         }
     }
 
+    // MARK: - Settings → Developer (debug builds only)
+
+    /// The panel and its controls exist only in a debug build, and so does
+    /// this pin — asserting the file's contents from a release test run would
+    /// fail against source that is deliberately compiled out.
+    #if DEBUG
+    @Test("Settings → Developer names its panel and every control")
+    func settingsDeveloperPanelIdentifiers() throws {
+        try assertDeclared(
+            [
+                #""Settings.Developer.Panel""#,
+                #""Settings.Developer.Scope.Preferences""#,
+                #""Settings.Developer.Scope.Conversations""#,
+                #""Settings.Developer.Scope.Telemetry""#,
+                #""Settings.Developer.Reonboard""#,
+                #""Settings.Developer.ConfirmReonboard""#,
+                #""Settings.Developer.CancelReonboard""#,
+            ],
+            in: "Sources/Rapid/UI/SettingsDeveloperPanel.swift",
+            surface: "Settings → Developer"
+        )
+    }
+    #endif
+
     // MARK: - Settings → Tools
 
     @Test("Settings → Performance names its panel and every control")

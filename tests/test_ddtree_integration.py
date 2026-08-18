@@ -132,8 +132,20 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
     assert "DDTree" in captured.out
     lines = captured.out.splitlines()
 
+    # DDTree is the second-to-last column: #1987 appended a "Preset" column
+    # after it. The table pads by display width (wide glyphs like ✓/—/✗ are not
+    # one char), so a header-char-offset slice misaligns — index from the end of
+    # the whitespace-split row instead. For the rows checked here every cell is
+    # a single token (Size is "X.Y GiB", but it sits well before DDTree), so the
+    # last two tokens are DDTree then Preset. Guard that Preset is really last.
+    header = next((ln for ln in lines if "DDTree" in ln and "Alias" in ln), None)
+    assert header is not None, "models listing header with a DDTree column not found"
+    assert header.split()[-2:] == ["DDTree", "Preset"], (
+        f"DDTree is expected to be the second-to-last column: {header!r}"
+    )
+
     def ddtree_cell(row: str) -> str:
-        return row.split()[-1]
+        return row.split()[-2]
 
     eligible_row = next(
         (line for line in lines if line.strip().startswith("qwen3.5-9b-8bit ")),

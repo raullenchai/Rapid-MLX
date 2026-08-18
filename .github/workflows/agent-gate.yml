@@ -1,7 +1,8 @@
 name: Tier-1 agent gate
 
-# Re-verifies the four Tier-1 (flagship) agents — Claude Code, Codex, Hermes,
-# Aider — end-to-end against a real local model on Apple Silicon, then reuses the
+# Re-verifies the five Tier-1 (flagship) agents — Claude Code, Codex, Hermes,
+# Aider, DeepSeek Harness — end-to-end against a real local model on Apple
+# Silicon, then reuses the
 # same warm serve to run the deep output-coherence golden (#1247) and a
 # decode-throughput perf check. This is the one release check GitHub-hosted
 # runners structurally cannot do (no Metal, no weights, no agent binaries), so it
@@ -45,16 +46,36 @@ concurrency:
 jobs:
   tier1-smoke:
     runs-on: [self-hosted, macOS, rapidmlx-studio]
-    # Headroom above the script's own worst case (~42 min if every agent hits
-    # every per-command timeout) so the smoke exits on its own, prints its
-    # summary, and runs cleanup — instead of GitHub cancelling mid-run. A
-    # passing run finishes in ~5-8 min; the tail only matters on regressions.
+    # Headroom above the script's own worst case so the smoke exits on its own,
+    # prints its summary, and runs cleanup — instead of GitHub cancelling
+    # mid-run. A passing run finishes in ~5-8 min; the tail only matters on
+    # regressions.
     # Raised from 55: the release path now adds the coherence golden and a
-    # perf measurement on top of the four agents (all on the same warm
+    # perf measurement on top of the agents (all on the same warm
     # serve). Each check is individually bounded, but they stack, and a
     # run where every check PASSES near its own limit could otherwise be
     # cancelled by Actions for exceeding the job budget.
-    timeout-minutes: 75
+    #
+    # Raised from 75: DeepSeek Harness is the fifth Tier-1 agent.
+    #
+    # This job and auto-release.yml's tier1-agent-gate run the SAME
+    # agent_smoke.sh, so they must not quote different worst cases. The one
+    # arithmetic, from the script's own budgets (AGENT_TO=480 x2 attempts for
+    # claude/codex/aider/dsh, HERMES_TO=600 x3 for hermes):
+    #   four agents  3x960 + 1800 = 4680s ~= 78 min
+    #   five agents  4x960 + 1800 = 5640s ~= 94 min
+    # An earlier revision of this comment claimed ~42 min for the four-agent
+    # tail; that predated the 35B gate model and the 600s hermes budget and was
+    # simply stale. Do not reintroduce it — recompute from AGENT_TO/HERMES_TO.
+    #
+    # 90 rather than auto-release's 125 because this manual job does NOT run
+    # the release-gate extras (coherence golden + perf) — those are gated on
+    # RAPID_MLX_RELEASE_GATE=1, which only the release path sets. 94 min of
+    # pathological-retry tail still exceeds 90, but that path requires every
+    # agent to burn every retry; a genuine hang fails on its own per-agent
+    # budget long before, and this job is operator-triggered rather than
+    # release-blocking, so the tighter cap is the deliberate trade.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Tier-1 agent re-verification

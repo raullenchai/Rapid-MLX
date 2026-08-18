@@ -4,6 +4,28 @@ import Testing
 
 @Suite("Download/catalog hardening")
 struct DownloadCatalogHardeningTests {
+    @Test("Speculative presets are parsed from the alias profile table")
+    func speculativePresetParsing() {
+        let output = """
+          Alias                  Size       Tools            Reasoning    Spec-Decode Suffix Tier DFlash DDTree Preset
+          qwen3.8-27b-4bit       15.2 GiB   hermes           qwen3        ✓ MTP       n/a         —       —       MTP@rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3
+          llama3-3b-4bit         1.8 GiB    llama3_json      —            ✓           unknown     —       —       Suffix
+          qwen3.6-27b-4bit       15.1 GiB   hermes           qwen3        ✗ hybrid    n/a         —       —       —
+        """
+        let capabilities = ModelCatalog.parseSpeculativeCapabilities(output)
+        #expect(capabilities["qwen3.8-27b-4bit"]?.method == .mtp)
+        #expect(capabilities["qwen3.8-27b-4bit"]?.model == "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX")
+        #expect(capabilities["qwen3.8-27b-4bit"]?.tokens == 3)
+        #expect(capabilities["llama3-3b-4bit"]?.method == .suffix)
+        #expect(capabilities["qwen3.6-27b-4bit"] == nil)
+
+        let legacyOutput = """
+          Alias                  Tools            Reasoning
+          model-ending-suffix    hermes           Suffix
+        """
+        #expect(ModelCatalog.parseSpeculativeCapabilities(legacyOutput).isEmpty)
+    }
+
     @MainActor
     @Test("DownloadManager rejects option-shaped aliases before spawning rapid-mlx")
     func downloadManagerRejectsOptionAlias() {

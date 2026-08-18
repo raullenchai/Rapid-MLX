@@ -28,7 +28,7 @@ from vllm_mlx.agents.base import (
     AgentStreamingSpec,
     AgentTestingSpec,
 )
-from vllm_mlx.agents.testing import AgentTestRunner
+from vllm_mlx.agents.testing import AgentTestRunner, TestStatus
 
 
 def _make_profile(name: str, config_type: str) -> AgentProfile:
@@ -63,7 +63,9 @@ def test_run_calls_setup_agent_config_before_tests():
 
     calls = []
 
-    def _capture_setup(profile_arg, base_url, model_id, agent_version=None):
+    def _capture_setup(
+        profile_arg, base_url, model_id, agent_version=None, context_length=None
+    ):
         calls.append(
             {
                 "profile_name": profile_arg.name,
@@ -122,7 +124,9 @@ def test_run_refreshes_config_when_server_is_available():
 
     calls = []
 
-    def _capture_setup(profile_arg, base_url, model_id, agent_version=None):
+    def _capture_setup(
+        profile_arg, base_url, model_id, agent_version=None, context_length=None
+    ):
         calls.append(model_id)
         return "ok"
 
@@ -153,6 +157,24 @@ def test_run_refreshes_config_when_server_is_available():
         "with the runner's current model_id — the v0.7.26 bug was that it "
         "wasn't called at all, leaving stale config from the prior bench."
     )
+
+
+def test_specific_python_suite_runs_with_script_semantics():
+    """SDK suites guarded by ``__main__`` must execute, not import as no-ops."""
+    profile = _make_profile("pydanticai", "env")
+    runner = AgentTestRunner(profile, model_id="test-model")
+
+    source = (
+        b"if __name__ == '__main__':\n"
+        b"    results = {'sdk_call': 'PASS'}\n"
+        b"    raise SystemExit(0)\n"
+    )
+    with patch("pathlib.Path.read_bytes", return_value=source):
+        results = runner._run_specific_tests("test_pydantic_ai_full.py")
+
+    assert len(results) == 1
+    assert results[0].name == "sdk_call"
+    assert results[0].status == TestStatus.PASS
 
 
 def test_file_config_agent_uses_an_isolated_home_for_setup_and_e2e(monkeypatch):
@@ -191,3 +213,72 @@ def test_file_config_agent_uses_an_isolated_home_for_setup_and_e2e(monkeypatch):
     assert observed["setup_home"] == observed["child_home"]
     assert "rapid-mlx-codex-home-" in observed["child_home"]
     assert "CODEX_HOME" not in os.environ
+
+
+def test_agent_without_home_env_still_uses_isolated_home(monkeypatch):
+    """Every profile must avoid the operator's HOME, not only Codex/Hermes."""
+    real_home = "/Users/operator"
+    monkeypatch.setenv("HOME", real_home)
+    profile = _make_profile("opencode", "yaml")
+    profile = replace(
+        profile,
+        testing=AgentTestingSpec(binary="opencode", query_cmd="opencode {query}"),
+    )
+    observed: dict[str, str] = {}
+
+    def _capture_setup(*_args, **_kwargs):
+        observed["setup_home"] = os.environ["HOME"]
+        return "ok"
+
+    def _capture_e2e(*_args, env_overrides=None, **_kwargs):
+        observed["child_home"] = env_overrides["HOME"]
+        return TestResult("e2e_chat", TestStatus.PASS)
+
+    from vllm_mlx.agents.testing import TestResult, TestStatus
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
+        patch("vllm_mlx.agents.adapter.setup_agent_config", side_effect=_capture_setup),
+        patch(
+            "vllm_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+        patch("vllm_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
+    ):
+        AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
+
+    assert observed["setup_home"] == observed["child_home"]
+    assert "rapid-mlx-opencode-home-" in observed["child_home"]
+    assert os.environ["HOME"] == real_home
+
+
+def test_claude_e2e_sets_documented_config_directory():
+    """Claude must not discover the operator's hooks through its account home."""
+    profile = _make_profile("claude-code", "env")
+    profile = replace(
+        profile,
+        testing=AgentTestingSpec(binary="claude", query_cmd="claude -p {query}"),
+    )
+    observed: dict[str, str] = {}
+
+    def _capture_e2e(*_args, env_overrides=None, **_kwargs):
+        observed.update(env_overrides)
+        return TestResult("e2e_chat", TestStatus.PASS)
+
+    from vllm_mlx.agents.testing import TestResult, TestStatus
+
+    with (
+        patch.object(AgentTestRunner, "_server_available", return_value=True),
+        patch.object(AgentTestRunner, "_agent_binary_available", return_value=True),
+        patch("vllm_mlx.agents.adapter.setup_agent_config", return_value="ok"),
+        patch(
+            "vllm_mlx.agents.testing._test_plain_chat",
+            return_value=TestResult("plain_chat", TestStatus.PASS),
+        ),
+        patch("vllm_mlx.agents.testing._test_e2e_chat", side_effect=_capture_e2e),
+    ):
+        AgentTestRunner(profile, model_id="qwen3.5-9b-4bit").run()
+
+    assert observed["CLAUDE_CONFIG_DIR"].startswith(observed["HOME"])
+    assert observed["CLAUDE_CONFIG_DIR"].endswith("/.claude")

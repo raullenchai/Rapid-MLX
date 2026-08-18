@@ -49,13 +49,13 @@ import pytest
 # Independent, checked-in snapshot of every strict-xfail matrix cell.
 # --------------------------------------------------------------------------- #
 #
-# 24 cells total, one strict-xfail per line. Grouped by the reason family
+# 26 cells total, one strict-xfail per line. Grouped by the reason family
 # (see tests/integrations/conftest.py for the root-cause of each group).
 # Editing this set is the ONLY sanctioned way to add/remove a strict-xfail
 # in the matrix — the assertion below fails until this snapshot matches the
 # markers the conftest hook actually applies.
 
-# 9 × DeepSeek R1-Distill tool-call cells — R1 distillation dropped OpenAI
+# 10 × DeepSeek R1-Distill tool-call cells — R1 distillation dropped OpenAI
 # tool_call emission (conftest ``_DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS``).
 _DEEPSEEK_STRICT_XFAIL = frozenset(
     {
@@ -63,6 +63,9 @@ _DEEPSEEK_STRICT_XFAIL = frozenset(
         "tests/integrations/test_agents_matrix.py::TestQwenCode::test_smoke[deepseek]",
         "tests/integrations/test_agents_matrix.py::TestHermesAgent::test_smoke[deepseek]",
         "tests/integrations/test_agents_matrix.py::TestKiloCode::test_smoke[deepseek]",
+        # DeepSeek's own harness is not exempt: the gap is the R1-Distill
+        # checkpoint's tool emission, and DSH rides the same OpenAI wire.
+        "tests/integrations/test_agents_matrix.py::TestDeepSeekHarness::test_smoke[deepseek]",
         "tests/integrations/test_agents_matrix.py::TestCopilot::test_smoke[deepseek]",
         "tests/integrations/test_agents_matrix.py::TestDroid::test_smoke[deepseek]",
         "tests/integrations/test_agents_matrix.py::TestKimiCode::test_smoke[deepseek]",
@@ -78,7 +81,7 @@ _GPTOSS_STRICT_XFAIL = frozenset(
     }
 )
 
-# 14 × Hy3 cells — 166 GB single-node-infeasible, Ultra-only (family-wide:
+# 15 × Hy3 cells — 166 GB single-node-infeasible, Ultra-only (family-wide:
 # every agent + framework class × [hy3]).
 _HY3_STRICT_XFAIL = frozenset(
     {
@@ -90,6 +93,7 @@ _HY3_STRICT_XFAIL = frozenset(
         "tests/integrations/test_agents_matrix.py::TestHermesAgent::test_smoke[hy3]",
         "tests/integrations/test_agents_matrix.py::TestAider::test_smoke[hy3]",
         "tests/integrations/test_agents_matrix.py::TestKiloCode::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestDeepSeekHarness::test_smoke[hy3]",
         "tests/integrations/test_agents_matrix.py::TestCopilot::test_smoke[hy3]",
         "tests/integrations/test_agents_matrix.py::TestDroid::test_smoke[hy3]",
         "tests/integrations/test_agents_matrix.py::TestKimiCode::test_smoke[hy3]",
@@ -105,10 +109,10 @@ _EXPECTED_STRICT_XFAIL_NODEIDS = (
 
 # Redundant count tripwires — make the coverage delta obvious even before
 # the reviewer diffs the nodeid set. Guarded against snapshot typos below.
-_EXPECTED_DEEPSEEK_COUNT = 9
+_EXPECTED_DEEPSEEK_COUNT = 10
 _EXPECTED_GPTOSS_COUNT = 1
-_EXPECTED_HY3_COUNT = 14
-_EXPECTED_STRICT_XFAIL_COUNT = 24
+_EXPECTED_HY3_COUNT = 15
+_EXPECTED_STRICT_XFAIL_COUNT = 26
 
 
 class _StrictXfailCollector:

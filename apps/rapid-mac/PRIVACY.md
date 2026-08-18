@@ -217,37 +217,26 @@ distributions are out of scope but we will help triage.
   which skips the request completely — no poll, no signal. No GitHub
   API call, no PAT, no proxy of GitHub — those were the v0.5 shape and
   were retired in v0.6.12 (PR rapid-desktop#225 + rapidmlx.com#8). When a newer release is available the app
-  surfaces the existing in-app version status. Builds without an injected
-  Sparkle public key (local development and unsigned internal builds) retain
-  the legacy "Install and Restart" fallback in
-  `Sources/Rapid/Updater/Installer.swift`, which
-  drives the full download → mount → verify → swap → relaunch flow:
-  * **HTTPS host allow-list** on the initial DMG URL **and** every
-    HTTP redirect — only the R2 origin (`dl.rapidmlx.com`) and the
-    legacy GitHub Releases + GitHub-CDN redirect hosts are accepted,
-    so a compromised manifest can't redirect the download to an
-    attacker origin.
-  * **`codesign --verify --strict --deep`** runs on the mounted
-    bundle before the swap. Production releases are **Developer ID
-    Application signed** (team `73WQ7ZGSWC`, MachineFi Inc.),
-    hardened-runtime, notarised, and stapled — verified live on
-    v0.5.16 via `codesign -dvv` and `spctl --assess`. The verify
-    catches a corrupt download, a mid-flight bit flip, and a
-    structurally-tampered resource payload. The remaining gap (the
-    verify call doesn't pass `-R "… leaf[subject.OU] =
-    73WQ7ZGSWC"`, so a DMG signed by a *different* valid Developer
-    ID team could also pass) is limited to this legacy fallback and
-    mitigated by the HTTPS host allow-list above. Signed production builds
-    use Sparkle's EdDSA verification instead.
-  * **No per-artifact SHA-256 enforcement yet.** The worker v1
-    schema does not surface one; worker v2 (planned) will add
-    `dmg_sha256` and the ``Installer.verifying`` stage will start
-    enforcing it as a one-line wiring change.
-  * **Signed production builds close the legacy identity gap with Sparkle.**
-    Each ZIP carries an Ed25519 signature from the appcast, while Sparkle also
-    validates Apple code-signing continuity before atomic replacement.
+  surfaces the existing in-app version status. **The app never downloads or
+  installs an update itself.** Everything past "a newer version exists" is
+  Sparkle's, and only on builds carrying an injected Sparkle public key
+  (signed releases):
+  * **Ed25519 signature over every downloaded update.** Sparkle fetches its
+    own appcast over HTTPS and refuses any payload whose EdDSA signature does
+    not verify against the public key baked into the app bundle at build time.
+  * **Apple code-signing continuity.** Before replacing the bundle Sparkle
+    checks that the update is signed by the same identity as the running app.
+    Production releases are **Developer ID Application signed** (team
+    `73WQ7ZGSWC`, MachineFi Inc.), hardened-runtime, notarised and stapled,
+    so an update signed by any other team is rejected.
+  * **Installed on quit, never over a running bundle**, and Sparkle handles
+    the authorisation prompt itself when `/Applications` is not writable.
+  * **Unsigned and local development builds have no updater at all.** With no
+    public key there is nothing to verify against, so those builds only report
+    version status; there is no in-app download or install path to fall back
+    to.
 
-  If you want to side-step the in-app installer entirely you can
+  If you want to side-step the in-app updater entirely you can
   download the DMG from the
   [GitHub Releases page](https://github.com/raullenchai/Rapid-MLX/releases/latest)
   and verify its origin yourself before installing.

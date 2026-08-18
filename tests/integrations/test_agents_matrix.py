@@ -666,6 +666,33 @@ class TestKiloCode:
         _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="kilo-code")
 
 
+class TestDeepSeekHarness:
+    """DeepSeek Harness /v1/chat/completions with tool call.
+
+    DSH reaches rapid-mlx through its GENERIC ``openai-completions``
+    provider (see ``deepseek-harness.yaml``), never the
+    ``deepseek-official`` adapter — pointing the official adapter at a
+    loopback server would require a fake API key and would claim the local
+    endpoint carries the official service's model/capacity contract. The
+    wire is therefore plain OpenAI-compat, and this cell smokes the
+    tool call that DSH's fs / bash / str-replace tools all ride on.
+
+    Cell shape follows hermes: a lightweight wire cell here, with the real
+    end-to-end drive of the ``dsh`` binary living in the Tier-1 release
+    gate (``agent_smoke.sh``), which fixes a real bug in a real repo and
+    asserts the repo's own test suite goes green.
+    """
+
+    def test_smoke(
+        self,
+        rapid_mlx_server: dict[str, Any],
+        family_alias: FamilyAlias,
+    ) -> None:
+        _run_openai_tool_smoke(
+            rapid_mlx_server, family_alias, agent_label="deepseek-harness"
+        )
+
+
 class TestCopilot:
     """GitHub Copilot CLI wire smoke.
 

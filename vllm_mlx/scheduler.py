@@ -375,11 +375,9 @@ class SchedulerConfig:
 
     # 0.9.13 PR-B: Ollama-style EV depth controller knobs. ``mtp_max_k``
     # is the hard ceiling on the per-round draft depth the controller
-    # may select. The current generator body implements K∈{0,1}, so
-    # values >1 are clamped at the generator; the default of 3 anticipates
-    # PR-B follow-up work that lifts the K≥2 chain-of-K verify.
-    # ``mtp_disable_auto_k`` bypasses the controller entirely and keeps
-    # the pre-PR-B fixed-K=1 chain-of-1 behavior (used for A/B benching).
+    # may select. K=0 parks the drafter; K=1..3 use chained MTP with
+    # per-position rollback on hybrid SSM targets.
+    # ``mtp_disable_auto_k`` fixes depth at ``mtp_max_k`` for A/B benching.
     mtp_max_k: int = 3
     mtp_disable_auto_k: bool = False
 
@@ -683,17 +681,16 @@ def _install_mtp_vendored(
     ``() -> (List[int], List[mx.array])``). Per-step, exactly one primary
     token is returned to keep the mlx-lm ``next()`` contract intact.
     Multi-token gains come from the generator's internal batched
-    backbone+MTP passes (up to 2 tokens per pass), not from returning
+    backbone+MTP passes (up to K+1 tokens per pass), not from returning
     multiple tokens per ``_step`` call. Extra tokens produced by the
     generator are queued and drained on the following ``_step`` calls.
 
-    K=1 chain-of-1 scope (PR-A of 0.9.13 stack):
+    Adaptive chain-of-K scope:
 
     * Single-request only (``len(gb.uids) == 1``). Multi-request batches
       fall through to ``_orig_step`` — Gemma 4's MTP fast-path is
       batch=1-only (``mtp_forward`` raises on B>1) and the vendored
-      generator maintains its own per-request state. Auto-K controller
-      lives in PR-B; batched residual+bonus sync lives in PR-C.
+      generator maintains its own per-request state.
 
     * Greedy sampling only (temperature == 0). Non-greedy falls through
       to ``_orig_step`` — the byte-lossless verify contract lives in the
@@ -896,7 +893,7 @@ def _install_mtp_vendored(
     def _is_greedy_for_uid(uid: int) -> bool:
         """Return True when the request behind ``uid`` sampled at temp=0.
 
-        K=1 MVP: matches the greedy contract that
+        Matches the greedy contract that
         ``vllm_mlx/spec_decode/mtp/generator.py::mtp_generate_step``
         implements with ``temp=0.0``. Under temp>0, the vendored
         generator can still preserve the lossless marginal via its
@@ -1486,7 +1483,7 @@ def _install_mtp_vendored(
 
     logger.info(
         "[MTP-vendored] installed on GenerationBatch._step "
-        "(single-request greedy K=1 chain-of-1; falls through on B>1 / "
+        "(single-request greedy adaptive chain-of-K; falls through on B>1 / "
         "non-greedy / logits-processors)."
     )
     return True
@@ -3671,9 +3668,7 @@ class Scheduler:
         # by ``dispatch_mtp_inject`` (which runs during engine boot in
         # ``BatchedEngine._start_llm`` before this scheduler is built).
         #
-        # K=1 chain-of-1 only for PR-A. Auto-K controller lands in PR-B
-        # (``feat/mtp-ev-controller-0.9.13``); batched residual+bonus
-        # sync lands in PR-C (``feat/mtp-batched-sync-0.9.14``).
+        # Single-request adaptive chain-of-K with batched verify.
         if getattr(self.config, "spec_decode", "none") == "mtp":
             mtp_model_type = getattr(self.config, "mtp_model_type", None)
             config_vetted_mtp = _config_vetted_mtp_supports_spec_decode(mtp_model_type)

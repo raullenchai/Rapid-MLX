@@ -30,6 +30,11 @@ def first_incompatible_mllm_cache_type(
         pass
     else:
         supported_types += (vlm_cache.KVCache, vlm_cache.RotatingKVCache)
+        # mlx-vlm owns a distinct ArraysCache class as well. Hybrid VLM
+        # backbones return this native type, so the serialized compatibility
+        # lane must accept it for the same reason it accepts mlx-lm's class.
+        if allow_arrays_cache and hasattr(vlm_cache, "ArraysCache"):
+            supported_types += (vlm_cache.ArraysCache,)
 
     for cache in caches:
         if not isinstance(cache, supported_types):

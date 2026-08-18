@@ -141,6 +141,25 @@ def _detect_base_quantization(inner: Any) -> dict | None:
     return None
 
 
+def _warn_if_mtp_quantization_mismatch(
+    base_quant: dict | None, sidecar_quant: dict | None
+) -> None:
+    """Recommend matched MTP precision when both quantizations are known."""
+    if base_quant is None or sidecar_quant is None or base_quant == sidecar_quant:
+        return
+
+    logger.warning(
+        "[mtp.inject] MTP sidecar quantization (%d-bit, group_size=%d) "
+        "differs from base model (%d-bit, group_size=%d): pairing effects "
+        "are model-dependent: slower than no speculation on Qwen3.6 "
+        "(#1258), faster on Qwen3.8-27B. Benchmark your pairing.",
+        sidecar_quant["bits"],
+        sidecar_quant["group_size"],
+        base_quant["bits"],
+        base_quant["group_size"],
+    )
+
+
 # MLX affine quantization's practical value set. Every mlx-community
 # checkpoint (base + MTP sidecar alike) uses one of these — the shipped
 # Qwen3.6 pairing is 4-/8-bit at group_size 64. A sidecar whose tensors
@@ -261,7 +280,8 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
     Accepts:
 
     * An absolute / relative path to a directory containing a
-      ``model.safetensors`` or ``model-mtp.safetensors`` file
+      ``model.safetensors``, ``model-mtp.safetensors``, or
+      ``mtp/model.safetensors`` file
       (operators with a pre-downloaded HF snapshot).
     * An absolute / relative path to a ``*.safetensors`` file
       directly (operators with a hand-assembled sidecar; the
@@ -269,7 +289,9 @@ def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
       names).
     * An HF Hub repo name like ``mlx-community/Qwen3.5-9B-MTP-4bit``
       (downloaded via ``snapshot_download`` to the HF cache, then
-      probed for ``model.safetensors`` / ``model-mtp.safetensors``).
+      probed for the layouts above). The nested ``mtp/`` layout lets a
+      single repository contain target and drafter weights without
+      ``mlx_lm.load`` mistaking the drafter for a target-model shard.
 
     Returns ``None`` if the reference cannot be resolved — caller
     treats this as a soft failure and logs.
@@ -314,6 +336,7 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
     """
     candidates = (
         sidecar_dir / "model-mtp.safetensors",
+        sidecar_dir / "mtp" / "model.safetensors",
         sidecar_dir / "model.safetensors",
     )
     for c in candidates:
@@ -449,8 +472,9 @@ def inject_mtp_support(
                 "[mtp.inject] sidecar %r could not be resolved to a "
                 "safetensors file; skipping MTP injection. "
                 "Pass either a repo id (mlx-community/Qwen3.5-9B-MTP-4bit), "
-                "a directory containing model.safetensors / "
-                "model-mtp.safetensors, or the file path directly.",
+                "a directory containing model-mtp.safetensors, "
+                "mtp/model.safetensors, or model.safetensors, or the "
+                "file path directly.",
                 mtp_sidecar,
             )
             return False
@@ -742,6 +766,9 @@ def inject_mtp_support(
             weights_file.name,
             f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
         )
+        _warn_if_mtp_quantization_mismatch(
+            _detect_base_quantization(inner), sidecar_quant
+        )
     else:
         # No sidecar.
         if not allow_random_init:
@@ -802,6 +829,11 @@ def inject_mtp_support(
           verify forwards). It is currently a no-op below this layer
           — the GatedDeltaNet rollback patch is tracked separately.
         """
+
+        # The generic generator only enables prompt-copy speculation for
+        # backends whose MTP cache-history synchronization has been audited.
+        # This injector covers the Qwen 3.5/3.6/3.8 family.
+        mtp_prompt_lookup_supported = True
 
         def __call__(  # type: ignore[override]
             self,
@@ -865,6 +897,7 @@ def inject_mtp_support(
             hidden_states,
             next_token_ids,
             mtp_cache,
+            return_hidden: bool = False,
         ):
             """Run the MTP head and project through the shared lm_head."""
             mtp_out = self.mtp(
@@ -874,8 +907,27 @@ def inject_mtp_support(
                 mtp_cache,
             )
             if self.args.tie_word_embeddings:
-                return self.model.embed_tokens.as_linear(mtp_out)
-            return self.lm_head(mtp_out)
+                logits = self.model.embed_tokens.as_linear(mtp_out)
+            else:
+                logits = self.lm_head(mtp_out)
+            return (logits, mtp_out) if return_hidden else logits
+
+        def mtp_greedy(self, hidden_states, next_token_ids, mtp_cache):
+            """Return greedy MTP ids without materializing full-vocab logits."""
+            if self.args.tie_word_embeddings:
+                return None
+            from .quantized_argmax import quantized_argmax
+
+            mtp_out = self.mtp(
+                hidden_states,
+                next_token_ids,
+                self.model.embed_tokens,
+                mtp_cache,
+            )
+            token = quantized_argmax(self.lm_head, mtp_out)
+            if token is None:
+                return None
+            return token, mtp_out
 
         def make_mtp_cache(self):
             """Return fresh ``KVCache`` entries — one per MTP layer.
@@ -898,6 +950,11 @@ def inject_mtp_support(
             return [KVCache() for _ in self.mtp.layers]
 
     inner.__class__ = _Qwen3_5WithMTP
+    # Some callers retain the VLM-style outer wrapper and pass it onward.
+    # Mirror the capability there so the gate follows the injected model
+    # regardless of which supported shape reaches the generator.
+    if model is not inner:
+        model.mtp_prompt_lookup_supported = True
     logger.info(
         "[mtp.inject] Patched %s with MTP surfaces "
         "(return_hidden, n_confirmed, mtp_forward, make_mtp_cache).",

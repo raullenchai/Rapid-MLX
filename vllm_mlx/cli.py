@@ -1893,6 +1893,47 @@ def _build_benchmark_context(target_tokens: int) -> str:
     return (block * repeats).strip()
 
 
+def _alias_mtp_declaration(model_name) -> tuple[str | None, int | None]:
+    """Return ``(mtp_draft_model, mtp_speculative_tokens)`` declared by an alias.
+
+    ``(None, None)`` when the model is not a known alias, declares no MTP
+    sidecar, or the registry cannot be read. Resolution is best-effort by
+    design: this only supplies DEFAULTS for a request that already asked for
+    MTP, so a registry problem must degrade to "no default" and let the
+    injector's own hard-fail speak — never turn a serve into a crash of its
+    own (#1998).
+
+    ``mtp_speculative_tokens`` is returned only when it is a positive int. The
+    alias schema already rejects the alternatives (``model_aliases`` requires
+    ``mtp_draft_model`` alongside it), so this is belt-and-braces against a
+    hand-edited registry rather than a live shape.
+    """
+    if not model_name:
+        return None, None
+    try:
+        from .model_aliases import resolve_profile as _resolve_alias
+
+        profile = _resolve_alias(model_name)
+    except Exception:  # noqa: BLE001 — see docstring: never fail the serve here
+        return None, None
+    if profile is None:
+        return None, None
+    # Type-check BEFORE ``.strip()``: the value reaches us straight off a
+    # profile object, and a non-str there would raise ``AttributeError`` out of
+    # this helper — breaking the totality the docstring promises, in the exact
+    # hand-edited-registry case it promises it for (codex nit).
+    raw_sidecar = getattr(profile, "mtp_draft_model", None)
+    sidecar = raw_sidecar.strip() or None if isinstance(raw_sidecar, str) else None
+    if sidecar is None:
+        # Depth without a sidecar is meaningless — the injector has nothing to
+        # load — so don't hand back a lone K either.
+        return None, None
+    depth = getattr(profile, "mtp_speculative_tokens", None)
+    if not isinstance(depth, int) or isinstance(depth, bool) or depth <= 0:
+        depth = None
+    return sidecar, depth
+
+
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -2201,9 +2242,23 @@ def _normalize_speculative_config_or_exit(args):
                 args.mtp_num_draft_tokens = config.num_speculative_tokens
             if legacy_mtp_optimistic_requested:
                 args.mtp_optimistic = True
-        args.mtp_sidecar = config.model
+        # #1998: an alias may DECLARE its own MTP sidecar and draft depth
+        # (``mtp_draft_model`` / ``mtp_speculative_tokens``). Those were
+        # rendered by ``rapid-mlx models`` as ``✓ MTP  MTP@<repo>@<k>`` and
+        # then read NOWHERE on the serve path, so the command that listing
+        # implies — ``serve <alias> --speculative-config '{"method":"mtp"}'``
+        # — reached the injector with ``sidecar=None`` and hard-failed at
+        # boot, quoting an unrelated model in the remedy. Fill ONLY what the
+        # request left unset; an explicit ``model`` /
+        # ``num_speculative_tokens`` in the JSON always wins.
+        alias_sidecar, alias_k = _alias_mtp_declaration(getattr(args, "model", None))
+        args.mtp_sidecar = config.model or alias_sidecar
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens
+        elif alias_k is not None:
+            # A depth the alias declares for THIS checkpoint beats the generic
+            # --force-spec-decode fallback below: it is the more specific fact.
+            args.mtp_max_k = alias_k
         elif getattr(args, "force_spec_decode", False):
             # User explicitly opted into spec-decode via --force-spec-decode
             # but didn't pin a draft depth. K=1 chain-of-1 carries draft
@@ -4340,7 +4395,7 @@ def _run_submit_flow(
     # thread executor spins up. Without this, ``mlx_lm.load`` runs inside
     # the executor and delegates to ``huggingface_hub.snapshot_download``
     # directly, skipping the mirror entirely (bug: --submit diverged from
-    # ``serve``/``chat``/``pull``/``jlens`` which all prefetch via the
+    # ``serve``/``chat``/``pull`` which all prefetch via the
     # mirror first). Running this in the main thread — before the executor
     # is created — surfaces the mirror's per-file progress lines to the
     # contributor's terminal; if we deferred to the executor, the tqdm
@@ -4631,7 +4686,7 @@ def bench_command(args):
     # heavy bench boot. Without this, ``bench`` falls into ``mlx_lm.load``
     # → ``huggingface_hub.snapshot_download`` directly and skips the
     # mirror entirely, wasting the user's bandwidth and hitting HF rate
-    # limits (bug: bench diverged from ``serve``/``chat``/``pull``/``jlens``
+    # limits (bug: bench diverged from ``serve``/``chat``/``pull``
     # which all prefetch via the mirror first).
     # ``_ensure_model_downloaded`` is a no-op on local paths and on
     # fully-cached repos and swallows mirror errors gracefully (mlx_lm.load
@@ -5517,7 +5572,7 @@ def models_command(args):
     # floor — never shrink below it so short rows still feel padded.
     # Other widths sized to fit values currently in aliases.json:
     # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
-    # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7.
+    # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7, preset 8.
     alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
     # Size ("438.3 GiB" is the widest current value) comes right after the
     # alias so the "how big before I pull?" answer is the first thing a user
@@ -5532,6 +5587,7 @@ def models_command(args):
         ("Suffix Tier", 11),
         ("DFlash", 7),
         ("DDTree", 7),
+        ("Preset", 8),
     )
     width = sum(w for _, w in cols) + len(cols) - 1
     sep = "  " + "─" * width
@@ -5544,7 +5600,11 @@ def models_command(args):
         p = profiles[alias]
         tools = p.tool_call_parser or "—"
         reasoning = p.reasoning_parser or "—"
-        if p.is_hybrid:
+        if p.mtp_draft_model:
+            spec = "✓ MTP"
+            tier = "n/a"
+            preset = f"MTP@{p.mtp_draft_model}@{p.mtp_speculative_tokens}"
+        elif p.is_hybrid:
             # Hybrid models cannot use spec-decode or suffix-decode regardless
             # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
             spec = "✗ hybrid"
@@ -5552,6 +5612,9 @@ def models_command(args):
         else:
             spec = "✓" if p.supports_spec_decode else "✗"
             tier = p.suffix_decoding_tier
+            preset = "Suffix" if p.supports_spec_decode else "—"
+        if p.is_hybrid and not p.mtp_draft_model:
+            preset = "—"
         # DFlash column — eligible aliases show ✓, everything else "—" so
         # the visual scan immediately surfaces what supports it. We don't
         # re-run the eligibility gate here (which would also check that
@@ -5562,7 +5625,7 @@ def models_command(args):
         size = format_size(p.hf_path)
         row = (
             f"  {alias:<{alias_width}} {size:<10} {tools:<16} {reasoning:<12} "
-            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7}"
+            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7} {preset:<8}"
         )
         print(row)
 
@@ -7894,7 +7957,7 @@ def agents_command(args):
         # write atomically, and verify the server afterwards. Keep the generic
         # profile writer below for the remaining integrations until each one
         # receives an equally precise adapter.
-        if profile.name in {"claude-code", "continue"}:
+        if profile.name in {"claude-code", "continue", "deepseek-harness"}:
             from vllm_mlx.agents.setup import (
                 apply_setup_plan,
                 build_setup_plan,
@@ -7902,8 +7965,24 @@ def agents_command(args):
                 verify_server,
             )
 
+            # DSH renders a reasoning-effort control from what we write, so
+            # it needs the model's real capability, not a blanket claim.
+            # Scoped to the one profile that consumes it — the other
+            # first-class flows don't, and this is a second HTTP round trip.
+            supports_reasoning = None
+            if profile.name == "deepseek-harness":
+                from vllm_mlx.agents.adapter import fetch_reasoning_support
+
+                supports_reasoning = fetch_reasoning_support(base_url, model_id)
+
             try:
-                plan = build_setup_plan(profile.name, base_url, model_id)
+                plan = build_setup_plan(
+                    profile.name,
+                    base_url,
+                    model_id,
+                    context_length=context_length,
+                    supports_reasoning=supports_reasoning,
+                )
             except (OSError, ValueError) as exc:
                 print(f"\n  {profile.display_name} setup failed: {exc}\n")
                 sys.exit(1)
@@ -9944,39 +10023,6 @@ Examples:
         help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (e.g. mlx-community/SmolLM3-3B-4bit)",
     ).completer = alias_completer
 
-    # Jlens command — read a model's internal "draft" with the Jacobian lens
-    jlens_parser = subparsers.add_parser(
-        "jlens",
-        help="Read a model's internal thoughts across layers (Jacobian lens)",
-    )
-    jlens_parser.add_argument(
-        "prompt",
-        help='Prompt to trace, e.g. "why is the sky blue"',
-    )
-    jlens_parser.add_argument(
-        "--model",
-        "-m",
-        default="qwen3-1.7b",
-        help="Model alias or HF repo to inspect (default: qwen3-1.7b)",
-    ).completer = alias_completer
-    jlens_parser.add_argument(
-        "--step",
-        type=int,
-        default=2,
-        help="Probe every Nth layer (default: 2; use 1 for full-resolution)",
-    )
-    jlens_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON instead of the rendered view",
-    )
-    jlens_parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help="Show full per-layer readouts and the answer's rank trajectory",
-    )
-
     # Agents command
     agents_parser = subparsers.add_parser(
         "agents", help="List, configure, and test agent integrations"
@@ -10458,15 +10504,7 @@ def main():
             print(f"\n  Error: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         if resolved != args.model:
-            # Keep stdout pure JSON for machine-readable modes (jlens --json);
-            # the human-facing alias banner goes to stderr there.
-            _alias_stream = (
-                sys.stderr
-                if getattr(args, "command", None) == "jlens"
-                and getattr(args, "json", False)
-                else sys.stdout
-            )
-            print(f"  Alias: {args.model} → {resolved}", file=_alias_stream)
+            print(f"  Alias: {args.model} → {resolved}")
             args._original_alias = args.model
             args.model = resolved
         elif "/" not in args.model and not os.path.exists(args.model):
@@ -10552,7 +10590,7 @@ def main():
     # NOT inherit the bypass. Codex round-2 BLOCKING #2.
     _chat_spawn_child = os.environ.pop("RAPID_MLX_CHAT_SPAWN", "") == "1"
 
-    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench", "jlens"}
+    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
     if (
         getattr(args, "command", None) in _GATED_COMMANDS
         and hasattr(args, "model")
@@ -10645,10 +10683,6 @@ def main():
         chat_command(args)
     elif args.command == "info":
         info_command(args)
-    elif args.command == "jlens":
-        from vllm_mlx.jlens import jlens_command
-
-        jlens_command(args)
     elif args.command == "agents":
         agents_command(args)
     elif args.command == "connect":

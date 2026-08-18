@@ -26,8 +26,9 @@ MODEL="${MODEL:-qwen3.5-9b-4bit}"
 PY="${PY:-python3.12}"
 PORT="${PORT:-8000}"
 
-# G7b's consolidated `bench --tier harness` runs 5 harness profiles
-# (codex/opencode/hermes/aider/langchain) under ONE shared per-profile cap
+# G7b's consolidated `bench --tier harness` runs 6 harness profiles
+# (codex/opencode/hermes/aider/langchain/deepseek-harness) under ONE shared
+# per-profile cap
 # (tier_runner's HARNESS_PROFILE_TIMEOUT_S, library default 300s). That default
 # is sized for a single fast harness — codex/opencode/aider/langchain each
 # finish <135s on the 9B gauntlet model — but the hermes profile runs 20+
@@ -362,8 +363,9 @@ run_g7_smol() {
 # Two-part gate.
 #
 # Part A — `bench --tier harness`: smoke-tests `/v1/chat/completions`
-# parser/router for the five first-class harnesses (codex / opencode /
-# hermes / aider / langchain). Doesn't touch `/v1/responses` (the runner
+# parser/router for the six first-class harnesses (codex / opencode /
+# hermes / aider / langchain / deepseek-harness). Doesn't touch
+# `/v1/responses` (the runner
 # only knows Chat Completions today). Consolidated in PR #2 of the
 # bench-tier series: a single `bench --tier harness` call replaces the
 # prior five sequential `agents <name> --test` invocations — same
@@ -385,7 +387,7 @@ run_g7b() {
   set +e
   (
     set -e
-    echo "  Part A: bench --tier harness (chat-completions smoke for all 5 first-class harnesses)"
+    echo "  Part A: bench --tier harness (chat-completions smoke for all 6 first-class harnesses)"
     "$PY" -m vllm_mlx.cli bench "$MODEL" --tier harness \
       --base-url "http://127.0.0.1:$PORT"
 

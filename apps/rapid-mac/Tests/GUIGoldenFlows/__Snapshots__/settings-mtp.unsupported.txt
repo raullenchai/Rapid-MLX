@@ -1,0 +1,116 @@
+# rapid-mac AX structural baseline v1
+AXApplication title="Rapid-MLX"
+  AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
+    AXGroup subrole=AXHostingView
+      AXSplitGroup id="main, SidebarNavigationSplitView"
+        AXGroup subrole=AXHostingView
+          AXButton id="Sidebar.NewChat" desc="New Chat" enabled=true
+          AXButton id="Sidebar.Images" desc="Images" enabled=true
+          AXButton id="Sidebar.Audio" desc="Audio" enabled=true
+          AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+        AXSplitter value=number enabled=false
+        AXGroup subrole=AXHostingView
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXGroup desc="<model> isn't running, It's already downloaded — starting takes a few seconds." enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Readiness.Action" desc="Start" enabled=true
+          AXStaticText value=text enabled=true
+          AXScrollArea
+            AXTextArea id="rapid.chat.compose" desc="Message compose field" value=empty
+          AXButton id="ChatView.AddAttachments" desc="Add attachments" help="Add PDF, CSV, or TXT files" enabled=true
+          AXButton id="ChatView.ConversationInstructions" desc="Conversation instructions" help="Conversation instructions" enabled=true
+          AXPopUpButton id="ModelPickerBar.ModelMenu" desc="Model" help="Choose which model to run" value=text enabled=true
+          AXButton id="ModelPickerBar.ModelInfo" desc="Show model details" help="Show model details" enabled=true
+          AXButton id="ChatView.SendOrStopButton" desc="Send message" help="Start <model> before sending." enabled=false
+      AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
+      AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
+      AXUnknown desc="Server status" enabled=true
+      AXUnknown desc="Tokens per second: no data yet" enabled=true
+      AXUnknown desc="CPU <percent>" enabled=true
+      AXUnknown desc="GPU <gpu>" enabled=true
+      AXUnknown desc="Memory <pressure>: <size> used out of <size>" enabled=true
+      AXButton id="Footer.DesktopVersionPill" desc="Rapid-MLX <version> <update-state>" help="Rapid-MLX <version> <update-state>" enabled=true
+    AXToolbar
+      AXButton desc="Hide Sidebar" enabled=true
+      AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true
+    AXButton subrole=AXCloseButton enabled=true
+    AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
+    AXButton subrole=AXMinimizeButton enabled=true
+    AXStaticText value=text enabled=true
+  AXWindow subrole=AXStandardWindow id="settings" title="Settings"
+    AXGroup subrole=AXHostingView
+      AXScrollArea
+        AXOutline desc="Settings categories" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.modelManagement" desc="Model Management" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.instructions" desc="Instructions" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.tools" desc="Tools" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.connectors" desc="Connectors" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.performance" desc="Performance" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.appearance" desc="Appearance" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.privacy" desc="Privacy" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.app" desc="App" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.developer" desc="Developer" enabled=true
+          AXColumn id="ListColumn"
+      AXScrollArea
+        AXScrollArea id="Settings.Performance.Panel"
+          AXHeading desc="Performance, These settings change speed and memory use, and some can change what the model writes. They apply to one model at a time and take effect when that model next starts." enabled=true
+          AXHeading desc="Model, Choose which model owns these settings. It does not need to be running." enabled=true
+          AXStaticText value=text enabled=true
+          AXPopUpButton id="Settings.Performance.ModelPicker" value=text enabled=true
+          AXHeading desc="KV cache precision, How the model's attention cache is stored. Lower precision means less memory and faster long-context decoding." enabled=true
+          AXRadioGroup id="Settings.Performance.KVMode" desc="KV cache precision" enabled=true
+            AXRadioButton desc="Engine default" value=bool:true enabled=true
+            AXRadioButton desc="Full precision (bf16)" value=bool:false enabled=true
+            AXRadioButton desc="8-bit" value=bool:false enabled=true
+            AXRadioButton desc="4-bit" value=bool:false enabled=true
+            AXRadioButton desc="TurboQuant V4" value=bool:false enabled=true
+            AXRadioButton desc="TurboQuant K8V4" value=bool:false enabled=true
+          AXStaticText value=text enabled=true
+          AXHeading desc="Speculative decoding, Drafts candidate tokens and verifies them with the full model." enabled=true
+          AXStaticText value=text enabled=false
+          AXCheckBox subrole=AXSwitch id="Settings.Performance.SpeculativeDecoding.Enabled" value=bool:false enabled=false
+          AXStaticText value=text enabled=true
+          AXHeading desc="Prefix cache, Reuses computation for a prompt prefix the model has already seen. Speeds up multi-turn chat and repeated system prompts." enabled=true
+          AXGroup id="Settings.Performance.PrefixCache" desc="Prefix cache" enabled=true
+            AXButton id="Settings.Performance.Prefix.Default" desc="Engine default" enabled=true
+            AXButton id="Settings.Performance.Prefix.On" desc="On" enabled=true
+            AXButton id="Settings.Performance.Prefix.Off" desc="Off" enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXSlider id="Settings.Performance.CacheBudget" desc="Cache budget" value=number enabled=true
+            AXValueIndicator value=number
+          AXStaticText value=text enabled=true
+          AXStaticText value=text enabled=true
+          AXButton id="Settings.Performance.Reset" desc="Reset to engine defaults" enabled=false
+          AXStaticText id="Settings.Performance.AppliesNextLoad" value=text enabled=true
+        AXScrollBar value=number enabled=true
+          AXValueIndicator value=number
+          AXButton subrole=AXIncrementArrow
+          AXButton subrole=AXDecrementArrow
+          AXButton subrole=AXIncrementPage
+          AXButton subrole=AXDecrementPage
+    AXButton subrole=AXCloseButton enabled=true
+    AXButton subrole=AXZoomButton enabled=true
+    AXButton subrole=AXMinimizeButton enabled=true
+    AXStaticText value=text enabled=true

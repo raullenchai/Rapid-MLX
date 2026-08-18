@@ -381,6 +381,47 @@ def _detect_running_model(base_url: str) -> tuple[str | None, int | None]:
     return None, None
 
 
+def fetch_reasoning_support(base_url: str, model_id: str) -> bool | None:
+    """Whether *model_id* can emit reasoning, as a THREE-state answer.
+
+    ``True``  — the served model advertises a reasoning parser.
+    ``False`` — the entry was found and explicitly advertises none.
+    ``None``  — unknown: server unreachable, model not listed, or an
+                older rapid-mlx whose ``/v1/models`` predates the field.
+
+    The three states are not decoration. A client that is told a model
+    supports graded reasoning shows the user a control for it, so
+    guessing in either direction has a cost: claim support a model
+    doesn't have and the control is a lie, deny support it does have and
+    a working feature disappears. Callers are expected to leave their
+    current behaviour alone on ``None`` and only act on ``False``.
+
+    Distinguishing ``False`` from ``None`` relies on ``/v1/models``
+    serializing nulls — ``routes/models.py`` deliberately does not set
+    ``exclude_none`` "so the shape is stable", so a reasoning-less model
+    sends ``"reasoning_parser": null`` while a server too old to know
+    about the field omits the key entirely. If that ever changes, this
+    collapses to ``None`` (unknown) rather than to a wrong answer.
+    """
+
+    def _from_entry(entry: dict) -> bool | None:
+        if "reasoning_parser" not in entry:
+            return None
+        parser = entry.get("reasoning_parser")
+        return bool(isinstance(parser, str) and parser.strip())
+
+    models = _fetch_models(base_url)
+    for m in models:
+        if m.get("id") == model_id:
+            return _from_entry(m)
+    # Same single-model fallback rule as fetch_context_window: a
+    # multi-model serve must match exactly rather than describe some
+    # other model's capabilities.
+    if len(models) == 1:
+        return _from_entry(models[0])
+    return None
+
+
 def fetch_context_window(base_url: str, model_id: str) -> int | None:
     """Fetch ``context_window`` for a specific *model_id* from the server.
 

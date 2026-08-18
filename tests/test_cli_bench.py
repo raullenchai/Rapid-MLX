@@ -5,7 +5,7 @@ Before this fix, ``bench_command`` (freeform path) and ``_run_submit_flow``
 (``--submit`` community-bench path) both delegated the initial weight pull
 to ``mlx_lm.load`` → ``huggingface_hub.snapshot_download`` DIRECTLY,
 bypassing the R2 mirror at ``models.rapidmlx.com`` that every other
-weight-materializing command (``serve``, ``chat``, ``pull``, ``jlens``)
+weight-materializing command (``serve``, ``chat``, ``pull``)
 prefetches through. Result: users burned bandwidth on HF and tripped rate
 limits even though a warm mirror shard was 50 ms away.
 
@@ -16,7 +16,8 @@ degradation contract: when the mirror is unreachable, prefetch returns
 without raising and bench proceeds to ``mlx_lm.load`` (which then pulls
 from HF directly, matching pre-fix behavior for the fallback case).
 
-Pattern lifted from ``tests/test_cli_jlens.py`` (PR #1045).
+The bench-path prefetch pattern was lifted from the (now-removed)
+``rapid-mlx jlens`` command's downloading tests (PR #1045).
 """
 
 from __future__ import annotations

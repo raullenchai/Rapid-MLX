@@ -901,6 +901,9 @@ class BatchedEngine(BaseEngine):
         self._mllm_scheduler = None  # MLLMScheduler for MLLM
         self._model_load_executor = None  # mlx-step worker (#170)
         self._mllm_instance = None  # MLXMultimodalLM instance
+        # The MLLM lane has no text EngineCore/model_config to query. Set this
+        # from the loaded language backbone's concrete cache probe instead.
+        self._mllm_is_hybrid: bool | None = None
         self._loaded = False
         self._engine_started = False  # Track if engine loop is running
         self._start_time: float | None = None
@@ -1205,6 +1208,7 @@ class BatchedEngine(BaseEngine):
             _probe_mllm_cache_type, language_model
         ).result()
         arrays_cache_compat = cache_type == "ArraysCache"
+        self._mllm_is_hybrid = arrays_cache_compat
         if cache_type is not None and not arrays_cache_compat:
             raise RuntimeError(
                 f"Model '{self._model_name}' uses a hybrid/linear-attention "
@@ -2340,6 +2344,8 @@ class BatchedEngine(BaseEngine):
         Returns False on any access error so a malformed engine state
         never *enables* the new path — fails closed.
         """
+        if self._is_mllm and self._mllm_is_hybrid is not None:
+            return self._mllm_is_hybrid
         try:
             return bool(self._engine.engine.model_config.is_hybrid)
         except (AttributeError, TypeError):

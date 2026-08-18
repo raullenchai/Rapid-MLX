@@ -343,9 +343,12 @@
         },
         "langchain": {
           "$ref": "#/$defs/harnessAdapterResult"
+        },
+        "deepseek-harness": {
+          "$ref": "#/$defs/harnessAdapterResult"
         }
       },
-      "description": "v2 only. Per-adapter results from the agent-harness gauntlet. Required iff ``tier`` is ``harness`` or ``all``; absent for tier=speed and tier=smoke. Each entry carries a pass/fail flag, the round-trip duration, and a short error excerpt on failure (null on pass)."
+      "description": "v2 only. Per-adapter results from the agent-harness gauntlet. Required iff ``tier`` is ``harness`` or ``all``; absent for tier=speed and tier=smoke. Each entry carries a pass/fail flag, the round-trip duration, and a short error excerpt on failure (null on pass). NOTE the deliberate asymmetry: ``deepseek-harness`` joined HARNESS_PROFILES after this schema shipped, so it is an allowed property but NOT in ``required``. Adding it to ``required`` would retroactively invalidate the historical submissions that carry only the original five adapters, and would reject every submission from a rapid-mlx older than the release that added it. ``additionalProperties: false`` is what needed to change so a current six-adapter payload validates at all."
     },
     "run_group": {
       "type": "string",

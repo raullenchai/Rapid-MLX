@@ -142,7 +142,8 @@ enum ModelInfoCatalog {
             ? String(alias.prefix(ModelCatalog.maxAliasBytes))
             : alias
         let a = boundedAlias.lowercased()
-        // Qwen family — order matters (qwen3.6 before qwen3)
+        // Qwen family — order matters (qwen3.8 / qwen3.6 before qwen3)
+        if a.contains("qwen3.8") { return ("Qwen 3.8", 32_768) }
         if a.contains("qwen3.6") { return ("Qwen 3.6", 32_768) }
         if a.contains("qwen3.5") { return ("Qwen 3.5", 32_768) }
         if a.contains("qwen3-coder-next") { return ("Qwen 3 Coder Next", 32_768) }

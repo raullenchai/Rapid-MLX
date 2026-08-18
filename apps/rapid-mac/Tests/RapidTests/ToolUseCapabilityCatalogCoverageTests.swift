@@ -339,6 +339,10 @@ struct ToolUseCapabilityCatalogCoverageTests {
         "qwen3.6-35b-mxfp4": .known,
         "qwen3.6-35b-nvfp4": .known,
         "qwen3.6-35b-ud": .known,
+        // qwen3.8 — hybrid family, hermes parser. The mixed-3.5bpw entry
+        // is our own build; release eval scored 25/30 tool scenarios.
+        "qwen3.8-27b-4bit": .known,
+        "qwen3.8-27b-mixed-3.5bpw": .known,
         // qwopus — Qwen+Opus distillation, hermes parser. PR #333
         // closure-verified 5/5 weather tool calls on qwopus-27b-8bit.
         "qwopus-27b-4bit": .known,

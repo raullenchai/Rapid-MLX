@@ -46,6 +46,7 @@ import pytest
 
 from vllm_mlx.agents import get_profile
 from vllm_mlx.agents.testing import (
+    E2E_CHAT_EXPECTED,
     E2E_FIRST_LINE,
     TestStatus,
     _agent_query,
@@ -244,9 +245,9 @@ def test_each_e2e_test_gets_its_own_workspace(tmp_path):
     reads back the directories they actually ran in.
     """
     log = tmp_path / "cwds.txt"
-    # One reply that satisfies both assertions: "4" for chat, the sentinel
-    # for file-read.
-    cmd = _recording_agent(log, f"4 {E2E_FIRST_LINE}")
+    # One reply that satisfies both assertions: the expected sum for chat,
+    # the sentinel for file-read.
+    cmd = _recording_agent(log, f"{E2E_CHAT_EXPECTED} {E2E_FIRST_LINE}")
 
     # ALL THREE entry points, not a sample of them: `_test_e2e_terminal`
     # could regress to a shared or inherited cwd while a test that only

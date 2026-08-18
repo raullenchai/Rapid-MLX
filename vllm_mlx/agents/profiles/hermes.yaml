@@ -32,7 +32,10 @@ streaming:
   max_tools: 62  # Hermes injects 62 tools per request
 
 testing:
-  binary: "~/.hermes/venv/bin/hermes"
+  # Resolve the installed CLI through PATH.  Current pip/uv installs place it
+  # in ~/.local/bin; older source installs used ~/.hermes/venv/bin.  Hardcoding
+  # the latter made `agents hermes --test` silently skip a valid modern install.
+  binary: "hermes"
   query_cmd: "hermes chat -q '{query}' -Q"
   query_timeout: 120
   install_cmd: "pip install hermes-agent"

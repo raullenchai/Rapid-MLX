@@ -122,6 +122,18 @@ def test_arrayscache_is_accepted_only_for_serialized_compatibility():
     )
 
 
+def test_mlx_vlm_arrayscache_is_accepted_in_serialized_mode(monkeypatch):
+    """The VLM namespace owns a class distinct from mlx-lm's ArraysCache."""
+    from mlx_vlm.models import cache as vlm_cache
+
+    native_arrays_cache = type("ArraysCache", (), {})
+    monkeypatch.setattr(vlm_cache, "ArraysCache", native_arrays_cache)
+
+    cache = native_arrays_cache()
+    assert first_incompatible_mllm_cache_type([cache]) == "ArraysCache"
+    assert first_incompatible_mllm_cache_type([cache], allow_arrays_cache=True) is None
+
+
 def test_arrayscache_scheduler_mode_requires_singleton_limits():
     config = MLLMSchedulerConfig(
         max_num_seqs=1,

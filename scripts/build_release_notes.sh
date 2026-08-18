@@ -130,9 +130,106 @@ HIGHLIGHTS_PATH="$HIGHLIGHTS_DIR/$TAG.md"
 if git cat-file -e "$RELEASE_SHA:$HIGHLIGHTS_PATH" 2>/dev/null; then
   HIGHLIGHTS=$(
     git show "$RELEASE_SHA:$HIGHLIGHTS_PATH" |
-      # Drop whole-line HTML comments so drafting guidance left in the template
-      # can never ship, then trim leading blank lines ($( ) trims trailing ones).
-      sed -E '/^[[:space:]]*<!--.*-->[[:space:]]*$/d' |
+      # Drop complete whole-line HTML comment blocks so drafting guidance left
+      # in the template can never ship. Buffer until the closing marker so an
+      # unmatched opener fails safe instead of swallowing the remaining notes.
+      awk '
+        function flush_pending(    i) {
+          for (i = 1; i <= pending_count; i++) print pending[i]
+          pending_count = 0
+        }
+        # An HTML comment closes at its FIRST "-->"; anything after that first
+        # marker is visible content. Return that trailing text so the caller can
+        # judge what a clean whole-line close leaves behind. Checking the whole
+        # line for a trailing "-->" instead would treat "<!-- x --> note -->" as
+        # a clean close and silently drop "note".
+        function tail_after_close(line,    p) {
+          p = index(line, "-->")
+          return substr(line, p + 3)
+        }
+        # Would the text trailing a closed comment ship nothing visible? True
+        # when it is only whitespace and/or further complete whole-line comments
+        # (so "<!-- a --> <!-- b -->" is fully strippable). A trailing UNCLOSED
+        # "<!--" is treated as not-clean so the line is kept verbatim rather than
+        # swallowing the notes that follow it. Only ever fed the tail of a line
+        # already in whole-line-comment context, so column-0-only stays intact.
+        function rest_is_clean(s,    o, c) {
+          while (1) {
+            if (s ~ /^[[:space:]]*$/) return 1
+            if (s !~ /^[[:space:]]*<!--/) return 0
+            o = index(s, "<!--"); s = substr(s, o + 4)
+            c = index(s, "-->"); if (c == 0) return 0
+            s = substr(s, c + 3)
+          }
+        }
+        # A line indented four or more spaces (or led by a tab) is a CommonMark
+        # indented code block, not prose: fences and drafting comments there are
+        # example text and must survive untouched. Kept deliberately simple —
+        # the interval form /^ {0,3}/ is avoided for portability with older awks.
+        function indented_code(line) {
+          return (line ~ /^    / || line ~ /^\t/)
+        }
+        # The leading code-fence run (0-3 spaces of indent), e.g. "```" or
+        # "~~~~", or "" when the line does not open/close a fence. A CommonMark
+        # fence is three or more backticks or tildes at 0-3 spaces of indent.
+        function fence_marker(line,    s, ch, n) {
+          if (indented_code(line)) return ""
+          s = line
+          sub(/^ */, "", s)
+          if (s ~ /^```/) ch = "`"
+          else if (s ~ /^~~~/) ch = "~"
+          else return ""
+          n = 0
+          while (substr(s, n + 1, 1) == ch) n++
+          return substr(s, 1, n)
+        }
+        in_comment {
+          pending[++pending_count] = $0
+          if ($0 ~ /-->/) {
+            in_comment = 0
+            if (rest_is_clean(tail_after_close($0))) pending_count = 0
+            else flush_pending()
+          }
+          next
+        }
+        # Inside a fenced code block, "<!--" is example text, not a drafting
+        # comment: pass every line through untouched. Track the opener char and
+        # length so only a matching bare closer (same char, at least as long, no
+        # info string) ends the block — a shorter run or the other delimiter is
+        # just fenced content. Checked only when not mid-comment so an open
+        # comment still closes on its own "-->".
+        !in_fence {
+          fm = fence_marker($0)
+          if (fm != "") {
+            print
+            fence_char = substr(fm, 1, 1); fence_len = length(fm); in_fence = 1
+            next
+          }
+        }
+        in_fence {
+          print
+          fm = fence_marker($0)
+          if (fm != "" && substr(fm, 1, 1) == fence_char && length(fm) >= fence_len \
+              && $0 ~ ("^[[:space:]]*[" fence_char "]+[[:space:]]*$")) in_fence = 0
+          next
+        }
+        # A whole-line drafting comment sits at 0-3 spaces of indent; deeper
+        # indentation is an indented code block whose "<!--" is example text.
+        !indented_code($0) && /^[[:space:]]*<!--/ {
+          if ($0 ~ /-->/) {
+            if (!rest_is_clean(tail_after_close($0))) print
+            next
+          }
+          in_comment = 1
+          pending[++pending_count] = $0
+          next
+        }
+        { print }
+        END {
+          if (in_comment) flush_pending()
+        }
+      ' |
+      # Trim leading blank lines ($( ) trims trailing ones).
       sed -e '/./,$!d'
   )
   if [ -n "$HIGHLIGHTS" ]; then

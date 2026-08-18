@@ -66,6 +66,8 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "is_hybrid_explicit",
         "is_moe",
         "supports_spec_decode",
+        "mtp_draft_model",
+        "mtp_speculative_tokens",
         "default_max_tokens",
         "suffix_decoding_tier",
         "suffix_bench_speedup",
@@ -586,6 +588,49 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
         _coerce(
             "fake-alias",
             {"hf_path": "fake/Model", "supports_dflash": True},
+        )
+
+
+def test_mtp_preset_requires_a_valid_drafter_and_positive_token_count() -> None:
+    """MTP capability metadata is consumed by both CLI and macOS Settings."""
+    from vllm_mlx.model_aliases import _coerce
+
+    profile = _coerce(
+        "fake-alias",
+        {
+            "hf_path": "fake/Model",
+            "mtp_draft_model": "fake/MTP-Model",
+            "mtp_speculative_tokens": 3,
+        },
+    )
+    assert profile.mtp_draft_model == "fake/MTP-Model"
+    assert profile.mtp_speculative_tokens == 3
+
+    for bad_model in ("", "   ", "missing-slash", True):
+        with pytest.raises(ValueError, match="mtp_draft_model"):
+            _coerce(
+                "fake-alias",
+                {"hf_path": "fake/Model", "mtp_draft_model": bad_model},
+            )
+    for bad_tokens in (0, -1, True, "3"):
+        with pytest.raises(ValueError, match="mtp_speculative_tokens"):
+            _coerce(
+                "fake-alias",
+                {
+                    "hf_path": "fake/Model",
+                    "mtp_draft_model": "fake/MTP-Model",
+                    "mtp_speculative_tokens": bad_tokens,
+                },
+            )
+
+
+def test_mtp_token_count_without_a_drafter_is_rejected() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="requires mtp_draft_model"):
+        _coerce(
+            "fake-alias",
+            {"hf_path": "fake/Model", "mtp_speculative_tokens": 3},
         )
 
 

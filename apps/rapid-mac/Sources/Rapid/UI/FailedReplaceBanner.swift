@@ -8,17 +8,17 @@ import SwiftUI
 /// signal and ``rapid-desktop#251`` for the live-incident context.
 ///
 /// Two CTAs:
-///   * **Open update dialog** — opens the existing ``update-install``
-///     scene. The in-app installer (``Installer.swift``) handles the
-///     quit-and-replace via a helper script + parent-PID wait, so the
-///     user can finish the upgrade without re-mounting the DMG by hand.
+///   * **Check for updates** — hands off to Sparkle, which downloads,
+///     verifies, and installs on quit, so the user can finish the upgrade
+///     without re-mounting the DMG by hand. Disabled on unsigned builds
+///     where Sparkle carries no public key.
 ///   * **Dismiss** — clears the banner for this session. Persistence
 ///     was already advanced on construction, so the next launch only
 ///     re-fires if ANOTHER failed Finder Replace happens between now
 ///     and then.
 struct FailedReplaceBanner: View {
     @Environment(InstallTracker.self) private var installTracker
-    @Environment(\.openWindow) private var openWindow
+    @Environment(SparkleUpdateController.self) private var sparkleUpdater
 
     var body: some View {
         if installTracker.failedReplaceDetected {
@@ -44,8 +44,8 @@ struct FailedReplaceBanner: View {
                         Text(
                             "Rapid-MLX is still running v\(installTracker.currentVersion). " +
                             "macOS Finder can't replace files inside a running .app, so a drag-to-/Applications " +
-                            "Replace silently leaves the old build in place. Use the in-app updater " +
-                            "(handles the quit + swap automatically), or quit and re-run the installer."
+                            "Replace silently leaves the old build in place. Check for updates " +
+                            "(the updater handles the quit + swap automatically), or quit and re-run the installer."
                         )
                         .scaledSystemFont(12)
                         .foregroundStyle(.secondary)
@@ -57,15 +57,16 @@ struct FailedReplaceBanner: View {
                         "An update attempt didn't take. " +
                         "Rapid-MLX is still running v\(installTracker.currentVersion). " +
                         "macOS Finder can't replace files inside a running .app. " +
-                        "Use the in-app updater, or quit and re-run the installer."
+                        "Check for updates, or quit and re-run the installer."
                     )
                     .accessibilityAddTraits(.isHeader)
                     HStack(spacing: 8) {
-                        Button("Open update dialog") {
-                            openWindow(id: "update-install")
+                        Button("Check for updates") {
+                            sparkleUpdater.checkForUpdates()
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .disabled(!sparkleUpdater.isEnabled)
                         .accessibilityIdentifier("FailedReplace.OpenUpdate")
                         Button("Dismiss") {
                             installTracker.dismiss()

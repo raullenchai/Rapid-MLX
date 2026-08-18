@@ -290,6 +290,23 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
 
     vad = _get_vad_model()
     if vad is None:
+        # mlx-audio 0.4.0-0.4.3 shipped without the Silero implementation
+        # even though our supported dependency range includes those builds.
+        # Retain the most important #961 invariant in that environment:
+        # digital/near-digital silence must never reach Whisper.  Energy alone
+        # is deliberately *not* used to trim or reject ambiguous audio; any
+        # signal above the conservative -50 dBFS floor falls through to the
+        # original transcription path so quiet speech cannot be eaten.
+        try:
+            from mlx_audio.stt.utils import load_audio  # noqa: PLC0415
+
+            fallback_waveform = load_audio(audio_path)
+            if getattr(fallback_waveform, "shape", (0,))[-1] == 0:
+                return _VADTrimResult(skipped=False, has_speech=False)
+            if not _rms_above_floor(fallback_waveform, _VAD_NO_SPEECH_RMS_FLOOR):
+                return _VADTrimResult(skipped=False, has_speech=False)
+        except Exception:  # noqa: BLE001
+            pass
         return _VADTrimResult(skipped=True)
 
     try:
@@ -456,6 +473,96 @@ def _shift_segment_time(seg: Any, offset: float) -> None:
             v = getattr(seg, k)
             if v is not None:
                 setattr(seg, k, float(v) + offset)
+
+
+def _segment_value(segment: Any, key: str) -> Any:
+    """Read a field from either mlx-audio's dict or object segment shape."""
+    if isinstance(segment, dict):
+        return segment.get(key)
+    return getattr(segment, key, None)
+
+
+def _audio_duration_seconds(audio_path: str) -> float | None:
+    """Read the source duration without decoding the whole file again."""
+    try:
+        import wave  # noqa: PLC0415
+
+        with wave.open(audio_path, "rb") as wav:
+            rate = wav.getframerate()
+            if rate > 0:
+                return float(wav.getnframes()) / rate
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import soundfile as sf  # noqa: PLC0415
+
+        duration = float(sf.info(audio_path).duration)
+        return duration if duration >= 0.0 else None
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # Last resort for compressed formats: use the same decoder mlx-audio
+        # itself accepts.  This allocates a waveform only when cheap metadata
+        # probes failed and Whisper actually returned timestamped segments.
+        from mlx_audio.stt.utils import load_audio  # noqa: PLC0415
+
+        waveform = load_audio(audio_path)
+        return float(waveform.shape[-1]) / _VAD_SAMPLE_RATE
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _discard_impossible_whisper_tail(
+    text: str,
+    segments: list | None,
+    input_duration: float | None,
+) -> tuple[str, list | None]:
+    """Drop decoder segments timestamped outside the supplied audio.
+
+    mlx-audio Whisper can continue decoding the zero-padded 30-second window
+    after a short clip has ended.  In the observed failure a 3.85-second WAV
+    produced one correct segment followed by dozens of random segments around
+    20-30 seconds.  Those timestamps are impossible for the caller's input and
+    provide a stronger signal than trying to classify hallucinated prose.
+
+    Keep the adapter conservative: only act when at least one segment is
+    impossible and at least one valid segment remains.  Unknown/malformed
+    segment shapes retain the backend result unchanged.
+    """
+    if not segments or input_duration is None or input_duration < 0.0:
+        return text, segments
+
+    # Whisper timestamps are quantized in 20 ms steps.  Half a second leaves
+    # ample room for rounding/padding while still rejecting a padded-window
+    # tail on short clips.
+    limit = input_duration + 0.5
+    kept: list[Any] = []
+    dropped = False
+    for segment in segments:
+        start = _segment_value(segment, "start")
+        end = _segment_value(segment, "end")
+        try:
+            start_f = float(start)
+            end_f = float(end)
+        except (TypeError, ValueError):
+            # Do not rewrite a result whose timing contract we cannot prove.
+            return text, segments
+        if start_f < -0.05 or end_f < start_f or start_f > limit or end_f > limit:
+            dropped = True
+            continue
+        kept.append(segment)
+
+    if not dropped or not kept:
+        return text, segments
+
+    rebuilt = "".join(str(_segment_value(segment, "text") or "") for segment in kept)
+    logger.warning(
+        "Whisper returned %d segment(s) beyond %.3fs input; discarded the "
+        "impossible padded-window tail.",
+        len(segments) - len(kept),
+        input_duration,
+    )
+    return rebuilt.strip(), kept
 
 
 class STTEngine:
@@ -726,7 +833,18 @@ class STTEngine:
 
         try:
             # Use the model's generate method directly
+            # mlx-audio defaults to temperature fallback
+            # ``(0.0, .2, ... 1.0)`` when its compression/log-probability
+            # checks reject the greedy pass.  On current Whisper MLX builds
+            # ``avg_logprob`` can be NaN and the zero-padded tail can trip the
+            # compression check, turning a deterministic short transcription
+            # into slow random hallucinations ("hope hope ...", "song song
+            # ...").  Keep local transcription deterministic; impossible
+            # padded-window segments are removed below using timestamps rather
+            # than content heuristics.
             kwargs = {"verbose": False}
+            if self._is_whisper:
+                kwargs["temperature"] = 0.0
             if self._is_sensevoice:
                 # SenseVoice: keyword-only ``language`` (default auto-detect),
                 # no translation ``task``. A caller-supplied code outside
@@ -772,6 +890,22 @@ class STTEngine:
             segments = getattr(result, "segments", None)
             detected_lang = getattr(result, "language", None)
 
+            # mlx-audio Whisper occasionally keeps decoding the zero-padded
+            # 30-second window after a short recording ends.  Reject only
+            # segments whose timestamps make them impossible for the actual
+            # input; this avoids language/content heuristics and preserves
+            # legitimate repetition inside the recording.
+            if self._is_whisper:
+                if trim is not None and not trim.skipped and trim.has_speech:
+                    input_duration = float(trim.waveform.shape[-1]) / trim.sample_rate
+                else:
+                    input_duration = _audio_duration_seconds(audio_path)
+                text, segments = _discard_impossible_whisper_tail(
+                    text if isinstance(text, str) else str(text),
+                    segments,
+                    input_duration,
+                )
+
             # Absolute-time contract: if we handed Whisper a trimmed
             # span starting at ``offset_seconds`` into the original
             # audio, every segment.start / segment.end (and per-word
@@ -791,8 +925,8 @@ class STTEngine:
             duration = None
             if segments:
                 last_seg = segments[-1] if segments else None
-                if last_seg and hasattr(last_seg, "end"):
-                    duration = last_seg.end
+                if last_seg:
+                    duration = _segment_value(last_seg, "end")
 
             return TranscriptionResult(
                 text=text.strip() if isinstance(text, str) else str(text),

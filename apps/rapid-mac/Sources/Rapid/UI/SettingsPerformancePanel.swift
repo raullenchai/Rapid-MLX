@@ -9,10 +9,9 @@ import SwiftUI
 ///   * **Only audited, CI-gated flags.** `--kv-bits`, `--kv-group-size`,
 ///     `--draft-model` and `--num-draft-tokens` — named in the issue — are in
 ///     the engine's deprecated-no-op block and are parsed but never read, so a
-///     switch for them would be wired to nothing. Speculative decoding's
-///     canonical entry point is `--speculative-config`, a JSON blob; its
-///     flag-shaped spellings are all `argparse.SUPPRESS` legacy aliases.
-///     Neither is here.
+///     switch for them would be wired to nothing. The speculative-decoding
+///     switch emits the alias registry's audited preset;
+///     aliases without one still show the control disabled with a reason.
 ///   * **Per model.** Settings attach to the alias, because the right KV
 ///     setting for a 4B dense model is not the right one for a 35B MoE.
 ///   * **One line of cost per control**, from ``KVCacheMode/tradeOff``.
@@ -57,6 +56,10 @@ struct SettingsPerformancePanel: View {
     /// condition it described is still true.
     private var needsReload: Bool {
         guard let alias = targetAlias, server.isModelResident(alias) else { return false }
+        let wantsSpeculative = perf.config(forAlias: alias).speculativePreset != nil
+        if wantsSpeculative != server.hasAppliedSpeculativeDecoding(forAlias: alias) {
+            return true
+        }
         if let resident = server.residency.models.first(where: { $0.matches(alias) }),
            let applied = resident.performance {
             return !applied.matches(effectiveConfig(for: alias))
@@ -91,6 +94,7 @@ struct SettingsPerformancePanel: View {
                 if let alias = targetAlias {
                     if needsReload { reloadBanner(alias: alias) }
                     kvSection(alias: alias)
+                    speculativeDecodingSection(alias: alias)
                     prefixSection(alias: alias)
                     footer(alias: alias)
                 } else {
@@ -162,10 +166,14 @@ struct SettingsPerformancePanel: View {
     }
 
     private func reloadBanner(alias: String) -> some View {
-        InlineNotice(
-            message: "Reload \(alias) to apply. Other resident models will stay available.",
+        let speculativeChanged = (perf.config(forAlias: alias).speculativePreset != nil)
+            != server.hasAppliedSpeculativeDecoding(forAlias: alias)
+        return InlineNotice(
+            message: speculativeChanged
+                ? "Restart \(alias) to apply speculative decoding. Other resident models will unload; downloaded weights and conversations stay available."
+                : "Reload \(alias) to apply. Other resident models will stay available.",
             tone: .warning,
-            actionTitle: isReloading ? "Reloading…" : "Reload model",
+            actionTitle: isReloading ? "Restarting…" : (speculativeChanged ? "Restart model" : "Reload model"),
             actionIdentifier: "Settings.Performance.ReloadModel",
             action: { reload(alias: alias) }
         )
@@ -233,6 +241,33 @@ struct SettingsPerformancePanel: View {
                 SettingsRowDivider()
 
                 cacheBudgetRow(alias: alias)
+            }
+        }
+    }
+
+    private func speculativeDecodingSection(alias: String) -> some View {
+        let preset = modelChoices.first {
+            $0.alias.caseInsensitiveCompare(alias) == .orderedSame
+        }?.speculativeDecodingPreset
+        return SettingsSection(
+            "Speculative decoding",
+            subtitle: "Drafts candidate tokens and verifies them with the full model."
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(
+                    preset.map { "Enable \($0.displayName)" }
+                        ?? "No verified preset for this model",
+                    isOn: speculativeDecodingBinding(alias: alias, preset: preset)
+                )
+                    .toggleStyle(.switch)
+                    .disabled(preset == nil)
+                    .accessibilityIdentifier("Settings.Performance.SpeculativeDecoding.Enabled")
+                tradeOffLine(
+                    preset == nil
+                        ? "This alias does not declare a verified speculative-decoding preset."
+                        : "Off by default. It can improve generation speed on some Macs, but may be slower on others; accepted output remains token-exact.",
+                    warns: false
+                )
             }
         }
     }
@@ -335,6 +370,18 @@ struct SettingsPerformancePanel: View {
         )
     }
 
+    private func speculativeDecodingBinding(
+        alias: String,
+        preset: SpeculativeDecodingPreset?
+    ) -> Binding<Bool> {
+        Binding(
+            get: { perf.config(forAlias: alias).speculativePreset != nil },
+            set: { enabled in
+                update(alias: alias) { $0.speculativePreset = enabled ? preset : nil }
+            }
+        )
+    }
+
     private func cacheBudgetBinding(alias: String) -> Binding<Double> {
         Binding(
             get: {
@@ -356,6 +403,21 @@ struct SettingsPerformancePanel: View {
         applyError = nil
         Task {
             let entry = modelChoices.first { $0.alias.caseInsensitiveCompare(alias) == .orderedSame }
+            let speculativeChanged = (perf.config(forAlias: alias).speculativePreset != nil)
+                != server.hasAppliedSpeculativeDecoding(forAlias: alias)
+            if speculativeChanged {
+                let restarted = await server.restartForSpeculativePerformance(
+                    alias: alias,
+                    hfPath: entry?.hfRepo
+                )
+                if restarted {
+                    launchedFlags = perf.launchFlags(forAlias: alias)
+                } else {
+                    applyError = "Could not restart this model with its speculative-decoding setting."
+                }
+                isReloading = false
+                return
+            }
             let result = await server.reloadResidentPerformance(
                 alias: alias,
                 hfPath: entry?.hfRepo

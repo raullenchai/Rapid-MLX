@@ -15,8 +15,9 @@ import Observation
 ///
 /// We can't reliably PREVENT the drag-replace (the user may use any
 /// downloader — website link, GitHub Releases, the bundled DMG); the
-/// in-app updater already takes the safer Sparkle-style path (see
-/// ``Installer.swift``). What we can do is DETECT the failure mode on
+/// in-app updater takes the safe path already, because Sparkle installs
+/// on quit rather than over a running bundle. What we can do is DETECT
+/// the failure mode on
 /// the next launch and surface a sticky banner explaining what happened,
 /// so the user can quit + re-run the installer instead of silently
 /// staying on the old build for weeks.

@@ -159,6 +159,11 @@ class ModelProfile:
     # Pure-attention models (llama, qwen3, mistral, gemma3, gpt-oss,
     # phi, ...) are safe.
     supports_spec_decode: bool = True
+    # Optional, bench-verified MTP preset. Presence takes precedence over the
+    # generic suffix preset in catalog/UI surfaces; the target alias remains
+    # opt-in and the engine never enables it automatically.
+    mtp_draft_model: str | None = None
+    mtp_speculative_tokens: int = 3
     default_max_tokens: int | None = None  # Per-model default when user omits
 
     # SuffixDecoding eligibility — populated from cross-model bench (issue #269).

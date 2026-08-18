@@ -73,11 +73,13 @@ config, plus an honest test-backed [support matrix](../agents/matrix.md):
 [OpenCode](../agents/opencode.md) ·
 [Qwen Code](../agents/qwen-code.md) ·
 [OpenHands](../agents/openhands.md) ·
-[Hermes Agent](../agents/hermes-agent.md).
+[Hermes Agent](../agents/hermes-agent.md) ·
+[DeepSeek Harness](../agents/deepseek-harness.md).
 
 | Client | Type | Setup | Status | Notes |
 |--------|------|-------|--------|-------|
 | [Aider](https://aider.chat) | CLI | `OPENAI_API_BASE=http://localhost:8000/v1 aider --model openai/default` | Verified | Architect mode, edit-and-commit |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | CLI / TUI / web | `rapid-mlx agents dsh --setup` | Verified | Tier-1 release gate; generic `openai-completions` provider, never `deepseek-official`. Needs Node 22.15+ |
 | [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `rapid-mlx agents claude-code --setup` | Compatible | Safe diff/confirm/backup flow; uses Anthropic `/v1/messages` |
 | [Cursor](https://cursor.com) | IDE | `RAPID_MLX_API_KEY=your-secret rapid-mlx launch cursor --server-url https://your-public-host` | Not compatible locally | BYOK requests pass through Cursor's servers; public HTTPS and server auth are required |

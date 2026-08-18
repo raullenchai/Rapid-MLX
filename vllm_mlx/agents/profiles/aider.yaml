@@ -21,7 +21,10 @@ streaming:
   max_tools: 0  # Aider does NOT use function calling
 
 testing:
-  binary: null  # aider is a pip package
+  # pip/uv installs expose the regular `aider` console script on PATH.
+  # Keeping this null made `agents aider --test` report PASS without ever
+  # launching Aider itself.
+  binary: aider
   query_cmd: "aider --message '{query}' --yes --no-git"
   query_timeout: 180
   install_cmd: "pip install aider-chat"

@@ -24,6 +24,12 @@ import sys
 import time
 
 import aiohttp
+import pytest
+
+# This module drives a live server (see the docstring above) — without one
+# it fails on connect, and with one it sends real completions to whatever
+# is bound on :8000. Keep it out of the default unit sweep.
+pytestmark = pytest.mark.integration
 
 BASE = "http://127.0.0.1:8000"
 

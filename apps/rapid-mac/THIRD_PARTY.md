@@ -14,6 +14,11 @@ so this document and the shipped bundle cannot silently disagree (#1596).
 This is the document the app's **Settings → Privacy → "Open-source
 credits"** link opens.
 
+* **MTPLX** — Youssof Altoukhi — Apache License 2.0
+  Rapid's prompt-lookup speculative decoding adapts MTPLX's context-copy
+  design. The required in-product attribution appears in Settings → Privacy.
+  https://github.com/youssofal/mtplx
+
 **Scope.** Components this project declares directly: the Swift packages
 in `Package.swift` (plus the transitive ones actually linked into the
 binary), the engine requirements in the monorepo's root `pyproject.toml`,
@@ -77,10 +82,10 @@ though the manifest does not name them.
 `Sources/RapidCrashHandler` is first-party C in this repository, not a
 third-party package.
 
-The in-tree `UpdateChecker.swift` + `Installer.swift` pair remains temporarily
-as a migration fallback for builds without an injected Sparkle public key and
-as the existing UI's read-only release-status source. Signed production builds
-delegate archive verification and installation to Sparkle.
+The in-tree `UpdateChecker.swift` is the read-only release-status source behind
+the version pill and the Settings panel. It does not download or install
+anything: Sparkle owns archive verification and installation, and builds without
+an injected Sparkle public key have no in-app update path at all.
 
 ## Assets
 

@@ -75,7 +75,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Mirror of ``vllm_mlx.bench.tier_runner.HARNESS_PROFILES`` — hardcoded
 # here so this script doesn't need to import the package (which would
 # pull mlx_lm at module-load and fail in a clean-venv sanity run).
-HARNESS_PROFILES = ("codex", "opencode", "hermes", "aider", "langchain")
+HARNESS_PROFILES = (
+    "codex",
+    "opencode",
+    "hermes",
+    "aider",
+    "langchain",
+    "deepseek-harness",
+)
 
 # Mirror of ``vllm_mlx.api.utils.MLLM_PATTERNS``, for the same reason as
 # HARNESS_PROFILES: importing the package pulls mlx_lm at module load.

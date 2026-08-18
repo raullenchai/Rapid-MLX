@@ -304,7 +304,7 @@ jobs:
       # than "golden flows failed". Each needs its own output directory: the
       # harness refuses to start on a non-empty one.
       #
-      # These seven drive the app through `rapid-ax` alone (see
+      # These flows drive the app through `rapid-ax` alone (see
       # `flow_requires_peekaboo` in the harness). Most other flows shell out to
       # peekaboo — a third-party install whose bridge socket comes from the
       # Peekaboo app rather than its CLI, with its own permission surface. The
@@ -344,6 +344,11 @@ jobs:
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/audio-readiness
 
+      - name: 'Golden flow: settings-mtp'
+        run: ./scripts/gui-golden-flows.sh --flow settings-mtp
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/settings-mtp
+
       - name: 'Golden flow: window-close-prompt'
         run: ./scripts/gui-golden-flows.sh --flow window-close-prompt
         env:
@@ -353,6 +358,26 @@ jobs:
         run: ./scripts/gui-golden-flows.sh --flow resident-load-rejected
         env:
           RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/resident-load-rejected
+
+      - name: 'Golden flow: no-dead-controls'
+        run: ./scripts/gui-golden-flows.sh --flow no-dead-controls
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/no-dead-controls
+
+      - name: 'Golden flow: catalog-integrity'
+        run: ./scripts/gui-golden-flows.sh --flow catalog-integrity
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/catalog-integrity
+
+      - name: 'Golden flow: update-state'
+        run: ./scripts/gui-golden-flows.sh --flow update-state
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/update-state
+
+      - name: 'Golden flow: launch-integrations'
+        run: ./scripts/gui-golden-flows.sh --flow launch-integrations
+        env:
+          RAPID_GUI_GOLDEN_OUT: ${{ runner.temp }}/golden/launch-integrations
 
       # The harness stops at the FIRST mismatched baseline and the job stops at
       # the first failing flow, so one red run reveals exactly one line. With 5
@@ -376,7 +401,7 @@ jobs:
           set -uo pipefail
           mkdir -p "$SCRATCH/snapshots"
           cp Tests/GUIGoldenFlows/__Snapshots__/*.txt "$SCRATCH/snapshots/"
-          for flow in chat-restore slow-stream-stop model-crash-recovery image-generation audio-readiness; do
+          for flow in chat-restore slow-stream-stop model-crash-recovery image-generation audio-readiness no-dead-controls catalog-integrity update-state launch-integrations; do
             RAPID_GUI_BASELINE_DIR="$SCRATCH/snapshots" \
             RAPID_GUI_GOLDEN_OUT="$SCRATCH/run/$flow" \
               ./scripts/gui-golden-flows.sh --flow "$flow" --update-baselines || true

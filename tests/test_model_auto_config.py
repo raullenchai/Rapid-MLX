@@ -2349,6 +2349,30 @@ class TestCheckpointMetadataFallback:
         assert config.is_moe is True
         assert config.supports_spec_decode is False
 
+    def test_qwen38_local_snapshot_is_not_mislabeled_dense_qwen35(self, monkeypatch):
+        """Qwen3.8 reuses qwen3_5 model_type but is a hybrid MTP target."""
+        monkeypatch.setattr(
+            auto_config_mod,
+            "read_model_metadata",
+            lambda name: self._metadata(
+                {
+                    "model_type": "qwen3_5",
+                    "text_config": {
+                        "model_type": "qwen3_5_text",
+                        "layer_types": ["linear_attention", "full_attention"],
+                    },
+                },
+                self._XML_TOOLS,
+            ),
+        )
+
+        config = detect_model_config("/tmp/models/Qwen3.8-27B-4bit/snapshots/revision")
+
+        assert config is not None
+        assert config.is_hybrid is True
+        assert config.is_hybrid_explicit is True
+        assert config.supports_spec_decode is False
+
     def test_incomplete_template_is_not_advertised_as_native_tools(self, monkeypatch):
         # The template PARSES successfully (``{% endif %}`` is present), but the
         # XML tool contract is genuinely INCOMPLETE: it opens

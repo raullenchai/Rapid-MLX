@@ -67,18 +67,18 @@ AXApplication title="Rapid-MLX"
           AXRow subrole=AXOutlineRow
             AXCell enabled=true
               AXButton id="Settings.Category.app" desc="App" enabled=true
+          AXRow subrole=AXOutlineRow
+            AXCell enabled=true
+              AXButton id="Settings.Category.developer" desc="Developer" enabled=true
           AXColumn id="ListColumn"
       AXScrollArea
         AXHeading desc="Rapid-MLX, Self-update for Rapid-MLX. New releases bundle the latest models, performance improvements, and bug fixes." enabled=true
         AXHeading desc="Version" enabled=true
         AXStaticText value=text enabled=true
         AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
-        AXStaticText value=text enabled=true
         AXHeading desc="Updates" enabled=true
         AXCheckBox id="Settings.App.AutomaticUpdatesToggle" desc="Automatically download updates" help="Automatic updates are enabled in signed release builds." value=bool:false enabled=false
-        AXStaticText id="Settings.App.UpToDate" value=text enabled=true
-        AXButton id="Settings.App.RecheckCTA" desc="Check for updates" enabled=true
+        AXStaticText id="Settings.App.AheadOfManifest" value=text enabled=true
         AXHeading desc="Diagnostics, Save a support report to share if something goes wrong. Includes your app version, Mac model, and recent logs — no prompts, files, or personal data." enabled=true
         AXButton id="Settings.App.ExportDiagnostics" desc="Export diagnostics…" enabled=true
         AXHeading desc="Window, Choose what happens when you close the main window. Rapid-MLX keeps running in the menu bar either way — this only affects whether the Dock icon stays visible." enabled=true

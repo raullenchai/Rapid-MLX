@@ -1180,8 +1180,10 @@ def test_gemma4_key_safety_is_word_only_stricter_than_xml():
     for bad in ("my-key", "a.b", "a b", "a:b", "a,b", "x<y", "a{b"):
         assert g_rep({"properties": {bad: {"type": "string"}}}) is False, bad
     # XML allows ``-``/``.`` (its key wire tolerates them) — proves the divergence
-    # is intentional and the shared structural guard is otherwise identical.
-    assert x_rep({"properties": {"my-key": {"type": "string"}}}) is True
+    # is intentional and the shared structural guard is otherwise identical. The
+    # XML side probes an INTEGER property: since #1996 a top-level free-form
+    # string opts XML out regardless of the key, which would hide the key rule.
+    assert x_rep({"properties": {"my-key": {"type": "integer"}}}) is True
     assert g_rep({"properties": {"my-key": {"type": "string"}}}) is False
 
 

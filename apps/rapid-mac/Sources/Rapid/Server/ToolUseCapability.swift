@@ -280,6 +280,12 @@ enum ToolUseCapability {
         // cycle-13 F-13-2 confirms /v1/models exposes the parser
         // correctly; PR #318 auto-scale gate verified.
         KnownFamily(prefix: "qwen3.6-", minSizeBillions: 3.0, note: "hybrid+MoE, qwen3_coder_xml parser; cycle-13 F-13-2 closure"),
+        // qwen3.8 — hybrid family, hermes parser. Release eval on
+        // rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX (our own mixed-precision
+        // build) scored 25/30 tool-calling scenarios, including the
+        // parallel and sequential multi-tool levels, with no control-token
+        // leakage into content.
+        KnownFamily(prefix: "qwen3.8-", minSizeBillions: 3.0, note: "hybrid, hermes parser; release eval 25/30 tool scenarios on 27b-mixed-3.5bpw"),
         // qwopus — Qwen+Opus distillation, hermes parser. PR #333
         // closure-verified 5/5 weather tool calls on qwopus-27b-8bit.
         KnownFamily(prefix: "qwopus-", minSizeBillions: 3.0, note: "PR #333 closure-verified 5/5 weather tool calls on 27b-8bit"),
