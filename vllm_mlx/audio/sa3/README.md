@@ -39,7 +39,7 @@ minimally severed from the kept generate-path files (`scripts/sa3_mlx.py`,
 **Kept (generate path):** `scripts/sa3_mlx.py`, `scripts/weights.py`,
 `models/defs/{dit_mlx.py, dit_mlx_medium.py, same_l_decoder.py,
 same_s_decoder.py, same_l_encoder.py, same_s_encoder.py, t5gemma_mlx.py,
-audio_encoding.py, sa3_pipeline.py}`, and the `__init__.py` files.
+sa3_pipeline.py}`, and the `__init__.py` files.
 
 ## No torch dependency
 
