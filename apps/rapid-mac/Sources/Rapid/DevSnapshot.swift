@@ -106,6 +106,28 @@ enum DevSnapshot {
             )
         }
 
+        // LIVE mode must run before the static matrix. The matrix below
+        // renders ~200 full-size views and temporarily raises process memory;
+        // running live last can trip ServerManager's real pre-load safety
+        // gate even for a 0.6B model, leaving state=.idle and silently skipping
+        // the only end-to-end sidecar check. Use a separate non-persisting
+        // chat model so the real turn cannot leak into the static fixtures.
+        if let liveAlias = ProcessInfo.processInfo.environment["RAPID_DEV_SERVE_ALIAS"],
+           !liveAlias.isEmpty {
+            let liveChat = ChatViewModel(
+                sampling: sampling,
+                customInstructions: chat.customInstructions,
+                server: server,
+                persistsConversations: false
+            )
+            await runLiveChat(
+                alias: liveAlias, server: server, chat: liveChat,
+                downloads: downloads, quickstart: quickstart, dir: dir
+            )
+            await server.stop()
+            server.dismissTerminalState()
+        }
+
         // The Images tab, rendered standalone — ``ContentView`` owns its
         // ``SidebarSection`` privately, so (like ``launchView``) the detail
         // surface is captured directly rather than by driving navigation.
@@ -198,7 +220,7 @@ enum DevSnapshot {
         // Scenario 1: the app as launched (idle / first-run, depending on
         // whether HF_HUB_CACHE points at a populated cache).
         render(contentView(width: 900, height: 640), to: "\(dir)/content-idle.png")
-        render(contentView(width: 640, height: 560), to: "\(dir)/content-min.png")
+        render(contentView(width: 720, height: 560), to: "\(dir)/content-min.png")
         // Narrow window: the status footer sheds its readouts through
         // ViewThatFits rather than squeezing them to ellipses, and the version
         // pill must stay on one line. Only a width this small exercises it.
@@ -243,26 +265,26 @@ enum DevSnapshot {
         // matrix the Phase-1 review runs on. Chat and Launch are the two
         // surfaces this phase repaints, so both are captured at the
         // 900x640 review size in both appearances, plus one shot each at
-        // the 640x560 window floor to prove the layout survives it.
+        // the 720x560 window floor to prove the layout survives it.
         let reviewSize = CGSize(width: 900, height: 640)
-        let floorSize = CGSize(width: 640, height: 560)
+        let floorSize = CGSize(width: 720, height: 560)
 
         renderHosted(contentView(width: 900, height: 640), size: reviewSize,
                      appearance: .aqua, to: "\(dir)/chat-900x640-light.png")
         renderHosted(contentView(width: 900, height: 640), size: reviewSize,
                      appearance: .darkAqua, to: "\(dir)/chat-900x640-dark.png")
-        renderHosted(contentView(width: 640, height: 560), size: floorSize,
-                     appearance: .aqua, to: "\(dir)/chat-640x560-light.png")
-        renderHosted(contentView(width: 640, height: 560), size: floorSize,
-                     appearance: .darkAqua, to: "\(dir)/chat-640x560-dark.png")
+        renderHosted(contentView(width: 720, height: 560), size: floorSize,
+                     appearance: .aqua, to: "\(dir)/chat-720x560-light.png")
+        renderHosted(contentView(width: 720, height: 560), size: floorSize,
+                     appearance: .darkAqua, to: "\(dir)/chat-720x560-dark.png")
         renderHosted(launchView(width: 900, height: 640), size: reviewSize,
                      appearance: .aqua, to: "\(dir)/launch-900x640-light.png")
         renderHosted(launchView(width: 900, height: 640), size: reviewSize,
                      appearance: .darkAqua, to: "\(dir)/launch-900x640-dark.png")
-        renderHosted(launchView(width: 640, height: 560), size: floorSize,
-                     appearance: .aqua, to: "\(dir)/launch-640x560-light.png")
-        renderHosted(launchView(width: 640, height: 560), size: floorSize,
-                     appearance: .darkAqua, to: "\(dir)/launch-640x560-dark.png")
+        renderHosted(launchView(width: 720, height: 560), size: floorSize,
+                     appearance: .aqua, to: "\(dir)/launch-720x560-light.png")
+        renderHosted(launchView(width: 720, height: 560), size: floorSize,
+                     appearance: .darkAqua, to: "\(dir)/launch-720x560-dark.png")
 
         // Scenario 1c (Paper 05.2): the Step 2 model-selection review matrix.
         //
@@ -366,7 +388,7 @@ enum DevSnapshot {
         // MARK: UI-2 Slice 1 — the core-workspace review matrix
         //
         // The captures above review Chat and Launch at 900x640 and at the
-        // 640x560 window floor, which were the sizes the v1.0 pass was
+        // 720x560 window floor, which were the sizes the v1.0 pass was
         // signed off at. Slice 1 is reviewed at three DIFFERENT widths —
         // 1440, 1000 and 720 — because that is where the lifecycle band
         // changes shape, and a 900pt capture would silently review only
@@ -844,19 +866,6 @@ enum DevSnapshot {
         )
 
         log("wrote PNGs to \(dir)")
-
-        // LIVE mode: when RAPID_DEV_SERVE_ALIAS is set, actually start the
-        // sidecar (resolved by ServerLocator — the bundled engine unless
-        // RAPID_BIN overrides it), send one chat turn, and snapshot the
-        // REAL streamed output — the runtime path static renders can't
-        // reach. Then the normal terminate exercises clean teardown.
-        if let liveAlias = ProcessInfo.processInfo.environment["RAPID_DEV_SERVE_ALIAS"],
-           !liveAlias.isEmpty {
-            await runLiveChat(
-                alias: liveAlias, server: server, chat: chat,
-                downloads: downloads, quickstart: quickstart, dir: dir
-            )
-        }
 
         // One-shot: quit so the dogfood harness gets a clean exit.
         NSApp.terminate(nil)

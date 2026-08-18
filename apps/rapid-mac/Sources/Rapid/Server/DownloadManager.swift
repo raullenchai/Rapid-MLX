@@ -558,7 +558,7 @@ final class DownloadManager {
         // ``.cancelled`` when ``wasCancelling == true`` so this is
         // idempotent with the wasCancelling branch.
         if let job = jobs[trimmed], case .running = job.status {
-            job.status = .cancelled
+            markCancelled(job)
         }
         process.terminate()
         // Async hard-kill check; matches ServerManager.terminateChild.
@@ -634,7 +634,7 @@ final class DownloadManager {
         }
         for alias in aliases {
             if let job = jobs[alias], case .running = job.status {
-                job.status = .cancelled
+                markCancelled(job)
             }
             if let process = processes[alias] {
                 cleanupProcessBookkeeping(alias: alias, process: process)
@@ -689,7 +689,7 @@ final class DownloadManager {
         }
 
         if wasCancelling {
-            job.status = .cancelled
+            markCancelled(job)
             return
         }
 
@@ -710,6 +710,21 @@ final class DownloadManager {
                 message: FailureDiagnoser.diagnosis(for: .downloadFailed).message
             )
         }
+    }
+
+    /// Flip a job to ``Status/cancelled`` and say so in ``Job/failureKind``.
+    ///
+    /// The kind is the load-bearing half. Every surface that explains a
+    /// terminal job reads ``failureKind`` first and only falls back to
+    /// classifying a raw string — and the string classifier has no signal for
+    /// "the user stopped it", so a cancelled job carrying a `nil` kind was
+    /// read as ``FailureDiagnosis/Kind/downloadFailed`` and told the user to
+    /// check a connection that was never at fault (Paper 05.1 state 10,
+    /// flagged). Recording the kind at every cancellation site is what stops
+    /// that inference happening at all.
+    private func markCancelled(_ job: Job) {
+        job.failureKind = .downloadCancelled
+        job.status = .cancelled
     }
 
     private func recordFailure(job: Job, alias: String, signal: Bool) {

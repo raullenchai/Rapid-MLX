@@ -639,11 +639,21 @@ final class ServerManager {
     /// [codex audit r1 ServerManager.swift:577]
     @ObservationIgnored
     private let healthSession: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 1.5
-        cfg.timeoutIntervalForResource = 1.5
-        return URLSession(configuration: cfg)
+        URLSession(configuration: ServerManager.loopbackHealthSessionConfiguration())
     }()
+
+    /// `/healthz` is always a loopback control-plane request. Inheriting the
+    /// user's system/PAC proxy can send it away from the local sidecar (or
+    /// wait for an unreachable corporate proxy), leaving a healthy process
+    /// permanently presented as Starting. Keep this session direct; external
+    /// network clients retain their ordinary proxy behaviour.
+    static func loopbackHealthSessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 1.5
+        configuration.timeoutIntervalForResource = 1.5
+        configuration.connectionProxyDictionary = [:]
+        return configuration
+    }
 
     /// Optional back-reference to the app's ``DownloadManager``. Wired
     /// from ``RapidApp.init`` after both singletons are constructed.
@@ -1153,11 +1163,46 @@ final class ServerManager {
 
     // MARK: - Public API
 
+    /// The outcome of the most recent user-initiated engine re-resolution.
+    ///
+    /// ## Why this exists
+    ///
+    /// ``refreshBinary()`` always did real work — it re-runs
+    /// ``ServerLocator/locate()`` from scratch. But when the engine is STILL
+    /// missing it changes nothing observable: ``state`` was ``.missing`` and
+    /// stays ``.missing``. So the one control on the missing-engine screen
+    /// looked inert to the user it exists for, which is indistinguishable
+    /// from a button wired to nothing. Recording the outcome — including the
+    /// attempt number, so two identical results are still two events — gives
+    /// the overlay something truthful to say without inventing a claim about
+    /// why the engine is absent.
+    ///
+    /// ``nil`` until the user asks. Nothing reads it as a cache: the answer to
+    /// "is the engine here?" remains ``state`` and ``binaryPath``.
+    struct BinaryRecheck: Equatable, Sendable {
+        /// Whether ``ServerLocator/locate()`` resolved a binary this time.
+        let found: Bool
+        /// 1-based count of user-initiated rechecks this session. Present so a
+        /// repeated "still missing" result is observably a NEW result rather
+        /// than an unchanged value the UI can coalesce away.
+        let attempt: Int
+    }
+
+    private(set) var lastBinaryRecheck: BinaryRecheck?
+
     /// Refreshes `binaryPath` and resets to `.idle` / `.missing`. Called
     /// from the app's launch hook after the orphan sweep so the UI shows
     /// the correct initial state even if the user installed rapid-mlx
     /// just before launching Rapid.
-    func refreshBinary() {
+    ///
+    /// - Parameter userInitiated: `true` only for the missing-engine screen's
+    ///   Recheck. Launch hooks and the Settings toggle pass `false` so they
+    ///   cannot leave a "you rechecked" state behind for a user who never
+    ///   pressed anything.
+    /// - Returns: whether a binary resolved, so a caller can react without
+    ///   re-reading ``state``.
+    @discardableResult
+    func refreshBinary(userInitiated: Bool = false) -> Bool {
         let resolution = ServerLocator.locate()
         self.binaryResolution = resolution
         self.binaryPath = resolution?.binary
@@ -1166,6 +1211,41 @@ final class ServerManager {
         } else if case .missing = state {
             state = .idle
         }
+        if userInitiated {
+            lastBinaryRecheck = BinaryRecheck(
+                found: resolution != nil,
+                attempt: (lastBinaryRecheck?.attempt ?? 0) + 1
+            )
+        } else {
+            // Launch and Settings refreshes are background maintenance, not
+            // evidence that the user just pressed Recheck. Retire any prior
+            // result so a later missing-engine render cannot replay stale
+            // feedback from an earlier interaction.
+            lastBinaryRecheck = nil
+        }
+        return resolution != nil
+    }
+
+    /// What the missing-engine screen says after a Recheck.
+    ///
+    /// Pure so the "must not look actionable while doing nothing" contract can
+    /// be pinned without a SwiftUI host. ``nil`` before the user has asked —
+    /// there is no result to report, and a placeholder would be noise.
+    ///
+    /// The found branch is deliberately still worded: resolving the binary
+    /// moves ``state`` off ``.missing`` and the overlay goes away on the next
+    /// render, but a caller that reads this during that frame must not be
+    /// handed the failure copy.
+    nonisolated static func recheckStatusMessage(for recheck: BinaryRecheck?) -> String? {
+        guard let recheck else { return nil }
+        if recheck.found {
+            return "Found it. Setting up…"
+        }
+        // Names what was done and what was found, and stops. No retry
+        // schedule, no diagnosis of WHY it is absent — nothing here knows.
+        return recheck.attempt == 1
+            ? "Checked again — Rapid-MLX still can't find its engine."
+            : "Checked again (\(recheck.attempt) times) — Rapid-MLX still can't find its engine."
     }
 
     /// Transitions a ``.crashed`` or ``.stopped`` state back to

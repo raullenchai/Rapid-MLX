@@ -19,6 +19,8 @@ from typing import Optional
 import numpy as np
 import mlx.core as mx
 
+from .checkpoint_security import load_torch_checkpoint
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Conditioner: seconds_total → 768-dim embedding
@@ -197,8 +199,7 @@ def load_conditioner_from_sa3_ckpt(ckpt_path: str) -> tuple[mx.array, SecondsTot
         sd = st.load_file(str(ckpt_path))
         get = lambda k: sd[k].cpu().float().numpy()
     else:
-        import torch
-        ck = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+        ck = load_torch_checkpoint(str(ckpt_path))
         sd = ck.get("state_dict", ck) if isinstance(ck, dict) else ck
         get = lambda k: sd[k].cpu().float().numpy()
 

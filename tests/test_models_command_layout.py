@@ -72,6 +72,43 @@ def test_every_row_aligns_with_the_header_separator(capsys):
         )
 
 
+def test_spec_decode_column_aligns_despite_long_reasoning(capsys):
+    """#1999: a Reasoning value wider than the old fixed 12 chars
+    (``deepseek_r1_distill`` is 19) must not shift Spec-Decode and every
+    column right of it out from under the header. Alias/Size/Tools/Reasoning
+    are ASCII, so the Spec-Decode column START is at a fixed char offset in
+    both the header and every row; the wide ✓/✗/— glyphs only appear from
+    Spec-Decode onward.
+    """
+    out = _capture(capsys)
+    lines = [ln for ln in out.splitlines() if ln.startswith("  ")]
+    header_idx = next(
+        i
+        for i, ln in enumerate(lines)
+        if ln.lstrip().startswith("Alias") and "DFlash" in ln and "HF id" not in ln
+    )
+    header = lines[header_idx]
+    spec_col = header.index("Spec-Decode")
+    data_rows: list[str] = []
+    for ln in lines[header_idx + 2 :]:
+        if set(ln.strip()) == {"─"}:
+            break
+        data_rows.append(ln)
+
+    # At least one row carries the long reasoning value that used to overflow.
+    assert any("deepseek_r1_distill" in r for r in data_rows), (
+        "expected a row with the long 'deepseek_r1_distill' reasoning value"
+    )
+    for row in data_rows:
+        assert len(row) > spec_col, f"row too short for Spec-Decode col: {row!r}"
+        assert row[spec_col - 1] == " ", (
+            f"no gap before Spec-Decode at col {spec_col}: {row!r}"
+        )
+        assert row[spec_col] != " ", (
+            f"Spec-Decode value not at header col {spec_col}: {row!r}"
+        )
+
+
 def test_alias_column_width_floor_is_24(capsys, monkeypatch):
     """If the registry only has short names, the alias column must
     still be 24 wide so short tables don't feel cramped."""

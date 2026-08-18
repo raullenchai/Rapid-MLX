@@ -72,6 +72,12 @@ def test_xcui_runner_launches_production_bundle_with_fake_sidecar():
     assert "fake-rapid-mlx.sh" in source
     assert 'appendingPathComponent(".rapid-golden-fake.json")' in source
     assert '"FAKE_EVENT_LOG": eventLog.path' in source
+    assert '"RAPID_DESKTOP_PORT": "65000"' in source
+    assert '"RAPID_DESKTOP_NO_PORT_SWEEP": "1"' in source
+    assert (
+        'terminateFakeSidecars(recordedIn: eventLog, alias: "fake-image-alias")'
+        in source
+    )
     assert "isExecutableFile" in source
     assert "RapidUITests-$(date +%s)-$$.xcresult" in runner
 

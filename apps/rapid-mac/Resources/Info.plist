@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.12.14</string>
+	<string>0.12.15</string>
 	<key>CFBundleVersion</key>
-	<string>158</string>
+	<string>159</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSAccentColorName</key>

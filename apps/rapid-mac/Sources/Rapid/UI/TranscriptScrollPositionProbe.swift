@@ -10,6 +10,18 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
     /// Whether an answer is currently being written. Drives the one-shot
     /// release described on ``Coordinator/releaseIfAnswerOutgrewViewport()``.
     var isStreaming: Bool = false
+    /// Bumped by anything outside that wants the transcript moved to the
+    /// bottom right now, ``JumpToBottomButton`` being the only caller today.
+    ///
+    /// Setting ``isPinnedToBottom`` back to true is NOT enough on its own, and
+    /// used to be: ``attach`` only anchors on a NEW attachment (#1877), and by
+    /// the time the reader presses the button the scroll view has long been
+    /// attached. Following then depends entirely on the document-frame
+    /// notification, which fires while an answer streams and never again once
+    /// it settles — so the button worked mid-stream and did nothing at all on
+    /// a finished transcript. A token the caller changes makes the request
+    /// explicit rather than a side effect of re-pinning.
+    var scrollToBottomRequest: Int = 0
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -33,6 +45,9 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         )
         context.coordinator.setStreaming(isStreaming)
         context.coordinator.attach(to: probe)
+        // After ``attach``: a first render arrives with the token already at
+        // its initial value, and attaching is what anchors that one.
+        context.coordinator.honourScrollRequest(scrollToBottomRequest)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -47,6 +62,9 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
         private weak var documentView: NSView?
         private var isLiveScrolling = false
         private var bottomScrollScheduled = false
+        /// Last token acted on. Starts at `nil` so the initial value — whatever
+        /// it happens to be — is recorded rather than treated as a request.
+        private var lastScrollRequest: Int?
 
         init(
             isPinnedToBottom: Binding<Bool>,
@@ -83,6 +101,16 @@ struct TranscriptScrollPositionProbe: NSViewRepresentable {
             if attachmentChanged, isPinnedToBottom.wrappedValue {
                 requestScrollToBottom()
             }
+        }
+
+        /// Scroll if the caller's token moved since we last looked.
+        ///
+        /// Deliberately compares rather than tests for non-zero: the token is a
+        /// counter the caller owns and may wrap, reset, or start anywhere.
+        func honourScrollRequest(_ token: Int) {
+            defer { lastScrollRequest = token }
+            guard let previous = lastScrollRequest, previous != token else { return }
+            requestScrollToBottom()
         }
 
         func detach() {

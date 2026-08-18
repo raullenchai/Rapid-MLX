@@ -147,17 +147,35 @@ _CONNECT_ROWS: list[tuple[str, str, bool]] = [
 ]
 
 
-def render_banner(ep: ServerEndpoints, *, include_connect: bool = True) -> str:
+def render_banner(
+    ep: ServerEndpoints, *, include_connect: bool = True, running: bool = True
+) -> str:
     """Render the human "Ready:" / "OpenAI:" / "Connect:" block.
 
     Used by the serve lifespan (once warmup completes) and by
     ``rapid-mlx connect``. Rendered centrally so the served banner and the
     standalone ``connect`` output can never disagree about an endpoint.
+
+    ``running`` is the serve default: the lifespan only calls this once the
+    server is actually up. ``rapid-mlx connect`` passes ``running=False`` when
+    a liveness probe found nothing on the target, so the banner does not claim
+    "Ready:" for an address that refuses connections (#1999) — it says there is
+    no server and how to start one, and drops the Connect cheat-sheet that
+    would otherwise wire a client to a dead endpoint.
     """
     lines: list[str] = []
 
     if ep.listen_fd is not None:
         lines.append(f"  Ready: inherited fd {ep.listen_fd}")
+    elif not running:
+        port_hint = "" if ep.port == 8000 else f" --port {ep.port}"
+        lines.append(f"  No rapid-mlx server on {ep.base_url}")
+        lines.append(f"  Start one with:  rapid-mlx serve <model>{port_hint}")
+        lines.append("")
+        lines.append("  A server there would expose:")
+        lines.append(f"  OpenAI:    {ep.openai_url}")
+        lines.append(f"  Anthropic: {ep.anthropic_url}")
+        return "\n".join(lines) + "\n"
     else:
         lines.append(f"  Ready: {ep.base_url}")
         lines.append("")
@@ -176,6 +194,41 @@ def render_banner(ep: ServerEndpoints, *, include_connect: bool = True) -> str:
             lines.append(f"    {app:<{width}}  {rendered}")
 
     return "\n".join(lines) + "\n"
+
+
+def probe_server_alive(host: str, port: int) -> bool:
+    """Best-effort liveness check: is a rapid-mlx server answering on host:port?
+
+    Hits ``/healthz`` — the middleware fast-path that answers without touching
+    the engine, so it can't stall under load the way ``/health`` can. The route
+    is rapid-mlx-specific, so we key on the response CODE rather than the body
+    (which differs across the standard / DFlash / DDTree servers):
+
+    * any 2xx, or an auth challenge (401/403 — a DDTree server can gate
+      ``/healthz`` behind its API key) → a server that ``connect`` can point a
+      client at;
+    * any other status (404 from an unrelated HTTP server, 503 from a server
+      that is up but draining and refusing new work, 5xx from a broken one) →
+      not something to hand a client;
+    * connection refused / timeout / DNS → nothing is running.
+
+    Never raises.
+    """
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{_authority(host)}:{port}/healthz"
+    try:
+        urllib.request.urlopen(url, timeout=2.0)
+        return True
+    except urllib.error.HTTPError as exc:
+        return exc.code in (401, 403)
+    # http.client.HTTPException (e.g. BadStatusLine) covers a port occupied by a
+    # non-HTTP service (SSH, a database) that answers with garbage — not a
+    # server to point a client at, and it must not crash ``connect``.
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
+        return False
 
 
 def endpoints_from_bind(

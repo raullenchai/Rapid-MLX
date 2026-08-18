@@ -10,6 +10,7 @@ laptop.
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -513,6 +514,23 @@ def test_detect_install_method_install_sh(tmp_path, monkeypatch):
     info = vc.detect_install_method()
     assert info.method == "install_sh"
     assert "install.sh" in info.upgrade_command
+    # Upgrade prefers the canonical rapidmlx.com host and falls back to the
+    # raullenchai.github.io Pages mirror — both present, primary first, wired
+    # with ``||`` so the mirror is only reached if rapidmlx.com fails.
+    cmd = info.upgrade_command
+    assert "https://rapidmlx.com/install.sh" in cmd
+    assert "https://raullenchai.github.io/Rapid-MLX/install.sh" in cmd
+    assert cmd.index("rapidmlx.com") < cmd.index("github.io")
+    assert "||" in cmd
+    # Fetch to a temp file and run only a complete download (never ``| bash``):
+    # guards against a false-success on total outage and a partial/hybrid script.
+    assert "mktemp" in cmd
+    assert "set -e" in cmd
+    assert "| bash" not in cmd
+    # Bounded timeouts so a blackholed primary fails fast into the fallback
+    # instead of hanging forever.
+    assert "--connect-timeout" in cmd
+    assert "--max-time" in cmd
 
 
 def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
@@ -539,8 +557,130 @@ def test_detect_install_method_install_sh_via_symlink(tmp_path, monkeypatch):
     info = vc.detect_install_method()
     assert info.method == "install_sh"
     assert "install.sh" in info.upgrade_command
+    cmd = info.upgrade_command
+    assert "https://rapidmlx.com/install.sh" in cmd
+    assert "https://raullenchai.github.io/Rapid-MLX/install.sh" in cmd
+    assert cmd.index("rapidmlx.com") < cmd.index("github.io")
+    assert "||" in cmd
     # Pipe needs a shell — wrapped as ``bash -c <pipe>``, never `shell=True`.
     assert info.upgrade_argv[:2] == ["bash", "-c"]
+    # The executed argv carries the same primary-first fallback pipeline.
+    argv_cmd = info.upgrade_argv[2]
+    assert "https://rapidmlx.com/install.sh" in argv_cmd
+    assert argv_cmd.index("rapidmlx.com") < argv_cmd.index("github.io")
+
+
+def _run_install_sh_upgrade(
+    tmp_path, monkeypatch, *, primary_ok, mirror_ok, primary_stall=False
+):
+    """Execute the real install_sh upgrade_argv with a stub ``curl`` on PATH.
+
+    The stub writes a host-tagged marker script to the ``-o`` target and exits 0
+    for an "ok" host, or exits non-zero (writing nothing) for a "down" host —
+    letting us assert the shell's fetch-to-temp-then-run semantics end to end.
+    With ``primary_stall`` the primary first asserts the bounded-timeout flags
+    reached it, then exits 28 (curl's timeout code) after a short sleep,
+    simulating a blackholed host hitting ``--max-time``.
+    Returns ``(returncode, sentinel_text_or_None)``.
+    """
+    import subprocess
+
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    fake_binary = str(home / ".local" / "bin" / "rapid-mlx")
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setattr("shutil.which", lambda _name: fake_binary)
+    monkeypatch.setattr("os.path.realpath", lambda p: p)
+    argv = vc.detect_install_method().upgrade_argv
+
+    sentinel = tmp_path / "ran.txt"
+    primary_flags = tmp_path / "primary_flags.txt"
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    curl = stub_dir / "curl"
+    # ``curl -fsSL --connect-timeout N --max-time N <url> -o <file>`` — capture
+    # the whole argv, find the url + -o target, decide ok/fail by host, and
+    # (on ok) drop a script that records which host served it. Every primary
+    # invocation records whether the bounded-timeout flags were present to
+    # ``primary_flags`` — a signal independent of the fallback path, so a test
+    # can assert the flags actually reached curl rather than inferring it from a
+    # mirror run (which happens on *any* primary failure). In stall mode the
+    # primary then times out (exit 28), emulating a blackholed host.
+    curl.write_text(
+        "#!/bin/bash\n"
+        'argv="$*"; url=""; out=""\n'
+        "while [ $# -gt 0 ]; do\n"
+        '  case "$1" in -o) out="$2"; shift 2;; https://*) url="$1"; shift;;'
+        " *) shift;; esac\n"
+        "done\n"
+        f'primary_ok="{int(primary_ok)}"; mirror_ok="{int(mirror_ok)}"\n'
+        f'primary_stall="{int(primary_stall)}"\n'
+        'case "$url" in\n'
+        "  *rapidmlx.com*)\n"
+        '    case "$argv" in *--connect-timeout*--max-time*)'
+        f" echo yes > {primary_flags};; *) echo no > {primary_flags};; esac\n"
+        '    if [ "$primary_stall" = 1 ]; then sleep 0.2; exit 28; fi\n'
+        '    [ "$primary_ok" = 1 ] || exit 22;'
+        f" printf 'printf primary > {sentinel}\\n' > \"$out\";;\n"
+        '  *github.io*) [ "$mirror_ok" = 1 ] || exit 22;'
+        f" printf 'printf mirror > {sentinel}\\n' > \"$out\";;\n"
+        "  *) exit 22;;\n"
+        "esac\n"
+    )
+    curl.chmod(0o755)
+
+    env = dict(os.environ, PATH=f"{stub_dir}:{os.environ['PATH']}")
+    proc = subprocess.run(argv, env=env, capture_output=True, text=True)
+    got = sentinel.read_text() if sentinel.exists() else None
+    return proc.returncode, got
+
+
+def test_install_sh_upgrade_prefers_primary(tmp_path, monkeypatch):
+    """Primary reachable → run the rapidmlx.com script; mirror untouched."""
+    rc, ran = _run_install_sh_upgrade(
+        tmp_path, monkeypatch, primary_ok=True, mirror_ok=True
+    )
+    assert rc == 0
+    assert ran == "primary"
+
+
+def test_install_sh_upgrade_falls_back_to_mirror(tmp_path, monkeypatch):
+    """Primary down → transparently run the github.io mirror script."""
+    rc, ran = _run_install_sh_upgrade(
+        tmp_path, monkeypatch, primary_ok=False, mirror_ok=True
+    )
+    assert rc == 0
+    assert ran == "mirror"
+
+
+def test_install_sh_upgrade_total_outage_fails_loudly(tmp_path, monkeypatch):
+    """Both hosts down → non-zero exit and NO installer runs. Regression for a
+    naive ``curl A || curl B | bash`` that returns bash's status and would
+    falsely report success (running nothing) when both fetches fail.
+    """
+    rc, ran = _run_install_sh_upgrade(
+        tmp_path, monkeypatch, primary_ok=False, mirror_ok=False
+    )
+    assert rc != 0
+    assert ran is None
+
+
+def test_install_sh_upgrade_stalled_primary_times_out_to_mirror(tmp_path, monkeypatch):
+    """A blackholed primary that hangs (rather than returning a clean HTTP
+    error) must not stall the upgrade forever: the bounded ``--connect-timeout``
+    /``--max-time`` flags reach the primary curl, it aborts (exit 28), and the
+    github.io mirror serves the install.
+    """
+    rc, ran = _run_install_sh_upgrade(
+        tmp_path, monkeypatch, primary_ok=True, mirror_ok=True, primary_stall=True
+    )
+    assert rc == 0
+    assert ran == "mirror"
+    # Assert the flags reached the *primary* invocation directly — not inferred
+    # from the mirror run, which fires on any primary failure. Drop either flag
+    # from the production command and this records "no" and the test fails.
+    flags = (tmp_path / "primary_flags.txt").read_text().strip()
+    assert flags == "yes"
 
 
 def test_detect_install_method_pip_uses_sys_executable(monkeypatch):
