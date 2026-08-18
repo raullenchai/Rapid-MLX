@@ -6918,9 +6918,7 @@ def _complete_chat_with_mcp(
             "tool_calls": normalized_calls,
         }
         if round_metrics.get("reasoning_content"):
-            assistant_message["reasoning_content"] = round_metrics[
-                "reasoning_content"
-            ]
+            assistant_message["reasoning_content"] = round_metrics["reasoning_content"]
         messages.append(assistant_message)
         completed_messages = {}
 
