@@ -830,9 +830,25 @@ press() {
     local tree="$1" identifier="$2" evidence="$3"
     jq -e --arg id "$identifier" '.data.ui_elements[]? | select(.identifier == $id)' "$tree" >/dev/null \
         || { printf '[gui-golden] AX identifier missing: %s\n' "$identifier" >&2; return 1; }
-    "$AX_DRIVER" press "$APP_PID" "$identifier" > "$evidence" || return 1
-    jq -e '.success' "$evidence" >/dev/null \
-        || { printf '[gui-golden] AXPress failed: %s\n' "$identifier" >&2; return 1; }
+    # Retry the press itself. SwiftUI can replace the accessibility element
+    # backing a control between the dump above and the AXPress below, and the
+    # press then fails with a transient invalid-element / cannot-complete error
+    # (#2009 identified this and fixed three call sites inline; there are 126).
+    # A single transient miss on ANY of them failed the whole gate, which is why
+    # three consecutive runs of this suite failed at three DIFFERENT controls —
+    # Choose File twice, then Check for updates. The identifier precheck stays
+    # OUTSIDE the loop: a genuinely absent control must still fail immediately
+    # rather than costing three attempts.
+    local attempt
+    for attempt in 1 2 3; do
+        if "$AX_DRIVER" press "$APP_PID" "$identifier" > "$evidence" 2>/dev/null \
+            && jq -e '.success' "$evidence" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.4
+    done
+    printf '[gui-golden] AXPress failed after 3 attempts: %s\n' "$identifier" >&2
+    return 1
 }
 
 round_trip_toggle() {
