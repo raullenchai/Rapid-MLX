@@ -2609,6 +2609,44 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     assert "--mcp-config" not in captured["cmd"]
 
 
+def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    cli._spawn_chat_server(
+        "qwen3.5-4b-4bit",
+        str(tmp_path / "fake.log"),
+        disable_prefix_cache=True,
+    )
+
+    assert captured["cmd"].count("--disable-prefix-cache") == 1
+
+
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):
     """A second SIGTERM landing mid-cleanup must be silently dropped via
     ``signal.SIG_IGN``, not re-invoke ``_cleanup`` (which would block on
