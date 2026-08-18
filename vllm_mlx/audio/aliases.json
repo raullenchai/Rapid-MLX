@@ -283,6 +283,28 @@
     "languages": "en",
     "notes": "Parakeet TDT 0.6B v3."
   },
+  "qwen3-asr": {
+    "type": "stt",
+    "hf_id": "mlx-community/Qwen3-ASR-1.7B-5bit",
+    "family": "qwen3_asr",
+    "languages": "multilingual",
+    "notes": "Qwen3-ASR 1.7B (5-bit). An audio LLM rather than an encoder-decoder ASR model: keeps Chinese/English code-switching straight without a decoding hint, and emits normal punctuation plus spacing between scripts. Takes hotwords as ``system_prompt`` (STTEngine maps the neutral ``context`` argument onto it). Bare ``qwen3-asr`` -> the 1.7B."
+  },
+  "qwen3-asr-1.7b": {
+    "type": "stt",
+    "hf_id": "mlx-community/Qwen3-ASR-1.7B-5bit",
+    "family": "qwen3_asr",
+    "languages": "multilingual",
+    "notes": "Explicit long-form alias for ``qwen3-asr`` — same HF id."
+  },
+  "qwen3-asr-0.6b": {
+    "type": "stt",
+    "hf_id": "mlx-community/Qwen3-ASR-0.6B-5bit",
+    "family": "qwen3_asr",
+    "languages": "multilingual",
+    "notes": "Smaller Qwen3-ASR. Faster than the 1.7B with a small accuracy cost."
+  },
+
   "sensevoice": {
     "type": "stt",
     "hf_id": "mlx-community/SenseVoiceSmall",

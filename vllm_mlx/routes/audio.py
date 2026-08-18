@@ -1227,6 +1227,7 @@ async def _run_stt_request(
     response_format: str,
     task: str,
     timestamp_granularities: list[str] | None = None,
+    context: str | None = None,
 ):
     """Shared STT pipeline used by both ``/v1/audio/transcriptions`` and
     ``/v1/audio/translations``.
@@ -1324,6 +1325,11 @@ async def _run_stt_request(
             transcribe_kwargs: dict = {"language": language, "task": task}
             if timestamp_granularities:
                 transcribe_kwargs["timestamp_granularities"] = timestamp_granularities
+            # Only forward when non-empty: an empty hint still costs the decoder
+            # attention, and omitting the kwarg keeps the call shape compatible
+            # with STTEngine-shaped stubs and third-party engines.
+            if context and context.strip():
+                transcribe_kwargs["context"] = context.strip()
             result = _stt_engine.transcribe(tmp_path, **transcribe_kwargs)
 
         # R6-H2: branch on the validated ``response_format`` so callers
@@ -1805,6 +1811,10 @@ async def create_transcription(
     # ``model`` then defaults to :data:`DEFAULT_ALIGNER_ALIAS`. Accepted
     # on both form and query for parity with the other STT fields.
     text_form: str | None = Form(None, alias="text"),
+    # Proper nouns / hotwords biasing the decoder. Off-spec for OpenAI (whose
+    # Whisper API calls the equivalent ``prompt``), so it is accepted under a
+    # backend-neutral name and mapped to each family's own kwarg in STTEngine.
+    context_form: str | None = Form(None, alias="context"),
     # STT-word-timestamps: OpenAI serialises the array field as
     # ``timestamp_granularities[]`` (bracketed) in the multipart body.
     # We also accept the un-bracketed ``timestamp_granularities`` name
@@ -2060,6 +2070,7 @@ async def create_transcription(
         response_format=response_format,
         task="transcribe",
         timestamp_granularities=timestamp_granularities,
+        context=context_form,
     )
 
 

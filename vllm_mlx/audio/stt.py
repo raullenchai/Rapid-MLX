@@ -630,6 +630,12 @@ class STTEngine:
         # repo carries model_type=sensevoice, which mlx_audio's
         # ``load_model`` dispatches through MODEL_REMAPPING["sensevoice"].
         self._is_sensevoice = "sensevoice" in model_name.lower()
+        # Qwen3-ASR is an audio LLM rather than an encoder-decoder ASR model, so
+        # it takes its decoding hint as ``system_prompt`` where Whisper takes
+        # ``initial_prompt``. Everything else about it already works through the
+        # generic path: mlx_audio dispatches the repo's ``model_type`` and its
+        # ``generate`` accepts ``language`` plus ``**kwargs``.
+        self._is_qwen3_asr = "qwen3-asr" in model_name.lower() or "qwen3_asr" in model_name.lower()
         # F-K-WHISPER-961: VAD pre-trim guard. See top-of-file block
         # for the full rationale. Only applied to Whisper engines —
         # Parakeet/Canary/etc. have their own silence semantics and
@@ -651,6 +657,8 @@ class STTEngine:
             model_type = getattr(getattr(self.model, "config", None), "model_type", "")
             if isinstance(model_type, str) and model_type:
                 self._is_sensevoice = model_type.lower() == "sensevoice"
+                if model_type.lower() in ("qwen3_asr", "qwen3asr"):
+                    self._is_qwen3_asr = True
             # F-K-WHISPER-500: patch up the missing WhisperProcessor
             # mlx-community Whisper repos don't ship. Runs AFTER
             # mlx_audio's own post_load_hook, so if that succeeded
@@ -770,6 +778,14 @@ class STTEngine:
         # exactly (no extra decoding cost, no signature change for callers
         # that never request granularities).
         timestamp_granularities: list[str] | None = None,
+        # Caller-supplied proper nouns ("vocabulary", "hotwords") biasing the
+        # decoder toward names it would otherwise mangle. Every backend spells
+        # this differently, so the mapping lives here rather than leaking the
+        # per-family kwarg name into the HTTP layer:
+        #     whisper    -> initial_prompt
+        #     qwen3_asr  -> system_prompt
+        # Backends with no equivalent ignore it rather than raising.
+        context: str | None = None,
     ) -> TranscriptionResult:
         """
         Transcribe audio file to text.
@@ -860,6 +876,16 @@ class STTEngine:
                     kwargs["language"] = language
                 if task:
                     kwargs["task"] = task
+
+            # Decoding hint. Sent only to backends that actually consume one —
+            # an unrecognised kwarg would either raise or, worse, be silently
+            # swallowed by a ``**kwargs`` catch-all and look like it worked.
+            hint = (context or "").strip()
+            if hint:
+                if self._is_whisper:
+                    kwargs["initial_prompt"] = hint
+                elif self._is_qwen3_asr:
+                    kwargs["system_prompt"] = hint
 
             # STT-word-timestamps: only Whisper's ``generate`` accepts
             # ``word_timestamps``. Guard on ``self._is_whisper`` so a
