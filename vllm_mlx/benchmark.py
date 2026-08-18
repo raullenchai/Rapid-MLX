@@ -32,7 +32,6 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import argparse
-import base64
 import io
 import json
 import statistics
@@ -699,22 +698,6 @@ def download_test_image(url: str, timeout: int = 30) -> "Image.Image":
 def resize_image(img: "Image.Image", width: int, height: int) -> "Image.Image":
     """Resize image to specified dimensions."""
     return img.resize((width, height), Image.Resampling.LANCZOS)
-
-
-def image_to_base64(img: "Image.Image", format: str = "JPEG") -> str:
-    """Convert PIL Image to base64 data URL."""
-    if img.mode == "RGBA":
-        background = Image.new("RGB", img.size, (255, 255, 255))
-        background.paste(img, mask=img.split()[3])
-        img = background
-    elif img.mode != "RGB":
-        img = img.convert("RGB")
-
-    buffer = io.BytesIO()
-    img.save(buffer, format=format, quality=85)
-    b64 = base64.b64encode(buffer.getvalue()).decode()
-    mime = "image/jpeg" if format == "JPEG" else "image/png"
-    return f"data:{mime};base64,{b64}"
 
 
 def benchmark_mllm_resolution(

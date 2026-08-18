@@ -699,65 +699,6 @@ except ImportError:
     GuidedGenerator = None
 
 
-def _extract_media_from_messages(messages: list[dict[str, Any]]) -> tuple:
-    """
-    Extract images and videos from OpenAI-format messages.
-
-    Returns:
-        Tuple of (has_media, images_list, videos_list)
-    """
-    images = []
-    videos = []
-
-    for msg in messages:
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-
-        for item in content:
-            # Handle Pydantic models
-            if hasattr(item, "model_dump"):
-                item = item.model_dump(exclude_none=True)
-            elif hasattr(item, "dict"):
-                item = {k: v for k, v in item.dict().items() if v is not None}
-
-            if not isinstance(item, dict):
-                continue
-
-            item_type = item.get("type", "")
-
-            if item_type == "image_url":
-                img_url = item.get("image_url", {})
-                if isinstance(img_url, str):
-                    images.append(img_url)
-                elif isinstance(img_url, dict):
-                    url = img_url.get("url", "")
-                    if url:
-                        images.append(url)
-
-            elif item_type == "image":
-                img = item.get("image") or item.get("url", "")
-                if img:
-                    images.append(img)
-
-            elif item_type == "video_url":
-                vid_url = item.get("video_url", {})
-                if isinstance(vid_url, str):
-                    videos.append(vid_url)
-                elif isinstance(vid_url, dict):
-                    url = vid_url.get("url", "")
-                    if url:
-                        videos.append(url)
-
-            elif item_type == "video":
-                vid = item.get("video") or item.get("url", "")
-                if vid:
-                    videos.append(vid)
-
-    has_media = bool(images or videos)
-    return has_media, images, videos
-
-
 class MLLMModelWrapper:
     """
     Wrapper for MLLM models to make them compatible with BatchGenerator.
