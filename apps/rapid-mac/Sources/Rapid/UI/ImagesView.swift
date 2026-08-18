@@ -1073,6 +1073,17 @@ private struct ShimmerProgressBar: View {
                     .offset(x: slideX)
                     .animation(indeterminate ? nil : .easeOut(duration: 0.3), value: fraction)
             }
+            // The indeterminate sweep deliberately travels from `-fillW` to
+            // `w`, i.e. it starts and ends OUTSIDE the track so the shuttle
+            // enters and leaves rather than popping into existence at the
+            // edges. Without a clip that overhang is drawn: the fill escapes
+            // the track and paints over the HUD card's padding — visible as an
+            // orange bar bleeding past the card's left/right edges during the
+            // "Finalizing image…" phase, which is indeterminate for its whole
+            // duration and therefore shows the bug on every single render.
+            // Clipping to the track's own capsule keeps the motion intact and
+            // confines the paint to the groove it belongs in.
+            .clipShape(Capsule())
         }
     }
 }
