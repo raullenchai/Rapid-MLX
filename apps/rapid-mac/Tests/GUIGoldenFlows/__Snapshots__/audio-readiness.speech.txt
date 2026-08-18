@@ -34,6 +34,12 @@ AXApplication title="Rapid-MLX"
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Download & start" enabled=true
             AXButton id="Audio.Speech.Generate" desc="Generate Speech" enabled=false
+            AXScrollBar value=number enabled=true
+              AXValueIndicator value=number
+              AXButton subrole=AXIncrementArrow
+              AXButton subrole=AXDecrementArrow
+              AXButton subrole=AXIncrementPage
+              AXButton subrole=AXDecrementPage
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

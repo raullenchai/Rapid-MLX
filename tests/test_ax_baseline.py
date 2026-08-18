@@ -56,6 +56,29 @@ def test_live_memory_pressure_bucket_is_scrubbed(ax_baseline, pressure):
     )
 
 
+def test_virtual_runner_suffix_is_scoped_to_recommendation_header(ax_baseline):
+    physical = ax_baseline.Node(
+        {
+            "role": "AXHeading",
+            "identifier": "Settings.ModelManagement.RecommendedHeader",
+            "description": "Recommended for your 16 GB · M2",
+        }
+    )
+    virtual = ax_baseline.Node(
+        {
+            "role": "AXHeading",
+            "identifier": "Settings.ModelManagement.RecommendedHeader",
+            "description": "Recommended for your 16 GB · M2 (Virtual)",
+        }
+    )
+    unrelated = ax_baseline.Node(
+        {"role": "AXStaticText", "description": "Virtual model"}
+    )
+
+    assert ax_baseline.render_node(physical, ()) == ax_baseline.render_node(virtual, ())
+    assert "Virtual model" in ax_baseline.render_node(unrelated, ())
+
+
 def _toolbar_with(ax_baseline, button):
     """Wrap ``button`` in an AXToolbar, since the lazy-copy collapse is armed
     only for toolbar descendants (where AppKit's self-copy is observed)."""
@@ -117,6 +140,50 @@ def test_app_toolbar_button_lazy_copy_is_ignored(ax_baseline):
         "AXToolbar enabled=true",
         '  AXButton id="Toolbar.SearchChats" desc="Search chats" enabled=true',
     ]
+
+
+def test_system_sidebar_button_order_is_session_independent(ax_baseline):
+    sidebar = ax_baseline.Node(
+        {"role": "AXButton", "description": "Hide Sidebar", "enabled": True}
+    )
+    search = ax_baseline.Node(
+        {
+            "role": "AXButton",
+            "identifier": "Toolbar.SearchChats",
+            "description": "Search chats",
+            "enabled": True,
+        }
+    )
+    toolbar_a = ax_baseline.Node({"role": "AXToolbar", "enabled": True})
+    toolbar_a.children = [sidebar, search]
+    toolbar_b = ax_baseline.Node({"role": "AXToolbar", "enabled": True})
+    toolbar_b.children = [search, sidebar]
+    window_a = ax_baseline.Node({"role": "AXWindow", "enabled": True})
+    window_a.children = [toolbar_a]
+    window_b = ax_baseline.Node({"role": "AXWindow", "enabled": True})
+    window_b.children = [toolbar_b]
+
+    assert ax_baseline.render(window_a, ()) == ax_baseline.render(window_b, ())
+
+
+def test_app_authored_toolbar_order_remains_regression_sensitive(ax_baseline):
+    first = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Toolbar.First", "enabled": True}
+    )
+    second = ax_baseline.Node(
+        {"role": "AXButton", "identifier": "Toolbar.Second", "enabled": True}
+    )
+    toolbar_a = ax_baseline.Node({"role": "AXToolbar", "enabled": True})
+    toolbar_a.children = [first, second]
+    toolbar_b = ax_baseline.Node({"role": "AXToolbar", "enabled": True})
+    toolbar_b.children = [second, first]
+
+    window_a = ax_baseline.Node({"role": "AXWindow", "enabled": True})
+    window_a.children = [toolbar_a]
+    window_b = ax_baseline.Node({"role": "AXWindow", "enabled": True})
+    window_b.children = [toolbar_b]
+
+    assert ax_baseline.render(window_a, ()) != ax_baseline.render(window_b, ())
 
 
 def test_nested_button_with_its_own_identity_is_preserved(ax_baseline):

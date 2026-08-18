@@ -639,11 +639,21 @@ final class ServerManager {
     /// [codex audit r1 ServerManager.swift:577]
     @ObservationIgnored
     private let healthSession: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 1.5
-        cfg.timeoutIntervalForResource = 1.5
-        return URLSession(configuration: cfg)
+        URLSession(configuration: ServerManager.loopbackHealthSessionConfiguration())
     }()
+
+    /// `/healthz` is always a loopback control-plane request. Inheriting the
+    /// user's system/PAC proxy can send it away from the local sidecar (or
+    /// wait for an unreachable corporate proxy), leaving a healthy process
+    /// permanently presented as Starting. Keep this session direct; external
+    /// network clients retain their ordinary proxy behaviour.
+    static func loopbackHealthSessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 1.5
+        configuration.timeoutIntervalForResource = 1.5
+        configuration.connectionProxyDictionary = [:]
+        return configuration
+    }
 
     /// Optional back-reference to the app's ``DownloadManager``. Wired
     /// from ``RapidApp.init`` after both singletons are constructed.

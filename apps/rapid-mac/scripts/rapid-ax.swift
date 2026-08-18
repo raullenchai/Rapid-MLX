@@ -111,11 +111,25 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|click-center|increment|decrement|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|increment|decrement|set-value|paste-file|set-window-size|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
 let application = AXUIElementCreateApplication(pid)
+
+// A semantic action should model an actual user interacting with the app.
+// On unattended runners AXPress can return success for a background SwiftUI
+// window without dispatching the Button closure. Bring the target app forward
+// before reading its tree, then resolve the post-activation elements so the
+// action never holds a reference across the activation/layout transition.
+if command != "dump" {
+    guard let running = NSRunningApplication(processIdentifier: pid) else {
+        fail("target application is no longer running")
+    }
+    running.activate(options: [.activateAllWindows])
+    usleep(100_000)
+}
+
 var visited = Set<AXUIElement>()
 var records = [[String: Any]]()
 var match: AXUIElement?
@@ -176,6 +190,15 @@ func walk(_ element: AXUIElement, depth: Int) {
     guard visited.insert(element).inserted else { return }
 
     let identifier = string(element, kAXIdentifierAttribute as CFString)
+    // Action commands only need one element. Building a complete 12k-node
+    // dump after finding it leaves SwiftUI several seconds to replace the
+    // backing accessibility object; AXPress then receives a stale reference
+    // and fails with invalidUIElement/cannotComplete. Stop at the match. Dump
+    // still walks the complete tree because negative assertions depend on it.
+    if command != "dump", match == nil, identifier == wanted {
+        match = element
+        return
+    }
     var record: [String: Any] = ["depth": depth]
     if let identifier { record["identifier"] = identifier }
     if let role = string(element, kAXRoleAttribute as CFString) { record["role"] = role }
@@ -238,6 +261,7 @@ func walk(_ element: AXUIElement, depth: Int) {
     }
     for child in children {
         walk(child, depth: depth + 1)
+        if command != "dump", match != nil { break }
     }
 }
 
@@ -284,6 +308,51 @@ if command == "close-window" {
     exit(0)
 }
 
+if command == "set-window-size" {
+    guard let wanted else { fail("set-window-size requires a window title") }
+    guard CommandLine.arguments.count > 4 else {
+        fail("set-window-size requires WIDTHxHEIGHT")
+    }
+    let parts = CommandLine.arguments[4].split(separator: "x", maxSplits: 1)
+    guard parts.count == 2,
+          let width = Double(parts[0]),
+          let height = Double(parts[1]),
+          width > 0, height > 0 else {
+        fail("set-window-size requires positive WIDTHxHEIGHT")
+    }
+    guard let window = windowElements.first(where: {
+        string($0, kAXTitleAttribute as CFString) == wanted
+    }) else {
+        fail("window not found: \(wanted)")
+    }
+    var requested = CGSize(width: width, height: height)
+    guard let value = AXValueCreate(.cgSize, &requested) else {
+        fail("could not encode requested window size")
+    }
+    let result = AXUIElementSetAttributeValue(
+        window, kAXSizeAttribute as CFString, value
+    )
+    guard result == .success else {
+        fail("setting window size failed: \(result.rawValue)")
+    }
+    usleep(300_000)
+    guard let actual = size(window, kAXSizeAttribute as CFString) else {
+        fail("window size could not be read after resize")
+    }
+    let payload: [String: Any] = [
+        "success": true,
+        "window": wanted,
+        "requested": ["width": width, "height": height],
+        "actual": ["width": actual.width, "height": actual.height],
+    ]
+    let data = try! JSONSerialization.data(
+        withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]
+    )
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(0)
+}
+
 if command == "dump" {
     let payload: [String: Any] = [
         "success": true,
@@ -314,24 +383,6 @@ switch command {
 case "press":
     let result = AXUIElementPerformAction(target, kAXPressAction as CFString)
     guard result == .success else { fail("AXPress \(identifier) failed: \(result.rawValue)") }
-case "click-center":
-    guard let origin = point(target, kAXPositionAttribute as CFString),
-          let extent = size(target, kAXSizeAttribute as CFString)
-    else { fail("click-center \(identifier) has no readable bounds") }
-    guard let running = NSRunningApplication(processIdentifier: pid) else {
-        fail("target application is no longer running")
-    }
-    running.activate(options: [.activateAllWindows])
-    usleep(100_000)
-    let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
-    guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown,
-                             mouseCursorPosition: center, mouseButton: .left),
-          let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp,
-                           mouseCursorPosition: center, mouseButton: .left)
-    else { fail("could not create click-center events") }
-    down.post(tap: .cghidEventTap)
-    up.post(tap: .cghidEventTap)
-    usleep(100_000)
 case "increment":
     let result = AXUIElementPerformAction(target, kAXIncrementAction as CFString)
     guard result == .success else { fail("AXIncrement \(identifier) failed: \(result.rawValue)") }
