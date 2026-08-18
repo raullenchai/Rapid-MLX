@@ -19,7 +19,7 @@ installs) the right Python automatically. Upgrade later with
 ## One-liner install script
 
 ```bash
-curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
 
 Auto-installs Python if needed, then `pipx install rapid-mlx`. Good fallback
