@@ -9,6 +9,16 @@ import Testing
 /// only picks a URL and writes the bytes these functions return.
 @Suite("Conversation export")
 struct ConversationExportTests {
+    @Test("Export formats advertise their real file types")
+    func exportContentTypesMatchExtensions() {
+        #expect(
+            ConversationExport.Format.markdown.contentType.preferredFilenameExtension
+                == "md"
+        )
+        #expect(ConversationExport.Format.markdown.contentType.conforms(to: .plainText))
+        #expect(ConversationExport.Format.json.contentType == .json)
+    }
+
     /// Fixed instant + fixed zone: the header is formatted with an explicit
     /// POSIX format, and a test that read the machine's zone would pass in
     /// one timezone and fail in another.

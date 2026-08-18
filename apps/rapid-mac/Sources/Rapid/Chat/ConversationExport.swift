@@ -29,12 +29,15 @@ enum ConversationExport {
             }
         }
 
-        /// `.markdown` exists as a UTType but is not universally claimed by
-        /// editors, so the save panel offers plain text for it — the same
-        /// choice ``DiagnosticsBundle`` makes for its `.txt` report.
         var contentType: UTType {
             switch self {
-            case .markdown: return .plainText
+            // The save panel uses this declaration to choose and validate the
+            // extension. Advertising plain text here can rewrite the proposed
+            // `.md` filename to `.txt`; editor ownership is irrelevant to that
+            // contract because Markdown already conforms to plain text.
+            case .markdown:
+                return UTType(filenameExtension: "md", conformingTo: .plainText)
+                    ?? .plainText
             case .json: return .json
             }
         }
