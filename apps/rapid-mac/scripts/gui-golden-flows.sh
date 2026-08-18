@@ -3864,14 +3864,24 @@ flow_audio_readiness() {
 
     see_main "$OUT/transcription-controls-before.json"
     local file_selected=0
-    for ((i=0; i<40; i++)); do
+    for ((i=0; i<80; i++)); do
         # AXPress can return success for a SwiftUI button whose backing object
         # is replaced before its closure runs. Resolve the current button on
         # every attempt and require the actual selection + enabled Transcribe
         # state instead of treating the AX result as proof of user-visible work.
-        "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
-            > "$OUT/transcription-file-press.json" 2>/dev/null || true
-        sleep 0.1
+        # Re-press only every ~2.5 s, not every iteration. Each press calls
+        # ``chooseAudioFile()`` → ``selectFile()``, which RESTARTS the file's
+        # async validation; on a busy unattended runner validation can outlast
+        # one 0.35 s loop period, so a per-iteration re-press keeps cancelling
+        # the work it is waiting for — a livelock. That is why this step kept
+        # failing in CI (3 of the last 5 runs) while passing on any warm local
+        # machine, and why the #2009 in-loop re-press did not cure it. One
+        # press per settle window keeps delivery-retry without the storm.
+        if (( i % 10 == 0 )); then
+            "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
+                > "$OUT/transcription-file-press.json" 2>/dev/null || true
+            sleep 0.1
+        fi
         see_main "$OUT/transcription-file-selected.json"
         if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
                   and any(.data.ui_elements[]?;
