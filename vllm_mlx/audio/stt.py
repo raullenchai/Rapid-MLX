@@ -635,7 +635,9 @@ class STTEngine:
         # ``initial_prompt``. Everything else about it already works through the
         # generic path: mlx_audio dispatches the repo's ``model_type`` and its
         # ``generate`` accepts ``language`` plus ``**kwargs``.
-        self._is_qwen3_asr = "qwen3-asr" in model_name.lower() or "qwen3_asr" in model_name.lower()
+        self._is_qwen3_asr = (
+            "qwen3-asr" in model_name.lower() or "qwen3_asr" in model_name.lower()
+        )
         # F-K-WHISPER-961: VAD pre-trim guard. See top-of-file block
         # for the full rationale. Only applied to Whisper engines —
         # Parakeet/Canary/etc. have their own silence semantics and
