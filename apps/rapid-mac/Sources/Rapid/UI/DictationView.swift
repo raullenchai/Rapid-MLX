@@ -14,8 +14,6 @@ struct DictationView: View {
 
     @State private var newTerm = ""
     @State private var fixTarget: DictationHistory.Entry?
-    @State private var scratch = ""
-    @FocusState private var scratchFocused: Bool
 
     private let contentMaxWidth = RapidTheme.Layout.contentMaxWidth
 
@@ -23,13 +21,12 @@ struct DictationView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
                 intro
-                if controller.readinessSnapshot.isReady && controller.isEnabled {
-                    readyBanner
-                    errorRow
-                    tryItHere
-                } else {
-                    setupCard
-                }
+                // One layout in every state. Swapping between a "setup" card
+                // and a "ready" banner hid the model and hotkey the moment
+                // dictation was switched on — changing either meant turning the
+                // whole feature off first.
+                statusCard
+                errorRow
                 vocabularySection
                 historySection
             }
@@ -80,8 +77,69 @@ struct DictationView: View {
     /// The three prerequisites are shown side by side rather than as a wizard:
     /// a returning user is usually missing exactly one of them and should not
     /// have to walk the whole flow again.
-    private var setupCard: some View {
+    /// Status and the switch live in one row that never moves. The dot and the
+    /// sentence describe what is actually true right now; the switch is the
+    /// only control that changes it.
+    private var enableRow: some View {
+        HStack(alignment: .center, spacing: RapidTheme.Space.md) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
+                Text(statusHeadline)
+                    .font(.subheadline.weight(.medium))
+                Text(statusDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: RapidTheme.Space.md)
+            if controller.isEnabled && controller.phase == .off
+                && controller.readinessSnapshot.isReady {
+                Button("Arm now") { Task { await controller.enable() } }
+                    .buttonStyle(.rapidSecondary)
+                    .accessibilityIdentifier("Dictation.Arm")
+            }
+            // Gate turning it ON, never turning it OFF, so a session whose
+            // permissions lapsed can always be switched back.
+            Toggle("", isOn: $controller.isEnabled)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .disabled(!controller.readinessSnapshot.isReady && !controller.isEnabled)
+                .accessibilityIdentifier("Dictation.Enable")
+        }
+        .padding(RapidTheme.Space.lg)
+    }
+
+    private var statusColor: Color {
+        guard controller.isEnabled else { return .secondary }
+        return controller.phase == .off ? .orange : RapidTheme.green
+    }
+
+    private var statusHeadline: String {
+        guard controller.isEnabled else { return "Dictation is off" }
+        return controller.phase == .off
+            ? "Not listening — the hotkey isn't armed"
+            : "Ready — press \(controller.trigger.label) in any app"
+    }
+
+    private var statusDetail: String {
+        guard controller.isEnabled else {
+            return controller.readinessSnapshot.isReady
+                ? "Turn it on to dictate into any app."
+                : blockingReason
+        }
+        var parts = [controller.modelAlias]
+        if let latency = controller.lastLatency {
+            parts.append(String(format: "%.2f s last", latency))
+        }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private var statusCard: some View {
         VStack(alignment: .leading, spacing: 0) {
+            enableRow
+            Divider().overlay(RapidTheme.hairline)
             setupRow(
                 label: "Model",
                 done: controller.readinessSnapshot.modelSelected
@@ -161,29 +219,6 @@ struct DictationView: View {
                 Text("Tap once to start, once more to stop. Only right-hand modifiers are offered — the left ones collide with everyday shortcuts.")
             }
 
-            Divider().overlay(RapidTheme.hairline)
-
-            HStack {
-                // Must read the same snapshot the checkmarks above render from.
-                // Reading live `readiness` here instead let the two disagree:
-                // three green ticks with a greyed-out switch and nothing on
-                // screen explaining why.
-                // Gate turning it ON, never turning it OFF. Disabling on
-                // readiness alone strands anyone whose permissions lapsed after
-                // enabling: the switch reads "on", nothing works, and it cannot
-                // be switched back.
-                Toggle("Enable dictation", isOn: $controller.isEnabled)
-                    .toggleStyle(.switch)
-                    .disabled(!controller.readinessSnapshot.isReady && !controller.isEnabled)
-                    .accessibilityIdentifier("Dictation.Enable")
-                if !controller.readinessSnapshot.isReady {
-                    Text(blockingReason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(RapidTheme.Space.lg)
         }
         .background(RapidTheme.card, in: RoundedRectangle(cornerRadius: RapidTheme.cardRadius))
         .overlay(
@@ -240,47 +275,6 @@ struct DictationView: View {
         .padding(RapidTheme.Space.lg)
     }
 
-    // MARK: - Ready
-
-    private var readyBanner: some View {
-        HStack(spacing: RapidTheme.Space.md) {
-            Circle()
-                .fill(controller.phase == .off ? Color.secondary : RapidTheme.green)
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                // Never claim "Ready" while the tap is not installed. The dot
-                // going grey under a green-sounding headline is exactly the
-                // state that hides a dead hotkey.
-                Text(controller.phase == .off
-                     ? "Not listening — the hotkey isn't armed"
-                     : "Ready — press \(controller.trigger.label) in any app")
-                    .font(.subheadline.weight(.medium))
-                Text(readyDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: RapidTheme.Space.md)
-            if controller.phase == .off {
-                Button("Arm now") { Task { await controller.enable() } }
-                    .buttonStyle(.rapidPrimary)
-                    .accessibilityIdentifier("Dictation.Arm")
-            }
-            Button("Turn off") { controller.isEnabled = false }
-                .buttonStyle(.rapidSecondary)
-                .accessibilityIdentifier("Dictation.Disable")
-        }
-        .padding(RapidTheme.Space.lg)
-        .background(
-            RapidTheme.brandAmberTint,
-            in: RoundedRectangle(cornerRadius: RapidTheme.cardRadius)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: RapidTheme.cardRadius)
-                .strokeBorder(RapidTheme.brandAmber.opacity(0.35))
-        )
-        .accessibilityIdentifier("Dictation.ReadyBanner")
-    }
-
     @ViewBuilder
     private var errorRow: some View {
         if let error = controller.lastError {
@@ -302,60 +296,6 @@ struct DictationView: View {
                 in: RoundedRectangle(cornerRadius: RapidTheme.Radius.input)
             )
             .accessibilityIdentifier("Dictation.Error")
-        }
-    }
-
-    /// A place to prove the feature works without leaving the app.
-    ///
-    /// Dictation types into whatever holds focus, so a focused field right here
-    /// is a real end-to-end run, not a simulation — and it removes the awkward
-    /// first step of "go find another app, then come back if it didn't work".
-    private var tryItHere: some View {
-        VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Try it here").font(.subheadline.weight(.semibold))
-                Spacer()
-                if !scratch.isEmpty {
-                    Button("Clear") { scratch = "" }
-                        .buttonStyle(.rapidTertiary)
-                        .accessibilityIdentifier("Dictation.ScratchClear")
-                }
-            }
-
-            TextEditor(text: $scratch)
-                .focused($scratchFocused)
-                .font(.callout)
-                .scrollContentBackground(.hidden)
-                .padding(RapidTheme.Space.sm)
-                .frame(height: 76)
-                .background(
-                    RapidTheme.card,
-                    in: RoundedRectangle(cornerRadius: RapidTheme.Radius.input)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input)
-                        .strokeBorder(
-                            scratchFocused ? RapidTheme.brandAmber.opacity(0.55) : RapidTheme.hairline
-                        )
-                )
-                .overlay(alignment: .topLeading) {
-                    if scratch.isEmpty {
-                        Text("Click here, then press \(controller.trigger.label) and speak.")
-                            .font(.callout)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, RapidTheme.Space.md)
-                            .padding(.vertical, RapidTheme.Space.md)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .accessibilityIdentifier("Dictation.Scratch")
-
-            if let latency = controller.lastLatency {
-                Text(String(format: "Last transcription took %.2f s.", latency))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
         }
     }
 
