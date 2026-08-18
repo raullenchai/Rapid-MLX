@@ -775,8 +775,11 @@ _MAX_TOOL_BUFFER_BYTES = 1_048_576  # 1 MB
 # Content inside these tags should be suppressed during streaming because
 # it will be re-emitted as structured tool_use blocks after parsing.
 #
-# This list is extensible — agent profiles can inject additional tags via
-# register_tool_call_tag() or by passing extra_tags to StreamingToolCallFilter.
+# This list is extensible — call register_tool_call_tag() to add a pattern
+# globally, or pass extra_tags to StreamingToolCallFilter for one request.
+# Note the server never learns which agent is on the other end of a request,
+# so a profile's ``streaming.extra_tool_tags`` cannot reach this list; any
+# genuinely needed tag belongs here or in a per-request extra_tags argument.
 _TOOL_CALL_TAGS: list[tuple[str, str]] = [
     ("<minimax:tool_call>", "</minimax:tool_call>"),
     ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"),  # DeepSeek V4 0731

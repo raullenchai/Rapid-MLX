@@ -274,6 +274,54 @@ class TestMergeOnWrite:
         summary = setup_agent_config(profile, "http://x/v1", "m")
         assert summary.startswith("Cannot")
 
+    def test_dry_run_does_not_touch_an_existing_config(self, tmp_path):
+        """``--dry-run`` must preview, never write.
+
+        The generic writer used to accept the flag from argparse and ignore
+        it, so asking for a preview rewrote the operator's real config.
+        """
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  default: old\nuser_preference: dark_mode\n"
+        config_path.write_text(original)
+
+        profile = _hermes_profile(
+            config=AgentConfigSpec(
+                type="yaml",
+                path=str(config_path),
+                template="model:\n  default: {model_id}\n",
+            ),
+        )
+        summary = setup_agent_config(
+            profile,
+            "http://localhost:8000/v1",
+            "new-model",
+            dry_run=True,
+        )
+
+        assert "Would merge" in summary
+        assert config_path.read_text() == original
+
+    def test_dry_run_does_not_create_a_missing_config(self, tmp_path):
+        """A preview must not bring the file (or its parent) into existence."""
+        config_path = tmp_path / "nested" / "config.yaml"
+        profile = _hermes_profile(
+            config=AgentConfigSpec(
+                type="yaml",
+                path=str(config_path),
+                template="model:\n  default: {model_id}\n",
+            ),
+        )
+        summary = setup_agent_config(
+            profile,
+            "http://localhost:8000/v1",
+            "new-model",
+            dry_run=True,
+        )
+
+        assert "Would write" in summary
+        assert not config_path.exists()
+        assert not config_path.parent.exists()
+
     def test_empty_yaml_treated_as_fresh(self, tmp_path):
         """Empty existing YAML file is treated as fresh write."""
         existing = tmp_path / "config.yaml"

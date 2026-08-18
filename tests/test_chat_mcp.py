@@ -529,7 +529,7 @@ def test_runtime_returns_validation_and_execution_errors_to_model(tmp_path):
                     "id": "bad-schema",
                     "function": {
                         "name": "alpha__lookup",
-                        "arguments": '{"value":1}',
+                        "arguments": '{"value":[1,2]}',
                     },
                 },
                 {
@@ -557,6 +557,69 @@ def test_runtime_returns_validation_and_execution_errors_to_model(tmp_path):
     assert "is not of type 'string'" in errors[2]
     assert "Unknown MCP tool" in errors[3]
     assert errors[4] == "tool exploded"
+
+
+def test_runtime_coerces_scalar_arguments_the_model_mistyped(tmp_path):
+    """A stringly-typed scalar is converted, not bounced back as an error.
+
+    Small local models routinely emit ``1`` where the schema says ``string``.
+    The value is unambiguous, so spending a whole round trip on a validation
+    error is pure waste.
+    """
+
+    path = _write_config(
+        tmp_path,
+        {"alpha": {"command": "python3", "args": ["alpha", "lookup"]}},
+    )
+    runtime = ChatMCPRuntime(str(path))
+    try:
+        messages = runtime.execute_tool_calls(
+            [
+                {
+                    "id": "coerced",
+                    "function": {
+                        "name": "alpha__lookup",
+                        "arguments": '{"value":1}',
+                    },
+                }
+            ]
+        )
+    finally:
+        runtime.close()
+
+    assert "error" not in json.loads(messages[0]["content"])
+    assert _FakeSessionGroup.calls[0][1] == {"value": "1"}
+
+
+def test_runtime_truncates_oversized_tool_results(tmp_path, monkeypatch):
+    """One large read must not be able to consume the whole context budget."""
+
+    monkeypatch.setattr("vllm_mlx.chat_mcp._MAX_TOOL_RESULT_CHARS", 200)
+    path = _write_config(
+        tmp_path,
+        {"alpha": {"command": "python3", "args": ["alpha", "lookup"]}},
+    )
+    runtime = ChatMCPRuntime(str(path))
+    try:
+        messages = runtime.execute_tool_calls(
+            [
+                {
+                    "id": "big",
+                    "function": {
+                        "name": "alpha__lookup",
+                        "arguments": json.dumps({"value": "x" * 5000}),
+                    },
+                }
+            ]
+        )
+    finally:
+        runtime.close()
+
+    content = messages[0]["content"]
+    assert len(content) < 5000
+    assert "truncated" in content
+    # The marker tells the model what to do next rather than just cutting.
+    assert "narrower range" in content
 
 
 def test_runtime_close_cancels_inflight_tool(tmp_path):

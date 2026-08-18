@@ -34,15 +34,20 @@ Baseline files use `harness/baseline.schema.json` and record:
 
 Both sides of the comparison must be measured the same way, so
 `stress_e2e_bench` benches **first** — on a server that has served
-nothing else — before the stress battery and the agent matrix touch it.
+nothing else — before the stress battery and the SDK matrix touch it.
 Capture baselines the same way.
+
+("SDK matrix" = the `agents:` list in
+`scripts/pr_validate/golden_models.yaml`, which is Anthropic SDK /
+LangChain / Pydantic-AI scripts. It is *not* the coding-agent matrix in
+`docs/agents/matrix.md`, which pr_validate does not run.)
 
 This is load-bearing, not a detail. Measured on Qwen3.5-35B-A3B-8bit /
 M3 Ultra, each group highly reproducible within itself:
 
 | capture state | cold median |
 |---|---|
-| after stress + agent matrix | 287.6, 288.2 ms |
+| after stress + SDK matrix | 287.6, 288.2 ms |
 | fresh server | 252.8, 253.1, 252.0 ms |
 
 A ~14% cold gap with under 0.5% spread inside each group. While the
