@@ -1313,7 +1313,9 @@ class BatchedEngine(BaseEngine):
         from ..scheduler import SchedulerConfig
         from ..utils.tokenizer import load_model_with_fallback
 
-        # Build tokenizer config
+        # The shared loader applies RAPID_MLX_TRUST_REMOTE_CODE=0 across every
+        # text-model entry point. Keep the engine's explicit request here so
+        # the default serve behavior remains unchanged.
         tokenizer_config = {"trust_remote_code": self._trust_remote_code}
 
         # Qwen3 fix

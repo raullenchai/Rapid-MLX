@@ -94,7 +94,7 @@ def test_semantic_gui_flows_do_not_use_screen_capture_as_window_oracle():
     screen_gate = source.split("flow_requires_screen_recording() {", 1)[1].split(
         "\n}", 1
     )[0]
-    assert "all|fresh-install|low-memory-choice" in screen_gate
+    assert "all) return 0" in screen_gate
     program = f"""
 flow_requires_screen_recording() {{{screen_gate}
 }}
@@ -112,7 +112,7 @@ done
     assert result.stdout.splitlines() == [
         "catalog-integrity=1",
         "settings-persistence=1",
-        "fresh-install=0",
+        "fresh-install=1",
         "all=0",
     ]
 

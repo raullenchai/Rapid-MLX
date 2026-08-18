@@ -129,6 +129,14 @@ _SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1<chip>",
     ),
+    # GitHub's hosted Apple-silicon runners append ``(Virtual)`` to the chip
+    # name. The preceding rule has already replaced the actual chip, leaving
+    # this runner-only suffix behind. Keep this scoped to the recommendation
+    # header: "Virtual" in model names or user-authored text remains visible.
+    (
+        re.compile(r"(Recommended for your\b[^·]*·\s*<chip>)\s+\(Virtual\)$"),
+        r"\1",
+    ),
     # Conversation-list date headings. The transcript a flow just created is
     # filed under "Today" — until the run straddles local midnight, at which
     # point the same unchanged UI reports "Yesterday" and every baseline
@@ -191,6 +199,30 @@ _ROLE_EQUIVALENTS = {
 def is_window_control(record: dict) -> bool:
     """True for a traffic-light / toolbar button whose subtree is AppKit's."""
     return record.get("subrole") in _WINDOW_CONTROL_SUBROLES
+
+
+def is_system_sidebar_button(node: Node) -> bool:
+    """True for AppKit's session-dependent window-toolbar sidebar control.
+
+    AppKit may return this system-owned button before or after the app-authored
+    toolbar items depending on the display/session.  It has no application
+    identifier; keep the control itself in the fingerprint, but canonicalise
+    only its position relative to our controls.  The order among app-authored
+    siblings remains untouched and therefore remains regression-sensitive.
+    """
+    record = node.record
+    return (
+        record.get("role") == "AXButton"
+        and not record.get("identifier")
+        and record.get("description") in {"Hide Sidebar", "Show Sidebar"}
+    )
+
+
+def normalize_toolbar_children(children: list[Node]) -> list[Node]:
+    """Place AppKit's sidebar toggle first without reordering app controls."""
+    sidebar = [child for child in children if is_system_sidebar_button(child)]
+    authored = [child for child in children if not is_system_sidebar_button(child)]
+    return [*sidebar, *authored]
 
 
 # The footer's GPU gauge has no stable cross-machine shape. Apple Silicon
@@ -502,6 +534,8 @@ def render(root: Node, extra_tokens: tuple[str, ...]) -> list[str]:
         # collapse in ``is_lazy_button_wrapper`` is armed only for a toolbar's
         # own children, never for buttons deeper in the subtree.
         node_is_toolbar = node.record.get("role") == "AXToolbar"
+        if node_is_toolbar:
+            children = normalize_toolbar_children(children)
         for child in children:
             walk(
                 child, depth + 1, sort_children=False, parent_is_toolbar=node_is_toolbar

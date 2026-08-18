@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import os
 import sys
 import threading
@@ -76,6 +77,117 @@ _MAX_WORKERS = 4
 # and keeps tqdm-free progress redraws coarse enough to not flood the
 # terminal.
 _CHUNK_BYTES = 8 * 1024 * 1024
+
+# Throughput floor for the R2 mirror (issue #2010). The edge serves a fast
+# prefix and then throttles sustained transfer of a large weight file to
+# ~0.2 MB/s. A SILENT stall is caught by ``_FILE_TIMEOUT``; a slow trickle is
+# not (bytes keep arriving), so a large shard can crawl for many minutes. When
+# the windowed rate collapses below the floor we abort R2 for that file and let
+# the caller fall back to HuggingFace, which was measured 20-100x faster at the
+# same moment. Tunable via ``RAPID_MLX_MIRROR_MIN_MBPS`` (0 disables the guard);
+# the window/grace let the fast prefix and TCP slow-start through first.
+_MIRROR_FLOOR_MBPS_DEFAULT = 1.0
+_MIRROR_FLOOR_WINDOW_SECONDS = 8.0
+_MIRROR_FLOOR_GRACE_SECONDS = 6.0
+# Consecutive sub-floor windows required before bailing — hysteresis so one
+# brief pause in an otherwise-healthy transfer doesn't trigger a fallback.
+_MIRROR_FLOOR_CONSECUTIVE = 2
+
+
+def _mirror_floor_bytes_per_sec() -> float:
+    """Bytes/s below which a sustained R2 transfer is abandoned for HF.
+
+    ``RAPID_MLX_MIRROR_MIN_MBPS`` overrides the default. ``0`` or a negative
+    value disables the guard. An unset, unparseable, or non-finite value
+    (``inf``/``nan``) falls back to the default so a typo can neither turn the
+    floor off silently nor set it to infinity (which would abort every
+    transfer).
+    """
+    raw = os.environ.get("RAPID_MLX_MIRROR_MIN_MBPS")
+    if raw is None:
+        return _MIRROR_FLOOR_MBPS_DEFAULT * 1_000_000
+    try:
+        mbps = float(raw)
+    except ValueError:
+        return _MIRROR_FLOOR_MBPS_DEFAULT * 1_000_000
+    if not math.isfinite(mbps):
+        return _MIRROR_FLOOR_MBPS_DEFAULT * 1_000_000
+    if mbps <= 0:
+        return 0.0
+    bps = mbps * 1_000_000
+    # A finite but enormous override (e.g. 1e308) overflows to inf when scaled;
+    # an infinite floor would abort every transfer, so fall back to the default.
+    if not math.isfinite(bps):
+        return _MIRROR_FLOOR_MBPS_DEFAULT * 1_000_000
+    return bps
+
+
+class _ThroughputFloor:
+    """Windowed throughput guard for a single streaming download.
+
+    ``record(total_read)`` is called after each chunk with the cumulative
+    bytes read this session; it returns ``True`` once the transfer should be
+    abandoned. To avoid false aborts on a healthy-but-bursty transfer:
+
+    * the first measurement window is anchored AFTER the grace period, so a
+      cold-connection / TCP-slow-start opening is never counted against the
+      rate;
+    * a single sub-floor window is not enough — ``consecutive`` windows must
+      all be below ``floor_bps`` before we bail. One momentarily-stretched
+      window (a brief GIL/disk pause) is tolerated and reset by the next
+      healthy one.
+
+    The #2010 throttle is a sustained collapse (0.03-0.4 MB/s vs 15-25 MB/s
+    healthy), so it trips every window and is caught within ``consecutive``
+    windows; a genuinely healthy transfer near the floor is not. The clock is
+    injectable for tests. A ``floor_bps <= 0`` guard never fires.
+    """
+
+    def __init__(
+        self,
+        floor_bps: float,
+        *,
+        window_s: float = _MIRROR_FLOOR_WINDOW_SECONDS,
+        grace_s: float = _MIRROR_FLOOR_GRACE_SECONDS,
+        consecutive: int = _MIRROR_FLOOR_CONSECUTIVE,
+        clock=None,
+    ) -> None:
+        self._floor = floor_bps
+        self._window = window_s
+        self._grace = grace_s
+        self._consecutive = max(1, consecutive)
+        # Resolve the clock at call time (not as a default argument) so a test
+        # that monkeypatches ``time.monotonic`` is honoured.
+        self._clock = clock if clock is not None else time.monotonic
+        self._start = self._clock()
+        self._anchored = False
+        self._win_t = self._start
+        self._win_bytes = 0
+        self._slow_windows = 0
+
+    def record(self, total_read: int) -> bool:
+        if self._floor <= 0:
+            return False
+        now = self._clock()
+        if now - self._start < self._grace:
+            return False
+        if not self._anchored:
+            # Begin the first window here, past grace — the slow opening does
+            # not enter any rate calculation.
+            self._anchored = True
+            self._win_t = now
+            self._win_bytes = total_read
+            return False
+        if now - self._win_t < self._window:
+            return False
+        rate = (total_read - self._win_bytes) / (now - self._win_t)
+        self._win_t = now
+        self._win_bytes = total_read
+        if rate < self._floor:
+            self._slow_windows += 1
+            return self._slow_windows >= self._consecutive
+        self._slow_windows = 0
+        return False
 
 
 # Aggregate byte-progress heartbeat — emitted at most once every
@@ -729,9 +841,25 @@ def _do_r2_download(
             if existing > 0 and progress_tracker is not None:
                 progress_tracker.add(existing)
                 chunks_credited += existing
+            floor = _ThroughputFloor(_mirror_floor_bytes_per_sec())
+            # Absolute final size the guard measures completion against. Prefer
+            # the response's own length (``total_size`` already folds a resumed
+            # prefix into ``existing + Content-Length``); when the response omits
+            # Content-Length, fall back to the size HF told us so a chunked shard
+            # is still guarded. 0 means "size unknown" — only tiny config assets
+            # reach here that way, and we can't tell final from mid-stream, so the
+            # guard stays off rather than risk discarding a complete file.
+            final_size = total_size if length > 0 else (expected_size or 0)
+            # ``read`` blocks until the full requested size arrives, so under a
+            # throttle a single 8 MiB call could sit for minutes and the floor
+            # would never get to sample. ``read1`` returns after one underlying
+            # socket read with whatever is available, so the loop keeps turning
+            # (and the floor keeps checking the clock) even at a trickle. Fall
+            # back to ``read`` for stand-ins that don't implement ``read1``.
+            reader = getattr(resp, "read1", None) or resp.read
             with tmp.open(mode) as fh:
                 while True:
-                    chunk = resp.read(_CHUNK_BYTES)
+                    chunk = reader(_CHUNK_BYTES)
                     if not chunk:
                         break
                     fh.write(chunk)
@@ -746,6 +874,26 @@ def _do_r2_download(
                     if progress_tracker is not None:
                         progress_tracker.add(len(chunk))
                         chunks_credited += len(chunk)
+                    # Bail to HF when the mirror throttles this shard below the
+                    # floor (issue #2010): a slow trickle never trips the socket
+                    # timeout, so a stalled R2 edge would otherwise crawl for
+                    # minutes. Discard the partial prefix and roll back its
+                    # credit so HF's full-file download can't double-count.
+                    #
+                    # Only guard a transfer that is still short of its absolute
+                    # final size: a slow FINAL chunk that completes the file is
+                    # not a stall (the loop breaks on the next empty read and the
+                    # file validates), so it must not be thrown away. ``existing``
+                    # folds in a resumed ``.part`` prefix so the comparison is
+                    # against absolute bytes-on-disk, not just this session's.
+                    if (
+                        final_size > 0
+                        and existing + read < final_size
+                        and floor.record(read)
+                    ):
+                        _safe_unlink(tmp)
+                        _rollback_credits(progress_tracker, chunks_credited)
+                        return False, "slow-mirror"
 
             # Short-read guard — Content-Length lied or the connection
             # dropped silently. Don't rename a truncated file into the

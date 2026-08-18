@@ -13,12 +13,56 @@ can actually understand.
 
 ## [Unreleased]
 
+## [0.12.15] — 2026-08-17
+
+Fixes a bug that could silently truncate files your coding agent writes, adds a
+Developer section to Settings, and brings MTP acceleration to the Qwen 3.8
+models that ship with it.
+
+### Fixed
+
+- **Coding agents no longer get truncated file writes.** When an agent asked a
+  Qwen 3.5 or 3.6 model to write a file, the file could be cut off at the first
+  line break — a 700-byte file arriving as 11 bytes — with no error shown
+  anywhere. Short values could come back subtly misspelled (`Tokyo` as `Toyo`).
+  This affected versions 0.12.5 through 0.12.14; if you ran a coding agent on
+  those, it is worth re-checking files it wrote.
+- Downloading a model no longer crawls when our mirror slows down. Each file
+  now watches its own speed and switches to Hugging Face if the transfer
+  collapses, instead of waiting it out — one 335 MB model took 8 minutes before.
+- Voice transcription no longer invents words when a clip is short or silent.
+  A brief silent recording now returns nothing instead of a made-up sentence.
+- Images and other visual input work correctly again on hybrid vision models,
+  which could previously answer from the wrong cached state.
+- Media-only models (image, audio, video) no longer appear as things you can
+  launch for chat.
+
 ### Added
 
-- Qwen3.8-27B users can explicitly opt into MTP acceleration from
-  Settings → Performance. It remains off by default because the measured
-  speedup varies by Mac, and is available for both Rapid's standard 4-bit and
-  mixed-precision builds.
+- **Settings → Developer**, in development builds only: rehearse the first-run
+  experience without touching your real setup. You choose what gets erased —
+  conversations, settings, and the telemetry decision are each opt-in, and the
+  confirmation names every item before anything is removed.
+- **MTP acceleration for Qwen 3.8**, opt-in from Settings → Performance. It is
+  off by default because the speedup varies by machine. Models that ship an MTP
+  head now carry everything needed to run it, so turning it on just works; a
+  model without one refuses to start rather than quietly running unaccelerated.
+- DeepSeek Harness joins Claude Code, Codex, Hermes and Aider as a fully
+  supported coding agent — including in the gate that every release must pass.
+
+### Security
+
+- Model files downloaded from the internet are treated as untrusted by default:
+  code shipped inside a model repository no longer runs implicitly, downloaded
+  Python components are checksum-verified, and the audio checkpoint loader
+  refuses formats that can execute code unless you opt in.
+
+### Changed
+
+- The status footer drops readouts it cannot fit instead of squeezing six
+  indicators into the width of four.
+- Installing on Apple Silicon now insists on a matching Python and repairs a
+  half-built environment, instead of leaving an installation that never worked.
 
 ## [0.12.14] — 2026-08-15
 
