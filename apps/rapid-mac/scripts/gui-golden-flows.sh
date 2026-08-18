@@ -1898,7 +1898,13 @@ flow_message_actions() {
         | select(startswith("ChatView.Message.Retry."))' \
         "$OUT/message-actions-long-settled.json" | tail -1)"
     [[ -n "$last_retry" ]] || die "long settled answer exposes no Retry action"
-    "$AX_DRIVER" scroll-wheel "$APP_PID" "$last_retry" 80 \
+    local bottom_scroll_value
+    bottom_scroll_value="$(jq -r '[.data.ui_elements[]?
+        | select(.role == "AXScrollBar" and (.value | type) == "number")
+        | .value] | max // empty' "$OUT/message-actions-long-settled.json")"
+    [[ -n "$bottom_scroll_value" ]] \
+        || die "long settled transcript exposes no measurable scroll position"
+    "$AX_DRIVER" scroll-wheel "$APP_PID" "$last_retry" -80 \
         > "$OUT/message-actions-scroll-up.json" \
         || die "could not scroll the settled transcript away from its tail"
     local jump_visible=0
@@ -1913,20 +1919,28 @@ flow_message_actions() {
     done
     [[ "$jump_visible" == 1 ]] \
         || die "scrolling up a settled transcript never exposed Jump to latest"
-    if jq -e --arg id "$last_retry" \
-        '.data.ui_elements[]? | select(.identifier == $id)' \
-        "$OUT/message-actions-scrolled.json" >/dev/null; then
-        die "scroll fixture did not move the last answer out of the realized transcript"
-    fi
+    local scrolled_value
+    scrolled_value="$(jq -r '[.data.ui_elements[]?
+        | select(.role == "AXScrollBar" and (.value | type) == "number")
+        | .value] | min // empty' "$OUT/message-actions-scrolled.json")"
+    [[ -n "$scrolled_value" ]] \
+        || die "scrolled transcript exposes no measurable scroll position"
+    awk -v before="$bottom_scroll_value" -v after="$scrolled_value" \
+        'BEGIN { exit !(after < before - 0.02) }' \
+        || die "scroll fixture did not move away from the settled transcript tail"
     press "$OUT/message-actions-scrolled.json" Transcript.JumpToBottom \
         "$OUT/message-actions-jump-press.json" \
         || die "Jump to latest is not pressable on a settled transcript"
     local jumped=0
     for _ in {1..60}; do
         see_main "$OUT/message-actions-jumped.json"
-        if jq -e --arg id "$last_retry" \
-            '.data.ui_elements[]? | select(.identifier == $id)' \
-            "$OUT/message-actions-jumped.json" >/dev/null \
+        local jumped_value
+        jumped_value="$(jq -r '[.data.ui_elements[]?
+            | select(.role == "AXScrollBar" and (.value | type) == "number")
+            | .value] | max // empty' "$OUT/message-actions-jumped.json")"
+        if [[ -n "$jumped_value" ]] \
+            && awk -v before="$scrolled_value" -v after="$jumped_value" \
+                'BEGIN { exit !(after > before + 0.02) }' \
             && ! jq -e '.data.ui_elements[]?
                         | select(.identifier == "Transcript.JumpToBottom")' \
                 "$OUT/message-actions-jumped.json" >/dev/null; then
