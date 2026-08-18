@@ -221,7 +221,16 @@ struct SidebarView: View {
         // Column-scoped toolbar content renders beside the native sidebar
         // toggle instead of in the detail column's title group.
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    presentFolderPrompt(.create(fileConversationID: nil))
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .help("New folder")
+                .accessibilityLabel("New folder")
+                .accessibilityIdentifier("Toolbar.NewConversationFolder")
+
                 Button(action: onSearchChats) {
                     Image(systemName: "magnifyingglass")
                 }
@@ -299,6 +308,7 @@ struct SidebarView: View {
                 .accessibilityIdentifier("Sidebar.Folder.NameField")
             Button("Save") { commitFolderPrompt() }
                 .accessibilityIdentifier("Sidebar.Folder.Prompt.Confirm")
+                .disabled(!canCommitFolderPrompt)
             Button("Cancel", role: .cancel) { folderPrompt = nil }
                 .accessibilityIdentifier("Sidebar.Folder.Prompt.Cancel")
         }
@@ -308,6 +318,18 @@ struct SidebarView: View {
         switch folderPrompt {
         case .rename: return "Rename Folder"
         case .create, .none: return "New Folder"
+        }
+    }
+
+    private var canCommitFolderPrompt: Bool {
+        guard let name = ChatFolder.normalizedName(folderNameDraft) else { return false }
+        switch folderPrompt {
+        case let .rename(folder):
+            return !chat.folderNameExists(name, excluding: folder.id)
+        case .create:
+            return !chat.folderNameExists(name)
+        case .none:
+            return false
         }
     }
 

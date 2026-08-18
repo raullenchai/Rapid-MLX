@@ -1668,6 +1668,63 @@ flow_chat_restore() {
     sleep 0.2
     see_main "$OUT/chat-restored-transcript.json"
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
+
+    # Conversation folders are a visible sidebar workflow, not just a data
+    # model. Exercise the real toolbar entry and the row menu path so a future
+    # refactor cannot leave creation or filing mounted but unreachable.
+    press "$OUT/chat-restored-transcript.json" Toolbar.NewConversationFolder \
+        "$OUT/folder-new-press.json"
+    wait_identifier Sidebar.Folder.NameField "$OUT/folder-prompt.json"
+    "$AX_DRIVER" set-value "$APP_PID" Sidebar.Folder.NameField "Golden Work" \
+        > "$OUT/folder-name.json"
+    see_main "$OUT/folder-name-set.json"
+    press "$OUT/folder-name-set.json" Sidebar.Folder.Prompt.Confirm \
+        "$OUT/folder-save.json"
+    wait_identifier Sidebar.Folder.Toggle.Golden-Work "$OUT/folder-created.json"
+    assert_tree_text "$OUT/folder-created.json" "No conversations yet"
+
+    local conversation_menu_id
+    conversation_menu_id="Sidebar.Conversation.Menu.${conversation_id##*.}"
+    press "$OUT/folder-created.json" "$conversation_menu_id" "$OUT/folder-row-menu.json"
+    wait_identifier Sidebar.Conversation.Action.MoveToFolder "$OUT/folder-move-menu.json"
+    press "$OUT/folder-move-menu.json" Sidebar.Conversation.Action.MoveToFolder \
+        "$OUT/folder-submenu-open.json"
+    wait_identifier Sidebar.Conversation.Action.MoveToFolder.Golden-Work \
+        "$OUT/folder-submenu.json"
+    press "$OUT/folder-submenu.json" Sidebar.Conversation.Action.MoveToFolder.Golden-Work \
+        "$OUT/folder-file.json"
+    for _ in {1..40}; do
+        see_main "$OUT/folder-filed.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("Golden Work (1)")' \
+            "$OUT/folder-filed.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    assert_tree_text "$OUT/folder-filed.json" "Golden Work (1)"
+    assert_tree_text "$OUT/folder-filed.json" "golden restore marker"
+
+    # The renderer/encoder are unit-tested; this GUI assertion owns the other
+    # half of the feature contract: the export action is reachable from a real
+    # conversation row and presents the native save surface.
+    press "$OUT/folder-filed.json" "$conversation_menu_id" "$OUT/export-row-menu.json"
+    wait_identifier Sidebar.Conversation.Action.Export "$OUT/export-menu.json"
+    press "$OUT/export-menu.json" Sidebar.Conversation.Action.Export \
+        "$OUT/export-submenu-open.json"
+    wait_identifier Sidebar.Conversation.Action.Export.Markdown "$OUT/export-submenu.json"
+    press "$OUT/export-submenu.json" Sidebar.Conversation.Action.Export.Markdown \
+        "$OUT/export-markdown.json"
+    local export_panel_visible=0
+    for _ in {1..40}; do
+        if ax_window_present "Export Conversation" "$OUT/export-panel.json"; then
+            export_panel_visible=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$export_panel_visible" == 1 ]] \
+        || die "Markdown export did not present its save panel"
+    "$AX_DRIVER" close-window "$APP_PID" "Export Conversation" \
+        > "$OUT/export-panel-close.json" \
+        || die "export save panel could not be cancelled"
+
     local conversation_suffix pin_id unpin_id
     conversation_suffix="${conversation_id##*.}"
     pin_id="Sidebar.Conversation.Pin.$conversation_suffix"

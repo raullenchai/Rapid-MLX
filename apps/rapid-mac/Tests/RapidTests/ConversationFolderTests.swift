@@ -50,6 +50,17 @@ struct ConversationFolderTests {
         #expect(model.folders.count == 1)
     }
 
+    @Test("Folder names are unique regardless of case")
+    func duplicateNamesAreRejected() throws {
+        let model = ChatViewModel(conversationStoreURL: try isolatedStore())
+        let work = try #require(model.createFolder(named: "Work"))
+        #expect(model.createFolder(named: "work") == nil)
+        let personal = try #require(model.createFolder(named: "Personal"))
+        #expect(model.renameFolder(personal.id, to: "WORK") == false)
+        #expect(model.renameFolder(work.id, to: "work") == true)
+        #expect(model.folders.map(\.name) == ["work", "Personal"])
+    }
+
     @Test("Renaming rejects blank and keeps the old name")
     func renameRejectsBlank() throws {
         let model = ChatViewModel(conversationStoreURL: try isolatedStore())

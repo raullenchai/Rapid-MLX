@@ -365,13 +365,10 @@ final class ChatViewModel {
     /// Create a folder. Returns nil for a blank name rather than making an
     /// unnamed row the user then can't tell apart from any other.
     ///
-    /// Duplicate names are allowed: they are identified by id, and refusing
-    /// the second "Work" would be a rule the user has to discover by hitting
-    /// it. ``ChatFolder/displayOrder(_:)`` keeps the ordering total so two
-    /// same-named folders still sort deterministically.
     @discardableResult
     func createFolder(named rawName: String) -> ChatFolder? {
         guard let name = ChatFolder.normalizedName(rawName) else { return nil }
+        guard !folderNameExists(name) else { return nil }
         let folder = ChatFolder(name: name)
         folders.append(folder)
         saveFolders()
@@ -383,6 +380,7 @@ final class ChatViewModel {
         guard let name = ChatFolder.normalizedName(rawName) else { return false }
         guard let index = folders.firstIndex(where: { $0.id == id }) else { return false }
         guard folders[index].name != name else { return true }
+        guard !folderNameExists(name, excluding: id) else { return false }
         folders[index].name = name
         saveFolders()
         return true
@@ -442,6 +440,14 @@ final class ChatViewModel {
             folders,
             to: Self.folderStoreURL(for: conversationStoreURL)
         )
+    }
+
+    func folderNameExists(_ name: String, excluding excludedID: UUID? = nil) -> Bool {
+        folders.contains {
+            $0.id != excludedID
+                && $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive])
+                    == .orderedSame
+        }
     }
 
     /// Load a saved conversation into the transcript, archiving whatever is
