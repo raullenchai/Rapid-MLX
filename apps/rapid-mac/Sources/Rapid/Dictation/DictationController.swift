@@ -65,6 +65,7 @@ final class DictationController {
             // renders from has to move with it — otherwise picking a model
             // leaves the Enable switch stuck until something else refreshes.
             refreshReadiness()
+            Task { await prewarmModel() }
         }
     }
 
@@ -93,6 +94,10 @@ final class DictationController {
     private var capturingApp: String?
     private var level: Float = 0
     private var transcribeTask: Task<Void, Never>?
+    /// alias → HuggingFace repo. `ensureServing` needs the repo to fetch a
+    /// model that is not on disk yet; passing nil silently limits it to models
+    /// already cached.
+    private var repoByAlias: [String: String] = [:]
 
     init(
         server: ServerManager,
@@ -226,6 +231,42 @@ final class DictationController {
         hotkey.reEnableIfDisabled()
     }
 
+    // MARK: - Model
+
+    /// Brings the transcription model up.
+    ///
+    /// Audio models must pass `residencyEligible: false`: the residency path
+    /// loads in-process, which the audio sidecar does not support, so the
+    /// server has to swap the whole process instead. Getting this wrong fails
+    /// at request time with nothing to distinguish it from a missing model.
+    @discardableResult
+    private func ensureModelServing() async -> Bool {
+        guard !modelAlias.isEmpty else { return false }
+        let repo = await resolveRepo(for: modelAlias)
+        return await server.ensureServing(
+            alias: modelAlias,
+            hfPath: repo,
+            residencyEligible: false
+        )
+    }
+
+    private func resolveRepo(for alias: String) async -> String? {
+        if let cached = repoByAlias[alias] { return cached }
+        guard let binary = server.binaryPath else { return nil }
+        let entries = await ModelCatalog.audioEntries(binary: binary)
+        for entry in entries { repoByAlias[entry.alias] = entry.hfRepo }
+        return repoByAlias[alias]
+    }
+
+    /// Loads the model ahead of the first hotkey press. Without this the first
+    /// dictation of a session pays for a process swap *and* a possible download
+    /// while the user is already talking.
+    func prewarmModel() async {
+        guard isEnabled, !modelAlias.isEmpty else { return }
+        guard server.servingAlias != modelAlias else { return }
+        _ = await ensureModelServing()
+    }
+
     // MARK: - Hotkey
 
     private func handleHotkey() {
@@ -302,8 +343,10 @@ final class DictationController {
         }
 
         let started = Date()
-        guard await server.ensureServing(alias: modelAlias, hfPath: nil) else {
-            lastError = "The transcription model couldn't start."
+        guard await ensureModelServing() else {
+            lastError = repoByAlias[modelAlias] == nil
+                ? "\(modelAlias) isn't in the audio model catalog. Pick another model."
+                : "\(modelAlias) couldn't start. It may still be downloading, or there may not be enough memory to swap models."
             return
         }
         guard !Task.isCancelled else { return }
@@ -332,7 +375,13 @@ final class DictationController {
             // Suspend the tap across injection: synthesising ⌘V puts a Command
             // flag change on the same event stream the hotkey listens to.
             hotkey.isSuspended = true
-            DictationInjector.deliver(text, paste: DictationInjector.canPaste)
+            // Say so when the text could only be copied. Silently landing it on
+            // the clipboard looks identical to the feature being broken.
+            let pasted = DictationInjector.canPaste
+            DictationInjector.deliver(text, paste: pasted)
+            if !pasted {
+                lastError = "Copied to the clipboard — Accessibility access is needed to type it into the app."
+            }
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .milliseconds(300))
                 self?.hotkey.isSuspended = false
@@ -360,7 +409,7 @@ final class DictationController {
     /// unsafe default.
     func retranscribe(_ entry: DictationHistory.Entry) async -> String? {
         guard let audio = history.audioData(for: entry), !modelAlias.isEmpty else { return nil }
-        guard await server.ensureServing(alias: modelAlias, hfPath: nil) else { return nil }
+        guard await ensureModelServing() else { return nil }
         let context = vocabulary.contextPrompt
         guard let result = try? await client.transcribe(
             audioData: audio,

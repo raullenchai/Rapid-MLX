@@ -43,6 +43,9 @@ struct DictationView: View {
             if controller.vocabulary.suggestions.isEmpty {
                 await controller.vocabulary.scanForSuggestions()
             }
+            // Swap the model in while the user is still reading this page,
+            // rather than on the first hotkey press when they are mid-sentence.
+            await controller.prewarmModel()
         }
         // TCC grants happen outside the app and emit no notification, so the
         // only reliable moment to re-check is when the window comes back.
