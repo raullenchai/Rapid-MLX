@@ -71,24 +71,64 @@ struct QuickstartBrowseAllDestinationTests {
         )
     }
 
-    @Test("The failure card's 'or browse all models' goes to the same place")
+    /// The failure card's route back to choosing.
+    ///
+    /// It used to be this same "or browse all models →" link, which satisfied
+    /// the invariant — the control leads somewhere, inside setup — but always
+    /// landed the user in the catalogue even when they had never opened it.
+    /// The onboarding-recovery slice replaced it with a return to the
+    /// micro-stage they actually left. The invariant is unchanged and the
+    /// destination is strictly better informed; what must never come back is a
+    /// failure card with no way out, or one whose way out leaves setup.
+    @Test("The failure card offers a wired route back to model selection")
     func failureCardLinkIsWiredToo() throws {
         let source = try Self.quickstartSource
         #expect(
             source.contains(
                 """
                         Button {
-                            browseAllModels()
+                            returnToModelSelection()
                         } label: {
-                            Text("or browse all models →")
+                            Text(Self.failureBackTitle(for: coordinator.step2Stage))
                 """
             ),
             """
-            The failure card's browse link must reach the catalogue as well — \
-            it is offered precisely when the user's chosen model failed, which \
+            The failure card's Back control must call returnToModelSelection(). \
+            It is offered precisely when the user's chosen model failed, which \
             is the moment they most need to pick a different one.
             """
         )
+    }
+
+    @Test("Returning from a failure re-enters Step 2 without leaving setup")
+    func failureReturnIsWiredToTheChooser() throws {
+        let source = try Self.quickstartSource
+        guard let start = source.range(of: "private func returnToModelSelection() {"),
+              let end = source.range(of: "\n    }", range: start.upperBound..<source.endIndex)
+        else {
+            Issue.record("could not isolate returnToModelSelection()")
+            return
+        }
+        let function = String(source[start.lowerBound..<end.upperBound])
+        #expect(
+            function.contains("coordinator.returnToChooser()"),
+            """
+            returnToModelSelection() must go through returnToChooser(), which \
+            leaves step2Stage alone — that is what returns the user to the \
+            shortlist, the catalogue or Review download rather than a default.
+            """
+        )
+        // Same bans as the browse path: a failure is not a way out of setup.
+        for needle in ["openWindow", "dismiss()", "settingsRouter", "onSkip", ".sheet"] {
+            #expect(
+                !function.contains(needle),
+                """
+                returnToModelSelection() references `\(needle)`. Recovering from \
+                a failure must not open Settings, open a second window, or \
+                dismiss setup.
+                """
+            )
+        }
     }
 
     // MARK: - The destination is in-window

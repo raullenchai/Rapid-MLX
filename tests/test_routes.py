@@ -43,6 +43,10 @@ def mock_engine():
         "metal_peak_memory_gb": 12.0,
         "metal_cache_memory_gb": 3.0,
     }
+    # Keep the generic mock aligned with the legacy fallback test; the real
+    # BatchedEngine exposes this method, while a bare MagicMock would
+    # auto-vivify it and bypass the prompt-cache branch.
+    engine.clear_prefix_cache = None
     return engine
 
 
@@ -642,6 +646,36 @@ class TestHealthRoutes:
             r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
             assert r.status_code == 200
             assert "No prompt cache" in r.json()["message"]
+        finally:
+            self._restore_config(orig)
+
+    def test_cache_clear_scheduler_prefix_cache(self, mock_engine):
+        """Cache clear uses the scheduler-owned KV cache when available."""
+        mock_engine.clear_prefix_cache = MagicMock(return_value=True)
+        orig = self._patch_config(engine=mock_engine)
+        try:
+            app = self._make_app()
+            client = TestClient(app, client=("127.0.0.1", 50000))
+            r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
+            assert r.status_code == 200
+            assert r.json()["scheduler_cache_cleared"] is True
+            mock_engine.clear_prefix_cache.assert_called_once_with(reset_stats=False)
+        finally:
+            self._restore_config(orig)
+
+    def test_cache_clear_rejects_active_scheduler_requests(self, mock_engine):
+        mock_engine.clear_prefix_cache = MagicMock(
+            side_effect=RuntimeError(
+                "cannot clear prefix cache while requests are active"
+            )
+        )
+        orig = self._patch_config(engine=mock_engine)
+        try:
+            app = self._make_app()
+            client = TestClient(app, client=("127.0.0.1", 50000))
+            r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
+            assert r.status_code == 409
+            assert "requests are active" in r.json()["detail"]
         finally:
             self._restore_config(orig)
 

@@ -1,5 +1,13 @@
 # Rapid-MLX Benchmark Scorecard
 
+> **STALE — do not cite these numbers.** Generated 2026-04-16 on a machine
+> whose model cache held only a fraction of the model list, so most rows below
+> read `not found in HF_HUB_CACHE` and two record a boot failure that was
+> environmental rather than a real regression. Nothing reads this file
+> programmatically; it is a human-readable snapshot only. Regenerate with
+> `python3.12 evals/generate_scorecard.py` on a box with the models cached,
+> and replace this notice with the fresh output.
+
 _Generated: 2026-04-16T07:10:38_
 
 | Model | Decode TPS | Cold TTFT | Cached TTFT | Tool % | Score | Status |

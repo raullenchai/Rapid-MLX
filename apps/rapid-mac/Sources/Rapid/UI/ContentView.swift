@@ -7,9 +7,15 @@ import SwiftUI
 /// brand-new user with no model on disk sees the Quickstart card.
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// #459: hard window-width floor (kept ≤ 640 so half-screen tiling
-    /// never overflows the window on a built-in MacBook display).
-    static let minWindowWidth: CGFloat = 640
+    /// #459: hard window-width floor. The original 640pt target preserved
+    /// half-screen tiling on built-in MacBook displays; 720pt is the smallest
+    /// width at which the current onboarding and workspace remain usable.
+    /// Enforced on the shell below, not just declared. It was a bare
+    /// constant read only by a test for a while, which meant the number and
+    /// the window could disagree without anything noticing — and they did:
+    /// the rail's 176pt minimum plus the 440pt detail floor let the window
+    /// go to ~616.
+    static let minWindowWidth: CGFloat = 720
     static let minWindowHeight: CGFloat = 560
 
     @Environment(ServerManager.self) private var server
@@ -106,11 +112,13 @@ struct ContentView: View {
             } detail: {
                 detailArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Detail floor drops 520 → 440 alongside the narrower
-                // rail: at the 640pt window floor the old pair
-                // (190 sidebar + 520 detail) over-committed the window
-                // by 70pt, which is what forced horizontal clipping
-                // instead of graceful compression.
+                // Detail floor dropped 520 → 440 alongside the narrower
+                // rail, back when the window floor was 640 and the old pair
+                // (190 sidebar + 520 detail) over-committed it by 70pt —
+                // which is what forced horizontal clipping instead of
+                // graceful compression. The floor is 720 now, so this has
+                // 80pt of slack; it stays at 440 because it is the detail's
+                // own minimum, not a number derived from the window.
                 .frame(minWidth: 440, minHeight: Self.minWindowHeight)
                     .background(RapidTheme.surfaceCanvas)
             }
@@ -125,6 +133,10 @@ struct ContentView: View {
             }
             statusFooter
         }
+        // `.windowResizability(.contentMinSize)` derives the window's floor
+        // from this, so the shell states it once here rather than leaving it
+        // to whatever the rail and the detail happen to add up to.
+        .frame(minWidth: Self.minWindowWidth, minHeight: Self.minWindowHeight)
         .background {
             // Bridge the SwiftUI scene to the AppKit behaviours that need the
             // concrete main NSWindow: close interception, frame autosave, and
@@ -846,7 +858,7 @@ struct ContentView: View {
                         .buttonStyle(.rapidPrimaryWide)
                         .accessibilityIdentifier("MissingRuntime.DownloadUpdate")
                         HStack(spacing: RapidTheme.Space.sm) {
-                            Button("Recheck") { server.refreshBinary() }
+                            Button("Recheck") { recheckEngine() }
                                 .buttonStyle(.rapidSecondary)
                                 .accessibilityIdentifier("MissingRuntime.Recheck")
                             Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
@@ -856,13 +868,25 @@ struct ContentView: View {
                     }
                 } else {
                     HStack(spacing: RapidTheme.Space.sm) {
-                        Button("Recheck") { server.refreshBinary() }
+                        Button("Recheck") { recheckEngine() }
                             .buttonStyle(.rapidPrimary)
                             .accessibilityIdentifier("MissingRuntime.Recheck")
                         Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
                             .buttonStyle(.rapidSecondary)
                             .accessibilityIdentifier("MissingRuntime.Quit")
                     }
+                }
+                // Recheck's result, once there is one. Without this the
+                // control is genuinely working — a full ``ServerLocator``
+                // re-resolution — and yet reads as dead, because a still-
+                // missing engine leaves every visible thing unchanged.
+                if let status = ServerManager.recheckStatusMessage(for: server.lastBinaryRecheck) {
+                    Text(status)
+                        .font(RapidFont.secondary)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("MissingRuntime.RecheckStatus")
                 }
                 Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
                     .font(RapidFont.caption)
@@ -886,6 +910,21 @@ struct ContentView: View {
         .padding(.horizontal, RapidTheme.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(LeopardSpots(opacity: 0.06))
+    }
+
+    /// The missing-engine screen's Recheck.
+    ///
+    /// The re-resolution itself is real and always was; what this adds is
+    /// saying so. The announcement matters more here than almost anywhere
+    /// else in the app — the sighted feedback is a single line of text that
+    /// may render identically to the last one, and a VoiceOver user pressing
+    /// a button that reports nothing has no way to tell it apart from a
+    /// button that does nothing.
+    private func recheckEngine() {
+        server.refreshBinary(userInitiated: true)
+        if let status = ServerManager.recheckStatusMessage(for: server.lastBinaryRecheck) {
+            VoiceOverAnnouncer.announce(status)
+        }
     }
 
     // MARK: - Status footer

@@ -309,6 +309,24 @@ class EngineCore:
         # binds to the running loop. See issue #265.
         self._idle_event: asyncio.Event | None = None
 
+        # Optional housekeeping clear for long-lived servers. This releases
+        # reusable KV state after an idle period while keeping model weights
+        # and the server process resident. An explicit config value wins over
+        # the environment so ``0`` can disable a service-level default.
+        configured_idle_clear = getattr(
+            self.scheduler.config, "idle_cache_clear_seconds", None
+        )
+        if configured_idle_clear is None:
+            configured_idle_clear = _env_float(
+                "RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS", 0.0
+            )
+        self._idle_cache_clear_seconds = max(0.0, float(configured_idle_clear))
+        self._idle_cache_clear_armed = True
+        self._last_request_activity = time.monotonic()
+        self._idle_cache_clear_count = 0
+        self._last_idle_cache_clear_at: float | None = None
+        self._idle_cache_clear_error_logged = False
+
         # Admission-wave coalescing (#1861 conc investigation): counts
         # ``add_request`` submissions so ``_await_admission_wave`` can
         # detect a burst still landing. Event-loop thread only.
@@ -450,6 +468,12 @@ class EngineCore:
         self._start_time = time.time()
         self._task = asyncio.create_task(self._engine_loop())
         logger.info("Engine started")
+
+    def _clear_prefix_cache_on_worker(self, *, reset_stats: bool = False) -> bool:
+        """Clear reusable KV state and flush MLX's allocator cache."""
+        cleared = self.scheduler.clear_prefix_cache(reset_stats=reset_stats)
+        mx.clear_cache()
+        return cleared
 
     async def stop(self) -> None:
         """Stop the engine loop."""
@@ -861,6 +885,7 @@ class EngineCore:
                                             )
 
                                 if req_output.finished:
+                                    self._last_request_activity = time.monotonic()
                                     event = events.get(rid)
                                     if event:
                                         event.set()
@@ -924,6 +949,44 @@ class EngineCore:
                                 pass
                         else:
                             self._run_pressure_evict_tick()
+
+                    # Optional full idle clear. Pressure eviction is
+                    # incremental; this wall-clock supervisor releases the
+                    # remaining reusable KV slabs while keeping model
+                    # weights resident for the next request.
+                    if (
+                        self._idle_cache_clear_seconds > 0
+                        and self._idle_cache_clear_armed
+                        and not self.scheduler.has_requests()
+                        and not self._output_collectors
+                        and now_mono - self._last_request_activity
+                        >= self._idle_cache_clear_seconds
+                    ):
+                        self._idle_cache_clear_armed = False
+                        try:
+                            if _executor is not None:
+                                did_clear = await loop.run_in_executor(
+                                    _executor, self._clear_prefix_cache_on_worker
+                                )
+                            else:
+                                did_clear = self._clear_prefix_cache_on_worker()
+                            self._idle_cache_clear_count += 1
+                            self._last_idle_cache_clear_at = time.time()
+                            logger.info(
+                                "[idle_cache_clear] released prefix KV cache "
+                                "after %.1fs idle (had_cache=%s); model weights "
+                                "remain resident",
+                                self._idle_cache_clear_seconds,
+                                did_clear,
+                            )
+                        except Exception as clear_exc:
+                            self._idle_cache_clear_armed = True
+                            if not self._idle_cache_clear_error_logged:
+                                self._idle_cache_clear_error_logged = True
+                                logger.warning(
+                                    "[idle_cache_clear] failed; will retry: %r",
+                                    clear_exc,
+                                )
 
             except asyncio.CancelledError:
                 break
@@ -1051,6 +1114,8 @@ class EngineCore:
         # both writer and reader run on the loop). getattr-guarded for
         # the ``__new__``-built stub engines in the zombie-KV tests.
         self._admission_seq = getattr(self, "_admission_seq", 0) + 1
+        self._last_request_activity = time.monotonic()
+        self._idle_cache_clear_armed = True
 
         if request_id is None:
             request_id = str(uuid.uuid4())
@@ -1590,6 +1655,12 @@ class EngineCore:
             "steps_executed": self._steps_executed,
             "active_requests": len(self._output_collectors),
             "stream_interval": self.config.stream_interval,
+            "idle_cache_clear": {
+                "enabled": self._idle_cache_clear_seconds > 0,
+                "seconds": self._idle_cache_clear_seconds,
+                "clear_count": self._idle_cache_clear_count,
+                "last_clear_at": self._last_idle_cache_clear_at,
+            },
             "requests": self.scheduler.get_running_requests_info(),
             **scheduler_stats,
         }
@@ -1597,6 +1668,17 @@ class EngineCore:
     def get_cache_stats(self) -> dict[str, Any] | None:
         """Get prefix cache statistics."""
         return self.scheduler.get_cache_stats()
+
+    def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
+        """Clear reusable prefix KV state on the MLX worker thread.
+
+        The allocator cache is flushed with the reusable KV blocks, while
+        model weights remain resident. Keeping this operation on the worker
+        thread avoids crossing MLX stream ownership from admin callers.
+        """
+        return self._run_on_step_thread(
+            self._clear_prefix_cache_on_worker, reset_stats=reset_stats
+        )
 
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk.
@@ -1847,6 +1929,10 @@ class AsyncEngineCore:
     def get_cache_stats(self) -> dict[str, Any] | None:
         """Get prefix cache statistics."""
         return self.engine.get_cache_stats()
+
+    def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
+        """Clear reusable prefix KV state while keeping model weights loaded."""
+        return self.engine.clear_prefix_cache(reset_stats=reset_stats)
 
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
         """Save prefix cache to disk."""

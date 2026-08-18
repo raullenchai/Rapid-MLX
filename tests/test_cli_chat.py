@@ -31,11 +31,45 @@ def _delta(content: str | None) -> dict:
     return {"choices": [{"delta": {"content": content} if content else {}}]}
 
 
+def _tool_call_delta(
+    index: int = 0,
+    call_id: str | None = None,
+    name: str | None = None,
+    arguments: str | None = None,
+    finish_reason: str | None = None,
+) -> dict:
+    """One SSE chunk carrying a ``delta.tool_calls`` fragment.
+
+    Mirrors how real servers split a call: ``id``/``name`` land on the first
+    fragment, ``arguments`` arrive as JSON text spread over later ones.
+    """
+    fragment: dict = {"index": index}
+    if call_id is not None:
+        fragment["id"] = call_id
+    function: dict = {}
+    if name is not None:
+        function["name"] = name
+    if arguments is not None:
+        function["arguments"] = arguments
+    if function:
+        fragment["function"] = function
+    return {
+        "choices": [
+            {"delta": {"tool_calls": [fragment]}, "finish_reason": finish_reason}
+        ]
+    }
+
+
 class _FakeChatHandler(BaseHTTPRequestHandler):
     """Minimal HTTP server that pretends to be /v1/chat/completions."""
 
     canned_response: list[dict] = []
+    # When non-empty, each POST consumes the next entry — this is what lets a
+    # test drive a multi-round agent loop, where round 1 returns tool calls
+    # and round 2 returns the final answer.
+    canned_rounds: list[list[dict]] = []
     received_payloads: list[dict] = []
+    advertised_models: list[str] = ["served-model"]
 
     def log_message(self, *_args, **_kwargs):  # silence stderr
         pass
@@ -48,24 +82,38 @@ class _FakeChatHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+        if type(self).canned_rounds:
+            chunks = type(self).canned_rounds.pop(0)
+        else:
+            chunks = self.canned_response
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        self.wfile.write(_sse(self.canned_response))
+        self.wfile.write(_sse(chunks))
 
     def do_GET(self):  # noqa: N802
         if self.path == "/health/ready":
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
+        elif self.path == "/v1/models":
+            body = json.dumps(
+                {"object": "list", "data": [{"id": m} for m in self.advertised_models]}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         else:
             self.send_response(404)
             self.end_headers()
 
 
 @contextmanager
-def _fake_server(canned: list[dict]):
+def _fake_server(canned: list[dict], rounds: list[list[dict]] | None = None):
     _FakeChatHandler.canned_response = canned
+    _FakeChatHandler.canned_rounds = list(rounds or [])
     _FakeChatHandler.received_payloads = []
     server = HTTPServer(("127.0.0.1", 0), _FakeChatHandler)
     port = server.server_address[1]
@@ -86,6 +134,21 @@ def test_chat_subcommand_registered_in_cli():
     ):
         cli.main()
     assert exc.value.code == 0
+
+
+def test_chat_disable_prefix_cache_flag_is_registered():
+    captured: list = []
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--disable-prefix-cache"],
+        ),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+
+    assert captured[0].disable_prefix_cache is True
 
 
 def test_chat_no_model_defaults_to_qwen35_4b():
@@ -121,6 +184,7 @@ def test_chat_no_model_defaults_to_qwen35_4b():
         args.model == "qwen3.5-4b-4bit"
         or getattr(args, "_original_alias", None) == "qwen3.5-4b-4bit"
     )
+    assert args._model_was_explicit is False
 
 
 def test_chat_with_alias_overrides_default():
@@ -137,6 +201,7 @@ def test_chat_with_alias_overrides_default():
         args.model == "smollm3-3b-4bit"
         or getattr(args, "_original_alias", None) == "smollm3-3b-4bit"
     )
+    assert args._model_was_explicit is True
 
 
 def test_chat_mcp_config_flag_is_scoped_to_chat():
@@ -197,96 +262,41 @@ class _FakeMCPRuntime:
         return messages
 
 
-def _json_response(body, status_code=200):
-    return type(
-        "Response",
-        (),
-        {
-            "status_code": status_code,
-            "text": json.dumps(body),
-            "json": lambda self: body,
-        },
-    )()
-
-
-def test_complete_chat_with_mcp_runs_standard_tool_loop(monkeypatch):
-    responses = iter(
+def test_complete_chat_with_mcp_runs_standard_tool_loop():
+    """Round 1 streams a tool call, round 2 streams the final answer."""
+    rounds = [
         [
-            _json_response(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "role": "assistant",
-                                "content": None,
-                                "tool_calls": [
-                                    {
-                                        "id": "call-1",
-                                        "type": "function",
-                                        "function": {
-                                            "name": "files__read",
-                                            "arguments": {"path": "/tmp/a"},
-                                        },
-                                    }
-                                ],
-                            },
-                            "finish_reason": "tool_calls",
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 7, "completion_tokens": 2},
-                }
-            ),
-            _json_response(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "role": "assistant",
-                                "content": "The file says hello.",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 8, "completion_tokens": 5},
-                }
-            ),
-        ]
-    )
-    payloads = []
-    tool_events = []
-
-    def _post(_url, json, timeout):
-        assert timeout == 10
-        payloads.append(deepcopy(json))
-        return next(responses)
-
-    monkeypatch.setattr("requests.post", _post)
+            _tool_call_delta(call_id="call-1", name="files__read"),
+            _tool_call_delta(arguments='{"path":'),
+            _tool_call_delta(arguments='"/tmp/a"}', finish_reason="tool_calls"),
+        ],
+        [_delta("The file says hello."), {"choices": [{"finish_reason": "stop"}]}],
+    ]
     runtime = _FakeMCPRuntime()
+    tool_events = []
     messages = [{"role": "user", "content": "read it"}]
 
-    answer, metrics = cli._complete_chat_with_mcp(
-        "http://localhost:8000",
-        {
-            "model": "test",
-            "messages": messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        },
-        runtime,
-        timeout_s=10,
-        on_tool_event=tool_events.append,
-    )
+    with _fake_server([], rounds=rounds) as (port, payloads):
+        answer, metrics = cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": messages},
+            runtime,
+            timeout_s=10,
+            on_tool_event=tool_events.append,
+        )
 
     assert answer == "The file says hello."
-    assert metrics == {
-        "prompt_tokens": 15,
-        "completion_tokens": 7,
-        "finish_reason": "stop",
-    }
-    assert payloads[0]["stream"] is False
-    assert "stream_options" not in payloads[0]
+    assert metrics["finish_reason"] == "stop"
+
+    # Both rounds streamed — the tool round no longer blocks the terminal.
+    assert len(payloads) == 2
+    assert payloads[0]["stream"] is True
+    assert payloads[1]["stream"] is True
     assert payloads[0]["tools"] == runtime.tools
     assert payloads[0]["tool_choice"] == "auto"
+
+    # The fragmented arguments reassembled into the original JSON.
+    assert runtime.calls[0][0]["function"]["arguments"] == '{"path":"/tmp/a"}'
     assert payloads[1]["messages"][-2]["tool_calls"][0]["id"] == "call-1"
     assert payloads[1]["messages"][-1] == {
         "role": "tool",
@@ -299,161 +309,217 @@ def test_complete_chat_with_mcp_runs_standard_tool_loop(monkeypatch):
     ]
 
 
-def test_complete_chat_with_mcp_preserves_reasoning_and_normalizes_calls(monkeypatch):
-    responses = iter(
+def test_complete_chat_with_mcp_preserves_reasoning_for_tool_followup():
+    rounds = [
         [
-            _json_response(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "reasoning_content": "need a tool",
-                                "tool_calls": [
-                                    {
-                                        "function": {
-                                            "name": "files__read",
-                                            "arguments": {},
-                                        }
-                                    }
-                                ],
-                            }
-                        }
-                    ]
-                }
-            ),
-            _json_response(
-                {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": ["structured", "answer"],
-                                "reasoning_content": "done",
-                            },
-                            "finish_reason": "stop",
-                        }
-                    ]
-                }
-            ),
-        ]
-    )
-    monkeypatch.setattr(
-        "requests.post",
-        lambda *_args, **_kwargs: next(responses),
-    )
+            {"choices": [{"delta": {"reasoning_content": "Need the file."}}]},
+            _tool_call_delta(call_id="call-1", name="files__read", arguments="{}"),
+        ],
+        [_delta("done"), {"choices": [{"finish_reason": "stop"}]}],
+    ]
+    runtime = _FakeMCPRuntime()
+
+    with _fake_server([], rounds=rounds) as (port, payloads):
+        cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": [{"role": "user", "content": "go"}]},
+            runtime,
+            timeout_s=10,
+        )
+
+    assert payloads[1]["messages"][-2]["reasoning_content"] == "Need the file."
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nope"])
+def test_mcp_max_rounds_requires_positive_integer(value):
+    with pytest.raises(__import__("argparse").ArgumentTypeError):
+        cli.positive_int(value)
+
+
+def test_complete_chat_with_mcp_reassembles_arguments_split_mid_string():
+    """Argument JSON split at hostile offsets still reassembles exactly.
+
+    vLLM and the OpenAI API fragment ``function.arguments`` at arbitrary byte
+    offsets — inside a key, inside a quoted value, between a colon and its
+    number. Only the concatenation is valid JSON, so any accumulator that
+    overwrites instead of appending yields a fragment that cannot parse.
+    The local MLX server happens to emit each call whole, so nothing else in
+    this suite exercises the fragmented shape end to end.
+    """
+    rounds = [
+        [
+            _tool_call_delta(call_id="call-frag", name="files__read"),
+            _tool_call_delta(arguments='{"pa'),
+            _tool_call_delta(arguments='th": "/a'),
+            _tool_call_delta(arguments='.txt", "he'),
+            _tool_call_delta(arguments='ad": '),
+            _tool_call_delta(arguments="20}", finish_reason="tool_calls"),
+        ],
+        [_delta("done"), {"choices": [{"finish_reason": "stop"}]}],
+    ]
+    runtime = _FakeMCPRuntime()
+
+    with _fake_server([], rounds=rounds) as (port, _payloads):
+        cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": [{"role": "user", "content": "go"}]},
+            runtime,
+            timeout_s=10,
+        )
+
+    dispatched = runtime.calls[0][0]["function"]["arguments"]
+    assert json.loads(dispatched) == {"path": "/a.txt", "head": 20}
+
+
+def test_complete_chat_with_mcp_assembles_interleaved_parallel_calls():
+    """Two calls streamed at once are kept apart by ``index``, not ``id``.
+
+    Only the first fragment of each call carries an ``id``; every later
+    fragment identifies itself by ``index`` alone. Keying on anything else
+    would splice the two argument streams together.
+    """
+    rounds = [
+        [
+            _tool_call_delta(index=0, call_id="a", name="files__read"),
+            _tool_call_delta(index=1, call_id="b", name="files__read"),
+            _tool_call_delta(index=0, arguments='{"path":"/one"}'),
+            _tool_call_delta(index=1, arguments='{"path":"/two"}'),
+        ],
+        [_delta("read both"), {"choices": [{"finish_reason": "stop"}]}],
+    ]
+    runtime = _FakeMCPRuntime()
+
+    with _fake_server([], rounds=rounds) as (port, _payloads):
+        answer, _metrics = cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": [{"role": "user", "content": "go"}]},
+            runtime,
+            timeout_s=10,
+        )
+
+    assert answer == "read both"
+    dispatched = runtime.calls[0]
+    assert [call["id"] for call in dispatched] == ["a", "b"]
+    assert [call["function"]["arguments"] for call in dispatched] == [
+        '{"path":"/one"}',
+        '{"path":"/two"}',
+    ]
+
+
+def test_complete_chat_with_mcp_synthesizes_missing_call_ids():
+    """A server that omits ``id`` still yields dispatchable, matched calls."""
+    rounds = [
+        [_tool_call_delta(name="files__read", arguments="{}")],
+        [_delta("done"), {"choices": [{"finish_reason": "stop"}]}],
+    ]
     runtime = _FakeMCPRuntime()
     messages = [{"role": "user", "content": "go"}]
 
-    answer, metrics = cli._complete_chat_with_mcp(
-        "http://localhost:8000",
-        {"model": "test", "messages": messages},
-        runtime,
-        timeout_s=10,
-    )
-
-    assert answer == '["structured", "answer"]'
-    assert metrics["reasoning_content"] == "done"
-    assert messages[1]["reasoning_content"] == "need a tool"
-    assert messages[1]["tool_calls"][0]["id"] == "call_0_0"
-    assert messages[1]["tool_calls"][0]["function"]["arguments"] == "{}"
-
-
-@pytest.mark.parametrize(
-    ("response", "error"),
-    [
-        (_json_response({"error": "boom"}, status_code=500), "HTTP 500"),
-        (_json_response({"choices": []}), "Malformed chat completion"),
-        (
-            _json_response({"choices": [{"message": []}]}),
-            "Malformed chat completion",
-        ),
-        (
-            _json_response({"choices": [{"message": {"tool_calls": ["bad"]}}]}),
-            "Malformed chat completion",
-        ),
-        (
-            _json_response(
-                {
-                    "choices": [
-                        {"message": {"tool_calls": [{"function": "not-an-object"}]}}
-                    ]
-                }
-            ),
-            "Malformed chat completion",
-        ),
-    ],
-)
-def test_complete_chat_with_mcp_surfaces_model_api_errors(monkeypatch, response, error):
-    monkeypatch.setattr("requests.post", lambda *_args, **_kwargs: response)
-    with pytest.raises(RuntimeError, match=error):
+    with _fake_server([], rounds=rounds) as (port, _payloads):
         cli._complete_chat_with_mcp(
-            "http://localhost:8000",
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": messages},
+            runtime,
+            timeout_s=10,
+        )
+
+    synthesized = runtime.calls[0][0]["id"]
+    assert synthesized
+    # The tool result must reference the same id, or the follow-up request is
+    # malformed.
+    assert messages[-2]["tool_calls"][0]["id"] == synthesized
+    assert messages[-1]["tool_call_id"] == synthesized
+
+
+def test_complete_chat_with_mcp_ignores_tool_call_without_a_name():
+    """A fragment that never names a function is not dispatchable."""
+    rounds = [
+        [
+            _tool_call_delta(call_id="ghost", arguments="{}"),
+            {"choices": [{"delta": {"content": "never mind"}}]},
+            {"choices": [{"finish_reason": "stop"}]},
+        ],
+    ]
+    runtime = _FakeMCPRuntime()
+
+    with _fake_server([], rounds=rounds) as (port, payloads):
+        answer, metrics = cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": [{"role": "user", "content": "go"}]},
+            runtime,
+            timeout_s=10,
+        )
+
+    # Treated as a plain answer: no dispatch, no extra round.
+    assert answer == "never mind"
+    assert metrics["finish_reason"] == "stop"
+    assert runtime.calls == []
+    assert len(payloads) == 1
+
+
+def test_complete_chat_with_mcp_surfaces_model_api_errors():
+    """A non-200 from the server is reported, not swallowed."""
+    runtime = _FakeMCPRuntime()
+
+    with (
+        _fake_server([]) as (port, _payloads),
+        pytest.raises(RuntimeError, match="HTTP 404"),
+    ):
+        cli._complete_chat_with_mcp(
+            # Wrong path on a live server → 404 from the fake handler.
+            f"http://127.0.0.1:{port}/wrong",
             {"model": "test", "messages": []},
-            _FakeMCPRuntime(),
+            runtime,
             timeout_s=10,
         )
 
 
-def test_complete_chat_with_mcp_has_bounded_rounds(monkeypatch):
-    response = _json_response(
-        {
-            "choices": [
-                {
-                    "message": {
-                        "tool_calls": [
-                            {
-                                "id": "loop",
-                                "function": {
-                                    "name": "files__read",
-                                    "arguments": "{}",
-                                },
-                            }
-                        ]
-                    }
-                }
-            ]
-        }
-    )
-    monkeypatch.setattr("requests.post", lambda *_args, **_kwargs: response)
+def test_complete_chat_with_mcp_has_bounded_rounds():
+    """Exhausting the budget keeps the work instead of discarding the turn."""
+    looping = [
+        _tool_call_delta(call_id="loop", name="files__read", arguments="{}"),
+        {"choices": [{"delta": {"content": "still working"}}]},
+    ]
     runtime = _FakeMCPRuntime()
-    with pytest.raises(RuntimeError, match="exceeded 1 rounds"):
-        cli._complete_chat_with_mcp(
-            "http://localhost:8000",
-            {"model": "test", "messages": []},
+    messages = [{"role": "user", "content": "loop forever"}]
+
+    with _fake_server(looping) as (port, _payloads):
+        answer, metrics = cli._complete_chat_with_mcp(
+            f"http://127.0.0.1:{port}",
+            {"model": "test", "messages": messages},
             runtime,
             timeout_s=10,
             max_rounds=1,
         )
+
+    assert answer == "still working"
+    assert metrics["finish_reason"] == "tool_call_limit"
+    assert metrics["tool_rounds_exhausted"] == 1
     assert len(runtime.calls) == 1
-
-
-def test_complete_chat_with_mcp_preserves_partial_multi_call_results(monkeypatch):
-    response = _json_response(
-        {
-            "choices": [
-                {
-                    "message": {
-                        "tool_calls": [
-                            {
-                                "id": "completed",
-                                "function": {
-                                    "name": "files__read",
-                                    "arguments": "{}",
-                                },
-                            },
-                            {
-                                "id": "interrupted",
-                                "function": {
-                                    "name": "files__read",
-                                    "arguments": "{}",
-                                },
-                            },
-                        ]
-                    }
-                }
-            ]
-        }
+    assert messages[-1]["role"] == "tool"
+    # No dangling assistant tool_calls without matching results — that would
+    # make the next request malformed.
+    assert not any(
+        message.get("tool_calls")
+        and not any(
+            other.get("tool_call_id") == message["tool_calls"][0]["id"]
+            for other in messages
+        )
+        for message in messages
+        if message.get("role") == "assistant"
     )
-    monkeypatch.setattr("requests.post", lambda *_args, **_kwargs: response)
+
+
+def test_complete_chat_with_mcp_preserves_partial_multi_call_results():
+    """An interrupt mid-batch still leaves every call answered."""
+    rounds = [
+        [
+            _tool_call_delta(index=0, call_id="completed", name="files__read"),
+            _tool_call_delta(index=0, arguments="{}"),
+            _tool_call_delta(index=1, call_id="interrupted", name="files__read"),
+            _tool_call_delta(index=1, arguments="{}"),
+        ],
+    ]
 
     class _Runtime(_FakeMCPRuntime):
         def execute_tool_calls(self, calls, on_event=None):
@@ -478,9 +544,12 @@ def test_complete_chat_with_mcp_preserves_partial_multi_call_results(monkeypatch
             raise KeyboardInterrupt
 
     messages = [{"role": "user", "content": "run both"}]
-    with pytest.raises(KeyboardInterrupt):
+    with (
+        _fake_server([], rounds=rounds) as (port, _payloads),
+        pytest.raises(KeyboardInterrupt),
+    ):
         cli._complete_chat_with_mcp(
-            "http://localhost:8000",
+            f"http://127.0.0.1:{port}",
             {"model": "test", "messages": messages},
             _Runtime(),
             timeout_s=10,
@@ -625,6 +694,32 @@ def test_chat_command_repl_multi_turn(monkeypatch, capsys):
     assert payloads[0]["messages"] == [{"role": "user", "content": "hello"}]
     # After /reset and "again", history should NOT contain "hello".
     assert payloads[1]["messages"] == [{"role": "user", "content": "again"}]
+
+
+def test_chat_attach_without_model_discovers_server_model(monkeypatch, capsys):
+    with _fake_server([_delta("ok")]) as (port, payloads):
+        inputs = iter(["hello", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        ns = _ns_for_chat(port)
+        ns._model_was_explicit = False
+
+        cli.chat_command(ns)
+
+    assert payloads[0]["model"] == "served-model"
+    assert "Connected model: served-model" in capsys.readouterr().out
+
+
+def test_chat_attach_with_explicit_model_does_not_override_it(monkeypatch):
+    with _fake_server([_delta("ok")]) as (port, payloads):
+        inputs = iter(["hello", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+        ns = _ns_for_chat(port)
+        ns.model = "explicit-model"
+        ns._model_was_explicit = True
+
+        cli.chat_command(ns)
+
+    assert payloads[0]["model"] == "explicit-model"
 
 
 # ----------------------------------------------------------------------
@@ -890,10 +985,11 @@ def test_chat_command_owns_mcp_runtime_without_configuring_serve(monkeypatch, ca
         def close(self):
             self.closed = True
 
-    def _complete(base_url, payload, runtime, timeout_s, on_tool_event):
+    def _complete(base_url, payload, runtime, timeout_s, max_rounds, on_tool_event):
         from vllm_mlx.chat_mcp import ChatToolEvent
 
         loop_payloads.append((base_url, deepcopy(payload), runtime, timeout_s))
+        assert max_rounds == 8
         on_tool_event(ChatToolEvent("start", "call-1", "files__read"))
         on_tool_event(ChatToolEvent("start", "call-evil", "\x1b]52;c;payload\x07"))
         on_tool_event(
@@ -927,7 +1023,12 @@ def test_chat_command_owns_mcp_runtime_without_configuring_serve(monkeypatch, ca
     assert "using ]52;c;payload…" in output
     assert "\x1b" not in output
     assert "✓ files.read (0.25s)" in output
-    assert "done" in output
+    # The answer itself is NOT printed here: each round is rendered by the
+    # streaming path inside _complete_chat_with_mcp. This stub returns without
+    # streaming, so the absence of "done" is what proves the caller no longer
+    # re-renders — re-rendering would print the answer twice in the real path.
+    assert "done" not in output
+    assert "1 tok" in output
 
     assert created[0].closed is True
     cleanup_callbacks[0]()
@@ -2559,6 +2660,44 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
     assert "--mcp-config" not in captured["cmd"]
+
+
+def test_spawn_chat_server_forwards_disable_prefix_cache(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    cli._spawn_chat_server(
+        "qwen3.5-4b-4bit",
+        str(tmp_path / "fake.log"),
+        disable_prefix_cache=True,
+    )
+
+    assert captured["cmd"].count("--disable-prefix-cache") == 1
 
 
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):

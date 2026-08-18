@@ -370,12 +370,13 @@ class PrefixCacheManager:
         """Reset statistics."""
         self.stats = PrefixCacheStats()
 
-    def clear(self) -> None:
+    def clear(self, *, reset_stats: bool = True) -> None:
         """Clear all cached entries."""
         self._cache.clear()
         self._lru.clear()
         self._pinned.clear()
-        self.reset_stats()
+        if reset_stats:
+            self.reset_stats()
 
     def pin_prefix(self, tokens: list[int]) -> bool:
         """
@@ -1181,12 +1182,13 @@ class BlockAwarePrefixCache:
         self._tokens_saved = 0
         self.paged_cache.reset_stats()
 
-    def clear(self) -> None:
+    def clear(self, *, reset_stats: bool = True) -> None:
         """Clear all cached data."""
         self._request_tables.clear()
         self._prefix_index.clear()
-        self.paged_cache.clear()
-        self.reset_stats()
+        self.paged_cache.clear(reset_stats=reset_stats)
+        if reset_stats:
+            self.reset_stats()
 
     def pin_prefix(self, tokens: list[int]) -> bool:
         """

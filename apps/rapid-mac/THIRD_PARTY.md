@@ -89,9 +89,10 @@ an injected Sparkle public key have no in-app update path at all.
 
 ## Assets
 
-* **Cheetah mascot** — derived from the `rapidmlx.com` landing-page
-  assets. © 2026 MachineFi. Embedded in the app bundle (not the
-  source tree under an OSS license).
+* **Cheetah mascot** — the Rapid-MLX project's own artwork, derived from
+  the project's `rapidmlx.com` landing-page assets. © 2026 the Rapid-MLX
+  project; all rights reserved. Embedded in the app bundle (not the source
+  tree under an OSS license).
 
 ## Bundled engine (the `rapid-mlx` sidecar)
 

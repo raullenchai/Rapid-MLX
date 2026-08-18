@@ -30,6 +30,15 @@ struct FailureDiagnosis: Equatable, Sendable {
         case toolFailed
         case userDeclined
         case downloadFailed
+        /// The user stopped the pull themselves. Distinct from
+        /// ``downloadFailed`` because the two differ in the only thing the
+        /// copy is for: nothing went wrong, and "check your connection" is
+        /// advice about a fault that did not happen. Paper 05.1 flags the
+        /// collapsed reading explicitly ("For a user-initiated stop that
+        /// connection advice is wrong … the fix belongs in FailureDiagnoser,
+        /// not in the design"), so the split lives here rather than in a
+        /// screen deciding to say something different about the same kind.
+        case downloadCancelled
         case downloadSourceUnavailable
         case requestFailed
 
@@ -63,6 +72,12 @@ struct FailureDiagnosis: Equatable, Sendable {
                 return .webSearchUnavailable
             case .browsePageTooLarge:
                 return .toolFailed
+            // Added after the same release, and carrying the same hazard. A
+            // download outcome is never written into a transcript today, but
+            // the ancestor is named anyway so that stays true by construction
+            // rather than by nobody having tried it.
+            case .downloadCancelled:
+                return .downloadFailed
             case .modelOutOfMemory, .modelLoadFailed, .engineNotRunning,
                  .webSearchOffline, .webSearchUnavailable,
                  .commandPermissionDenied, .commandFailed,
@@ -192,7 +207,11 @@ extension FailureDiagnosis.Kind {
     /// chose, rather than inheriting the alarming lane by omission.
     var severity: FailureDiagnosis.Severity {
         switch self {
-        case .userDeclined:
+        // Both of these are the user's own answer, not a malfunction: one
+        // declines a permission prompt, the other stops a transfer already
+        // running. Painting either red tells somebody their own decision
+        // broke something.
+        case .userDeclined, .downloadCancelled:
             return .notice
         // A throttled backend is something that went wrong out in the world,
         // not something the user picked — it stays on the error lane, and its
@@ -289,6 +308,16 @@ enum FailureDiagnoser {
             action = nil
         case .downloadFailed:
             message = "The model download didn't finish. Check your connection, then try again."
+            action = .retry
+        case .downloadCancelled:
+            // States what the user did, what it left behind, and what the one
+            // button will do — and stops. No connection advice (nothing was
+            // wrong with the connection), and deliberately silent about
+            // whether a fresh pull reuses bytes already on disk: that is a
+            // property of the downloader, not a promise this app is in a
+            // position to make. See Paper 05.1 state 10 — "No Pause and no
+            // resume."
+            message = "You stopped this download, so the model isn't installed. Download it again, or choose a different model."
             action = .retry
         case .downloadSourceUnavailable:
             message = "The current download source couldn't be reached. Switch source and try again."

@@ -13,6 +13,7 @@ The scheduler follows vLLM's design with:
 
 import inspect
 import logging
+import math
 import os
 import threading
 import time
@@ -436,6 +437,10 @@ class SchedulerConfig:
     vision_min_pixels: int = 0
     vision_max_pixels: int = 0
 
+    # Opt-in idle prefix-cache release. ``None`` lets the engine read
+    # RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS; 0 explicitly disables it.
+    idle_cache_clear_seconds: float | None = None
+
     def __post_init__(self) -> None:
         if self.vision_min_pixels < 0 or self.vision_max_pixels < 0:
             raise ValueError("vision pixel bounds must be non-negative")
@@ -447,6 +452,11 @@ class SchedulerConfig:
             raise ValueError("vision_min_pixels must not exceed vision_max_pixels")
         if self.response_cache_entries < 0:
             raise ValueError("response_cache_entries must be >= 0")
+        if self.idle_cache_clear_seconds is not None and (
+            not math.isfinite(self.idle_cache_clear_seconds)
+            or self.idle_cache_clear_seconds < 0
+        ):
+            raise ValueError("idle_cache_clear_seconds must be finite and >= 0")
         if self.enable_mtp:
             import warnings
 
@@ -8060,6 +8070,22 @@ class Scheduler:
         elif self.prefix_cache is not None:
             return self.prefix_cache.get_stats()
         return None
+
+    def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
+        """Clear scheduler-owned reusable KV state without touching requests."""
+        if self.has_requests():
+            raise RuntimeError("cannot clear prefix cache while requests are active")
+        cleared = False
+        if self.block_aware_cache is not None:
+            self.block_aware_cache.clear(reset_stats=reset_stats)
+            cleared = True
+        elif self.memory_aware_cache is not None:
+            self.memory_aware_cache.clear(reset_stats=reset_stats)
+            cleared = True
+        elif self.prefix_cache is not None:
+            self.prefix_cache.clear(reset_stats=reset_stats)
+            cleared = True
+        return cleared
 
     def reset(self) -> None:
         """Reset the scheduler state.

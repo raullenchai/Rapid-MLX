@@ -146,6 +146,19 @@ def non_negative_int(value: str) -> int:
     return n
 
 
+def positive_int(value: str) -> int:
+    """Argparse ``type`` callable: parse a strictly positive integer."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a positive integer, got {value!r}"
+        ) from None
+    if n <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {n}")
+    return n
+
+
 def _vision_pixel_bounds_error(min_pixels: int, max_pixels: int) -> str | None:
     if min_pixels and max_pixels and min_pixels > max_pixels:
         return "--vision-min-pixels must not exceed --vision-max-pixels"
@@ -2925,6 +2938,13 @@ def serve_command(args):
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
         sys.exit(1)
+    idle_cache_clear_seconds = getattr(args, "idle_cache_clear_seconds", None)
+    if idle_cache_clear_seconds is not None:
+        import math
+
+        if not math.isfinite(idle_cache_clear_seconds) or idle_cache_clear_seconds < 0:
+            print("Error: --idle-cache-clear-seconds must be finite and >= 0")
+            sys.exit(1)
 
     # Validate PFlash config and reject unsupported model combinations
     # at startup. Done here (not lazily in the scheduler) so a typo in
@@ -3656,6 +3676,7 @@ def serve_command(args):
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
         cache_memory_percent=args.cache_memory_percent,
+        idle_cache_clear_seconds=getattr(args, "idle_cache_clear_seconds", None),
         # #1103/#1122: bounded trim-free hybrid (recurrent-state) prefix reuse.
         # Auto-defaulted to 8 for hybrid models when prefix cache is enabled.
         hybrid_cache_entries=_hybrid_cache_entries,
@@ -6212,6 +6233,7 @@ def _spawn_chat_server(
     *,
     register_in: list | None = None,
     log_handle=None,
+    disable_prefix_cache: bool = False,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
@@ -6264,6 +6286,8 @@ def _spawn_chat_server(
     ]
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
+    if disable_prefix_cache:
+        cmd.append("--disable-prefix-cache")
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
     # Tell the child main() that the parent already gated (or that this is
     # an internal spawn, where prompting would deadlock anyway because the
@@ -6534,11 +6558,79 @@ def _has_short_pattern_dominating_suffix(
     return period < n and period <= max_period
 
 
+def _accumulate_tool_call_deltas(
+    parts: dict[int, dict],
+    deltas: list,
+) -> None:
+    """Merge one chunk's ``delta.tool_calls`` into an index-keyed accumulator.
+
+    Streaming tool calls arrive split across chunks: the first carries ``id``
+    and ``function.name``, later ones append ``function.arguments`` fragments
+    that are only valid JSON once concatenated. ``index`` — not ``id``, which
+    later fragments omit — is the field that ties the fragments together, so
+    it is the accumulator key.
+
+    A server that streams several calls interleaves their indices, which is
+    why fragments are appended per index rather than to a single buffer.
+    """
+
+    import json
+
+    for delta in deltas:
+        if not isinstance(delta, dict):
+            continue
+        # Fall back to positional order for servers that omit ``index`` when
+        # only one call is in flight.
+        index = delta.get("index")
+        if not isinstance(index, int):
+            index = 0
+        part = parts.setdefault(index, {"id": None, "name": None, "arguments": ""})
+
+        if delta.get("id"):
+            part["id"] = str(delta["id"])
+        function = delta.get("function")
+        if not isinstance(function, dict):
+            continue
+        if function.get("name"):
+            part["name"] = str(function["name"])
+        arguments = function.get("arguments")
+        if isinstance(arguments, str):
+            part["arguments"] += arguments
+        elif arguments is not None:
+            # Some servers send the whole object once instead of fragments.
+            part["arguments"] = json.dumps(arguments, ensure_ascii=False)
+
+
+def _finalize_tool_calls(parts: dict[int, dict]) -> list[dict]:
+    """Render the accumulator into OpenAI-shape tool calls, in index order."""
+
+    finalized = []
+    for position, index in enumerate(sorted(parts)):
+        part = parts[index]
+        if not part["name"]:
+            # No function name ever arrived — there is nothing to dispatch,
+            # and forwarding it would only produce an "unknown tool" round
+            # trip.
+            continue
+        finalized.append(
+            {
+                "id": part["id"] or f"call_{position}",
+                "type": "function",
+                "function": {
+                    "name": part["name"],
+                    "arguments": part["arguments"] or "{}",
+                },
+            }
+        )
+    return finalized
+
+
 def _stream_chat_response(
     base_url: str,
     payload: dict,
     timeout_s: int,
     metrics: dict | None = None,
+    tool_calls: list | None = None,
 ) -> str:
     """POST /v1/chat/completions with stream=True and print tokens as they
     arrive. Returns the full assistant content (concatenated content deltas).
@@ -6552,6 +6644,11 @@ def _stream_chat_response(
     with one correct Rich Markdown render containing structured headings,
     lists, links, tables, and code. Pipes, CI, dumb terminals, and
     ``NO_COLOR`` retain byte-for-byte plain streaming.
+
+    When *tool_calls* is a list, streamed ``delta.tool_calls`` fragments are
+    accumulated and the assembled calls are appended to it. This is what lets
+    the MCP agent loop stream: the tool round is no longer a reason to fall
+    back to a blocking request.
     """
     import json
 
@@ -6565,6 +6662,8 @@ def _stream_chat_response(
     is_tty = supports_rich_output(sys.stdout)
     in_reasoning = False
     full = ""
+    full_reasoning = ""
+    tool_call_parts: dict[int, dict] = {}
 
     # ----- Repetition guard ----------------------------------------------
     # Models occasionally degenerate into the same token repeated until
@@ -6638,7 +6737,12 @@ def _stream_chat_response(
                     metrics["finish_reason"] = fr
             reasoning = delta.get("reasoning_content")
             piece = delta.get("content")
+            if tool_calls is not None:
+                streamed_calls = delta.get("tool_calls")
+                if isinstance(streamed_calls, list):
+                    _accumulate_tool_call_deltas(tool_call_parts, streamed_calls)
             if reasoning:
+                full_reasoning += reasoning
                 if not in_reasoning:
                     if is_tty:
                         sys.stdout.write(f"{MAGENTA}[thinking]{RESET} {DIM}")
@@ -6721,6 +6825,10 @@ def _stream_chat_response(
     if in_reasoning and is_tty:
         sys.stdout.write(RESET)
         sys.stdout.flush()
+    if tool_calls is not None:
+        tool_calls.extend(_finalize_tool_calls(tool_call_parts))
+    if metrics is not None and full_reasoning:
+        metrics["reasoning_content"] = full_reasoning
     if repetition_aborted:
         msg = (
             f"\n\n  {DIM}(response cut: model began repeating itself — "
@@ -6742,96 +6850,86 @@ def _complete_chat_with_mcp(
     max_rounds: int = 8,
     on_tool_event=None,
 ) -> tuple[str, dict]:
-    """Run the chat agent loop with MCP tools using non-streaming responses.
+    """Run the chat agent loop with MCP tools, streaming every round.
 
     vLLM and SGLang use the same loop shape: expose MCP tools as ordinary
     function tools, append the assistant tool call and matching tool output,
     then ask the model again.  MCP transport and execution stay inside the
     chat runtime; the inference server only sees standard Chat Completions
     messages.
+
+    Every round streams, including the ones that end in a tool call. The
+    blocking variant this replaced left the screen empty for the whole
+    multi-round turn, which on a local model is the slowest part of the
+    session and the part the user most needs feedback during.
     """
     import json
-
-    import requests
 
     messages = payload["messages"]
     request_payload = {
         **payload,
-        "stream": False,
+        "stream": True,
+        "stream_options": {"include_usage": True},
         "tools": mcp_runtime.tools,
         "tool_choice": "auto",
     }
-    request_payload.pop("stream_options", None)
     total_usage: dict[str, int | float] = {}
 
     for round_index in range(max_rounds + 1):
-        response = requests.post(
-            f"{base_url}/v1/chat/completions",
-            json=request_payload,
-            timeout=timeout_s,
+        round_metrics: dict = {}
+        streamed_calls: list[dict] = []
+        content = _stream_chat_response(
+            base_url,
+            request_payload,
+            timeout_s=timeout_s,
+            metrics=round_metrics,
+            tool_calls=streamed_calls,
         )
-        if response.status_code != 200:
-            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
-        try:
-            body = response.json()
-            choice = body["choices"][0]
-            message = choice["message"]
-            if not isinstance(message, dict):
-                raise TypeError
-        except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise RuntimeError("Malformed chat completion response") from exc
 
-        usage = body.get("usage") or {}
-        if not isinstance(usage, dict):
-            raise RuntimeError("Malformed chat completion response")
-        for name, value in usage.items():
+        for name in ("prompt_tokens", "completion_tokens"):
+            value = round_metrics.get(name)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 total_usage[name] = total_usage.get(name, 0) + value
 
-        tool_calls = message.get("tool_calls") or []
-        if not isinstance(tool_calls, list):
-            raise RuntimeError("Malformed chat completion response")
-        if not tool_calls:
-            content = message.get("content") or ""
-            if not isinstance(content, str):
-                content = json.dumps(content, ensure_ascii=False)
+        if not streamed_calls:
             metrics = dict(total_usage)
-            metrics["finish_reason"] = choice.get("finish_reason")
-            reasoning = message.get("reasoning_content")
-            if reasoning:
-                metrics["reasoning_content"] = reasoning
+            metrics["finish_reason"] = round_metrics.get("finish_reason")
             return content, metrics
         if round_index == max_rounds:
-            raise RuntimeError(f"MCP tool loop exceeded {max_rounds} rounds")
+            # Budget exhausted. The tool results already in ``messages`` are
+            # real work — the model read files, ran commands — so raising here
+            # would send the caller down ``_recover_failed_chat_turn`` and
+            # delete all of it. Return instead, with the partial content the
+            # model did produce and a finish_reason the caller can report.
+            # The assistant message requesting this round's calls is
+            # deliberately not appended: unanswered ``tool_calls`` in history
+            # make the next request malformed.
+            metrics = dict(total_usage)
+            metrics["finish_reason"] = "tool_call_limit"
+            metrics["tool_rounds_exhausted"] = max_rounds
+            return content, metrics
 
         normalized_calls = []
-        for position, tool_call in enumerate(tool_calls):
-            if not isinstance(tool_call, dict):
-                raise RuntimeError("Malformed chat completion response")
-            function = tool_call.get("function") or {}
-            if not isinstance(function, dict):
-                raise RuntimeError("Malformed chat completion response")
-            arguments = function.get("arguments", "{}")
-            if not isinstance(arguments, str):
-                arguments = json.dumps(arguments, ensure_ascii=False)
+        for position, tool_call in enumerate(streamed_calls):
+            function = tool_call["function"]
             normalized_calls.append(
                 {
                     "id": str(tool_call.get("id") or f"call_{round_index}_{position}"),
                     "type": "function",
                     "function": {
                         "name": str(function.get("name") or ""),
-                        "arguments": arguments,
+                        "arguments": function.get("arguments") or "{}",
                     },
                 }
             )
 
         assistant_message = {
             "role": "assistant",
-            "content": message.get("content"),
+            "content": content or None,
             "tool_calls": normalized_calls,
         }
-        if message.get("reasoning_content"):
-            assistant_message["reasoning_content"] = message["reasoning_content"]
+        if round_metrics.get("reasoning_content"):
+            assistant_message["reasoning_content"] = round_metrics["reasoning_content"]
         messages.append(assistant_message)
         completed_messages = {}
 
@@ -6863,7 +6961,9 @@ def _complete_chat_with_mcp(
                 )
             raise
 
-    raise RuntimeError(f"MCP tool loop exceeded {max_rounds} rounds")
+    # Unreachable: the ``round_index == max_rounds`` branch returns on the
+    # final iteration. Kept so the function has no implicit ``None`` return.
+    raise AssertionError("MCP tool loop exited without a result")
 
 
 def _recover_failed_chat_turn(messages: list[dict], turn_start: int) -> None:
@@ -7099,6 +7199,8 @@ def chat_command(args):
         pass
     atexit.register(_cleanup)
 
+    attached_to_existing = bool(args.base_url or args.port is not None)
+
     if args.base_url:
         base_url = args.base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -7152,12 +7254,18 @@ def chat_command(args):
             # If main() resolved an alias, expose the alias as the API model name
             # so the chat request body matches what the user typed.
             original = getattr(args, "_original_alias", None)
+            privacy_kwargs = (
+                {"disable_prefix_cache": True}
+                if getattr(args, "disable_prefix_cache", False)
+                else {}
+            )
             proc, base_url = _spawn_chat_server(
                 args.model,
                 log_path,
                 served_name=original,
                 register_in=_active_procs,
                 log_handle=_log_handle,
+                **privacy_kwargs,
             )
 
         try:
@@ -7166,6 +7274,37 @@ def chat_command(args):
             print(f"\n  {RED}Failed to start server:{RESET} {e}")
             sys.exit(1)
         print(f"  {GREEN}✓ Ready.{RESET}\n")
+
+    # When attaching without an explicit model, trust the server's advertised
+    # model instead of the client's independently configured starter alias.
+    # The latter commonly differs from a manually started server and turns the
+    # very first request into an avoidable 404. Direct callers predating this
+    # marker are treated as explicit to preserve their existing behavior.
+    if attached_to_existing and not getattr(args, "_model_was_explicit", True):
+        try:
+            import requests
+
+            response = requests.get(f"{base_url}/v1/models", timeout=2)
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("data", []) if isinstance(payload, dict) else []
+            discovered = next(
+                (
+                    item.get("id")
+                    for item in models
+                    if isinstance(item, dict)
+                    and isinstance(item.get("id"), str)
+                    and item["id"].strip()
+                ),
+                None,
+            )
+        except (requests.RequestException, ValueError, TypeError):
+            discovered = None
+        if discovered:
+            args.model = discovered
+            if hasattr(args, "_original_alias"):
+                delattr(args, "_original_alias")
+            print(f"  Connected model: {discovered} (discovered from server)")
 
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
@@ -7437,12 +7576,18 @@ def chat_command(args):
             # readiness wait, before any further Python statement runs in
             # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
             # load tears the child down via the cleanup walk.
+            privacy_kwargs = (
+                {"disable_prefix_cache": True}
+                if getattr(args, "disable_prefix_cache", False)
+                else {}
+            )
             new_proc, new_base_url = _spawn_chat_server(
                 resolved,
                 new_log_path,
                 served_name=new_alias,
                 register_in=_active_procs,
                 log_handle=_new_log_handle,
+                **privacy_kwargs,
             )
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
@@ -7612,14 +7757,13 @@ def chat_command(args):
                         payload,
                         mcp_runtime,
                         timeout_s=args.response_timeout,
+                        max_rounds=getattr(args, "mcp_max_rounds", 8),
                         on_tool_event=_show_mcp_tool_event,
                     )
-                    reasoning = metrics.get("reasoning_content")
-                    if reasoning:
-                        sys.stdout.write(f"{DIM}[thinking] {reasoning}{RESET}\n")
-                    from .chat_render import render_markdown
-
-                    render_markdown(assistant)
+                    # No re-render here: every round streamed its own tokens
+                    # (reasoning included) through the same renderer the
+                    # non-MCP path uses, so rendering again would print the
+                    # final answer twice.
             except KeyboardInterrupt:
                 print(f"\n  {YELLOW}(response interrupted){RESET}\n")
                 _recover_failed_chat_turn(messages, turn_start)
@@ -7663,6 +7807,16 @@ def chat_command(args):
                 print(
                     f"  {YELLOW}(reasoning consumed the full --max-tokens "
                     f"budget; bump --max-tokens for a final answer){RESET}\n"
+                )
+            # The turn stopped because the tool budget ran out, not because the
+            # model was done. Say so — the tool results are kept in history, so
+            # the user can simply ask it to continue.
+            if metrics.get("finish_reason") == "tool_call_limit":
+                exhausted = metrics.get("tool_rounds_exhausted")
+                print(
+                    f"  {YELLOW}(stopped after {exhausted} tool rounds; "
+                    f"tool results are kept — ask it to continue, or raise "
+                    f"--mcp-max-rounds){RESET}\n"
                 )
             if assistant:
                 messages.append({"role": "assistant", "content": assistant})
@@ -7998,11 +8152,11 @@ def agents_command(args):
             # User specified model — look up *that* model's context window
             context_length = fetch_context_window(base_url, model_id)
 
-        # Claude Code and Continue are the first first-class setup flows. They
+        # Claude Code, Continue and DSH have first-class setup flows. They
         # preview an exact diff, require consent, back up existing config,
-        # write atomically, and verify the server afterwards. Keep the generic
-        # profile writer below for the remaining integrations until each one
-        # receives an equally precise adapter.
+        # write atomically, and verify the server afterwards. The generic
+        # profile writer below still lacks the diff/consent/backup half, but
+        # it does honour --dry-run, so a preview never writes on either path.
         if profile.name in {"claude-code", "continue", "deepseek-harness"}:
             from vllm_mlx.agents.setup import (
                 apply_setup_plan,
@@ -8073,12 +8227,17 @@ def agents_command(args):
             model_id,
             agent_version=args.agent_version,
             context_length=context_length,
+            dry_run=args.dry_run,
         )
         if summary.startswith("Cannot"):
             print(f"\n  {profile.display_name} setup failed.")
             print(f"  {summary}")
             print()
             sys.exit(1)
+        if args.dry_run:
+            print(f"\n  {summary}")
+            print("\n  Dry run only; nothing was written.\n")
+            return
         print(f"\n  {profile.display_name} configured!")
         print(f"  {summary}")
         print()
@@ -8699,6 +8858,16 @@ Examples:
         type=float,
         default=0.20,
         help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+    )
+    serve_parser.add_argument(
+        "--idle-cache-clear-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Clear reusable prefix/KV cache after this many seconds with no "
+            "active requests, preserving loaded model weights. 0 disables; "
+            "default: RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS or disabled."
+        ),
     )
     # #1103: bounded trim-free prefix reuse for "non-trimmable" cache entries.
     # Opt-in: the default 0 keeps the #1075 policy of dropping them at store
@@ -10077,6 +10246,24 @@ Examples:
         default=None,
         help="Path to an MCP config file whose tools are available in this chat",
     )
+    chat_parser.add_argument(
+        "--mcp-max-rounds",
+        type=positive_int,
+        default=8,
+        help=(
+            "Maximum tool-call rounds per turn when --mcp-config is set "
+            "(default: 8). Multi-step tasks may need more."
+        ),
+    )
+    chat_parser.add_argument(
+        "--disable-prefix-cache",
+        action="store_true",
+        help=(
+            "Disable reusable prefix-cache persistence in the server spawned "
+            "by chat, so prompt token IDs are not written to disk. Has no "
+            "effect with --port or --base-url; configure that server directly."
+        ),
+    )
 
     # Info command — show the per-model profile (parsers + capability gates)
     info_parser = subparsers.add_parser(
@@ -10333,6 +10520,8 @@ def main():
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
     args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    if getattr(args, "command", None) in ("chat", "run"):
+        args._model_was_explicit = getattr(args, "model", None) is not None
 
     # First-run consent prompt — fires at most once per machine, only on
     # interactive subcommands when stdin is a tty. Safe no-op otherwise.
@@ -10528,7 +10717,7 @@ def main():
         _cmd = getattr(args, "command", "chat")
         _sel_alias, _starter_cached = select_chat_default()
         args.model = _sel_alias
-        if sys.stdin.isatty():
+        if sys.stdin.isatty() and not (args.base_url or args.port is not None):
             if _starter_cached:
                 print(
                     f"  No model specified — using {_sel_alias} (already downloaded)."

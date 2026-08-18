@@ -292,21 +292,30 @@ python examples/audio_separation_example.py song.mp3 --description music -o musi
 
 ### Drums Separation Demo
 
-Isolate drums from a rock song using SAM-Audio:
-
-| Audio | Description | Listen |
-|-------|-------------|--------|
-| Original | "Get Ready" by David Fesliyan (30s, royalty-free) | [🎵 rock_get_ready.mp3](../../examples/rock_get_ready.mp3) |
-| Isolated Drums | Drums extracted by SAM-Audio | [🥁 drums_isolated.wav](../../examples/drums_isolated.wav) |
-| Without Drums | Track with drums removed | [🎸 rock_no_drums.wav](../../examples/rock_no_drums.wav) |
+Isolate drums from a rock song using SAM-Audio. Point the example at any track
+you have the rights to use — `--description` takes a free-form stem name
+(`drums`, `bass`, `vocals`, `guitar`, …), and `--background` writes the
+complementary mix:
 
 ```bash
-# Isolate drums from rock song
-python examples/audio_separation_example.py examples/rock_get_ready.mp3 \
+python examples/audio_separation_example.py your_song.mp3 \
   --description "drums" \
   --output drums_isolated.wav \
-  --background rock_no_drums.wav
+  --background song_no_drums.wav
 ```
+
+`--output` gets the isolated stem, `--background` gets the same track with that
+stem removed. Add `--play` to audition the result without writing files.
+
+> **Bring your own audio.** This repository ships no music. Stock "royalty-free"
+> libraries usually still restrict redistribution and commercial use, so we do
+> not bundle their files — use your own recordings, or a source you have cleared
+> for your use. The [Free Music Archive](https://freemusicarchive.org/) hosts
+> tracks under several licenses, so filter to CC0 / Public Domain and check the
+> individual track's license before you rely on it; [MUSDB18](https://sigsep.github.io/datasets/musdb.html)
+> is the standard source-separation benchmark but is research-licensed (not for
+> commercial use). Whatever you pick, confirm its license covers what you plan
+> to do.
 
 **Performance:** 30s audio processed in ~20 seconds on M4 Max.
 

@@ -92,6 +92,9 @@ struct FailureDiagnosisView: View {
         case .userDeclined: return "hand.raised"
         case .fileNotFound: return "doc.questionmark"
         case .downloadFailed, .downloadSourceUnavailable: return "arrow.down.circle"
+        // Unfilled and tinted secondary by ``diagnosisIcon``, for the same
+        // reason ``userDeclined`` is: the user stopped this on purpose.
+        case .downloadCancelled: return "stop.circle"
         case .commandFailed, .toolFailed, .requestFailed: return "exclamationmark.triangle.fill"
         }
     }
