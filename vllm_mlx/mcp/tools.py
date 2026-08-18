@@ -98,19 +98,6 @@ def format_tool_result(result: MCPToolResult, tool_call_id: str) -> dict[str, An
     return result.to_message(tool_call_id)
 
 
-def format_tool_results(
-    results: list[tuple[MCPToolResult, str]],
-) -> list[dict[str, Any]]:
-    """
-    Format multiple tool results as messages.
-
-    Args:
-        results: List of (MCPToolResult, tool_call_id) tuples
-
-    Returns:
-        List of OpenAI-compatible tool result messages
-    """
-    return [format_tool_result(result, call_id) for result, call_id in results]
 
 
 def merge_tools(
