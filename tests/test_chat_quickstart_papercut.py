@@ -147,22 +147,28 @@ def test_with_gradio_present_module_exposes_it():
 def test_real_subprocess_bare_fallback_reaches_the_repl_path():
     """Belt-and-braces: a REAL interpreter, the REAL argument parser.
 
-    Only the terminal boundary (``chat_command``) is stubbed — codex (r3 on
-    #2030) rightly flagged that stubbing ``cli.main`` wholesale left the
-    fallback argv unvalidated: rename ``chat`` or ``--port`` and a lambda
-    stub stays green while the fallback dies for users. Here the argv must
-    survive real argparse and dispatch to the chat entry with the parsed
-    port, or the subprocess exits non-zero / never prints the marker. The
-    stub keeps the test off the network — with no positional model the
-    pre-dispatch download gate never fires, and stdin is not a tty.
+    Codex (r3 on #2030) rightly flagged that a bare ``cli.main`` lambda left
+    the fallback argv unvalidated: rename ``chat`` or ``--port`` and the stub
+    stays green while the fallback dies for users. The replacement main here
+    runs the fallback argv through the REAL ``build_parser()`` strictly —
+    an unknown subcommand or flag makes argparse exit 2 and the test red —
+    and asserts the parsed port. It deliberately does NOT run the real
+    ``main()`` body: its pre-dispatch model auto-select for ``chat`` with no
+    positional model touches the machine's model catalog (env-dependent —
+    it failed on the hosted validate runner, which has no models), and
+    routing ``chat`` to ``chat_command`` is cli's own dispatch contract,
+    covered by the CLI suite.
     """
     code = (
         "import sys\n"
         "sys.modules['gradio'] = None\n"
         "import vllm_mlx.cli as cli\n"
-        "def _record(args):\n"
+        "def _parse_with_real_parser(argv=None):\n"
+        "    args = cli.build_parser().parse_args(sys.argv[1:])\n"
+        "    assert args.command == 'chat', args.command\n"
         "    print(f'REPL-DISPATCH port={args.port}')\n"
-        "cli.chat_command = _record\n"
+        "    return 0\n"
+        "cli.main = _parse_with_real_parser\n"
         "sys.argv = ['rapid-mlx-chat']\n"
         "import vllm_mlx.gradio_app as g\n"
         "try:\n"
