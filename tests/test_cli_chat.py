@@ -126,6 +126,21 @@ def test_chat_subcommand_registered_in_cli():
     assert exc.value.code == 0
 
 
+def test_chat_disable_prefix_cache_flag_is_registered():
+    captured: list = []
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--disable-prefix-cache"],
+        ),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+
+    assert captured[0].disable_prefix_cache is True
+
+
 def test_chat_no_model_defaults_to_qwen35_4b():
     """`rapid-mlx chat` (no model) on a COLD cache routes chat_command with
     the first-run starter (qwen3.5-4b-4bit).
