@@ -1167,6 +1167,15 @@ flow_fresh_install() {
             || die "post-onboarding shell missing $id"
     done
     baseline fresh-install.steady "$OUT/steady.json"
+    # Exercise the scene/content contract, not only the constant. Before the
+    # fix the declared floor was never applied and AppKit accepted ~616pt.
+    # Asking for 500pt must be clamped by the live window to at least 720pt.
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX 500x500 \
+        > "$OUT/window-floor.json" \
+        || die "the main window rejected a native resize request"
+    jq -e '.actual.width >= 720 and .actual.height >= 560' \
+        "$OUT/window-floor.json" >/dev/null \
+        || die "the live main window did not enforce its 720x560 floor: $(jq -c .actual "$OUT/window-floor.json")"
     cleanup_persona
 }
 
@@ -1386,8 +1395,6 @@ flow_download_progress() {
         fi
         sleep 0.1
     done
-    wait "$press_pid" \
-        || die "AXPress failed while starting the download-progress fixture"
     [[ "$observed" == 1 ]] \
         || die "overrun fixture never reached a truthful bytes-downloaded state"
     if jq -e '(.data.ui_elements | tostring)
@@ -1398,6 +1405,31 @@ flow_download_progress() {
     jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "download-progress flow never exercised the pull subprocess"
+
+    # Onboarding covers the global DownloadStrip, so Step 3 must provide its
+    # own reachable cancellation path. Exercise the live process rather than
+    # accepting a source-level identifier: cancellation must become a notice,
+    # never fabricated network advice, and Back must return to the Review
+    # micro-stage that launched this transfer.
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Download.Cancel")
+            | select(.enabled == true)' "$OUT/downloading.json" >/dev/null \
+        || die "an active onboarding download exposes no enabled Cancel action"
+    press "$OUT/downloading.json" Quickstart.Download.Cancel \
+        "$OUT/download-cancel.json" \
+        || die "onboarding Cancel download is not pressable"
+    wait "$press_pid" \
+        || die "AXPress failed while starting the download-progress fixture"
+    wait_identifier Quickstart.Retry "$OUT/download-cancelled.json"
+    assert_tree_text "$OUT/download-cancelled.json" "Download stopped"
+    if jq -e '(.data.ui_elements | tostring) | contains("Check your connection")' \
+        "$OUT/download-cancelled.json" >/dev/null; then
+        die "a user-cancelled download was misdiagnosed as a network failure"
+    fi
+    press "$OUT/download-cancelled.json" Quickstart.Failure.BackToModelSelection \
+        "$OUT/download-back.json" \
+        || die "cancelled download recovery has no working Back action"
+    wait_identifier Quickstart.Review.Alias "$OUT/download-review-restored.json"
     cleanup_persona
 }
 
@@ -1885,7 +1917,70 @@ flow_message_actions() {
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "Save edited message did not resend the edited turn"
     wait_send_idle "$OUT/message-actions-saved-edit-settled.json"
-    log "  message Copy, Select text/Done, Edit/Cancel, Edit/Save, and Retry all produced effects"
+
+    # A finished answer no longer emits document-frame changes. This is the
+    # exact state where Jump to latest used to set the pinned flag but leave
+    # the transcript physically scrolled up. Drive a long, fully settled
+    # answer, move away from its tail, then require the same last-message
+    # action to return after pressing the button.
+    send_prompt "shape:long finished answer for jump-to-bottom" message-actions-long
+    wait_send_idle "$OUT/message-actions-long-settled.json"
+    local bottom_scroll_value
+    bottom_scroll_value="$(jq -r '[.data.ui_elements[]?
+        | select(.role == "AXScrollBar" and (.value | type) == "number")
+        | .value] | max // empty' "$OUT/message-actions-long-settled.json")"
+    [[ -n "$bottom_scroll_value" ]] \
+        || die "long settled transcript exposes no measurable scroll position"
+    "$AX_DRIVER" set-scroll-value "$APP_PID" 0 \
+        > "$OUT/message-actions-scroll-up.json" \
+        || die "could not move the settled transcript away from its tail"
+    local jump_visible=0
+    for _ in {1..60}; do
+        see_main "$OUT/message-actions-scrolled.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Transcript.JumpToBottom")' \
+            "$OUT/message-actions-scrolled.json" >/dev/null; then
+            jump_visible=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$jump_visible" == 1 ]] \
+        || die "scrolling up a settled transcript never exposed Jump to latest"
+    local scrolled_value
+    scrolled_value="$(jq -r '[.data.ui_elements[]?
+        | select(.role == "AXScrollBar" and (.value | type) == "number")
+        | .value] | min // empty' "$OUT/message-actions-scrolled.json")"
+    [[ -n "$scrolled_value" ]] \
+        || die "scrolled transcript exposes no measurable scroll position"
+    awk -v before="$bottom_scroll_value" -v after="$scrolled_value" \
+        'BEGIN { exit !(after < before - 0.02) }' \
+        || die "scroll fixture did not move away from the settled transcript tail"
+    press "$OUT/message-actions-scrolled.json" Transcript.JumpToBottom \
+        "$OUT/message-actions-jump-press.json" \
+        || die "Jump to latest is not pressable on a settled transcript"
+    local jumped=0
+    for _ in {1..60}; do
+        see_main "$OUT/message-actions-jumped.json"
+        local jumped_value
+        jumped_value="$(jq -r '[.data.ui_elements[]?
+            | select(.role == "AXScrollBar" and (.value | type) == "number")
+            | .value] | max // empty' "$OUT/message-actions-jumped.json")"
+        if [[ -n "$jumped_value" ]] \
+            && awk -v before="$scrolled_value" -v after="$jumped_value" \
+                'BEGIN { exit !(after > before + 0.02) }' \
+            && ! jq -e '.data.ui_elements[]?
+                        | select(.identifier == "Transcript.JumpToBottom")' \
+                "$OUT/message-actions-jumped.json" >/dev/null; then
+            jumped=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$jumped" == 1 ]] \
+        || die "Jump to latest hid itself without returning the settled transcript to its tail"
+    jq -n '{success: true,
+            assertion: "a finished transcript scrolls back to its final answer"}' \
+        > "$OUT/message-actions-jump-assertion.json"
+    log "  message actions and finished-answer Jump to latest all produced effects"
     cleanup_persona
 }
 
@@ -2846,6 +2941,27 @@ flow_chat_document_attachment() {
            | select(.identifier == "ChatView.Attachment.Remove.chat-document.txt")' \
         "$OUT/document-attached.json" >/dev/null \
         || die "the pasted TXT file did not become a removable attachment chip"
+
+    # Paste the exact same path again through the real clipboard gesture. It
+    # must produce feedback without adding a second chip — otherwise the
+    # shared document budget is split across duplicate copies.
+    "$AX_DRIVER" paste-file "$APP_PID" rapid.chat.compose "$fixture" \
+        > "$OUT/document-duplicate-paste.json"
+    local duplicate_rejected=0
+    for _ in {1..40}; do
+        see_main "$OUT/document-duplicate-rejected.json"
+        if jq -e '([.data.ui_elements[]?
+                    | select(.identifier == "ChatView.Attachment.Remove.chat-document.txt")]
+                   | length) == 1
+                  and ((.data.ui_elements | tostring)
+                       | contains("That file is already attached."))' \
+            "$OUT/document-duplicate-rejected.json" >/dev/null; then
+            duplicate_rejected=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$duplicate_rejected" == 1 ]] \
+        || die "pasting the same document twice did not leave exactly one chip with duplicate feedback"
 
     send_prompt "Which region is in this document?" document
     for _ in {1..40}; do
