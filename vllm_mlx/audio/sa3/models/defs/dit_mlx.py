@@ -10,13 +10,12 @@ Forward signature matches dit_torch.py:
 """
 
 import math
-import logging
 from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
 
-logger = logging.getLogger(__name__)
+from .checkpoint_security import load_torch_checkpoint
 
 
 # Constants (sa3-sm-music)
@@ -274,25 +273,9 @@ class DiT(nn.Module):
 
 def convert_weights_from_torch_ckpt(ckpt_path):
     """Load sa3-sm-music ckpt (torch.load), strip 'model.model.' prefix, remap to MLX layout."""
-    import torch
     import numpy as np
-    import pickle
 
-    # SA3-PIPE-01: default to ``weights_only=True`` so a crafted ckpt cannot
-    # execute arbitrary Python during unpickling (RCE via pickled
-    # ``__reduce__``). The file is only ever read for its tensor
-    # ``state_dict``. If a legacy ckpt needs non-tensor metadata, fall back
-    # to ``weights_only=False`` only on failure, with a warning.
-    try:
-        raw = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    except pickle.UnpicklingError:
-        logger.warning(
-            "SA3 DiT ckpt %s uses a legacy non-tensor format; falling back "
-            "to unsafe unpickling (weights_only=False). Prefer a "
-            ".safetensors checkpoint.",
-            ckpt_path,
-        )
-        raw = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    raw = load_torch_checkpoint(ckpt_path)
     sd = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
 
     prefix = "model.model."

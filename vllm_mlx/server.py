@@ -1175,7 +1175,7 @@ def _parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> None:
+def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> list[str]:
     """OPT-IN Host-header allowlist (DNS-rebinding / Host-header-spoofing
     hardening) via Starlette's ``TrustedHostMiddleware``.
 
@@ -1192,14 +1192,16 @@ def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> None:
     typical. A request whose Host matches nothing is rejected with 400.
     """
     hosts: list[str] = []
-    if cli_hosts:
-        hosts = list(cli_hosts)
+    if cli_hosts is not None:
+        # argparse's nargs="+" accepts both ``a b`` and values users commonly
+        # write as ``a,b``. Normalize each entry so CLI and env semantics match.
+        hosts = [host for entry in cli_hosts for host in _parse_csv(entry)]
     else:
         env_raw = os.environ.get("RAPID_MLX_TRUSTED_HOSTS")
         if env_raw:
             hosts = _parse_csv(env_raw)
     if not hosts:
-        return
+        return []
     from starlette.middleware.trustedhost import TrustedHostMiddleware
 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
@@ -1208,6 +1210,7 @@ def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> None:
         "non-matching Host header are rejected.",
         hosts,
     )
+    return hosts
 
 
 def configure_cors_from_env(

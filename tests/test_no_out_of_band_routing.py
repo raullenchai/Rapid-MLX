@@ -121,6 +121,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
     {
         "RAPID_MLX_DISABLE_VERSION_CHECK",  # opt-out of version check
         "RAPID_MLX_PROFILE_VERBOSE",  # debug verbosity for profile logs
+        # Security policy knobs, none of which selects a model, parser, tier,
+        # or engine route. TRUST_REMOTE_CODE only constrains whether an
+        # already-selected checkpoint may import repository Python;
+        # TRUSTED_HOSTS filters HTTP Host headers; ALLOW_UNSAFE_SA3_PICKLE is
+        # an explicit compatibility escape hatch after safe tensor loading
+        # rejects a legacy audio checkpoint.
+        "RAPID_MLX_TRUST_REMOTE_CODE",
+        "RAPID_MLX_TRUSTED_HOSTS",
+        "RAPID_MLX_ALLOW_UNSAFE_SA3_PICKLE",
         # Opt-out of the fused top-p/top-k/temperature sampler fast path
         # (PR #542). Same shape as DISABLE_VERSION_CHECK — a perf shortcut
         # toggle, not a routing decision. The math collapses to mlx-lm's

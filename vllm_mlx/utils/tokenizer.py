@@ -9,12 +9,36 @@ directly from tokenizer.json.
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 from .model_file_guard import validate_local_model_file
 
 logger = logging.getLogger(__name__)
+
+_FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+
+
+def apply_remote_code_policy(
+    tokenizer_config: dict | None,
+) -> tuple[dict | None, bool]:
+    """Apply the process-wide remote-code opt-out without changing defaults.
+
+    ``None`` remains ``None`` when the environment variable is unset, which
+    preserves the loader's historical defaults for non-serve call sites.  An
+    explicit false value is authoritative across every caller of the shared
+    loader, including bench and disk-stream paths.
+    """
+    configured = tokenizer_config is not None
+    config = dict(tokenizer_config or {})
+    requested = bool(config.get("trust_remote_code", True))
+    raw = os.environ.get("RAPID_MLX_TRUST_REMOTE_CODE")
+    if raw is not None and raw.strip().lower() in _FALSE_ENV_VALUES:
+        config["trust_remote_code"] = False
+        return config, False
+    return (config if configured else None), requested
+
 
 # Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit). The hook is
@@ -1044,6 +1068,8 @@ def load_model_with_fallback(
     # here; see validate_local_model_file for the containment boundary.
     validate_local_model_file(model_name)
 
+    tokenizer_config, trust_remote_code = apply_remote_code_policy(tokenizer_config)
+
     # Security hardening: when remote-code execution is enabled (the default,
     # for maximal community-model compatibility) and this model actually needs
     # it (its config declares ``auto_map``), say so BEFORE any repo code is
@@ -1051,13 +1077,20 @@ def load_model_with_fallback(
     # choice; opt out process-wide with RAPID_MLX_TRUST_REMOTE_CODE=0 (see
     # BatchedEngine). A probe failure is silent — never breaks loading.
     if _model_requires_remote_code(model_name):
-        logger.warning(
-            "Security: model %r declares auto_map (custom Python code). "
-            "Loading will DOWNLOAD AND EXECUTE that repo's code locally. "
-            "Only continue if you trust this model's source. Disable with "
-            "RAPID_MLX_TRUST_REMOTE_CODE=0 if you do not need it.",
-            model_name,
-        )
+        if trust_remote_code:
+            logger.warning(
+                "Security: model %r declares auto_map (custom Python code). "
+                "Loading may DOWNLOAD AND EXECUTE that repo's code locally. "
+                "Only continue if you trust this model's source. Disable with "
+                "RAPID_MLX_TRUST_REMOTE_CODE=0 if you do not need it.",
+                model_name,
+            )
+        else:
+            logger.warning(
+                "Model %r declares auto_map custom code, but remote code is "
+                "disabled; loading will continue with trust_remote_code=False.",
+                model_name,
+            )
 
     if lazy:
         from mlx_lm import load as _mlx_lm_load

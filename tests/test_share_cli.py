@@ -131,15 +131,28 @@ def test_share_command_happy_path(capsys):
     ):
         share_cli.share_command(_make_args())
 
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     # Banner pieces that protect users from leaking the key:
     assert "PUBLIC INTERNET" in out
     assert "Do NOT screenshot" in out
     # URL surfaced verbatim (the worker route, not a bare host).
     assert "https://rapidserver.quicksilverpro.io/r/testabc1234567890abcd" in out
+    assert "public internet" in captured.err
+    assert "generated share URL/key" in captured.err
     # Ctrl-C path tears down the tunnel and the serve child.
     tunnel.stop.assert_called_once()
     serve_proc.terminate.assert_called_once()
+
+
+def test_share_warns_when_configured_server_key_is_replaced(monkeypatch, capsys):
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "operator-key")
+    _drive_share_capture(_make_args())
+
+    warning = capsys.readouterr().err
+    assert "does not reuse it" in warning
+    assert "fresh per-share key" in warning
+    assert "operator-key" not in warning
 
 
 def test_share_command_aborts_when_serve_exits_before_ready():

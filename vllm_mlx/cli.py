@@ -736,7 +736,7 @@ def _serve_audio_mode(args, entry) -> None:
     # CORS — same friendly default the text path uses.
     server.configure_cors_from_env(args.cors_origins)
     # WH-1: OPT-IN Host-header allowlist (DNS-rebinding hardening).
-    server.configure_trusted_hosts(args.trusted_hosts)
+    server.configure_trusted_hosts(getattr(args, "trusted_hosts", None))
     if args.rate_limit > 0:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
@@ -3200,7 +3200,7 @@ def serve_command(args):
     cors_origins = server.configure_cors_from_env(args.cors_origins)
 
     # WH-1: OPT-IN Host-header allowlist (DNS-rebinding hardening).
-    server.configure_trusted_hosts(args.trusted_hosts)
+    server.configure_trusted_hosts(getattr(args, "trusted_hosts", None))
 
     # Request logging middleware — installed AFTER CORS so it is the
     # outermost layer (Starlette prepends, so last install runs first).
@@ -9257,8 +9257,9 @@ Examples:
             "OPT-IN Host-header allowlist (DNS-rebinding hardening): only "
             "requests whose Host header matches one of these values are "
             "accepted; everything else gets 400. Off by default so "
-            "rapid-mlx share and LAN access keep working. Example: "
-            "--trusted-hosts localhost 127.0.0.1 (also settable via "
+            "rapid-mlx share and LAN access keep working. Values may be "
+            "space- or comma-separated. Example: --trusted-hosts localhost "
+            "127.0.0.1 (also settable via "
             "RAPID_MLX_TRUSTED_HOSTS)."
         ),
     )

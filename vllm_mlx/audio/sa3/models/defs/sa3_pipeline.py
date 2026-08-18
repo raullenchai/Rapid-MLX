@@ -14,13 +14,12 @@ channels=2 stereo, cond_token_dim=768.
 
 from __future__ import annotations
 import math
-import logging
 from typing import Optional
 
 import numpy as np
 import mlx.core as mx
 
-logger = logging.getLogger(__name__)
+from .checkpoint_security import load_torch_checkpoint
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -200,23 +199,7 @@ def load_conditioner_from_sa3_ckpt(ckpt_path: str) -> tuple[mx.array, SecondsTot
         sd = st.load_file(str(ckpt_path))
         get = lambda k: sd[k].cpu().float().numpy()
     else:
-        import torch
-        import pickle
-        # SA3-PIPE-01: default to ``weights_only=True`` so a crafted ckpt
-        # cannot execute arbitrary Python during unpickling (RCE via pickled
-        # ``__reduce__``). The file is only ever read for its tensor
-        # ``state_dict``. If a legacy ckpt needs non-tensor metadata, fall
-        # back to ``weights_only=False`` only on failure, with a warning.
-        try:
-            ck = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
-        except pickle.UnpicklingError:
-            logger.warning(
-                "SA3 ckpt %s uses a legacy non-tensor format; falling back "
-                "to unsafe unpickling (weights_only=False). Prefer a "
-                ".safetensors checkpoint.",
-                ckpt_path,
-            )
-            ck = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+        ck = load_torch_checkpoint(str(ckpt_path))
         sd = ck.get("state_dict", ck) if isinstance(ck, dict) else ck
         get = lambda k: sd[k].cpu().float().numpy()
 
