@@ -457,13 +457,44 @@ def detect_install_method() -> InstallInfo:
         local_bin = str(Path.home() / ".local" / "bin")
         rapid_mlx_dir = str(Path.home() / ".rapid-mlx")
         if binary.startswith(local_bin) or normalized.startswith(rapid_mlx_dir):
+            # Prefer the canonical rapidmlx.com host (the same domain the
+            # website, docs, and the update poll ``CLI_UPDATE_ENDPOINT`` use),
+            # falling back to the raullenchai.github.io Pages mirror when it
+            # can't be reached. Two independent hosts, no single point of
+            # failure: if rapidmlx.com is down the mirror still upgrades, and —
+            # because ``*.github.io`` is frequently unreachable from mainland
+            # China — trying rapidmlx.com (Cloudflare) first keeps that path
+            # working there.
+            #
+            # Download to a temp file and execute only a *complete* fetch,
+            # rather than ``curl ... | bash``: a naive pipe (a) reports the
+            # pipeline's ``bash`` status, so if BOTH hosts fail bash reads empty
+            # input and exits 0 — a false "upgrade succeeded"; and (b) streams
+            # bytes as they arrive, so a mid-transfer primary failure could feed
+            # a partial script to bash before the fallback even runs. ``set -e``
+            # + ``curl -o`` fixes both: ``curl -f`` exits non-zero on any HTTP
+            # error (the primary's stderr silenced so a clean fallback is quiet;
+            # the mirror keeps its stderr), ``||`` reaches the mirror only when
+            # the primary fails, ``curl -o`` overwrites the temp file so the two
+            # candidates never concatenate, and ``set -e`` aborts (non-zero,
+            # before ``bash``) when both fail. The trap cleans up on every exit.
+            # Bounded timeouts (``--connect-timeout``/``--max-time``) are what
+            # make the fallback actually reachable: a blocked or blackholed host
+            # frequently hangs the connection rather than returning a clean HTTP
+            # error, and without a cap the primary ``curl`` would wait forever
+            # and never reach the mirror. 5s to connect + 30s overall is ample
+            # for a few-KB script while failing fast when rapidmlx.com stalls.
+            _curl = "curl -fsSL --connect-timeout 5 --max-time 30"
             install_sh_pipe = (
-                "curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash"
+                'set -e; t="$(mktemp)"; trap \'rm -f "$t"\' EXIT; '
+                f'{_curl} https://rapidmlx.com/install.sh -o "$t" 2>/dev/null || '
+                f'{_curl} https://raullenchai.github.io/Rapid-MLX/install.sh -o "$t"; '
+                'bash "$t"'
             )
             return InstallInfo(
                 method="install_sh",
                 upgrade_command=install_sh_pipe,
-                # Pipe needs a shell — use bash -c explicitly rather than
+                # The script needs a shell — use bash -c explicitly rather than
                 # ``shell=True`` (no ambient $SHELL coupling, no PATH-based
                 # shell-injection surface beyond the literal string we control).
                 upgrade_argv=["bash", "-c", install_sh_pipe],
