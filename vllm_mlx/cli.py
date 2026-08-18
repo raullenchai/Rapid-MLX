@@ -7188,6 +7188,8 @@ def chat_command(args):
         pass
     atexit.register(_cleanup)
 
+    attached_to_existing = bool(args.base_url or args.port is not None)
+
     if args.base_url:
         base_url = args.base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -7255,6 +7257,37 @@ def chat_command(args):
             print(f"\n  {RED}Failed to start server:{RESET} {e}")
             sys.exit(1)
         print(f"  {GREEN}✓ Ready.{RESET}\n")
+
+    # When attaching without an explicit model, trust the server's advertised
+    # model instead of the client's independently configured starter alias.
+    # The latter commonly differs from a manually started server and turns the
+    # very first request into an avoidable 404. Direct callers predating this
+    # marker are treated as explicit to preserve their existing behavior.
+    if attached_to_existing and not getattr(args, "_model_was_explicit", True):
+        try:
+            import requests
+
+            response = requests.get(f"{base_url}/v1/models", timeout=2)
+            response.raise_for_status()
+            payload = response.json()
+            models = payload.get("data", []) if isinstance(payload, dict) else []
+            discovered = next(
+                (
+                    item.get("id")
+                    for item in models
+                    if isinstance(item, dict)
+                    and isinstance(item.get("id"), str)
+                    and item["id"].strip()
+                ),
+                None,
+            )
+        except (requests.RequestException, ValueError, TypeError):
+            discovered = None
+        if discovered:
+            args.model = discovered
+            if hasattr(args, "_original_alias"):
+                delattr(args, "_original_alias")
+            print(f"  Connected model: {discovered} (discovered from server)")
 
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
@@ -10445,6 +10478,8 @@ def main():
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
     args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    if getattr(args, "command", None) in ("chat", "run"):
+        args._model_was_explicit = getattr(args, "model", None) is not None
 
     # First-run consent prompt — fires at most once per machine, only on
     # interactive subcommands when stdin is a tty. Safe no-op otherwise.
@@ -10640,7 +10675,7 @@ def main():
         _cmd = getattr(args, "command", "chat")
         _sel_alias, _starter_cached = select_chat_default()
         args.model = _sel_alias
-        if sys.stdin.isatty():
+        if sys.stdin.isatty() and not (args.base_url or args.port is not None):
             if _starter_cached:
                 print(
                     f"  No model specified — using {_sel_alias} (already downloaded)."

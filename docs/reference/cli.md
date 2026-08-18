@@ -276,6 +276,10 @@ rapid-mlx chat qwen3.5-4b-4bit --system "You are a terse, friendly Mac shell tut
 rapid-mlx chat qwen3.5-4b-4bit --mcp-config mcp.json
 ```
 
+When attaching with `--port` or `--base-url` and no model argument, `chat`
+discovers the model from the server's `/v1/models` response. An explicit model
+argument always wins.
+
 In-REPL slash commands: `/help`, `/reset` (alias `/clear`), `/model <alias>`,
 `/save <path>` (write conversation to markdown), `/exit` (alias `/quit`).
 Type `"""` on its own line to start/end a multi-line block (pasting code).
