@@ -182,11 +182,13 @@ final class DictationController {
         refreshReadiness()
         guard readinessSnapshot.accessibility else {
             lastError = "Dictation needs Accessibility access before the hotkey can be used."
+            // The switch records the user's intent and is left alone. Writing
+            // it back to off means a permission that lapses once disables
+            // dictation permanently: the grant is fixed later, but the stored
+            // flag stays false and nothing re-arms. The UI shows an amber dot
+            // and an Arm control for this state, and turning it off by hand is
+            // never blocked, so nobody is stranded by keeping it on.
             phase = .off
-            // Roll the switch back. Leaving it on while nothing works strands
-            // the user: the control reads "enabled", the hotkey is dead, and a
-            // readiness-gated `.disabled` would stop them turning it off again.
-            isEnabled = false
             return
         }
         guard hotkey.start() else {
@@ -199,7 +201,6 @@ final class DictationController {
                 ? "Accessibility is granted, but this running copy hasn't picked it up. Relaunch Rapid to finish."
                 : "The dictation hotkey couldn't be registered."
             phase = .off
-            isEnabled = false
             return
         }
         accessibilityNeedsRelaunch = false
