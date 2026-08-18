@@ -14,7 +14,9 @@ stars: 1000
 # with no reasoning parser gets ``false``, not the ladder below). This
 # template is what ``agents dsh --test`` writes into its throwaway home, where
 # the model is always a reasoning-capable one, so the ladder is correct there.
-# Change both if you change the provider contract.
+# Change both if you change the provider contract —
+# ``test_dsh_plan_and_profile_template_agree_on_the_provider_contract`` fails
+# if only one side moves.
 config:
   type: yaml
   path: "~/.dsh/settings.yaml"

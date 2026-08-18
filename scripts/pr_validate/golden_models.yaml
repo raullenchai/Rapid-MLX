@@ -257,10 +257,17 @@ overrides:
   "mlx-community/diffusiongemma-26B-A4B-it-4bit":
     args: ["--enable-auto-tool-choice", "--tool-call-parser", "gemma4"]
 
-# Agent integrations — each is a tests/integrations/ test_X.py script
-# we exec against the live server. The matrix is models × agents.
+# SDK/framework integrations — each is a tests/integrations/ test_X.py script
+# we exec against the live server. The matrix is models × these scripts.
 # Tests that already work today; we expand the list as integrations
 # stabilize.
+#
+# NAMING: these are SDKs (Anthropic, LangChain, Pydantic-AI), NOT the coding
+# agents in ``docs/agents/matrix.md`` (Codex CLI, Claude Code, …) and NOT the
+# profiles in ``vllm_mlx/agents/``. Three different lists have historically
+# been called "the agent matrix"; this one is the SDK matrix that pr_validate
+# runs per-PR. The coding-agent matrix lives in
+# ``tests/integrations/test_agents_matrix.py`` and is not run by pr_validate.
 agents:
   - name: anthropic_sdk
     script: tests/integrations/test_anthropic_sdk.py

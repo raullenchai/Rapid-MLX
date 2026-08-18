@@ -163,7 +163,7 @@ class StressE2EBenchStep(Step):
 
                     # Bench FIRST, on a server that has served nothing
                     # else. It used to run last, after the stress battery
-                    # and the whole agent matrix had hammered this same
+                    # and the whole SDK matrix had hammered this same
                     # process — so it measured residual state, not the
                     # code under review.
                     #
@@ -1026,7 +1026,7 @@ def _resolve_bench_against_base(
             ),
         }
 
-    # The base is measured after the stress battery and the agent matrix have
+    # The base is measured after the stress battery and the SDK matrix have
     # run for this model, so the machine is warmer than it was for the PR's
     # bench on a fresh server. That biases the base SLOW, and a slow base is
     # exactly what excuses a PR — the wrong direction. Requiring the base to

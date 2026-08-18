@@ -119,12 +119,18 @@ def setup_agent_config(
     agent_version: str | None = None,
     *,
     context_length: int | None = None,
+    dry_run: bool = False,
 ) -> str:
     """Write the agent's config file or print env vars to set up the integration.
 
     For file-based configs (YAML/JSON/TOML), if the config file already
     exists it is *merged* rather than overwritten — user customizations
     are preserved while connection details are updated.
+
+    When *dry_run* is set, the merge is computed and described but nothing is
+    written. ``--dry-run`` used to be accepted and then ignored on this path,
+    so asking for a preview silently rewrote the operator's real config —
+    the opposite of what the flag promises.
 
     Returns a human-readable summary of what was done.
     """
@@ -146,7 +152,8 @@ def setup_agent_config(
 
     if cfg.path:
         config_path = _resolve_config_path(cfg)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if not dry_run:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
         if profile.name == "codex" and isinstance(rendered, str):
             import json
@@ -158,16 +165,17 @@ def setup_agent_config(
                 "{model_catalog_path}", str(catalog_path.resolve())
             )
             catalog = {"models": [build_codex_model_info(model_id, context_length)]}
-            try:
-                _atomic_write(
-                    catalog_path,
-                    json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
-                )
-            except OSError as exc:
-                return (
-                    f"Cannot write Codex model catalog to {catalog_path} "
-                    f"({exc}). Check file permissions."
-                )
+            if not dry_run:
+                try:
+                    _atomic_write(
+                        catalog_path,
+                        json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
+                    )
+                except OSError as exc:
+                    return (
+                        f"Cannot write Codex model catalog to {catalog_path} "
+                        f"({exc}). Check file permissions."
+                    )
 
         try:
             merged_text = _merge_file_config(config_path, rendered, cfg.type)
@@ -180,6 +188,14 @@ def setup_agent_config(
             return (
                 f"Cannot parse existing config at {config_path} ({exc}). "
                 "Fix or remove it manually, then re-run --setup."
+            )
+
+        if dry_run:
+            if merged_text == rendered:
+                return f"Would write config to {config_path} (nothing written)"
+            return (
+                f"Would merge config into {config_path}, preserving custom keys "
+                "(nothing written)"
             )
 
         try:
@@ -528,47 +544,3 @@ def get_setup_instructions(
             lines.append(f"- {issue}")
 
     return "\n".join(lines)
-
-
-def apply_streaming_config(profile: AgentProfile, agent_version: str | None = None):
-    """Inject agent-specific streaming filter tags into the global registry.
-
-    This is called at server startup or when an agent profile is activated,
-    to extend the streaming filter with agent-specific patterns.
-
-    Uses the register_tool_call_tag() API from api/utils.py rather than
-    directly mutating the list — ensures proper dedup and future extensibility.
-
-    Args:
-        profile: The agent profile to apply
-        agent_version: Optional version to match version-specific config
-    """
-    from vllm_mlx.api.utils import register_tool_call_tag
-
-    streaming = profile.get_streaming_for_version(agent_version)
-    if not streaming.extra_tool_tags:
-        return
-
-    added = 0
-    for tag_pair in streaming.extra_tool_tags:
-        if register_tool_call_tag(tag_pair[0], tag_pair[1]):
-            added += 1
-
-    if added:
-        logger.info(
-            f"Applied {added} extra streaming filter tags from "
-            f"agent profile '{profile.name}'"
-        )
-
-
-def get_extra_tags_for_profile(
-    profile: AgentProfile,
-    agent_version: str | None = None,
-) -> list[tuple[str, str]]:
-    """Get extra streaming tags from a profile (for per-request filter creation).
-
-    Instead of mutating global state, this returns the tags so they can be
-    passed to StreamingToolCallFilter(extra_tags=...) at request time.
-    """
-    streaming = profile.get_streaming_for_version(agent_version)
-    return list(streaming.extra_tool_tags)
