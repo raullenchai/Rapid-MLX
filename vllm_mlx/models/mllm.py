@@ -1104,12 +1104,20 @@ class MLXMultimodalLM:
                 # Preserve mlx-vlm's historical call shape (and compatibility
                 # with older versions/wrappers) unless the operator opts out.
                 self.model, self.processor = load(self.model_name)
+                self.config = load_config(self.model_name)
             else:
                 self.model, self.processor = load(
                     self.model_name,
                     trust_remote_code=False,
                 )
-            self.config = load_config(self.model_name)
+                # mlx-vlm 0.6.x currently reads config.json directly, but
+                # forwarding the policy here makes the process-wide opt-out
+                # explicit and prevents a future/config-loader implementation
+                # from silently re-enabling repository code.
+                self.config = load_config(
+                    self.model_name,
+                    trust_remote_code=False,
+                )
 
             # Augment the wrapped tokenizer's EOS set with the chat-
             # template terminator ids from ``generation_config.json``.

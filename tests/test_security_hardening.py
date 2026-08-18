@@ -35,6 +35,48 @@ def test_remote_code_opt_out_is_authoritative_and_non_mutating(monkeypatch, valu
     assert original["trust_remote_code"] is True
 
 
+def test_mllm_remote_code_optout_reaches_model_and_config_loaders(monkeypatch):
+    """The process-wide opt-out must cover every MLLM repository read."""
+    import types
+
+    from vllm_mlx.models import mllm as mllm_mod
+
+    calls = {}
+    model = SimpleNamespace(config=SimpleNamespace())
+    processor = SimpleNamespace(tokenizer=SimpleNamespace())
+
+    def fake_load(model_name, **kwargs):
+        calls["model"] = (model_name, kwargs)
+        return model, processor
+
+    def fake_load_config(model_name, **kwargs):
+        calls["config"] = (model_name, kwargs)
+        return {}
+
+    monkeypatch.setenv("RAPID_MLX_TRUST_REMOTE_CODE", "0")
+    monkeypatch.setattr(mllm_mod, "_require_mlx_vlm", lambda: None)
+    monkeypatch.setitem(sys.modules, "mlx_vlm", types.SimpleNamespace(load=fake_load))
+    monkeypatch.setitem(
+        sys.modules,
+        "mlx_vlm.utils",
+        types.SimpleNamespace(load_config=fake_load_config),
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer.augment_eos_token_ids_from_generation_config",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.utils.tokenizer.repair_byte_level_decoder",
+        lambda *_args, **_kwargs: None,
+    )
+
+    instance = mllm_mod.MLXMultimodalLM("org/model")
+    instance.load()
+
+    assert calls["model"] == ("org/model", {"trust_remote_code": False})
+    assert calls["config"] == ("org/model", {"trust_remote_code": False})
+
+
 def test_trusted_hosts_default_off_and_cli_comma_normalization(monkeypatch):
     import vllm_mlx.server as server
 
