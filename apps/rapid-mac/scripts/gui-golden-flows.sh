@@ -2423,22 +2423,40 @@ flow_no_dead_controls() {
         "$OUT/dead-actions-app-open.json"
     round_trip_toggle Settings.App.HideDockOnCloseToggle dead-actions-hide-dock
     see_main "$OUT/dead-actions-app-before-recheck.json"
-    press "$OUT/dead-actions-app-before-recheck.json" Settings.App.RecheckCTA \
-        "$OUT/dead-actions-app-recheck-press.json" \
-        || die "Check for updates is not pressable"
-    local update_feedback=0
-    for ((i=0; i<40; i++)); do
-        see_main "$OUT/dead-actions-app-checked.json"
-        if jq -e '(.data.ui_elements | tostring)
-                  | contains("Checking for updates") or contains("Up to date")' \
-            "$OUT/dead-actions-app-checked.json" >/dev/null; then
-            update_feedback=1
-            break
-        fi
-        sleep 0.25
-    done
-    [[ "$update_feedback" == 1 ]] \
-        || die "Check for updates produced no visible state"
+    # The App panel is a per-STATE tree (see the update-state flow above):
+    # ``AheadOfManifest`` — the build is newer than anything published — has NO
+    # ``Settings.App.RecheckCTA`` at all. That is precisely the state every
+    # version-bump PR builds into (app X.Y.Z+1, manifest X.Y.Z), so an
+    # unconditional press here failed 2 of 2 runs that reached this flow on the
+    # 0.12.15 bump while passing on every same-version PR. Mirror update-state:
+    # exercise the CTA when the panel renders it, and in AheadOfManifest assert
+    # the state marker instead — a dead control in UpToDate still dies, and a
+    # correctly-absent control no longer reads as one.
+    if jq -e '.data.ui_elements[]?
+              | select(.identifier == "Settings.App.RecheckCTA")' \
+        "$OUT/dead-actions-app-before-recheck.json" >/dev/null; then
+        press "$OUT/dead-actions-app-before-recheck.json" Settings.App.RecheckCTA \
+            "$OUT/dead-actions-app-recheck-press.json" \
+            || die "Check for updates is not pressable"
+        local update_feedback=0
+        for ((i=0; i<40; i++)); do
+            see_main "$OUT/dead-actions-app-checked.json"
+            if jq -e '(.data.ui_elements | tostring)
+                      | contains("Checking for updates") or contains("Up to date")' \
+                "$OUT/dead-actions-app-checked.json" >/dev/null; then
+                update_feedback=1
+                break
+            fi
+            sleep 0.25
+        done
+        [[ "$update_feedback" == 1 ]] \
+            || die "Check for updates produced no visible state"
+    else
+        jq -e '.data.ui_elements[]?
+               | select(.identifier == "Settings.App.AheadOfManifest")' \
+            "$OUT/dead-actions-app-before-recheck.json" >/dev/null \
+            || die "Settings > App shows neither Settings.App.RecheckCTA nor Settings.App.AheadOfManifest"
+    fi
 
     # Developer exists only in debug builds. Its destructive reset is unit
     # tested separately; here the GUI contract is that every scope toggle
