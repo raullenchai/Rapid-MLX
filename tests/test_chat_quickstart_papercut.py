@@ -48,12 +48,21 @@ def test_installer_recommends_a_command_that_works_on_a_base_install():
     """ORDER matters, not mere presence (codex on #2030): a restored bare
     rapid-mlx-chat line ABOVE the terminal one would re-open the papercut
     while a substring check stayed green. The zero-extra terminal REPL must
-    be the FIRST chat command the quick-start prints."""
+    be the FIRST chat command the quick-start prints — and it must name the
+    SAME model the serve line recommends: a fresh-install dogfood showed the
+    bare ``chat --port 8000`` resolving the client-side default alias and
+    404ing against the just-served model (#2035)."""
     lines = _chat_echo_lines()
     assert lines, "quick-start no longer prints any chat command at all"
-    assert "rapid-mlx chat --port 8000" in lines[0], (
+    first = lines[0]
+    assert "rapid-mlx chat " in first and "--port 8000" in first, (
         "the first chat command the installer prints must be the terminal "
-        f"REPL (works on a base install); got: {lines[0]!r}"
+        f"REPL (works on a base install); got: {first!r}"
+    )
+    assert "${RECOMMENDED_MODEL}" in first, (
+        "the chat line must reuse the exact alias the serve line recommends "
+        "— an unpaired bare chat resolves the client default and 404s: "
+        f"{first!r}"
     )
 
 
