@@ -972,23 +972,15 @@ struct ChatView: View {
         isImportingFiles = true
         Task { @MainActor in
             let outcome = await Task.detached(priority: .userInitiated) {
-                var accepted: [ChatFileAttachment] = []
-                var rejection: String?
-                for url in selection.accepted {
-                    let accessed = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if accessed { url.stopAccessingSecurityScopedResource() }
-                    }
-                    do { accepted.append(try ChatFileAttachment(contentsOf: url)) }
-                    catch { rejection = error.localizedDescription }
-                }
-                return (accepted, rejection)
+                Self.loadFileAttachments(selection.accepted)
             }.value
 
-            let combined = fileAttachments + outcome.0
+            let combined = fileAttachments + outcome.0.map(\.attachment)
             fileAttachments = ChatFileAttachment.fittedForMessage(combined)
-            for (attachment, url) in zip(outcome.0, selection.accepted) {
-                attachedSourcePaths[attachment.id] = Self.attachmentKey(for: url)
+            for imported in outcome.0 {
+                attachedSourcePaths[imported.attachment.id] = Self.attachmentKey(
+                    for: imported.sourceURL
+                )
             }
             if selection.rejectedCount > 0 {
                 attachmentNotice = "Attach up to \(ChatFileAttachment.maxAttachmentsPerMessage) PDF, CSV, or TXT files per message."
@@ -998,6 +990,35 @@ struct ChatView: View {
             isImportingFiles = false
         }
         return true
+    }
+
+    /// Parse candidates without losing which source produced each attachment.
+    /// Failed candidates may appear anywhere in the batch, so pairing a
+    /// filtered attachments array with the original URL array by index would
+    /// associate every success after a failure with the wrong path.
+    nonisolated static func loadFileAttachments(
+        _ urls: [URL]
+    ) -> (
+        accepted: [(attachment: ChatFileAttachment, sourceURL: URL)],
+        rejection: String?
+    ) {
+        var accepted: [(attachment: ChatFileAttachment, sourceURL: URL)] = []
+        var rejection: String?
+        for url in urls {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                accepted.append((
+                    attachment: try ChatFileAttachment(contentsOf: url),
+                    sourceURL: url
+                ))
+            } catch {
+                rejection = error.localizedDescription
+            }
+        }
+        return (accepted, rejection)
     }
 
     private func pasteAttachmentsFromClipboard() -> Bool {
@@ -1037,7 +1058,7 @@ struct ChatView: View {
     /// living at two real paths deliberately still count as two, because
     /// deciding otherwise would mean reading every candidate before we know
     /// whether we want it.
-    static func attachmentKey(for url: URL) -> String {
+    nonisolated static func attachmentKey(for url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 

@@ -128,4 +128,26 @@ struct AttachmentDedupTests {
         #expect(fresh.count == 2)
         #expect(duplicates == 0)
     }
+
+    @Test("A failed import does not shift source paths onto later attachments")
+    func failedImportPreservesSourceAssociation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let invalid = directory.appendingPathComponent("broken.txt")
+        let valid = directory.appendingPathComponent("answer.txt")
+        try Data([0xFF]).write(to: invalid)
+        try Data("hello".utf8).write(to: valid)
+
+        let outcome = ChatView.loadFileAttachments([invalid, valid])
+
+        #expect(outcome.accepted.count == 1)
+        #expect(outcome.accepted.first?.attachment.filename == "answer.txt")
+        #expect(outcome.accepted.first?.sourceURL == valid)
+        #expect(outcome.rejection != nil)
+    }
 }
