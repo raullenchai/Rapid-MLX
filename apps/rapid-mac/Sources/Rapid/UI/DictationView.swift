@@ -248,13 +248,23 @@ struct DictationView: View {
                 .fill(controller.phase == .off ? Color.secondary : RapidTheme.green)
                 .frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: RapidTheme.Space.xxs) {
-                Text("Ready — press \(controller.trigger.label) in any app")
+                // Never claim "Ready" while the tap is not installed. The dot
+                // going grey under a green-sounding headline is exactly the
+                // state that hides a dead hotkey.
+                Text(controller.phase == .off
+                     ? "Not listening — the hotkey isn't armed"
+                     : "Ready — press \(controller.trigger.label) in any app")
                     .font(.subheadline.weight(.medium))
                 Text(readyDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: RapidTheme.Space.md)
+            if controller.phase == .off {
+                Button("Arm now") { Task { await controller.enable() } }
+                    .buttonStyle(.rapidPrimary)
+                    .accessibilityIdentifier("Dictation.Arm")
+            }
             Button("Turn off") { controller.isEnabled = false }
                 .buttonStyle(.rapidSecondary)
                 .accessibilityIdentifier("Dictation.Disable")

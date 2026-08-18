@@ -170,6 +170,18 @@ final class DictationController {
 
     // MARK: - Lifecycle
 
+    /// Apply the persisted switch at launch.
+    ///
+    /// Swift does not run `didSet` for assignments made inside `init`, so
+    /// restoring `isEnabled = true` from defaults silently skipped the work
+    /// that normally follows flipping the switch: the event tap was never
+    /// installed, the banner still read "Ready", and the hotkey did nothing
+    /// until the user toggled it off and on again.
+    func bootstrap() async {
+        guard isEnabled, phase == .off else { return }
+        await enable()
+    }
+
     func enable() async {
         guard isEnabled else { return }
         refreshReadiness()
@@ -213,7 +225,14 @@ final class DictationController {
     /// The system silently disables an event tap that misbehaves; re-arm when
     /// the app comes forward rather than leaving the user with a dead hotkey.
     func revalidate() {
-        guard isEnabled, phase != .off else { return }
+        guard isEnabled else { return }
+        // Returning to the app is also when a permission granted elsewhere
+        // becomes usable, so a session that failed to arm gets another try
+        // rather than staying dead until the switch is cycled by hand.
+        guard phase != .off else {
+            Task { await enable() }
+            return
+        }
         hotkey.reEnableIfDisabled()
     }
 

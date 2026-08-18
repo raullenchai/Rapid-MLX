@@ -297,6 +297,11 @@ struct RapidApp: App {
                 .environment(mcpTools)
                 .environment(perfConfig)
                 .task {
+                    // Dictation is a background service: arm it at launch so
+                    // the hotkey works without ever opening the Audio tab.
+                    await dictation.bootstrap()
+                }
+                .task {
                     // DEV-ONLY: render real screens to PNG when
                     // RAPID_DEV_SNAPSHOT_DIR is set, then quit. Inert
                     // (returns immediately) in normal use.
