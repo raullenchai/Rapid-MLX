@@ -1670,9 +1670,17 @@ flow_chat_restore() {
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
 
     # Conversation folders are a visible sidebar workflow, not just a data
-    # model. Exercise the real toolbar entry and the row menu path so a future
-    # refactor cannot leave creation or filing mounted but unreachable.
-    press "$OUT/chat-restored-transcript.json" Toolbar.NewConversationFolder \
+    # model. Exercise the real row-menu path that creates a folder and files
+    # this conversation in one intention.
+    local conversation_menu_id
+    conversation_menu_id="Sidebar.Conversation.Menu.${conversation_id##*.}"
+    press "$OUT/chat-restored-transcript.json" "$conversation_menu_id" \
+        "$OUT/folder-row-menu.json"
+    wait_identifier Sidebar.Conversation.Action.MoveToFolder "$OUT/folder-move-menu.json"
+    press "$OUT/folder-move-menu.json" Sidebar.Conversation.Action.MoveToFolder \
+        "$OUT/folder-submenu-open.json"
+    wait_identifier Sidebar.Conversation.Action.MoveToFolder.New "$OUT/folder-submenu.json"
+    press "$OUT/folder-submenu.json" Sidebar.Conversation.Action.MoveToFolder.New \
         "$OUT/folder-new-press.json"
     wait_identifier Sidebar.Folder.NameField "$OUT/folder-prompt.json"
     "$AX_DRIVER" set-value "$APP_PID" Sidebar.Folder.NameField "Golden Work" \
@@ -1681,18 +1689,6 @@ flow_chat_restore() {
     press "$OUT/folder-name-set.json" Sidebar.Folder.Prompt.Confirm \
         "$OUT/folder-save.json"
     wait_identifier Sidebar.Folder.Toggle.Golden-Work "$OUT/folder-created.json"
-    assert_tree_text "$OUT/folder-created.json" "No conversations yet"
-
-    local conversation_menu_id
-    conversation_menu_id="Sidebar.Conversation.Menu.${conversation_id##*.}"
-    press "$OUT/folder-created.json" "$conversation_menu_id" "$OUT/folder-row-menu.json"
-    wait_identifier Sidebar.Conversation.Action.MoveToFolder "$OUT/folder-move-menu.json"
-    press "$OUT/folder-move-menu.json" Sidebar.Conversation.Action.MoveToFolder \
-        "$OUT/folder-submenu-open.json"
-    wait_identifier Sidebar.Conversation.Action.MoveToFolder.Golden-Work \
-        "$OUT/folder-submenu.json"
-    press "$OUT/folder-submenu.json" Sidebar.Conversation.Action.MoveToFolder.Golden-Work \
-        "$OUT/folder-file.json"
     for _ in {1..40}; do
         see_main "$OUT/folder-filed.json"
         if jq -e '(.data.ui_elements | tostring) | contains("Golden Work (1)")' \

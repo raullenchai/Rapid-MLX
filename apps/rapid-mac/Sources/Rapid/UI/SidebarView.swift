@@ -221,16 +221,7 @@ struct SidebarView: View {
         // Column-scoped toolbar content renders beside the native sidebar
         // toggle instead of in the detail column's title group.
         .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    presentFolderPrompt(.create(fileConversationID: nil))
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                }
-                .help("New folder")
-                .accessibilityLabel("New folder")
-                .accessibilityIdentifier("Toolbar.NewConversationFolder")
-
+            ToolbarItem(placement: .primaryAction) {
                 Button(action: onSearchChats) {
                     Image(systemName: "magnifyingglass")
                 }
