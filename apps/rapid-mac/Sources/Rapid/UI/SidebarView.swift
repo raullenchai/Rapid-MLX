@@ -1020,6 +1020,12 @@ struct SidebarView: View {
             }
             .accessibilityIdentifier("Sidebar.Conversation.Action.Rename")
             moveToFolderMenu(conv)
+            Button {
+                presentFolderPrompt(.create(fileConversationID: conv.id))
+            } label: {
+                Label("Move to New Folder…", systemImage: "folder.badge.plus")
+            }
+            .accessibilityIdentifier("Sidebar.Conversation.Action.MoveToNewFolder")
             Divider()
             Button {
                 cancelRename()
@@ -1042,23 +1048,18 @@ struct SidebarView: View {
             }
             .accessibilityIdentifier(Self.archiveMenuItemIdentifier(for: conv))
             Divider()
-            Menu {
-                Button {
-                    ConversationExportPanel.export(conv, format: .markdown)
-                } label: {
-                    Label("Markdown…", systemImage: "doc.richtext")
-                }
-                .accessibilityIdentifier("Sidebar.Conversation.Action.Export.Markdown")
-                Button {
-                    ConversationExportPanel.export(conv, format: .json)
-                } label: {
-                    Label("JSON…", systemImage: "curlybraces")
-                }
-                .accessibilityIdentifier("Sidebar.Conversation.Action.Export.JSON")
+            Button {
+                ConversationExportPanel.export(conv, format: .markdown)
             } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+                Label("Export Markdown…", systemImage: "doc.richtext")
             }
-            .accessibilityIdentifier("Sidebar.Conversation.Action.Export")
+            .accessibilityIdentifier("Sidebar.Conversation.Action.Export.Markdown")
+            Button {
+                ConversationExportPanel.export(conv, format: .json)
+            } label: {
+                Label("Export JSON…", systemImage: "curlybraces")
+            }
+            .accessibilityIdentifier("Sidebar.Conversation.Action.Export.JSON")
             Divider()
             // Delete is the one item that does NOT need an explicit cancel: it only
             // stages a confirmation, and presenting that dialog takes keyboard
@@ -1082,52 +1083,45 @@ struct SidebarView: View {
 
     /// The "Move to Folder" submenu for one conversation.
     ///
-    /// Always offers "New Folder…" so the first folder can be created from the
-    /// row the user is already pointing at — otherwise folders would need a
-    /// separate creation affordance in a 200pt rail before they could be used
-    /// even once. "Remove from Folder" appears only when the row is actually
-    /// filed, since an unfiled row has nothing to remove it from.
+    /// Creating a folder is a first-level row action; this submenu stays
+    /// focused on choosing among existing destinations. "Remove from Folder"
+    /// appears only when the row is actually filed.
     @ViewBuilder
     private func moveToFolderMenu(_ conv: ChatConversation) -> some View {
-        Menu {
-            ForEach(ChatFolder.displayOrder(chat.folders)) { folder in
-                Button {
-                    cancelRename()
-                    chat.moveConversation(conv.id, toFolder: folder.id)
-                } label: {
-                    // A checkmark rather than a disabled row: the current
-                    // folder still has to be visible in the list, or a folder
-                    // set would appear to have no effect on the menu.
-                    Label(
-                        folder.name,
-                        systemImage: conv.folderID == folder.id
-                            ? "checkmark.circle.fill" : "folder"
+        if !chat.folders.isEmpty || conv.folderID != nil {
+            Menu {
+                ForEach(ChatFolder.displayOrder(chat.folders)) { folder in
+                    Button {
+                        cancelRename()
+                        chat.moveConversation(conv.id, toFolder: folder.id)
+                    } label: {
+                        // A checkmark rather than a disabled row: the current
+                        // folder still has to be visible in the list.
+                        Label(
+                            folder.name,
+                            systemImage: conv.folderID == folder.id
+                                ? "checkmark.circle.fill" : "folder"
+                        )
+                    }
+                    .accessibilityIdentifier(
+                        "Sidebar.Conversation.Action.MoveToFolder.\(folder.axSlug)"
                     )
                 }
-                .accessibilityIdentifier(
-                    "Sidebar.Conversation.Action.MoveToFolder.\(folder.axSlug)"
-                )
-            }
-            if !chat.folders.isEmpty { Divider() }
-            Button {
-                presentFolderPrompt(.create(fileConversationID: conv.id))
-            } label: {
-                Label("New Folder…", systemImage: "folder.badge.plus")
-            }
-            .accessibilityIdentifier("Sidebar.Conversation.Action.MoveToFolder.New")
-            if conv.folderID != nil {
-                Button {
-                    cancelRename()
-                    chat.moveConversation(conv.id, toFolder: nil)
-                } label: {
-                    Label("Remove from Folder", systemImage: "folder.badge.minus")
+                if !chat.folders.isEmpty, conv.folderID != nil { Divider() }
+                if conv.folderID != nil {
+                    Button {
+                        cancelRename()
+                        chat.moveConversation(conv.id, toFolder: nil)
+                    } label: {
+                        Label("Remove from Folder", systemImage: "folder.badge.minus")
+                    }
+                    .accessibilityIdentifier("Sidebar.Conversation.Action.MoveToFolder.Remove")
                 }
-                .accessibilityIdentifier("Sidebar.Conversation.Action.MoveToFolder.Remove")
+            } label: {
+                Label("Move to Folder", systemImage: "folder")
             }
-        } label: {
-            Label("Move to Folder", systemImage: "folder")
+            .accessibilityIdentifier("Sidebar.Conversation.Action.MoveToFolder")
         }
-        .accessibilityIdentifier("Sidebar.Conversation.Action.MoveToFolder")
     }
 
     /// Inline rename editor, occupying the row it replaces.

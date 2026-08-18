@@ -1676,11 +1676,8 @@ flow_chat_restore() {
     conversation_menu_id="Sidebar.Conversation.Menu.${conversation_id##*.}"
     press "$OUT/chat-restored-transcript.json" "$conversation_menu_id" \
         "$OUT/folder-row-menu.json"
-    wait_identifier Sidebar.Conversation.Action.MoveToFolder "$OUT/folder-move-menu.json"
-    press "$OUT/folder-move-menu.json" Sidebar.Conversation.Action.MoveToFolder \
-        "$OUT/folder-submenu-open.json"
-    wait_identifier Sidebar.Conversation.Action.MoveToFolder.New "$OUT/folder-submenu.json"
-    press "$OUT/folder-submenu.json" Sidebar.Conversation.Action.MoveToFolder.New \
+    wait_identifier Sidebar.Conversation.Action.MoveToNewFolder "$OUT/folder-menu.json"
+    press "$OUT/folder-menu.json" Sidebar.Conversation.Action.MoveToNewFolder \
         "$OUT/folder-new-press.json"
     wait_identifier Sidebar.Folder.NameField "$OUT/folder-prompt.json"
     "$AX_DRIVER" set-value "$APP_PID" Sidebar.Folder.NameField "Golden Work" \
@@ -1702,11 +1699,8 @@ flow_chat_restore() {
     # half of the feature contract: the export action is reachable from a real
     # conversation row and presents the native save surface.
     press "$OUT/folder-filed.json" "$conversation_menu_id" "$OUT/export-row-menu.json"
-    wait_identifier Sidebar.Conversation.Action.Export "$OUT/export-menu.json"
-    press "$OUT/export-menu.json" Sidebar.Conversation.Action.Export \
-        "$OUT/export-submenu-open.json"
-    wait_identifier Sidebar.Conversation.Action.Export.Markdown "$OUT/export-submenu.json"
-    press "$OUT/export-submenu.json" Sidebar.Conversation.Action.Export.Markdown \
+    wait_identifier Sidebar.Conversation.Action.Export.Markdown "$OUT/export-menu.json"
+    press "$OUT/export-menu.json" Sidebar.Conversation.Action.Export.Markdown \
         "$OUT/export-markdown.json"
     local export_panel_visible=0
     for _ in {1..40}; do
