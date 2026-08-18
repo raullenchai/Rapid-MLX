@@ -24,6 +24,14 @@ import Testing
 struct ServerManagerHealthDeadlineTests {
     private let window: TimeInterval = 30 * 60
 
+    @Test("Loopback health probes never inherit system or PAC proxies")
+    func loopbackHealthProbeIsDirect() {
+        let configuration = ServerManager.loopbackHealthSessionConfiguration()
+        #expect(configuration.connectionProxyDictionary?.isEmpty == true)
+        #expect(configuration.timeoutIntervalForRequest == 1.5)
+        #expect(configuration.timeoutIntervalForResource == 1.5)
+    }
+
     /// Boundary 1 — at zero idle time the loop must keep waiting.
     /// ``now == lastProgressAt`` is the launch-instant case, and the
     /// most recently observed-progress case after a heartbeat tick

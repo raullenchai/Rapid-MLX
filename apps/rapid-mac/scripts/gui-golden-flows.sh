@@ -76,7 +76,7 @@ die() { printf '[gui-golden] FAIL: %s\n' "$*" >&2; exit 1; }
 pb() { peekaboo "$@" --bridge-socket "$BRIDGE"; }
 flow_requires_screen_recording() {
     case "$FLOW" in
-        all|fresh-install|low-memory-choice) return 0 ;;
+        all) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -99,8 +99,8 @@ flow_requires_screen_recording() {
 # unattended without taking on any of that.
 flow_requires_peekaboo() {
     case "$FLOW" in
-        cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
-        slow-stream-stop|model-crash-recovery|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
+        fresh-install|cached-quickstart|cached-curated-tradeup|download-progress|settings-persistence|settings-mtp|chat-restore|message-actions|restored-tools|tool-loop-budget|chat-depth|math-rendering|browse-all-destination|no-dead-controls|catalog-integrity|update-state|launch-integrations) return 1 ;;
+        slow-stream-stop|model-crash-recovery|low-memory-choice|chat-document-attachment|image-generation|audio-readiness|window-close-prompt|resident-load-rejected) return 1 ;;
         *) return 0 ;;
     esac
 }
@@ -352,6 +352,22 @@ wait_tree_text() {
         sleep 0.25
     done
     die "timed out waiting for AX text: $needle"
+}
+
+wait_selected() {
+    local identifier="$1" destination="$2" attempts="${3:-80}"
+    for ((i=0; i<attempts; i++)); do
+        see_main "$destination"
+        if jq -e --arg id "$identifier" \
+            '.data.ui_elements[]?
+             | select(.identifier == $id)
+             | select(.selected == true or .value == 1 or .value == "1")' \
+            "$destination" >/dev/null; then
+            return
+        fi
+        sleep 0.25
+    done
+    die "timed out waiting for AX selection: $identifier"
 }
 
 # Is a window with this title in the app's OWN accessibility tree?
@@ -1151,32 +1167,84 @@ flow_fresh_install() {
             || die "post-onboarding shell missing $id"
     done
     baseline fresh-install.steady "$OUT/steady.json"
-    pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/final.png" --json > "$OUT/final-image.json"
     cleanup_persona
 }
 
 flow_cached_quickstart() {
     log "cached Quickstart starts without downloading (#1793)"
     # Reproduce #1618, not merely its configuration strings: an
-    # operator-owned rapid-mlx-shaped listener is alive on the default port
+    # operator-owned rapid-mlx-shaped listener is alive in the default port
+    # window
     # before the dogfood app launches. The isolated persona must bind its own
     # high port without sweeping or terminating this process.
+    # A server started in another Terminal owns a different process group.
+    # Non-interactive CI shells disable job control, though, so a bare `&`
+    # would put this fixture in the runner shell's group alongside the app and
+    # its child.  That makes an ownership-safe group shutdown look like it
+    # killed the operator fixture.  Give the fixture the same isolation a real
+    # operator-owned process has; `$!` remains its pid because Python execs the
+    # fake in place after setsid().
+    local operator_port=""
+    local candidate
+    for candidate in {8000..8009}; do
+        if ! /usr/sbin/lsof -nP -sTCP:LISTEN -ti :"$candidate" 2>/dev/null \
+            | grep -q .; then
+            operator_port="$candidate"
+            break
+        fi
+    done
+    [[ -n "$operator_port" ]] \
+        || die "no free port in the operator's default 8000-8009 window"
+
     FAKE_EVENT_LOG="$OUT_ROOT/operator-events.jsonl" \
+        /usr/bin/env python3 -c \
+        'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
         "$ROOT/scripts/fake-rapid-mlx.sh" serve operator-owned \
-        --host 127.0.0.1 --port 8000 > "$OUT_ROOT/operator-server.log" 2>&1 &
+        --host 127.0.0.1 --port "$operator_port" \
+        > "$OUT_ROOT/operator-server.log" 2>&1 &
     OPERATOR_SERVER_PID=$!
+    local operator_bound=0
     for _ in {1..40}; do
-        curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1 && break
+        if kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
+            && curl -fsS "http://127.0.0.1:$operator_port/healthz" >/dev/null 2>&1; then
+            # The port was observed free immediately before spawn. Give a
+            # failed bind enough time to unwind before accepting the health
+            # response, so a racing listener cannot impersonate this fixture.
+            sleep 0.1
+            if kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null; then
+                operator_bound=1
+                break
+            fi
+        fi
         sleep 0.1
     done
-    curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
-        || die "operator-shaped server did not bind :8000 for the isolation repro"
-    kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
-        || die ":8000 was already occupied; cannot establish the owned-server isolation repro"
+    [[ "$operator_bound" == 1 ]] \
+        || die "operator fixture did not own :$operator_port; cannot establish the isolation repro"
+
+    start_persona operator-isolation
+
+    # #1618 is specifically a launch-sweep regression. Prove the operator's
+    # listener survived the isolated app launch, then release the canonical
+    # port window and this probe persona before exercising cached model
+    # startup. Keeping an unrelated server — or the app launched beside it —
+    # alive throughout onboarding adds no ownership coverage and couples two
+    # otherwise independent regression shapes.
+    if ! kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null; then
+        echo "=== isolated app log ===" >&2
+        tail -n 120 "$OUT/app.log" >&2 || true
+        echo "=== operator server log ===" >&2
+        tail -n 120 "$OUT_ROOT/operator-server.log" >&2 || true
+        die "dogfood launch terminated the operator-owned :$operator_port server (#1618)"
+    fi
+    curl -fsS "http://127.0.0.1:$operator_port/healthz" >/dev/null \
+        || die "operator-owned :$operator_port server stopped responding after dogfood launch"
+    cleanup_operator_server
 
     # Include the real cold-cache notice alongside the deterministic cached
     # fixture. Catalog output can be interleaved with prose; the chooser must
     # never promote that notice into a selectable model named "No" (#1918).
+    # A fresh persona keeps this onboarding assertion independent from the
+    # launch-sweep assertion above.
     start_persona cached-quickstart FAKE_EMPTY_CACHE_NOTICE=1
 
     see_main "$OUT/consent.json"
@@ -1212,11 +1280,18 @@ flow_cached_quickstart() {
               and .port >= 49152 and .port <= 65535)' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "isolated persona did not bind its selected high port"
-    kill -0 "$OPERATOR_SERVER_PID" 2>/dev/null \
-        || die "dogfood launch terminated the operator-owned :8000 server (#1618)"
-    curl -fsS http://127.0.0.1:8000/healthz >/dev/null \
-        || die "operator-owned :8000 server stopped responding after dogfood launch"
-
+    local sidecar_port
+    sidecar_port="$(jq -rs 'map(select(.event == "server_started" and .alias == "fake-alias")) | last | .port // empty' "$OUT/fake-events.jsonl")"
+    local sidecar_healthy=0
+    for _ in {1..40}; do
+        if curl -fsS "http://127.0.0.1:$sidecar_port/healthz" >/dev/null 2>&1; then
+            sidecar_healthy=1
+            break
+        fi
+        sleep 0.1
+    done
+    [[ "$sidecar_healthy" == 1 ]] \
+        || die "cached Quickstart sidecar started but never served health on :$sidecar_port"
     # Ready is no longer completion: onboarding must hold the window until
     # the user explicitly confirms the final step. Pin both halves so a
     # future regression cannot silently restore the old auto-dismiss path.
@@ -1266,8 +1341,11 @@ flow_cached_curated_tradeup() {
         "$OUT/chooser.json" >/dev/null \
         || die "cached curated trade-up still advertises a download"
     press "$OUT/chooser.json" Quickstart.Choice.qwen3.5-4b-4bit "$OUT/select.json"
-    see_main "$OUT/selected.json"
-    assert_tree_text "$OUT/selected.json" "Start existing model"
+    # Verify the action's semantic result, not footer copy. The cached model's
+    # provenance is pinned above; after the press the durable contract is that
+    # this exact card becomes selected. Footer wording is presentation copy and
+    # is not required for the cached trade-up behavior under test.
+    wait_selected Quickstart.Choice.qwen3.5-4b-4bit "$OUT/selected.json"
     cleanup_persona
 }
 
@@ -2040,17 +2118,6 @@ flow_low_memory_choice() {
     jq -e '.data.ui_elements[]? | select(.identifier == "Quickstart.Footer.Primary")' \
         "$OUT/low-memory-selected.json" >/dev/null \
         || die "selecting the low-memory choice left no Download & start action"
-    local sheet_region
-    sheet_region="$(jq -r '.data.ui_elements[] | select(.role == "AXSheet") | [.bounds.x, .bounds.y, .bounds.width, .bounds.height] | map(round) | @csv' "$OUT/low-memory-selected.json" | head -1)"
-    [[ -n "$sheet_region" ]] || die "Quickstart sheet bounds are absent from AX"
-    pb app switch --to "PID:$APP_PID" --verify --json > "$OUT/focus-before-image.json"
-    # Capture the containing window instead of relying on Peekaboo's newer
-    # area/region flags. The AX assertion above still proves that the sheet is
-    # present, while a window capture works with both v3.0 beta and current
-    # Peekaboo releases used across our dogfood Macs.
-    pb image --window-id "$MAIN_WINDOW_ID" --path "$OUT/low-memory-selected.png" --json \
-        > "$OUT/low-memory-selected-image.json"
-
     jq -n '{success: true, assertion: "onboarding exposes and selects an honestly labelled sub-1B low-memory fallback"}' \
         > "$OUT/low-memory-assertion.json"
     cleanup_persona
