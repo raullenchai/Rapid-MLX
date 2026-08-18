@@ -811,6 +811,8 @@ struct OnboardingRecoveryBehaviorTests {
     @Test("A non-user refresh leaves no 'you rechecked' state behind")
     func launchRefreshDoesNotFakeARecheck() {
         let server = ServerManager()
+        server.refreshBinary(userInitiated: true)
+        #expect(server.lastBinaryRecheck != nil)
         server.refreshBinary()
         #expect(server.lastBinaryRecheck == nil)
     }

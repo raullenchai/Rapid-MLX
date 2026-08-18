@@ -1395,8 +1395,6 @@ flow_download_progress() {
         fi
         sleep 0.1
     done
-    wait "$press_pid" \
-        || die "AXPress failed while starting the download-progress fixture"
     [[ "$observed" == 1 ]] \
         || die "overrun fixture never reached a truthful bytes-downloaded state"
     if jq -e '(.data.ui_elements | tostring)
@@ -1407,6 +1405,31 @@ flow_download_progress() {
     jq -e -s 'any(.[]; .event == "command" and .subcommand == "pull")' \
         "$OUT/fake-events.jsonl" >/dev/null \
         || die "download-progress flow never exercised the pull subprocess"
+
+    # Onboarding covers the global DownloadStrip, so Step 3 must provide its
+    # own reachable cancellation path. Exercise the live process rather than
+    # accepting a source-level identifier: cancellation must become a notice,
+    # never fabricated network advice, and Back must return to the Review
+    # micro-stage that launched this transfer.
+    jq -e '.data.ui_elements[]?
+            | select(.identifier == "Quickstart.Download.Cancel")
+            | select(.enabled == true)' "$OUT/downloading.json" >/dev/null \
+        || die "an active onboarding download exposes no enabled Cancel action"
+    press "$OUT/downloading.json" Quickstart.Download.Cancel \
+        "$OUT/download-cancel.json" \
+        || die "onboarding Cancel download is not pressable"
+    wait "$press_pid" \
+        || die "AXPress failed while starting the download-progress fixture"
+    wait_identifier Quickstart.Retry "$OUT/download-cancelled.json"
+    assert_tree_text "$OUT/download-cancelled.json" "Download stopped"
+    if jq -e '(.data.ui_elements | tostring) | contains("Check your connection")' \
+        "$OUT/download-cancelled.json" >/dev/null; then
+        die "a user-cancelled download was misdiagnosed as a network failure"
+    fi
+    press "$OUT/download-cancelled.json" Quickstart.Failure.BackToModelSelection \
+        "$OUT/download-back.json" \
+        || die "cancelled download recovery has no working Back action"
+    wait_identifier Quickstart.Review.Alias "$OUT/download-review-restored.json"
     cleanup_persona
 }
 

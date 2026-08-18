@@ -1216,6 +1216,12 @@ final class ServerManager {
                 found: resolution != nil,
                 attempt: (lastBinaryRecheck?.attempt ?? 0) + 1
             )
+        } else {
+            // Launch and Settings refreshes are background maintenance, not
+            // evidence that the user just pressed Recheck. Retire any prior
+            // result so a later missing-engine render cannot replay stale
+            // feedback from an earlier interaction.
+            lastBinaryRecheck = nil
         }
         return resolution != nil
     }
