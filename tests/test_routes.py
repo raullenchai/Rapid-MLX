@@ -665,7 +665,9 @@ class TestHealthRoutes:
 
     def test_cache_clear_rejects_active_scheduler_requests(self, mock_engine):
         mock_engine.clear_prefix_cache = MagicMock(
-            side_effect=RuntimeError("cannot clear prefix cache while requests are active")
+            side_effect=RuntimeError(
+                "cannot clear prefix cache while requests are active"
+            )
         )
         orig = self._patch_config(engine=mock_engine)
         try:

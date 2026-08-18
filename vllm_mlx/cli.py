@@ -2938,9 +2938,10 @@ def serve_command(args):
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
         sys.exit(1)
-    if getattr(args, "idle_cache_clear_seconds", None) is not None and getattr(
-        args, "idle_cache_clear_seconds", 0.0
-    ) < 0:
+    if (
+        getattr(args, "idle_cache_clear_seconds", None) is not None
+        and getattr(args, "idle_cache_clear_seconds", 0.0) < 0
+    ):
         print("Error: --idle-cache-clear-seconds must be >= 0")
         sys.exit(1)
 
