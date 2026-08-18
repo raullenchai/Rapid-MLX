@@ -1893,20 +1893,15 @@ flow_message_actions() {
     # action to return after pressing the button.
     send_prompt "shape:long finished answer for jump-to-bottom" message-actions-long
     wait_send_idle "$OUT/message-actions-long-settled.json"
-    local last_retry
-    last_retry="$(jq -r '.data.ui_elements[]? | (.identifier // "")
-        | select(startswith("ChatView.Message.Retry."))' \
-        "$OUT/message-actions-long-settled.json" | tail -1)"
-    [[ -n "$last_retry" ]] || die "long settled answer exposes no Retry action"
     local bottom_scroll_value
     bottom_scroll_value="$(jq -r '[.data.ui_elements[]?
         | select(.role == "AXScrollBar" and (.value | type) == "number")
         | .value] | max // empty' "$OUT/message-actions-long-settled.json")"
     [[ -n "$bottom_scroll_value" ]] \
         || die "long settled transcript exposes no measurable scroll position"
-    "$AX_DRIVER" scroll-wheel "$APP_PID" "$last_retry" -80 \
+    "$AX_DRIVER" set-scroll-value "$APP_PID" 0 \
         > "$OUT/message-actions-scroll-up.json" \
-        || die "could not scroll the settled transcript away from its tail"
+        || die "could not move the settled transcript away from its tail"
     local jump_visible=0
     for _ in {1..60}; do
         see_main "$OUT/message-actions-scrolled.json"

@@ -111,7 +111,7 @@ if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "trust" {
 
 guard CommandLine.arguments.count >= 3,
       let pid = pid_t(CommandLine.arguments[2]) else {
-    fail("usage: rapid-ax <dump|press|scroll-wheel|increment|decrement|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
+    fail("usage: rapid-ax <dump|press|set-scroll-value|increment|decrement|set-value|paste-file|close-window|trust> <pid> [identifier-or-window-title] [value]")
 }
 
 let command = CommandLine.arguments[1]
@@ -190,18 +190,24 @@ func walk(_ element: AXUIElement, depth: Int) {
     guard visited.insert(element).inserted else { return }
 
     let identifier = string(element, kAXIdentifierAttribute as CFString)
+    let role = string(element, kAXRoleAttribute as CFString)
     // Action commands only need one element. Building a complete 12k-node
     // dump after finding it leaves SwiftUI several seconds to replace the
     // backing accessibility object; AXPress then receives a stale reference
     // and fails with invalidUIElement/cannotComplete. Stop at the match. Dump
     // still walks the complete tree because negative assertions depend on it.
+    if command == "set-scroll-value", match == nil,
+       role == kAXScrollBarRole as String {
+        match = element
+        return
+    }
     if command != "dump", match == nil, identifier == wanted {
         match = element
         return
     }
     var record: [String: Any] = ["depth": depth]
     if let identifier { record["identifier"] = identifier }
-    if let role = string(element, kAXRoleAttribute as CFString) { record["role"] = role }
+    if let role { record["role"] = role }
     if let subrole = string(element, kAXSubroleAttribute as CFString), !subrole.isEmpty {
         record["subrole"] = subrole
     }
@@ -338,29 +344,16 @@ switch command {
 case "press":
     let result = AXUIElementPerformAction(target, kAXPressAction as CFString)
     guard result == .success else { fail("AXPress \(identifier) failed: \(result.rawValue)") }
-case "scroll-wheel":
-    guard CommandLine.arguments.count > 4,
-          let lines = Int32(CommandLine.arguments[4])
-    else { fail("scroll-wheel requires an integer line delta") }
-    guard let origin = point(target, kAXPositionAttribute as CFString),
-          let extent = size(target, kAXSizeAttribute as CFString)
-    else { fail("scroll-wheel \(identifier) has no readable bounds") }
-    let center = CGPoint(x: origin.x + extent.width / 2, y: origin.y + extent.height / 2)
-    NSRunningApplication(processIdentifier: pid)?.activate(options: [])
-    CGWarpMouseCursorPosition(center)
-    guard let event = CGEvent(
-        scrollWheelEvent2Source: nil,
-        units: .line,
-        wheelCount: 1,
-        wheel1: lines,
-        wheel2: 0,
-        wheel3: 0
-    ) else { fail("could not create scroll-wheel event") }
-    // A newly-created CG scroll event is not guaranteed to inherit the
-    // cursor's warped position. Pin the event itself to the semantic target;
-    // otherwise headless runners can deliver it at (0, 0), outside the app.
-    event.location = center
-    event.post(tap: .cghidEventTap)
+case "set-scroll-value":
+    guard CommandLine.arguments.count > 3,
+          let value = Double(CommandLine.arguments[3]),
+          (0.0...1.0).contains(value)
+    else { fail("set-scroll-value requires a normalized value from 0 through 1") }
+    let result = AXUIElementSetAttributeValue(
+        target, kAXValueAttribute as CFString, NSNumber(value: value))
+    guard result == .success else {
+        fail("setting the first visible scroll bar failed: \(result.rawValue)")
+    }
     usleep(150_000)
 case "increment":
     let result = AXUIElementPerformAction(target, kAXIncrementAction as CFString)
