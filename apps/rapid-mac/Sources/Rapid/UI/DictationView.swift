@@ -181,24 +181,25 @@ struct DictationView: View {
                 done: controller.readinessSnapshot.accessibility
             ) {
                 if !controller.readinessSnapshot.accessibility {
-                    Button("Grant…") { controller.requestAccessibility() }
-                        .buttonStyle(.rapidSecondary)
-                        .accessibilityIdentifier("Dictation.GrantAccessibility")
-                }
-            } detail: {
-                // A grant made while the app is running does not reach this
-                // process — macOS only consults TCC when the tap is installed.
-                // Saying "grant it again" here would send the user in a loop.
-                if controller.accessibilityNeedsRelaunch {
+                    // Both routes are offered together, always. macOS applies
+                    // this permission when a process launches, so someone who
+                    // just ticked the box in System Settings needs Relaunch,
+                    // not another Grant — and there is no API to tell those two
+                    // states apart from in here. Showing only Grant left them
+                    // pointing at an already-ticked checkbox with no way out.
                     HStack(spacing: RapidTheme.Space.sm) {
-                        Text("Granted in System Settings, but this running copy hasn't picked it up.")
+                        Button("Grant…") { controller.requestAccessibility() }
+                            .buttonStyle(.rapidSecondary)
+                            .accessibilityIdentifier("Dictation.GrantAccessibility")
                         Button("Relaunch") { controller.relaunch() }
                             .buttonStyle(.rapidTertiary)
                             .accessibilityIdentifier("Dictation.Relaunch")
                     }
-                } else {
-                    Text("Needed to watch for the hotkey and to type into other apps. macOS applies this at launch, so Rapid may need a relaunch afterwards.")
                 }
+            } detail: {
+                Text(controller.accessibilityNeedsRelaunch
+                     ? "Already allowed in System Settings — relaunch Rapid to pick it up."
+                     : "Needed to watch for the hotkey and to type into other apps. macOS applies it at launch: if you have just allowed it, use Relaunch.")
             }
 
             Divider().overlay(RapidTheme.hairline)
