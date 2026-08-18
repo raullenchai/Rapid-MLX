@@ -2925,6 +2925,11 @@ def serve_command(args):
     if getattr(args, "resident_model_idle_ttl", 0.0) < 0:
         print("Error: --resident-model-idle-ttl must be >= 0")
         sys.exit(1)
+    if getattr(args, "idle_cache_clear_seconds", None) is not None and getattr(
+        args, "idle_cache_clear_seconds", 0.0
+    ) < 0:
+        print("Error: --idle-cache-clear-seconds must be >= 0")
+        sys.exit(1)
 
     # Validate PFlash config and reject unsupported model combinations
     # at startup. Done here (not lazily in the scheduler) so a typo in
@@ -3656,6 +3661,7 @@ def serve_command(args):
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
         cache_memory_percent=args.cache_memory_percent,
+        idle_cache_clear_seconds=getattr(args, "idle_cache_clear_seconds", None),
         # #1103/#1122: bounded trim-free hybrid (recurrent-state) prefix reuse.
         # Auto-defaulted to 8 for hybrid models when prefix cache is enabled.
         hybrid_cache_entries=_hybrid_cache_entries,
@@ -8699,6 +8705,16 @@ Examples:
         type=float,
         default=0.20,
         help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+    )
+    serve_parser.add_argument(
+        "--idle-cache-clear-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Clear reusable prefix/KV cache after this many seconds with no "
+            "active requests, preserving loaded model weights. 0 disables; "
+            "default: RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS or disabled."
+        ),
     )
     # #1103: bounded trim-free prefix reuse for "non-trimmable" cache entries.
     # Opt-in: the default 0 keeps the #1075 policy of dropping them at store

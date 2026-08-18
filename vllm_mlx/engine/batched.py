@@ -3122,6 +3122,12 @@ class BatchedEngine(BaseEngine):
             return self._engine.get_cache_stats()
         return None
 
+    def clear_prefix_cache(self, *, reset_stats: bool = True) -> bool:
+        """Clear reusable text prefix KV state while keeping weights loaded."""
+        if self._engine:
+            return self._engine.clear_prefix_cache(reset_stats=reset_stats)
+        return False
+
     async def abort_request(self, request_id: str) -> bool:
         """Abort an active or queued batched request by request ID.
 

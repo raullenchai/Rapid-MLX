@@ -59,6 +59,7 @@ rapid-mlx serve <model> [options]
 | `--timeout` | Request timeout in seconds | 300 |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
+| `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
 | `--no-memory-aware-cache` | Use legacy entry-count cache | False |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--max-tokens` | Default max tokens | 32768 |

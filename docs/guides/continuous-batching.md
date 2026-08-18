@@ -97,10 +97,26 @@ rapid-mlx serve model --cache-memory-mb 2048
 rapid-mlx serve model --cache-memory-percent 0.10
 ```
 
+For a long-lived server that should keep model weights warm but release an old
+conversation's KV slabs, enable the idle cache supervisor:
+
+```bash
+rapid-mlx serve model --idle-cache-clear-seconds 600
+# Equivalent service configuration:
+RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS=600 rapid-mlx serve model
+```
+
+The supervisor runs only when there are no queued/running requests and no
+active output collectors. It clears reusable prefix-cache entries and flushes
+MLX's allocator cache; it does not unload model weights or stop the server.
+The default is disabled. Cache hit/miss counters remain cumulative across an
+idle clear so monitoring does not report a misleading reset.
+
 | Option | Description |
 |--------|-------------|
 | `--cache-memory-mb` | Set explicit limit in MB |
 | `--cache-memory-percent` | Fraction of available RAM (default: 0.20) |
+| `--idle-cache-clear-seconds` | Release reusable KV state after idle time while retaining weights |
 | `--no-memory-aware-cache` | Use legacy entry-count based cache |
 
 ## Prefix Cache

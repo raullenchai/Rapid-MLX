@@ -2488,7 +2488,7 @@ class MemoryAwarePrefixCache:
             self._stats.current_memory_bytes = self._current_memory
         return True
 
-    def clear(self) -> None:
+    def clear(self, *, reset_stats: bool = True) -> None:
         """Clear all cached entries.
 
         R10-D codex round 2 HIGH: ``load_skipped`` is cumulative —
@@ -2514,15 +2514,25 @@ class MemoryAwarePrefixCache:
                 except Exception as exc:  # pragma: no cover — defensive
                     logger.warning(f"[radix] clear failed: {exc}")
             self._current_memory = 0
-            carried_load_skipped = self._stats.load_skipped
-            carried_save_drift_drops = self._stats.save_drift_drops
-            carried_non_trimmable_skips = self._stats.non_trimmable_skips
-            self._stats = CacheStats(
-                max_memory_bytes=self._max_memory,
-                load_skipped=carried_load_skipped,
-                save_drift_drops=carried_save_drift_drops,
-                non_trimmable_skips=carried_non_trimmable_skips,
-            )
+            previous = self._stats
+            if reset_stats:
+                self._stats = CacheStats(
+                    max_memory_bytes=self._max_memory,
+                    load_skipped=previous.load_skipped,
+                    save_drift_drops=previous.save_drift_drops,
+                    non_trimmable_skips=previous.non_trimmable_skips,
+                )
+            else:
+                self._stats = CacheStats(
+                    hits=previous.hits,
+                    misses=previous.misses,
+                    evictions=previous.evictions,
+                    tokens_saved=previous.tokens_saved,
+                    max_memory_bytes=self._max_memory,
+                    load_skipped=previous.load_skipped,
+                    save_drift_drops=previous.save_drift_drops,
+                    non_trimmable_skips=previous.non_trimmable_skips,
+                )
         logger.debug("Cache cleared")
 
     def get_stats(self) -> dict[str, Any]:
