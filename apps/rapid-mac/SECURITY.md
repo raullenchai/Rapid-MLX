@@ -9,7 +9,7 @@ surface matters.
 
 **Do not file a public GitHub issue for security reports.**
 
-Email **security@machinefi.com** with:
+Email **security@rapidmlx.com** with:
 
 - A description of the vulnerability
 - Steps to reproduce (a minimal Swift / shell snippet is ideal)

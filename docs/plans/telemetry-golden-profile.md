@@ -194,7 +194,7 @@ see §2.3 reasoning).
 
 Two-zone reality:
 - `rapidmlx.com` zone — owned by raullen, hosts Pages + `chat.…`.
-- `quicksilverpro.io` zone — Iotex-owned, hosts `rapidserver.…`.
+- `quicksilverpro.io` zone — separately owned, hosts `rapidserver.…`.
 
 Because the telemetry Worker has zero coupling to the share tunnel,
 it can attach to `rapidmlx.com` cleanly:
