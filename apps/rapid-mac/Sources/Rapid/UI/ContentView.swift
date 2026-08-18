@@ -7,8 +7,9 @@ import SwiftUI
 /// brand-new user with no model on disk sees the Quickstart card.
 struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// #459: hard window-width floor (kept ≤ 640 so half-screen tiling
-    /// never overflows the window on a built-in MacBook display).
+    /// #459: hard window-width floor. The original 640pt target preserved
+    /// half-screen tiling on built-in MacBook displays; 720pt is the smallest
+    /// width at which the current onboarding and workspace remain usable.
     /// Enforced on the shell below, not just declared. It was a bare
     /// constant read only by a test for a while, which meant the number and
     /// the window could disagree without anything noticing — and they did:
