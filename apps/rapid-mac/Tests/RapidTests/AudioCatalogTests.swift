@@ -22,10 +22,13 @@ struct AudioCatalogTests {
       flux2-klein-4b               4.3 GiB    [image:gen] Runpod/FLUX.2-klein-4B-mflux-4bit
     """
 
-    @Test("audio mode control places Speech before Transcription")
+    /// Order is load-bearing: the segmented control renders `allCases` directly.
+    /// Dictation goes last because it configures a background service rather
+    /// than being a workbench like the two before it.
+    @Test("audio mode control places Speech before Transcription, then Dictation")
     @MainActor
     func modeOrder() {
-        #expect(AudioViewModel.Mode.allCases == [.speech, .transcription])
+        #expect(AudioViewModel.Mode.allCases == [.speech, .transcription, .dictation])
         let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
         #expect(viewModel.mode == .speech)
     }

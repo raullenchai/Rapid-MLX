@@ -28,6 +28,13 @@
 	<string>AccentColor</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!--
+	Dictation records from the microphone only while the user is holding a
+	recording session open (hotkey pressed once to start, once to stop). Audio
+	is transcribed by the local sidecar and never leaves the machine.
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Rapid transcribes what you say into the app you're typing in. Recording happens only while you hold a dictation session open, and audio is transcribed on this Mac.</string>
 	<key>NSNetworkVolumesUsageDescription</key>
 	<string>Rapid needs access when you choose a network drive for model storage or approve a file tool there. Click Allow to continue.</string>
 	<key>NSRemovableVolumesUsageDescription</key>

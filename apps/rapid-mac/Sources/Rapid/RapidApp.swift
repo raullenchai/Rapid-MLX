@@ -56,6 +56,9 @@ struct RapidApp: App {
     /// Local speech-to-text and text-to-speech workflows. Like Images, this
     /// shares the one embedded server and swaps models only on explicit work.
     @State private var audio: AudioViewModel
+    /// Owned by the app, not the Audio tab: dictation must keep working
+    /// while Rapid's own window is closed.
+    @State private var dictation: DictationController
     /// Self-update poller. GETs a public static manifest on R2 at
     /// `https://dl.rapidmlx.com/latest.json`. See ``UpdateChecker``.
     @State private var updater: UpdateChecker
@@ -246,6 +249,7 @@ struct RapidApp: App {
         _chatViewModel = State(initialValue: chat)
         _imageGen = State(initialValue: ImageGenViewModel(server: manager))
         _audio = State(initialValue: AudioViewModel(server: manager))
+        _dictation = State(initialValue: DictationController(server: manager))
         _updater = State(initialValue: updateChecker)
         _sparkleUpdater = State(initialValue: sparkleUpdateController)
         _sampling = State(initialValue: samplingConfig)
@@ -275,6 +279,7 @@ struct RapidApp: App {
                 .environment(chatViewModel)
                 .environment(imageGen)
                 .environment(audio)
+                .environment(dictation)
                 .environment(updater)
                 .environment(sparkleUpdater)
                 .environment(sampling)

@@ -150,6 +150,69 @@ struct AudioClient {
         )
     }
 
+    /// Transcribe audio already held in memory.
+    ///
+    /// Dictation captures straight into a 16 kHz mono WAV buffer, so routing it
+    /// through the file-based path above would mean a pointless write/read of a
+    /// temporary file on the latency-critical path.
+    ///
+    /// `context` carries the user's proper-noun list. The server maps it onto
+    /// whichever decoding-hint parameter the loaded backend exposes
+    /// (`initial_prompt` for whisper, `system_prompt` for Qwen3-ASR); it is
+    /// omitted entirely when empty, because an empty hint still consumes
+    /// decoder attention.
+    func transcribe(
+        audioData: Data,
+        model: String,
+        context: String?,
+        port: Int,
+        bearer: String?
+    ) async throws -> AudioTranscriptionResult {
+        guard audioData.count <= Self.maxUploadBytes else {
+            throw AudioClientError.fileTooLarge(maxBytes: Self.maxUploadBytes)
+        }
+        guard !audioData.isEmpty else { throw AudioClientError.emptyAudio }
+
+        let boundary = "rapid-dictation-\(UUID().uuidString)"
+        var request = URLRequest(
+            url: Self.loopbackURL(port: port)
+                .appendingPathComponent("v1/audio/transcriptions")
+        )
+        request.httpMethod = "POST"
+        request.timeoutInterval = Self.requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        applyBearer(&request, bearer)
+
+        var fields = [("model", model), ("response_format", "json")]
+        if let context, !context.isEmpty {
+            fields.append(("context", context))
+        }
+
+        request.httpBody = ImageClient.multipartBody(
+            boundary: boundary,
+            fields: fields,
+            fileField: "file",
+            fileName: "dictation.wav",
+            fileMime: "audio/wav",
+            fileData: audioData
+        )
+
+        let (data, response) = try await send(request)
+        try validate(response: response, data: data)
+        guard let decoded = try? JSONDecoder().decode(TranscriptionWire.self, from: data) else {
+            throw AudioClientError.invalidResponse
+        }
+        return AudioTranscriptionResult(
+            text: decoded.text,
+            language: decoded.language,
+            duration: decoded.duration
+        )
+    }
+
     func voices(
         model: String,
         port: Int,

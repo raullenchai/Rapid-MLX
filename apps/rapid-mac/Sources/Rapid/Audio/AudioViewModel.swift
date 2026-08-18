@@ -7,12 +7,16 @@ final class AudioViewModel {
     enum Mode: String, CaseIterable, Identifiable {
         case speech
         case transcription
+        /// Unlike the other two, this mode is not a workbench: it configures a
+        /// background service whose whole point is being used from *other* apps.
+        case dictation
 
         var id: String { rawValue }
         var label: String {
             switch self {
             case .transcription: return "Transcription"
             case .speech: return "Speech"
+            case .dictation: return "Dictation"
             }
         }
     }

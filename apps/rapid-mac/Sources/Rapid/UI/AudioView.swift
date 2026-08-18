@@ -14,6 +14,7 @@ struct AudioView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(SettingsRouter.self) private var settingsRouter
     @Environment(DownloadManager.self) private var downloads
+    @Environment(DictationController.self) private var dictation
 
     @State private var copied = false
     @State private var playback = AudioPlaybackController()
@@ -180,6 +181,16 @@ struct AudioView: View {
                     unavailableState(operation: "speech")
                 } else {
                     speechSurface
+                }
+            case .dictation:
+                if viewModel.transcriptionModels.isEmpty {
+                    unavailableState(operation: "transcription")
+                } else {
+                    DictationView(
+                        controller: dictation,
+                        viewModel: viewModel,
+                        server: server
+                    )
                 }
             }
         }
