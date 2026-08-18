@@ -283,6 +283,10 @@ rapid-mlx chat qwen3.5-4b-4bit --disable-prefix-cache
 `--disable-prefix-cache` applies only when `chat` spawns its own server. When
 using `--port` or `--base-url`, start that server with the corresponding flag.
 
+When attaching with `--port` or `--base-url` and no model argument, `chat`
+discovers the model from the server's `/v1/models` response. An explicit model
+argument always wins.
+
 In-REPL slash commands: `/help`, `/reset` (alias `/clear`), `/model <alias>`,
 `/save <path>` (write conversation to markdown), `/exit` (alias `/quit`).
 Type `"""` on its own line to start/end a multi-line block (pasting code).
