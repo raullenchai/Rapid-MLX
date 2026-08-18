@@ -2,7 +2,7 @@
 """The perf bench must measure a server that has served nothing else.
 
 `stress_e2e_bench` used to run the bench LAST, after the stress battery
-and the whole agent matrix had hammered the same server process. It
+and the whole SDK matrix had hammered the same server process. It
 therefore measured residual state rather than the code under review,
 while baselines are captured on a fresh server
 (`harness/README.md`) — two different protocols compared against each
@@ -60,8 +60,14 @@ def _capture_runner_lines():
     return lines
 
 
-def _agent_matrix_lineno():
-    """Line of ``for agent in registry["agents"]:`` — the matrix loop."""
+def _sdk_matrix_lineno():
+    """Line of ``for agent in registry["agents"]:`` — the matrix loop.
+
+    The ``agents`` key holds SDK/framework scripts (Anthropic SDK, LangChain,
+    Pydantic-AI), not the coding agents of ``docs/agents/matrix.md``. The key
+    name is load-bearing for this AST lookup, so it is matched literally even
+    though the prose calls it the SDK matrix.
+    """
     for node in ast.walk(_run_body()):
         if not isinstance(node, ast.For):
             continue
@@ -91,12 +97,12 @@ def test_bench_runs_before_the_stress_battery():
     )
 
 
-def test_bench_runs_before_the_agent_matrix():
-    """The agent matrix is the heavier half of the contamination."""
+def test_bench_runs_before_the_sdk_matrix():
+    """The SDK matrix is the heavier half of the contamination."""
     lines = _capture_runner_lines()
     assert "bench" in lines, f"no bench runner found; got {sorted(lines)}"
 
-    assert lines["bench"] < _agent_matrix_lineno(), (
-        "the bench must run before the agent matrix; benching after it "
-        "measures a server that has already served every agent battery"
+    assert lines["bench"] < _sdk_matrix_lineno(), (
+        "the bench must run before the SDK matrix; benching after it "
+        "measures a server that has already served every integration battery"
     )

@@ -36,6 +36,11 @@ from .mcp.types import MCPServerConfig, MCPTool, MCPTransport
 
 _OPENAI_FUNCTION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MAX_SHUTDOWN_SECONDS = 5.0
+# A tool result is a context cost, not just a payload. One `read_file` over a
+# large file can consume the whole KV budget of the small local models this
+# runs against, so an oversized result is truncated with a marker the model
+# can act on (ask for a narrower range) instead of silently blowing the turn.
+_MAX_TOOL_RESULT_CHARS = 32_000
 _OPTIONAL_COMPONENT_WARNINGS = {
     "Could not fetch prompts: Method not found",
     "Could not fetch resources: Method not found",
@@ -432,6 +437,7 @@ class ChatMCPRuntime:
             if tool is None:
                 raise ValueError(f"Unknown MCP tool: {full_name or '<empty>'}")
 
+            arguments = _prepare_arguments(tool, arguments)
             validate_tool_arguments(tool, arguments, strict=True)
             self._sandbox.validate_tool_execution(
                 tool.name,
@@ -451,9 +457,11 @@ class ChatMCPRuntime:
                     f"MCP tool {full_name!r} timed out after {timeout:g} seconds"
                 ) from exc
 
-            content = json.dumps(
-                result.model_dump(mode="json", by_alias=True, exclude_none=True),
-                ensure_ascii=False,
+            content = _truncate_tool_result(
+                json.dumps(
+                    result.model_dump(mode="json", by_alias=True, exclude_none=True),
+                    ensure_ascii=False,
+                )
             )
             is_error = bool(_sdk_attr(result, "is_error", "isError", False))
             self._sandbox.record_execution(
@@ -497,6 +505,116 @@ class ChatMCPRuntime:
 
     def _server_timeout(self, server_name: str) -> float:
         return self._config.servers[server_name].timeout
+
+
+def _matches_json_type(value: Any, declared: str) -> bool:
+    """Return whether a Python value already satisfies one JSON scalar type."""
+
+    if declared == "null":
+        return value is None
+    if declared == "boolean":
+        return isinstance(value, bool)
+    if declared == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if declared == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if declared == "string":
+        return isinstance(value, str)
+    if declared == "array":
+        return isinstance(value, list)
+    if declared == "object":
+        return isinstance(value, dict)
+    return False
+
+
+def _coerce_scalar(value: Any, schema: dict[str, Any]) -> Any:
+    """Nudge a JSON scalar toward the type its schema declares.
+
+    Small local models routinely emit ``"5"`` where the schema says ``integer``
+    and ``5`` where it says ``string``. Rejecting those costs a whole round
+    trip; the value is unambiguous, so convert it. Anything that does not
+    convert cleanly is returned untouched so schema validation still reports
+    the real problem rather than a conversion artifact.
+    """
+
+    declared = schema.get("type")
+    if isinstance(declared, list):
+        # A union that already admits the value needs no nudging. Choosing its
+        # first member unconditionally would turn a valid integer into a
+        # string for ``["string", "integer"]`` merely because string came
+        # first in the schema.
+        if any(
+            isinstance(candidate, str) and _matches_json_type(value, candidate)
+            for candidate in declared
+        ):
+            return value
+        non_null = [candidate for candidate in declared if candidate != "null"]
+        # Multiple possible coercion targets are ambiguous. Leave validation
+        # to report the mismatch instead of guessing which branch was meant.
+        declared = non_null[0] if len(non_null) == 1 else None
+    if declared is None:
+        return value
+
+    if declared in ("integer", "number") and isinstance(value, str):
+        try:
+            return int(value) if declared == "integer" else float(value)
+        except ValueError:
+            return value
+    if (
+        declared == "string"
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        return str(value)
+    if declared == "boolean" and isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "false"):
+            return lowered == "true"
+    return value
+
+
+def _prepare_arguments(tool: MCPTool, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Drop hallucinated keys and coerce obvious scalar-type mismatches.
+
+    Both halves exist because the model, not a caller, wrote these arguments.
+
+    Dropping is scoped to schemas that set ``additionalProperties: false``,
+    which is exactly where an invented key turns into a hard validation
+    failure and costs a whole round trip. When the key is absent JSON Schema
+    says extras are permitted, so they are forwarded and the server — not this
+    layer — decides whether they are meaningful.
+    """
+
+    schema = tool.input_schema or {}
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return arguments
+
+    allows_extra = schema.get("additionalProperties", True) is not False
+    prepared: dict[str, Any] = {}
+    for name, value in arguments.items():
+        declared = properties.get(name)
+        if declared is None:
+            if allows_extra:
+                prepared[name] = value
+            continue
+        prepared[name] = (
+            _coerce_scalar(value, declared) if isinstance(declared, dict) else value
+        )
+    return prepared
+
+
+def _truncate_tool_result(content: str) -> str:
+    """Cap a tool result so one oversized read cannot exhaust the context."""
+
+    if len(content) <= _MAX_TOOL_RESULT_CHARS:
+        return content
+    dropped = len(content) - _MAX_TOOL_RESULT_CHARS
+    return (
+        content[:_MAX_TOOL_RESULT_CHARS]
+        + f"\n\n[truncated: {dropped} of {len(content)} characters omitted; "
+        "request a narrower range to see the rest]"
+    )
 
 
 def _emit_tool_event(
