@@ -1668,6 +1668,53 @@ flow_chat_restore() {
     sleep 0.2
     see_main "$OUT/chat-restored-transcript.json"
     assert_tree_text "$OUT/chat-restored-transcript.json" "deterministic content"
+
+    # Conversation folders are a visible sidebar workflow, not just a data
+    # model. Exercise the real row-menu path that creates a folder and files
+    # this conversation in one intention.
+    local conversation_menu_id
+    conversation_menu_id="Sidebar.Conversation.Menu.${conversation_id##*.}"
+    press "$OUT/chat-restored-transcript.json" "$conversation_menu_id" \
+        "$OUT/folder-row-menu.json"
+    wait_identifier Sidebar.Conversation.Action.MoveToNewFolder "$OUT/folder-menu.json"
+    press "$OUT/folder-menu.json" Sidebar.Conversation.Action.MoveToNewFolder \
+        "$OUT/folder-new-press.json"
+    wait_identifier Sidebar.Folder.NameField "$OUT/folder-prompt.json"
+    "$AX_DRIVER" set-value "$APP_PID" Sidebar.Folder.NameField "Golden Work" \
+        > "$OUT/folder-name.json"
+    see_main "$OUT/folder-name-set.json"
+    press "$OUT/folder-name-set.json" Sidebar.Folder.Prompt.Confirm \
+        "$OUT/folder-save.json"
+    wait_identifier Sidebar.Folder.Toggle.Golden-Work "$OUT/folder-created.json"
+    for _ in {1..40}; do
+        see_main "$OUT/folder-filed.json"
+        if jq -e '(.data.ui_elements | tostring) | contains("Golden Work (1)")' \
+            "$OUT/folder-filed.json" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    assert_tree_text "$OUT/folder-filed.json" "Golden Work (1)"
+    assert_tree_text "$OUT/folder-filed.json" "golden restore marker"
+
+    # The renderer/encoder are unit-tested; this GUI assertion owns the other
+    # half of the feature contract: the export action is reachable from a real
+    # conversation row and presents the native save surface.
+    press "$OUT/folder-filed.json" "$conversation_menu_id" "$OUT/export-row-menu.json"
+    wait_identifier Sidebar.Conversation.Action.Export.Markdown "$OUT/export-menu.json"
+    press "$OUT/export-menu.json" Sidebar.Conversation.Action.Export.Markdown \
+        "$OUT/export-markdown.json"
+    local export_panel_visible=0
+    for _ in {1..40}; do
+        if ax_window_present "Export Conversation" "$OUT/export-panel.json"; then
+            export_panel_visible=1; break
+        fi
+        sleep 0.1
+    done
+    [[ "$export_panel_visible" == 1 ]] \
+        || die "Markdown export did not present its save panel"
+    "$AX_DRIVER" close-window "$APP_PID" "Export Conversation" \
+        > "$OUT/export-panel-close.json" \
+        || die "export save panel could not be cancelled"
+
     local conversation_suffix pin_id unpin_id
     conversation_suffix="${conversation_id##*.}"
     pin_id="Sidebar.Conversation.Pin.$conversation_suffix"

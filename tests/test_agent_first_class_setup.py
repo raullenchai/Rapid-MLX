@@ -98,6 +98,58 @@ def test_verify_server_checks_health_and_models(monkeypatch):
     ]
 
 
+def test_dsh_plan_and_profile_template_agree_on_the_provider_contract(monkeypatch):
+    """The two DSH provider definitions must not drift apart.
+
+    ``agents dsh --setup`` builds the provider block in ``agents/setup.py``,
+    while ``agents dsh --test`` renders the template in
+    ``profiles/deepseek-harness.yaml``. They are deliberately separate — only
+    the plan adapts ``reasoningEfforts`` to the served model — but every other
+    key is the same contract, and nothing but this test notices when an edit
+    lands in one and not the other.
+    """
+    import yaml
+
+    from vllm_mlx.agents import get_profile
+    from vllm_mlx.agents.setup import build_setup_plan
+
+    base_url = "http://localhost:8000/v1"
+    model = "qwen3.6-35b-4bit"
+    context = 131072
+
+    monkeypatch.setattr(
+        "vllm_mlx.agents.setup._dsh_settings_path",
+        lambda: __import__("pathlib").Path("/nonexistent/settings.yaml"),
+    )
+    plan = build_setup_plan("dsh", base_url, model, context_length=context)
+    planned = plan.after["llm-pi-ai"]["providers"]["rapid-mlx"]
+
+    profile = get_profile("deepseek-harness")
+    rendered = yaml.safe_load(
+        profile.render_config(base_url, model, context_length=context)
+    )
+    templated = rendered["llm-pi-ai"]["providers"]["rapid-mlx"]
+
+    for key in (
+        "displayName",
+        "apiKeyEnv",
+        "api",
+        "baseURL",
+        "defaultContextWindow",
+        "defaultMaxTokens",
+    ):
+        assert planned[key] == templated[key], f"DSH provider key drifted: {key}"
+
+    assert plan.after["agent-default-model"] == rendered["agent-default-model"]
+
+    planned_model = planned["models"][0]
+    templated_model = templated["models"][0]
+    for key in ("id", "name", "contextWindow", "maxTokens"):
+        assert planned_model[key] == templated_model[key], (
+            f"DSH model key drifted: {key}"
+        )
+
+
 def test_cli_parser_exposes_setup_safety_flags(monkeypatch):
     import vllm_mlx.cli as cli
 

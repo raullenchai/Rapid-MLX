@@ -382,6 +382,19 @@ struct RapidApp: App {
                     AboutPanel.show(server: server)
                 }
             }
+            // File → Export All Chats…  The per-conversation export lives on
+            // the sidebar row menu; this is the whole-library backup, and the
+            // menu bar is where a user looks for "get my data out" when they
+            // don't have one particular chat in mind.
+            CommandGroup(after: .newItem) {
+                Button("Export All Chats…") {
+                    ConversationExportPanel.exportAll(
+                        conversations: chatViewModel.conversations,
+                        folders: chatViewModel.folders
+                    )
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+            }
             // ⌘, → our Window-based Settings (replaces the default that
             // targeted the removed ``Settings`` scene).
             CommandGroup(replacing: .appSettings) {
@@ -897,8 +910,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reapDownloads()
         // Drain any queued conversation-history write so the last turn /
         // edit / deletion isn't lost when the process exits before the
-        // async save lands.
+        // async save lands. Folders drain alongside it — the two files are
+        // written in the same user actions (deleting a folder unfiles the
+        // conversations in it), so flushing only one can leave the pair
+        // disagreeing about where a row lives.
         ConversationStore.flush()
+        ConversationFolderStore.flush()
     }
 
     /// The single clean-shutdown wiring, shared by ``applicationWillTerminate``
