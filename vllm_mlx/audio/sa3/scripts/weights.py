@@ -186,3 +186,8 @@ def is_present(local_rel_path: str) -> bool:
     return p.exists() or p.is_symlink()
 
 
+def bundle_status(bundle: str) -> tuple[int, int]:
+    """Returns (present_count, total_count) for the bundle (including SHARED)."""
+    items = DIT_BUNDLES[bundle] + SHARED
+    present = sum(1 for rel, _ in items if is_present(rel))
+    return present, len(items)
