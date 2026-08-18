@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "apps/rapid-mac/scripts/gui-golden-flows.sh"
 WORKFLOW = ROOT / ".github/workflows/rapid-mac-ci.yml"
@@ -30,3 +32,18 @@ def test_audio_control_journey_is_blocking_gui_ci_and_has_failure_evidence():
         1
     ]
     assert "image-generation audio-readiness" in diagnostic
+
+
+@pytest.mark.parametrize(
+    "flow",
+    ["no-dead-controls", "catalog-integrity", "update-state", "launch-integrations"],
+)
+def test_semantic_control_audits_are_blocking_gui_ci(flow: str):
+    workflow = WORKFLOW.read_text()
+
+    assert f"Golden flow: {flow}" in workflow
+    assert f"--flow {flow}" in workflow
+    diagnostic = workflow.split("Regenerate baselines on this runner (diagnostic)", 1)[
+        1
+    ]
+    assert flow in diagnostic

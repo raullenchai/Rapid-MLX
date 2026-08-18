@@ -18,11 +18,8 @@ import Foundation
 /// `--draft-model` and `--num-draft-tokens` are in the engine's
 /// deprecated-no-op block (`vllm_mlx/cli.py`: "consumed-and-discarded: stored
 /// on ``args`` but never read"), so exposing them would ship switches wired to
-/// nothing. Speculative decoding's canonical entry point is
-/// `--speculative-config`, a JSON blob whose shape does not survive
-/// translation into toggles; its flag-shaped aliases are all
-/// `argparse.SUPPRESS` legacy. Both are out of scope here by audit, not by
-/// oversight.
+/// nothing. Speculative decoding uses the alias registry's audited preset and
+/// emits canonical `--speculative-config` JSON rather than a legacy flag.
 struct ModelPerfConfig: Codable, Equatable, Sendable {
     /// KV-cache precision / compression. One knob, not two, because the
     /// engine treats them as one: `vllm_mlx/cli.py` resolves `--kv-cache-dtype`
@@ -42,14 +39,20 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
     /// auto-detection (~20% of RAM) alone.
     var cacheMemoryMB: Int?
 
+    /// Explicit opt-in to the selected alias's registry-advertised preset.
+    /// `nil` is off; the method is persisted so launch remains deterministic.
+    var speculativePreset: SpeculativeDecodingPreset?
+
     init(
         kvCacheMode: KVCacheMode? = nil,
         prefixCacheEnabled: Bool? = nil,
-        cacheMemoryMB: Int? = nil
+        cacheMemoryMB: Int? = nil,
+        speculativePreset: SpeculativeDecodingPreset? = nil
     ) {
         self.kvCacheMode = kvCacheMode
         self.prefixCacheEnabled = prefixCacheEnabled
         self.cacheMemoryMB = cacheMemoryMB
+        self.speculativePreset = speculativePreset
     }
 
     /// True when the user has not overridden anything. Such a config is
@@ -57,6 +60,7 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
     /// that encode "no opinion".
     var isEmpty: Bool {
         kvCacheMode == nil && prefixCacheEnabled == nil && cacheMemoryMB == nil
+            && speculativePreset == nil
     }
 
     /// Bounds for ``cacheMemoryMB``. The floor is the engine's own smallest
@@ -88,6 +92,26 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
         return flags
     }
 
+    /// Alias-aware rendering used by the app's launch pipeline. The preset was
+    /// advertised by aliases.json through `rapid-mlx models`; persisting that
+    /// exact repo keeps relaunch deterministic and avoids a second allowlist.
+    func launchFlags(forAlias alias: String) -> [String] {
+        var flags = launchFlags
+        let normalizedAlias = alias.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedAlias.isEmpty, let speculativePreset else { return flags }
+        let payload: String
+        switch speculativePreset.method {
+        case .mtp:
+            guard let model = speculativePreset.model,
+                  let tokens = speculativePreset.tokens else { return flags }
+            payload = #"{"method":"mtp","model":"\#(model)","num_speculative_tokens":\#(tokens)}"#
+        case .suffix:
+            payload = #"{"method":"suffix"}"#
+        }
+        flags.append(contentsOf: ["--speculative-config", payload])
+        return flags
+    }
+
     /// Decode the audited subset from an already-resolved argv fragment.
     /// This is how residency receives the same measured recommendation +
     /// user override that a cold ``serve`` spawn receives.
@@ -114,6 +138,23 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
             case "--cache-memory-mb":
                 if let value, let parsed = Int(value) { cacheMemoryMB = parsed }
                 index += 2
+            case "--speculative-config":
+                if let value,
+                   let data = value.data(using: .utf8),
+                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let method = payload["method"] as? String {
+                    if method == "mtp", let model = payload["model"] as? String,
+                       let tokens = payload["num_speculative_tokens"] as? Int {
+                        speculativePreset = SpeculativeDecodingPreset(
+                            method: .mtp, model: model, tokens: tokens
+                        )
+                    } else if method == "suffix" {
+                        speculativePreset = SpeculativeDecodingPreset(
+                            method: .suffix, model: nil, tokens: nil
+                        )
+                    }
+                }
+                index += 2
             default:
                 index += 1
             }
@@ -129,6 +170,7 @@ struct ModelPerfConfig: Codable, Equatable, Sendable {
         "--enable-prefix-cache",
         "--disable-prefix-cache",
         "--cache-memory-mb",
+        "--speculative-config",
     ]
 }
 

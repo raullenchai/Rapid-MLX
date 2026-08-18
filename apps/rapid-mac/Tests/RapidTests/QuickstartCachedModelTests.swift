@@ -69,4 +69,25 @@ struct QuickstartCachedModelTests {
         )
         #expect(resolved?.hfRepo == "local/actual-cached-repo")
     }
+
+    @Test("curated trade-up keeps cached provenance past the six-row display cap")
+    func cachedTradeUpPastDisplayCap() {
+        let rows = (0..<6).map { entry("cached-\($0)") } + [
+            entry("qwen3.5-4b-4bit")
+        ]
+        let shortlist = QuickstartView.shortlist(
+            catalog: rows,
+            selection: "qwen3.5-4b-4bit"
+        )
+
+        #expect(shortlist.cached.count == 6)
+        #expect(QuickstartView.cachedModel(
+            alias: "qwen3.5-4b-4bit",
+            cachedModels: rows
+        )?.sizeOnDisk == "2.9 GiB")
+        #expect(QuickstartView.canStartWithoutDownload(
+            alias: "qwen3.5-4b-4bit",
+            cachedModels: rows
+        ))
+    }
 }

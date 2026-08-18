@@ -17,11 +17,25 @@ config:
   path: "~/.qwen/settings.json"
   template: |
     {
-      "openaiCompatible": {
-        "baseUrl": "{base_url}",
-        "apiKey": "not-needed",
-        "model": "{model_id}"
-      }
+      "modelProviders": {
+        "openai": [
+          {
+            "id": "{model_id}",
+            "name": "{model_id} (Rapid-MLX)",
+            "envKey": "RAPID_MLX_API_KEY",
+            "baseUrl": "{base_url}",
+            "generationConfig": {
+              "timeout": 300000,
+              "maxRetries": 1,
+              "contextWindowSize": {context_length},
+              "samplingParams": {"max_tokens": 8192}
+            }
+          }
+        ]
+      },
+      "env": {"RAPID_MLX_API_KEY": "not-needed"},
+      "security": {"auth": {"selectedType": "openai"}},
+      "model": {"name": "{model_id}"}
     }
 
 models:
@@ -44,14 +58,17 @@ testing:
   # qwen-code has a one-shot mode: `qwen -p "<prompt>"` runs without a
   # REPL. Useful for CI smokes.
   query_cmd: "qwen -p '{query}'"
-  query_timeout: 120
-  install_cmd: "npm install -g @qwenlm/qwen-code"
+  # Current Qwen Code injects ~30K prompt tokens and 59 tools before the user
+  # turn.  A local 9B prefill can legitimately exceed two minutes; allow the
+  # complete tool-result round trip rather than classifying progress as a hang.
+  query_timeout: 360
+  install_cmd: "npm install -g @qwen-code/qwen-code@latest"
 
 capabilities:
   function_calling: true
   streaming: true
 
 known_issues:
-  - "qwen-code hardcodes the OpenAI-compat `/v1` suffix — set `baseUrl` to `http://localhost:8000/v1` not the root URL."
+  - "Set the OpenAI provider baseUrl to the full `http://localhost:8000/v1` endpoint, not the server root."
   - "Older releases (< 1.2) had an issue where `chat_template_kwargs` was stripped before send; upgrade if you see `<think>` traces leaking into `content` on Qwen3.6."
   - "Alibaba banned Claude Code internally over alleged backdoor risks (2026-07-03) — qwen-code + rapid-mlx is the local, source-visible alternative."

@@ -761,6 +761,13 @@ struct AudioView: View {
     }
 
     private func chooseAudioFile() {
+        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
+           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_AUDIO_PATH"],
+           !simulated.isEmpty
+        {
+            viewModel.selectFile(URL(fileURLWithPath: simulated))
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
         panel.allowsMultipleSelection = false
@@ -774,6 +781,17 @@ struct AudioView: View {
     }
 
     private func saveTranscription(_ text: String) {
+        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
+           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_TRANSCRIPTION_SAVE_PATH"],
+           !simulated.isEmpty
+        {
+            do {
+                try text.write(to: URL(fileURLWithPath: simulated), atomically: true, encoding: .utf8)
+            } catch {
+                viewModel.errorMessage = "Couldn't save the transcription: \(error.localizedDescription)"
+            }
+            return
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.plainText]
         panel.nameFieldStringValue = "transcription.txt"
@@ -787,6 +805,17 @@ struct AudioView: View {
     }
 
     private func saveSpeech(_ audio: SynthesizedAudio) {
+        if ProcessInfo.processInfo.environment["RAPID_GUI_GOLDEN_MODE"] == "1",
+           let simulated = ProcessInfo.processInfo.environment["RAPID_SIMULATED_SPEECH_SAVE_PATH"],
+           !simulated.isEmpty
+        {
+            do {
+                try audio.data.write(to: URL(fileURLWithPath: simulated), options: .atomic)
+            } catch {
+                viewModel.errorMessage = "Couldn't save the audio: \(error.localizedDescription)"
+            }
+            return
+        }
         let panel = NSSavePanel()
         if let type = UTType(filenameExtension: audio.fileExtension) {
             panel.allowedContentTypes = [type]

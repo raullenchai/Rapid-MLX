@@ -37,6 +37,13 @@ struct ModelPerfConfigTests {
         #expect(store.configuredAliases.isEmpty)
     }
 
+    @Test("MTP is off by default for both Qwen3.8 aliases")
+    func mtpDefaultsOff() {
+        let store = makeStore()
+        #expect(store.launchFlags(forAlias: "qwen3.8-27b-4bit").isEmpty)
+        #expect(store.launchFlags(forAlias: "qwen3.8-27b-mixed-3.5bpw").isEmpty)
+    }
+
     @Test("Setting a knob then clearing it removes the row rather than pinning the default")
     func clearingAnOverrideRemovesTheRow() {
         let store = makeStore()
@@ -88,6 +95,27 @@ struct ModelPerfConfigTests {
             == ["--kv-cache-dtype", "int8"])
     }
 
+    @Test("MTP opt-in persists and normalizes the alias")
+    func mtpOptInPersists() {
+        let defaults = makeDefaults()
+        let first = ModelPerfConfigStore(defaults: defaults)
+        first.setConfig(
+            ModelPerfConfig(speculativePreset: .init(
+                method: .mtp,
+                model: "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
+                tokens: 3
+            )),
+            forAlias: " Qwen3.8-27B-4bit "
+        )
+
+        let second = ModelPerfConfigStore(defaults: defaults)
+        #expect(second.config(forAlias: "qwen3.8-27b-4bit").speculativePreset?.method == .mtp)
+        #expect(second.launchFlags(forAlias: "qwen3.8-27b-4bit") == [
+            "--speculative-config",
+            #"{"method":"mtp","model":"rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX","num_speculative_tokens":3}"#,
+        ])
+    }
+
     @Test("A corrupt persisted blob surfaces an error instead of reporting defaults")
     func corruptBlobSurfacesError() {
         let defaults = makeDefaults()
@@ -121,6 +149,34 @@ struct ModelPerfConfigTests {
             prefixCacheEnabled: false,
             cacheMemoryMB: 4096
         ))
+    }
+
+    @Test("MTP canonical config round-trips into residency state")
+    func mtpFlagsRoundTrip() {
+        let config = ModelPerfConfig(launchFlags: [
+            "--speculative-config",
+            #"{"method":"mtp","model":"rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX","num_speculative_tokens":3}"#,
+        ])
+        #expect(config.speculativePreset?.method == .mtp)
+    }
+
+    @Test("Registry-selected methods render canonical configs")
+    func speculativeMethodsRender() {
+        let enabled = ModelPerfConfig(speculativePreset: .init(
+            method: .mtp,
+            model: "rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX",
+            tokens: 3
+        ))
+        #expect(enabled.launchFlags(forAlias: "qwen3.8-27b-mixed-3.5bpw") == [
+            "--speculative-config",
+            #"{"method":"mtp","model":"rapid-mlx/Qwen3.8-27B-mixed-3.5bpw-MLX","num_speculative_tokens":3}"#,
+        ])
+        #expect(ModelPerfConfig(speculativePreset: .init(
+            method: .suffix, model: nil, tokens: nil
+        ))
+            .launchFlags(forAlias: "llama3-3b-4bit") == [
+                "--speculative-config", #"{"method":"suffix"}"#,
+            ])
     }
 
     @Test("The deprecated --kv-cache-quantization spelling is never emitted")

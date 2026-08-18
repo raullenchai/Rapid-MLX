@@ -41,21 +41,18 @@ import Observation
 ///          }
 ///     5xx — CF / R2 transient error
 ///
-/// `dmg_sha256` / `dmg_size` are emitted by the publish script
-/// (`rapidmlx.com/scripts/publish-desktop-release.sh`) but the
-/// `Release` Codable struct below does NOT decode them yet —
-/// the in-app installer still relies on `codesign --verify` on the
-/// mounted bundle for integrity (see ``Installer.swift``).
-/// Decoding + verifying `dmg_sha256` is the next reinforcement step;
-/// when added, the Installer should fail closed if the hash is
-/// present in the manifest and the downloaded bytes don't match.
+/// `dmg_sha256` / `dmg_size` are emitted by the desktop release workflow
+/// (`.github/workflows/rapid-mac-release.yml`) but the
+/// `Release` Codable struct below does NOT decode them — nothing in
+/// this process downloads the DMG any more. Sparkle fetches its own
+/// appcast and verifies the EdDSA signature over the payload it
+/// downloads, so integrity lives there, not here.
 /// Codable silently drops unknown keys, so existing manifests don't
 /// need a schema bump when those fields appear/disappear.
 ///
 /// `sidecar_*` / `model_*` are bootstrapper-only fields read by
 /// ``BootstrapCoordinator`` on first-install (slice γ + slice δ).
-/// The v0.8.x in-app UpdateChecker does NOT take action on them —
-/// `Installer.swift` keeps using `dmg_url` regardless. Declaring
+/// The in-app UpdateChecker does NOT take action on them. Declaring
 /// them here as `Codable Optional` so a future migration (e.g.
 /// surfacing "sidecar fix-up download" in Settings, or driving the
 /// in-app installer through the bootstrapper machinery) only has
@@ -69,8 +66,10 @@ import Observation
 ///
 /// Decisions:
 ///
-///   * Per-launch + 6-hour timer poll. Mac users typically restart
-///     apps weekly+, so per-launch is the dominant cadence anyway.
+///   * Per-launch only, no timer. Sparkle owns the recurring
+///     "is there a newer version" schedule; a second timer beside it was
+///     pure duplication. Mac users restart apps weekly+, so per-launch was
+///     the dominant cadence anyway.
 ///   * No background fetch via NSURLSession schedulers.
 ///   * No auth header — the endpoint is public.
 ///   * **Privacy contract.** The ONLY thing this request sends is
@@ -83,9 +82,9 @@ import Observation
 ///     leaves the app on its current version (no alert, no crash),
 ///     and it is skipped entirely when the user has opted out (see
 ///     ``updateChecksEnabled``).
-///   * Signed production builds delegate installation to Sparkle. Builds
-///     without an injected Sparkle public key retain ``Installer.swift`` as a
-///     migration fallback: download DMG, verify, mount, swap, relaunch.
+///   * Installation is Sparkle's job entirely. This type never downloads,
+///     verifies or swaps a bundle; it reports what the manifest says so the
+///     version pill and the Settings panel have something to render.
 @MainActor
 @Observable
 final class UpdateChecker {
@@ -205,8 +204,9 @@ final class UpdateChecker {
     private(set) var latest: Release?
     /// Last error from a check, or nil. Cleared on a successful poll.
     private(set) var lastError: String?
-    /// When the last check finished (success OR failure), used by the
-    /// 6-hour timer to decide whether to skip.
+    /// When the last check finished (success OR failure). Surfaced for
+    /// diagnostics; nothing schedules off it now that the check is
+    /// per-launch.
     private(set) var lastCheckedAt: Date?
 
     /// Currently-installed version, read once from the bundle. Kept
@@ -417,11 +417,10 @@ final class UpdateChecker {
             throw UpdateError.decode("html_url is not in the release allowlist: \(release.htmlURL)")
         }
         // DMG URL is optional; when present it must be HTTPS on the
-        // download-host allowlist (the same set the in-app installer
-        // accepts). Otherwise the installer would refuse it at the
-        // download gate — failing closed here surfaces the cause
-        // earlier and avoids a half-state where the user sees the
-        // "Install in app" CTA but it can never succeed.
+        // download-host allowlist. Sparkle owns the real download, so this
+        // no longer guards a fetch we perform — it keeps a manifest that
+        // names an unexpected download host from being accepted as
+        // well-formed, which is the shape the status UI trusts.
         if let dmg = release.dmgURL {
             guard let dmgURL = URL(string: dmg),
                   dmgURL.scheme?.lowercased() == "https",

@@ -5020,11 +5020,16 @@ async def _create_chat_completion_impl(
                 media_type="text/event-stream",
                 headers=_sse_headers,
             )
+        # Shared route/guard latch: an engine may translate cancellation into
+        # clean iterator exhaustion after the client disconnects.  The route
+        # needs to distinguish that from a genuinely malformed stream ending.
+        _client_disconnect_state = [False]
         _chat_stream = stream_chat_completion(
             engine,
             messages,
             request,
             caller_agent=_caller_ua,
+            _client_disconnect_state=_client_disconnect_state,
             **chat_kwargs,
         )
         if engine.is_mllm:
@@ -5055,6 +5060,7 @@ async def _create_chat_completion_impl(
                 raw_request,
                 engine=engine,
                 request_id_holder=request_id_holder,
+                disconnect_state=_client_disconnect_state,
             ),
             media_type="text/event-stream",
             headers=_sse_headers,
@@ -6174,6 +6180,7 @@ async def stream_chat_completion(
     response_id: str | None = None,
     created: int | None = None,
     caller_agent: str | None = None,
+    _client_disconnect_state: list[bool] | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
@@ -6194,6 +6201,9 @@ async def stream_chat_completion(
             unbucketed — ``emit.request`` funnels it through
             ``normalize_caller_agent`` (never stored raw). ``None`` when
             the header is absent or telemetry is off.
+        _client_disconnect_state: Private route/guard coordination latch.
+            True means the consumer disappeared and post-stream recovery must
+            not synthesize terminal frames for the dead connection.
     """
     from ..service.postprocessor import StreamingPostProcessor
 
@@ -6692,6 +6702,14 @@ async def stream_chat_completion(
                     # finish_reason as "tool_calls" — not emit two
                     # contradictory finish chunks.
                     buffered_finish = (event, output)
+
+        # A confirmed disconnect needs scheduler cleanup, not a synthetic
+        # terminal frame for a socket that no longer exists.  Some engines
+        # intentionally swallow the cancellation used by the guard and expose
+        # it here as ordinary exhaustion, so cancellation alone is not enough
+        # to distinguish this path.
+        if _client_disconnect_state and _client_disconnect_state[0]:
+            return
 
         # Fallback tool call detection (post-stream). Collect ALL fallback
         # tool_call events before emitting; they get merged into the

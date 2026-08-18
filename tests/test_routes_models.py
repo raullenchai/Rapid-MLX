@@ -307,6 +307,102 @@ def test_engine_is_mllm_or_none_is_defensive():
     assert models_route._engine_is_mllm_or_none(_StubEngine(False)) is False
 
 
+def test_build_model_info_prefers_live_hybrid_probe(monkeypatch):
+    """The wire reports the scheduler's loaded profile, not stale alias data."""
+    from vllm_mlx.routes import models as models_route
+
+    restore = _stub_single_serve(
+        monkeypatch,
+        model_id="mlx-community/LFM2.5-1.2B-Instruct-4bit",
+        engine_is_mllm=False,
+    )
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    cfg.engine._is_hybrid_model = lambda: True
+    try:
+        assert models_route._build_model_info("lfm2.5-1b-4bit").is_hybrid is True
+        assert (
+            models_route._build_model_info(
+                "mlx-community/LFM2.5-1.2B-Instruct-4bit"
+            ).is_hybrid
+            is True
+        )
+    finally:
+        restore()
+
+
+def test_mllm_engine_reports_loaded_hybrid_cache_profile():
+    """MLLM has no text EngineCore; its loaded cache probe is authoritative."""
+    from vllm_mlx.engine.batched import BatchedEngine
+
+    engine = BatchedEngine.__new__(BatchedEngine)
+    engine._is_mllm = True
+    engine._mllm_is_hybrid = True
+    engine._engine = None
+    assert engine._is_hybrid_model() is True
+
+    engine._mllm_is_hybrid = False
+    assert engine._is_hybrid_model() is False
+
+
+def test_build_model_info_keeps_static_hybrid_for_unserved_alias(monkeypatch):
+    """Discovery-only aliases retain registry metadata without a live engine."""
+    from vllm_mlx.routes import models as models_route
+
+    restore = _stub_single_serve(
+        monkeypatch, model_id="fake/other-model", engine_is_mllm=False
+    )
+    try:
+        assert models_route._build_model_info("lfm2.5-1b-4bit").is_hybrid is False
+    finally:
+        restore()
+
+
+def test_reported_hybrid_keeps_static_for_unmounted_registry_entry(monkeypatch):
+    """A registered model is discovery-only until its engine is attached."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.routes import models as models_route
+
+    entry = SimpleNamespace(engine=None, matches=lambda model_id: model_id == "alias")
+    registry = SimpleNamespace(get_entry=lambda _model_id: entry)
+    cfg = SimpleNamespace(model_registry=registry)
+    monkeypatch.setattr(models_route, "get_config", lambda: cfg)
+
+    assert models_route._reported_hybrid("alias", False) is False
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [None, lambda: "yes", lambda: (_ for _ in ()).throw(RuntimeError("probe"))],
+)
+def test_build_model_info_does_not_backfill_unknown_live_hybrid(monkeypatch, probe):
+    """A loaded engine's unknown state must not be replaced by alias metadata."""
+    from vllm_mlx.routes import models as models_route
+
+    restore = _stub_single_serve(
+        monkeypatch,
+        model_id="mlx-community/LFM2.5-1.2B-Instruct-4bit",
+        engine_is_mllm=False,
+    )
+    from vllm_mlx.config import get_config
+
+    cfg = get_config()
+    cfg.model_alias = "lfm2.5-1b-4bit"
+    if probe is not None:
+        cfg.engine._is_hybrid_model = probe
+    try:
+        assert models_route._build_model_info("lfm2.5-1b-4bit").is_hybrid is None
+        # The same static alias remains useful when it is not the served model.
+        cfg.model_name = "fake/other-model"
+        cfg.model_alias = None
+        assert models_route._build_model_info("lfm2.5-1b-4bit").is_hybrid is False
+    finally:
+        restore()
+
+
 def test_build_model_info_raw_hf_path_honors_degraded_engine(monkeypatch):
     """The raw-HF-path branch of ``_build_model_info`` (no alias profile — the
     gemma-4 OptiQ case) must, once the served engine has degraded to text,

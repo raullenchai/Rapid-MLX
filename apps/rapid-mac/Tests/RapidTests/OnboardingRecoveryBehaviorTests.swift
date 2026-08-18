@@ -591,7 +591,7 @@ struct OnboardingRecoveryBehaviorTests {
         )
         #expect(!kickedOff, "the pull must not start behind the question")
         #expect(coord.phase == .lowDiskWarning(
-            freeBytes: 100 * 1024 * 1024,
+            freeBytes: Int64(100 * 1024 * 1024),
             requiredBytes: DiskSpaceProbe.quickstartRequiredBytes
         ))
     }
@@ -628,7 +628,7 @@ struct OnboardingRecoveryBehaviorTests {
     @Test("The low-disk number is stated as a flat floor, not the model's size")
     func lowDiskCopyDoesNotAttributeTheFloorToTheModel() {
         let body = QuickstartView.lowDiskBannerBody(
-            freeBytes: 1024 * 1024 * 1024,
+            freeBytes: Int64(1024 * 1024 * 1024),
             requiredBytes: DiskSpaceProbe.quickstartRequiredBytes,
             displayName: QuickstartCoordinator.defaultChoice.displayName
         )
@@ -641,7 +641,7 @@ struct OnboardingRecoveryBehaviorTests {
         #expect(body.contains("Continue anyway?"))
 
         let label = QuickstartView.lowDiskAccessibilityLabel(
-            freeBytes: 1024 * 1024 * 1024,
+            freeBytes: Int64(1024 * 1024 * 1024),
             requiredBytes: DiskSpaceProbe.quickstartRequiredBytes,
             displayName: QuickstartCoordinator.defaultChoice.displayName
         )

@@ -34,12 +34,6 @@ struct SettingsView: View {
     /// environment chain so the panel can render the same
     /// "available update" state the MenuBarExtra already drives.
     @Environment(UpdateChecker.self) private var appUpdater
-    /// #191 companion: the in-app installer is what powers the
-    /// "Install and Restart" button in ``UpdateInstallView``; we
-    /// also bind it here so the panel can show "Updating…" /
-    /// "Failed: …" inline when the dedicated update window is
-    /// closed.
-    @Environment(Installer.self) private var appInstaller
     @Environment(SparkleUpdateController.self) private var sparkleUpdater
     @Environment(\.dismissWindow) private var dismissWindow
     /// #260: persisted "hide Dock icon on close" choice. Settings →
@@ -47,11 +41,6 @@ struct SettingsView: View {
     /// without re-triggering the one-time prompt, plus a "Reset
     /// onboarding alerts" affordance that brings the prompt back.
     @Environment(DockVisibilityPromptStore.self) private var dockPromptStore
-    /// #191: the App panel's "Update Rapid-MLX Desktop" CTA
-    /// opens the existing ``update-install`` scene — the same
-    /// one the MenuBarExtra menu drives. We need
-    /// ``\Environment.openWindow`` for the open call.
-    @Environment(\.openWindow) private var openWindow
 
     /// Stable reference shared by the sidebar and detail canvas. Keeping the
     /// frequently-mutated category outside this large view's value state means
@@ -98,6 +87,13 @@ struct SettingsView: View {
         /// Rapid-MLX Desktop app updates. The .app self-update is the
         /// only correct way to bump the bundled engine.
         case app
+        #if DEBUG
+        /// Debug builds only — state-erasing actions for rehearsing flows
+        /// that are one-shot per Mac, chiefly Quickstart. Compiled out of
+        /// release entirely rather than hidden at the rail, so the copy and
+        /// the erase logic cannot ship even unreachable.
+        case developer
+        #endif
 
         var id: String { rawValue }
         var title: String {
@@ -110,6 +106,9 @@ struct SettingsView: View {
             case .appearance: return "Appearance"
             case .privacy: return "Privacy"
             case .app: return "App"
+            #if DEBUG
+            case .developer: return "Developer"
+            #endif
             }
         }
         var iconName: String {
@@ -122,6 +121,9 @@ struct SettingsView: View {
             case .appearance: return "paintpalette.fill"
             case .privacy: return "lock.shield.fill"
             case .app: return "app.badge.fill"
+            #if DEBUG
+            case .developer: return "hammer.fill"
+            #endif
             }
         }
     }
@@ -486,6 +488,10 @@ struct SettingsView: View {
             privacyPanel
         case .app:
             appPanel
+        #if DEBUG
+        case .developer:
+            SettingsDeveloperPanel()
+        #endif
         }
     }
 
@@ -621,6 +627,12 @@ struct SettingsView: View {
             // other link in the app used the steel-blue link token.
             .foregroundStyle(RapidTheme.linkLabel)
 
+            Link("Powered by MTPLX",
+                 destination: URL(string: "https://github.com/youssofal/mtplx")!)
+                .font(RapidFont.caption)
+                .foregroundStyle(RapidTheme.linkLabel)
+                .accessibilityIdentifier("Settings.Privacy.Link.MTPLX")
+
             Spacer(minLength: 0)
         }
     }
@@ -662,15 +674,13 @@ struct SettingsView: View {
     /// users here to install a newer Rapid-MLX Desktop.
     ///
     /// State table:
-    ///   * ``availableUpdate`` non-nil → prominent "Update Rapid-MLX
-    ///     Desktop" CTA that opens the existing in-app installer
-    ///     window, mirroring the MenuBarExtra menu entry. Falls
-    ///     back to the GitHub Releases page when the release
-    ///     payload doesn't carry a DMG URL.
+    ///   * ``availableUpdate`` non-nil → prominent "Update Rapid-MLX"
+    ///     CTA that hands off to Sparkle's update panel, mirroring the
+    ///     MenuBarExtra menu entry. Disabled on unsigned builds where
+    ///     Sparkle is not configured.
     ///   * Otherwise → calm "Up to date" check + a Recheck button.
-    ///     The poller also runs on a 6 h timer from ``RapidApp``;
-    ///     manual recheck is for users who saw the menubar tint
-    ///     change and want to confirm.
+    ///     The status is refreshed once per launch from ``RapidApp``;
+    ///     manual recheck is how a user refreshes it without relaunching.
     @ViewBuilder
     private var appPanel: some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.xl) {
@@ -817,10 +827,8 @@ struct SettingsView: View {
     }
 
     /// Top action row inside ``appPanel``. Three states, all
-    /// non-blocking (the actual download + install runs in the
-    /// dedicated ``UpdateInstallView`` scene so this row stays
-    /// responsive even if the user closed the update window
-    /// mid-install).
+    /// non-blocking: the CTA only hands off to Sparkle, which drives the
+    /// download and install behind its own panel.
     /// Coarse status the App panel renders. Keyed off the app
     /// self-update poller's observable surface so the "Up to date"
     /// green check only fires after a check has actually established
@@ -934,23 +942,37 @@ struct SettingsView: View {
                     identifier: "Settings.App.UpdateHeadline"
                 )
                 Spacer(minLength: RapidTheme.Space.sm)
-                // Codex r1 P2 (CTA never disabled): the CTA only
-                // opens the existing update-install scene — leaving
-                // it tappable while ``appInstaller.isRunning`` lets
-                // the user reopen the progress window if they
-                // accidentally closed it mid-download. ``Updating…``
-                // copy makes the live state obvious.
-                Button {
-                    appOpenUpdateWindow()
-                } label: {
-                    if appInstaller.isRunning {
-                        Label("Updating…", systemImage: "arrow.down.circle")
-                    } else {
+                // Hands off to Sparkle's own update panel, which owns the
+                // download/verify/install-on-quit UI.
+                //
+                // Unsigned builds have no Sparkle key and, since the in-app
+                // installer was removed, no install path at all — so a bare
+                // disabled button would be a dead end on the one screen the
+                // tray sends those users to. Offer the release page instead,
+                // through the same allowlist check the missing-runtime overlay
+                // uses, so a compromised manifest cannot turn this into a
+                // phishing redirect.
+                if sparkleUpdater.isEnabled {
+                    Button {
+                        sparkleUpdater.checkForUpdates()
+                    } label: {
                         Label("Update Rapid-MLX", systemImage: "arrow.down.circle.fill")
                     }
+                    .buttonStyle(.rapidPrimary)
+                    .help("Opens the updater to download and install this release.")
+                    .accessibilityIdentifier("Settings.App.UpdateCTA")
+                } else if let releaseURL = ContentView.missingOverlayDownloadURL(
+                    for: appUpdater.availableUpdate
+                ) {
+                    Button {
+                        NSWorkspace.shared.open(releaseURL)
+                    } label: {
+                        Label("Download from the release page", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.rapidPrimary)
+                    .help("In-app updates need a signed release build; download this version manually.")
+                    .accessibilityIdentifier("Settings.App.UpdateCTA")
                 }
-                .buttonStyle(.rapidPrimary)
-                .accessibilityIdentifier("Settings.App.UpdateCTA")
             case .upToDate(let version):
                 statusLine(
                     symbol: "checkmark.circle.fill",
@@ -1064,10 +1086,10 @@ struct SettingsView: View {
         )
     }
 
-    /// Release-notes preview inside ``appPanel``. The dedicated
-    /// ``UpdateInstallView`` window shows the full notes; here we
-    /// render an inline scroll-bounded preview so the user can see
-    /// "what's new" without opening another window.
+    /// Release-notes preview inside ``appPanel``. Sparkle's own update
+    /// panel shows the notes embedded in the appcast; here we render an
+    /// inline scroll-bounded preview so the user can see "what's new"
+    /// without starting an update.
     private func appReleaseNotesPanel(notes: String) -> some View {
         VStack(alignment: .leading, spacing: RapidTheme.Space.sm) {
             SectionHeader("Release notes")
@@ -1088,24 +1110,6 @@ struct SettingsView: View {
             )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Open the in-app installer window — same window the
-    /// MenuBarExtra menu drives. Wrapped here so the panel reads
-    /// cleanly. v0.5.4 documented the runloop-tick workaround for
-    /// ``openWindow`` against a never-instantiated scene; we
-    /// mirror the same pattern (small sleep + activate first)
-    /// for the same reason.
-    private func appOpenUpdateWindow() {
-        if sparkleUpdater.isEnabled {
-            sparkleUpdater.checkForUpdates()
-            return
-        }
-        Task { @MainActor in
-            NSApp.activate(ignoringOtherApps: true)
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            openWindow(id: "update-install")
-        }
     }
 
     /// A label/value pair inside the Version section.

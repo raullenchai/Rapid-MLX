@@ -13,6 +13,46 @@ can actually understand.
 
 ## [Unreleased]
 
+### Added
+
+- Qwen3.8-27B users can explicitly opt into MTP acceleration from
+  Settings → Performance. It remains off by default because the measured
+  speedup varies by Mac, and is available for both Rapid's standard 4-bit and
+  mixed-precision builds.
+
+## [0.12.14] — 2026-08-15
+
+Adds a Rapid-built version of Qwen3.8-27B, lets you give models your own names,
+and moves app updates fully onto the signed background updater.
+
+### Added
+
+- **Qwen3.8-27B, Rapid mixed-precision build** — a version of Qwen3.8-27B we
+  quantized ourselves, at 13 GB of weights instead of the standard build's
+  15 GB. It answered every coding task and 25 of 30 tool-calling scenarios in
+  our release testing. Plan for a 48 GB Mac or larger; on 32 GB it is a tight
+  fit. Maths is its weak spot — for arithmetic-heavy work Qwen 3.6 35B or
+  Gemma 4 26B remain the safer picks.
+- Qwen 3.8 models now show their real family name in the model list, and their
+  verified tool support shows as a capability instead of "unknown".
+- Give any model a name of your own from the command line —
+  `rapid-mlx alias set fast qwen3.5-4b-4bit`, then `rapid-mlx serve fast`.
+  Names can point at a built-in model or any Hugging Face repository.
+- DeepSeek Harness joins the list of coding agents Rapid can set up for you.
+
+### Changed
+
+- App updates now run entirely through the signed background updater. The old
+  in-app installer is gone, which removes the case where an update could
+  download but fail to install. Versions 0.12.12 and newer update themselves;
+  older versions are pointed at the download page once.
+
+### Fixed
+
+- The model information shown for hybrid models is now read live instead of
+  from a stale snapshot.
+- Closing a chat mid-answer no longer records a false error in the logs.
+
 ## [0.12.13] — 2026-08-14
 
 Adds Qwen's newest 27B model and document attachments in chat, plus a round of

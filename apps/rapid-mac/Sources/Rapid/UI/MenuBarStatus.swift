@@ -88,15 +88,14 @@ enum MenuBarStatus {
 
     /// The full, ordered tray menu given the live inputs. This is the
     /// single source of truth for the menu's structure and its dynamic
-    /// branches (the update row only appears when one is available; its
-    /// label flips while the installer runs; "Check for updates…" is
-    /// disabled mid-check). ``MenuBarController.rebuildMenu`` renders
-    /// exactly this list, so a test against it pins the real menu.
+    /// branches (the update row only appears when one is available;
+    /// "Check for updates…" is disabled mid-check).
+    /// ``MenuBarController.rebuildMenu`` renders exactly this list, so a
+    /// test against it pins the real menu.
     static func menuItems(
         state: ServerState,
         hasUpdate: Bool,
         updateVersion: String,
-        installerRunning: Bool,
         checking: Bool
     ) -> [MenuBarItem] {
         var items: [MenuBarItem] = [
@@ -114,13 +113,16 @@ enum MenuBarStatus {
 
         if hasUpdate {
             // Newer version visible — surface it as the primary
-            // call-to-action above the line. While the in-app installer
-            // is applying the DMG the label reflects that in-progress
-            // state; both open the dedicated update window.
-            let title = installerRunning
-                ? "Updating Rapid-MLX…"
-                : "Update available — v\(updateVersion)"
-            items.append(.button(.update, title: title, enabled: true, shortcut: nil))
+            // call-to-action above the line. Selecting it hands off to
+            // Sparkle's own update panel, which renders its own progress.
+            items.append(
+                .button(
+                    .update,
+                    title: "Update available — v\(updateVersion)",
+                    enabled: true,
+                    shortcut: nil
+                )
+            )
             items.append(.separator)
         }
 

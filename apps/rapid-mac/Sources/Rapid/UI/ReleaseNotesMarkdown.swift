@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// ## Why this exists
 ///
-/// The notes shown in ``UpdateInstallView`` come straight from the
+/// The notes rendered in Settings → App come straight from the
 /// GitHub Release body / ``latest.json`` ``notes`` field, which is the
 /// raw CHANGELOG section — full Markdown (``##`` / ``###`` headings,
 /// ``-`` bullets, ``**bold**``, inline `` `code` ``). SwiftUI's

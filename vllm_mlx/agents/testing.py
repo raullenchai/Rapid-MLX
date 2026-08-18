@@ -43,6 +43,61 @@ _ANTHROPIC_REMOTE_ENV = (
     "CLAUDE_CODE_USE_FOUNDRY",
 )
 
+# Prefix of the err sentinel ``_agent_query`` returns when the agent CLI exits
+# non-zero. Sentinel-prefixed like the ``SKIP:`` one so classification stays a
+# property of the string the subprocess boundary produced, not a guess made
+# from the child's own prose.
+_EXIT_ERR_PREFIX = "EXIT:"
+
+# One separator character models actually use for thousands: comma, no-break
+# space, narrow no-break space, plain space.
+_DIGIT_GROUP_SEP = "[,\u00a0\u202f ]"
+
+
+def _grouped_number_pattern(digits: str) -> str:
+    """``777777`` → ``(?:777777|777<sep>777)`` — bare or thousands-grouped.
+
+    Only these two shapes. An earlier version stripped every separator that
+    sat between two digits before matching, which also turned malformed or
+    entirely different numbers ("7777 77") into the expected one — a fresh
+    way to pass without answering, which is the bug this module exists to
+    prevent (codex review round 2).
+    """
+    head = len(digits) % 3 or 3
+    groups = [digits[:head]] + [digits[i : i + 3] for i in range(head, len(digits), 3)]
+    return f"(?:{digits}|{_DIGIT_GROUP_SEP.join(groups)})"
+
+
+def _exact_number_re(digits: str, *, grouped: bool = False) -> re.Pattern[str]:
+    """Match `digits` as that number, not as a run of digits inside another.
+
+    Boundaries are numeric rather than merely non-digit: a leading sign or a
+    decimal point makes it a DIFFERENT number, so "-4", "0.4", "4.5",
+    "12.777777" and "777777.5" are wrong answers rather than sloppy right
+    ones. Word characters are excluded on both sides for the same reason —
+    the "4" in a request id like "a4b" is not an answer to anything. A
+    trailing period stays fine: that is a sentence ending, which is why only
+    ``.<digit>`` is rejected on the right.
+
+    A group separator with a digit on its far side is rejected as well, or
+    the tolerance for "777,777" would accept "4,000", "1,777777" and
+    "777777,000" — each a different number that merely starts or ends with
+    the expected digits.
+    """
+    body = _grouped_number_pattern(digits) if grouped else digits
+    return re.compile(
+        "(?<![\\w.\\-−–])"
+        + f"(?<!\\d{_DIGIT_GROUP_SEP})"
+        + body
+        + f"(?!{_DIGIT_GROUP_SEP}\\d)"
+        + "(?!\\w)(?!\\.\\d)"
+    )
+
+
+# `_test_plain_chat` asks for 2+2 over HTTP; see the comment at its assertion
+# for why its question stays easy while the e2e sibling's does not.
+_PLAIN_CHAT_EXPECTED_RE = _exact_number_re("4")
+
 
 # ---------------------------------------------------------------------------
 # Test result types
@@ -235,7 +290,21 @@ def _test_plain_chat(base_url: str, model_id: str) -> TestResult:
             [{"role": "user", "content": "What is 2+2? Reply with just the number."}],
         )
         content = r["choices"][0]["message"]["content"]
-        if "4" in content:
+        # The number 4, not the digit anywhere in the string: "1234", "0.4",
+        # "-4", "4.5" and a request id ending in 4 are none of them answers to
+        # "what is 2+2" (#1981, sibling of the `_test_e2e_chat` false green).
+        # Same matcher as the e2e probe so the two cannot drift apart.
+        #
+        # The question itself stays 2+2, unlike its e2e sibling, and the
+        # threat models are why. This grades ``choices[0].message.content``
+        # from a response that already passed ``raise_for_status`` — a
+        # parsed answer field, not the raw stdout+stderr of a CLI that may
+        # never have reached the server, so there is no error prose here to
+        # be mistaken for an answer. That leaves this the cheapest possible
+        # probe of "the server answers coherently", which is what makes it
+        # a useful control: when e2e_chat fails and plain_chat passes, the
+        # fault is in the agent CLI path, not the model.
+        if _PLAIN_CHAT_EXPECTED_RE.search(content):
             return TestResult(
                 "plain_chat", TestStatus.PASS, duration_ms=(time.time() - t0) * 1000
             )
@@ -725,7 +794,47 @@ def _test_tag_suppression(
 # answer that merely mentions the project — or reads some other file —
 # satisfies without ever having read the line the test asks for.
 E2E_FIRST_LINE_TOKEN = "rapid-mlx-e2e-first-line-sentinel"
-E2E_FIRST_LINE = f"# {E2E_FIRST_LINE_TOKEN}"
+# Keep the sentinel as a semantic TOML assignment rather than a comment.
+# Several competent agents (Kilo and DSH among them) interpret "first line"
+# as "first meaningful config line" and intentionally omit comments even
+# when asked not to.  A unique top-level key remains impossible to guess while
+# making the expected evidence part of the document rather than trivia.
+E2E_FIRST_LINE = f"{E2E_FIRST_LINE_TOKEN} = true"
+
+
+# `_test_e2e_chat` grades whatever the agent CLI wrote to stdout+stderr, and
+# that text is not always an answer — a CLI that never reached the server
+# still prints something.  The old probe asked for 2+2 and accepted a bare
+# "4" anywhere in that text, so a pure launch failure reported PASS:
+#
+#     dsh: request failed: connect ECONNREFUSED 127.0.0.1:8477
+#                                                        ^ this "4"
+#
+# An HTTP 404, a timestamp, a token count or a version string does it just as
+# well (#1981).  The expected answer therefore has to be a value that cannot
+# plausibly fall out of a failure message — the same reasoning that made
+# `_test_e2e_file_read` demand a sentinel instead of the word "build".
+#
+# Why an arithmetic result rather than a sentinel word: the expected token must
+# NOT appear in the prompt, or every CLI that echoes its prompt (`codex exec`
+# does) becomes a new false green.  The operands below are chosen so that no
+# column carries — this is as easy as multi-digit arithmetic gets, so a small
+# quantized model is not being asked for a new capability — while the answer is
+# longer than any port number (max 65535) or status code, and is accepted only
+# as a standalone number so it can never be a fragment of an epoch, a request
+# id or a hash.
+E2E_CHAT_QUERY = "What is 123456 + 654321? Reply with just the number."
+E2E_CHAT_EXPECTED = "777777"
+# Grouped as well as bare: a model that writes "777,777" has answered the
+# question. `_exact_number_re` explains the boundaries.
+_E2E_CHAT_EXPECTED_RE = _exact_number_re(E2E_CHAT_EXPECTED, grouped=True)
+
+
+def _e2e_chat_answered(out: str | None) -> bool:
+    """True only when the agent came back with the expected sum itself."""
+    if not out:
+        return False
+    return bool(_E2E_CHAT_EXPECTED_RE.search(out))
 
 
 @contextlib.contextmanager
@@ -749,13 +858,11 @@ def _e2e_workspace():
     left lying around. Starting it in a directory we just created, holding
     one file we wrote, makes that set knowable.
 
-    **This is not a sandbox and does not pretend to be.** The agent still
-    runs as the user, with the user's environment and `$HOME`, and can
-    read anything the user can by absolute path. Isolating that would take
-    a real filesystem sandbox with its own home; what this gives is a
-    deterministic *working directory*, which is what the e2e tests depend
-    on. Codex additionally runs its own commands under Seatbelt on macOS,
-    which is its business, not something arranged here.
+    **This is not a sandbox and does not pretend to be.** The runner gives the
+    child a throwaway HOME and deterministic working directory, but the agent
+    still runs as the same OS user and can read anything that user can via an
+    absolute path. Codex additionally runs its own commands under Seatbelt on
+    macOS, which is its business, not something arranged here.
     """
     workdir = tempfile.mkdtemp(prefix="rapid-mlx-agent-e2e-")
     try:
@@ -860,7 +967,10 @@ def _agent_query(
     except ValueError:
         # Fallback: simple split if shlex can't parse
         cmd_parts = query_cmd.split()
-    cmd_parts = [part.replace("{query}", query) for part in cmd_parts]
+    cmd_parts = [
+        part.replace("{query}", query).replace("{cwd}", cwd or os.getcwd())
+        for part in cmd_parts
+    ]
     # Replace first part with full binary path
     cmd_parts[0] = binary_path
 
@@ -872,6 +982,33 @@ def _agent_query(
         for key in _ANTHROPIC_REMOTE_ENV:
             child_env.pop(key, None)
     child_env.update(env_overrides or {})
+
+    # DSH rc.6 imports Node's Zstd stream API during profile boot but its npm
+    # manifest declares no minimum Node engine.  Node 23.6 therefore installs
+    # cleanly and then crashes with an opaque ESM export stack.  Probe the
+    # capability selected by the exact child PATH and report the actionable
+    # runtime mismatch before launching the harness.
+    if Path(binary_path).name == "dsh":
+        node = shutil.which("node", path=child_env.get("PATH"))
+        if node is None:
+            return None, "DeepSeek Harness requires Node.js on PATH"
+        probe = subprocess.run(
+            [
+                node,
+                "-e",
+                "process.exit(typeof require('node:zlib').createZstdDecompress === 'function' ? 0 : 1)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            stdin=subprocess.DEVNULL,
+            env=child_env,
+        )
+        if probe.returncode != 0:
+            return None, (
+                "DeepSeek Harness requires a Node.js runtime with the Zstd "
+                "stream API; update Node (Node 22.15+ works)"
+            )
 
     try:
         proc = subprocess.run(
@@ -938,6 +1075,52 @@ def _agent_query(
                 f"SKIP: agent refused init — served model's context window "
                 f"is below the harness minimum{detail}"
             )
+        # The one signal the OS gives us that the run did not complete. A CLI
+        # that never reached the server prints its complaint and exits
+        # non-zero; without this the caller sees only the complaint text and
+        # grades it as if it were an answer (#1981).
+        #
+        # Deliberately a SOFT err — carried alongside the output, not instead
+        # of it — because exit status can neither pass nor fail a test on its
+        # own here:
+        #   * dsh exits 0 even when it fails outright (a bad provider prints
+        #     NO_ADAPTER and still returns 0; see its profile known_issues),
+        #     so a zero exit proves nothing;
+        #   * an agent may answer correctly and then exit non-zero on its way
+        #     out, which #1598 already established is not grounds for failing
+        #     a test whose evidence is on stdout.
+        # Capability evidence therefore still wins; this only decides what an
+        # evidence-LESS run gets called, and turns a silent "wrong answer"
+        # FAIL into an ERROR naming the launch failure.
+        #
+        # But a process that reported failure only gets credit for what it put
+        # on STDOUT: the returned output narrows to ``proc.stdout`` so a
+        # diagnostic that quotes the expected evidence back at us ("expected
+        # 777777; request failed", printed on stderr) cannot be mistaken for
+        # the answer and re-open this very bug from the other side. Every agent
+        # CLI the profiles drive writes its answer to stdout and its complaints
+        # to stderr; the failure text is not discarded, it is summarized into
+        # the err below, which is what gets reported.
+        #
+        # The TIMEOUT branch below applies the same rule, for the same reason:
+        # both are runs that misbehaved, and it would be incoherent for a hung
+        # CLI to get credit for stderr text a failed one does not.
+        if proc.returncode != 0:
+            tail = " ".join(output.split())[-160:]
+            detail = f" — {tail}" if tail else ""
+            return proc.stdout, (
+                f"{_EXIT_ERR_PREFIX}{proc.returncode} agent CLI exited non-zero{detail}"
+            )
+        # A CLEAN exit keeps the combined capture, and that boundary is
+        # deliberate. Narrowing every run to stdout was considered (codex
+        # review round 3) and declined: it would change grading on the normal
+        # path for all 13 profiles to defend against a failure message that
+        # contains the expected six-digit sum, which a CLI has no way to know.
+        # The cost is not hypothetical — the Hermes binary writes user-facing
+        # text to STDERR (see the hard-wrap note in the refusal detection
+        # above), so stdout-only grading could fail a Tier-1 profile that
+        # answered correctly. Suppressing evidence is only justified once the
+        # run itself has reported that it went wrong.
         return output, None
     except subprocess.TimeoutExpired as exc:
         # A headless agent can finish the capability under test, print the
@@ -950,7 +1133,12 @@ def _agent_query(
                 return ""
             return value.decode(errors="replace") if isinstance(value, bytes) else value
 
-        partial = _timeout_text(exc.stdout) + _timeout_text(exc.stderr)
+        # STDOUT only, exactly as on the non-zero-exit path: a hung CLI's
+        # diagnostics ("ERROR: expected 777777", "could not run echo <marker>")
+        # are not evidence that it did the work, and this err is one of the two
+        # that lose to evidence. Nothing is lost from the report — the timeout
+        # err carries no child text in either form.
+        partial = _timeout_text(exc.stdout)
         return partial or None, "TIMEOUT"
     except Exception as e:
         return None, str(e)
@@ -959,8 +1147,13 @@ def _agent_query(
 def _err_to_status(err: str | None) -> TestStatus:
     """Map an ``_agent_query`` err string to the right TestStatus.
 
-    Three buckets, in priority order:
+    Four buckets, in priority order:
 
+    - ``"EXIT:"`` prefix → ERROR. The agent CLI exited non-zero (#1981).
+      Checked FIRST because this err carries a tail of the child's own
+      output, and that text is not ours: a child that printed "command
+      not found" or "model not found" would otherwise be misrouted to
+      SKIP by the substring rule below and vanish from the report.
     - ``"not found"`` → SKIP. Harness binary isn't installed; we can't
       run the e2e gate and shouldn't pretend to.
     - ``"SKIP:"`` prefix → SKIP. ``_agent_query`` propagates this for
@@ -970,11 +1163,42 @@ def _err_to_status(err: str | None) -> TestStatus:
     """
     if not err:
         return TestStatus.PASS  # caller shouldn't pass empty err but stay safe
+    if err.startswith(_EXIT_ERR_PREFIX):
+        return TestStatus.ERROR
     if "not found" in err:
         return TestStatus.SKIP
     if err.startswith("SKIP:"):
         return TestStatus.SKIP
     return TestStatus.ERROR
+
+
+def _err_loses_to_evidence(err: str | None) -> bool:
+    """True for errs that must not overrule evidence the agent already gave.
+
+    An agent can do the work, print the proof, and only *then* misbehave:
+    never terminate (#1598) or exit non-zero on its way out (#1981). Both
+    describe how the process ended, not whether the capability worked, so
+    a caller holding the expected evidence keeps its PASS. Every other err
+    — binary missing, init refusal, server error, crash — means the output
+    cannot be trusted at all and wins outright.
+
+    What counts as evidence is narrowed at the source: on a non-zero exit or
+    a timeout ``_agent_query`` returns stdout only, so a failure diagnostic
+    quoting the expected token back at us on stderr cannot buy a PASS here.
+
+    Callers may only use this where their evidence cannot be produced by
+    echoing the prompt — `_test_e2e_terminal` deliberately does not.
+    """
+    return bool(err) and (err == "TIMEOUT" or err.startswith(_EXIT_ERR_PREFIX))
+
+
+def _evidence_note(err: str | None, evidence: str) -> str:
+    """Message for a PASS whose CLI misbehaved after producing the evidence."""
+    if err == "TIMEOUT":
+        return f"{evidence} observed; agent CLI did not terminate before timeout"
+    if err and err.startswith(_EXIT_ERR_PREFIX):
+        return f"{evidence} observed; {err}"
+    return ""
 
 
 def _test_e2e_chat(
@@ -1007,12 +1231,16 @@ def _test_e2e_chat(
         out, err = _agent_query(
             binary,
             query_cmd,
-            "What is 2+2? Reply with just the number.",
+            E2E_CHAT_QUERY,
             timeout,
             workdir,
             env_overrides,
         )
-    if err:
+    # Evidence first, exactly as `_test_e2e_file_read` does: an agent that
+    # answered and then failed to terminate (#1598) or exited non-zero
+    # (#1981) still demonstrated the capability under test.
+    answered = _e2e_chat_answered(out)
+    if err and not (_err_loses_to_evidence(err) and answered):
         status = _err_to_status(err)
         return TestResult(
             "e2e_chat",
@@ -1021,18 +1249,19 @@ def _test_e2e_chat(
             message=err,
             category="e2e",
         )
-    if "4" in (out or ""):
+    if answered:
         return TestResult(
             "e2e_chat",
             TestStatus.PASS,
             duration_ms=(time.time() - t0) * 1000,
+            message=_evidence_note(err, "answer"),
             category="e2e",
         )
     return TestResult(
         "e2e_chat",
         TestStatus.FAIL,
         duration_ms=(time.time() - t0) * 1000,
-        message=f"Expected '4': {(out or '')[:80]}",
+        message=f"Expected '{E2E_CHAT_EXPECTED}': {(out or '')[:80]}",
         category="e2e",
     )
 
@@ -1067,12 +1296,17 @@ def _test_e2e_file_read(
         out, err = _agent_query(
             binary,
             query_cmd,
-            "Read the first line of pyproject.toml",
+            (
+                "Read pyproject.toml and copy its first physical line exactly, "
+                "including any leading punctuation. Do not skip comment lines."
+            ),
             timeout,
             workdir,
             env_overrides,
         )
-    if err and not (err == "TIMEOUT" and E2E_FIRST_LINE_TOKEN in (out or "")):
+    if err and not (
+        _err_loses_to_evidence(err) and E2E_FIRST_LINE_TOKEN in (out or "")
+    ):
         status = _err_to_status(err)
         return TestResult(
             "e2e_file_read",
@@ -1088,11 +1322,7 @@ def _test_e2e_file_read(
             "e2e_file_read",
             TestStatus.PASS,
             duration_ms=(time.time() - t0) * 1000,
-            message=(
-                "file-read evidence observed; agent CLI did not terminate before timeout"
-                if err == "TIMEOUT"
-                else ""
-            ),
+            message=_evidence_note(err, "file-read evidence"),
             category="e2e",
         )
     return TestResult(
@@ -1141,6 +1371,17 @@ def _test_e2e_terminal(
             workdir,
             env_overrides,
         )
+    # NO evidence carve-out here, unlike the chat and file-read probes, and
+    # the difference is the marker itself: it is handed to the agent IN THE
+    # PROMPT ("Run 'echo <marker>'"), so any CLI that echoes its prompt prints
+    # it without having run anything. That is fine while the run is otherwise
+    # healthy — a healthy run that echoed the prompt and stopped would also
+    # have to survive `err is None` — but it is exactly what a broken CLI does
+    # on its way out, so letting a marker overrule a crash or a hang would
+    # hand a PASS to an agent that never opened a shell (codex review round 4).
+    # Chat and file-read can afford the carve-out because their evidence — a
+    # derived sum, a sentinel that lives only in the workspace file — cannot
+    # be produced by echoing the question.
     if err:
         status = _err_to_status(err)
         return TestResult(
@@ -1287,18 +1528,18 @@ class AgentTestRunner:
             )
             return report
 
-        # File-config agents are driven from a throwaway home.  In particular,
-        # Codex must not inherit the operator's plugins, skills, history, or
-        # config: those change its context budget and made #1598 depend on the
-        # contents of ``~/.codex``.  The same override also prevents this test
-        # runner from merging into the operator's real config.
+        # Every agent is driven from a throwaway home.  Limiting isolation to
+        # profiles with a dedicated ``home_env`` left env-configured CLIs
+        # (notably Claude Code) free to load the operator's plugins, hooks,
+        # history and credentials.  It also let file-config agents without a
+        # relocation variable (OpenCode/Qwen Code/Kilo) refresh the real
+        # ``~/.config`` during ``--test``.  HOME is therefore the universal
+        # boundary; tool-specific relocation variables are layered on top.
         active_config = self.profile.get_config_for_version(self.agent_version)
-        isolated_config_home: tempfile.TemporaryDirectory[str] | None = None
+        isolated_config_home = tempfile.TemporaryDirectory(
+            prefix=f"rapid-mlx-{self.profile.name}-home-"
+        )
         config_home_env = active_config.home_env
-        if config_home_env:
-            isolated_config_home = tempfile.TemporaryDirectory(
-                prefix=f"rapid-mlx-{self.profile.name}-home-"
-            )
 
         # Refresh the agent's on-disk config (e.g. ``~/.hermes/config.yaml``)
         # so e2e tests run against the CURRENT model_id + base_url instead
@@ -1310,30 +1551,29 @@ class AgentTestRunner:
         # ``setup_agent_config`` is a no-op for env-var-style profiles
         # (codex, opencode, aider) since those carry config via env only.
         try:
-            from .adapter import setup_agent_config
+            from .adapter import fetch_context_window, setup_agent_config
 
-            if isolated_config_home and config_home_env:
-                previous = os.environ.get(config_home_env)
-                os.environ[config_home_env] = isolated_config_home.name
-                try:
-                    setup_agent_config(
-                        self.profile,
-                        base_url=self.base_url,
-                        model_id=self.model_id,
-                        agent_version=self.agent_version,
-                    )
-                finally:
-                    if previous is None:
-                        os.environ.pop(config_home_env, None)
-                    else:
-                        os.environ[config_home_env] = previous
-            else:
+            context_length = fetch_context_window(self.base_url, self.model_id)
+
+            redirected = {"HOME": isolated_config_home.name}
+            if config_home_env:
+                redirected[config_home_env] = isolated_config_home.name
+            previous = {key: os.environ.get(key) for key in redirected}
+            os.environ.update(redirected)
+            try:
                 setup_agent_config(
                     self.profile,
                     base_url=self.base_url,
                     model_id=self.model_id,
                     agent_version=self.agent_version,
+                    context_length=context_length,
                 )
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
         except Exception as exc:  # noqa: BLE001 — config refresh must never abort the sweep
             logger.warning(
                 "could not refresh %s config before harness sweep: %s",
@@ -1344,18 +1584,43 @@ class AgentTestRunner:
         t0 = time.time()
         streaming = self.profile.get_streaming_for_version(self.agent_version)
         testing = self.profile.get_testing_for_version(self.agent_version)
+        # Use the same server-advertised capacity for env-style profiles.
+        # File-style profiles consumed it above during setup; rendering env
+        # profiles with the 32K fallback here would make the test sweep and
+        # `agents --setup` exercise materially different configurations.
+        try:
+            from .adapter import fetch_context_window
+
+            context_length = fetch_context_window(self.base_url, self.model_id)
+        except Exception:  # noqa: BLE001 — retain the documented fallback
+            context_length = None
         rendered_config = self.profile.render_config(
             self.base_url,
             self.model_id,
             self.agent_version,
+            context_length=context_length,
         )
         env_overrides = (
             {str(key): str(value) for key, value in rendered_config.items()}
             if active_config.type == "env" and isinstance(rendered_config, dict)
             else None
         )
-        if isolated_config_home and config_home_env:
-            env_overrides = dict(env_overrides or {})
+        env_overrides = dict(env_overrides or {})
+        env_overrides["HOME"] = isolated_config_home.name
+        # Claude Code documents CLAUDE_CONFIG_DIR as its supported config
+        # relocation.  Set it even though HOME is redirected: some packaged
+        # launchers resolve the account home before applying the child env.
+        if self.profile.name == "claude-code":
+            env_overrides["CLAUDE_CONFIG_DIR"] = str(
+                Path(isolated_config_home.name) / ".claude"
+            )
+        # DSH's pi-ai OpenAI transport currently insists on resolving a
+        # credential even for a loopback endpoint.  The first-class setup
+        # stores this non-secret sentinel in DSH's managed credential file;
+        # the ephemeral test home gets the equivalent process-local value.
+        if self.profile.name == "deepseek-harness":
+            env_overrides["RAPID_MLX_API_KEY"] = "not-needed"
+        if config_home_env:
             env_overrides[config_home_env] = isolated_config_home.name
 
         # --- API tests ---
@@ -1471,7 +1736,6 @@ class AgentTestRunner:
         Returns:
             List of TestResult from the specific test module.
         """
-        import importlib.util
         import re
         from pathlib import Path
 
@@ -1533,13 +1797,6 @@ class AgentTestRunner:
 
         t0 = time.time()
         try:
-            # Load and execute the test module
-            spec = importlib.util.spec_from_file_location(
-                f"specific_test_{test_module_name}",
-                test_path,
-            )
-            mod = importlib.util.module_from_spec(spec)
-
             # Set base URL env var so specific test modules use the right server
             import sys
 
@@ -1548,10 +1805,24 @@ class AgentTestRunner:
             # Suppress sys.exit (test modules call exit() at the end)
             original_exit = sys.exit
             exec_error = None
+            namespace: dict = {}
             sys.exit = lambda *a: None
             try:
-                spec.loader.exec_module(mod)
-                run_suite = getattr(mod, "run_suite", None)
+                # Integration files are executable test programs. Some expose
+                # module-level results, while others intentionally guard the
+                # suite with ``if __name__ == "__main__"``. Importing under a
+                # synthetic module name silently skipped the latter (notably
+                # PydanticAI) and then reported a harness error without making
+                # a single SDK call. Execute with script semantics and collect
+                # the resulting globals for both styles.
+                namespace = {
+                    "__name__": "__main__",
+                    "__file__": str(test_path),
+                    "__builtins__": __builtins__,
+                }
+                source = test_path.read_bytes()
+                exec(compile(source, str(test_path), "exec"), namespace)
+                run_suite = namespace.get("run_suite")
                 if callable(run_suite):
                     run_suite()
             except SystemExit:
@@ -1597,7 +1868,7 @@ class AgentTestRunner:
                 ]
 
             # Extract results dict
-            results_dict = getattr(mod, "results", {})
+            results_dict = namespace.get("results", {})
             if not results_dict:
                 return [
                     TestResult(

@@ -6,18 +6,19 @@
 # this — no Metal, no weights, and release-preflight skips every gate that needs
 # a live `rapid-mlx serve`.
 #
-# Boots `rapid-mlx serve`, then drives the FOUR Tier-1 (flagship) agents —
-# Claude Code, Codex, Hermes, Aider — through a real multi-step bug-fix task
-# against the local model, and asserts each one actually made the test pass.
+# Boots `rapid-mlx serve`, then drives the FIVE Tier-1 (flagship) agents —
+# Claude Code, Codex, Hermes, Aider, DeepSeek Harness — through a real
+# multi-step bug-fix task against the local model, and asserts each one
+# actually made the test pass.
 #
 #   Usage:   RAPID_MLX_VENV=~/rapid-mlx-audit-venv ./agent_smoke.sh [model-alias]
 #   Default: model-alias = qwen3.6-35b-8bit   (strong 8-bit — never 4-bit,
 #            which confounds "weak model" with "broken integration")
 #
-# Exit code: 0 iff all four Tier-1 agents PASS. Non-zero blocks the release.
+# Exit code: 0 iff all five Tier-1 agents PASS. Non-zero blocks the release.
 # Non-destructive on the shared Studio: it starts only its own server (and kills
-# only that one), and backs up / restores (or removes) ~/.codex and ~/.hermes
-# config it touches.
+# only that one), and backs up / restores (or removes) the ~/.codex, ~/.hermes
+# and ~/.dsh config it touches.
 set -uo pipefail
 
 # Resolved HERE, before anything runs: ``seed_repo``/``verify`` cd into the
@@ -44,9 +45,13 @@ WORK="$HOME/agent-smoke-work"
 LOG="$HOME/agent-smoke-serve.log"
 SERVE_PID=""
 
-# Throwaway config homes. codex and hermes both relocate their entire config
-# directory via these variables, and `agents <x> --setup` honours them, so this
-# gate never reads or writes the operator's real ~/.codex or ~/.hermes.
+# Throwaway config homes. codex, hermes and dsh all relocate their entire
+# config directory via these variables, and `agents <x> --setup` honours them,
+# so this gate never reads or writes the operator's real ~/.codex, ~/.hermes or
+# ~/.dsh. DSH_HOME matters more than the other two: `agents dsh --setup` also
+# writes a credential file (.credentials.yaml) beside settings.yaml, so an
+# un-redirected run would touch the operator's credential store, not just a
+# provider block.
 #
 # This replaces backup-then-restore as the PRIMARY protection. That approach
 # has two failure modes we actually hit: the restore never runs if the script
@@ -71,7 +76,8 @@ SERVE_PID=""
 # anyway. One definition, owned by the side that actually makes the decision.
 export CODEX_HOME="${CODEX_HOME_OVERRIDE:-$(mktemp -d)}"
 export HERMES_HOME="${HERMES_HOME_OVERRIDE:-$(mktemp -d)}"
-for _home_var in CODEX_HOME HERMES_HOME; do
+export DSH_HOME="${DSH_HOME_OVERRIDE:-$(mktemp -d)}"
+for _home_var in CODEX_HOME HERMES_HOME DSH_HOME; do
   eval "_home_val=\${$_home_var}"
   # Resolve it EXACTLY as _resolve_config_path will (strip, then expanduser)
   # and re-export the result, so the value this script validates, backs up and
@@ -103,6 +109,7 @@ sys.stdout.write(os.path.realpath(os.path.expanduser(v)) if v else "")' \
   case "$_home_var" in
     CODEX_HOME)  _home_real="$(python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(os.path.expanduser("~/.codex")))')" ;;
     HERMES_HOME) _home_real="$(python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(os.path.expanduser("~/.hermes")))')" ;;
+    DSH_HOME)    _home_real="$(python3 -c 'import os,sys; sys.stdout.write(os.path.realpath(os.path.expanduser("~/.dsh")))')" ;;
     *)           _home_real="" ;;
   esac
   if [ -n "$_home_real" ] && [ "${_home_val}" = "$_home_real" ]; then
@@ -115,6 +122,7 @@ done
 unset _home_var _home_val _home_real
 CODEX_CFG="$CODEX_HOME/config.toml"
 HERMES_CFG="$HERMES_HOME/config.yaml"
+DSH_CFG="$DSH_HOME/settings.yaml"
 
 # Portable timeout: coreutils `timeout`, or `gtimeout`, else a bash fallback
 # (background the command, hard-kill after N seconds). macOS ships neither
@@ -162,10 +170,13 @@ cleanup() {
   fi
   restore_cfg "$CODEX_CFG"
   restore_cfg "$HERMES_CFG"
-  # Both live under throwaway homes now, so this is just tidying temp files —
-  # the operator's real ~/.codex and ~/.hermes were never touched.
+  restore_cfg "$DSH_CFG"
+  # All three live under throwaway homes now, so this is just tidying temp
+  # files — the operator's real ~/.codex, ~/.hermes and ~/.dsh were never
+  # touched.
   [ -n "${CODEX_HOME_OVERRIDE:-}" ] || rm -rf "$CODEX_HOME"
   [ -n "${HERMES_HOME_OVERRIDE:-}" ] || rm -rf "$HERMES_HOME"
+  [ -n "${DSH_HOME_OVERRIDE:-}" ] || rm -rf "$DSH_HOME"
   rm -rf "$WORK" "$LOG"
 }
 trap cleanup EXIT
@@ -175,7 +186,7 @@ fail() { echo "SMOKE-ABORT: $*" >&2; exit 3; }
 
 echo "== versions =="
 printf "  rapid-mlx  %s\n" "$($RMLX --version 2>&1 | head -1)"
-for b in claude codex aider hermes; do
+for b in claude codex aider hermes dsh; do
   command -v "$b" >/dev/null 2>&1 && printf "  %-9s  %s\n" "$b" "$($b --version 2>&1 | head -1)" \
                                   || printf "  %-9s  MISSING\n" "$b"
 done
@@ -245,7 +256,7 @@ fi
 # kernels, which alone pushes cold start to ~240s (a warm shader cache serves the
 # same model in ~15s). The old 240s budget sat right on that cold-compile knee and
 # flaked the release gate by ~1-2s. 600s clears the cold compile with margin and
-# still leaves ample room under the 55-min job timeout for the four agent runs. A
+# still leaves ample room under the job timeout for the five agent runs. A
 # genuine hang (never binds) still fails — it just gets a realistic deadline.
 for i in $(seq 1 120); do
   curl -s -m 3 "$B/v1/models" 2>/dev/null | grep -q '"id"' && { echo "serve READY (~$((i*5))s)"; break; }
@@ -273,7 +284,7 @@ done
 # 0.11.3 on every serving path. It is purely one-time cold-compile latency.
 #
 # So warm the LARGE-context kernels here, untimed, on BOTH routes the agents use
-# (/v1/chat/completions for codex/hermes/aider, /v1/messages for claude), and
+# (/v1/chat/completions for codex/hermes/aider/dsh, /v1/messages for claude), and
 # RETRY until a request returns fast — a fast return proves the cold compile is
 # fully paid and cached before any timed agent starts. Generous per-request
 # timeout so the compile completes untimed; best-effort, never fatal.
@@ -349,9 +360,9 @@ TASK='Run python3 test_calc.py, it fails. Fix the bug in calc.py so all assertio
 # The agents (codex especially) are non-deterministic, so give each up to 2
 # attempts (hermes 3) — a single miss must not flap the release gate.
 #
-# Run the four SERIALLY, one at a time, against the warm server. An earlier
-# revision overlapped all four to collapse wall-clock from ~sum to ~max, on the
-# theory that an agent leaves the GPU idle between generations so the four fill
+# Run the five SERIALLY, one at a time, against the warm server. An earlier
+# revision overlapped them to collapse wall-clock from ~sum to ~max, on the
+# theory that an agent leaves the GPU idle between generations so they fill
 # each other's gaps. In practice their turns overlap heavily, and batching 5-6
 # in-flight requests — each a 25-38k-token agent prompt — onto the ONE GPU
 # starves every stream (measured on the Studio: 12 output tokens in 65s at
@@ -410,6 +421,30 @@ run_aider() {
   echo "$r" > "$WORK/aider.result"
 }
 
+# ---- DeepSeek Harness (uses $DSH_HOME/settings.yaml rendered below) ------
+# RAPID_MLX_API_KEY is passed explicitly even though `--setup` also writes the
+# same sentinel into $DSH_HOME/.credentials.yaml: DSH's pi-ai transport insists
+# on RESOLVING a credential for the provider before it will dispatch, and the
+# env var is the path that does not depend on the credential store having been
+# written. Belt and braces, same as ANTHROPIC_API_KEY / OPENAI_API_KEY above.
+#
+# `--profile headless` is the one-shot task profile (answer, print, exit); the
+# interactive `web` / `tui` profiles would block forever on a gate runner.
+# NOTE: dsh exits 0 even when it fails outright (a bad provider prints
+# `NO_ADAPTER: ...` and still returns 0), so the exit status is deliberately
+# ignored here — `verify` re-running the real test is the only signal that
+# means anything. Do not "improve" this into an exit-code check.
+run_dsh() {
+  local r=FAIL
+  for _try in 1 2; do
+    seed_repo dsh
+    TO "$AGENT_TO" env RAPID_MLX_API_KEY=not-needed \
+      dsh --profile headless "$TASK" >/dev/null 2>&1
+    [ "$(verify dsh)" = PASS ] && { r=PASS; break; }
+  done
+  echo "$r" > "$WORK/dsh.result"
+}
+
 # Render the two agent config files up front (distinct paths → no collision),
 # THEN launch. --base-url points setup at OUR serve port (not the default
 # :8000). For hermes it is REQUIRED: Hermes rejects any model whose
@@ -425,8 +460,14 @@ run_aider() {
 # back to the operator's real config no matter what this script exported.
 # Fingerprinting the real files and checking them afterwards catches that, and
 # anything else nobody has thought of yet.
+#
+# ~/.dsh contributes TWO paths, not one: `agents dsh --setup` writes the
+# provider block to settings.yaml AND a credential sentinel to
+# .credentials.yaml. Fingerprinting only the settings file would let a
+# redirect failure rewrite the operator's real credential store unnoticed.
 _real_fingerprint() {
-  for f in "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml"; do
+  for f in "$HOME/.codex/config.toml" "$HOME/.hermes/config.yaml" \
+           "$HOME/.dsh/settings.yaml" "$HOME/.dsh/.credentials.yaml"; do
     if [ -f "$f" ]; then shasum -a 256 "$f" 2>/dev/null; else echo "absent $f"; fi
   done
 }
@@ -438,6 +479,11 @@ patch_port "$CODEX_CFG"
 save_cfg "$HERMES_CFG"
 "$RMLX" agents hermes --setup --base-url "$B/v1" >/dev/null 2>&1
 patch_port "$HERMES_CFG"
+save_cfg "$DSH_CFG"
+# --yes: dsh's setup is the interactive plan/apply flow, and this gate has no
+# tty to answer the confirmation prompt with.
+"$RMLX" agents dsh --setup --yes --base-url "$B/v1" >/dev/null 2>&1
+patch_port "$DSH_CFG"
 
 if [ "$(_real_fingerprint)" != "$_REAL_BEFORE" ]; then
   echo "SMOKE-ABORT: \`agents --setup\` modified the operator's REAL config despite" >&2
@@ -448,7 +494,7 @@ if [ "$(_real_fingerprint)" != "$_REAL_BEFORE" ]; then
   exit 3
 fi
 
-echo "running 4 Tier-1 agents serially (budget ${AGENT_TO}s, hermes ${HERMES_TO}s)…"
+echo "running 5 Tier-1 agents serially (budget ${AGENT_TO}s, hermes ${HERMES_TO}s)…"
 # Serial, NOT backgrounded: overlapping them oversubscribes the single GPU and
 # flakes the gate (see the rationale above run_claude). Each runs to completion
 # — with its own retries + per-agent timeout — before the next starts, so it
@@ -458,15 +504,18 @@ run_claude
 run_codex
 run_hermes
 run_aider
+run_dsh
 
 # Restore the config files only after every agent has finished using them.
 restore_cfg "$CODEX_CFG"
 restore_cfg "$HERMES_CFG"
+restore_cfg "$DSH_CFG"
 
 R_CLAUDE=$(cat "$WORK/claude.result" 2>/dev/null || echo FAIL)
 R_CODEX=$(cat "$WORK/codex.result" 2>/dev/null || echo FAIL)
 R_HERMES=$(cat "$WORK/hermes.result" 2>/dev/null || echo FAIL)
 R_AIDER=$(cat "$WORK/aider.result" 2>/dev/null || echo FAIL)
+R_DSH=$(cat "$WORK/dsh.result" 2>/dev/null || echo FAIL)
 
 # ---- report --------------------------------------------------------------
 echo
@@ -475,8 +524,9 @@ printf "  claude-code  %s\n" "$R_CLAUDE"
 printf "  codex-cli    %s\n" "$R_CODEX"
 printf "  hermes       %s\n" "$R_HERMES"
 printf "  aider        %s\n" "$R_AIDER"
+printf "  dsh          %s\n" "$R_DSH"
 
-for r in "$R_CLAUDE" "$R_CODEX" "$R_HERMES" "$R_AIDER"; do
+for r in "$R_CLAUDE" "$R_CODEX" "$R_HERMES" "$R_AIDER" "$R_DSH"; do
   [ "$r" = PASS ] || { echo "RESULT: FAIL — a Tier-1 agent regressed; this blocks the release."; exit 1; }
 done
 
@@ -516,4 +566,4 @@ if [ "${RAPID_MLX_RELEASE_GATE:-0}" = "1" ]; then
   echo "== release-gate extras PASSED (coherence + perf) =="
 fi
 
-echo "RESULT: PASS — all four Tier-1 agents verified on $ALIAS."
+echo "RESULT: PASS — all five Tier-1 agents verified on $ALIAS."

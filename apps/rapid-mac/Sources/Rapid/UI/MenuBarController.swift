@@ -130,7 +130,6 @@ final class MenuBarController: NSObject {
             state: AppDelegate.shared.server?.state ?? .idle,
             hasUpdate: Self.hasAvailableUpdate(),
             updateVersion: AppDelegate.shared.updater?.availableUpdate?.version ?? "",
-            installerRunning: AppDelegate.shared.installer?.isRunning ?? false,
             checking: AppDelegate.shared.updater?.checking ?? false
         ) {
             switch item {
@@ -191,9 +190,14 @@ final class MenuBarController: NSObject {
         case .update:
             if let sparkle = AppDelegate.shared.sparkleUpdater, sparkle.isEnabled {
                 sparkle.checkForUpdates()
-            } else {
-                openUpdateWindow()
+                return
             }
+            // Unsigned build: Sparkle is off and there is no in-app installer
+            // to fall back to any more. Settings → App names the running
+            // version and, in this state, offers a link to the release page,
+            // so send the user there rather than to a dead end.
+            NSApp.activate(ignoringOtherApps: true)
+            AppDelegate.openSettingsWindowAt?(.app)
         case .checkForUpdates:
             if let sparkle = AppDelegate.shared.sparkleUpdater, sparkle.isEnabled {
                 sparkle.checkForUpdates()
@@ -253,17 +257,6 @@ final class MenuBarController: NSObject {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 50_000_000)
             AppDelegate.openMainWindow?()
-        }
-    }
-
-    /// Open the dedicated update window through the ``AppDelegate`` bridge,
-    /// guarding the same macOS 14.0–14.2 background-``openWindow`` race as
-    /// ``bringMainWindowForward``.
-    private func openUpdateWindow() {
-        Task { @MainActor in
-            NSApp.activate(ignoringOtherApps: true)
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            AppDelegate.openUpdateWindow?()
         }
     }
 

@@ -33,7 +33,10 @@ _LOADED = False
 # adding duplicate rows to ``rapid-mlx agents``.  Claude's executable is named
 # ``claude``, while the product and launch adapter use ``claude-code``; users
 # reasonably try either spelling.
-_PROFILE_ALIASES = {"claude": "claude-code"}
+_PROFILE_ALIASES = {
+    "claude": "claude-code",
+    "dsh": "deepseek-harness",
+}
 
 PROFILES_DIR = Path(__file__).parent / "profiles"
 

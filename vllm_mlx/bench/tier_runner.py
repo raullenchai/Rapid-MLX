@@ -31,16 +31,24 @@ from dataclasses import dataclass
 
 from ..http_auth import rapid_mlx_auth_headers
 
-# The 5 first-class harnesses in the documented order. Used by both
+# The 6 first-class harnesses in the documented order. Used by both
 # ``--tier harness`` and the release_check_m3.sh G7b gate. Keep this
 # list in lock-step with the G7b shell loop in scripts/release_check_m3.sh
-# — if a harness is added/removed here, the script must be updated too.
+# AND with the hardcoded mirror in scripts/release_check_m3_random.py
+# — if a harness is added/removed here, both must be updated too.
+#
+# ``deepseek-harness`` is appended rather than slotted in beside the other
+# CLIs on purpose: ``test_bench_tier_smoke`` pins this tuple exactly and
+# ``test_bench_tier_harness`` indexes it (``HARNESS_PROFILES[1:]``), so
+# growing it at the tail is the change that cannot silently reinterpret an
+# existing positional assertion.
 HARNESS_PROFILES: tuple[str, ...] = (
     "codex",
     "opencode",
     "hermes",
     "aider",
     "langchain",
+    "deepseek-harness",
 )
 
 # Deterministic ephemeral-port range the tier runner probes when no
@@ -1040,9 +1048,12 @@ def _run_harness(
     # error_excerpt is ``null`` (schema enforces ``["string", "null"]``);
     # on fail, the first 200 chars of the existing detail line — same
     # truncation cap as schema. The dict is keyed by adapter name; the
-    # schema's ``additionalProperties: false`` plus ``required`` of all
-    # 5 keys means this stays in lock-step with HARNESS_PROFILES (a
-    # mismatch is a schema-validation failure at submission time).
+    # schema's ``additionalProperties: false`` means an adapter absent
+    # from the schema's ``properties`` is a validation failure at
+    # submission time, so a new HARNESS_PROFILES entry must be added
+    # there too. ``required`` deliberately still lists only the original
+    # five — see the ``harness_result`` description in schema.json for why
+    # a newer adapter is allowed-but-not-required.
     #
     # When ``HARNESS_PROFILES_FILTER`` is active, ``per_harness`` only
     # contains entries for the filtered profiles — the resulting payload

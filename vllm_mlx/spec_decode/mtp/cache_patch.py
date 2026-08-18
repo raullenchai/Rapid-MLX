@@ -281,6 +281,47 @@ def patch_gated_delta_net_for_mtp() -> bool:
             q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
             k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
 
+            # A verify block wider than two tokens needs a restore point for
+            # every possible acceptance prefix.  The old PR #990-compatible
+            # pair below is sufficient for K=1 only: acceptance is either
+            # before or after the sole draft.  For K>1, run the very small
+            # verify block (currently at most four positions) position-wise
+            # and retain the recurrent state after each position except the
+            # final one.  This is intentionally limited to the speculative
+            # verify path; ordinary prefill/decode still takes the original
+            # fused GDN call above.
+            if S > 2:
+                outs = []
+                snapshots = []
+                cur_state = state
+                for pos in range(S):
+                    pos_mask = mask[:, pos : pos + 1] if mask is not None else None
+                    pos_out, cur_state = gated_delta_update(
+                        q[:, pos : pos + 1],
+                        k[:, pos : pos + 1],
+                        v[:, pos : pos + 1],
+                        a[:, pos : pos + 1],
+                        b[:, pos : pos + 1],
+                        self.A_log,
+                        self.dt_bias,
+                        cur_state,
+                        pos_mask,
+                        use_kernel=not self.training,
+                    )
+                    outs.append(pos_out)
+                    if pos < S - 1:
+                        conv_at_pos = mx.contiguous(
+                            conv_input[:, pos + 1 : pos + 1 + n_keep, :]
+                        )
+                        snapshots.append((conv_at_pos, cur_state))
+
+                cache.rollback_state = snapshots
+                cache[1] = cur_state
+                cache.advance(S)
+                out = mx.concatenate(outs, axis=1)
+                out = self.norm(out, z)
+                return self.out_proj(out.reshape(B, S, -1))
+
             # Chunk 1: [0:n_conf]
             q1 = q[:, :n_conf]
             k1 = k[:, :n_conf]

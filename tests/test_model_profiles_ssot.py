@@ -257,6 +257,7 @@ def test_legacy_string_value_still_loads(tmp_path) -> None:
         patch.object(ma, "_aliases", None),
         patch.object(ma, "_hf_to_alias", None),
         patch("vllm_mlx.model_aliases.os.path.join", return_value=str(legacy)),
+        patch("vllm_mlx.user_aliases.load_user_aliases", return_value={}),
     ):
         profiles = ma.list_profiles()
 

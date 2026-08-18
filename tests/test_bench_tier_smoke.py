@@ -216,9 +216,22 @@ def test_resolve_base_url_strips_v1_suffix():
     assert _resolve_base_url(None) is None
 
 
-def test_harness_profiles_list_has_five_in_correct_order():
-    """The 5 first-class harnesses must be in the documented order."""
-    assert HARNESS_PROFILES == ("codex", "opencode", "hermes", "aider", "langchain")
+def test_harness_profiles_list_is_exact_and_in_documented_order():
+    """The first-class harnesses must be in the documented order.
+
+    Deliberately not named for a count — the previous
+    ``..._has_five_...`` spelling went stale the moment a sixth harness
+    was added, and a test whose name disagrees with its assertion is a
+    slower way to learn the same thing.
+    """
+    assert HARNESS_PROFILES == (
+        "codex",
+        "opencode",
+        "hermes",
+        "aider",
+        "langchain",
+        "deepseek-harness",
+    )
 
 
 def test_find_free_port_in_range_uses_band():

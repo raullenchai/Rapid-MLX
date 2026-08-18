@@ -80,10 +80,16 @@ struct SettingsVisualFoundationTests {
         // ``connectors`` did in #1716. The guard's job is to make a category
         // change deliberate and reviewed, not to freeze the list forever —
         // update this literal alongside the enum when a feature adds one.
-        let expected: Set<String> = [
+        var expected: Set<String> = [
             "modelManagement", "instructions", "tools", "connectors", "performance",
             "appearance", "privacy", "app",
         ]
+        // `swift test` builds debug, so the debug-only category is present
+        // here and absent from the shipped binary. Conditioning the literal
+        // rather than hardcoding it keeps `swift test -c release` honest too.
+        #if DEBUG
+        expected.insert("developer")
+        #endif
         let actual = Set(SettingsView.Category.allCases.map(\.rawValue))
         #expect(
             actual == expected,
@@ -101,10 +107,14 @@ struct SettingsVisualFoundationTests {
     @MainActor
     @Test("Category order is unchanged, so arrow-key navigation is unchanged")
     func categoryOrderIsStable() {
-        #expect(SettingsView.Category.allCases.map(\.rawValue) == [
+        var expectedOrder = [
             "modelManagement", "instructions", "tools", "connectors", "performance",
             "appearance", "privacy", "app",
-        ])
+        ]
+        #if DEBUG
+        expectedOrder.append("developer")
+        #endif
+        #expect(SettingsView.Category.allCases.map(\.rawValue) == expectedOrder)
         // #1717: ``performance`` sits after ``connectors`` — both are
         // "what the engine is wired to do", ahead of the presentation and
         // app-level sections.
@@ -112,7 +122,16 @@ struct SettingsVisualFoundationTests {
         #expect(SettingsView.category(.performance, movedBy: 1) == .appearance)
         // The rail's ↑/↓ handler walks this order and clamps at the ends.
         #expect(SettingsView.category(.modelManagement, movedBy: -1) == nil)
+        // Developer sits after App in debug, so App is only the last row in
+        // a release build. Both spellings assert the same property: arrowing
+        // past the final row clamps rather than wrapping.
+        #if DEBUG
+        #expect(SettingsView.category(.app, movedBy: 1) == .developer)
+        #expect(SettingsView.category(.developer, movedBy: 1) == nil)
+        #expect(SettingsView.category(.developer, movedBy: -1) == .app)
+        #else
         #expect(SettingsView.category(.app, movedBy: 1) == nil)
+        #endif
         #expect(SettingsView.category(.modelManagement, movedBy: 1) == .instructions)
         #expect(SettingsView.category(.app, movedBy: -1) == .privacy)
     }
@@ -131,7 +150,7 @@ struct SettingsVisualFoundationTests {
                 "@Environment(SettingsRouter.self)",
                 "@Environment(ServerManager.self)",
                 "@Environment(UpdateChecker.self)",
-                "@Environment(Installer.self)",
+                "@Environment(SparkleUpdateController.self)",
                 "@Environment(DockVisibilityPromptStore.self)",
             ]),
             ("Sources/Rapid/UI/SettingsToolsPanel.swift", [

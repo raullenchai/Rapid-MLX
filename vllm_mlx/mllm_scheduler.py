@@ -1197,6 +1197,11 @@ class MLLMScheduler:
                 # Arbitrary RuntimeError/ValueError text may include caller
                 # data or local paths that happen to match the old markers.
                 is_client_error = isinstance(e, ClientRequestError)
+                public_error = (
+                    err_msg
+                    if is_client_error
+                    else "MLLM inference failed due to an internal engine error"
+                )
                 # Create error outputs (queue delivery deferred to caller).
                 for request_id in error_ids:
                     output.outputs.append(
@@ -1204,8 +1209,11 @@ class MLLMScheduler:
                             request_id=request_id,
                             output_text="",
                             finished=True,
-                            error=err_msg if is_client_error else None,
+                            error=public_error,
                             error_kind=("invalid_request" if is_client_error else None),
+                            # Preserve the established terminal reason for
+                            # internal aborts; the non-None error is what
+                            # prevents routes from serializing fake success.
                             finish_reason="error" if is_client_error else "length",
                         )
                     )

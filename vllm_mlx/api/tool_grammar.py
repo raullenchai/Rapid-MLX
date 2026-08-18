@@ -703,6 +703,21 @@ class _ArgWirePolicy:
         five-string blacklist (codex r3 E4). Without a tokenizer it falls back to
         the five structural markers alone.
 
+      * ``freeform_string_representable`` — whether a TOP-LEVEL non-enum string
+        property can be constrained at all on this wire (#1996). A top-level
+        string is the one value the model emits with NO delimiter of its own, so
+        the wire must be able to end it. gemma4 CAN: its value is framed by the
+        ``<|"|>`` marker, a single special token the model natively emits, so the
+        lexer always knows where the value stops. The Qwen3-Coder XML wire CANNOT:
+        its close (``\\n</parameter>\\n``) is ORDINARY TEXT, and the model emits
+        the value BARE. A bare terminal cannot be lexed against that close —
+        ``/[^<]*/`` munches the ``\\n`` and then rejects the very next token
+        (real tokenizers emit ``\\n</`` as ONE token), and a lazy ``/(.|\\n)*?/``
+        never terminates, constraining nothing. That leaves ``%json`` — a QUOTED
+        surface the model was never trained to produce there — which is why it is
+        not representable rather than merely awkward. See the note on
+        ``_emit_xml_param_value``.
+
     Everything else (top-level key allowlist, ``additionalProperties`` /
     ``required`` totality, ``$ref`` resolution, scalar/object/array/string
     dispatch, string-facet allowlist) is wire-independent and SHARED — so the two
@@ -712,10 +727,22 @@ class _ArgWirePolicy:
 
     key_safe: Callable[[Any], bool]
     enum_wire_unsafe: Callable[[str], bool]
+    # Default True keeps every wire that CAN frame a bare value (gemma4) exactly
+    # as it was; only a wire that proves it cannot sets this False.
+    freeform_string_representable: bool = True
 
 
 _XML_WIRE_POLICY = _ArgWirePolicy(
-    key_safe=_xml_key_is_delimiter_safe, enum_wire_unsafe=_xml_enum_wire_unsafe
+    key_safe=_xml_key_is_delimiter_safe,
+    enum_wire_unsafe=_xml_enum_wire_unsafe,
+    # #1996: measured on a real server, not reasoned about. With the constraint
+    # ON, ``qwen3.6-35b-8bit`` answered a ``write_file`` call with an 11-byte
+    # ``content`` ("import time") — the model opened the forced JSON string, hit
+    # a newline it could not emit raw, and closed the string instead of escaping
+    # it, silently truncating the file. The same server with
+    # ``RAPID_MLX_CONSTRAIN_TOOLS=0`` wrote all 710 bytes. Short values corrupt
+    # more quietly: ``Tokyo`` came back as ``Toyo`` and ``Osaka`` as ``osaka``.
+    freeform_string_representable=False,
 )
 _GEMMA4_WIRE_POLICY = _ArgWirePolicy(
     key_safe=_gemma4_key_is_safe, enum_wire_unsafe=_gemma4_enum_wire_unsafe
@@ -899,8 +926,15 @@ def _xml_property_representable(
         return False
     t = prop_type.strip().lower()
     if t == "string":
-        # Only annotation keys may accompany a string; any facet the raw lazy
-        # value path cannot enforce (or an unknown key) opts out.
+        # A TOP-LEVEL free-form string is the one value this wire family emits
+        # with no delimiter of its own, so a wire that cannot frame a bare value
+        # cannot represent it at all (#1996 — see ``freeform_string_representable``).
+        # NESTED strings are unaffected: they ride inside a ``%json`` object or
+        # array, where quoting IS the surface the model emits.
+        if not policy.freeform_string_representable:
+            return False
+        # Only annotation keys may accompany a string; any facet the value path
+        # cannot enforce (or an unknown key) opts out.
         return set(resolved.keys()) <= _XML_ALLOWED_STRING_KEYS
     if t in _XML_SCALAR_TERMINAL_TYPES:
         return True
@@ -1052,6 +1086,12 @@ def _emit_xml_param_value(subschema: Any, defs: dict[str, Any]) -> str:
         ``\\n</parameter>\\n`` close.
       * STRING (non-enum) -> a ``%json`` string. Its quoting/escaping layer makes
         delimiter-looking text payload rather than XML structure (#1542).
+        UNREACHABLE for the XML wire since #1996: the representability guard opts
+        a tool with a top-level non-enum string OUT of grammar entirely, because
+        the model emits that value BARE and the forced quoted surface silently
+        truncated/mangled it. The branch stays because the emitter is shared and
+        ``policy.freeform_string_representable`` is what decides — flip that back
+        only together with a value rule this wire can actually lex.
       * EVERYTHING ELSE (number / integer / boolean / object / array / null) ->
         JSON-constrained via ``%json`` (these surface forms match the parser's
         int / float / bool / ``json.loads`` paths), then the ``\\n</parameter>\\n``

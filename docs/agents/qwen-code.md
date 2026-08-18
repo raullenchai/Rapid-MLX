@@ -3,7 +3,7 @@
 Point [Qwen Code](https://github.com/QwenLM/qwen-code) at a local rapid-mlx
 server. Qwen Code is Alibaba's `gemini-cli` fork tuned for Qwen tool-calling;
 it speaks the **OpenAI-compatible chat completions API**
-(`POST /v1/chat/completions`) via an `openaiCompatible.baseUrl` config that
+(`POST /v1/chat/completions`) via an OpenAI entry in `modelProviders` that
 maps 1:1 onto rapid-mlx's default endpoint.
 
 Verified via wire smoke against Qwen 3.6, Gemma 4, and gpt-oss in the Tier-1
@@ -23,7 +23,7 @@ the [support matrix](matrix.md) for the current per-family status.
 
 ```bash
 # 1. Install Qwen Code
-npm install -g @qwenlm/qwen-code
+npm install -g @qwen-code/qwen-code
 
 # 2. Start rapid-mlx (Qwen 3.6 is the sweet spot)
 rapid-mlx serve qwen3.6-35b-4bit --port 8000
@@ -38,15 +38,28 @@ qwen -p "explain this repo"   # one-shot
 
 ## Manual config
 
-`~/.qwen/settings.json` — substitute your alias for `{model_id}`:
+`~/.qwen/settings.json` — current Qwen Code releases use the provider catalog
+schema below (the older `openaiCompatible` object is no longer recognized):
 
 ```json
 {
-  "openaiCompatible": {
-    "baseUrl": "http://localhost:8000/v1",
-    "apiKey": "not-needed",
-    "model": "qwen3.6-35b-4bit"
-  }
+  "modelProviders": {
+    "openai": [{
+      "id": "qwen3.6-35b-4bit",
+      "name": "qwen3.6-35b-4bit (Rapid-MLX)",
+      "envKey": "RAPID_MLX_API_KEY",
+      "baseUrl": "http://localhost:8000/v1",
+      "generationConfig": {
+        "timeout": 300000,
+        "maxRetries": 1,
+        "contextWindowSize": 262144,
+        "samplingParams": {"max_tokens": 8192}
+      }
+    }]
+  },
+  "env": {"RAPID_MLX_API_KEY": "not-needed"},
+  "security": {"auth": {"selectedType": "openai"}},
+  "model": {"name": "qwen3.6-35b-4bit"}
 }
 ```
 
@@ -68,10 +81,8 @@ rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB
 # smaller: qwen3.6-27b-4bit
 ```
 
-```json
-{ "openaiCompatible": { "baseUrl": "http://localhost:8000/v1",
-  "apiKey": "not-needed", "model": "qwen3.6-35b-4bit" } }
-```
+Then run `rapid-mlx agents qwen-code --setup` to select the served model and
+write its actual advertised context window.
 
 - tool-call parser: `qwen3_coder_xml` · reasoning parser: `qwen3`
 - matrix cell: **PASS** ✅
@@ -83,10 +94,7 @@ rapid-mlx serve gemma-4-12b-4bit --port 8000   # ~7 GB at 4-bit
 # larger: gemma-4-26b-4bit
 ```
 
-```json
-{ "openaiCompatible": { "baseUrl": "http://localhost:8000/v1",
-  "apiKey": "not-needed", "model": "gemma-4-12b-4bit" } }
-```
+Then run `rapid-mlx agents qwen-code --setup`.
 
 - tool-call parser: `gemma4` · reasoning parser: `gemma4`
 - matrix cell: **PASS** ✅ (non-Qwen models run at reduced quality)
@@ -98,10 +106,7 @@ rapid-mlx serve gpt-oss-20b --port 8000        # ~11 GB (MXFP4-Q8)
 # larger: gpt-oss-120b
 ```
 
-```json
-{ "openaiCompatible": { "baseUrl": "http://localhost:8000/v1",
-  "apiKey": "not-needed", "model": "gpt-oss-20b" } }
-```
+Then run `rapid-mlx agents qwen-code --setup`.
 
 - tool-call parser: `harmony` · reasoning parser: `harmony`
 - matrix cell: **PASS** ✅

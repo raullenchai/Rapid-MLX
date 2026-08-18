@@ -30,7 +30,11 @@ testing:
   # explicitly allowed or it refuses the calls non-interactively. Scope each
   # permission to the exact fixture/command; changing cwd is not a sandbox.
   query_cmd: "claude --allowedTools 'Read(pyproject.toml)' 'Bash(echo rapidmlx_claude-code_test)' -p '{query}'"
-  query_timeout: 180
+  # A real Claude Code prompt carries ~25K tokens plus 28 tools. On local
+  # models the first tool call can arrive just before 180s, leaving no budget
+  # for the tool-result turn; 360s covers that full loop without conflating a
+  # slow-but-progressing local prefill with a hung client.
+  query_timeout: 360
   install_cmd: "npm install -g @anthropic-ai/claude-code"
 
 capabilities:

@@ -56,7 +56,7 @@ truthfully from the authoritative test suite in
 > parser and `hermes` tool-call family with Qwen 3.6, exercising the same
 > wire without loading a 15 GB weight blob per test process.
 
-## Agent × Family (11 agents × 5 families)
+## Agent × Family (12 agents × 5 families)
 
 Source: `tests/integrations/README.md` "Current cell status" (pilot run
 2026-07-06, four always-on families; Hy3 column is `xfail(strict=True)` from
@@ -72,6 +72,7 @@ Source: `tests/integrations/README.md` "Current cell status" (pilot run
 | <a id="agent-hermes-agent"></a>[hermes-agent](hermes-agent.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-aider"></a>aider | bash CLI → `/v1/chat/completions` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
 | <a id="agent-kilo-code"></a>kilo-code | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| <a id="agent-deepseek-harness"></a>[deepseek-harness](deepseek-harness.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-copilot"></a>copilot | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-droid"></a>droid | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-kimi-code"></a>kimi-code | `/v1/chat/completions` (wire smoke) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
@@ -86,6 +87,13 @@ Notes on cell shape:
   text-action tags don't require OpenAI `tool_calls`, so aider PASSes on
   DeepSeek and OpenHands PASSes on DeepSeek (but XFAILs on gpt-oss — format
   mismatch, see legend).
+- **deepseek-harness** is the only cell whose agent is published by the same
+  vendor as one of the model families, and it gets no special treatment for
+  it: the wire cell is the shared OpenAI tool-call smoke, and the DeepSeek
+  column XFAILs on R1-Distill exactly like every other tool-calling agent.
+  Its Qwen 3.6 and gpt-oss cells were run strict against real weights on
+  2026-08-17; see the `†` footnote in `tests/integrations/README.md` for
+  which columns are recorded from the shared code path instead.
 - **copilot / droid / kimi-code** are **wire-smoke only** in CI: their BYOK
   routes are documented and verified, but driving the real CLI binaries is
   blocked on vendor OAuth / first-run onboarding. The wire smoke still
@@ -108,19 +116,23 @@ shape.
 ## Totals
 
 Across the four always-on families (Qwen 3.6, Gemma 4, DeepSeek, gpt-oss);
-the Hy3 column adds 11 more agent cells, all `xfail(strict=True)`:
+the Hy3 column adds 12 more agent cells, all `xfail(strict=True)`:
 
-- **Agents:** 11 agents × 4 families = 44 cells → **36 PASS · 8 XFAIL ·
-  0 FAIL**. The 8 XFAIL are the 7 DeepSeek arch cells (opencode, qwen-code,
-  hermes-agent, kilo-code, copilot, droid, kimi-code) + 1 gpt-oss × OpenHands
-  format cell.
+- **Agents:** 12 agents × 4 families = 48 cells → **39 PASS · 9 XFAIL ·
+  0 FAIL**. The 9 XFAIL are the 8 DeepSeek arch cells (opencode, qwen-code,
+  hermes-agent, kilo-code, deepseek-harness, copilot, droid, kimi-code) + 1
+  gpt-oss × OpenHands format cell. DeepSeek Harness is in the arch group for
+  the same reason as the rest: the R1-Distill checkpoint cannot emit
+  OpenAI-shape `tool_calls`, and DSH drives rapid-mlx over that same wire —
+  being DeepSeek's own client buys it no exemption from its own
+  checkpoint's gap.
 - **Frameworks:** 3 frameworks × 4 families = 12 cells → the two
   `tool_calls`-dependent frameworks (LangChain, PydanticAI) XFAIL on DeepSeek;
   smolagents PASSes everywhere.
-- **Combined always-on run** (56 cells excluding Hy3): **46 PASS · 10 XFAIL
-  · 0 FAIL** — 9 XFAIL are the DeepSeek R1-Distill architectural
+- **Combined always-on run** (60 cells excluding Hy3): **49 PASS · 11 XFAIL
+  · 0 FAIL** — 10 XFAIL are the DeepSeek R1-Distill architectural
   tool-emission cells, 1 is gpt-oss × OpenHands.
-- **Hy3 (0.11.0):** +14 cells, all `xfail(strict=True)` (Ultra-only). The
+- **Hy3 (0.11.0):** +15 cells, all `xfail(strict=True)` (Ultra-only). The
   CI-runnable coverage is the 8-test offline `test_hy3_offline.py`
   (**8 PASS** in the normal `pytest tests/` sweep).
 
@@ -146,5 +158,6 @@ Without a running server every cell **skips** (non-strict) so a naive
 
 - Per-agent setup: [codex-cli](codex-cli.md) · [claude-code](claude-code.md)
   · [opencode](opencode.md) · [qwen-code](qwen-code.md) ·
-  [openhands](openhands.md) · [hermes-agent](hermes-agent.md)
+  [openhands](openhands.md) · [hermes-agent](hermes-agent.md) ·
+  [deepseek-harness](deepseek-harness.md)
 - [AI client compatibility](../guides/ai-clients.md) · [Tool calling](../guides/tool-calling.md)

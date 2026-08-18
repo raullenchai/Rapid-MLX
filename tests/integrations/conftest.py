@@ -476,12 +476,21 @@ _DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS = frozenset(
     {
         # test_agents_matrix.py — OpenAI-wire agents that require true
         # ``tool_calls`` emission (opencode, qwen-code, hermes, kilo-code,
-        # copilot, droid, kimi-code). CodexCLI + ClaudeCode use text-only
-        # routes and PASS on R1-Distill, so they are NOT in this list.
+        # deepseek-harness, copilot, droid, kimi-code). CodexCLI +
+        # ClaudeCode use text-only routes and PASS on R1-Distill, so they
+        # are NOT in this list.
+        #
+        # DeepSeek Harness is in this list despite being DeepSeek's own
+        # client: the gap is in the R1-Distill CHECKPOINT's tool emission,
+        # not in the harness. DSH drives rapid-mlx over the generic
+        # ``openai-completions`` provider and needs the same OpenAI-shape
+        # ``tool_calls`` every other wire agent needs, so it inherits the
+        # same architectural xfail.
         "test_agents_matrix.py::TestOpenCode",
         "test_agents_matrix.py::TestQwenCode",
         "test_agents_matrix.py::TestHermesAgent",
         "test_agents_matrix.py::TestKiloCode",
+        "test_agents_matrix.py::TestDeepSeekHarness",
         "test_agents_matrix.py::TestCopilot",
         "test_agents_matrix.py::TestDroid",
         "test_agents_matrix.py::TestKimiCode",
@@ -577,7 +586,7 @@ _GPTOSS_OPENHANDS_XFAIL_REASON = (
 # Following the same G8 discipline as the V4-Flash precedent
 # (root-caused note in ``_FAMILY_ALIASES['deepseek'].reason`` +
 # README §"DeepSeek family — architectural tool-emission gap"): rather
-# than downgrade the 14 Hy3 cells (11 agents + 3 frameworks) to plain
+# than downgrade the 15 Hy3 cells (12 agents + 3 frameworks) to plain
 # ``skip`` (G8: "root-cause failures, do not hide behind skips"), every
 # Hy3 cell is marked
 # ``xfail(strict=True)``. These are structural placeholders + a weekly
@@ -664,7 +673,7 @@ def pytest_collection_modifyitems(
                     strict=True,
                 )
             )
-        # Hy3 — every matrix cell (all 14: 11 agents + 3 frameworks), 166 GB
+        # Hy3 — every matrix cell (all 15: 12 agents + 3 frameworks), 166 GB
         # Ultra-only. The matrix parametrizes by a single ``family`` argument,
         # so every Hy3 matrix nodeid ends in exactly ``[hy3]`` (never a
         # combined id like ``[agent-hy3]``). The bare ``[hy3]`` token is NOT

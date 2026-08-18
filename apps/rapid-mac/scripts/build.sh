@@ -3,8 +3,8 @@
 #
 # Naming (see issue #164): the .app bundle on disk is
 # ``Rapid-MLX Desktop.app`` for fresh installs. Existing 0.5.21 installs
-# auto-update in place — Installer.swift's helper preserves the
-# existing on-disk filename, so a user with ``/Applications/Rapid.app``
+# auto-update in place — the updater replaces the running bundle at its
+# existing path, so a user with ``/Applications/Rapid.app``
 # keeps that path forever (or until they manually re-install from the
 # DMG). The display name everywhere (Dock, About, menus) reads
 # "Rapid-MLX Desktop" via CFBundleDisplayName.

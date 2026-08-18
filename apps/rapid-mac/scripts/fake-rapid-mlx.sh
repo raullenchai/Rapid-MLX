@@ -35,12 +35,14 @@ exec /usr/bin/env python3 - "$@" <<'PYEOF'
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import struct
 import sys
 import threading
 import time
+import wave
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -561,6 +563,10 @@ class Handler(BaseHTTPRequestHandler):
             # indistinguishable from the daemon being down.
             self._json(200, RENDERS.snapshot())
             return
+        if self.path.partition("?")[0] == "/v1/audio/voices":
+            _event("audio_voices")
+            self._json(200, {"voices": ["Golden", "Harbor"]})
+            return
         self._json(404, {"error": "not_found"})
 
     def _residency_snapshot(self):
@@ -746,6 +752,42 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/images/edits":
             self._images_generate(editing=True)
             return
+        if self.path == "/v1/audio/speech":
+            length = int(self.headers.get("content-length", "0") or "0")
+            body = json.loads(self.rfile.read(length) or b"{}")
+            _event(
+                "audio_speech",
+                model=body.get("model"),
+                voice=body.get("voice"),
+                speed=body.get("speed"),
+                text=body.get("input"),
+            )
+            audio = io.BytesIO()
+            with wave.open(audio, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                # Long enough for the AX flow to observe Play -> Stop, while
+                # still tiny and silent for unattended GUI tests.
+                wav.writeframes(b"\x00\x00" * 32000)
+            payload = audio.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/v1/audio/transcriptions":
+            length = int(self.headers.get("content-length", "0") or "0")
+            if length:
+                self.rfile.read(length)
+            _event("audio_transcription")
+            self._json(200, {
+                "text": "Golden transcription result.",
+                "language": "en",
+                "duration": 0.1,
+            })
+            return
         if self.path != "/v1/chat/completions":
             self._json(404, {"error": "not_found"})
             return
@@ -891,10 +933,22 @@ def _emit_catalog(subcommand, alias):
     """
     if subcommand == "models":
         print("Available models")
-        print("Alias                  Parser           Reasoning")
-        print("---------------------  ---------------  ---------")
+        print("Alias                  Parser           Reasoning        Preset")
+        print("---------------------  ---------------  ---------------  --------")
+        if _setting("FAKE_INCLUDE_STARTER") == "1":
+            # A production catalog always contains the onboarding starter.
+            # Most flows deliberately keep the compact single-chat-row
+            # fixture, but fresh-install must exercise the real default
+            # selection contract rather than falling back to fake-alias.
+            print("lfm2.5-1b-4bit        hermes           none")
+        if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+            for index in range(6):
+                print(f"a-cached-{index}             hermes           none")
+            print("qwen3.5-4b-4bit       hermes           qwen3")
         print("fake-alias             hermes           qwen3")
         print("fake-external-alias    hermes           qwen3")
+        if _setting("FAKE_SETTINGS_MTP") == "1":
+            print("qwen3.8-27b-4bit       hermes           qwen3           MTP@rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX@3")
         # A video-generation row, in the tagged section the real engine
         # emits (#1607). It has no tokenizer and cannot answer a chat
         # request, so the desktop must filter it out of every catalog
@@ -929,8 +983,15 @@ def _emit_catalog(subcommand, alias):
         print("Cached models")
         print("Alias                  Repo                   Size")
         print("---------------------  ---------------------  ------")
-        print(f"fake-alias             {FAKE_REPO}        1.2 GB")
-        print("(external)             fake-external-alias     2.4 GB")
+        if _setting("FAKE_SETTINGS_MTP") != "1":
+            print(f"fake-alias             {FAKE_REPO}        1.2 GB")
+            print("(external)             fake-external-alias     2.4 GB")
+        if _setting("FAKE_CACHED_CURATED_TRADEUP") == "1":
+            for index in range(6):
+                print(f"a-cached-{index}             fake-org/a-cached-{index}        100 MB")
+            print("qwen3.5-4b-4bit       mlx-community/Qwen3.5-4B-MLX-4bit  2.9 GB")
+        if _setting("FAKE_SETTINGS_MTP") == "1":
+            print("qwen3.8-27b-4bit       rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX  15.2 GB")
         # Cached, so the Images tab resolves to it without a download path —
         # ``ImageGenViewModel.resolveAlias`` prefers a cached entry.
         print(f"{FAKE_IMAGE_ALIAS}       {FAKE_IMAGE_REPO}  4.6 GB")
@@ -957,6 +1018,7 @@ def _emit_catalog(subcommand, alias):
             "fake-video-alias": "fake/video-mlx",
             "fake-qwen3-tts": "fake/qwen3-tts",
             "fake-whisper-small": "fake/whisper-small",
+            "qwen3.8-27b-4bit": "rapid-mlx/Qwen3.8-27B-4bit-MTP-MLX",
         }.get(alias, FAKE_REPO)
         print(f"Alias: {alias} -> {repo}")
         return True

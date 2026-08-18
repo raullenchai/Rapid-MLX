@@ -330,6 +330,13 @@ class TestEngineForwarding:
         eng.transcribe(str(wav), timestamp_granularities=["segment"])
         assert "word_timestamps" not in eng.model.seen_kwargs
 
+    def test_whisper_uses_deterministic_greedy_decode(self, tmp_path):
+        eng = self._make_engine("mlx-community/whisper-large-v3-turbo")
+        wav = tmp_path / "a.wav"
+        wav.write_bytes(_make_tone_wav())
+        eng.transcribe(str(wav))
+        assert eng.model.seen_kwargs["temperature"] == 0.0
+
     def test_parakeet_never_gets_word_timestamps(self, tmp_path):
         # Parakeet's generate() has no word_timestamps kwarg; forwarding it
         # would raise. The engine must omit it even when word is requested.

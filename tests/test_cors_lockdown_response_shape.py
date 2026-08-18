@@ -102,6 +102,11 @@ def test_disallowed_origin_preflight_is_200_not_400(
         f"got {r.text!r}. If the body is intentionally being changed, "
         f"update the comment in ``_SpecAlignedCORSMiddleware.preflight_response``."
     )
+    assert r.headers.get("content-length") == str(len(r.content)), (
+        "The replacement response must describe its own body length; carrying "
+        "Starlette's rejected-preflight Content-Length truncates the response "
+        "on the wire for curl and strict HTTP clients."
+    )
 
 
 def test_disallowed_origin_preflight_omits_acao(

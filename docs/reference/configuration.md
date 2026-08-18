@@ -207,6 +207,15 @@ Pair each head with a base of the same size class: `Qwen3.6-27B-MTP-4bit`
 with a `qwen3.6-27b-*` base, and `Qwen3.6-35B-A3B-MTP-4bit` with a
 `qwen3.6-35b-*` base.
 
+Sidecar/base precision pairing effects are model-dependent: benchmark your
+pairing. On Qwen3.6
+([#1258](https://github.com/raullenchai/Rapid-MLX/issues/1258)), matched 4/4
+improved throughput by 14% while mixed 8/4 reduced it by 8% versus no
+speculation. On Qwen3.8-27B (M5 Max measurements in
+[#1216](https://github.com/raullenchai/Rapid-MLX/pull/1216)) the economics
+invert: mixed 8/4 gained 35-65% while matched 4/4 was roughly break-even,
+because an expensive base leaves more room for a cheap drafter.
+
 ### MCP Options
 
 | Option | Description | Default |

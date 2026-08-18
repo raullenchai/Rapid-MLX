@@ -7,7 +7,8 @@ name: Auto-release on version bump
 #
 # Flow:  detect (hosted)  →  tier1-agent-gate (self-hosted Studio)  →  release
 # The release job ``needs`` the gate, so a version bump cannot tag or publish
-# unless the four Tier-1 agents (Claude Code / Codex / Hermes / Aider) re-verify
+# unless the five Tier-1 agents (Claude Code / Codex / Hermes / Aider /
+# DeepSeek Harness) re-verify
 # green against the exact source being released. Mirrors Apple MLX's
 # ``publish needs: test_wheel``.
 #
@@ -158,7 +159,7 @@ jobs:
   #    GitHub-hosted runners have no Metal, no weights, no agent binaries, so
   #    this is the one release check CI can't do elsewhere. Builds the EXACT
   #    source being released into a fresh venv (it isn't on PyPI yet) and
-  #    re-verifies the four Tier-1 agents end-to-end. A failure here blocks the
+  #    re-verifies the five Tier-1 agents end-to-end. A failure here blocks the
   #    release job below. Skipped for an emergency forced release.
   #
   #    SECURITY: this self-hosted job runs only on push to the protected main
@@ -168,20 +169,28 @@ jobs:
     needs: detect
     if: needs.detect.outputs.should_release == 'true' && needs.detect.outputs.force != 'true'
     runs-on: [self-hosted, macOS, rapidmlx-studio]
-    # 90, not 55: the four Tier-1 agents run SERIALLY against a 35B hybrid, each
-    # with retries and a per-agent budget. Worst case = claude+codex+aider at
-    # 2x480s each (2880s) + hermes at 3x600s (1800s) = 4680s ~= 78 min. On a cold
-    # Studio shader cache the first large-context request of each agent also pays
-    # a one-time Metal-kernel compile. 55 min guillotined the run mid-agent (the
-    # job was "cancelled" before any RESULT could print). The step warms kernels
+    # 90, not 55: the Tier-1 agents run SERIALLY against a 35B hybrid, each
+    # with retries and a per-agent budget. On a cold Studio shader cache the
+    # first large-context request of each agent also pays a one-time
+    # Metal-kernel compile. 55 min guillotined the run mid-agent (the job was
+    # "cancelled" before any RESULT could print). The step warms kernels
     # untimed up front (hard-bounded to ~10 min) so the healthy path finishes in
-    # minutes; 90 min is headroom so a slow-but-passing cold run reaches a verdict
-    # instead of being killed. A genuine hang still fails on the per-agent budgets.
+    # minutes; the cap is headroom so a slow-but-passing cold run reaches a
+    # verdict instead of being killed. A genuine hang still fails on the
+    # per-agent budgets.
     # 105, not 90: the coherence golden + perf measurement now run after the
-    # four agents on the same warm serve. They are minutes on a healthy run,
-    # but they stack on top of the ~78 min worst case above, and a run where
-    # every check PASSES near its own budget must not be guillotined.
-    timeout-minutes: 105
+    # agents on the same warm serve. They are minutes on a healthy run, but
+    # they stack on top of the agent worst case, and a run where every check
+    # PASSES near its own budget must not be guillotined.
+    # 125, not 105: DeepSeek Harness joined as the FIFTH Tier-1 agent, so the
+    # worst case grows by one more 2x480s agent. Recomputed:
+    # claude+codex+aider+dsh at 2x480s each (3840s) + hermes at 3x600s (1800s)
+    # = 5640s ~= 94 min, versus ~78 min for four. Keeping the same ~27 min of
+    # extras/cold-compile headroom that took 78 -> 105 gives 94 + 27 ~= 121,
+    # rounded to 125. Measured on the Studio, dsh solves the task in 17-64s
+    # (warm/cold) — the budget is for the pathological retry path, not the
+    # expected one.
+    timeout-minutes: 125
     # Serialize with the manual agent-gate.yml so two runs never contend for the
     # single runner / the serve port.
     concurrency:

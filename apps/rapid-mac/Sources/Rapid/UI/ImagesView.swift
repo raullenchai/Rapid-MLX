@@ -675,7 +675,7 @@ struct ImagesView: View {
     private var starters: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
-                ForEach(ImageGenViewModel.starters, id: \.self) { starter in
+                ForEach(Array(ImageGenViewModel.starters.enumerated()), id: \.offset) { index, starter in
                     Button {
                         viewModel.use(starter: starter)
                     } label: {
@@ -689,7 +689,7 @@ struct ImagesView: View {
                             .overlay(Capsule().stroke(RapidTheme.hairline, lineWidth: 1))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityIdentifier("Images.Starter")
+                    .accessibilityIdentifier("Images.Starter.\(index)")
                 }
             }
         }
@@ -719,7 +719,6 @@ struct ImagesView: View {
                 .accessibilityAddTraits(on ? .isSelected : [])
             }
         }
-        .accessibilityIdentifier("Images.Aspect")
     }
 
     /// Output dimensions are explicit rather than hidden inside the aspect

@@ -69,16 +69,18 @@ struct SectionHeader: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            // Keep the heading text as one rotor destination, but do not fold
+            // trailing buttons/toggles into it. Combining the whole HStack
+            // made visually separate accessories (for example Copy and Save)
+            // one unpressable AXHeading.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             if accessory != nil {
                 Spacer(minLength: RapidTheme.Space.sm)
                 accessory
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // One AX element per heading, announced with the heading trait
-        // so VoiceOver's rotor can jump between sections.
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder

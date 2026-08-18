@@ -579,10 +579,15 @@ jobs:
           # The GitHub Release does not exist yet — it is created only once this
           # manifest is live (see publish-updater-fallback), so a failure here
           # can no longer leave a published release pointing at a stale updater
-          # manifest (#1851). Both fields the release API used to supply are
-          # derivable without it: the release page URL is a pure function of the
-          # tag, and the notes are the same bytes the release is created from.
-          HTML_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          # manifest (#1851). The notes are the same bytes the release is
+          # created from, so they need no release API call either.
+          #
+          # html_url is the link an installed app offers when it cannot install
+          # for the user. It must NOT be the release page on this repo: the repo
+          # is private, so that URL 404s for every end user — which is exactly
+          # what shipped until now. Point it at the public download page, the
+          # same value the landing Worker serves for the other feed.
+          HTML_URL="https://rapidmlx.com/desktop"
           NOTES_FILE="notes/release-notes.md"
           [[ -s "$NOTES_FILE" ]] || { echo "::error::missing $NOTES_FILE"; exit 1; }
           # published_at is the moment the release becomes fetchable, which is

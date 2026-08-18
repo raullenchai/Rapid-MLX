@@ -103,3 +103,35 @@ async def test_process_loop_failure_unblocks_every_inflight_request() -> None:
     assert not scheduler._detokenizer_pool
     assert not scheduler._pending_abort_ids
     assert not scheduler._aborted_queue_ids
+
+
+def test_scheduler_step_does_not_turn_internal_failure_into_fake_success() -> None:
+    """A model/runtime error must terminate as an error without leaking details."""
+    scheduler = MLLMScheduler.__new__(MLLMScheduler)
+    request = MLLMRequest(request_id="runtime-failure", prompt="hello")
+    scheduler.requests = {request.request_id: request}
+    scheduler.waiting = __import__("collections").deque()
+    scheduler.running = {request.request_id: request}
+    scheduler.request_id_to_uid = {request.request_id: 42}
+    scheduler.uid_to_request_id = {42: request.request_id}
+    scheduler.finished_req_ids = set()
+    scheduler._detokenizer_pool = {}
+    scheduler._pending_abort_ids = set()
+    scheduler._aborted_queue_ids = set()
+    scheduler.batch_generator = MagicMock()
+    scheduler.batch_generator.next.side_effect = RuntimeError(
+        "private runtime detail: /Users/example/model"
+    )
+    scheduler._process_pending_aborts = MagicMock()
+    scheduler._schedule_waiting = MagicMock(return_value=[])
+
+    output = scheduler._step_no_queue()
+
+    assert output.finished_request_ids == {request.request_id}
+    assert len(output.outputs) == 1
+    terminal = output.outputs[0]
+    assert terminal.finished is True
+    assert terminal.finish_reason == "length"
+    assert terminal.error == "MLLM inference failed due to an internal engine error"
+    assert "/Users/example" not in terminal.error
+    scheduler.batch_generator.remove.assert_called_once_with([42])

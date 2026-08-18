@@ -166,7 +166,17 @@ struct ContentView: View {
         .onChange(of: server.state) { _, newState in
             // Sync the picker breadcrumb when the server lands in
             // ``.ready(<alias>)`` against a different alias than shown.
-            if case .ready(let serving) = newState, !serving.isEmpty, serving != alias {
+            if case .ready(let serving) = newState,
+               !serving.isEmpty,
+               serving != alias,
+               ContentView.shouldSyncChatAlias(
+                   serving: serving,
+                   catalogEntries: catalogEntries,
+                   knownMediaAliases: Set(
+                       audio.audioModels.map(\.alias) + imageGen.imageModels.map(\.alias)
+                   ),
+                   section: section
+               ) {
                 alias = serving
             }
             // Retire pending-Ready provenance the moment the app serves some
@@ -725,6 +735,24 @@ struct ContentView: View {
         section == .chat
     }
 
+    /// A process-wide server transition must not overwrite the Chat model
+    /// selection when Audio, Images, or Video starts its own resident model.
+    /// Unknown aliases remain eligible because custom text model ids are not
+    /// necessarily present in the catalog snapshot.
+    static func shouldSyncChatAlias(
+        serving: String,
+        catalogEntries: [ModelEntry],
+        knownMediaAliases: Set<String> = [],
+        section: SidebarSection
+    ) -> Bool {
+        guard section == .chat else { return false }
+        guard !knownMediaAliases.contains(serving) else { return false }
+        guard let entry = catalogEntries.first(where: { $0.alias == serving }) else {
+            return true
+        }
+        return entry.kind == .chat
+    }
+
     /// True when the Quickstart sheet is up AND owns the pending
     /// memory-warning decision (#1503) — it renders its own in-sheet copy,
     /// so this parent-anchored (and sheet-covered) alert must stand down to
@@ -889,6 +917,43 @@ struct ContentView: View {
 
     // MARK: - Status footer
 
+    /// The footer's right-hand readouts, widest arrangement first.
+    ///
+    /// ``ViewThatFits`` picks the first that does not overflow, so this is an
+    /// ordering of what to give up rather than a set of width breakpoints —
+    /// no magic numbers to re-tune when a chip's text changes length.
+    ///
+    /// What may be dropped follows the rule ``settingsContentIsCompact``
+    /// already states for Settings: shed readouts, never controls. The gear,
+    /// the log toggle and ``DesktopVersionPill`` are buttons — the version
+    /// pill routes to Settings → App — so all three survive every width and
+    /// sit outside this group. Everything inside is a number you read.
+    ///
+    /// The ambient system probes go first: CPU, GPU and memory describe the
+    /// Mac, not this app's work. Throughput goes next. ``ServerStatusPill``
+    /// is last because "is a model running" is the one piece of state the
+    /// rest of the footer is meaningless without — and even it is redundant
+    /// in the narrowest case, where ``ReadinessBanner`` is saying the same
+    /// thing in a full sentence directly above.
+    @ViewBuilder
+    private var footerReadouts: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                ServerStatusPill(state: server.state)
+                TokensPerSecondPill(messages: { chat.messages })
+                CPUPill()
+                GPUPill()
+                MemoryPill()
+            }
+            HStack(spacing: 8) {
+                ServerStatusPill(state: server.state)
+                TokensPerSecondPill(messages: { chat.messages })
+            }
+            ServerStatusPill(state: server.state)
+            EmptyView()
+        }
+    }
+
     private var statusFooter: some View {
         HStack(spacing: 8) {
             SettingsGearButton()
@@ -905,12 +970,8 @@ struct ContentView: View {
             .help(showLogs ? "Hide logs" : "Show logs")
             .accessibilityLabel(showLogs ? "Hide logs" : "Show logs")
             .accessibilityIdentifier("ContentView.ToggleLogs")
-            Spacer()
-            ServerStatusPill(state: server.state)
-            TokensPerSecondPill(messages: { chat.messages })
-            CPUPill()
-            GPUPill()
-            MemoryPill()
+            Spacer(minLength: 8)
+            footerReadouts
             DesktopVersionPill(updater: updater)
         }
         .padding(.horizontal, 14)
@@ -1427,6 +1488,13 @@ struct DesktopVersionPill: View {
                 label
             }
             .scaledSystemFont(11)
+            // One line, always. Without this the label wraps under
+            // compression — in a narrow window it became a five-line green
+            // block — and, worse, a view that wraps reports that it fits at
+            // any width, so the footer's ``ViewThatFits`` could never tell
+            // that the row had run out of room.
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(

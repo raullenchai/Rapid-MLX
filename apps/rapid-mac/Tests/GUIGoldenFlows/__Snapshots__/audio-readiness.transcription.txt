@@ -8,6 +8,13 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
+          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXGroup id="Audio.Mode" desc="Audio mode" enabled=true
@@ -24,6 +31,8 @@ AXApplication title="Rapid-MLX"
               AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Download & start" enabled=true
+            AXGroup enabled=true
+              AXStaticText value=text enabled=true
             AXButton id="Audio.Transcription.Run" desc="Transcribe" enabled=false
       AXImage id="checkmark.circle.fill" desc="Selected" enabled=true
       AXStaticText value=text enabled=true

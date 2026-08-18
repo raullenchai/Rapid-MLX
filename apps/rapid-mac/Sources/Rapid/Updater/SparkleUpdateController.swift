@@ -5,10 +5,12 @@ import Sparkle
 /// Owns Sparkle's updater lifecycle for signed production builds.
 ///
 /// The source Info.plist deliberately has no `SUPublicEDKey`; build.sh injects
-/// it for release builds. When the key is absent (normal local development),
-/// this controller stays disabled and callers use the legacy manifest/DMG
-/// updater. This also gives already-installed clients a migration bridge
-/// instead of requiring both update systems to change in one release.
+/// it for release builds. When the key is absent (normal local development)
+/// this controller stays disabled and every method here is a silent no-op —
+/// there is no in-app fallback installer to hand off to any more. Callers must
+/// therefore offer something else in the disabled state (Settings → App falls
+/// back to a link to the release page) rather than a control that does
+/// nothing.
 @MainActor
 @Observable
 final class SparkleUpdateController {

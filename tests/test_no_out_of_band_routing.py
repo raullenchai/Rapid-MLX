@@ -136,6 +136,22 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # fires, which tier engages — none of that changes. Default off
         # keeps the load bit-faithful to the published weights.
         "RAPID_MLX_FP8_LM_HEAD_AFFINE8",
+        # Prompt-lookup speculation knobs for the MTP draft path (#1969).
+        # Same shape as DISABLE_FUSED_SAMPLER: they tune a speculation
+        # fast path on an ALREADY-SELECTED model. Which checkpoint loads,
+        # which parser fires, which tier engages — none of that changes,
+        # and prompt-copy drafts are verified against the target model, so
+        # these cannot alter emitted tokens either. Read only by
+        # ``vllm_mlx.spec_decode.mtp.generator``.
+        #
+        # ``RAPID_MLX_MTP_PROMPT_LOOKUP`` is the explicit opt-in (default
+        # OFF) held until Qwen's hybrid SSM target path is proven
+        # token-lossless across verification chunk boundaries; the other
+        # three size the n-gram match window.
+        "RAPID_MLX_MTP_PROMPT_LOOKUP",
+        "RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS",
+        "RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM",
+        "RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM",
         # Test/integration helpers — server URL for integration suites,
         # not consulted at runtime by the engine.
         "RAPID_MLX_BASE_URL",
@@ -1044,6 +1060,18 @@ def _check_env_constant(
                 "external-model discovery/resolution boundary."
             )
         return
+    if value == "RAPID_MLX_USER_ALIASES_FILE":
+        # Narrow test-isolation/config-location exception for user aliases.
+        # The file's CONTENT can affect alias resolution, so this is not a
+        # general non-routing allowlist entry: only the persistence module may
+        # read the override. Any engine/router consumer is a new hidden routing
+        # surface and must fail this gate.
+        if rel != "user_aliases.py":
+            offenders.append(
+                f"{rel}:{lineno} references `{value}` outside the approved "
+                "user-alias persistence boundary."
+            )
+        return
     if value in ALLOWED_RAPID_MLX_ENV_VARS:
         return
     if ENV_VAR_ROUTING_PATTERN.match(value):
@@ -1351,6 +1379,9 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             "suffix_decoding_tier",  # one of VALID_SUFFIX_TIERS — non-routing data
             "dflash_draft_model",  # HF path for the spec-decode drafter
             "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
+            "mtp_draft_model",  # HF 'org/repo' path for the MTP drafter (#1987);
+            # validated as non-empty org/repo at JSON load in model_aliases.py,
+            # open-ended like the other *_draft_model paths, not a routing enum
             # PFlash long-prompt compression eligibility (#287). One of
             # VALID_PFLASH_TIERS ({"unknown", "verified"}). It IS a
             # routing decision in the sense that it flips the engine's

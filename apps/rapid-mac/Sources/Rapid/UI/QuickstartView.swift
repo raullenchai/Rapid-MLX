@@ -752,7 +752,7 @@ Open the picker any time to switch models.
     /// falls), in-memory flag lost, welcome permanently skipped.
     private(set) var awaitingWelcomeSeed: Bool {
         didSet {
-            UserDefaults.standard.set(awaitingWelcomeSeed, forKey: Self.awaitingSeedKey)
+            defaults.set(awaitingWelcomeSeed, forKey: Self.awaitingSeedKey)
             // #1524: pin the alias the deferred seed is waiting on. Before
             // #1524 every comparison used the single pinned static, so a
             // quit-mid-flow relaunch trivially matched. Now the live
@@ -764,9 +764,9 @@ Open the picker any time to switch models.
             // against the model that was actually in flight, so a
             // non-default pick's welcome message survives the relaunch.
             if awaitingWelcomeSeed {
-                UserDefaults.standard.set(selection.alias, forKey: Self.awaitingSeedAliasKey)
+                defaults.set(selection.alias, forKey: Self.awaitingSeedAliasKey)
             } else {
-                UserDefaults.standard.removeObject(forKey: Self.awaitingSeedAliasKey)
+                defaults.removeObject(forKey: Self.awaitingSeedAliasKey)
             }
         }
     }
@@ -840,7 +840,7 @@ Open the picker any time to switch models.
     static let setupBegunKey: String = "rapid.quickstart.v1.setupBegun"
 
     private(set) var setupBegun: Bool {
-        didSet { UserDefaults.standard.set(setupBegun, forKey: Self.setupBegunKey) }
+        didSet { defaults.set(setupBegun, forKey: Self.setupBegunKey) }
     }
 
     /// Whether the welcome screen is greeting a returning, unfinished setup
@@ -855,9 +855,9 @@ Open the picker any time to switch models.
     private(set) var pendingReadyAlias: String? {
         didSet {
             if let pendingReadyAlias {
-                UserDefaults.standard.set(pendingReadyAlias, forKey: Self.pendingReadyAliasKey)
+                defaults.set(pendingReadyAlias, forKey: Self.pendingReadyAliasKey)
             } else {
-                UserDefaults.standard.removeObject(forKey: Self.pendingReadyAliasKey)
+                defaults.removeObject(forKey: Self.pendingReadyAliasKey)
             }
         }
     }
@@ -865,26 +865,33 @@ Open the picker any time to switch models.
     /// True while an unconfirmed Ready flow is on the books.
     var hasPendingReady: Bool { pendingReadyAlias != nil }
 
-    init() {
-        self.done = UserDefaults.standard.bool(forKey: Self.storageKey)
-        self.legacyDone = UserDefaults.standard.bool(forKey: Self.legacyStorageKey)
+    /// Injectable so tests validate erasure against a scratch suite instead
+    /// of mutating the developer's real ``defaults`` when they
+    /// run the suite (#1973). Defaults to ``.standard`` — production is
+    /// unchanged.
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        self.done = defaults.bool(forKey: Self.storageKey)
+        self.legacyDone = defaults.bool(forKey: Self.legacyStorageKey)
         // History only. Nothing below reconstructs a phase, a selection or a
         // job from it — a relaunch always starts at ``.idle``, which is what
         // makes "never restore a fake active transfer" true by construction
         // rather than by remembering to avoid it.
-        self.setupBegun = UserDefaults.standard.bool(forKey: Self.setupBegunKey)
+        self.setupBegun = defaults.bool(forKey: Self.setupBegunKey)
         // Codex r5: read the persisted awaiting-seed flag so a
         // quit-mid-deferred-flow relaunch can resume the welcome
         // injection once an active session lands. (Assigning a stored
         // property in ``init`` does NOT trigger the didSet, so this read
         // can't clobber the persisted alias below.)
-        self.awaitingWelcomeSeed = UserDefaults.standard.bool(forKey: Self.awaitingSeedKey)
-        self.pendingReadyAlias = UserDefaults.standard.string(forKey: Self.pendingReadyAliasKey)
+        self.awaitingWelcomeSeed = defaults.bool(forKey: Self.awaitingSeedKey)
+        self.pendingReadyAlias = defaults.string(forKey: Self.pendingReadyAliasKey)
         // #1524: if a deferred seed survived a quit, restore the model it
         // was waiting on so the seed observers match the served alias and
         // the welcome copy names the right model (not the reset default).
         if self.awaitingWelcomeSeed,
-           let alias = UserDefaults.standard.string(forKey: Self.awaitingSeedAliasKey) {
+           let alias = defaults.string(forKey: Self.awaitingSeedAliasKey) {
             self.selection = Self.choice(forAlias: alias)
         }
         // An unconfirmed Ready flow restores its model and drops the user
@@ -925,7 +932,7 @@ Open the picker any time to switch models.
     /// in-memory mirror. Idempotent.
     func markDone() {
         done = true
-        UserDefaults.standard.set(true, forKey: Self.storageKey)
+        defaults.set(true, forKey: Self.storageKey)
         // Setup is finished, so there is no unfinished setup to resume.
         // Retired rather than left set: ``isResumingIncompleteSetup`` already
         // guards on ``done``, but a stale true here would come back to life if
@@ -934,11 +941,18 @@ Open the picker any time to switch models.
         setupBegun = false
     }
 
-    /// Test-only reset so the suite can drive the state machine from
-    /// scratch in every case without leaking flag state across runs.
-    /// NOT exposed in any production UI; the design contract is that
-    /// Quickstart is one-shot per Mac.
-    internal func _testingReset() {
+    /// Put the wizard back to the state a Mac has before it has ever run.
+    ///
+    /// Quickstart is one-shot per Mac by design, and no shipping UI offers a
+    /// way back — the only callers are the test suite, ``DevSnapshot``, and
+    /// the debug-only Settings → Developer panel, which exists so that flow
+    /// can be rehearsed without faking `$HOME`.
+    ///
+    /// This does NOT clear `rapid.serve.lastAlias`, which gates the wizard
+    /// independently of these flags (see ``isEligible``). Callers wanting a
+    /// true first-run state must stop the server too; ``ReonboardingReset``
+    /// does exactly that.
+    internal func resetForReonboarding() {
         done = false
         phase = .idle
         stage = .welcome
@@ -952,13 +966,32 @@ Open the picker any time to switch models.
         hasSeededWelcome = false
         awaitingWelcomeSeed = false
         pendingReadyAlias = nil
+        // Union of both sides of the #1946 merge, not either one: each
+        // cleared a flag the other did not, and dropping either leaves the
+        // reset silently incomplete.
         setupBegun = false
-        UserDefaults.standard.removeObject(forKey: Self.setupBegunKey)
-        UserDefaults.standard.removeObject(forKey: Self.storageKey)
-        UserDefaults.standard.removeObject(forKey: Self.awaitingSeedKey)
-        UserDefaults.standard.removeObject(forKey: Self.awaitingSeedAliasKey)
-        UserDefaults.standard.removeObject(forKey: Self.pendingReadyAliasKey)
+        // #1946's resume marker. Without this the relaunch this reset
+        // triggers greets the user with "Continue setup" — the exact
+        // untruthful state that PR exists to remove.
+        defaults.removeObject(forKey: Self.setupBegunKey)
+        defaults.removeObject(forKey: Self.storageKey)
+        // Clear the legacy v1 flag too. A user upgraded from a build that
+        // wrote ``rapid.quickstart.v1.done`` would otherwise relaunch reading
+        // ``legacyDone == true``, which ``onboardingOwed`` treats as "already
+        // onboarded" and suppresses Quickstart — silently defeating the reset
+        // unless "erase all settings" was also chosen (#1973). ``legacyDone``
+        // is a launch-time ``let``, so removing the key is what takes effect
+        // on the relaunch this reset triggers.
+        defaults.removeObject(forKey: Self.legacyStorageKey)
+        defaults.removeObject(forKey: Self.awaitingSeedKey)
+        defaults.removeObject(forKey: Self.awaitingSeedAliasKey)
+        defaults.removeObject(forKey: Self.pendingReadyAliasKey)
     }
+
+    /// The name 44 call sites in the suite and ``DevSnapshot`` already use.
+    /// Kept as an alias rather than renamed at every site, so this change
+    /// stays reviewable as "the reset grew a second caller".
+    internal func _testingReset() { resetForReonboarding() }
 
     /// Drop the record of an unconfirmed Ready flow. Idempotent.
     func clearPendingReady() {
@@ -1813,10 +1846,15 @@ struct QuickstartView: View {
                         shortlistHeading("OR PICK A BIGGER ONE")
                         VStack(spacing: 9) {
                             ForEach(list.tradeUps) { choice in
+                                let cached = Self.cachedModel(
+                                    alias: choice.alias,
+                                    cachedModels: cachedModels
+                                )
                                 QuickstartCompactCard(
                                     choice: choice,
                                     selected: coordinator.selection.alias == choice.alias,
-                                    sizeText: Self.sizeText(for: choice),
+                                    sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
+                                    isCached: cached != nil,
                                     onActivate: { activatePrimary(in: .shortlist) }
                                 ) { coordinator.select(choice) }
                             }

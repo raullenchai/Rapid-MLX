@@ -1359,6 +1359,7 @@ def test_inject_mtp_support_attaches_four_surfaces():
     injected = inject_mtp_support(model, allow_random_init=True)
     assert injected is True
     assert validate_mtp_support(model) is True
+    assert model.mtp_prompt_lookup_supported is True
 
 
 def test_inject_mtp_support_rejects_non_qwen35_model():
@@ -1630,6 +1631,35 @@ def test_infer_sidecar_fc_quantization_full_precision_returns_none():
     flat = dict(tree_flatten(fp.parameters()))
     assert "fc.scales" not in flat
     assert _infer_sidecar_fc_quantization(flat, fc_out_dims, fc_in_dims) is None
+
+
+def test_mtp_quantization_pairing_warning_for_mismatch_only(caplog):
+    """Known mixed precision warns once; a matched pairing stays silent."""
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _warn_if_mtp_quantization_mismatch,
+    )
+
+    logger_name = "vllm_mlx.spec_decode.mtp.qwen3_5_inject"
+    with caplog.at_level("WARNING", logger=logger_name):
+        _warn_if_mtp_quantization_mismatch(
+            {"bits": 8, "group_size": 64},
+            {"bits": 4, "group_size": 64},
+        )
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "[mtp.inject] MTP sidecar quantization (4-bit, group_size=64) "
+        "differs from base model (8-bit, group_size=64): pairing effects "
+        "are model-dependent: slower than no speculation on Qwen3.6 "
+        "(#1258), faster on Qwen3.8-27B. Benchmark your pairing."
+    ]
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=logger_name):
+        _warn_if_mtp_quantization_mismatch(
+            {"bits": 4, "group_size": 64},
+            {"bits": 4, "group_size": 64},
+        )
+    assert caplog.records == []
 
 
 def test_infer_sidecar_fc_quantization_raises_on_malformed_packing():
@@ -2310,6 +2340,8 @@ class _CountingKVCache:
 class _CacheAdvancingQwen35Model(_MockedQwen35Model):
     """Mock that advances supplied cache doubles on each forward."""
 
+    mtp_prompt_lookup_supported = True
+
     def __init__(self, backbone_outputs: list[int], mtp_outputs: list[int]):
         super().__init__(backbone_outputs, mtp_outputs)
         self.layers = [object()]
@@ -2396,6 +2428,122 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     assert snap.attempts == 1
     assert snap.accepts == 1
     assert snap.tokens_saved == 1
+
+
+def test_prompt_lookup_point_mass_residual_removes_proposed_token():
+    from vllm_mlx.spec_decode.mtp.generator import (
+        _point_mass_residual_distribution,
+    )
+
+    target = mx.array([[0.6, 0.3, 0.1], [0.2, 0.5, 0.3]])
+    actual = _point_mass_residual_distribution(
+        mx.log(target), mx.array([0, 1], dtype=mx.int32)
+    )
+    expected = mx.array([[0.0, 0.75, 0.25], [0.4, 0.0, 0.6]])
+    mx.eval(actual)
+    assert bool(mx.allclose(actual, expected, atol=1e-6).item())
+
+
+def test_generator_fixed_k3_accepts_three_drafts_in_one_verify():
+    """Fixed-depth mode must honor max_k=3 instead of silently using K=1."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    counter = MTPAcceptCounter()
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            _MockedQwen35Model([7, 11, 12, 13, 14], [11, 12, 13]),
+            max_tokens=4,
+            max_k=3,
+            disable_auto_k=True,
+            accept_counter=counter,
+        )
+    )
+
+    assert [(tok, draft) for tok, _lp, draft in emitted] == [
+        (7, False),
+        (11, True),
+        (12, True),
+        (13, True),
+    ]
+    snap = counter.snapshot()
+    assert snap.attempts == 3
+    assert snap.accepts == 3
+
+
+def test_quantized_argmax_matches_materialized_qlinear_logits():
+    """The fused greedy kernel must select the exact qlinear argmax."""
+    import mlx.nn as nn
+
+    from vllm_mlx.spec_decode.mtp.quantized_argmax import quantized_argmax
+
+    dense = nn.Linear(1024, 4096, bias=False)
+    dense.set_dtype(mx.bfloat16)
+    head = nn.QuantizedLinear.from_linear(dense, group_size=64, bits=4)
+    hidden = mx.random.normal((1, 3, 1024)).astype(mx.bfloat16)
+
+    fused = quantized_argmax(head, hidden)
+    reference = mx.argmax(head(hidden), axis=-1)
+    assert fused is not None
+    mx.eval(fused, reference)
+    assert fused.tolist() == reference.tolist()
+
+
+def test_generator_k3_restores_ssm_state_at_partial_accept_boundary():
+    """Rejecting draft 2 restores GDN state after y + accepted draft 1."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    class SnapshotSSMCache:
+        rollback_state = None
+
+        def __init__(self):
+            self.cache = [mx.array([0]), mx.array([0])]
+
+        def __getitem__(self, idx):
+            return self.cache[idx]
+
+        def __setitem__(self, idx, value):
+            self.cache[idx] = value
+
+        def is_trimmable(self):
+            return False
+
+    class SnapshotModel(_MockedQwen35Model):
+        def __init__(self):
+            super().__init__([7, 11, 12, 13, 14], [11, 99, 13])
+            self.layers = [object()]
+
+        def __call__(self, inputs, cache=None, **kwargs):
+            result = super().__call__(inputs, cache=cache, **kwargs)
+            if cache and inputs.shape[1] > 2:
+                c = cache[0]
+                c.rollback_state = [
+                    (mx.array([101 + i]), mx.array([201 + i]))
+                    for i in range(inputs.shape[1] - 1)
+                ]
+                c[0], c[1] = mx.array([999]), mx.array([999])
+            return result
+
+    ssm = SnapshotSSMCache()
+    emitted = list(
+        mtp_generate_step(
+            mx.array([1], dtype=mx.uint32),
+            SnapshotModel(),
+            prompt_cache=[ssm],
+            max_tokens=3,
+            max_k=3,
+            disable_auto_k=True,
+            accept_counter=MTPAcceptCounter(),
+        )
+    )
+
+    assert [tok for tok, _lp, _draft in emitted] == [7, 11, 12]
+    # keep=2 positions (y + one accepted draft) selects snapshot index 1.
+    assert ssm[0].item() == 102
+    assert ssm[1].item() == 202
+    assert ssm.rollback_state is None
 
 
 def test_generator_rolls_back_verify_round_on_early_materialization_abort(
@@ -2494,6 +2642,134 @@ def test_generator_rejection_path_does_not_count_as_accept():
     assert snap.attempts == 1
     assert snap.accepts == 0
     assert snap.tokens_saved == 0
+
+
+def test_generator_prompt_lookup_verifies_prompt_continuation(monkeypatch):
+    """A prompt suffix match bypasses MTP drafting but still uses target verify."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+
+    # The length-4 prompt prefills three positions first. Decode then emits
+    # 7, rejects MTP's 99 in favour of target token 8, and finds prompt suffix
+    # [7, 8] -> [20, 21]. The copied block is accepted only because the target
+    # independently predicts 20 and 21; 22 is its ordinary bonus token.
+    model = _CacheAdvancingQwen35Model(
+        backbone_outputs=[0, 0, 0, 7, 8, 0, 20, 21, 22],
+        mtp_outputs=[0, 0, 0, 99, 0, 0],
+    )
+    model_cache = _CountingKVCache()
+    mtp_cache = _CountingKVCache()
+    timing: dict[str, float] = {}
+
+    emitted = list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            model,
+            max_tokens=5,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[model_cache, mtp_cache],
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert [(token, drafted) for token, _lp, drafted in emitted] == [
+        (7, False),
+        (8, False),
+        (20, True),
+        (21, True),
+        (22, False),
+    ]
+    assert timing["prompt_lookup_proposals"] == 1
+    assert timing["prompt_lookup_drafted_tokens"] == 2
+    assert timing["prompt_lookup_mtp_sync_seconds"] >= 0
+    # Three prefill positions + one ordinary draft + two lookup-history sync
+    # positions. Prompt lookup itself consumed no MTP proposal.
+    assert model._mtp_cursor == 6
+    assert model_cache.trim_calls == [1]
+    assert mtp_cache.trim_calls == [1]
+    assert mtp_cache.offset == 5
+
+
+def test_prompt_lookup_requires_an_audited_model_capability(monkeypatch):
+    """An env opt-in cannot force unaudited MTP backends into prompt lookup."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.spec_decode.mtp.generator import _prompt_lookup_is_enabled
+
+    monkeypatch.delenv("RAPID_MLX_MTP_PROMPT_LOOKUP", raising=False)
+    assert not _prompt_lookup_is_enabled(
+        SimpleNamespace(mtp_prompt_lookup_supported=True)
+    )
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    assert not _prompt_lookup_is_enabled(SimpleNamespace())
+    assert not _prompt_lookup_is_enabled(
+        SimpleNamespace(mtp_prompt_lookup_supported=False)
+    )
+    assert _prompt_lookup_is_enabled(SimpleNamespace(mtp_prompt_lookup_supported=True))
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "off")
+    assert not _prompt_lookup_is_enabled(
+        SimpleNamespace(mtp_prompt_lookup_supported=True)
+    )
+
+
+def test_generator_prompt_lookup_partial_reject_keeps_mtp_cache_aligned(
+    monkeypatch,
+):
+    """Only the accepted lookup prefix is appended to MTP history."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP", "1")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MIN_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_NGRAM", "2")
+    monkeypatch.setenv("RAPID_MLX_MTP_PROMPT_LOOKUP_MAX_TOKENS", "2")
+
+    model = _CacheAdvancingQwen35Model(
+        # Lookup proposes [20, 21]. Target accepts 20, rejects 21 as 19.
+        backbone_outputs=[0, 0, 0, 7, 8, 0, 20, 19, 22],
+        mtp_outputs=[0, 0, 0, 77, 0],
+    )
+    model_cache = _CountingKVCache()
+    mtp_cache = _CountingKVCache()
+    timing: dict[str, float] = {}
+
+    emitted = list(
+        mtp_generate_step(
+            mx.array([7, 8, 20, 21], dtype=mx.uint32),
+            model,
+            max_tokens=4,
+            max_k=1,
+            disable_auto_k=True,
+            prompt_cache=[model_cache, mtp_cache],
+            accept_counter=MTPAcceptCounter(),
+            timing_stats=timing,
+        )
+    )
+
+    assert [(token, drafted) for token, _lp, drafted in emitted] == [
+        (7, False),
+        (8, False),
+        (20, True),
+        (19, False),
+    ]
+    assert timing["prompt_lookup_accepted_tokens"] == 1
+    assert timing["prompt_lookup_rejections"] == 1
+    # Target drops the ordinary rejected draft and then lookup's unaccepted
+    # tail. MTP drops only its ordinary draft: lookup never speculatively
+    # advanced that cache, and appends exactly one accepted history position.
+    assert model_cache.trim_calls == [1, 1]
+    assert mtp_cache.trim_calls == [1]
+    assert mtp_cache.offset == 4
+    assert model._mtp_cursor == 5
 
 
 def test_generator_runs_with_int4_quantized_kv_cache_kwargs():
@@ -3068,31 +3344,74 @@ def test_mtp_controller_key_separates_sidecars():
     assert _mtp_controller_key("", "mlx-community/Head-A") is None
 
 
-def test_scheduler_config_model_name_is_the_last_field():
-    """``SchedulerConfig`` is constructed positionally by external
-    callers, so a field added mid-list silently rebinds every argument
-    after it. ``model_name`` must stay at the end.
-    """
+def test_scheduler_config_preserves_the_historical_positional_prefix():
+    """New fields append after, rather than shifting, the historical tail."""
     from vllm_mlx.scheduler import SchedulerConfig
 
     names = [f.name for f in dataclasses.fields(SchedulerConfig)]
-    assert names[-1] == "model_name", (
-        f"model_name must be the last field to preserve positional "
-        f"construction; it is at index {names.index('model_name')} of "
-        f"{len(names)}"
-    )
+    historical_prefix = [
+        "max_num_seqs",
+        "prefill_batch_size",
+        "completion_batch_size",
+        "prefill_step_size",
+        "enable_prefix_cache",
+        "prefix_cache_size",
+        "prefix_cache_index",
+        "use_memory_aware_cache",
+        "cache_memory_mb",
+        "cache_memory_percent",
+        "kv_cache_dtype",
+        "kv_cache_quantization",
+        "kv_cache_quantization_bits",
+        "kv_cache_quantization_group_size",
+        "kv_cache_min_quantize_tokens",
+        "kv_cache_turboquant",
+        "kv_cache_turboquant_bits",
+        "kv_cache_turboquant_group_size",
+        "kv_cache_turboquant_mode",
+        "kv_disk_checkpoint_interval",
+        "use_paged_cache",
+        "paged_cache_block_size",
+        "max_cache_blocks",
+        "hybrid_cache_entries",
+        "spec_decode",
+        "enable_mtp",
+        "mtp_num_draft_tokens",
+        "mtp_optimistic",
+        "dflash_drafter_path",
+        "enable_suffix_decoding",
+        "suffix_max_draft",
+        "suffix_max_suffix_len",
+        "suffix_min_confidence",
+        "suffix_min_draft_len",
+        "max_concurrent_requests",
+        "gpu_memory_utilization",
+        "metal_pressure_evict_fraction",
+        "metal_cap_kv_bytes_per_token",
+        "pflash_config",
+        "mtp_sidecar",
+        "mtp_model_type",
+        "mtp_max_k",
+        "mtp_disable_auto_k",
+        "response_cache_entries",
+        "non_trimmable_exact_prefix_reuse",
+        "dspark_num_speculative_tokens",
+        "adaptive_prefill",
+        "adaptive_prefill_min_tokens",
+        "adaptive_prefill_min_chunk_size",
+        "model_name",
+    ]
+    assert names[:50] == historical_prefix
+    assert names[49:] == ["model_name", "vision_min_pixels", "vision_max_pixels"]
 
 
 def test_fixed_k_observer_leaves_the_ceiling_to_whoever_selects_depth():
     """An observer-only fixed-K run must not fix ``max_k`` for later runs.
 
     The registry normally keeps whatever ceiling the FIRST caller set.
-    That makes an observer's ceiling a trap in both directions: seeding
-    the configured value (3 by default) would let a later auto-K run —
-    one an SSM cache forces to clamp to 1 — inherit 3 and select past its
-    clamp; seeding the 1 this mode can actually reach would cap a later
-    auto-K run at chain-of-1 forever. So the observer's ceiling is
-    provisional and the first selecting caller replaces it.
+    Fixed mode now exercises the configured K (including SSM-safe K=3),
+    but its ceiling remains provisional: the first selecting auto-K caller
+    may still replace it with its own configured ceiling.
     """
     from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
@@ -3119,11 +3438,11 @@ def test_fixed_k_observer_leaves_the_ceiling_to_whoever_selects_depth():
         # the ceiling this test is trying to observe.
         return get_or_create_controller("ceiling-model", max_k=99, authoritative=False)
 
-    # The observer only ever ran K in {0, 1}, and says so provisionally.
+    # Fixed mode really ran the configured K=3, but says so provisionally.
     ctrl = _observe_only(max_k=3)
-    assert ctrl.max_k == 1
+    assert ctrl.max_k == 3
     assert ctrl.ceiling_is_authoritative is False
-    assert ctrl.pick_k() <= 1
+    assert ctrl.pick_k() <= 3
 
     # A later auto-K run clamped to 1 (the SSM case) keeps 1.
     ctrl = _observe_only(max_k=3)

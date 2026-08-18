@@ -7,7 +7,7 @@ Rapid-MLX server on `http://localhost:8000` and a loaded model — the fixtures
 `skip` cells when no server is reachable, so a naïve `pytest tests/` still
 comes out green.
 
-## Two matrices — 11 agents + 3 frameworks × 6 families
+## Two matrices — 12 agents + 3 frameworks × 6 families
 
 0.10.2 PR-2 pilot expanded the matrices to the 0.10.2 **Tier-1 four
 families** (added DeepSeek V4) and the finalized **top-10** commercial /
@@ -103,6 +103,7 @@ for operator scope call in the PR body).
 | hermes-agent | `/v1/chat/completions` | `TestHermesAgent` (wire smoke via OpenAI SDK) | `test_hermes.py` (real 62-tool E2E) |
 | aider | shell subprocess → `/v1/chat/completions` | `TestAider` (**real bash-CLI harness** — drives aider one-shot with `--message`, asserts add.py corrected) | `test_aider.sh` (same harness, standalone) |
 | kilo-code | `/v1/chat/completions` | `TestKiloCode` (wire smoke via OpenAI SDK) | (matrix only) |
+| deepseek-harness | `/v1/chat/completions` | `TestDeepSeekHarness` (wire smoke via OpenAI SDK) | `agent_smoke.sh` (Tier-1 release gate — real `dsh` binary fixes a real bug, repo test suite must go green) |
 | copilot | `/v1/chat/completions` | `TestCopilot` (**wire smoke only** — real CLI needs `gh auth login`, deferred) | (subprocess cell deferred) |
 | droid | `/v1/chat/completions` | `TestDroid` (**wire smoke only** — real CLI needs Factory session token, deferred) | (subprocess cell deferred) |
 | kimi-code | `/v1/chat/completions` | `TestKimiCode` (**wire smoke only** — real CLI needs Moonshot auth flow, deferred) | (subprocess cell deferred) |
@@ -336,9 +337,22 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 | hermes-agent | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) | ✅ |
 | aider | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) | exp |
 | kilo-code | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) | ✅ |
+| deepseek-harness | ✅† | ✅ | XFAIL (arch) | ✅† | XFAIL (Ultra) | ✅ |
 | copilot | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) | ✅ |
 | droid | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) | ✅ |
 | kimi-code | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) | ✅ |
+
+† `deepseek-harness` joined the matrix on 2026-08-17. Its Qwen 3.6 and gpt-oss
+cells were run strict (`RAPID_MLX_MATRIX_STRICT=1`) against real weights that
+day — `qwen3.6-35b-8bit` and `gpt-oss-20b-MXFP4-Q8` respectively. The Gemma 4
+and Muse cells are recorded from the shared code path rather than an
+independent run: `TestDeepSeekHarness.test_smoke` is a one-line call to the
+same `_run_openai_tool_smoke` helper that backs `kilo-code`, `copilot`,
+`droid` and `kimi-code`, and the helper's only per-agent input is a label used
+in failure messages — so those columns measure the server's tool-call wire for
+the family, which those four identical cells already record. The next full
+matrix run resolves them for real; if any disagrees, this footnote is the bug
+report.
 
 ### Framework × Family matrix (3 × 6 = 18)
 

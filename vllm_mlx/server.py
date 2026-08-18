@@ -1063,6 +1063,13 @@ class _SpecAlignedCORSMiddleware(CORSMiddleware):
             lk = k.lower()
             if lk == "access-control-allow-origin":
                 continue
+            # The upstream 400 body is longer than our constant ``"OK"``.
+            # Carrying its Content-Length into PlainTextResponse makes the
+            # wire response claim bytes that never arrive: curl exits 18 and
+            # strict HTTP clients raise IncompleteRead. Let PlainTextResponse
+            # calculate the length of the replacement body instead.
+            if lk == "content-length":
+                continue
             if lk == "vary":
                 continue  # canonicalized below
             headers[k] = v

@@ -97,7 +97,11 @@ struct ConnectToolsView: View {
     /// resolved. Anything less and the snippets below would be a
     /// half-filled template.
     private var configReady: Bool {
-        port > 0 && !bearer.isEmpty && resolvedModel != nil
+        let selectedModelIsServing = readiness?.isReady ?? true
+        return port > 0
+            && !bearer.isEmpty
+            && resolvedModel != nil
+            && selectedModelIsServing
     }
 
     /// One concise sentence naming what is missing.

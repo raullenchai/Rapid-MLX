@@ -3777,6 +3777,7 @@ async def _disconnect_guard(
     keepalive_seconds: float | None = None,
     request_id_holder: list | None = None,
     keepalive_factory=None,
+    disconnect_state: list[bool] | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -3913,6 +3914,8 @@ async def _disconnect_guard(
                 **wait_kwargs,
             )
             if disconnect_task in done:
+                if disconnect_state is not None:
+                    disconnect_state[0] = True
                 logger.info(
                     f"[disconnect_guard] CLIENT DISCONNECTED after "
                     f"{chunk_count} chunks ({keepalive_count} keepalives), "
@@ -4075,7 +4078,27 @@ async def _disconnect_guard(
             # consumer has pulled this chunk. Do NOT eagerly schedule
             # the next ``__anext__`` here — see the docstring at loop
             # entry for the rationale (codex r3 BLOCKING).
+    except asyncio.CancelledError:
+        # Starlette cancels the StreamingResponse body task when the socket
+        # disappears.  On current uvicorn/anyio this is the common disconnect
+        # signal; neither ``Request.is_disconnected()`` nor ``GeneratorExit``
+        # is guaranteed to win the race first.  Publish the state before the
+        # finally block closes the upstream generator so route-level
+        # finalizers do not manufacture a terminal SSE frame for a dead
+        # connection.
+        if disconnect_state is not None:
+            disconnect_state[0] = True
+        logger.info(
+            f"[disconnect_guard] CancelledError after {chunk_count} chunks, "
+            f"elapsed={_elapsed()}"
+        )
+        if anext_task is not None and not anext_task.done():
+            anext_task.cancel()
+        _force_abort_request(engine, request_id_holder)
+        raise
     except GeneratorExit:
+        if disconnect_state is not None:
+            disconnect_state[0] = True
         logger.info(
             f"[disconnect_guard] GeneratorExit after {chunk_count} chunks, elapsed={_elapsed()}"
         )
@@ -4097,8 +4120,24 @@ async def _disconnect_guard(
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()
-        if anext_task and not anext_task.done():
-            anext_task.cancel()
+        if anext_task:
+            if not anext_task.done():
+                anext_task.cancel()
+            # Cancellation of the response task races the upstream async
+            # generator's own cancellation-to-exhaustion cleanup.  Always
+            # retrieve the terminal result: it may be CancelledError *or*
+            # StopAsyncIteration.  Leaving the latter on the task produces
+            # asyncio's noisy "Task exception was never retrieved" warning
+            # on the next GC cycle even though the request was handled.
+            try:
+                await anext_task
+            except (asyncio.CancelledError, StopAsyncIteration):
+                pass
+            except Exception:
+                # The streaming loop owns client-facing error translation.
+                # During teardown there is no live consumer, but retrieving
+                # the exception still prevents an orphan-task warning.
+                pass
         # Drive the cascade first: ``generator.aclose()`` propagates
         # ``GeneratorExit`` into the upstream so its ``finally`` runs
         # (calls ``stream_generate.finally`` → ``scheduler.abort_request``).
