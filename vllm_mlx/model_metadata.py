@@ -497,3 +497,10 @@ def checkpoint_has_multimodal_weights(
     return _contains_multimodal_weight_names(weights)
 
 
+def checkpoint_evidence_is_available(snapshot_dir: Path | None) -> bool:
+    """Return whether checkpoint metadata was available for inspection."""
+    if snapshot_dir is None:
+        return False
+    return (snapshot_dir / "model.safetensors.index.json").is_file() or any(
+        snapshot_dir.glob("*.safetensors")
+    )
