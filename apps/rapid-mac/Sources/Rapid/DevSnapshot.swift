@@ -106,6 +106,28 @@ enum DevSnapshot {
             )
         }
 
+        // LIVE mode must run before the static matrix. The matrix below
+        // renders ~200 full-size views and temporarily raises process memory;
+        // running live last can trip ServerManager's real pre-load safety
+        // gate even for a 0.6B model, leaving state=.idle and silently skipping
+        // the only end-to-end sidecar check. Use a separate non-persisting
+        // chat model so the real turn cannot leak into the static fixtures.
+        if let liveAlias = ProcessInfo.processInfo.environment["RAPID_DEV_SERVE_ALIAS"],
+           !liveAlias.isEmpty {
+            let liveChat = ChatViewModel(
+                sampling: sampling,
+                customInstructions: chat.customInstructions,
+                server: server,
+                persistsConversations: false
+            )
+            await runLiveChat(
+                alias: liveAlias, server: server, chat: liveChat,
+                downloads: downloads, quickstart: quickstart, dir: dir
+            )
+            await server.stop()
+            server.dismissTerminalState()
+        }
+
         // The Images tab, rendered standalone — ``ContentView`` owns its
         // ``SidebarSection`` privately, so (like ``launchView``) the detail
         // surface is captured directly rather than by driving navigation.
@@ -844,19 +866,6 @@ enum DevSnapshot {
         )
 
         log("wrote PNGs to \(dir)")
-
-        // LIVE mode: when RAPID_DEV_SERVE_ALIAS is set, actually start the
-        // sidecar (resolved by ServerLocator — the bundled engine unless
-        // RAPID_BIN overrides it), send one chat turn, and snapshot the
-        // REAL streamed output — the runtime path static renders can't
-        // reach. Then the normal terminate exercises clean teardown.
-        if let liveAlias = ProcessInfo.processInfo.environment["RAPID_DEV_SERVE_ALIAS"],
-           !liveAlias.isEmpty {
-            await runLiveChat(
-                alias: liveAlias, server: server, chat: chat,
-                downloads: downloads, quickstart: quickstart, dir: dir
-            )
-        }
 
         // One-shot: quit so the dogfood harness gets a clean exit.
         NSApp.terminate(nil)

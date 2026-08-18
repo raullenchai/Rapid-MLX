@@ -1175,6 +1175,44 @@ def _parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def configure_trusted_hosts(cli_hosts: list[str] | None = None) -> list[str]:
+    """OPT-IN Host-header allowlist (DNS-rebinding / Host-header-spoofing
+    hardening) via Starlette's ``TrustedHostMiddleware``.
+
+    Resolution:
+      1. ``--trusted-hosts`` CLI flag (comma-separated) — takes precedence.
+      2. ``RAPID_MLX_TRUSTED_HOSTS`` env var (comma-separated).
+      3. Unset / empty → middleware is NOT registered. This is the default:
+         restricting the Host header would break ``rapid-mlx share`` (which
+         forwards the public-facing Host header into the local server) and
+         LAN access via machine hostname, so an operator opts in deliberately.
+
+    ``allowed_hosts`` (Starlette) values cross-match the request ``Host``
+    header against glob patterns; ``*`` and ``localhost``/``127.0.0.1`` are
+    typical. A request whose Host matches nothing is rejected with 400.
+    """
+    hosts: list[str] = []
+    if cli_hosts is not None:
+        # argparse's nargs="+" accepts both ``a b`` and values users commonly
+        # write as ``a,b``. Normalize each entry so CLI and env semantics match.
+        hosts = [host for entry in cli_hosts for host in _parse_csv(entry)]
+    else:
+        env_raw = os.environ.get("RAPID_MLX_TRUSTED_HOSTS")
+        if env_raw:
+            hosts = _parse_csv(env_raw)
+    if not hosts:
+        return []
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+    logger.info(
+        "TrustedHostMiddleware enabled (allowed_hosts=%s): requests with a "
+        "non-matching Host header are rejected.",
+        hosts,
+    )
+    return hosts
+
+
 def configure_cors_from_env(
     cli_origins: list[str] | None = None,
 ) -> list[str]:
