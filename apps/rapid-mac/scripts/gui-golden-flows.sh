@@ -2376,11 +2376,14 @@ flow_no_dead_controls() {
             || die "Erase and restart is not pressable"
         wait_identifier Settings.Developer.CancelReonboard \
             "$OUT/dead-actions-developer-dialog.json"
-        press "$OUT/dead-actions-developer-dialog.json" Settings.Developer.CancelReonboard \
-            "$OUT/dead-actions-developer-cancel.json" \
-            || die "re-onboarding confirmation Cancel is not pressable"
         local dialog_closed=0
         for ((i=0; i<40; i++)); do
+            # SwiftUI can replace a confirmation-dialog AX element between a
+            # tree dump and AXPress. Re-resolve and retry the semantic action;
+            # the observable contract is that the dialog disappears.
+            "$AX_DRIVER" press "$APP_PID" Settings.Developer.CancelReonboard \
+                > "$OUT/dead-actions-developer-cancel.json" 2>/dev/null || true
+            sleep 0.1
             see_main "$OUT/dead-actions-developer-cancelled.json"
             if ! jq -e '.data.ui_elements[]?
                         | select(.identifier == "Settings.Developer.CancelReonboard")' \
@@ -3688,11 +3691,14 @@ flow_audio_readiness() {
                      and .text == "golden speech controls"' \
         "Generate Speech did not send the selected voice and text"
     wait_identifier Audio.Speech.Play "$OUT/speech-result.json"
-    "$AX_DRIVER" click-center "$APP_PID" Audio.Speech.Save \
-        > "$OUT/speech-save-click.json" \
-        || die "Save speech is not clickable"
     local speech_saved=0
     for ((i=0; i<40; i++)); do
+        # Re-resolve the dynamic result button for every AXPress. A real
+        # semantic action is required here; CGEvent coordinate clicks are not
+        # trustworthy on unattended runners and can report success while TCC
+        # discards the event.
+        "$AX_DRIVER" press "$APP_PID" Audio.Speech.Save \
+            > "$OUT/speech-save-press.json" 2>/dev/null || true
         if [[ -s "$OUT_ROOT/audio-readiness/saved-speech.wav" ]]; then
             speech_saved=1; break
         fi
@@ -3701,11 +3707,11 @@ flow_audio_readiness() {
     [[ "$speech_saved" == 1 ]] \
         || die "Save speech did not write the generated WAV"
     see_main "$OUT/speech-before-play.json"
-    "$AX_DRIVER" click-center "$APP_PID" Audio.Speech.Play \
-        > "$OUT/speech-play-click.json" \
-        || die "Play speech is not clickable"
     local playback_started=0
     for ((i=0; i<40; i++)); do
+        "$AX_DRIVER" press "$APP_PID" Audio.Speech.Play \
+            > "$OUT/speech-play-press.json" 2>/dev/null || true
+        sleep 0.05
         see_main "$OUT/speech-playing.json"
         if [[ "$(element_field "$OUT/speech-playing.json" Audio.Speech.Play description)" == "Stop playback" ]]; then
             playback_started=1; break
@@ -3841,11 +3847,15 @@ flow_audio_readiness() {
         || die "Transcription stayed behind Download & start after its model became ready"
 
     see_main "$OUT/transcription-controls-before.json"
-    press "$OUT/transcription-controls-before.json" Audio.Transcription.FilePicker \
-        "$OUT/transcription-file-press.json" \
-        || die "Choose File is not pressable"
     local file_selected=0
     for ((i=0; i<40; i++)); do
+        # AXPress can return success for a SwiftUI button whose backing object
+        # is replaced before its closure runs. Resolve the current button on
+        # every attempt and require the actual selection + enabled Transcribe
+        # state instead of treating the AX result as proof of user-visible work.
+        "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
+            > "$OUT/transcription-file-press.json" 2>/dev/null || true
+        sleep 0.1
         see_main "$OUT/transcription-file-selected.json"
         if jq -e '((.data.ui_elements | tostring) | contains("assistant_bank_en.wav"))
                   and any(.data.ui_elements[]?;
