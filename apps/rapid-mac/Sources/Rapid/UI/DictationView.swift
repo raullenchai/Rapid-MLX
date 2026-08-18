@@ -181,25 +181,16 @@ struct DictationView: View {
                 done: controller.readinessSnapshot.accessibility
             ) {
                 if !controller.readinessSnapshot.accessibility {
-                    // Both routes are offered together, always. macOS applies
-                    // this permission when a process launches, so someone who
-                    // just ticked the box in System Settings needs Relaunch,
-                    // not another Grant — and there is no API to tell those two
-                    // states apart from in here. Showing only Grant left them
-                    // pointing at an already-ticked checkbox with no way out.
-                    HStack(spacing: RapidTheme.Space.sm) {
-                        Button("Grant…") { controller.requestAccessibility() }
-                            .buttonStyle(.rapidSecondary)
-                            .accessibilityIdentifier("Dictation.GrantAccessibility")
-                        Button("Relaunch") { controller.relaunch() }
-                            .buttonStyle(.rapidTertiary)
-                            .accessibilityIdentifier("Dictation.Relaunch")
-                    }
+                    Button("Grant…") { controller.requestAccessibility() }
+                        .buttonStyle(.rapidSecondary)
+                        .accessibilityIdentifier("Dictation.GrantAccessibility")
                 }
             } detail: {
-                Text(controller.accessibilityNeedsRelaunch
-                     ? "Already allowed in System Settings — relaunch Rapid to pick it up."
-                     : "Needed to watch for the hotkey and to type into other apps. macOS applies it at launch: if you have just allowed it, use Relaunch.")
+                // macOS reads this permission when a process launches, so
+                // allowing it while Rapid is running leaves the live process
+                // still seeing "denied". Saying so up front beats adding a
+                // second control for the one case it applies to.
+                Text("Needed to watch for the hotkey and to type into other apps. macOS applies it at launch — quit and reopen Rapid after allowing.")
             }
 
             Divider().overlay(RapidTheme.hairline)

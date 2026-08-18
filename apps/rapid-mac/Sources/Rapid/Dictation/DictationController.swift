@@ -151,16 +151,6 @@ final class DictationController {
         refreshReadiness()
     }
 
-    /// Relaunch so a post-launch Accessibility grant takes effect.
-    func relaunch() {
-        let url = Bundle.main.bundleURL
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in
-            Task { @MainActor in NSApp.terminate(nil) }
-        }
-    }
-
     func requestAccessibility() {
         DictationHotkey.requestAccessibilityPermission()
         // The prompt only appears once per app version; send returning users
