@@ -40,6 +40,27 @@ let updateDownloadHostAllowlist: Set<String> = [
     "www.rapidmlx.com",
 ]
 
+/// The main window's size on a launch that has no saved frame.
+///
+/// Named rather than inline because the width is not a taste choice: Direction
+/// D's onboarding enters its two-column layout at
+/// ``OnboardingD/columnsMinWidth`` (1290pt), and the previous default of
+/// 1200×820 sat below it — so every fresh install met Step 2 in the medium
+/// STACKED layout and no user ever saw the composition Paper 05.1.A specifies
+/// until they resized the window themselves. 1440×900 is Paper's own desktop
+/// frame, and it is the smallest round size that clears the breakpoint.
+///
+/// This is a DEFAULT, not a policy. It applies only where SwiftUI has no frame
+/// to restore: ``AppDelegate/attachMainWindow(_:)`` sets the
+/// `Rapid.MainWindow` autosave name, which restores a saved frame synchronously
+/// and therefore wins for every returning user. Nothing resizes the window when
+/// onboarding appears or changes state, and narrowing it still reaches the
+/// medium and compact tiers exactly as before.
+enum MainWindowDefaults {
+    static let width: CGFloat = 1440
+    static let height: CGFloat = 900
+}
+
 struct RapidApp: App {
     @Environment(\.openWindow) private var openWindow
 
@@ -383,7 +404,7 @@ struct RapidApp: App {
                     await TelemetrySession.sendStartIfNeeded()
                 }
         }
-        .defaultSize(width: 1200, height: 820)
+        .defaultSize(width: MainWindowDefaults.width, height: MainWindowDefaults.height)
         .windowResizability(.contentMinSize)
         .commands {
             // Replace the system-default "About" item with our own.

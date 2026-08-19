@@ -2530,15 +2530,16 @@ struct QuickstartView: View {
             coordinator.select(choice)
             coordinator.rememberCatalogAnchor(entry.alias)
         }
-        // Truthfully won't run here. A disabled Button takes no click, which is
-        // the "No-op" row of the activation truth table, enforced rather than
-        // merely drawn.
+        // No `.disabled(!available)`. A WON'T FIT row is a live control that
+        // selects, and whose Review is reachable and read-only (Paper 05.2.D):
+        // "refusing to answer would be worse than answering". What used to be
+        // enforced here — by making the row take no click at all — is now
+        // enforced where it belongs, in the one derivation that decides what
+        // the primary does: ``OnboardingModelSelection.primary`` hands back
+        // ``Action/reviewIncompatible`` from a list and a DISABLED commit from
+        // Review, so no path from this row reaches a download or a start.
         //
-        // Deliberately still disabled, NOT merely styled: opening a WON'T FIT
-        // row's read-only detail is a separate, deferred behaviour PR. The
-        // badge below tells the user WHY the row is inert, which is a visual
-        // fix; making it openable would be a new user action.
-        .disabled(!available)
+        // The muted treatment is unchanged and still driven by `isAvailable:`.
     }
 
     /// The second line of a catalogue row.
@@ -2624,25 +2625,43 @@ struct QuickstartView: View {
         let alias = coordinator.selection.alias
         let cached = Self.cachedModel(alias: alias, cachedModels: cachedModels)
         let primary = primary(for: .review)
+        // The same availability seam every other surface reads. Note it is
+        // asked here, on arrival, rather than passed in by whatever opened the
+        // screen: Review's companion list can change the selection in place,
+        // and this must follow it.
+        let runsHere = OnboardingModelSelection.isAvailable(alias: alias, hardware: hardware)
         step2Scaffold {
             step2Columns(
                 kicker: "REVIEW DOWNLOAD",
                 title: coordinator.selection.displayName,
-                subtitle: cached == nil
-                    ? "This downloads once and then runs entirely on your Mac."
-                    : "Already on this Mac — nothing will be downloaded."
+                subtitle: Self.reviewSubtitle(cached: cached, runsHere: runsHere)
             ) {
                 VStack(alignment: .leading, spacing: 0) {
+                    if !runsHere {
+                        OnboardingInlineNote(
+                            text: Self.incompatibilityNote(alias: alias, hardware: hardware),
+                            identifier: "Quickstart.Review.Incompatible"
+                        )
+                        .padding(.top, 20)
+                    }
+
                     OnboardingFactTable(rows: Self.reviewFacts(
                         alias: alias,
                         cached: cached,
                         cachedModels: cachedModels,
                         hardware: hardware,
-                        freeBytes: freeBytesProbe()
+                        freeBytes: freeBytesProbe(),
+                        runsHere: runsHere
                     ))
                     .padding(.top, 26)
 
-                    if let footnote = Self.reviewFootnote(alias: alias, cached: cached) {
+                    // A download footnote frames a cost about to be paid, so it
+                    // has nothing to say about a download that will not happen;
+                    // the memory note takes the slot instead. One line under
+                    // the table either way — the composition does not change.
+                    if let footnote = runsHere
+                        ? Self.reviewFootnote(alias: alias, cached: cached)
+                        : Self.memoryHeadroomFootnote(hardware: hardware) {
                         Text(footnote)
                             .scaledSystemFont(12)
                             .foregroundStyle(RapidTheme.textTertiary)
@@ -2664,6 +2683,9 @@ struct QuickstartView: View {
                 backAccessibilityLabel: coordinator.reviewOrigin == .catalogue
                     ? "Back to all models"
                     : "Back to recommended models",
+                primaryAccessibilityHint: runsHere
+                    ? nil
+                    : Self.incompatiblePrimaryHint(alias: alias, hardware: hardware),
                 onBack: { coordinator.backFromReviewDownload() },
                 onPrimary: { activatePrimary(in: .review) }
             )
@@ -2738,12 +2760,18 @@ struct QuickstartView: View {
     /// ``ModelSizing`` against ``MacHardware`` for memory, the pre-flight probe
     /// for free space. A row whose source has nothing to say is omitted rather
     /// than printed with a placeholder.
+    /// - Parameter runsHere: false when ``ModelSizing`` classifies the alias
+    ///   ``ModelSizing/Fit/tooBig`` on this Mac. It adds one row and recolours
+    ///   another; it removes nothing, because Paper 05.2.D keeps the shape of
+    ///   the screen identical between a model that can start and one that
+    ///   cannot — the user compared them from the same list a moment ago.
     static func reviewFacts(
         alias: String,
         cached: ModelEntry?,
         cachedModels: [ModelEntry],
         hardware: MacHardware,
-        freeBytes: Int64?
+        freeBytes: Int64?,
+        runsHere: Bool = true
     ) -> [OnboardingFactRow] {
         var rows: [OnboardingFactRow] = [
             // The alias, first. Paper's fact list starts at the download size,
@@ -2773,8 +2801,21 @@ struct QuickstartView: View {
             rows.append(OnboardingFactRow(
                 "Memory when loaded",
                 "≈ \(preciseGB(footprint)) of \(wholeGB(hardware.physicalRAMGB))",
+                isAlert: !runsHere,
                 identifier: "Quickstart.Review.Memory"
             ))
+            // Only shown when it is the reason for something. On a model that
+            // fits, the usable pool is trivia; on one that does not, it is the
+            // fact the verdict rests on, and printing it lets the user check
+            // the arithmetic rather than take the refusal on trust.
+            if !runsHere, hardware.usableRAMGB > 0 {
+                rows.append(OnboardingFactRow(
+                    "Usable for a model",
+                    "\(preciseGB(hardware.usableRAMGB)) of \(wholeGB(hardware.physicalRAMGB))",
+                    isStrong: false,
+                    identifier: "Quickstart.Review.UsableMemory"
+                ))
+            }
         }
 
         if let freeBytes {
@@ -2821,6 +2862,64 @@ struct QuickstartView: View {
             return "One download, once. After that this model starts in seconds and needs no network."
         }
         return "One \(size) pull, once. After that this model starts in seconds and needs no network."
+    }
+
+    // MARK: - 2e — Review download · incompatible memory (Paper 05.2.D)
+
+    /// The sentence under the model's name on Review download.
+    ///
+    /// Three states, one slot. Paper writes the incompatible one as a flat
+    /// statement — "It cannot run on this Mac" — with no apology and no offer,
+    /// because the screen's whole job at that point is to answer a question
+    /// the user already asked.
+    static func reviewSubtitle(cached: ModelEntry?, runsHere: Bool) -> String {
+        guard runsHere else { return "This model cannot run on this Mac." }
+        return cached == nil
+            ? "This downloads once and then runs entirely on your Mac."
+            : "Already on this Mac — nothing will be downloaded."
+    }
+
+    /// Paper 05.2.D's callout: what it needs, what this Mac has, and how much
+    /// of that a model may actually use.
+    ///
+    /// Every figure is an existing reading — ``ModelSizing/estimate(alias:)``
+    /// and ``MacHardware/usableRAMGB`` — rendered through the same two helpers
+    /// the fact table uses, so the number in the callout and the number in the
+    /// table below it are the same number, spelled the same way.
+    static func incompatibilityNote(alias: String, hardware: MacHardware) -> String {
+        let needed = ModelSizing.estimate(alias: alias).totalGB
+        guard needed > 0, hardware.physicalRAMGB > 0 else {
+            return "This model needs more memory than this Mac has."
+        }
+        return "Needs ≈ \(preciseGB(needed)) of memory. This Mac has "
+            + "\(wholeGB(hardware.physicalRAMGB)), of which roughly "
+            + "\(preciseGB(hardware.usableRAMGB)) is usable for a model."
+    }
+
+    /// The line under the fact table on an incompatible Review, in place of
+    /// the download footnote — there is no download to frame.
+    ///
+    /// Paper's sentence is the first half. The second half is added because
+    /// without it the screen is misleading at the margin: the ceiling is 75%
+    /// of the usable pool, not the pool, so a 21 GB model on a 32 GB Mac is
+    /// refused while the callout says 25.6 GB is usable. Naming the limit
+    /// turns an apparent contradiction into an arithmetic the user can follow.
+    /// The number comes from ``ModelSizing/largestFittingGB(on:)`` so it
+    /// cannot drift from the band that produced the verdict.
+    static func memoryHeadroomFootnote(hardware: MacHardware) -> String? {
+        guard hardware.physicalRAMGB > 0, hardware.usableRAMGB > 0 else { return nil }
+        let ceiling = ModelSizing.largestFittingGB(on: hardware)
+        return "macOS keeps about a fifth of unified memory for itself, so a "
+            + "\(wholeGB(hardware.physicalRAMGB)) Mac has roughly "
+            + "\(preciseGB(hardware.usableRAMGB)) to give a model. Rapid keeps "
+            + "some of that free for your conversation, so it offers models "
+            + "needing up to about \(preciseGB(ceiling))."
+    }
+
+    /// What VoiceOver is told about the greyed primary on an incompatible
+    /// Review. macOS announces a disabled control as "dimmed" and stops there.
+    static func incompatiblePrimaryHint(alias: String, hardware: MacHardware) -> String {
+        "Unavailable. \(incompatibilityNote(alias: alias, hardware: hardware))"
     }
 
     // MARK: - Step 2 derivation (pure seams)
@@ -2966,7 +3065,12 @@ struct QuickstartView: View {
         let primary = primary(for: context)
         guard primary.isEnabled else { return }
         switch primary.action {
-        case .reviewDownload:
+        case .reviewDownload, .reviewIncompatible:
+            // Both open the same micro-stage. What differs is what it says
+            // once it is there, and that is re-derived from the selection on
+            // arrival rather than carried across as a flag — so a user who
+            // switches to a runnable model on Review's live companion list
+            // gets a working primary without navigating anywhere.
             coordinator.beginReviewDownload(
                 origin: context == .catalogue ? .catalogue : .shortlist
             )

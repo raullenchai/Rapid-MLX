@@ -160,6 +160,21 @@ enum ModelSizing {
         return .tooBig
     }
 
+    /// The largest total footprint that still classifies as something other
+    /// than ``Fit/tooBig`` on this host — i.e. the actual ceiling ``classify``
+    /// enforces, in GB.
+    ///
+    /// Exists so a screen explaining a WON'T FIT verdict can quote the real
+    /// limit instead of implying it is ``MacHardware/usableRAMGB``. Those are
+    /// not the same number, and the gap is where a misleading explanation
+    /// lives: on a 32 GB Mac the usable pool is 25.6 GB, but a 21 GB model is
+    /// still refused, so "needs 21 GB, 25.6 GB usable" reads as a
+    /// contradiction unless the 75% headroom is named. Derived from the band
+    /// above rather than restated, so the two cannot drift apart.
+    static func largestFittingGB(on hardware: MacHardware) -> Double {
+        max(0, hardware.usableRAMGB * 0.75)
+    }
+
     // MARK: - Live memory safety (pre-load guard)
 
     /// Verdict for loading a model RIGHT NOW given live memory use.

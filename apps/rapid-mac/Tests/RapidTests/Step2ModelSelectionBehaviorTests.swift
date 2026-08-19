@@ -325,14 +325,32 @@ struct Step2ModelSelectionBehaviorTests {
         coord._testingReset()
     }
 
-    @Test("An unavailable model is never actionable, even when selected and visible")
+    /// Superseded in part by Paper 05.2.D: the row is now openable. What
+    /// survives — and is the only part that ever mattered — is that nothing
+    /// reachable from it commits.
+    @Test("An unavailable model can be inspected but never committed")
     func unavailableModelIsInert() {
-        let primary = OnboardingModelSelection.primary(
+        // From a list: reachable, and reachable ONLY as an explanation.
+        for context in [OnboardingModelSelection.ListContext.shortlist, .catalogue] {
+            let primary = OnboardingModelSelection.primary(
+                selection: "wont-fit",
+                visibleRows: [Self.row("wont-fit", available: false)],
+                catalogState: .ready, context: context
+            )
+            #expect(primary.isEnabled, "\(context): the detail must be reachable")
+            #expect(primary.action == .reviewIncompatible, "\(context)")
+            #expect(!primary.action.isCommit, "\(context): must not be a commit")
+            // The catalogue's control never relabels itself between rows.
+            #expect(primary.title == OnboardingModelSelection.Verb.reviewDownload)
+        }
+        // Inside Review: the verb it WOULD have taken, greyed.
+        let review = OnboardingModelSelection.primary(
             selection: "wont-fit",
             visibleRows: [Self.row("wont-fit", available: false)],
-            catalogState: .ready, context: .catalogue
+            catalogState: .ready, context: .review
         )
-        #expect(!primary.isEnabled)
+        #expect(!review.isEnabled)
+        #expect(review.title == OnboardingModelSelection.Verb.downloadAndStart)
     }
 
     /// Availability is the classification the model picker already disables on
@@ -493,7 +511,13 @@ struct Step2ModelSelectionBehaviorTests {
                      action: OnboardingModelSelection.Action?, enabled: Bool)] = [
             ("uncached valid", Self.row("a"), .reviewDownload, true),
             ("cached valid", Self.row("a", cached: true), .startExisting, true),
-            ("unavailable", Self.row("a", available: false), nil, false),
+            // Paper 05.2.D: from a LIST, an unrunnable pick opens its detail
+            // and nothing else. The action is distinguishable from an ordinary
+            // Review so that "this can never become a download" is a property
+            // of the derivation rather than of every call site.
+            ("unavailable", Self.row("a", available: false), .reviewIncompatible, true),
+            ("unavailable cached", Self.row("a", cached: true, available: false),
+             .reviewIncompatible, true),
         ]
         for entry in table {
             let primary = OnboardingModelSelection.primary(

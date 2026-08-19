@@ -670,11 +670,62 @@ struct OnboardingRecoveryBehaviorTests {
                 catalogState: .ready,
                 context: context
             )
-            #expect(!primary.isEnabled, "\(context): an unrunnable pick must not be actionable")
-            // Disabled shows the neutral verb — never a blank, never a third
-            // label — so the control's identity is stable.
-            #expect(primary == OnboardingModelSelection.disabledPrimary)
+            // The claim this test has always made, restated precisely: an
+            // unrunnable pick can never be COMMITTED on. Since Paper 05.2.D
+            // its read-only detail is reachable from a list, which is a
+            // navigation and spends nothing — so "not actionable" is checked
+            // against the commit, not against the button being pressable.
+            #expect(
+                !(primary.isEnabled && primary.action.isCommit),
+                "\(context): an unrunnable pick must never reach a start or a download"
+            )
+            #expect(!OnboardingModelSelection.isActionable(
+                selection: "huge-model", visibleRows: rows, catalogState: .ready
+            ), "\(context)")
+            if context == .review {
+                // The refusal lands here, and names what is being withheld.
+                #expect(!primary.isEnabled)
+                #expect(primary.title == OnboardingModelSelection.Verb.downloadAndStart)
+            } else {
+                #expect(primary.action == .reviewIncompatible, "\(context)")
+            }
         }
+    }
+
+    /// Incompatibility outranks cached-ness. A model already on disk that this
+    /// Mac cannot load is still a model this Mac cannot load — being
+    /// downloaded already is not evidence about memory, and ``startExisting``
+    /// is the shorter route into exactly the same ``ServerManager`` load.
+    @Test("A cached model that cannot run still cannot be started")
+    func cachedIncompatibleModelCannotStart() {
+        let rows = [OnboardingModelSelection.Row(
+            alias: "huge-but-here", isCached: true, isAvailable: false
+        )]
+        for context in [
+            OnboardingModelSelection.ListContext.shortlist,
+            .catalogue,
+            .review,
+        ] {
+            let primary = OnboardingModelSelection.primary(
+                selection: "huge-but-here",
+                visibleRows: rows,
+                catalogState: .ready,
+                context: context
+            )
+            #expect(
+                !(primary.isEnabled && primary.action == .startExisting),
+                "\(context): a cached unrunnable pick must not start"
+            )
+        }
+        // And inside Review the greyed verb is the cached one, so the screen
+        // does not offer to download something that is already here.
+        let review = OnboardingModelSelection.primary(
+            selection: "huge-but-here", visibleRows: rows,
+            catalogState: .ready, context: .review
+        )
+        #expect(!review.isEnabled)
+        #expect(review.title == OnboardingModelSelection.Verb.startExisting)
+        #expect(review.action == .startExisting)
     }
 
     @Test("An unrunnable pick stays selected — only its actionability changes")

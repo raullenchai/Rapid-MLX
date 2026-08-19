@@ -1299,12 +1299,24 @@ struct OnboardingFactRow: Identifiable {
     /// Soft values (a path, "Not downloaded yet") sit back a step so the
     /// numbers that drive the decision stay the strongest thing in the column.
     var isStrong: Bool = true
+    /// The one row that is not merely a fact but the REASON — Paper 05.2.D
+    /// colours both the label and the value of "Memory when loaded" when the
+    /// model will not fit, so the table itself points at the offending number
+    /// instead of leaving the callout above to carry it alone.
+    var isAlert: Bool = false
     var identifier: String?
 
-    init(_ label: String, _ value: String, isStrong: Bool = true, identifier: String? = nil) {
+    init(
+        _ label: String,
+        _ value: String,
+        isStrong: Bool = true,
+        isAlert: Bool = false,
+        identifier: String? = nil
+    ) {
         self.label = label
         self.value = value
         self.isStrong = isStrong
+        self.isAlert = isAlert
         self.identifier = identifier
     }
 }
@@ -1323,11 +1335,15 @@ struct OnboardingFactTable: View {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     Text(row.label)
                         .scaledSystemFont(13)
-                        .foregroundStyle(RapidTheme.textSecondary)
+                        .foregroundStyle(row.isAlert ? RapidTheme.statusError : RapidTheme.textSecondary)
                     Spacer(minLength: 12)
                     Text(row.value)
                         .scaledSystemFont(13, design: .monospaced)
-                        .foregroundStyle(row.isStrong ? RapidTheme.textPrimary : RapidTheme.textSecondary)
+                        .foregroundStyle(
+                            row.isAlert
+                                ? RapidTheme.statusError
+                                : (row.isStrong ? RapidTheme.textPrimary : RapidTheme.textSecondary)
+                        )
                         .multilineTextAlignment(.trailing)
                         .textSelection(.enabled)
                 }
@@ -1338,6 +1354,48 @@ struct OnboardingFactTable: View {
                 .accessibilityLabel("\(row.label): \(row.value)")
             }
         }
+    }
+}
+
+/// A tinted note that sits INSIDE a decision, above the facts that justify it
+/// (Paper 05.2.D — the incompatible-memory callout).
+///
+/// Deliberately not an ``OnboardingOutcomeBlock``: that template owns whole
+/// screens whose subject is the outcome, and it centres a glyph tile over a
+/// title. This is a paragraph with a mark beside it, subordinate to the heading
+/// it explains — the screen is still Review download, and the note is one of
+/// the things Review has to say rather than a replacement for it.
+struct OnboardingInlineNote: View {
+    let text: String
+    var glyph: String = "exclamationmark.triangle"
+    var tone: Color = RapidTheme.statusError
+    var tint: Color = RapidTheme.statusErrorTint
+    var identifier: String?
+    /// Spoken form. Defaults to ``text``; a caller that has already said the
+    /// same thing in a heading can hand VoiceOver a shorter line instead.
+    var accessibilityText: String?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: glyph)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(tone)
+                .accessibilityHidden(true)
+            Text(text)
+                .scaledSystemFont(12.5)
+                .foregroundStyle(tone)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .background(
+            RoundedRectangle(cornerRadius: OnboardingD.actionRadius, style: .continuous)
+                .fill(tint)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(identifier ?? "")
+        .accessibilityLabel(accessibilityText ?? text)
     }
 }
 
@@ -1434,6 +1492,14 @@ struct OnboardingStepFooter: View {
     var backTitle: String = "Back"
     /// Spoken form of ``backTitle``, without the arrow glyph.
     var backAccessibilityLabel: String?
+    /// Spoken form of the primary. Defaults to ``primaryTitle`` so the AX
+    /// baselines that pin `desc="Review download"` are unaffected.
+    var primaryAccessibilityLabel: String?
+    /// Why the primary is unavailable, when it is. macOS announces a disabled
+    /// control as "dimmed", which says that it cannot be pressed but not why —
+    /// and on Review download for a model this Mac cannot run, the why is the
+    /// entire point of the screen.
+    var primaryAccessibilityHint: String?
     var onBack: (() -> Void)?
     let onPrimary: () -> Void
 
@@ -1456,6 +1522,8 @@ struct OnboardingStepFooter: View {
             .disabled(!primaryEnabled)
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("Quickstart.Footer.Primary")
+            .accessibilityLabel(primaryAccessibilityLabel ?? primaryTitle)
+            .accessibilityHint(primaryAccessibilityHint ?? "")
         }
         .frame(maxWidth: .infinity)
     }

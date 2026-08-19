@@ -231,6 +231,40 @@ struct OnboardingDirectionDTests {
         #expect(OnboardingLayout.resolve(width: 720) == .compact)
     }
 
+    /// A fresh install must MEET Step 2 in the two-column layout, not merely be
+    /// able to reach it by dragging the window wider.
+    ///
+    /// The old default was 1200×820 — 90pt below the columns breakpoint — so
+    /// every first run got the medium stacked tier and the composition Paper
+    /// 05.1.A specifies was, in practice, unreachable without a manual resize.
+    /// Pinned against the constant the scene actually uses rather than a
+    /// literal, so the test cannot agree with a number the app has stopped
+    /// using.
+    @Test("The fresh-install window default opens in the wide layout")
+    func defaultWindowSizeOpensWide() {
+        #expect(MainWindowDefaults.width == 1440)
+        #expect(MainWindowDefaults.height == 900)
+        #expect(MainWindowDefaults.width > OnboardingD.columnsMinWidth,
+                "the default must clear the columns breakpoint, not sit on it")
+        #expect(OnboardingLayout.resolve(width: MainWindowDefaults.width) == .wide)
+        #expect(OnboardingLayout.resolve(width: MainWindowDefaults.width).usesColumns)
+    }
+
+    /// The scene must consume the constant. Without this a future edit could
+    /// hardcode a width back inline and leave the test above passing against a
+    /// number nothing reads.
+    @Test("The window scene takes its default size from the named constant")
+    func defaultSizeIsWiredToTheConstant() throws {
+        let app = try Self.strippedSource("Sources/Rapid/RapidApp.swift")
+        #expect(app.contains(
+            ".defaultSize(width:MainWindowDefaults.width,height:MainWindowDefaults.height)"
+        ))
+        // And the frame autosave still owns a returning user's size — the
+        // default may never become a resize.
+        #expect(app.contains(#"window.setFrameAutosaveName("Rapid.MainWindow")"#))
+        #expect(app.contains("WindowFrameClamp.clamp(frame:window.frame,to:visibleFrame)"))
+    }
+
     @Test("Every width from the floor up leaves the model rows usable")
     func everyTierLeavesUsableCanvas() {
         // Swept rather than sampled. Three fixed widths passed while 1200pt —

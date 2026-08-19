@@ -340,6 +340,12 @@ struct OnboardingCatalogRow: View {
     let sizeText: String
     let selected: Bool
     /// False when ``ModelSizing`` says this will not run on this Mac.
+    ///
+    /// Drives the muted treatment — dimmed monogram, tertiary text, canvas
+    /// fill instead of raised, hollow selection glyph — and nothing else. The
+    /// row stays a live control: Paper 05.2.D allows opening its detail, and
+    /// the refusal happens on the primary of the screen that opens, not by
+    /// making the row itself unclickable. See ``OnboardingModelSelection``.
     let isAvailable: Bool
     let badges: [OnboardingCatalogRow.Badge]
     var onActivate: (() -> Void)? = nil
@@ -405,6 +411,7 @@ struct OnboardingCatalogRow: View {
         .accessibilityIdentifier("Quickstart.CatalogRow.\(alias)")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel(accessibilityText)
+        .accessibilityHint(accessibilityHint)
     }
 
     private var accessibilityText: String {
@@ -412,5 +419,21 @@ struct OnboardingCatalogRow: View {
         parts.append(contentsOf: badges.map(\.text.localizedLowercase))
         if !sizeText.isEmpty { parts.append(sizeText) }
         return parts.joined(separator: ". ")
+    }
+
+    /// Spoken only for the row that cannot run, because only there is the
+    /// honest answer the surprising one: the row IS live, and nothing but an
+    /// explanation is behind it. A sighted user infers that from the dimming
+    /// plus the badge; the hint is how the same inference reaches VoiceOver,
+    /// which is told the label and the traits and would otherwise have to
+    /// guess from "won't fit" whether the row does anything at all.
+    ///
+    /// Runnable rows get none. Their behaviour is the norm the rest of the
+    /// list establishes, and the one sentence that would cover them both is
+    /// not true of either: a cached row does not open Review, it starts.
+    private var accessibilityHint: String {
+        isAvailable
+            ? ""
+            : "Cannot run on this Mac. Opens a read-only explanation — nothing will be downloaded."
     }
 }

@@ -489,6 +489,35 @@ struct AccessibilityIdentifierInventoryTests {
             in: "Sources/Rapid/UI/OnboardingComponents.swift",
             surface: "Onboarding model rows"
         )
+        // Review download's read-only content. These reach the accessibility
+        // tree through a component parameter (``OnboardingFactRow`` and
+        // ``OnboardingInlineNote`` both forward `identifier` to
+        // `.accessibilityIdentifier`), so they are pinned in their declared
+        // form rather than by the modifier shape the helper above matches.
+        //
+        // `Quickstart.Review.Incompatible` is the one a harness needs in order
+        // to assert that a WON'T FIT row explains itself: without it the only
+        // evidence that the screen said anything is a screenshot.
+        let review = try strippedSource("Sources/Rapid/UI/QuickstartView.swift")
+        for identifier in [
+            "Quickstart.Review.Alias",
+            "Quickstart.Review.Size",
+            "Quickstart.Review.CachedStatus",
+            "Quickstart.Review.Memory",
+            "Quickstart.Review.UsableMemory",
+            "Quickstart.Review.FreeSpace",
+            "Quickstart.Review.Repo",
+            "Quickstart.Review.Incompatible",
+        ] {
+            #expect(
+                review.contains(#"identifier:"\#(identifier)""#),
+                """
+                Onboarding Review: QuickstartView.swift no longer declares \
+                identifier: "\(identifier)". Golden flows read Review's facts \
+                by AXIdentifier — removing one makes that fact unassertable.
+                """
+            )
+        }
     }
 
     // MARK: - Launch integrations
