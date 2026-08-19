@@ -2,44 +2,102 @@
 
 ## Server Configuration
 
+The tables below cover the consequential `rapid-mlx serve` options by
+category. The exhaustive flag list (every flag visible in
+`rapid-mlx serve --help`) lives in the [CLI reference](cli.md#rapid-mlx-serve).
+
 ### Basic Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--host` | Server host address (loopback-only by default; pass `0.0.0.0` to expose on LAN) | `127.0.0.1` |
 | `--port` | Server port | `8000` |
+| `--listen-fd` | File descriptor of a pre-bound listening socket (3-1023) for socket activation; when set, `--host`/`--port` are ignored for binding | None |
+| `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | `INFO` |
+| `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
 | `--max-tokens` | Default max tokens | `32768` |
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
+| `--default-top-k` | Default top_k when not specified in request | None |
+| `--default-min-p` | Default min_p when not specified in request | None |
+| `--default-repetition-penalty` | Default repetition_penalty when not specified in request | None |
+| `--default-presence-penalty` | Default presence_penalty when not specified in request | None |
+| `--default-frequency-penalty` | Default frequency_penalty when not specified in request | None |
 
 ### Security Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--api-key` | API key for authentication | None |
+| `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
+| `--cors-origins` | Allowed CORS origins (space-separated; also via `RAPID_MLX_CORS_ALLOW_ORIGINS`) | `*` (all origins) |
+| `--trusted-hosts` | Opt-in Host-header allowlist; non-matching requests get HTTP 400 (also via `RAPID_MLX_TRUSTED_HOSTS`) | None (not enforced) |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | `0` |
+| `--max-request-bytes` | Max HTTP request body size in bytes; oversized requests get HTTP 413 before parsing. 0 disables. (also via `RAPID_MLX_MAX_REQUEST_BYTES`) | 8 MiB (8388608) |
 | `--timeout` | Request timeout in seconds | `1800` |
 
-### Batching Options
+### Admission and Batching Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--stream-interval` | Tokens per stream chunk | `1` |
 | `--max-num-seqs` | Max concurrent sequences | `256` |
+| `--max-concurrent-requests` | Admission cap on in-flight requests (queued + running); excess requests get HTTP 503 with `Retry-After` | `256` |
+| `--prefill-batch-size` | Max prompts prefilled together in one cold wave; lower for better first-token latency under concurrent cold load | `8` |
+| `--completion-batch-size` | Completion batch size | `32` |
+| `--prefill-step-size` | Chunk size for prompt prefill processing | `2048` |
+| `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0) | `0.90` |
 
 ### Cache Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching for repeated prompts | enabled |
+| `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie) or `hash` (legacy bisect) | `radix` |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | `0.20` |
 | `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
 | `--no-memory-aware-cache` | Use legacy entry-count cache | `false` |
+| `--pin-system-prompt` | Auto-pin the system prompt in the prefix cache to prevent eviction under memory pressure | `false` |
 | `--use-paged-cache` | Enable paged KV cache | `false` |
 | `--paged-cache-block-size` | Tokens per block | `64` |
 | `--max-cache-blocks` | Maximum blocks | `1000` |
 | `--hybrid-cache-entries` | Opt-in: retain N non-trimmable prefix-cache entries for prefix-extension reuse (stable prefix + new suffix each turn). Covers hybrid recurrent-state (GatedDeltaNet/Mamba) and sliding-window (Gemma 4, GPT-OSS) models. `0` disables. | `0` |
 | `--response-cache-entries` | Opt-in: retain N fully-computed greedy (`temperature 0` / `top_k 1`) chat completions; a completely repeated request returns the stored completion with zero GPU decode. Sampled requests are never cached. `0` disables. | `0` |
+
+### KV Cache Quantization Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`). int8/int4 shrink the KV cache 2x/4x for memory-constrained hosts at a decode-throughput cost at long context; sliding-window and MLA models auto-downgrade to bf16. | `bf16` |
+| `--reasoning` | Pins `--kv-cache-dtype` to int8 (reasoning-accuracy profile) | `false` |
+| `--kv-cache-quantization` | Deprecated alias of `--kv-cache-dtype int8`; wins when both are passed | `false` |
+| `--kv-cache-quantization-bits` | Bit width for KV cache quantization (4 or 8) | `8` |
+| `--kv-cache-quantization-group-size` | Group size for KV cache quantization | `64` |
+| `--kv-cache-min-quantize-tokens` | Minimum tokens for quantization to apply | `256` |
+| `--kv-cache-turboquant` | TurboQuant KV compression (experimental): bare = `v4` (V-only), `k8v4` (K 8-bit + V 4-bit mix), `none` (explicit off overriding alias auto-resolution). Mutually exclusive with `--kv-cache-quantization`. | None (alias-driven) |
+| `--kv-cache-turboquant-bits` | V-side bit width (3 or 4); ignored in `k8v4` mode | Auto by head_dim |
+| `--kv-cache-turboquant-group-size` | Group size for TurboQuant V-side quantization | `32` |
+| `--kv-disk-checkpoint-interval` | Token interval for KV snapshots to `~/.cache/rapid-mlx/kv_checkpoints/`; write-only, blocks decode per snapshot — external tooling only. `0` disables. | `0` |
+| `--metal-cap-kv-bytes-per-token` | Override the projected per-token KV size (bytes) in the admission gate; set when running a quantized KV cache. `0` auto-derives an fp16 figure. | `0` (auto) |
+
+### Model Loading and Residency Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; registered architectures only) | `false` |
+| `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache | `1.0` |
+| `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; LRU idle unpinned models are evicted first. `0` disables. | `0` |
+| `--resident-model-idle-ttl` | Evict idle unpinned secondary models after this many seconds. `0` disables. | `0` |
+| `--mllm` / `--no-mllm` | Force multimodal (vision) loading / force text-only loading, overriding auto-detection | auto-detect |
+| `--enable-audio` | Mount `/v1/audio/*` routes on a text-only server (audio-capable models auto-mount them) | `false` |
+
+### PFlash Options
+
+PFlash long-prompt prefill compression. Defaults to `always` for verified
+aliases (Qwen3.5 / Qwen3.6 family) and `off` otherwise; tune with
+`--pflash off|auto|always`, `--pflash-threshold` (32768), and the
+`--pflash-*` keep/scoring knobs — see the
+[CLI reference](cli.md#pflash-long-prompt-compression) for the full table.
 
 ### Tool Calling Options
 
@@ -59,6 +117,8 @@
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
+| `--embedding-max-length` | Max input length (tokens); `auto` derives it from the model's declared maximum, or pass a positive integer for a lower ceiling | `auto` |
+| `--embedding-overflow-policy` | Handling for over-length inputs: `truncate` (logged + metric, never silent) or `error` (HTTP 400 with observed/allowed counts) | `truncate` |
 
 ### Speculative Decoding Options
 
@@ -274,12 +334,46 @@ Create `mcp.json`:
 
 ## Environment Variables
 
+### Server-side variables
+
+Operator-facing `RAPID_MLX_*` variables read by the server and CLI. A CLI
+flag always wins over its env-var fallback when both are set.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RAPID_MLX_API_KEY` | unset (no auth) | Bearer API key fallback for `serve --api-key`; the inline flag value wins. `rapid-mlx share` uses the env form so the key never lands in `argv`. |
+| `RAPID_MLX_TRUSTED_HOSTS` | unset (not enforced) | Comma-separated Host-header allowlist fallback for `--trusted-hosts`; non-matching requests get HTTP 400 |
+| `RAPID_MLX_CORS_ALLOW_ORIGINS` | unset (wildcard `*`) | Comma-separated CORS origin allowlist; `--cors-origins` wins when both are set. Unset = friendly wildcard default with a startup notice; set-but-empty parses fail closed (no CORS middleware). |
+| `RAPID_MLX_CORS_ALLOW_METHODS` / `_HEADERS` / `_MAX_AGE` / `_CREDENTIALS` | `POST,GET,OPTIONS` / `Content-Type,Authorization,X-Rapid-MLX-Internal` / `3600` / off | Fine-tune the CORS policy when origins come from the env var (the CLI `--cors-origins` path keeps legacy wide-open methods/headers). Credentials are always forced off with a wildcard origin, per the Fetch spec. |
+| `RAPID_MLX_MAX_REQUEST_BYTES` | 8388608 (8 MiB) | Request-body size cap fallback for `--max-request-bytes`; oversized bodies get HTTP 413 before parsing. 0 disables. |
+| `RAPID_MLX_SSE_KEEPALIVE_SECONDS` | 20 | Interval for SSE keepalive comment lines during silent prefill (defeats proxy idle timeouts). 0 disables the heartbeat. |
+| `RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS` | 15 | Max idle seconds between request-body chunks (slowloris defense); exceeded connections get HTTP 408. 0 disables. |
+| `RAPID_MLX_IDLE_CACHE_CLEAR_SECONDS` | 0 (disabled) | Fallback for `--idle-cache-clear-seconds`: clear reusable KV state after this many idle seconds, keeping model weights loaded. An explicit CLI value (including 0) wins. |
+| `RAPID_MLX_WATCHDOG_PPID` | unset (disabled) | Fallback for `--watchdog-ppid`: self-terminate when the parent with this PID dies |
+| `RAPID_MLX_TELEMETRY` | unset | Telemetry kill switch: `0` / `false` / `no` / `off` / empty force-disables telemetry regardless of stored consent. Truthy values do NOT force-enable (consent is interactive-only). |
+| `RAPID_MLX_KV_CHECKPOINT_MAX_BYTES` | 21474836480 (20 GiB) | Disk cap for `~/.cache/rapid-mlx/kv_checkpoints/` when `--kv-disk-checkpoint-interval` is enabled; oldest files evicted first. Read at scan time, so it can change without a restart. |
+| `RAPID_MLX_PREFIX_CACHE_MAX_BYTES` | unset (heuristic) | Hard byte cap on prefix-cache memory (positive integer). Unset, blank, or invalid values fall back to the heuristic limit (logged once). |
+| `RAPID_MLX_MAX_GENERATION_TOKENS` | unset (no ceiling) | Opt-in hard ceiling on per-request `max_tokens`; requests above it are rejected at validation. Invalid or non-positive values are treated as unset. Read per request. |
+| `RAPID_MLX_STRICT_JSON_SCHEMA` | enabled | Strict post-generate `json_schema` enforcement; set `0`/`off`/`false`/`no`/`disable`/`disabled` to fall back to legacy prompt-injection-only behavior |
+| `RAPID_MLX_CONSTRAIN_TOOLS` | on (`1`) | Grammar-constrained tool calling (best-effort). Set to `0`/`off`/`false` to opt out. When enabled AND a `--tool-call-parser` is set AND a request sends `tools` with `tool_choice="required"` or a named function, the server compiles a grammar that constrains generation so a completed tool call names a real tool with schema-valid arguments in the family wire format. Requests without tools, or with `tool_choice="auto"`/`"none"`, are always unaffected. **Best-effort fallback:** the request silently falls back to the free-form-then-parse path (no hard error, no structural guarantee) when the `[guided]` extra (`llguidance`) is not installed, the model's tokenizer cannot back an `LLTokenizer`, the grammar fails to compile, or the parser family declares no structural info. `parallel_tool_calls=false` narrows the grammar to exactly one call. Note: the structural guarantee holds only for a call the model runs to a grammar-accepted completion — a `max_tokens` cutoff mid-call can still truncate the arguments and yield invalid JSON. |
+| `RAPID_MLX_MCP_CONFIG` | unset | Path to the MCP config file; `--mcp-config` sets it for the server process, and it is honored at boot when the flag is absent |
+| `RAPID_MLX_AUTO_PULL` | unset | Set `1`/`true`/`yes` to auto-confirm model downloads (skips the interactive size prompt) |
+| `RAPID_MLX_MODEL_MIRROR` | `https://models.rapidmlx.com` | Model download mirror base URL; set to an empty string to force downloads from Hugging Face |
+| `RAPID_MLX_EXTRA_MODEL_ROOTS` | unset | Extra local directories to resolve models from, separated by `os.pathsep` (`:` on macOS/Linux), or a JSON array of paths |
+| `RAPID_MLX_DEFAULT_MODEL` | `qwen3.5-4b-4bit` | Default model alias used by `rapid-mlx launch` when `--model` is not given |
+| `RAPID_MLX_DISABLE_VERSION_CHECK` | unset | Set to any non-empty value to skip the interactive new-version check |
+| `RAPID_MLX_TRUST_REMOTE_CODE` | unset | Set `0`/`false`/`no`/`off` to force `trust_remote_code=False` process-wide for tokenizer loading |
+| `VLLM_MLX_TEST_MODEL` | unset | Default model for tests |
+| `HF_TOKEN` | unset | HuggingFace authentication token |
+
+### Client-side (SDK) variables
+
+These are read by client SDKs, not by the rapid-mlx server:
+
 | Variable | Description |
 |----------|-------------|
-| `VLLM_MLX_TEST_MODEL` | Default model for tests |
-| `HF_TOKEN` | HuggingFace authentication token |
-| `OPENAI_API_KEY` | Set to any value for SDK compatibility |
-| `RAPID_MLX_CONSTRAIN_TOOLS` | Grammar-constrained tool calling (best-effort). **On by default** (`1`); set to `0`/`off`/`false` to opt out. When enabled AND a `--tool-call-parser` is set AND a request sends `tools` with `tool_choice="required"` or a named function, the server compiles a grammar that constrains generation so a completed tool call names a real tool with schema-valid arguments in the family wire format. Requests without tools, or with `tool_choice="auto"`/`"none"`, are always unaffected. **Best-effort fallback:** the request silently falls back to the free-form-then-parse path (no hard error, no structural guarantee) when the `[guided]` extra (`llguidance`) is not installed, the model's tokenizer cannot back an `LLTokenizer`, the grammar fails to compile, or the parser family declares no structural info. `parallel_tool_calls=false` narrows the grammar to exactly one call. Note: the structural guarantee holds only for a call the model runs to a grammar-accepted completion — a `max_tokens` cutoff mid-call can still truncate the arguments and yield invalid JSON. |
+| `OPENAI_API_KEY` | Read by the OpenAI SDK, not the server. Set to any value when the server runs without `--api-key`; must match the server key when one is set. |
+| `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` | Read by Anthropic SDK clients (e.g. Claude Code) to point at the rapid-mlx `/v1/messages` endpoint |
 
 ## Example Configurations
 
@@ -292,7 +386,7 @@ rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
 ### Production (Multiple Users)
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+rapid-mlx serve qwen3.5-27b-4bit \
   --use-paged-cache \
   --api-key your-secret-key \
   --rate-limit 60 \
@@ -333,7 +427,7 @@ rapid-mlx serve mlx-community/Qwen3-4B-4bit \
 ### High Throughput
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+rapid-mlx serve qwen3.5-27b-4bit \
   --stream-interval 5 \
   --max-num-seqs 256
 ```

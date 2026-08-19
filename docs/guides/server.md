@@ -24,28 +24,108 @@ rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 
 ## Server Options
 
+The most consequential `rapid-mlx serve` flags. The exhaustive list — every
+flag visible in `rapid-mlx serve --help`, grouped by category — lives in the
+[CLI reference](../reference/cli.md#rapid-mlx-serve).
+
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--port` | Server port | 8000 |
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
-| `--api-key` | API key for authentication | None |
+| `--listen-fd` | Adopt a pre-bound listening socket (3-1023) from a supervisor instead of binding; `--host`/`--port` are then ignored (see the socket-activation section below) | None |
+| `--log-level` | Log level for Python logging and uvicorn (`DEBUG`, `INFO`, `WARNING`, `ERROR`) | INFO |
+| `--served-model-name` | Model name reported by the API; when unset the `model` argument is used | None |
+| `--api-key` | API key for authentication (falls back to `RAPID_MLX_API_KEY`) | None |
+| `--cors-origins` | Allowed CORS origins (also via `RAPID_MLX_CORS_ALLOW_ORIGINS`) | `*` (all origins) |
+| `--trusted-hosts` | Opt-in Host-header allowlist; non-matching requests get HTTP 400 | None (not enforced) |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
+| `--max-request-bytes` | Max HTTP request body size; oversized requests get HTTP 413 before parsing (0 disables) | 8 MiB (8388608) |
 | `--timeout` | Request timeout in seconds | 1800 |
+| `--max-num-seqs` | Max concurrent sequences | 256 |
+| `--max-concurrent-requests` | Admission cap on in-flight requests (queued + running); excess requests get HTTP 503 with `Retry-After` | 256 |
+| `--prefill-batch-size` | Max prompts prefilled together in one cold wave; lower for better first-token latency under concurrent cold load | 8 |
+| `--completion-batch-size` | Completion batch size | 32 |
+| `--prefill-step-size` | Chunk size for prompt prefill processing | 2048 |
+| `--gpu-memory-utilization` | Fraction of device memory for the Metal allocation limit (0.0-1.0) | 0.90 |
+| `--kv-cache-dtype` | KV cache dtype (`bf16`, `int8`, `int4`); int8/int4 shrink the KV cache 2x/4x at a long-context decode cost. See the [CLI reference](../reference/cli.md#kv-cache-dtype-and-quantization) for the full quantization family (`--kv-cache-quantization*`, `--kv-cache-turboquant*`). | bf16 |
+| `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching for repeated prompts | enabled |
+| `--prefix-cache-index` | Prefix-cache lookup index: `radix` (token trie) or `hash` (legacy) | radix |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
 | `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
 | `--max-tokens` | Default max tokens | 32768 |
-| `--default-temperature` | Default temperature when not specified | None |
+| `--default-temperature` | Default temperature when not specified (companions: `--default-top-k`, `--default-min-p`, `--default-repetition-penalty`, `--default-presence-penalty`, `--default-frequency-penalty`) | None |
 | `--default-top-p` | Default top_p when not specified | None |
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
 | `--reasoning-parser` | Reasoning parser (`qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`, `gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`, `ui_tars`, `vibethinker`). Auto-detected from the alias profile; explicit flag overrides. There is no literal `auto` value — omit the flag for auto-detection. | None (auto-detected) |
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`; companions: `--embedding-max-length`, `--embedding-overflow-policy`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
+| `--mllm` / `--no-mllm` | Force multimodal (vision) loading / force text-only loading, overriding auto-detection | auto-detect |
+| `--enable-audio` | Mount `/v1/audio/*` routes on a text-only server (audio-capable models auto-mount them) | False |
+| `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; budget via `--disk-stream-cache-gb`) | False |
+| `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB (multi-model serving); LRU idle unpinned models are evicted first; 0 disables (companion: `--resident-model-idle-ttl`) | 0 |
+| `--pflash` | PFlash long-prompt prefill compression (`off`, `auto`, `always`); tuning knobs in the [CLI reference](../reference/cli.md#pflash-long-prompt-compression) | `always` for verified aliases, `off` otherwise |
 
 ## API Endpoints
+
+### Endpoint Index
+
+The complete route surface. Endpoints with a detailed section in this guide
+are marked; multimodal and MCP surfaces link to their own guides.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Chat completion, streaming and non-streaming (detailed below) |
+| `/v1/completions` | POST | Text completion (detailed below) |
+| `/v1/responses` | POST | OpenAI Responses API (the surface Codex CLI uses) |
+| `/v1/messages` | POST | Anthropic Messages API — Claude Code / OpenCode compatible (detailed below) |
+| `/v1/messages/count_tokens` | POST | Count input tokens for an Anthropic-format request (detailed below) |
+| `/v1/embeddings` | POST | Text embeddings — see the [Embeddings Guide](embeddings.md) |
+| `/v1/models` | GET | List available models (detailed below) |
+| `/v1/models/{id}` | GET | Metadata for a single model |
+| `/v1/models/residency` | GET | Residency status of every model loaded in the process |
+| `/v1/models/load` | POST | Load an additional model into the running server |
+| `/v1/models/{id}/pin` | PUT | Pin a resident model so it is never auto-evicted |
+| `/v1/models/{id}` | DELETE | Unload a resident (non-startup) model |
+| `/v1/audio/speech` | POST | Text-to-speech — see the [Audio Guide](audio.md) |
+| `/v1/audio/transcriptions` | POST | Speech-to-text — see the [Audio Guide](audio.md) |
+| `/v1/audio/translations` | POST | Speech translation to English — see the [Audio Guide](audio.md) |
+| `/v1/audio/music` | POST | Music generation — see the [Audio Guide](audio.md) |
+| `/v1/audio/voices` | GET | List available TTS voices — see the [Audio Guide](audio.md) |
+| `/v1/images/generations` | POST | Image generation |
+| `/v1/images/edits` | POST | Image editing |
+| `/v1/images/progress` | GET | Denoise progress of the in-flight image render (`step / total`) |
+| `/v1/images/cancel` | POST | Stop the in-flight image render at the next denoise step |
+| `/v1/videos` | POST / GET | Start a video-generation job / list jobs — see the [Video Generation Guide](video-generation.md) |
+| `/v1/videos/capabilities` | GET | Video-lane capability report |
+| `/v1/videos/{id}` | GET / DELETE | Video job status / delete a job and its artifact |
+| `/v1/videos/{id}/content` | GET | Download the finished video |
+| `/v1/mcp/tools` | GET | List tools discovered from the MCP config — see the [MCP Tools Guide](mcp-tools.md) |
+| `/v1/mcp/servers` | GET | List configured MCP servers |
+| `/v1/mcp/status` | GET | MCP subsystem status (including init errors) |
+| `/v1/mcp/execute` | POST | Execute an MCP tool by name |
+| `/v1/mcp/reload` | POST | Re-read the MCP config file without a server restart |
+| `/v1/status` | GET | Real-time server statistics (detailed below) |
+| `/v1/cache/stats` | GET | Cache statistics |
+| `/v1/cache/clear` | POST | Clear reusable prompt KV state without unloading model weights |
+| `/v1/cache/export` | POST | Export the prefix cache to a disk snapshot |
+| `/v1/cache/import` | POST | Import a previously exported prefix-cache snapshot |
+| `/v1/cache/info` | GET | Read the manifest of an exported cache snapshot |
+| `/v1/requests/{id}/cancel` | POST | Cancel an active or queued request by its `chatcmpl-...` id (`DELETE /v1/requests/{id}` is an alias) |
+| `/health` | GET | Full health view (queries engine stats on every hit) |
+| `/health/ready` | GET | Readiness — 503 until model load and warmup complete |
+| `/healthz` | GET | Constant-cost liveness probe (k8s convention; 503 while draining) |
+| `/readyz` | GET | Alias for `/health/ready` |
+| `/livez` | GET | Process liveness only (does not check model readiness) |
+| `/metrics` | GET | Prometheus metrics |
+
+The `/v1/audio/*` routes are mounted when the loaded model is audio-capable
+or `--enable-audio` is passed; on a plain text-only server they return 404.
+Image and video routes are always mounted and answer with a structured 409
+when no image/video model is loaded.
 
 ### Chat Completions
 
@@ -416,6 +496,7 @@ Stop reasons:
 | `end_turn` | Model finished naturally |
 | `tool_use` | Model wants to call a tool |
 | `max_tokens` | Hit the `max_tokens` limit |
+| `stop_sequence` | A user-supplied `stop_sequences` entry matched; the matched string is returned in the response's `stop_sequence` field (which is `null` for every other stop reason) |
 
 #### Using with Claude Code
 
@@ -761,7 +842,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+ExecStart=/usr/local/bin/rapid-mlx serve qwen3.5-27b-4bit \
   --use-paged-cache --port 8000
 Restart=always
 
@@ -844,7 +925,7 @@ at the argparse layer.
 For production with 50+ concurrent users:
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+rapid-mlx serve qwen3.5-27b-4bit \
   --use-paged-cache \
   --api-key your-secret-key \
   --rate-limit 60 \
