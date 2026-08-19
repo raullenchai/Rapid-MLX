@@ -2280,6 +2280,36 @@ flow_slow_stream_stop() {
     assert_tree_text "$OUT/after-stop-settled.json" "Three things, in order:"
     jq -n '{success: true, assertion: "a send immediately after zero-content Stop answers the new prompt"}' \
         > "$OUT/after-stop-assertion.json"
+
+    # A forming fenced block used to appear first as a stray backtick text
+    # row, then swap into a code card with a partial language, and finally
+    # shrink when the closing fence arrived. Sample the assembled app while
+    # the fake sidecar streams its deliberately split code fixture: no raw
+    # marker may become an accessibility row at any intermediate revision.
+    send_prompt "shape:code stream a code block" streaming-fence
+    local fence_samples=0
+    for sample in {1..120}; do
+        see_main "$OUT/streaming-fence-$sample.json"
+        if jq -e '.data.ui_elements[]?
+                  | ((.value // "") | tostring)
+                  | select((gsub("[[:space:]]"; "")) == "`"
+                           or (gsub("[[:space:]]"; "")) == "``")' \
+            "$OUT/streaming-fence-$sample.json" >/dev/null; then
+            die "a forming code fence flickered into the streaming AX tree"
+        fi
+        fence_samples=$((fence_samples + 1))
+        [[ "$(element_field "$OUT/streaming-fence-$sample.json" ChatView.SendOrStopButton description)" == "Send message" ]] \
+            && break
+        sleep 0.01
+    done
+    wait_send_idle "$OUT/streaming-fence-settled.json"
+    assert_code_block_is_its_own_view \
+        "$OUT/streaming-fence-settled.json" \
+        "Here is the function you asked for" \
+        "def fib(n):"
+    jq -n --argjson samples "$fence_samples" \
+        '{success: true, assertion: "forming fences never became text rows", samples: $samples}' \
+        > "$OUT/streaming-fence-assertion.json"
     cleanup_persona
 }
 
