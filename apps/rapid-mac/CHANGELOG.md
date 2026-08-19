@@ -67,7 +67,7 @@ exported.
 - Voice notes in Apple formats (M4A, CAF, …) transcribe directly — the app
   transcodes them for the server on the fly.
 
-## [0.12.15] — 2026-08-17
+## [0.12.15] — 2026-08-18
 
 Fixes a bug that could silently truncate files your coding agent writes, adds a
 Developer section to Settings, and brings MTP acceleration to the Qwen 3.8
