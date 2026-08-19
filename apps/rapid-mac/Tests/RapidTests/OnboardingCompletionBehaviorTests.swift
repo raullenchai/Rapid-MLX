@@ -466,13 +466,18 @@ struct OnboardingCompletionBehaviorTests {
                 "the completion action must be addressable by the golden-flow harness")
         #expect(!body.contains(#".accessibilityIdentifier("Quickstart.Ready")"#),
                 "a container identifier would overwrite the child button's AX identifier")
-        #expect(body.contains(#"Text("Startchatting")"#),
+        #expect(body.contains(#"Button("Startchatting"){completeOnboarding()}"#),
                 "the Ready screen must offer the Start chatting action")
         // The confirmation must run the coordinator transaction, not a
         // local shortcut that bypasses seeding / persistence.
         #expect(body.contains("coordinator.confirmStartChatting(seedWelcome:onSeedWelcome)"))
-        // No fake work between the click and the app.
-        #expect(!body.contains("case.ready:centeredCard(progressStep:.start){ProgressView"),
+        // No fake work between the click and the app. Direction D renders
+        // Ready through the shared outcome block, which has no progress slot
+        // at all; pin the absence directly rather than through the retired
+        // centred-card call shape.
+        #expect(!body.contains("case.ready:OnboardingCenteredCanvas{ProgressView"),
+                "Ready must not render a spinner — the model is already up")
+        #expect(!body.contains("privatevarreadyCard:someView{ProgressView"),
                 "Ready must not render a spinner — the model is already up")
     }
 
