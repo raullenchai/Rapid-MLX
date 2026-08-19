@@ -311,7 +311,8 @@ class SchedulerConfig:
     # slabs. Expressed as a fraction of the hard cap. Default 0.9 keeps
     # a 10% safety margin below the cap, wide enough that one large
     # prefill on a half-empty cache will not trigger a thrash loop.
-    # See D-METAL-PFX in 0.8TODO for the regression repro.
+    # The D-METAL-PFX regression repro was tracked in the 0.8-era
+    # local TODO, since removed — see git history.
     metal_pressure_evict_fraction: float = 0.9
 
     # D-METAL-CAP (codex round 3 BLOCKING #1): conservative per-token

@@ -41,21 +41,21 @@
       "floor_gb": 48,
       "picks": [
         {"role": "smart", "alias": "qwen3.8-27b-4bit", "footprint_gb": 20.0, "capability_pct": 92, "tokens_per_sec": 40.7, "launch_flags": []},
-        {"role": "fast", "alias": "qwen3.6-35b-4bit", "footprint_gb": 20.0, "capability_pct": 87, "tokens_per_sec": 60.0, "launch_flags": []}
+        {"role": "fast", "alias": "qwen3.6-35b-4bit", "footprint_gb": 20.0, "capability_pct": 87, "tokens_per_sec": 60.0, "provenance": "estimate", "launch_flags": []}
       ]
     },
     {
       "floor_gb": 64,
       "picks": [
         {"role": "smart", "alias": "qwen3.8-27b-4bit", "footprint_gb": 20.0, "capability_pct": 92, "tokens_per_sec": 40.7, "launch_flags": []},
-        {"role": "fast", "alias": "qwen3.6-35b-4bit", "footprint_gb": 20.0, "capability_pct": 87, "tokens_per_sec": 60.0, "launch_flags": []}
+        {"role": "fast", "alias": "qwen3.6-35b-4bit", "footprint_gb": 20.0, "capability_pct": 87, "tokens_per_sec": 60.0, "provenance": "estimate", "launch_flags": []}
       ]
     },
     {
       "floor_gb": 96,
       "picks": [
         {"role": "smart", "alias": "qwen3.8-27b-4bit", "footprint_gb": 20.0, "capability_pct": 92, "tokens_per_sec": 40.7, "launch_flags": []},
-        {"role": "fast", "alias": "qwen3.6-35b-4bit", "footprint_gb": 20.0, "capability_pct": 87, "tokens_per_sec": 60.0, "launch_flags": []}
+        {"role": "fast", "alias": "qwen3.6-35b-4bit", "footprint_gb": 20.0, "capability_pct": 87, "tokens_per_sec": 60.0, "provenance": "estimate", "launch_flags": []}
       ]
     }
   ]

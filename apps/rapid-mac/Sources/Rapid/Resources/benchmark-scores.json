@@ -488,5 +488,5 @@
       "speed_source": "docs/benchmarks/model-recommendation-measurements.json (short-prompt decode, M3 Ultra, MTP on; 8K decode: 37.6)"
     }
   },
-  "ground_truth_source": "data/benchmark-ground-truth.json"
+  "ground_truth_source": "data/benchmark-ground-truth.json for the rows it covers; rows absent there (e.g. lfm2.5-*, bonsai-27b, qwen3.5-35b, qwen3.8-27b) are sourced solely by their per-row *_source fields"
 }

@@ -55,11 +55,11 @@ private final class RecommendationBundleFinder: NSObject {}
 /// tree. The column is display-only (``pickStatsLine``); safety gates still
 /// apply independently at launch.
 ///
-/// The capability column is monotonic non-decreasing by RAM, with ONE
-/// deliberate tie documented at the tier: the 64 GB smart 8-bit is floored
-/// at its own faster 4-bit alt's 87 % (an 8-bit quant can't display weaker
-/// than its 4-bit; its edge is fidelity, not bench points). Every alias is
-/// verified to exist in the bundled ``aliases.json`` by
+/// The capability column is monotonic non-decreasing by RAM, and every
+/// smart pick reads at or above its own fast alt — e.g. the 64 GB smart
+/// pick (qwen3.8-27b-4bit) shows 92 %, above its qwen3.6-35b-4bit alt's
+/// 87 % — so "Best pick" never looks weaker than "Faster". Every alias
+/// is verified to exist in the bundled ``aliases.json`` by
 /// ``RAMBucketedDefaultTests``.
 enum RAMBucketedDefault {
     /// One recommended model for a RAM tier: the alias, the numbers the

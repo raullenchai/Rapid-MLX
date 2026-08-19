@@ -2362,8 +2362,9 @@ def _mark_thinking_auto_disabled(request) -> None:
 # When a client explicitly sets ``chat_template_kwargs.enable_thinking``
 # on a server running a non-honoring parser, we surface the silent-drop
 # via the ``X-RapidMLX-Warning`` response header rather than the previous
-# zero-signal behavior. See L-05 in 0.8TODO.md for the dogfooding repro
-# (Theo on phi-4-mini-reasoning → deepseek_r1 parser).
+# zero-signal behavior. The L-05 dogfooding repro (Theo on
+# phi-4-mini-reasoning → deepseek_r1 parser) was tracked in the 0.8-era
+# local TODO, since removed — see git history.
 _THINKING_FLAG_HONORING_PARSERS: frozenset[str] = frozenset({"qwen3"})
 
 
