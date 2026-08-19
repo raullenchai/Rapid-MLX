@@ -1,9 +1,10 @@
 # Rapid-MLX Optimization Roadmap
 
-> **Historical snapshot, March 2026** — this document is preserved as written
-> and is no longer maintained. Several items listed as planned have since
-> shipped; see the [release notes](docs/release-notes/) for what has shipped
-> since.
+> **Historical snapshot, March 2026** — this document is no longer
+> maintained. It is preserved with light annotations marking items that
+> have since shipped (each tagged "shipped"); see the
+> [release notes](docs/release-notes/) for the authoritative record of
+> what has shipped since.
 
 > Goal: For every popular model on Apple Silicon, Rapid-MLX should be the fastest engine — **zero configuration required**. Users pick a model, we auto-apply the best optimizations.
 
