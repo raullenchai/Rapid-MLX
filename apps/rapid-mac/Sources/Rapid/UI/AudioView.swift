@@ -307,7 +307,7 @@ struct AudioView: View {
 
     private var fileCaption: String {
         guard let url = viewModel.selectedFileURL else {
-            return "WAV, MP3, M4A, AAC, FLAC, or MP4 - up to 25 MB"
+            return "WAV, MP3, M4A, AAC, FLAC, MP4, AIFF, or CAF - up to 25 MB"
         }
         if let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
             return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)

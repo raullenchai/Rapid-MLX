@@ -71,6 +71,39 @@ struct AudioClientTests {
         #expect(body.contains("Content-Type: audio/wav"))
         #expect(bodyData.range(of: Data("RIFF".utf8)) != nil)
         #expect(bodyData.range(of: Data("WAVEfmt ".utf8)) != nil)
+        let format = try wavFormat(in: bodyData)
+        #expect(format.sampleRate == 16_000)
+        #expect(format.channels == 1)
+    }
+
+    @Test("AIFF transcription is normalized to a 16 kHz WAV upload")
+    @MainActor
+    func aiffTranscriptionRequest() async throws {
+        let client = makeClient()
+        AudioStubProtocol.response = (
+            200,
+            ["Content-Type": "application/json"],
+            Data(#"{"text":"local aiff","language":"en","duration":0.1}"#.utf8)
+        )
+        let file = try temporaryAIFF()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+
+        _ = try await client.transcribe(
+            fileURL: file,
+            model: "whisper-medium",
+            port: 8125,
+            bearer: nil
+        )
+
+        let bodyData = try #require(AudioStubProtocol.bodies.first)
+        let body = String(decoding: bodyData, as: UTF8.self)
+        #expect(body.contains("name=\"file\"; filename=\"input.wav\""))
+        #expect(body.contains("Content-Type: audio/wav"))
+        #expect(bodyData.range(of: Data("RIFF".utf8)) != nil)
+        #expect(bodyData.range(of: Data("WAVEfmt ".utf8)) != nil)
+        let format = try wavFormat(in: bodyData)
+        #expect(format.sampleRate == 16_000)
+        #expect(format.channels == 1)
     }
 
     @Test("Voices sends model query and omits an empty bearer")
@@ -244,6 +277,73 @@ struct AudioClientTests {
         )
         try output.write(from: buffer)
         return file
+    }
+
+    private func temporaryAIFF() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rapid-audio-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("sample.aiff")
+        let sampleRate = 22_050.0
+        let format = try #require(AVAudioFormat(
+            standardFormatWithSampleRate: sampleRate,
+            channels: 1
+        ))
+        let frames: AVAudioFrameCount = 2_205
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let samples = try #require(buffer.floatChannelData?[0])
+        for index in 0..<Int(frames) {
+            samples[index] = Float(sin(2.0 * .pi * 440.0 * Double(index) / sampleRate) * 0.2)
+        }
+        let output = try AVAudioFile(
+            forWriting: file,
+            settings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: true,
+            ]
+        )
+        try output.write(from: buffer)
+        return file
+    }
+
+    private func wavFormat(in multipartBody: Data) throws -> (sampleRate: UInt32, channels: UInt16) {
+        let riff = try #require(multipartBody.range(of: Data("RIFF".utf8))?.lowerBound)
+        let wave = riff + 8
+        #expect(multipartBody[wave..<(wave + 4)] == Data("WAVE".utf8))
+
+        var chunk = wave + 4
+        while chunk + 8 <= multipartBody.endIndex {
+            let chunkID = multipartBody[chunk..<(chunk + 4)]
+            let chunkSize = Int(littleEndianUInt32(in: multipartBody, at: chunk + 4))
+            let payload = chunk + 8
+            guard payload + chunkSize <= multipartBody.endIndex else { break }
+            if chunkID == Data("fmt ".utf8) {
+                #expect(chunkSize >= 16)
+                return (
+                    littleEndianUInt32(in: multipartBody, at: payload + 4),
+                    littleEndianUInt16(in: multipartBody, at: payload + 2)
+                )
+            }
+            chunk = payload + chunkSize + (chunkSize % 2)
+        }
+        Issue.record("Uploaded WAV is missing its fmt chunk")
+        throw CocoaError(.fileReadCorruptFile)
+    }
+
+    private func littleEndianUInt16(in data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private func littleEndianUInt32(in data: Data, at offset: Int) -> UInt32 {
+        UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
     }
 }
 

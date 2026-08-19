@@ -217,8 +217,9 @@ def test_small_macs_get_something_that_fits(ram, expected):
     pytest.fail(f"no install.sh tier matched {ram} GB")
 
 
-def _readme_table_tiers() -> list[tuple[int, str, list[str]]]:
-    """``[(floor_gb, alias, one_shot_flags)]`` from the Choose Your Model table.
+def _readme_table_tiers() -> list[tuple[int, str, str, list[str]]]:
+    """``[(floor_gb, alias, peak_rss, one_shot_flags)]`` from the Choose Your
+    Model table.
 
     Parsed from the tier ROWS, not by scanning the file: the README also
     names ``qwen3.5-4b-4bit`` as the ``rapid-mlx chat`` default, which is
@@ -228,21 +229,29 @@ def _readme_table_tiers() -> list[tuple[int, str, list[str]]]:
     in the row — a flag sitting in the prose column would satisfy a
     substring search while the command a reader actually pastes is still
     incomplete.
+
+    The Peak RSS cell is captured (not skipped) so it can be pinned against
+    the SSOT: it drifted on 2 of 5 rows precisely because the old regex
+    swallowed it with ``[^|]*``.
     """
     out = []
     for line in README.read_text().splitlines():
         m = re.match(
-            r"\| \*\*(\d+)(?:[–-]\d+)? GB\+?\*\*[^|]*\| `([a-z0-9.\-]+)` \|[^|]*\| `([^`]+)` \|",
+            r"\| \*\*(\d+)(?:[–-]\d+)? GB\+?\*\*[^|]*"
+            r"\| `([a-z0-9.\-]+)` "
+            r"\|\s*([\d.]+) GB\s*"
+            r"\| `([^`]+)` \|",
             line,
         )
         if not m:
             continue
-        floor, alias, oneshot = int(m.group(1)), m.group(2), m.group(3).split()
+        floor, alias, rss = int(m.group(1)), m.group(2), m.group(3)
+        oneshot = m.group(4).split()
         assert oneshot[:2] == ["rapid-mlx", "serve"], f"unexpected command: {oneshot}"
         assert oneshot[2] == alias, (
             f"README row recommends {alias} but its command runs {oneshot[2]}"
         )
-        out.append((floor, alias, oneshot[3:]))
+        out.append((floor, alias, rss, oneshot[3:]))
     return out
 
 
@@ -279,9 +288,9 @@ def test_readme_table_matches_the_app_tier_for_tier():
             continue
         app_collapsed.append((floor, alias))
     readme = sorted(_readme_table_tiers())
-    assert [(f, a) for f, a, _ in readme] == app_collapsed, (
+    assert [(f, a) for f, a, *_ in readme] == app_collapsed, (
         "README.md's tier table does not line up with RAMBucketedDefault.tiers:\n"
-        f"  README: {[(f, a) for f, a, _ in readme]}\n"
+        f"  README: {[(f, a) for f, a, *_ in readme]}\n"
         f"  app:    {app_collapsed}"
     )
 
@@ -289,7 +298,7 @@ def test_readme_table_matches_the_app_tier_for_tier():
 def test_readme_prose_matches_the_readme_table():
     """The README states the map twice; both have to say the same thing."""
     prose = sorted(_readme_prose_tiers())
-    table = sorted((f, a) for f, a, _ in _readme_table_tiers())
+    table = sorted((f, a) for f, a, *_ in _readme_table_tiers())
     assert prose == table, (
         "the README's quick-start sentence and its tier table disagree:\n"
         f"  prose: {prose}\n"
@@ -301,11 +310,33 @@ def test_readme_one_shot_commands_carry_the_exact_flags():
     """A README reader pastes the One-shot command verbatim. It must be the
     command the app runs — same flags, same order, nothing missing."""
     app = {alias: flags for _, alias, flags in _parse_app_tiers()}
-    for floor, alias, oneshot_flags in _readme_table_tiers():
+    for floor, alias, _rss, oneshot_flags in _readme_table_tiers():
         assert alias in app, f"README recommends {alias}, which is not an app pick"
         assert oneshot_flags == app[alias], (
             f"README's one-shot command for {alias} has {oneshot_flags}, "
             f"the app launches it with {app[alias]}"
+        )
+
+
+def test_readme_peak_rss_matches_the_ssot():
+    """The Peak RSS column is the number a reader checks against their RAM
+    before pasting the one-shot command. It sat outside this gate and drifted
+    on 2 of 5 rows (3.2 vs SSOT 3.0, 5.8 vs SSOT 6.0) while the README right
+    above the table promised "a CI test parses both files and fails if they
+    drift apart" — so each cell is now pinned to the SSOT's ``footprint_gb``,
+    rendered the way the README renders it (one decimal place)."""
+    ssot: dict[str, float] = {}
+    for tier in json.loads(RECOMMENDATIONS.read_text())["tiers"]:
+        for pick in tier["picks"]:
+            ssot[pick["alias"]] = pick["footprint_gb"]
+    rows = _readme_table_tiers()
+    assert rows, "no tier rows parsed from README.md"
+    for floor, alias, rss, _flags in rows:
+        assert alias in ssot, f"README recommends {alias}, which is not an app pick"
+        expected = f"{ssot[alias]:.1f}"
+        assert rss == expected, (
+            f"README's {floor} GB row lists Peak RSS {rss} GB for {alias}, "
+            f"the SSOT footprint_gb is {expected} GB"
         )
 
 

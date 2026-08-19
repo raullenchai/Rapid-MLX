@@ -4265,6 +4265,11 @@ flow_audio_readiness() {
     done
     [[ "$transcription_ready" == 1 ]] \
         || die "Transcription did not expose download-only readiness"
+    jq -e '.data.ui_elements[]?
+           | select(.role == "AXStaticText"
+                    and ((.value // "") | contains("AIFF")))' \
+        "$OUT/transcription.json" >/dev/null \
+        || die "Transcription picker copy does not advertise its supported AIFF input"
     baseline audio-readiness.transcription "$OUT/transcription.json"
 
     press "$OUT/transcription.json" Readiness.Action "$OUT/transcription-download.json" \

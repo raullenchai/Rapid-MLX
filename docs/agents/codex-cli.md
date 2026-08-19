@@ -6,7 +6,7 @@ OpenAI **Responses API** (`POST /v1/responses`); rapid-mlx implements that
 endpoint as a stateless shim, so any local model can drive Codex.
 
 Requires **rapid-mlx >= 0.7.10**. Verified end-to-end against Qwen 3.6,
-Gemma 4, and gpt-oss in the Tier-1 agent matrix
+Gemma 4, DeepSeek, and gpt-oss in the Tier-1 agent matrix
 (`tests/integrations/test_agents_matrix.py::TestCodexCLI`). See the
 [support matrix](matrix.md) for the current per-family status.
 

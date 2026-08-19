@@ -18,7 +18,7 @@
 |--------|-------------|---------|
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | `0` |
-| `--timeout` | Request timeout in seconds | `300` |
+| `--timeout` | Request timeout in seconds | `1800` |
 
 ### Batching Options
 
@@ -257,10 +257,10 @@ Create `mcp.json`:
 |-----------|-------------|---------|
 | `model` | Model name | Required |
 | `messages` | Chat messages | Required |
-| `max_tokens` | Max tokens to generate | 256 |
+| `max_tokens` | Max tokens to generate | None → server default (32768, `--max-tokens`) |
 | `temperature` | Sampling temperature | Model default |
 | `top_p` | Nucleus sampling | Model default |
-| `stream` | Enable streaming | `true` |
+| `stream` | Enable streaming | `false` |
 | `stop` | Stop sequences | None |
 | `tools` | Tool definitions | None |
 | `response_format` | Output format (`json_object`, `json_schema`) | None |
@@ -270,7 +270,7 @@ Create `mcp.json`:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `video_fps` | Frames per second | 2.0 |
-| `video_max_frames` | Max frames | 32 |
+| `video_max_frames` | Max frames | 128 |
 
 ## Environment Variables
 

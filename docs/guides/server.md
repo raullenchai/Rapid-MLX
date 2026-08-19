@@ -30,7 +30,7 @@ rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
-| `--timeout` | Request timeout in seconds | 300 |
+| `--timeout` | Request timeout in seconds | 1800 |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
@@ -349,13 +349,26 @@ curl http://localhost:8000/v1/messages/count_tokens \
 | `max_tokens` | int | yes | - | Maximum number of tokens to generate |
 | `system` | string or list | no | null | System prompt (string or list of `{"type": "text", "text": "..."}` blocks) |
 | `stream` | bool | no | false | Enable SSE streaming |
-| `temperature` | float | no | 0.7 | Sampling temperature (0.0 = deterministic, 1.0 = creative) |
-| `top_p` | float | no | 0.9 | Nucleus sampling threshold |
+| `temperature` | float | no | *(resolved — see below)* | Sampling temperature (0.0 = deterministic, 1.0 = creative). Must be in `[0, 1]` — out-of-range values are rejected with HTTP 422 |
+| `top_p` | float | no | *(resolved — see below)* | Nucleus sampling threshold. Must be in `(0, 1]` — out-of-range values are rejected with HTTP 422 |
 | `top_k` | int | no | null | Top-k sampling |
 | `stop_sequences` | list | no | null | Sequences that stop generation |
 | `tools` | list | no | null | Tool definitions with `name`, `description`, `input_schema` |
 | `tool_choice` | dict | no | null | Tool selection mode (`auto`, `any`, `tool`, `none`) |
 | `metadata` | dict | no | null | Arbitrary metadata (passed through, not used by server) |
+
+When `temperature` / `top_p` are omitted, the server resolves them through a
+cascade — first value set wins:
+
+1. the request field,
+2. the CLI overrides (`--default-temperature` / `--default-top-p`),
+3. the alias profile's `recommended_sampling`,
+4. the model's `generation_config.json`,
+5. last-resort fallbacks `0.7` (temperature) / `0.9` (top_p).
+
+Independently of the cascade, this surface enforces the Anthropic spec ranges:
+`temperature` must be in `[0, 1]` and `top_p` in `(0, 1]`; violations return
+HTTP 422 before any inference runs.
 
 #### Response format
 

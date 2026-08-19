@@ -86,7 +86,8 @@ each SSE chunk's delta:
 
 The official OpenAI Chat Completions streaming schema only defines
 `delta.role`, `delta.content`, `delta.tool_calls`, `delta.refusal`, and
-(very recently) `delta.function_call`. It does **not** define
+the legacy `delta.function_call` (the pre-1.0 function-calling field,
+deprecated in favor of `delta.tool_calls`). It does **not** define
 `delta.reasoning_content`.
 
 For us this is intentional: it mirrors the non-stream
@@ -119,7 +120,7 @@ OpenAI reference for what the canonical schema actually contains:
 
 ---
 
-## L-04 — Streaming emits `usage` in the last content chunk without `stream_options.include_usage`
+## L-04 — Streaming `usage` requires `stream_options.include_usage` (historical — now spec-aligned)
 
 The OpenAI spec says token-usage data is only delivered on the wire
 when the client opts in with:
@@ -135,32 +136,33 @@ When `include_usage` is `true`, OpenAI sends a **dedicated trailer
 chunk** after `finish_reason` is set, with an empty `choices` array
 and a populated `usage` object — followed by `data: [DONE]`.
 
-rapid-mlx currently does two things at once:
+rapid-mlx now matches this exactly:
 
-1. **Always** embeds `usage` directly into the last content chunk
-   (the one that carries `finish_reason`), **regardless** of whether
-   `stream_options.include_usage` was set. This is non-spec.
-2. When `include_usage: true` **is** set, it additionally emits the
-   dedicated trailer chunk after the content chunk. This part **is**
-   spec-aligned.
+1. When `include_usage` is unset or `false`, `usage` is omitted from
+   **every** chunk.
+2. When `include_usage: true` is set, `usage` appears **only** in the
+   dedicated trailer chunk (empty `choices`) after the finish chunk;
+   terminal content / tool-call chunks carry `"usage": null`.
+
+**Historical note:** earlier releases always embedded `usage` directly
+into the last content chunk (the one carrying `finish_reason`),
+regardless of the opt-in — non-spec behavior that made LangChain /
+AI-SDK-style aggregators double-count token totals. That emission has
+been removed; this entry is kept so anyone who coded around the old
+behavior knows why their workaround stopped seeing inline usage.
 
 **What this means for clients:**
 
-- If you are using the official `openai-python` SDK to read
-  `chunk.usage`, you'll see usage data with or without
-  `include_usage`. Reading it works today.
-- For forward compatibility, **explicitly set
-  `stream_options.include_usage=True`** and rely on the dedicated
-  trailer chunk. We may gate the inline-on-last-content emission
-  behind the same opt-in flag in a future minor release to align with
-  the spec; clients that already opt in will be unaffected.
+- To read usage from a stream, **set
+  `stream_options.include_usage=True`** and read it from the trailer
+  chunk — exactly as you would against OpenAI.
+- Code written against the old behavior that read `chunk.usage` off
+  the last content chunk *without* opting in now gets `None`. Add the
+  opt-in.
 - Strict parsers that disallow `usage` on a chunk with a non-empty
-  `choices` array will reject our current emission. The same parsers
-  will accept the trailer chunk fine, so opting in is the
-  forward-compatible workaround.
+  `choices` array no longer have anything to reject.
 
-Example of safe consumption (works on rapid-mlx today *and* on a
-spec-strict future):
+Example of spec-aligned consumption:
 
 ```python
 stream = client.chat.completions.create(
@@ -173,7 +175,7 @@ stream = client.chat.completions.create(
 usage = None
 for chunk in stream:
     if chunk.usage is not None:
-        usage = chunk.usage  # may be set on last content chunk OR trailer
+        usage = chunk.usage  # set only on the dedicated trailer chunk
     if chunk.choices:
         delta = chunk.choices[0].delta
         if delta.content:
@@ -269,5 +271,5 @@ See also:
 |-----|---------|---------|------------|
 | **L-01** | Anthropic SDK | `404` on every request | `base_url="http://host:port"` — no `/v1` suffix |
 | **L-03** | OpenAI SDK / streaming | Strict parser rejects `delta.reasoning_content` | Loosen parser, or pre-filter chunks |
-| **L-04** | OpenAI SDK / streaming | `usage` arrives on last content chunk without opt-in | Opt in via `stream_options.include_usage=True` and read from trailer |
+| **L-04** | OpenAI SDK / streaming | `chunk.usage` is `None` without opt-in (historical: arrived uninvited on the last content chunk) | Opt in via `stream_options.include_usage=True` and read from the trailer chunk |
 | **L-06** | OpenAI / Anthropic streaming | `reasoning_content` deltas after first `content` delta | Buffer separately, join at end of stream |

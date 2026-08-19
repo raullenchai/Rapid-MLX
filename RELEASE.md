@@ -5,6 +5,10 @@ wrong. If you only read one thing: **you cut a release by merging a
 `chore: bump version to X.Y.Z` commit to `main`** — everything else is
 automated.
 
+This file is the **canonical** release-flow reference (as
+`scripts/pr_validate/README.md` is for the PR-validation pipeline). The
+extended operational guide, `docs/development/releasing.md`, defers to it.
+
 ## TL;DR — cut a release
 
 1. Bump `version` in `pyproject.toml` to `X.Y.Z`.
@@ -64,8 +68,9 @@ push to main
 ┌─ tier1-agent-gate (SELF-HOSTED, Apple Silicon "Studio", ~10m) ┐
 │  Build the exact release source into a fresh venv, then run   │
 │  tests/integrations/agent_smoke.sh: boot rapid-mlx serve and  │
-│  drive Claude Code / Codex / Hermes / Aider through a real     │
-│  end-to-end edit. Exit non-zero if any of the 4 regresses.    │
+│  drive Claude Code / Codex / Hermes / Aider / DeepSeek Harness│
+│  through a real end-to-end edit. Exit non-zero if any of the 5│
+│  regresses.                                                   │
 └───────────────────────────────────────────────────────────────┘
    │ gate passed
    ▼
@@ -84,15 +89,16 @@ PyPI publish on a self-hosted-Metal `test_wheel` job.
 
 ## Why a self-hosted runner
 
-The gate re-verifies that our four **Tier-1 (flagship) agents** — Claude Code,
-Codex, Hermes, Aider — actually work end-to-end against a real local model on
+The gate re-verifies that our five **Tier-1 (flagship) agents** — Claude Code,
+Codex, Hermes, Aider, DeepSeek Harness (`dsh`) — actually work end-to-end
+against a real local model on
 Apple Silicon, on the *current* client binaries. GitHub-hosted runners cannot do
 this: no Metal, no cached weights (a boot model is ~40–70 GB), and the agent
 CLIs aren't installed. So the gate runs on a **self-hosted Apple-Silicon runner
 (the "Studio", an M3 Ultra)**.
 
 > **Two meanings of "Tier-1", don't conflate:** *Tier-1 model families*
-> (Qwen 3.6 / Gemma 4 / DeepSeek / gpt-oss / Hy3) and *Tier-1 agents* (the 4
+> (Qwen 3.6 / Gemma 4 / DeepSeek / gpt-oss / Hy3) and *Tier-1 agents* (the 5
 > flagship). The gate is about the **agents**. See the agent-tier docs on
 > rapidmlx.com/docs/matrix and `tests/integrations/README.md`.
 
@@ -115,7 +121,7 @@ CLIs aren't installed. So the gate runs on a **self-hosted Apple-Silicon runner
 
 The `release` job is skipped; the version stays committed-but-unpublished. In
 the failed `tier1-agent-gate` job log you'll see which agent (`claude-code` /
-`codex-cli` / `hermes` / `aider`) reported `FAIL`.
+`codex-cli` / `hermes` / `aider` / `dsh`) reported `FAIL`.
 
 1. First rule out a *model-strength* artifact — a weak model that fakes success
    is not an integration bug. The gate uses `qwen3.6-35b-8bit` (≥8-bit on

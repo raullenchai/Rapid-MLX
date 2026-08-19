@@ -56,7 +56,7 @@ rapid-mlx serve <model> [options]
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
-| `--timeout` | Request timeout in seconds | 300 |
+| `--timeout` | Request timeout in seconds | 1800 |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
 | `--idle-cache-clear-seconds` | Clear reusable KV cache after idle time; model weights remain loaded | Disabled |
@@ -208,8 +208,8 @@ rapid-mlx bench <model> [options]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `<model>` | Model alias (e.g. `qwen3.5-4b-4bit`) or HF repo (positional) | *(required)* |
-| `--num-prompts` | Number of prompts | 5 |
-| `--max-tokens` | Max tokens per prompt | 256 |
+| `--num-prompts` | Number of prompts | 10 |
+| `--max-tokens` | Max tokens per prompt | 100 |
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching | enabled |
 | `--use-paged-cache` | Use paged KV cache layout | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries | off |
@@ -245,7 +245,7 @@ rapid-mlx chat [model] [options]
 | `model` | Model alias or HF repo (positional, optional) | `qwen3.5-4b-4bit` |
 | `--system` | System prompt prepended to the conversation | *(none)* |
 | `--think` / `--no-think` | Enable / disable reasoning output in the REPL | off |
-| `--max-tokens` | Max tokens per assistant response | 2048 |
+| `--max-tokens` | Max tokens per assistant response | 2048 (raised to 4096 when `--think` is set, so reasoning + answer fit the budget; an explicit `--max-tokens` always wins) |
 | `--temperature` | Sampling temperature | 0.7 |
 | `--port` | Connect to an existing server on `127.0.0.1:<port>` instead of spawning | *(spawn)* |
 | `--base-url` | Connect to an existing server URL (overrides `--port`) | *(spawn)* |
