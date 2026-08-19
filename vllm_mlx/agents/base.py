@@ -82,6 +82,11 @@ class AgentProfile:
     # Identity
     name: str  # "codex", "hermes", "qwen-code"
     display_name: str  # "Hermes Agent"
+    # "agent" (a runnable agent product) or "framework" (a library you
+    # build agents with — langchain, pydanticai, smolagents). The CLI
+    # footer counts the two separately; everything else treats them the
+    # same.
+    kind: str = "agent"
     repo: str | None = None  # "NousResearch/hermes-agent"
     stars: int | None = None  # for prioritization
 

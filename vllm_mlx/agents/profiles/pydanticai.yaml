@@ -1,5 +1,6 @@
 name: pydanticai
 display_name: "PydanticAI"
+kind: framework
 repo: "pydantic/pydantic-ai"
 stars: 15000
 

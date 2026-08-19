@@ -43,4 +43,33 @@ ADAPTERS: dict[str, object] = {
     "cursor": cursor,
 }
 
-__all__ = ["ADAPTERS", "claude_code", "cline", "continue_dev", "cursor"]
+# Alternate user-facing spellings, normalized before the ``ADAPTERS``
+# lookup. ``rapid-mlx agents`` calls the same product ``continue`` (its
+# profile is ``continue.yaml``), so users reasonably type either slug in
+# either subcommand — see issue #2082. The canonical ids above stay
+# unchanged: config files and detection logic key on them.
+CLIENT_ALIASES: dict[str, str] = {
+    "continue": "continue-dev",
+}
+
+
+def canonical_client(name: str | None) -> str | None:
+    """Normalize a user-typed client slug to its canonical ``ADAPTERS`` key.
+
+    Unknown names pass through unchanged so the caller's "unknown
+    client" error handling still sees exactly what the user typed.
+    """
+    if name is None:
+        return None
+    return CLIENT_ALIASES.get(name, name)
+
+
+__all__ = [
+    "ADAPTERS",
+    "CLIENT_ALIASES",
+    "canonical_client",
+    "claude_code",
+    "cline",
+    "continue_dev",
+    "cursor",
+]

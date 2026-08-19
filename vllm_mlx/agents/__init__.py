@@ -36,6 +36,10 @@ _LOADED = False
 _PROFILE_ALIASES = {
     "claude": "claude-code",
     "dsh": "deepseek-harness",
+    # ``rapid-mlx launch`` calls the same product ``continue-dev`` (the
+    # launch registry avoids the bare Python keyword in its module
+    # names), so both slugs must resolve here too — see issue #2082.
+    "continue-dev": "continue",
 }
 
 PROFILES_DIR = Path(__file__).parent / "profiles"
@@ -106,6 +110,7 @@ def _load_profile_from_yaml(path: Path) -> AgentProfile:
     return AgentProfile(
         name=data["name"],
         display_name=data.get("display_name", data["name"]),
+        kind=data.get("kind", "agent"),
         repo=data.get("repo"),
         stars=data.get("stars"),
         config=_parse_config(data),
