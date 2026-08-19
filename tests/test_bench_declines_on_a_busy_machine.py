@@ -204,22 +204,55 @@ def test_steady_contention_cancels(monkeypatch, tmp_path):
     assert "not this PR" in result["summary"], result["summary"]
 
 
-def test_a_noisy_base_arm_cannot_waive_a_regression(monkeypatch, tmp_path):
-    """An inflated base is the denominator — as dangerous as a noisy PR arm."""
+def test_a_noisy_base_warm_arm_cannot_waive_a_regression(monkeypatch, tmp_path):
+    """An inflated base WARM is the denominator — as dangerous as a noisy PR arm.
+
+    Warm is the authoritative metric (see #2118): a noisy warm capture on either
+    arm means the machine is not quiet enough to trust the steady-state number,
+    so the A/B declines rather than risk waiving a regression through an inflated
+    denominator.
+    """
     result, _, _ = _harness(
-        monkeypatch, tmp_path, [(350, 400), (250, 400)], [(350, 400)] * 2
+        monkeypatch, tmp_path, [(250, 560), (250, 400)], [(250, 400)] * 2
     )
     assert result["status"] == "skip", result
     assert "not quiet enough" in result["summary"], result["summary"]
-    assert "base_cold" in result["summary"], result["summary"]
+    assert "base_warm" in result["summary"], result["summary"]
 
 
-def test_a_noisy_pr_arm_also_declines(monkeypatch, tmp_path):
+def test_a_noisy_pr_warm_arm_also_declines(monkeypatch, tmp_path):
     result, _, _ = _harness(
-        monkeypatch, tmp_path, [(250, 400)] * 2, [(350, 400), (250, 400)]
+        monkeypatch, tmp_path, [(250, 400)] * 2, [(250, 560), (250, 400)]
     )
     assert result["status"] == "skip", result
-    assert "pr_cold" in result["summary"], result["summary"]
+    assert "pr_warm" in result["summary"], result["summary"]
+
+
+def test_cold_noise_alone_is_advisory_not_inconclusive(monkeypatch, tmp_path):
+    """#2118: cold-start spread is intrinsic on the large-model matrix (page-cache
+    eviction + Metal kernel compile), so a noisy cold spread with a quiet warm
+    capture no longer forces INCONCLUSIVE. The warm A/B decides; cold is advisory.
+    """
+    result, _, _ = _harness(
+        monkeypatch, tmp_path, [(250, 400), (600, 400)], [(250, 400), (600, 400)]
+    )
+    assert result["status"] == "pass", result
+    assert "not this PR" in result["summary"], result["summary"]
+    assert "advisory" in result["summary"], result["summary"]
+    assert "verdict on warm" in result["summary"], result["summary"]
+
+
+def test_a_warm_regression_survives_cold_noise(monkeypatch, tmp_path):
+    """Cold noise must not waive a real WARM regression. With cold noisy on both
+    arms but warm quiet and clearly slower on the PR, the gate still fails — the
+    cold delta is merely demoted to advisory, not the verdict.
+    """
+    result, _, _ = _harness(
+        monkeypatch, tmp_path, [(250, 400), (600, 400)], [(250, 500), (600, 500)]
+    )
+    assert result["status"] == "fail", result
+    assert "regression confirmed" in result["summary"], result["summary"]
+    assert "advisory" in result["summary"], result["summary"]
 
 
 def test_both_arms_see_matched_prompt_sets(monkeypatch, tmp_path):
