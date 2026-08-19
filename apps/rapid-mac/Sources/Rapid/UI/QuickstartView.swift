@@ -1464,10 +1464,13 @@ struct QuickstartView: View {
     private var compactRailPlane: some View {
         if let lifecycle = subjectLifecycle {
             let job = downloads.job(for: coordinator.selection.alias)
+            @Bindable var progress = job?.progress ?? DownloadProgress()
             OnboardingCompactSubjectBand(
-                lifecycle: lifecycle,
+                lifecycle: coordinator.phase == .downloading
+                    ? Self.downloadLifecycleName(progress: progress)
+                    : lifecycle,
                 identity: coordinator.selection.alias,
-                fraction: coordinator.phase == .downloading ? job?.progress.progressFraction : nil,
+                fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
                 bytesLine: Self.subjectBytesLine(job: job)
             )
         } else {
@@ -1485,10 +1488,13 @@ struct QuickstartView: View {
     private var railPlane: some View {
         if let lifecycle = subjectLifecycle {
             let job = downloads.job(for: coordinator.selection.alias)
+            @Bindable var progress = job?.progress ?? DownloadProgress()
             OnboardingSubjectRail(
-                lifecycle: lifecycle,
+                lifecycle: coordinator.phase == .downloading
+                    ? Self.downloadLifecycleName(progress: progress)
+                    : lifecycle,
                 identity: coordinator.selection.alias,
-                fraction: coordinator.phase == .downloading ? job?.progress.progressFraction : nil,
+                fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
                 bytesLine: Self.subjectBytesLine(job: job),
                 rateLine: Self.subjectRateLine(job: job),
                 stepLabel: "STEP \(coordinator.step.displayNumber) OF \(QuickstartCoordinator.Step.total)",
@@ -1542,15 +1548,28 @@ struct QuickstartView: View {
         }
     }
 
+    /// The mirror's aggregate byte heartbeat is a stronger signal than its
+    /// coarse phase. It deliberately does not mutate ``phase`` (the next file
+    /// event owns that state), so a rail that looked only at the enum could
+    /// claim PREPARING while measured bytes were already moving.
+    static func downloadLifecycleName(progress: DownloadProgress) -> String {
+        progress.hasDiskObservation ? "DOWNLOADING" : downloadLifecycleName(phase: progress.phase)
+    }
+
     /// "271 MB / 633 MB" — only once the byte monitor has observed real disk
     /// growth against a known total. Never a synthesised denominator.
     static func subjectBytesLine(job: DownloadManager.Job?) -> String? {
         guard let progress = job?.progress,
               progress.hasDiskObservation,
-              let bytes = progress.bytesDownloaded,
-              let total = progress.totalBytes, total > 0
+              let bytes = progress.bytesDownloaded
         else { return nil }
-        return "\(DownloadProgress.formatBytes(bytes)) / \(DownloadProgress.formatBytes(total))"
+        if let total = progress.totalBytes, total > 0 {
+            return "\(DownloadProgress.formatBytes(bytes)) / \(DownloadProgress.formatBytes(total))"
+        }
+        // A measured total is discarded when the mirror proves it wrong
+        // (done > total). Keep the truthful numerator visible rather than
+        // regressing to an indeterminate track while bytes are flowing.
+        return "\(DownloadProgress.formatBytes(bytes)) downloaded"
     }
 
     /// "4.4 MB/s · 2 min left" — rate first, and the ETA appended only when

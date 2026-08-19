@@ -612,6 +612,18 @@ struct OnboardingDirectionDTests {
         #expect(QuickstartView.subjectBytesLine(job: nil) == nil)
     }
 
+    @Test("Measured bytes stay visible when an incorrect total is discarded")
+    func byteLineKeepsTruthfulNumeratorAfterOverrun() {
+        let downloads = DownloadManager()
+        let job = downloads._testingSeedJob(alias: "lfm2.5-1b-4bit", totalBytes: 563 * 1024 * 1024)
+        job.progress.seedDiskBaseline(bytes: 0)
+        job.progress.applyDiskObservation(bytes: 633 * 1024 * 1024)
+
+        #expect(job.progress.totalBytes == nil)
+        #expect(QuickstartView.subjectBytesLine(job: job) == "633 MB downloaded")
+        #expect(QuickstartView.downloadLifecycleName(progress: job.progress) == "DOWNLOADING")
+    }
+
     @Test("The rate line appears only once a rate has been measured")
     func rateLineRequiresAMeasuredRate() {
         // Paper 05.1.A forbids an ETA before bytes move, so there is
