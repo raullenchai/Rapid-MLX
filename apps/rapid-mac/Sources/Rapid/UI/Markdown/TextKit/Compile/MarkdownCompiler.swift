@@ -25,6 +25,50 @@ struct MarkdownCompiler: Sendable {
         self.postProcessors = postProcessors
     }
 
+    /// Drop a trailing fence marker that is still being typed.
+    ///
+    /// Three separate flickers, all from the same cause — the parser is shown
+    /// a fence that is one keystroke old. Measured by compiling a growing
+    /// prefix of "Here is code:\n\n```swift\nlet x = 1\nprint(x)\n```\n\nDone.":
+    ///
+    ///     n=16   T(13) T(1)          a lone backtick renders as its own text block
+    ///     n=20   T(13) C(0|sw)       index 1 turns from text into code — SwiftUI
+    ///                                swaps the whole representable at that slot
+    ///     n=24   T(13) C(0|swift)    the language changes, re-running highlighting
+    ///     n=44   T(13) C(21|swift)
+    ///     n=48   T(13) C(19|swift)   the closing backticks were being displayed
+    ///                                as code content until they closed the fence
+    ///
+    /// Holding the marker back until its line is finished removes all three:
+    /// the code card appears once, already knowing its language, and no stray
+    /// backticks are ever shown inside it.
+    ///
+    /// Only the LAST line is considered, and only while streaming. The settled
+    /// row re-compiles the whole message with ``isComplete`` true (see
+    /// ``StreamingMarkdownStore/finish()``), so nothing stays hidden.
+    ///
+    /// Deliberately narrow. A line like ``\`foo`` — an inline code span being
+    /// typed — is left alone: only a run of three or more backticks (a real
+    /// fence, with or without its info string) or a line that is nothing but
+    /// one or two backticks (a fence in the making) qualifies.
+    static func withoutFormingFence(_ source: String) -> String {
+        guard let lineStart = source.lastIndex(of: "\n").map(source.index(after:))
+                ?? (source.isEmpty ? nil : source.startIndex) else { return source }
+        let lastLine = source[lineStart...]
+        let trimmed = lastLine.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return source }
+
+        let ticks = trimmed.prefix { $0 == "`" }
+        guard !ticks.isEmpty else { return source }
+        let rest = trimmed.dropFirst(ticks.count)
+        // An info string carries no backticks and no whitespace; anything else
+        // means this is prose that merely opens with a backtick.
+        guard !rest.contains("`"), !rest.contains(where: \.isWhitespace) else { return source }
+        guard ticks.count >= 3 || rest.isEmpty else { return source }
+
+        return String(source[..<lineStart])
+    }
+
     /// Compile `source`.
     ///
     /// `isComplete` reaches the post-processors: mid-stream they should leave
@@ -33,6 +77,7 @@ struct MarkdownCompiler: Sendable {
     public func compile(
         _ source: String, revision: Int = 0, isComplete: Bool = true
     ) -> MarkdownResult {
+        let source = isComplete ? source : Self.withoutFormingFence(source)
         var items: [MarkdownItem] = []
 
         // Split math out BEFORE parsing. `$x_1$` handed to a markdown parser
