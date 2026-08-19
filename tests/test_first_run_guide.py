@@ -157,6 +157,8 @@ def test_nameplate_cold_cache_no_agent(monkeypatch):
     out = fr.build_nameplate("9.9.9")
     assert "Rapid-MLX 9.9.9" in out
     assert "rapid-mlx chat" in out
+    assert "rapid-mlx recipe" in out
+    assert "Smart + Fast" in out
     assert fr.FIRST_RUN_MODEL in out
     assert fr.FIRST_RUN_MODEL_SIZE in out
     assert "launch --all" in out  # generic signpost when no agent

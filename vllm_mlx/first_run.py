@@ -210,7 +210,9 @@ def build_nameplate(version: str) -> str:
     # REPL behavior). Cached models are still listed above so a returning user
     # can name one explicitly.
     starter_cached = any(alias == FIRST_RUN_MODEL for alias, _ in cached)
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str]] = [
+        ("rapid-mlx recipe", "pick Smart + Fast models for this Mac")
+    ]
     if starter_cached:
         rows.append(("rapid-mlx chat", f"{FIRST_RUN_MODEL} — already downloaded"))
     else:

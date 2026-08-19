@@ -8257,9 +8257,13 @@ def agents_command(args):
         profiles = list_profiles()
         print()
         print("  Supported AI Agents")
-        print("  " + "─" * 56)
+        print(
+            f"  {'name':<15} {'client':<20} {'GitHub':>6}  "
+            f"{'tools':<5}  recommended models"
+        )
+        print("  " + "─" * 78)
         for p in profiles:
-            fc = "FC" if p.needs_function_calling else "  "
+            tools = "FC" if p.needs_function_calling else "—"
             stars = f"{p.stars // 1000}K" if p.stars and p.stars >= 1000 else ""
             if p.recommended_models:
                 shown = p.recommended_models[:3]
@@ -8268,7 +8272,10 @@ def agents_command(args):
                     models += f" +{len(p.recommended_models) - 3}"
             else:
                 models = ""
-            print(f"  {p.name:<15} {p.display_name:<20} {stars:>5}  [{fc}]  {models}")
+            print(
+                f"  {p.name:<15} {p.display_name:<20} {stars:>6}  {tools:<5}  {models}"
+            )
+        print("  FC = function calling")
         print()
         # Frameworks (langchain, pydanticai, smolagents) are libraries
         # you build agents with, not agents themselves — count them
@@ -8885,7 +8892,7 @@ Examples:
         allow_abbrev=False,
     )
     serve_parser.add_argument(
-        "model", type=str, help="Model to serve"
+        "model", nargs="?", type=str, help="Model to serve"
     ).completer = alias_completer
     serve_parser.add_argument(
         "--served-model-name",
@@ -10714,6 +10721,19 @@ def main():
     # Systematic serve-flag passthrough for ``share`` via the standard ``--``
     # end-of-options separator — see ``_parse_args_with_share_passthrough``.
     args = _parse_args_with_share_passthrough(parser, sys.argv[1:])
+    # A missing required positional normally makes argparse print the entire
+    # serve help (dozens of expert flags) before its one actionable error.
+    # Keep the positional optional at parse time so this first-run mistake gets
+    # a short recovery path. Explicit ``serve --help`` still exits from
+    # argparse above and retains the complete reference.
+    if getattr(args, "command", None) == "serve" and not args.model:
+        print("rapid-mlx serve: a model is required.", file=sys.stderr)
+        print("  Pick one for this Mac:  rapid-mlx recipe", file=sys.stderr)
+        print(
+            "  Or start a small one:   rapid-mlx serve qwen3.5-4b-4bit",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if getattr(args, "command", None) in ("chat", "run"):
         args._model_was_explicit = getattr(args, "model", None) is not None
 

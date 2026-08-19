@@ -203,6 +203,9 @@ def test_agents_footer_counts_agents_and_frameworks_separately(
     out = capsys.readouterr().out
     assert "10 agents + 3 frameworks supported" in out
     assert "13 agents supported" not in out
+    assert "GitHub" in out
+    assert "tools" in out
+    assert "FC = function calling" in out
 
 
 def test_cli_parser_exposes_setup_safety_flags(monkeypatch):
