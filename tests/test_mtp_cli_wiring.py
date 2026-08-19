@@ -1429,9 +1429,14 @@ def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
     Prior revision returned ``True`` from ``_is_greedy_for_uid`` when
     ``requests`` / ``uid_to_request_id`` were unresolvable — that
     silently applied greedy sampling to any request whose bookkeeping
-    had just been evicted. The fix flips the default to ``False`` so
-    the caller falls through to ``_orig_step()`` (which reads the real
-    sampler).
+    had just been evicted. The fix falls closed so the caller
+    delegates to ``_orig_step()`` (which reads the real sampler).
+
+    Issue #1013 replaced the binary greedy gate with
+    ``_sampling_for_uid``, which forwards the request's sampler to the
+    generator instead of excluding non-greedy requests. The fail-closed
+    contract for UNRESOLVABLE bookkeeping is unchanged; only the
+    counter name moved to ``ft_unresolved_sampling``.
 
     We can't easily exercise the closure directly (it's local to
     ``_install_mtp_vendored``). But we CAN observe the outer contract:
@@ -1452,14 +1457,14 @@ def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
     )
     assert ok is True
 
-    # Fire the patched _step. With requests=None, _is_greedy_for_uid
-    # must return False → fallthrough to _orig_step. Pre-fix the gate
+    # Fire the patched _step. With requests=None, _sampling_for_uid
+    # must return None → fallthrough to _orig_step. Pre-fix the gate
     # returned True and we would have entered the mtp_generate_step
     # construction path.
     gb._step()
     stats = batch_gen._mtp_vendored_stats
     assert stats["fallthrough_steps"] >= 1
-    assert stats["ft_non_greedy"] >= 1, (
+    assert stats["ft_unresolved_sampling"] >= 1, (
         "codex round-A blocker #1 regression: gate did not fall closed "
         "when request bookkeeping is unresolvable"
     )
@@ -2119,7 +2124,7 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
     )
 
 
-def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
+def test_install_mtp_vendored_sampling_change_mid_stream_falls_back_to_orig_step(
     monkeypatch,
 ):
     """Codex round-L BLOCKING #3 regression guard.
@@ -2128,6 +2133,12 @@ def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
     switched to non-greedy after MTP had already emitted tokens.
     That killed the request whenever an operator adjusted sampling
     params mid-stream.
+
+    Issue #1013 kept the handoff but generalised the trigger: the
+    generator's sampler chain is fixed at construction, so ANY change
+    to ``(temperature, top_p, top_k, min_p)`` mid-stream — not just a
+    transition to non-greedy — hands off rather than continuing to
+    sample from the stale distribution.
 
     Round-L flip: the wrapper closes the MTP generator, marks the
     uid disabled, delegates to ``_orig_step()``, and logs a WARN
@@ -2197,10 +2208,10 @@ def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
         "that to a fallback."
     )
     stats = batch_gen._mtp_vendored_stats
-    assert stats["ft_non_greedy"] >= 1
+    assert stats["ft_sampling_changed"] >= 1
     assert stats["ft_mid_stream_handoff"] >= 1, (
         "codex round-L BLOCKING #3 regression: mid-stream handoff "
-        "counter did not fire on non-greedy transition."
+        "counter did not fire on the sampling transition."
     )
     assert fake_gen_calls["closed"] >= 1, (
         "codex round-L BLOCKING #3: non-greedy handoff MUST close "
@@ -2313,25 +2324,63 @@ def test_install_mtp_vendored_logits_processors_mid_stream_falls_back_to_orig_st
     )
 
 
-def test_install_mtp_vendored_non_greedy_before_state_soft_fallthrough(monkeypatch):
-    """Companion to round-H BLOCKING #2: when the request starts
-    non-greedy (never populated ``_state``), the wrapper soft-falls
-    through to ``_orig_step()`` and marks the uid as disabled to
-    prevent re-entry on the next step.
+def test_install_mtp_vendored_non_greedy_engages_speculative_path(monkeypatch):
+    """Issue #1013 regression guard: temp>0 must NOT fall through.
 
-    This preserves the round-A "bench harness with temp>0" path
-    working under the round-H tightening.
+    Before this fix the wrapper asked ``_is_greedy_for_uid`` and routed
+    every ``temperature > 0`` request straight to ``_orig_step()`` —
+    plain autoregressive decode. Because rapid-desktop (and essentially
+    every real client) samples at ``temp=0.7, top_p=0.95``, MTP was a
+    no-op in production even though ``mtp_generate_step`` already
+    implements the full speculative-sampling math for temp>0.
+
+    The wrapper now forwards the request's sampler to the generator.
+    Assert both halves of that contract: the speculative path RUNS
+    (tokens come from the generator, ``_orig_step`` is never called),
+    and the request's own ``(temperature, top_p, top_k, min_p)`` — not
+    a hard-coded ``temp=0.0`` — reaches ``mtp_generate_step``.
     """
     from types import SimpleNamespace
 
     import mlx.core as mx
 
     from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (self._n + 7000, mx.array([0.0]), True)
+
+        def close(self):
+            pass
+
+    def _recording_mtp_generate_step(*args, **kwargs):
+        seen.update(kwargs)
+        return _FakeGen()
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _recording_mtp_generate_step)
 
     batch_gen, gb = _make_batch_gen_with_gb()
     gb.uids = [11]
-    # temp > 0 from the start — MTP never primes.
-    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.7))
+    # temp > 0 from the start — the regime issue #1013 says never ran.
+    request_stub = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            temperature=0.7,
+            top_p=0.95,
+            top_k=0,
+            min_p=0.0,
+            seed=None,
+        )
+    )
     ok = _install_mtp_vendored(
         batch_gen,
         model=_StubModel(),
@@ -2343,10 +2392,75 @@ def test_install_mtp_vendored_non_greedy_before_state_soft_fallthrough(monkeypat
     gb._next_tokens = mx.array([200], dtype=mx.uint32)
     gb._next_logprobs = [mx.array([0.0])]
 
-    # Should soft-fall-through, not raise.
+    # First step primes the generator and replays the token mlx-lm's
+    # own sampler already staged.
+    first_toks, _ = gb._step()
+    assert first_toks == [200]
+
+    # Second step must be served BY THE GENERATOR, not by plain decode.
+    second_toks, _ = gb._step()
+    assert second_toks == [7001], (
+        "issue #1013 regression: non-greedy request did not draw its "
+        "token from the speculative generator"
+    )
+
+    stats = batch_gen._mtp_vendored_stats
+    assert gb.orig_step_calls == 0, (
+        "issue #1013 regression: non-greedy request fell through to "
+        "plain autoregressive decode"
+    )
+    assert stats["fallthrough_steps"] == 0
+    assert stats["vendored_steps"] == 2
+
+    # The request's sampler — not a hard-coded greedy one — was handed
+    # to the generator, so the draft/verify accept test operates on the
+    # distribution the caller asked for.
+    assert seen["temp"] == 0.7
+    assert seen["top_p"] == 0.95
+    assert seen["top_k"] == 0
+    assert seen["min_p"] == 0.0
+
+
+def test_install_mtp_vendored_seeded_request_falls_through(monkeypatch):
+    """Issue #1013 fail-closed guard: a per-request PRNG seed.
+
+    The seeded sampler (H-11) splits a dedicated ``mx.random.key(seed)``
+    per step so two identical requests reproduce byte-for-byte. The
+    vendored generator draws its accept test and residual sample from
+    the global MLX stream and cannot honour that, so seeded requests
+    keep falling through to plain decode.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [12]
+    request_stub = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            temperature=0.7,
+            top_p=0.95,
+            top_k=0,
+            min_p=0.0,
+            seed=1234,
+        )
+    )
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-12": request_stub},
+        uid_to_request_id={12: "req-12"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([200], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
     gb._step()
     stats = batch_gen._mtp_vendored_stats
-    assert stats["ft_non_greedy"] >= 1
+    assert stats["ft_seeded_sampling"] >= 1
     assert gb.orig_step_calls == 1
 
 
