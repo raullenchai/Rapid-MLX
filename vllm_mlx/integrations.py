@@ -25,7 +25,7 @@ _LAUNCH_NAMES = {
 }
 _PROFILE_TO_LAUNCH = {"continue": "continue-dev"}
 _CONFIG_DESTINATIONS = {
-    "cline": "Cline's VS Code settings",
+    "cline": "~/.cline/data/",
     "claude-code": "~/.claude/settings.json",
     "continue-dev": "~/.continue/config.json",
     "cursor": "Cursor's VS Code settings",

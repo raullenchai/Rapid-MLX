@@ -305,7 +305,14 @@ struct ConnectToolsView: View {
                 )
             }
             if target.kind == .configWriter {
-                let destination = target.configPath.map { " It writes \($0)." } ?? ""
+                // "writes TO" rather than "writes": a target's config
+                // destination is not always a single file. Cline, for one,
+                // needs three files under ~/.cline/data (two bundle shapes,
+                // plus a separate 0600 secrets file), so the registry gives
+                // us the directory. "It writes ~/.cline/data/." misreads as
+                // a filename; "It writes to ~/.cline/data/." is true of both
+                // a file and a directory.
+                let destination = target.configPath.map { " It writes to \($0)." } ?? ""
                 let cursorCaveat = target.id == "cursor"
                     ? " Cursor requires a public HTTPS endpoint; localhost cannot be reached by Cursor's backend."
                     : ""

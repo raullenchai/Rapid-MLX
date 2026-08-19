@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -53,10 +54,12 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     """
     monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
 
-    # cline: replace the candidate-roots helper so detect/path
-    # resolution picks paths under tmp_path.
-    fake_root = tmp_path / "vscode-globalStorage"
-    monkeypatch.setattr(cline, "_candidate_settings_roots", lambda: [fake_root])
+    # cline: pin the data root at tmp_path via the same env var the
+    # extension itself honours, and blank the VS Code extension probe
+    # so the dev machine's real Cline install can't make detect() true.
+    monkeypatch.setenv("CLINE_DATA_DIR", str(tmp_path / "cline-data"))
+    monkeypatch.delenv("CLINE_DIR", raising=False)
+    monkeypatch.setattr(cline, "_candidate_extension_dirs", lambda: [])
 
     # claude_code: replace the two module constants.
     monkeypatch.setattr(claude_code, "_CLAUDE_STATE_DIR", tmp_path / ".claude")
@@ -87,74 +90,159 @@ def fake_home(tmp_path, monkeypatch) -> Path:
 
 
 class TestCline:
-    def test_detect_false_when_no_globalstorage(self, fake_home):
+    def test_detect_false_when_nothing_installed(self, fake_home):
         assert cline.detect() is False
         assert cline.current_config_path() is None
 
-    def test_detect_true_when_settings_dir_exists(self, fake_home):
-        # Materialise the extension settings dir but not the file —
-        # detect() should still report True (installed, uninitialised).
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+    def test_detect_true_when_data_dir_exists(self, fake_home):
+        # Cline has run at least once — the data tree is the store we
+        # patch, so its mere existence is proof enough.
+        (fake_home / "cline-data").mkdir(parents=True)
         assert cline.detect() is True
         path = cline.current_config_path()
         assert path is not None
-        assert path.name == "cline_mcp_settings.json"
+        assert path.name == "globalState.json"
+
+    def test_detect_true_when_only_extension_installed(self, fake_home, monkeypatch):
+        # Installed from the marketplace but never opened: no data dir,
+        # but the versioned extension directory is there. We create the
+        # data tree ourselves on write.
+        ext_root = fake_home / "vscode-extensions"
+        (ext_root / "saoudrizwan.claude-dev-4.1.10").mkdir(parents=True)
+        monkeypatch.setattr(cline, "_candidate_extension_dirs", lambda: [ext_root])
+        assert cline.detect() is True
 
     def test_write_preserves_existing_keys(self, fake_home):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
-        path = ext_dir / "cline_mcp_settings.json"
-        path.write_text(
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
+        state_path = data_dir / "globalState.json"
+        state_path.write_text(
             json.dumps(
                 {
-                    "mcpServers": {"custom": {"command": "node"}},
-                    "apiProvider": "anthropic",  # we'll overwrite this
-                    "openAiApiKey": "old-key",  # we'll overwrite this
-                    "customInstructions": "be terse",  # must survive
+                    "planModeApiProvider": "anthropic",  # we'll overwrite
+                    "actModeApiProvider": "anthropic",  # we'll overwrite
+                    "taskHistory": [{"id": "abc"}],  # must survive
+                    "preferredLanguage": "English",  # must survive
                 }
             )
         )
+        secrets_path = data_dir / "secrets.json"
+        secrets_path.write_text(json.dumps({"openRouterApiKey": "keep-me"}))
 
         returned = cline.write_or_patch_config(
             "http://127.0.0.1:8000",
             "qwen3.5-4b-4bit",
             api_key="sk-noop",
         )
-        assert returned == path
+        assert returned == state_path
 
-        # Backup exists.
-        backups = list(ext_dir.glob("cline_mcp_settings.json.bak.*"))
-        assert len(backups) == 1
+        # Backup exists for each file we rewrote.
+        assert len(list(data_dir.glob("globalState.json.bak.*"))) == 1
+        assert len(list(data_dir.glob("secrets.json.bak.*"))) == 1
 
-        data = json.loads(path.read_text())
-        # Keys we own — set / overwritten.
-        assert data["apiProvider"] == "openai"
-        assert data["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
-        assert data["openAiApiKey"] == "sk-noop"
-        assert data["openAiModelId"] == "qwen3.5-4b-4bit"
+        state = json.loads(state_path.read_text())
+        # Keys we own — set / overwritten. Plan and Act are separate
+        # provider selections in Cline; both have to point at us.
+        assert state["planModeApiProvider"] == "openai"
+        assert state["actModeApiProvider"] == "openai"
+        assert state["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
+        assert state["planModeOpenAiModelId"] == "qwen3.5-4b-4bit"
+        assert state["actModeOpenAiModelId"] == "qwen3.5-4b-4bit"
+        assert state["welcomeViewCompleted"] is True
         # Keys we don't own — untouched.
-        assert data["mcpServers"] == {"custom": {"command": "node"}}
-        assert data["customInstructions"] == "be terse"
+        assert state["taskHistory"] == [{"id": "abc"}]
+        assert state["preferredLanguage"] == "English"
+
+        # The API key is a secret, and lives in its own file.
+        secrets = json.loads(secrets_path.read_text())
+        assert secrets["openAiApiKey"] == "sk-noop"
+        assert secrets["openRouterApiKey"] == "keep-me"
+        assert "openAiApiKey" not in state
+
+    def test_write_populates_next_bundle_providers_json(self, fake_home):
+        """The extension can be flipped between its ``legacy`` and
+        ``next`` bundles by a remote rollout, so we must configure both
+        or a server-side flip silently unconfigures the user."""
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "settings").mkdir()
+        (data_dir / "settings" / "providers.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "lastUsedProvider": "cline",
+                    "providers": {
+                        "cline": {
+                            "settings": {"provider": "cline", "model": "some-model"},
+                            "updatedAt": "2026-08-19T02:42:26Z",
+                            "tokenSource": "oauth",
+                        }
+                    },
+                }
+            )
+        )
+
+        cline.write_or_patch_config(
+            "http://127.0.0.1:8000",
+            "qwen3.5-4b-4bit",
+            api_key="sk-noop",
+        )
+
+        doc = json.loads((data_dir / "settings" / "providers.json").read_text())
+        assert doc["version"] == 1
+        assert doc["lastUsedProvider"] == "openai-compatible"
+        entry = doc["providers"]["openai-compatible"]
+        assert entry["settings"] == {
+            "provider": "openai-compatible",
+            "apiKey": "sk-noop",
+            "model": "qwen3.5-4b-4bit",
+            "baseUrl": "http://127.0.0.1:8000/v1",
+        }
+        assert entry["tokenSource"] == "manual"
+        # zod's ``.datetime()`` rejects Python's default microsecond
+        # precision — the timestamp has to be second-granular UTC.
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", entry["updatedAt"])
+        # The user's other provider (and its OAuth token) survives.
+        assert doc["providers"]["cline"]["tokenSource"] == "oauth"
+
+    def test_creates_tree_when_cline_never_opened(self, fake_home, monkeypatch):
+        ext_root = fake_home / "vscode-extensions"
+        (ext_root / "saoudrizwan.claude-dev-4.1.10").mkdir(parents=True)
+        monkeypatch.setattr(cline, "_candidate_extension_dirs", lambda: [ext_root])
+
+        cline.write_or_patch_config("http://127.0.0.1:8000", "alias")
+
+        data_dir = fake_home / "cline-data"
+        assert (
+            json.loads((data_dir / "globalState.json").read_text())[
+                "actModeApiProvider"
+            ]
+            == "openai"
+        )
+        assert (data_dir / "secrets.json").exists()
+        assert (data_dir / "settings" / "providers.json").exists()
 
     def test_does_not_double_append_v1(self, fake_home):
         """User passes ``http://127.0.0.1:8000/v1`` — must NOT
         produce ``/v1/v1``."""
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
         cline.write_or_patch_config(
             "http://127.0.0.1:8000/v1",
             "alias",
         )
-        path = ext_dir / "cline_mcp_settings.json"
-        data = json.loads(path.read_text())
-        assert data["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
+        state = json.loads((data_dir / "globalState.json").read_text())
+        assert state["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
+
+    def test_cline_dir_env_relocates_the_tree(self, fake_home, monkeypatch):
+        """A user who moved Cline off a synced home dir must get their
+        REAL config patched, not the default path."""
+        monkeypatch.delenv("CLINE_DATA_DIR")
+        relocated = fake_home / "elsewhere"
+        monkeypatch.setenv("CLINE_DIR", str(relocated))
+        (relocated / "data").mkdir(parents=True)
+
+        assert cline.current_config_path() == relocated / "data" / "globalState.json"
 
 
 # --------------------------------------------------------------------
@@ -762,29 +850,25 @@ class TestLaunchCommand:
     def test_dry_run_does_not_touch_disk(self, fake_home, capsys):
         # Mark cline as detected so the dispatcher reaches the
         # would-patch line.
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
-        before = list(ext_dir.iterdir())
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
+        before = list(data_dir.iterdir())
 
         launch_cli.launch_command(_make_args(client="cline", dry_run=True))
         out = capsys.readouterr().out
         assert "[dry-run]" in out
         assert "cline" in out
         # No file was created or modified.
-        assert list(ext_dir.iterdir()) == before
+        assert list(data_dir.iterdir()) == before
 
     def test_real_patch_writes_file(self, fake_home, capsys):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
         launch_cli.launch_command(_make_args(client="cline", model="qwen3.5-4b-4bit"))
-        target = ext_dir / "cline_mcp_settings.json"
+        target = data_dir / "globalState.json"
         assert target.exists()
         data = json.loads(target.read_text())
-        assert data["openAiModelId"] == "qwen3.5-4b-4bit"
+        assert data["actModeOpenAiModelId"] == "qwen3.5-4b-4bit"
         out = capsys.readouterr().out
         assert "Patched cline" in out
         assert "Now ready" in out
@@ -799,10 +883,8 @@ class TestLaunchCommand:
         assert "cline: not detected" in err
 
     def test_start_server_spawns_and_writes_pid(self, fake_home, capsys):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
         fake_proc = MagicMock()
         fake_proc.pid = 99999
         with patch.object(subprocess, "Popen", return_value=fake_proc) as popen:
@@ -829,17 +911,15 @@ class TestLaunchCommand:
     def test_api_key_is_passed_to_client_and_started_server(
         self, fake_home, capsys, monkeypatch
     ):
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
         fake_proc = MagicMock()
         fake_proc.pid = 99998
         monkeypatch.setenv("RAPID_MLX_API_KEY", "shared-secret")
         with patch.object(subprocess, "Popen", return_value=fake_proc) as popen:
             launch_cli.launch_command(_make_args(client="cline", start_server=True))
-        config = json.loads((ext_dir / "cline_mcp_settings.json").read_text())
-        assert config["openAiApiKey"] == "shared-secret"
+        secrets = json.loads((data_dir / "secrets.json").read_text())
+        assert secrets["openAiApiKey"] == "shared-secret"
         assert popen.call_args.kwargs["env"]["RAPID_MLX_API_KEY"] == "shared-secret"
 
     def test_start_server_skipped_when_no_clients_patched(self, fake_home, capsys):
@@ -882,16 +962,14 @@ class TestLaunchCommand:
         """When ``main()`` rewrites ``args.model`` from alias to HF id,
         the launch command should patch with the ORIGINAL alias so the
         IDE client requests the short name from rapid-mlx."""
-        ext_dir = (
-            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
-        )
-        ext_dir.mkdir(parents=True)
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
         ns = _make_args(client="cline", model="mlx-community/Qwen3.5-4B-MLX-4bit")
         # Simulate what ``main()`` does on the way in.
         ns._original_alias = "qwen3.5-4b-4bit"
         launch_cli.launch_command(ns)
-        data = json.loads((ext_dir / "cline_mcp_settings.json").read_text())
-        assert data["openAiModelId"] == "qwen3.5-4b-4bit"
+        data = json.loads((data_dir / "globalState.json").read_text())
+        assert data["actModeOpenAiModelId"] == "qwen3.5-4b-4bit"
 
 
 # --------------------------------------------------------------------

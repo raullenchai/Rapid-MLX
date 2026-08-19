@@ -49,7 +49,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 if sys.argv[1:] == ["launch", "list", "--json"]:
     print(json.dumps([
-        {"id": "cline", "name": "Cline", "kind": "config_writer", "config_path": "~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"},
+        {"id": "cline", "name": "Cline", "kind": "config_writer", "config_path": "~/.cline/data/"},
         {"id": "claude-code", "name": "Claude Code", "kind": "config_writer", "config_path": "~/.claude/settings.json"},
         {"id": "continue-dev", "name": "Continue.dev", "kind": "config_writer", "config_path": "~/.continue/config.json"},
         {"id": "cursor", "name": "Cursor", "kind": "config_writer", "config_path": "~/Library/Application Support/Cursor/User/settings.json"},
