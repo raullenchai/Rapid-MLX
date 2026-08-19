@@ -73,8 +73,42 @@ struct InlineMathRenderTests {
         #expect(black === InlineMathImage.image(latex: "x", pointSize: 14, color: .black))
     }
 
+    /// The case the app actually ships, and the one the first version of the
+    /// key missed entirely.
+    ///
+    /// `appearanceMissesTheCache` above uses `.black` and `.white` — two
+    /// static colours that genuinely differ, so it passes whether the key
+    /// holds the `NSColor` or its resolved components. But the renderer is
+    /// handed `.labelColor` (`TextKitMarkdownView`) or `.textColor`
+    /// (`MarkdownOptions`), and a dynamic catalog colour compares equal to
+    /// itself and hashes equal in *every* appearance. Keying on the object
+    /// therefore served the Light bitmap back in Dark — the black-on-black
+    /// failure `LaTeXMarkdownView` documents, reproduced by the key added to
+    /// prevent it.
+    @Test("A dynamic colour still misses the cache across appearances")
+    func dynamicColourMissesAcrossAppearances() {
+        InlineMathImage.resetCache()
+        var light: NSImage?
+        var dark: NSImage?
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            light = InlineMathImage.image(latex: "x", pointSize: 14, color: .labelColor)
+        }
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            dark = InlineMathImage.image(latex: "x", pointSize: 14, color: .labelColor)
+        }
+        #expect(light != nil)
+        #expect(dark != nil)
+        #expect(light !== dark, "the Light bitmap was served back in Dark")
+    }
+
     /// An unparseable body renders as the `$…$` the author typed. Returning a
     /// broken bitmap would paint SwiftMath's red diagnostic into the sentence.
+    ///
+    /// This asserts the contract, not the `label.error` guard specifically:
+    /// review showed that deleting that guard leaves this passing, because a
+    /// failed parse also leaves `fittingSize` at zero and the size guard
+    /// declines first. The explicit error check stays as the readable reason,
+    /// with the size check behind it.
     @Test("An unparseable formula declines rather than drawing an error")
     func unparseableDeclines() {
         InlineMathImage.resetCache()

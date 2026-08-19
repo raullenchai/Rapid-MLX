@@ -55,7 +55,7 @@ struct MarkdownCompiler: Sendable {
         // change than this one.
         var pending = ""
         var inlineMath: [String] = []
-        for segment in LaTeXSegmenter.segment(source) {
+        for segment in LaTeXSegmenter.segment(Self.withoutStraySentinels(source)) {
             switch segment {
             case let .math(latex, displayMode) where displayMode:
                 appendMarkdown(pending, depth: 0, into: &items)
@@ -263,12 +263,30 @@ struct MarkdownCompiler: Sendable {
     // MARK: - Inline math
 
     /// Private-use bracket around a decimal index. Nothing in it is markdown
-    /// syntax, and nothing a model writes will collide with it.
-    private static let sentinelOpen: Character = "\u{E000}"
-    private static let sentinelClose: Character = "\u{E001}"
+    /// syntax, so it survives parsing as one contiguous piece of a run.
+    ///
+    /// Plane 15, not the U+E000 block: that block is where Nerd Fonts put
+    /// their glyphs — U+E000 itself is the first Pomicons codepoint — so it
+    /// arrives in pasted terminal output and in model text about fonts.
+    /// A literal `U+E000 0 U+E001` in a message was enough to have the
+    /// reader's own text replaced by somebody else's formula, and a literal
+    /// `U+E000 -1 U+E001` crashed the renderer outright. Nothing ships glyphs
+    /// in the supplementary private-use planes.
+    private static let sentinelOpen: Character = "\u{F0000}"
+    private static let sentinelClose: Character = "\u{F0001}"
 
     static func mathSentinel(_ index: Int) -> String {
         "\(sentinelOpen)\(index)\(sentinelClose)"
+    }
+
+    /// Belt and braces for the above: a sentinel that reaches the compiler in
+    /// the source text is not ours, and is dropped before segmentation so it
+    /// can never be read as an index.
+    static func withoutStraySentinels(_ source: String) -> String {
+        guard source.contains(sentinelOpen) || source.contains(sentinelClose) else {
+            return source
+        }
+        return source.filter { $0 != sentinelOpen && $0 != sentinelClose }
     }
 
     /// Swap sentinels back for math runs, everywhere runs can appear.
@@ -293,11 +311,45 @@ struct MarkdownCompiler: Sendable {
                 rows: block.rows.map { $0.map { expandingSentinels($0, from: latex) } },
                 alignments: block.alignments
             ))
-        case .code, .images, .math:
-            // Code carries source text, not runs. Images and display math have
-            // no inline layer to walk.
+        case .code(let block):
+            // The segmenter skips code so `$x$` inside a block stays literal,
+            // but it and swift-markdown do not agree on every spelling of a
+            // block — a `~~~` fence is one swift-markdown recognises and the
+            // segmenter does not. The sentinel then lands in code the reader
+            // sees and the copy button copies. Putting the source spelling
+            // back restores exactly what `main` renders, whichever construct
+            // the two disagreed about.
+            return .code(.init(
+                code: restoringSourceSpelling(in: block.code, from: latex),
+                language: block.language
+            ))
+        case .images, .math:
+            // Neither has an inline layer to walk.
             return item
         }
+    }
+
+    /// Rewrite sentinels back to `$…$` in plain text that never became runs.
+    static func restoringSourceSpelling(
+        in text: String, from latex: [String]
+    ) -> String {
+        guard text.contains(sentinelOpen) else { return text }
+        var output = ""
+        var index = text.startIndex
+        while index < text.endIndex {
+            guard text[index] == sentinelOpen,
+                  let close = text[index...].firstIndex(of: sentinelClose),
+                  let slot = Int(text[text.index(after: index)..<close]),
+                  latex.indices.contains(slot)
+            else {
+                output.append(text[index])
+                index = text.index(after: index)
+                continue
+            }
+            output += "$\(latex[slot])$"
+            index = text.index(after: close)
+        }
+        return output
     }
 
     /// Split each run on sentinels, keeping the surrounding inline styling.
@@ -318,7 +370,9 @@ struct MarkdownCompiler: Sendable {
                 guard run.text[index] == sentinelOpen,
                       let close = run.text[index...].firstIndex(of: sentinelClose),
                       let slot = Int(run.text[run.text.index(after: index)..<close]),
-                      slot < latex.count
+                      // `indices.contains`, not `slot < latex.count`:
+                      // `Int("-1")` parses, and a negative index traps.
+                      latex.indices.contains(slot)
                 else {
                     buffer.append(run.text[index])
                     index = run.text.index(after: index)

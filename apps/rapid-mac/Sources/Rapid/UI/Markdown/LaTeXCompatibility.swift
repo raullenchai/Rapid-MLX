@@ -169,10 +169,19 @@ enum LaTeXCompatibility {
     // MARK: - Commands that take an argument
 
     private static func rewritingArgumentCommands(_ source: String) -> String {
+        // `\left`/`\right` resolve their operand through SwiftMath's separate
+        // `delimiters` table, which is a `let` with no extension point — so
+        // registering `\lVert` above does nothing for the `\left\lVert …
+        // \right\rVert` spelling, which is the one written for any norm taller
+        // than a single symbol. Substituting the plain double bar is the only
+        // route, and loses the same asymmetric spacing the registration does.
+        var source = source
+            .replacingOccurrences(of: "\\left\\lVert", with: "\\left\\|")
+            .replacingOccurrences(of: "\\right\\rVert", with: "\\right\\|")
         // `\operatorname` sets an upright multi-letter name and adds operator
         // spacing around it. `\mathrm` gives the upright letters; the spacing
         // is lost.
-        var source = rewritingCommand(source, "operatorname") { "\\mathrm{\($0)}" }
+        source = rewritingCommand(source, "operatorname") { "\\mathrm{\($0)}" }
         // The box around a model's final answer is decoration. Losing the
         // rule keeps the answer.
         source = rewritingCommand(source, "boxed") { $0 }

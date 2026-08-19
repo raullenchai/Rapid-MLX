@@ -114,3 +114,89 @@ struct InlineMathCompileTests {
         }
     }
 }
+
+/// What happens when a message contains the sentinel itself.
+///
+/// All three of these were live defects found in review of #2107, and the
+/// first killed the process.
+@Suite("Inline math — hostile input") @MainActor
+struct InlineMathHostileInputTests {
+
+    private func runs(_ source: String) -> [String] {
+        MarkdownCompiler().compile(source).items.flatMap { item -> [String] in
+            if case .text(let block) = item { return block.runs.map(\.text) }
+            return []
+        }
+    }
+
+    /// `Int("-1")` parses and `-1 < latex.count` is true, so the old bounds
+    /// check let a negative index through to `latex[slot]` and trapped.
+    /// U+E000 was not hypothetical — it is the first Nerd Font Pomicons
+    /// codepoint, so it arrives in pasted terminal output.
+    @Test("A negative index in a literal sentinel does not crash")
+    func negativeIndexDoesNotCrash() {
+        for payload in ["-1", "-99999", "999999", "", "x", "1.5"] {
+            let source = "Value $x$ and \u{E000}\(payload)\u{E001} tail"
+            _ = MarkdownCompiler().compile(source)
+            let plane15 = "Value $x$ and \u{F0000}\(payload)\u{F0001} tail"
+            _ = MarkdownCompiler().compile(plane15)
+        }
+    }
+
+    /// The bounds check, tested at its own boundary.
+    ///
+    /// `withoutStraySentinels` means a hostile index cannot reach here
+    /// through `compile`, so this drives `expandingSentinels` directly —
+    /// otherwise the guard would be code no test can fail. `Int("-1")`
+    /// parses and `-1 < latex.count` is true, so the original
+    /// `slot < latex.count` let it through to `latex[-1]` and trapped.
+    @Test("A malformed sentinel index is left as text, not indexed")
+    func malformedSentinelIndexIsLeftAlone() {
+        for payload in ["-1", "-99999", "999999"] {
+            let text = "a \u{F0000}\(payload)\u{F0001} b"
+            let expanded = MarkdownCompiler.expandingSentinels(
+                [InlineRun(text: text)], from: ["x"]
+            )
+            #expect(expanded.map(\.text).joined() == text)
+            #expect(expanded.allSatisfy { $0.math == nil })
+            #expect(MarkdownCompiler.restoringSourceSpelling(in: text, from: ["x"]) == text)
+        }
+    }
+
+    /// A well-formed literal sentinel used to be read as ours and replaced
+    /// with whichever formula happened to sit at that index.
+    @Test("A literal sentinel is never read as a formula")
+    func literalSentinelIsNotSubstituted() {
+        let text = runs("Value $x$ and \u{F0000}0\u{F0001} tail").joined()
+        #expect(text.contains("tail"))
+        // One `$x$` in, one `$x$` out — not two.
+        #expect(text.components(separatedBy: "$x$").count - 1 == 1)
+    }
+}
+
+/// Inline math must not leak its scaffolding into code.
+@Suite("Inline math — code blocks") @MainActor
+struct InlineMathCodeBlockTests {
+
+    private func code(_ source: String) -> [String] {
+        MarkdownCompiler().compile(source).items.compactMap {
+            if case .code(let block) = $0 { return block.code } else { return nil }
+        }
+    }
+
+    /// `LaTeXSegmenter` skips backtick fences, but swift-markdown also
+    /// recognises `~~~`, which the segmenter does not — so the sentinel
+    /// landed in code the reader sees and the copy button copies.
+    @Test("A tilde-fenced block keeps its literal dollars")
+    func tildeFenceKeepsDollars() {
+        let block = code("~~~\nlet a = $x$\n~~~").first
+        #expect(block?.contains("$x$") == true, "got: \(block ?? "nil")")
+        #expect(block?.contains("\u{F0000}") == false)
+    }
+
+    @Test("A backtick-fenced block is unaffected")
+    func backtickFenceKeepsDollars() {
+        let block = code("```\nlet a = $x$\n```").first
+        #expect(block?.contains("$x$") == true, "got: \(block ?? "nil")")
+    }
+}

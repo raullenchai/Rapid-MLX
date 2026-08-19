@@ -27,7 +27,28 @@ enum InlineMathImage {
     private struct Key: Hashable {
         let latex: String
         let pointSize: CGFloat
-        let color: NSColor
+        /// The *resolved* glyph colour, not the `NSColor` it came from.
+        ///
+        /// This is the whole point of the key and it was got wrong first
+        /// time. The app renders with `.labelColor` (`TextKitMarkdownView`)
+        /// or `.textColor` (`MarkdownOptions`) — dynamic catalog colours,
+        /// which compare equal to themselves and hash equal in *every*
+        /// appearance. `label.textColor` resolves against the current
+        /// appearance, so keying on the `NSColor` handed a bitmap baked with
+        /// near-black glyphs straight back in Dark: exactly the black-on-black
+        /// failure ``LaTeXMarkdownView`` records, reproduced by the fix meant
+        /// to prevent it. Components resolve; the object does not.
+        let components: [CGFloat]
+    }
+
+    private static func key(
+        latex: String, pointSize: CGFloat, color: NSColor
+    ) -> Key {
+        Key(
+            latex: latex,
+            pointSize: pointSize,
+            components: color.cgColor.components ?? []
+        )
     }
 
     /// Bounded so a long chat cannot grow it without limit. Formulas repeat
@@ -49,7 +70,7 @@ enum InlineMathImage {
         // Bridged before it becomes the key, so two spellings of the same
         // formula — `\mod` and a registered `\bmod` — share one bitmap.
         let source = LaTeXCompatibility.normalized(latex)
-        let key = Key(latex: source, pointSize: pointSize, color: color)
+        let key = Self.key(latex: source, pointSize: pointSize, color: color)
         if let hit = cache[key] { return hit }
 
         let label = MTMathUILabel()
@@ -110,8 +131,10 @@ enum InlineMathImage {
 
 /// The attachment that carries one formula.
 ///
-/// Holds the LaTeX alongside the bitmap so the renderer can tell an inline
-/// formula from any other attachment when it comes to fading and hit testing.
+/// Holds the LaTeX alongside the bitmap so a formula can be told apart from
+/// any other attachment. Nothing in the renderer consults it yet — fading and
+/// hit testing do not — so today it serves identification in tests and in the
+/// debugger.
 final class InlineMathAttachment: NSTextAttachment {
     let latex: String
 

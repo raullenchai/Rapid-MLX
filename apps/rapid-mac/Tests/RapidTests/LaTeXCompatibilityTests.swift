@@ -48,11 +48,16 @@ struct LaTeXCompatibilityTests {
     /// rewrite keyed on the characters `\mod` would corrupt every command
     /// that starts with them. SwiftMath's parser takes the longest run of
     /// letters, so registration cannot.
+    ///
+    /// Only the parse is asserted. A companion `normalized("\\dotsb") ==
+    /// "\\dotsb"` was here and was removed: `normalized` does no textual
+    /// substitution for *any* registered symbol, so that assertion could not
+    /// fail for this implementation — it restated the design instead of
+    /// testing it. What keeps the registrations honest is
+    /// ``argumentCommandsRender``, which fails when they are removed.
     @Test("Registration does not shadow longer commands")
     func registrationDoesNotShadowLongerCommands() {
         #expect(parses("A \\models B"))
-        // Likewise for the other registered names.
-        #expect(LaTeXCompatibility.normalized("\\dotsb") == "\\dotsb")
     }
 
     // MARK: - Environments
@@ -115,6 +120,11 @@ struct LaTeXCompatibilityTests {
         "\\boxed{\\frac{a}{b}}",
         "\\dots",
         "\\lVert x \\rVert",
+        // `\left`/`\right` read a different table inside SwiftMath, one with
+        // no extension point — so this spelling needs the substitution and
+        // not the registration, and the bare form above cannot catch it.
+        "\\left\\lVert x \\right\\rVert",
+        "\\left\\lVert \\frac{a}{b} \\right\\rVert^2",
     ])
     func argumentCommandsRender(_ latex: String) {
         #expect(parses(latex))
