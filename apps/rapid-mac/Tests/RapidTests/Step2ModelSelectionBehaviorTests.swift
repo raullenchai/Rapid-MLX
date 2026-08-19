@@ -72,6 +72,17 @@ struct Step2ModelSelectionBehaviorTests {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    /// The Direction D design system, which owns the shared footer lane and
+    /// therefore the Escape contract that used to live in the components file.
+    private static func directionDSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Rapid/UI/OnboardingDirectionD.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
     /// Comment- and whitespace-stripped source, using the same helper the rest
     /// of the source-guard suites share. Comments must go, not just whitespace:
     /// otherwise a doc comment that *describes* a call counts as the call, and
@@ -122,19 +133,38 @@ struct Step2ModelSelectionBehaviorTests {
         #expect(!kicker.contains("OF 5"), "the catalogue must not add a step")
     }
 
-    @Test("Every micro-stage renders the rail through the shared Step 2 scaffold")
+    @Test("Every micro-stage renders the rail through one shared shell")
     func railIsRenderedOnce() throws {
         let body = Self.stripped(try Self.quickstartSource)
-        // One rail call inside Step 2, in the scaffold every branch goes
-        // through — not one per screen, which is how the old three-step model
-        // ended up with two screens both claiming step 3. Matched with its
-        // trailing modifier so the prose in the doc comment above it does not
-        // count as a second call site.
-        let railCalls = body
-            .components(separatedBy: "OnboardingTopBar(step:.chooseModel).padding(.top,22)")
-            .count - 1
-        #expect(railCalls == 1, "Step 2's rail must be rendered by the scaffold alone")
-        #expect(body.contains("privatefuncstep2Scaffold<Content:View,Footer:View>"))
+        // Direction D draws the rail once for the WHOLE surface, from
+        // `coordinator.step`, rather than once per screen — which is how the
+        // old three-step model ended up with two screens both claiming step 3.
+        // The invariant is unchanged and is now enforced more strongly: no
+        // Step 2 branch can render a rail at all, because none of them has one.
+        let fullRail = body.components(separatedBy: "OnboardingSetupRail(").count - 1
+        let compactRail = body.components(separatedBy: "OnboardingCompactRail(").count - 1
+        #expect(fullRail == 1, "exactly one full-width rail call site, found \(fullRail)")
+        #expect(compactRail == 1, "exactly one rotated-rail call site, found \(compactRail)")
+        // Both live in the shell's rail planes, never inside a micro-stage.
+        #expect(body.contains("privatevarrailPlane:someView{"))
+        #expect(body.contains("privatevarcompactRailPlane:someView{"))
+        // And every micro-stage still routes through the one scaffold.
+        #expect(body.contains("privatefuncstep2Scaffold<Body:View,Footer:View>"))
+    }
+
+    @Test("The rail reports the macro step, and never a micro-stage")
+    func railReportsTheMacroStepOnly() {
+        // The rail reads `coordinator.step`, which is derived from (phase,
+        // stage) and deliberately does not consult `step2Stage`. Browsing and
+        // reviewing must therefore both still report Step 2.
+        let coord = Self.coordinator()
+        coord.advanceToChooseModel()
+        #expect(coord.step == .chooseModel)
+        coord.beginBrowsingCatalog()
+        #expect(coord.step == .chooseModel, "the catalogue is not a step of its own")
+        coord.beginReviewDownload(origin: .catalogue)
+        #expect(coord.step == .chooseModel, "review is not a step of its own")
+        #expect(QuickstartCoordinator.Step.total == 4)
     }
 
     // MARK: - 2. CTA derivation (Paper 05.2.G — canonical)
@@ -519,7 +549,10 @@ struct Step2ModelSelectionBehaviorTests {
     /// see" structural rather than re-implemented per screen.
     @Test("Return is the footer primary, and a disabled primary swallows it")
     func returnIsTheVisiblePrimary() throws {
-        let footer = Self.stripped(try Self.componentsSource())
+        // Direction D moved the shared action lane out of the components file
+        // and into the design system; the contract is unchanged, and it is
+        // still one control rather than one per screen.
+        let footer = Self.stripped(try Self.directionDSource())
         #expect(footer.contains(".disabled(!primaryEnabled).keyboardShortcut(.defaultAction)"),
                 "the default action must sit on the control the derivation disables")
         #expect(footer.contains(#".accessibilityIdentifier("Quickstart.Footer.Primary")"#))
@@ -796,14 +829,14 @@ struct Step2ModelSelectionBehaviorTests {
     @Test("Every Escape destination also has a visible control")
     func escapeMirrorsAVisibleControl() throws {
         let body = Self.stripped(try Self.quickstartSource)
-        let components = Self.stripped(try Self.componentsSource())
         // Escape is `.cancelAction` on Back, and every Step 2 micro-stage
         // supplies a Back — so the key can only ever do what a visible control
         // already does.
-        #expect(components.contains(".keyboardShortcut(.cancelAction).accessibilityIdentifier(\"Quickstart.Footer.Back\")"))
+        let directionD = Self.stripped(try Self.directionDSource())
+        #expect(directionD.contains(".keyboardShortcut(.cancelAction).accessibilityIdentifier(\"Quickstart.Footer.Back\")"))
         #expect(body.contains(#"backTitle:"←Backtorecommendedmodels""#))
         #expect(body.contains(#""←Backtoallmodels""#))
-        let footers = body.components(separatedBy: "OnboardingWizardFooter(").count - 1
+        let footers = body.components(separatedBy: "OnboardingStepFooter(").count - 1
         #expect(footers >= 4, "each Step 2 micro-stage must carry its own footer, found \(footers)")
     }
 

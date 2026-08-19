@@ -1,0 +1,31 @@
+# rapid-mac AX structural baseline v1
+AXApplication title="Rapid-MLX"
+  AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
+    AXGroup subrole=AXHostingView
+      AXUnknown id="Quickstart.Progress" desc="Setup progress, step 2 of 4" enabled=true
+      AXStaticText id="Quickstart.Step2.Kicker" value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXScrollArea
+        AXStaticText value=text enabled=true
+        AXButton id="Quickstart.CachedModel.<model>" desc="<model>. Already downloaded and ready to start.. on disk <size>" enabled=true
+        AXButton id="Quickstart.CachedModel.fake-external-alias" desc="fake-external-alias. Already downloaded by another MLX app.. on disk <size>" enabled=true
+        AXButton id="Quickstart.Choice.<model>" desc="LFM2.5 · 1.2B. recommended starter. Small download (~<size>), runs on any Mac. Answers instantly and follows instructions well. Upgrade anytime for more depth.. download ~<size>. instant, runs on any Mac" enabled=true
+        AXStaticText value=text enabled=true
+        AXButton id="Quickstart.Choice.<model>" desc="Qwen 3 · 0.6B. Lowest memory. Lowest memory and fastest startup. Good for basic chat, but less accurate and not recommended for tools. Download ~<size>" enabled=true
+        AXStaticText value=text enabled=true
+        AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 4B. Better everyday quality. Still light on disk.. download <size>" enabled=true
+        AXButton id="Quickstart.Choice.<model>" desc="Qwen <version> · 9B. Strong all-rounder if you have the RAM to spare.. download <size>" enabled=true
+        AXButton id="Quickstart.BrowseAll" desc="Browse all models" enabled=true
+        AXScrollBar value=number enabled=true
+          AXValueIndicator value=number
+          AXButton subrole=AXIncrementArrow
+          AXButton subrole=AXDecrementArrow
+          AXButton subrole=AXIncrementPage
+          AXButton subrole=AXDecrementPage
+      AXButton id="Quickstart.Footer.Back" desc="Back" enabled=true
+      AXButton id="Quickstart.Footer.Primary" desc="Review download" enabled=true
+    AXButton subrole=AXCloseButton enabled=true
+    AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
+    AXButton subrole=AXMinimizeButton enabled=true
+    AXStaticText value=text enabled=true

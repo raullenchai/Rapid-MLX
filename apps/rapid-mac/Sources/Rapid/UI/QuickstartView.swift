@@ -1424,13 +1424,168 @@ struct QuickstartView: View {
             }
     }
 
-    /// Top-level router. While ``phase`` is ``.idle`` the wizard shows
-    /// the ``stage``-driven welcome / choose-model steps (full pane);
-    /// once a download is in flight the download-lifecycle cards take
-    /// the frame (centered). The lifecycle machine itself is unchanged —
-    /// only its idle branch now fans out to two wizard screens.
-    @ViewBuilder
+    /// The Direction D two-plane shell (Paper 05.1.A).
+    ///
+    /// Every state is a rail beside a canvas. The rail says where you are and
+    /// what this Mac is; the canvas says what is being decided and what the
+    /// action will do. Which rail depends on whether the user can act: D1 —
+    /// the mineral setup rail — asks, and D2 — the graphite subject rail —
+    /// waits. Nothing here decides *what* the state is; that is still
+    /// ``coordinator.phase`` and ``coordinator.stage``, unchanged.
     private var content: some View {
+        GeometryReader { proxy in
+            let layout = OnboardingLayout.resolve(width: proxy.size.width)
+            Group {
+                if layout.isCompact {
+                    // Paper 05.1.E. The rail rotates rather than shrinking:
+                    // a 300pt column beside a 720pt window leaves the canvas
+                    // around 400pt, which the model cards cannot use.
+                    VStack(spacing: 0) {
+                        compactRailPlane
+                        canvasPlane
+                    }
+                } else {
+                    HStack(spacing: 0) {
+                        railPlane
+                        canvasPlane
+                    }
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .environment(\.onboardingLayout, layout)
+        }
+        // The surface fills whatever the window gives it. There is no maximum:
+        // setup IS the window now, not a panel inside one.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The rotated rail, D2 band included.
+    @ViewBuilder
+    private var compactRailPlane: some View {
+        if let lifecycle = subjectLifecycle {
+            let job = downloads.job(for: coordinator.selection.alias)
+            @Bindable var progress = job?.progress ?? DownloadProgress()
+            OnboardingCompactSubjectBand(
+                lifecycle: coordinator.phase == .downloading
+                    ? Self.downloadLifecycleName(progress: progress)
+                    : lifecycle,
+                identity: coordinator.selection.alias,
+                fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
+                bytesLine: Self.subjectBytesLine(job: job)
+            )
+        } else {
+            OnboardingCompactRail(step: coordinator.step)
+        }
+    }
+
+    /// D2 for the blocking lifecycle states, D1 for everything else.
+    ///
+    /// A memory warning parked on top of ``Phase/starting`` is a DECISION, not
+    /// a wait, so it keeps the D1 rail — the user has something to answer and
+    /// the rail must keep showing them the step and the machine facts that
+    /// answer it with.
+    @ViewBuilder
+    private var railPlane: some View {
+        if let lifecycle = subjectLifecycle {
+            let job = downloads.job(for: coordinator.selection.alias)
+            @Bindable var progress = job?.progress ?? DownloadProgress()
+            OnboardingSubjectRail(
+                lifecycle: coordinator.phase == .downloading
+                    ? Self.downloadLifecycleName(progress: progress)
+                    : lifecycle,
+                identity: coordinator.selection.alias,
+                fraction: coordinator.phase == .downloading ? progress.progressFraction : nil,
+                bytesLine: Self.subjectBytesLine(job: job),
+                rateLine: Self.subjectRateLine(job: job),
+                stepLabel: "STEP \(coordinator.step.displayNumber) OF \(QuickstartCoordinator.Step.total)",
+                stepName: coordinator.step.railTitle.localizedUppercase
+            )
+        } else {
+            OnboardingSetupRail(
+                step: coordinator.step,
+                hardware: hardware,
+                // Free space joins the rail from Step 2 onward, where it
+                // starts bearing on the decision (Paper 05.1 frames 03/04).
+                freeSpace: coordinator.step == .welcome
+                    ? nil
+                    : freeBytesProbe().map { Self.wholeGB(Double($0) / Double(1 << 30)) }
+            )
+        }
+    }
+
+    /// The lifecycle name for the D2 rail, or `nil` when this state is a D1
+    /// decision. Derived from the real download phase so "PREPARING" is only
+    /// claimed while the pull genuinely has nothing to report yet.
+    private var subjectLifecycle: String? {
+        switch coordinator.phase {
+        case .downloading:
+            let job = downloads.job(for: coordinator.selection.alias)
+            return Self.downloadLifecycleName(phase: job?.progress.phase)
+        case .starting:
+            guard QuickstartView.memoryWarningToPresent(
+                phase: coordinator.phase,
+                pending: server.pendingMemoryWarning,
+                selectionAlias: coordinator.selection.alias
+            ) == nil else { return nil }
+            return "STARTING"
+        case .idle, .lowDiskWarning, .ready, .dismissed, .failed:
+            return nil
+        }
+    }
+
+    /// Which of Paper's two download lifecycles a job is in.
+    ///
+    /// Pure so "a pull with nothing observed yet must not be called
+    /// DOWNLOADING" can be pinned. Paper draws these as separate states (09
+    /// and 14) and the difference is real: one has bytes to report, the other
+    /// has a request that landed and no transfer yet.
+    static func downloadLifecycleName(phase: DownloadProgress.Phase?) -> String {
+        switch phase {
+        case .downloading, .fetching:
+            return "DOWNLOADING"
+        case .idle, .preparing, .warmingUp, nil:
+            return "PREPARING"
+        }
+    }
+
+    /// The mirror's aggregate byte heartbeat is a stronger signal than its
+    /// coarse phase. It deliberately does not mutate ``phase`` (the next file
+    /// event owns that state), so a rail that looked only at the enum could
+    /// claim PREPARING while measured bytes were already moving.
+    static func downloadLifecycleName(progress: DownloadProgress) -> String {
+        progress.hasDiskObservation ? "DOWNLOADING" : downloadLifecycleName(phase: progress.phase)
+    }
+
+    /// "271 MB / 633 MB" — only once the byte monitor has observed real disk
+    /// growth against a known total. Never a synthesised denominator.
+    static func subjectBytesLine(job: DownloadManager.Job?) -> String? {
+        guard let progress = job?.progress,
+              progress.hasDiskObservation,
+              let bytes = progress.bytesDownloaded
+        else { return nil }
+        if let total = progress.totalBytes, total > 0 {
+            return "\(DownloadProgress.formatBytes(bytes)) / \(DownloadProgress.formatBytes(total))"
+        }
+        // A measured total is discarded when the mirror proves it wrong
+        // (done > total). Keep the truthful numerator visible rather than
+        // regressing to an indeterminate track while bytes are flowing.
+        return "\(DownloadProgress.formatBytes(bytes)) downloaded"
+    }
+
+    /// "4.4 MB/s · 2 min left" — rate first, and the ETA appended only when
+    /// ``DownloadProgress`` has measured one. Paper 05.1.A forbids an ETA
+    /// before bytes move, so there is deliberately no pre-download branch.
+    static func subjectRateLine(job: DownloadManager.Job?) -> String? {
+        guard let progress = job?.progress, let speed = progress.bytesPerSecond, speed > 0
+        else { return nil }
+        var parts = [DownloadProgress.formatSpeed(bytesPerSecond: speed)]
+        if let eta = progress.etaText { parts.append(eta) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The right-hand plane: one composition per state.
+    @ViewBuilder
+    private var canvasPlane: some View {
         switch coordinator.phase {
         case .idle:
             switch coordinator.stage {
@@ -1438,15 +1593,15 @@ struct QuickstartView: View {
             case .chooseModel: chooseModelStep
             }
         case .lowDiskWarning(let freeBytes, let requiredBytes):
-            centeredCard(progressStep: nil) {
+            OnboardingCenteredCanvas {
                 lowDiskCard(freeBytes: freeBytes, requiredBytes: requiredBytes)
             }
         case .downloading:
-            centeredCard(progressStep: .download) { downloadingCard }
+            OnboardingCenteredCanvas(trailing: 72) { downloadingCard }
         case .ready:
             // Onboarding V3: readiness is a destination, not a hand-off.
             // The surface stays here until the user confirms.
-            centeredCard(progressStep: .start) { readyCard }
+            OnboardingCenteredCanvas { readyCard }
         case .dismissed:
             // Terminal — the parent's visibility predicate has already
             // dropped this surface. A one-frame race can still render here,
@@ -1470,58 +1625,16 @@ struct QuickstartView: View {
                 pending: server.pendingMemoryWarning,
                 selectionAlias: coordinator.selection.alias
             ) {
-                centeredCard(progressStep: nil) { memoryWarningCard(warning) }
+                OnboardingCenteredCanvas { memoryWarningCard(warning) }
             } else {
                 // .ready is transitional — the parent swaps to ChatView, but
                 // a one-frame race can land here; the starting copy is a calm
                 // fallback so the user never sees a blank pane.
-                centeredCard(progressStep: .start) { startingCard }
+                OnboardingCenteredCanvas(trailing: 72) { startingCard }
             }
         case .failed(let message, _):
-            centeredCard(progressStep: nil) { failedCard(message: message) }
+            OnboardingCenteredCanvas { failedCard(message: message) }
         }
-    }
-
-    /// The centered card chrome shared by the download-lifecycle states.
-    /// ``progressStep`` shows the top progress bar on the happy path
-    /// (download / starting / ready); ``nil`` omits it for the low-disk /
-    /// failed interstitials, where a "progress" bar would misread.
-    ///
-    /// The card caps at 460pt but SHRINKS on a narrow detail pane rather
-    /// than overflowing — ``QuickstartView`` lives in the split view's
-    /// detail column, so at the 640pt window floor with the sidebar
-    /// visible the pane is only ~360pt (memory #459/#464: NavigationSplit
-    /// detail clips instead of scrolling on macOS 14/15). ``maxWidth`` +
-    /// the outer horizontal inset keeps the chrome inside the column.
-    @ViewBuilder
-    private func centeredCard<Content: View>(
-        progressStep: QuickstartCoordinator.Step?,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(spacing: 0) {
-            if let progressStep {
-                OnboardingTopBar(step: progressStep)
-                    .padding(.top, 22)
-            }
-            Spacer()
-            VStack(spacing: 20) { content() }
-                .padding(28)
-                .frame(maxWidth: 460)
-                .background(
-                    RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                        .fill(RapidTheme.card)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: RapidTheme.cardRadius, style: .continuous)
-                        .stroke(RapidTheme.hairline, lineWidth: 1)
-                )
-                .shadow(color: Color.black.opacity(0.06), radius: 18, x: 0, y: 8)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Quickstart")
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
     }
 
     /// Stable key for ``.task(id:)`` so SwiftUI re-fires the handler on
@@ -1545,99 +1658,87 @@ struct QuickstartView: View {
     /// Step 1 — the centered brand hero. "Get started" advances to the
     /// model chooser (it no longer kicks off a download directly; the
     /// download starts from the chooser once a model is picked).
+    /// Step 1 — the privacy claim, at display scale (Paper 05.1 state 01).
+    ///
+    /// The headline is the product's one substantive promise rather than a
+    /// marketing line, and the mascot carries the brand so the type does not
+    /// have to. Left-aligned against the canvas's deep leading margin: the
+    /// asymmetry is the composition, and a centred hero would read as a
+    /// landing page rather than a setup screen.
     @ViewBuilder
     private var welcomeStep: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            OnboardingBrandMark(size: 78).padding(.bottom, 22)
+        OnboardingCenteredCanvas {
+            VStack(alignment: .leading, spacing: 0) {
+                CheetahLogo(size: 156)
+                    .padding(.bottom, 30)
 
-            Text("WELCOME TO RAPID-MLX")
-                .scaledSystemFont(11, weight: .semibold)
-                .tracking(2.2)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 14)
+                OnboardingDisplayTitle(text: "Nothing you type\nleaves this Mac.", size: 52)
 
-            (Text("Fast, free AI\n")
-             + Text("that runs on your Mac.").italic().foregroundColor(RapidTheme.brand))
-                .scaledSystemFont(38, relativeTo: .largeTitle, weight: .bold)
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Models run locally on Apple Silicon. You download one model "
+                         + "once — after that it works with no network at all.")
+                    Text("No account, no subscription.")
+                }
+                .scaledSystemFont(17, relativeTo: .title3)
+                .foregroundStyle(RapidTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 16)
+                .frame(maxWidth: OnboardingD.proseWidth, alignment: .leading)
+                .padding(.top, 26)
 
-            VStack(spacing: 5) {
-                Text("Local models on Apple Silicon — no account, no subscription.")
-                Text("Download one model and start chatting in minutes.")
+                // Setup was entered on an earlier launch and never finished.
+                // Say so, and say what is and is not carried over — nothing
+                // is, and a screen that stayed silent about it while offering
+                // to "continue" would let the user assume a download picked up
+                // where it left off. Paper 05.1 state 18: "The copy promises a
+                // fresh download, never a resume."
+                if coordinator.isResumingIncompleteSetup {
+                    Text("Setup didn't finish last time. Nothing was carried over — "
+                         + "choose a model and it downloads from here.")
+                        .scaledSystemFont(13)
+                        .foregroundStyle(RapidTheme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: OnboardingD.proseWidth, alignment: .leading)
+                        .padding(.top, 18)
+                        .accessibilityIdentifier("Quickstart.ResumeNotice")
+                }
+
+                OnboardingActionLane {
+                    Button {
+                        coordinator.advanceToChooseModel()
+                    } label: {
+                        Text(Self.welcomePrimaryTitle(resuming: coordinator.isResumingIncompleteSetup))
+                    }
+                    .buttonStyle(.onboardingPrimary)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("Quickstart.GetStarted")
+                    .accessibilityLabel(
+                        coordinator.isResumingIncompleteSetup
+                            ? "Continue setup — choose your first model"
+                            : "Get started — choose your first model"
+                    )
+
+                    // #549 (§16 wayfinding): the hero must answer "how do I
+                    // get out?" — before this the only exit was the "Browse
+                    // all models" link on step 2, trapping a first-run user
+                    // sitting on step 1. A low-emphasis Skip drops straight
+                    // into the app, and `.cancelAction` makes Esc leave
+                    // onboarding.
+                    //
+                    // This is the app's one genuine "dismiss onboarding"
+                    // control. "Browse all models" on step 2 shared it until
+                    // #1653; it does not any more, because a user asking to
+                    // see the catalogue has not asked to leave setup.
+                    Button("Skip for now") {
+                        onSkip()
+                    }
+                    .buttonStyle(.onboardingQuiet)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("Quickstart.Skip")
+                    .accessibilityLabel("Skip onboarding and go to the app")
+                }
+                .padding(.top, 44)
             }
-            .scaledSystemFont(14)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-
-            // Setup was entered on an earlier launch and never finished. Say
-            // so, and say what is and is not carried over — nothing is, and a
-            // screen that stayed silent about it while offering to "continue"
-            // would let the user assume a download picked up where it left
-            // off. Paper 05.1 state 18: "The copy promises a fresh download,
-            // never a resume."
-            if coordinator.isResumingIncompleteSetup {
-                Text("Setup didn't finish last time. Nothing was carried over — "
-                     + "choose a model and it downloads from here.")
-                    .scaledSystemFont(12)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 12)
-                    .accessibilityIdentifier("Quickstart.ResumeNotice")
-            }
-
-            Spacer()
-
-            Button {
-                coordinator.advanceToChooseModel()
-            } label: {
-                Text(Self.welcomePrimaryTitle(resuming: coordinator.isResumingIncompleteSetup))
-                    .scaledSystemFont(15, weight: .semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 34).padding(.vertical, 12)
-                    .background(Capsule().fill(RapidTheme.amber))
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("Quickstart.GetStarted")
-            .accessibilityLabel(
-                coordinator.isResumingIncompleteSetup
-                    ? "Continue setup — choose your first model"
-                    : "Get started — choose your first model"
-            )
-            .padding(.bottom, 10)
-
-            // #549 (§16 wayfinding): the hero must answer "how do I get
-            // out?" — before this the only exit was the "Browse all
-            // models" link on step 2, trapping a first-run user sitting
-            // on step 1. A low-emphasis Skip drops straight into the app,
-            // and `.cancelAction` makes Esc leave onboarding — mirroring
-            // the Skip control OnboardingTour already ships.
-            //
-            // This is the app's one genuine "dismiss onboarding" control.
-            // "Browse all models" on step 2 shared it until #1653; it does
-            // not any more, because a user asking to see the catalogue has
-            // not asked to leave setup.
-            Button("Skip for now") {
-                onSkip()
-            }
-            .buttonStyle(.plain)
-            .scaledSystemFont(12, weight: .medium)
-            .foregroundStyle(.secondary)
-            .keyboardShortcut(.cancelAction)
-            .accessibilityIdentifier("Quickstart.Skip")
-            .accessibilityLabel("Skip onboarding and go to the app")
-            .padding(.bottom, 18)
-
-            OnboardingStepProgress(current: QuickstartCoordinator.Step.welcome.rawValue)
-                .padding(.bottom, 34)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 44)
     }
 
     /// The welcome primary's verb.
@@ -1657,26 +1758,18 @@ struct QuickstartView: View {
 
     /// Step 2's router over its five micro-stages (Paper 05.2.B).
     ///
-    /// Every branch renders ``OnboardingTopBar(step: .chooseModel)`` through
-    /// the one shared scaffold, so the rail cannot drift off `Step 2 of 4` by
-    /// a screen forgetting which step it belongs to — the mistake the old
-    /// three-step model made twice.
+    /// Every branch renders through the one shared ``step2Scaffold``, so the
+    /// rail cannot drift off `Step 2 of 4` by a screen forgetting which step it
+    /// belongs to — the mistake the old three-step model made twice. The rail
+    /// itself is drawn once, by ``railPlane``, from ``coordinator.step``.
     @ViewBuilder
     private var chooseModelStep: some View {
         Group {
             switch coordinator.step2Stage {
             case .checkingHardware:
-                recommendationLoadingStep(
-                    kicker: "CHECKING THIS MAC",
-                    title: "Reading this Mac…",
-                    identifier: "Quickstart.Step2.CheckingHardware"
-                )
+                checkingHardwareStep
             case .findingFit:
-                recommendationLoadingStep(
-                    kicker: "FINDING THE BEST FIT",
-                    title: "Matching models to this Mac…",
-                    identifier: "Quickstart.Step2.FindingFit"
-                )
+                findingFitStep
             case .choosing:
                 recommendedShortlistStep
             case .browsing:
@@ -1692,54 +1785,48 @@ struct QuickstartView: View {
         }
     }
 
-    /// The chrome every Step 2 micro-stage shares.
+    /// The canvas + footer lane every Step 2 micro-stage shares.
     ///
-    /// One rail (macro progress, always Step 2 of 4), one kicker (micro
-    /// progress, names the branch), one title, the content, and exactly one
-    /// footer lane holding at most one Back and one primary. No breadcrumb: a
-    /// trail would imply a depth this flow does not have.
+    /// One canvas, and exactly one footer lane holding at most one Back and one
+    /// primary. No breadcrumb: a trail would imply a depth this flow does not
+    /// have. The kicker and title live in the body, because Direction D places
+    /// them differently for the column layouts (beside the content) and for the
+    /// catalogue (above it).
     @ViewBuilder
-    private func step2Scaffold<Content: View, Footer: View>(
+    private func step2Scaffold<Body: View, Footer: View>(
+        trailing: CGFloat = OnboardingD.canvasTrailing,
+        @ViewBuilder body: @escaping () -> Body,
+        @ViewBuilder footer: @escaping () -> Footer
+    ) -> some View {
+        OnboardingCanvas(trailing: trailing) {
+            // One geometry for every state: the principal group fills the
+            // canvas and centres in it, the action lane is anchored beneath.
+            OnboardingCanvasLayout(principal: body) {
+                footer().padding(.top, 28)
+            }
+        }
+    }
+
+    /// Paper's Step 2 body: a fixed heading column beside the live list.
+    ///
+    /// The asymmetry is load-bearing. The heading column is where the branch
+    /// names itself and — on Review download — where the cost is stated, while
+    /// the list stays in exactly the same place across all three micro-stages
+    /// so switching between them never moves the rows under the pointer.
+    private func step2Columns<Aside: View, Content: View>(
         kicker: String,
         title: String,
         subtitle: String?,
-        @ViewBuilder content: () -> Content,
-        @ViewBuilder footer: () -> Footer
+        @ViewBuilder aside: @escaping () -> Aside,
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            OnboardingTopBar(step: .chooseModel).padding(.top, 22)
-
-            // Micro progress. The step number is repeated deliberately: this
-            // is the only element that names the branch, and it must not be
-            // mistaken for a step of its own. Never sub-numbered.
-            Text(Self.microStageKicker(kicker))
-                .scaledSystemFont(10, weight: .semibold).tracking(1)
-                .foregroundStyle(.tertiary)
-                .padding(.top, 18)
-                .accessibilityIdentifier("Quickstart.Step2.Kicker")
-
-            Text(title)
-                .scaledSystemFont(24, relativeTo: .title, weight: .bold)
-                .padding(.top, 6)
-            if let subtitle {
-                Text(subtitle)
-                    .scaledSystemFont(13).foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            }
-
-            content()
-                .padding(.top, 16)
-
-            footer()
-                .padding(.top, 12)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Tighter than the welcome hero's 44pt inset: Step 2 holds rigid-column
-        // cards, and it lives in the split-view detail pane (~360pt at the
-        // 640pt window floor with the sidebar shown). 24pt keeps model names
-        // readable instead of squeezed to a sliver (memory #459/#464).
-        .padding(.horizontal, 24)
-        .padding(.bottom, 26)
+        OnboardingStepColumns(
+            kicker: Self.microStageKicker(kicker),
+            title: title,
+            subtitle: subtitle,
+            aside: aside,
+            content: content
+        )
     }
 
     /// `STEP 2 OF 4 · <MICRO-STAGE>`. Pure so a test can pin the format —
@@ -1752,31 +1839,118 @@ struct QuickstartView: View {
 
     // MARK: - 2a / 2b — hardware detection and recommendation loading
 
-    /// The pre-shortlist wait. Indeterminate on purpose: neither catalogue
-    /// subprocess reports progress, so a determinate bar would be a number we
-    /// made up. The footer is present but disabled — the user can still go
-    /// Back, and there is nothing yet to progress to.
+    /// 2a — reading this Mac (Paper 05.1 state 02).
+    ///
+    /// The chip and the unified memory are synchronous sysctl reads and are
+    /// therefore already known when this draws; the free-space probe is the
+    /// one value that genuinely arrives later, so it is the only one shown as
+    /// a placeholder. Nothing here is a scanning animation with an invented
+    /// duration — Paper forbids that explicitly, and the honest rendering of a
+    /// read that has already happened is the answer.
     @ViewBuilder
-    private func recommendationLoadingStep(
+    private var checkingHardwareStep: some View {
+        transientStep(
+            kicker: "CHECKING THIS MAC",
+            title: "Reading this Mac…",
+            subtitle: "Rapid-MLX checks the chip, the unified memory and the free "
+                + "space on the volume that holds your Hugging Face cache. "
+                + "Nothing is uploaded — the read is local.",
+            identifier: "Quickstart.Step2.CheckingHardware"
+        ) {
+            VStack(spacing: 0) {
+                transientFact("Chip") {
+                    Text(hardware.brandString)
+                        .scaledSystemFont(13, design: .monospaced)
+                        .foregroundStyle(RapidTheme.textPrimary)
+                }
+                transientFact("Unified memory") {
+                    Text(Self.wholeGB(hardware.physicalRAMGB))
+                        .scaledSystemFont(13, design: .monospaced)
+                        .foregroundStyle(RapidTheme.textPrimary)
+                }
+                transientFact("Free on cache volume") {
+                    if let free = freeBytesProbe() {
+                        Text(Self.formatBytesForBanner(free))
+                            .scaledSystemFont(13, design: .monospaced)
+                            .foregroundStyle(RapidTheme.textPrimary)
+                    } else {
+                        OnboardingSkeleton(width: 84)
+                    }
+                }
+            }
+            .frame(maxWidth: 460, alignment: .leading)
+        }
+    }
+
+    /// 2b — matching models to this Mac (Paper 05.1 state 03).
+    ///
+    /// The genuinely asynchronous one: the shortlist cannot say which models
+    /// are already on disk until ``ModelCatalog/load`` answers. Only the
+    /// "already on this Mac" group is unknown, so only it is drawn as
+    /// placeholder rows — the ladder below it is a fixed list and is never
+    /// pretended to be computed.
+    @ViewBuilder
+    private var findingFitStep: some View {
+        transientStep(
+            kicker: "FINDING THE BEST FIT",
+            title: "Matching models to \(Self.wholeGB(hardware.physicalRAMGB))…",
+            subtitle: "Rapid-MLX is reading the model catalogue to see which models "
+                + "are already on this Mac and how much each one would download. "
+                + "The short list below is fixed; only the “already downloaded” "
+                + "part depends on this read.",
+            identifier: "Quickstart.Step2.FindingFit"
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                OnboardingGroupLabel(text: "ALREADY ON THIS MAC")
+                ForEach(0..<2, id: \.self) { _ in
+                    HStack(spacing: 14) {
+                        OnboardingSkeleton(width: 32, height: 32)
+                        VStack(alignment: .leading, spacing: 6) {
+                            OnboardingSkeleton(width: 168, height: 10)
+                            OnboardingSkeleton(width: 116, height: 9)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 18)
+                    .frame(height: OnboardingD.rowHeight)
+                    .background(
+                        RoundedRectangle(cornerRadius: OnboardingD.cardRadius, style: .continuous)
+                            .fill(RapidTheme.surfaceRaised)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: OnboardingD.cardRadius, style: .continuous)
+                            .strokeBorder(RapidTheme.hairline, lineWidth: 1)
+                    )
+                }
+            }
+        }
+    }
+
+    /// The chrome the two pre-shortlist micro-stages share. The footer is
+    /// present but disabled — the user can still go Back, and there is nothing
+    /// yet to progress to.
+    @ViewBuilder
+    private func transientStep<Content: View>(
         kicker: String,
         title: String,
-        identifier: String
+        subtitle: String,
+        identifier: String,
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        step2Scaffold(
-            kicker: kicker,
-            title: title,
-            subtitle: "Nothing is downloaded yet."
-        ) {
-            HStack(spacing: 9) {
-                ProgressView().controlSize(.small)
-                Text("Reading the model catalogue…")
-                    .scaledSystemFont(12)
-                    .foregroundStyle(.secondary)
+        step2Scaffold {
+            step2Columns(
+                kicker: kicker,
+                title: title,
+                subtitle: subtitle
+            ) {
+                EmptyView()
+            } content: {
+                content()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(identifier)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .accessibilityIdentifier(identifier)
         } footer: {
-            OnboardingWizardFooter(
+            OnboardingStepFooter(
                 primaryTitle: OnboardingModelSelection.disabledPrimary.title,
                 primaryEnabled: false,
                 onBack: { coordinator.backToWelcome() },
@@ -1785,7 +1959,141 @@ struct QuickstartView: View {
         }
     }
 
+    @ViewBuilder
+    private func transientFact<Value: View>(
+        _ label: String,
+        @ViewBuilder value: () -> Value
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .scaledSystemFont(13)
+                .foregroundStyle(RapidTheme.textSecondary)
+            Spacer(minLength: 12)
+            value()
+        }
+        .padding(.vertical, 11)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(RapidTheme.hairline).frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     // MARK: - 2c — the recommended shortlist
+
+    /// What the Step 2 heading column says about the current selection.
+    ///
+    /// Paper draws the chooser three ways, and which one shows is a pure
+    /// function of the pick (05.1 states 04, 05, 06). The list on the right is
+    /// identical in all three — only the narrative beside it changes, because
+    /// what the user needs explained differs completely between "here is the
+    /// recommendation", "you have chosen something bigger, here is the cost"
+    /// and "this one is already downloaded".
+    enum SelectionNarrative: Equatable {
+        /// State 04 — the default. The starter, the low-memory fallback, or
+        /// anything the other two cases do not claim.
+        case chooseFirst
+        /// State 05 — a bigger model is picked, so the cost is compared.
+        case biggerAndCost
+        /// State 06 — the pick is already in the shared cache.
+        case alreadyHere
+
+        var title: String {
+            switch self {
+            case .chooseFirst:   return "Choose your\nfirst model"
+            case .biggerAndCost: return "Bigger, and\nwhat it costs"
+            case .alreadyHere:   return "One is already\nhere."
+            }
+        }
+    }
+
+    /// Resolve the narrative from the selection alone.
+    ///
+    /// Pure, and ordered: cached-ness wins over size, because "you already
+    /// have this" is the more useful thing to say about a 9B that happens to
+    /// be on disk than "here is what it costs to download". A trade-up only
+    /// takes the comparison branch when there is something to compare it
+    /// WITH — a lone trade-up would produce a one-column table, which is a
+    /// statement dressed as a comparison.
+    static func selectionNarrative(
+        alias: String,
+        cachedModels: [ModelEntry],
+        comparableTradeUps: [QuickstartModelChoice]
+    ) -> SelectionNarrative {
+        if canStartWithoutDownload(alias: alias, cachedModels: cachedModels) {
+            return .alreadyHere
+        }
+        let isTradeUp = comparableTradeUps.contains { $0.alias == alias }
+        if isTradeUp, comparableTradeUps.count >= 2 {
+            return .biggerAndCost
+        }
+        return .chooseFirst
+    }
+
+    /// The subtitle under the narrative title.
+    static func selectionSubtitle(
+        _ narrative: SelectionNarrative,
+        hardware: MacHardware
+    ) -> String {
+        switch narrative {
+        case .chooseFirst:
+            return "Start small — you can download bigger models anytime in Settings."
+        case .biggerAndCost:
+            return "The difference is download size and how much memory the model "
+                + "holds while it runs, against this Mac's \(wholeGB(hardware.physicalRAMGB))."
+        case .alreadyHere:
+            return "Another MLX app already downloaded this model into the shared "
+                + "Hugging Face cache. Picking it skips the download entirely."
+        }
+    }
+
+    /// The comparison columns for ``SelectionNarrative/biggerAndCost``.
+    ///
+    /// Every figure is an existing reading: ``sizeText`` for the download,
+    /// ``ModelSizing/estimate(alias:)`` for the memory, and
+    /// ``ModelSizing/classify(_:on:)`` — the same classification the primary is
+    /// gated on — for the fit. No benchmark, no quality claim.
+    static func comparisonColumns(
+        selection: String,
+        tradeUps: [QuickstartModelChoice],
+        hardware: MacHardware
+    ) -> [OnboardingComparisonTable.Column] {
+        tradeUps.map { choice in
+            let footprint = ModelSizing.estimate(alias: choice.alias)
+            let fit = ModelSizing.classify(footprint, on: hardware)
+            return OnboardingComparisonTable.Column(
+                title: comparisonColumnTitle(for: choice),
+                isPicked: choice.alias == selection,
+                download: sizeText(for: choice),
+                memory: footprint.totalGB > 0 ? "≈ \(preciseGB(footprint.totalGB))" : "Unknown",
+                fit: fitText(fit),
+                fitIsWarning: fit != .recommended
+            )
+        }
+    }
+
+    /// The short column header — the parameter count, which is the axis the
+    /// user is actually comparing. Falls back to the display name when the
+    /// alias carries no size token.
+    static func comparisonColumnTitle(for choice: QuickstartModelChoice) -> String {
+        if let params = ModelSizing.estimate(alias: choice.alias).paramsBillions {
+            let whole = params.rounded()
+            let text = abs(params - whole) < 0.05
+                ? String(Int(whole))
+                : String(format: "%.1f", params)
+            return "\(text)B"
+        }
+        return choice.displayName
+    }
+
+    /// Plain words for a ``ModelSizing/Fit``. Read from the classification, so
+    /// the table and the disabled primary can never disagree.
+    static func fitText(_ fit: ModelSizing.Fit) -> String {
+        switch fit {
+        case .recommended: return "Comfortable"
+        case .borderline:  return "Tight"
+        case .tooBig:      return "Won't fit"
+        }
+    }
 
     /// The recommended shortlist: models already on this Mac, the starter, an
     /// honest low-memory fallback, bigger trade-ups, a catalogue pick carried
@@ -1794,29 +2102,48 @@ struct QuickstartView: View {
     private var recommendedShortlistStep: some View {
         let list = shortlist
         let primary = primary(for: .shortlist)
-        step2Scaffold(
-            kicker: "CHOOSE A MODEL",
-            title: "Choose your first model",
-            subtitle: "Start small — you can download bigger models anytime in Settings."
-        ) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+        let narrative = Self.selectionNarrative(
+            alias: coordinator.selection.alias,
+            cachedModels: cachedModels,
+            comparableTradeUps: list.tradeUps
+        )
+        step2Scaffold {
+            step2Columns(
+                kicker: "CHOOSE A MODEL",
+                title: narrative.title,
+                subtitle: Self.selectionSubtitle(narrative, hardware: hardware)
+            ) {
+                // Paper 05.1 state 05: the comparison is part of the heading
+                // column, not a second panel — it is the explanation of the
+                // pick, and it sits where every other explanation sits.
+                if narrative == .biggerAndCost {
+                    OnboardingComparisonTable(
+                        columns: Self.comparisonColumns(
+                            selection: coordinator.selection.alias,
+                            tradeUps: list.tradeUps,
+                            hardware: hardware
+                        ),
+                        fitLabel: "Fit on \(Self.wholeGB(hardware.physicalRAMGB))"
+                    )
+                    .padding(.top, 26)
+                }
+            } content: {
+            OnboardingIntrinsicColumn {
+                VStack(alignment: .leading, spacing: 10) {
                     if !list.cached.isEmpty {
-                        shortlistHeading("ALREADY ON THIS MAC")
-                        VStack(spacing: 9) {
-                            ForEach(list.cached) { entry in
-                                let choice = Self.choice(forCachedModel: entry)
-                                QuickstartCompactCard(
-                                    choice: choice,
-                                    selected: coordinator.selection.alias == entry.alias,
-                                    sizeText: entry.sizeOnDisk ?? "",
-                                    isCached: true,
-                                    onActivate: { activatePrimary(in: .shortlist) }
-                                ) { coordinator.select(choice) }
-                                .accessibilityIdentifier("Quickstart.CachedModel.\(entry.alias)")
-                            }
+                        OnboardingGroupLabel(text: "ALREADY ON THIS MAC")
+                            .padding(.top, 14)
+                        ForEach(list.cached) { entry in
+                            let choice = Self.choice(forCachedModel: entry)
+                            QuickstartCompactCard(
+                                choice: choice,
+                                selected: coordinator.selection.alias == entry.alias,
+                                sizeText: entry.sizeOnDisk ?? "",
+                                isCached: true,
+                                onActivate: { activatePrimary(in: .shortlist) }
+                            ) { coordinator.select(choice) }
+                            .accessibilityIdentifier("Quickstart.CachedModel.\(entry.alias)")
                         }
-                        .padding(.bottom, 16)
                     }
 
                     ForEach(list.starters) { choice in
@@ -1826,11 +2153,11 @@ struct QuickstartView: View {
                             sizeText: Self.sizeText(for: choice),
                             onActivate: { activatePrimary(in: .shortlist) }
                         ) { coordinator.select(choice) }
-                        .padding(.bottom, 16)
                     }
 
                     if !list.lowMemory.isEmpty {
-                        shortlistHeading("NEED THE LIGHTEST OPTION?")
+                        OnboardingGroupLabel(text: "NEED THE LIGHTEST OPTION?")
+                            .padding(.top, 14)
                         ForEach(list.lowMemory) { choice in
                             QuickstartLowMemoryCard(
                                 choice: choice,
@@ -1838,26 +2165,24 @@ struct QuickstartView: View {
                                 sizeText: Self.sizeText(for: choice),
                                 onActivate: { activatePrimary(in: .shortlist) }
                             ) { coordinator.select(choice) }
-                            .padding(.bottom, 16)
                         }
                     }
 
                     if !list.tradeUps.isEmpty {
-                        shortlistHeading("OR PICK A BIGGER ONE")
-                        VStack(spacing: 9) {
-                            ForEach(list.tradeUps) { choice in
-                                let cached = Self.cachedModel(
-                                    alias: choice.alias,
-                                    cachedModels: cachedModels
-                                )
-                                QuickstartCompactCard(
-                                    choice: choice,
-                                    selected: coordinator.selection.alias == choice.alias,
-                                    sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
-                                    isCached: cached != nil,
-                                    onActivate: { activatePrimary(in: .shortlist) }
-                                ) { coordinator.select(choice) }
-                            }
+                        OnboardingGroupLabel(text: "OR PICK A BIGGER ONE")
+                            .padding(.top, 14)
+                        ForEach(list.tradeUps) { choice in
+                            let cached = Self.cachedModel(
+                                alias: choice.alias,
+                                cachedModels: cachedModels
+                            )
+                            QuickstartCompactCard(
+                                choice: choice,
+                                selected: coordinator.selection.alias == choice.alias,
+                                sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
+                                isCached: cached != nil,
+                                onActivate: { activatePrimary(in: .shortlist) }
+                            ) { coordinator.select(choice) }
                         }
                     }
 
@@ -1867,7 +2192,8 @@ struct QuickstartView: View {
                     // a list that visibly disagrees with the footer, which
                     // reads as "my choice was ignored".
                     if let pick = list.yourPick {
-                        shortlistHeading("YOUR PICK").padding(.top, 16)
+                        OnboardingGroupLabel(text: "YOUR PICK")
+                            .padding(.top, 14)
                         let choice = Self.choice(forCatalogEntry: pick)
                         QuickstartCompactCard(
                             choice: choice,
@@ -1879,35 +2205,25 @@ struct QuickstartView: View {
                         .accessibilityIdentifier("Quickstart.YourPick.\(pick.alias)")
                     }
 
-                    Button {
+                    Button("Browse all models →") {
                         browseAllModels()
-                    } label: {
-                        Text("Browse all models →")
-                            .scaledSystemFont(12, weight: .medium)
-                            .foregroundStyle(RapidTheme.brand)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.top, 14)
+                    .buttonStyle(.onboardingLink)
+                    .padding(.top, 2)
                     .accessibilityIdentifier("Quickstart.BrowseAll")
                     .accessibilityLabel("Browse all models")
                 }
+                .padding(.trailing, 2)
+            }
             }
         } footer: {
-            OnboardingWizardFooter(
+            OnboardingStepFooter(
                 primaryTitle: primary.title,
                 primaryEnabled: primary.isEnabled,
                 onBack: { coordinator.backToWelcome() },
                 onPrimary: { activatePrimary(in: .shortlist) }
             )
         }
-    }
-
-    @ViewBuilder
-    private func shortlistHeading(_ text: String) -> some View {
-        Text(text)
-            .scaledSystemFont(10, weight: .semibold).tracking(1)
-            .foregroundStyle(.tertiary)
-            .padding(.bottom, 9)
     }
 
     // MARK: - 2d — Browse all models, in window
@@ -1927,20 +2243,40 @@ struct QuickstartView: View {
             totalCount: Self.onboardingCatalogModels(cachedModels).count
         )
         let primary = primary(for: .catalogue)
-        step2Scaffold(
-            kicker: "BROWSE ALL MODELS",
-            title: "All models",
-            subtitle: nil
-        ) {
-            VStack(alignment: .leading, spacing: 10) {
+        // The catalogue is the one Step 2 stage that does NOT use the fixed
+        // heading column: 175 rows carrying an alias, a repo, badges and a size
+        // need the full canvas width, so the heading becomes a band across the
+        // top instead (Paper 05.2.C).
+        step2Scaffold(trailing: OnboardingD.canvasTrailing) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .bottom, spacing: OnboardingD.columnGap) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        OnboardingKicker(text: Self.microStageKicker("BROWSE ALL MODELS"))
+                            .accessibilityIdentifier("Quickstart.Step2.Kicker")
+                            .padding(.bottom, 16)
+                        OnboardingDisplayTitle(text: "All models")
+                    }
+                    Spacer(minLength: 24)
+                    Text("Everything rapid-mlx can serve on this Mac. "
+                         + "Your shortlist pick stays selected.")
+                        .scaledSystemFont(15, relativeTo: .callout)
+                        .foregroundStyle(RapidTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(width: 330, alignment: .leading)
+                }
+
                 catalogToolbar(heading: heading)
+                    .padding(.top, 26)
+
                 catalogBody(entries: entries)
+                    .padding(.top, 20)
             }
         } footer: {
-            OnboardingWizardFooter(
+            OnboardingStepFooter(
                 primaryTitle: primary.title,
                 primaryEnabled: primary.isEnabled,
                 backTitle: "← Back to recommended models",
+                backAccessibilityLabel: "Back to recommended models",
                 onBack: { returnToRecommendedModels() },
                 onPrimary: { activatePrimary(in: .catalogue) }
             )
@@ -1951,17 +2287,19 @@ struct QuickstartView: View {
     /// they survive Review download and a SwiftUI re-mount.
     @ViewBuilder
     private func catalogToolbar(heading: ModelCacheActions.ListHeading) -> some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                HStack(spacing: 9) {
                     Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(RapidTheme.textSecondary)
                         .accessibilityHidden(true)
                     TextField(
                         "Search models or Hugging Face repo",
                         text: $coordinator.catalogQuery
                     )
                     .textFieldStyle(.plain)
+                    .scaledSystemFont(13)
                     // Escape priority 1. A search field holding text owns the
                     // key and clears itself; empty, it declines so the event
                     // reaches the footer's Back at priority 3. Without this,
@@ -1975,16 +2313,26 @@ struct QuickstartView: View {
                     .accessibilityIdentifier("Quickstart.BrowseAll.Search")
                     .accessibilityLabel("Search models")
                 }
-                .padding(.horizontal, 9)
-                .frame(height: 28)
+                .padding(.horizontal, 13)
+                .frame(height: 36)
                 .background(
-                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
-                        .fill(RapidTheme.card)
+                    RoundedRectangle(cornerRadius: OnboardingD.actionRadius, style: .continuous)
+                        .fill(RapidTheme.surfaceRaised)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: RapidTheme.Radius.input, style: .continuous)
+                    RoundedRectangle(cornerRadius: OnboardingD.actionRadius, style: .continuous)
                         .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
                 )
+
+                RapidSegmentedControl(
+                    selection: $coordinator.catalogFilter,
+                    options: ModelCacheActions.FilterMode.allCases.map {
+                        .init(value: $0, title: $0.displayLabel)
+                    },
+                    accessibilityLabel: "Filter"
+                )
+                .fixedSize()
+                .accessibilityIdentifier("Quickstart.BrowseAll.Filter")
 
                 Menu {
                     ForEach(ModelCacheActions.SortOrder.allCases) { order in
@@ -2003,37 +2351,51 @@ struct QuickstartView: View {
                         .accessibilityIdentifier("Quickstart.BrowseAll.Sort.\(order.rawValue)")
                     }
                 } label: {
-                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                    Text(coordinator.catalogSort.displayLabel)
                         .scaledSystemFont(12)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .padding(.horizontal, 13)
+                .frame(height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: OnboardingD.actionRadius, style: .continuous)
+                        .fill(RapidTheme.surfaceRaised)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: OnboardingD.actionRadius, style: .continuous)
+                        .strokeBorder(RapidTheme.hairlineStrong, lineWidth: 1)
+                )
                 // The scene tints app-wide amber and a borderless Menu's label
                 // reads the TINT, not the foreground style — without this the
                 // utility control renders as the page's primary action.
                 .tint(nil)
-                .foregroundStyle(RapidTheme.utilityActionLabel)
+                .foregroundStyle(RapidTheme.textPrimary)
                 .accessibilityIdentifier("Quickstart.BrowseAll.SortMenu")
+                .accessibilityLabel("Sort")
             }
 
-            HStack(spacing: 10) {
-                RapidSegmentedControl(
-                    selection: $coordinator.catalogFilter,
-                    options: ModelCacheActions.FilterMode.allCases.map {
-                        .init(value: $0, title: $0.displayLabel)
-                    },
-                    accessibilityLabel: "Filter"
-                )
-                .accessibilityIdentifier("Quickstart.BrowseAll.Filter")
-                Spacer(minLength: 6)
-                Text(heading.countText)
-                    .scaledSystemFont(10, weight: .medium)
+            // The list's own header lane. Column captions live here rather
+            // than on every row, and the trailing spacer reserves the
+            // selection glyph's width so SIZE lands over the size column.
+            HStack(spacing: 14) {
+                Text(heading.countText.localizedUppercase)
+                    .scaledSystemFont(10, relativeTo: .caption2, weight: .semibold, design: .monospaced)
+                    .tracking(OnboardingD.Tracking.groupLabel)
                     .monospacedDigit()
-                    .foregroundStyle(.tertiary)
-                    .fixedSize()
+                    .foregroundStyle(RapidTheme.textTertiary)
                     .accessibilityIdentifier("Quickstart.BrowseAll.Count")
                     .accessibilityLabel(heading.accessibilityLabel)
+                Spacer(minLength: 8)
+                Text("SIZE")
+                    .scaledSystemFont(10, relativeTo: .caption2, design: .monospaced)
+                    .tracking(OnboardingD.Tracking.badge)
+                    .foregroundStyle(RapidTheme.textTertiary)
+                    .frame(width: OnboardingD.rowSizeSlot, alignment: .trailing)
+                    .accessibilityHidden(true)
+                Color.clear.frame(width: OnboardingD.selectionGlyph, height: 1)
             }
+            .padding(.horizontal, 18)
         }
     }
 
@@ -2090,23 +2452,27 @@ struct QuickstartView: View {
         body: String,
         identifier: String
     ) -> some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             if let symbol {
                 Image(systemName: symbol)
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 24, weight: .regular))
+                    .foregroundStyle(RapidTheme.textTertiary)
                     .accessibilityHidden(true)
             } else {
                 ProgressView().controlSize(.small)
             }
-            Text(title).scaledSystemFont(13, weight: .semibold)
+            Text(title)
+                .scaledSystemFont(15, relativeTo: .callout, weight: .semibold)
+                .foregroundStyle(RapidTheme.textPrimary)
             Text(body)
-                .scaledSystemFont(12)
-                .foregroundStyle(.secondary)
+                .scaledSystemFont(13)
+                .foregroundStyle(RapidTheme.textSecondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 420)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.vertical, 48)
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(identifier)
         .accessibilityLabel("\(title). \(body)")
@@ -2148,11 +2514,17 @@ struct QuickstartView: View {
     private func catalogRow(_ entry: ModelEntry) -> some View {
         let choice = Self.choice(forCatalogEntry: entry)
         let available = OnboardingModelSelection.isAvailable(alias: entry.alias, hardware: hardware)
-        QuickstartCompactCard(
-            choice: choice,
-            selected: coordinator.selection.alias == entry.alias,
+        OnboardingCatalogRow(
+            alias: entry.alias,
+            subtitle: Self.catalogRowSubtitle(
+                entry: entry,
+                available: available,
+                hardware: hardware
+            ),
             sizeText: Self.rowSizeText(for: entry),
-            isCached: entry.cached,
+            selected: coordinator.selection.alias == entry.alias,
+            isAvailable: available,
+            badges: Self.catalogRowBadges(entry: entry, available: available),
             onActivate: { activatePrimary(in: .catalogue) }
         ) {
             coordinator.select(choice)
@@ -2161,8 +2533,72 @@ struct QuickstartView: View {
         // Truthfully won't run here. A disabled Button takes no click, which is
         // the "No-op" row of the activation truth table, enforced rather than
         // merely drawn.
+        //
+        // Deliberately still disabled, NOT merely styled: opening a WON'T FIT
+        // row's read-only detail is a separate, deferred behaviour PR. The
+        // badge below tells the user WHY the row is inert, which is a visual
+        // fix; making it openable would be a new user action.
         .disabled(!available)
-        .opacity(available ? 1 : 0.5)
+    }
+
+    /// The second line of a catalogue row.
+    ///
+    /// Normally the Hugging Face repo — the fact that disambiguates two aliases
+    /// of the same family. For a row this Mac cannot run, the repo is replaced
+    /// by the reason, because at that point the reason is the more useful fact
+    /// and the row is not a candidate anyway. Both come from data the catalogue
+    /// and ``ModelSizing`` already hold; nothing here is a new claim.
+    static func catalogRowSubtitle(
+        entry: ModelEntry,
+        available: Bool,
+        hardware: MacHardware
+    ) -> String {
+        guard available else {
+            let needed = ModelSizing.estimate(alias: entry.alias).totalGB
+            guard needed > 0 else { return "Needs more memory than this Mac has" }
+            return "Needs ≈ \(Self.wholeGB(needed)) · this Mac has \(Self.wholeGB(hardware.physicalRAMGB))"
+        }
+        let repo = entry.hfRepo ?? ""
+        return repo.isEmpty ? entry.alias : repo
+    }
+
+    /// The badges a catalogue row carries.
+    ///
+    /// A fixed, closed set drawn from facts already on screen elsewhere:
+    /// cached-ness from the catalogue snapshot, and runnability from the same
+    /// ``ModelSizing`` classification the primary is already gated on. No new
+    /// capability, benchmark or compatibility claim is introduced.
+    static func catalogRowBadges(
+        entry: ModelEntry,
+        available: Bool
+    ) -> [OnboardingCatalogRow.Badge] {
+        var badges: [OnboardingCatalogRow.Badge] = []
+        if entry.alias == QuickstartCoordinator.defaultChoice.alias {
+            badges.append(.init(text: "RECOMMENDED", tone: .amber))
+        }
+        if !available {
+            badges.append(.init(text: "WON'T FIT", tone: .error))
+        } else if entry.cached {
+            badges.append(.init(text: "ON THIS MAC", tone: .ready))
+        }
+        return badges
+    }
+
+    /// Whole gibibytes — for a MACHINE figure: this Mac's memory, free space,
+    /// the fit threshold. One place so the catalogue row, the rail and the
+    /// Review table cannot round the same number differently.
+    static func wholeGB(_ value: Double) -> String {
+        "\(Int(value.rounded())) GB"
+    }
+
+    /// One decimal — for a MODEL figure: an estimated footprint.
+    ///
+    /// The split is deliberate and matches Paper. A machine has 32 GB, flatly;
+    /// an estimate of 8.7 GB rounded to "9 GB" loses the precision that makes
+    /// two trade-ups distinguishable, and 5.9 vs 6 is exactly the comparison
+    /// the user is being shown.
+    static func preciseGB(_ value: Double) -> String {
+        String(format: "%.1f GB", value)
     }
 
     /// Leave the catalogue, remembering where the user was.
@@ -2175,76 +2611,216 @@ struct QuickstartView: View {
     /// Name the cost before spending it (Paper 05.2.D).
     ///
     /// Shows only what the product can truthfully state: identity, the size
-    /// estimate the rest of the app quotes, whether it is already on disk, and
-    /// the free space the pre-flight probe actually measured. No ETA, no
-    /// benchmark claim, no invented compatibility verdict.
+    /// estimate the rest of the app quotes, whether it is already on disk, the
+    /// memory it will occupy against this Mac's, the free space the pre-flight
+    /// probe actually measured, and where the files land. No ETA, no benchmark
+    /// claim, no invented compatibility verdict.
+    ///
+    /// The shortlist stays live on the right: picking a different row
+    /// re-renders this detail in place, so the user can compare without
+    /// leaving Step 2.
     @ViewBuilder
     private var reviewDownloadStep: some View {
         let alias = coordinator.selection.alias
         let cached = Self.cachedModel(alias: alias, cachedModels: cachedModels)
         let primary = primary(for: .review)
-        step2Scaffold(
-            kicker: "REVIEW DOWNLOAD",
-            title: coordinator.selection.displayName,
-            subtitle: cached == nil
-                ? "This downloads once and then runs entirely on your Mac."
-                : "Already on this Mac — nothing will be downloaded."
-        ) {
-            ScrollView {
+        step2Scaffold {
+            step2Columns(
+                kicker: "REVIEW DOWNLOAD",
+                title: coordinator.selection.displayName,
+                subtitle: cached == nil
+                    ? "This downloads once and then runs entirely on your Mac."
+                    : "Already on this Mac — nothing will be downloaded."
+            ) {
                 VStack(alignment: .leading, spacing: 0) {
-                    reviewFact("Model", alias, identifier: "Quickstart.Review.Alias")
-                    if let repo = Self.reviewRepo(alias: alias, cached: cached, cachedModels: cachedModels) {
-                        reviewFact("Hugging Face", repo, identifier: "Quickstart.Review.Repo")
-                    }
-                    reviewFact(
-                        cached == nil ? "Download size" : "Size on disk",
-                        Self.reviewSizeText(alias: alias, cached: cached),
-                        identifier: "Quickstart.Review.Size"
-                    )
-                    reviewFact(
-                        "On this Mac",
-                        cached == nil ? "Not downloaded yet" : "Already downloaded",
-                        identifier: "Quickstart.Review.CachedStatus"
-                    )
-                    if let free = Self.reviewFreeSpaceText(probe: freeBytesProbe) {
-                        reviewFact("Free space", free, identifier: "Quickstart.Review.FreeSpace")
+                    OnboardingFactTable(rows: Self.reviewFacts(
+                        alias: alias,
+                        cached: cached,
+                        cachedModels: cachedModels,
+                        hardware: hardware,
+                        freeBytes: freeBytesProbe()
+                    ))
+                    .padding(.top, 26)
+
+                    if let footnote = Self.reviewFootnote(alias: alias, cached: cached) {
+                        Text(footnote)
+                            .scaledSystemFont(12)
+                            .foregroundStyle(RapidTheme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 18)
+                            .accessibilityIdentifier("Quickstart.Review.Footnote")
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            } content: {
+                reviewCompanionList
             }
         } footer: {
-            OnboardingWizardFooter(
+            OnboardingStepFooter(
                 primaryTitle: primary.title,
                 primaryEnabled: primary.isEnabled,
                 backTitle: coordinator.reviewOrigin == .catalogue
                     ? "← Back to all models"
                     : "← Back to recommended models",
+                backAccessibilityLabel: coordinator.reviewOrigin == .catalogue
+                    ? "Back to all models"
+                    : "Back to recommended models",
                 onBack: { coordinator.backFromReviewDownload() },
                 onPrimary: { activatePrimary(in: .review) }
             )
         }
     }
 
+    /// The shortlist, rendered beside Review download so a comparison never
+    /// costs a navigation. Selecting here re-renders the fact table in place —
+    /// the same ``coordinator.select`` every other list calls, so the
+    /// micro-stage does not change and Back still returns to the origin.
     @ViewBuilder
-    private func reviewFact(_ label: String, _ value: String, identifier: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label)
-                .scaledSystemFont(11, weight: .medium)
-                .foregroundStyle(.tertiary)
-                .frame(width: 108, alignment: .leading)
-            Text(value)
-                .scaledSystemFont(12.5)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var reviewCompanionList: some View {
+        let list = shortlist
+        OnboardingIntrinsicColumn {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(list.starters) { choice in
+                    QuickstartRecommendedCard(
+                        choice: choice,
+                        selected: coordinator.selection.alias == choice.alias,
+                        sizeText: Self.sizeText(for: choice),
+                        onActivate: { activatePrimary(in: .review) }
+                    ) { coordinator.select(choice) }
+                }
+                if !list.lowMemory.isEmpty {
+                    OnboardingGroupLabel(text: "NEED THE LIGHTEST OPTION?")
+                        .padding(.top, 14)
+                    ForEach(list.lowMemory) { choice in
+                        QuickstartLowMemoryCard(
+                            choice: choice,
+                            selected: coordinator.selection.alias == choice.alias,
+                            sizeText: Self.sizeText(for: choice),
+                            onActivate: { activatePrimary(in: .review) }
+                        ) { coordinator.select(choice) }
+                    }
+                }
+                if !list.tradeUps.isEmpty {
+                    OnboardingGroupLabel(text: "OR PICK A BIGGER ONE")
+                        .padding(.top, 14)
+                    ForEach(list.tradeUps) { choice in
+                        let cached = Self.cachedModel(alias: choice.alias, cachedModels: cachedModels)
+                        QuickstartCompactCard(
+                            choice: choice,
+                            selected: coordinator.selection.alias == choice.alias,
+                            sizeText: cached?.sizeOnDisk ?? Self.sizeText(for: choice),
+                            isCached: cached != nil,
+                            onActivate: { activatePrimary(in: .review) }
+                        ) { coordinator.select(choice) }
+                    }
+                }
+                if let pick = list.yourPick {
+                    OnboardingGroupLabel(text: "YOUR PICK")
+                        .padding(.top, 14)
+                    let choice = Self.choice(forCatalogEntry: pick)
+                    QuickstartCompactCard(
+                        choice: choice,
+                        selected: coordinator.selection.alias == pick.alias,
+                        sizeText: Self.rowSizeText(for: pick),
+                        isCached: pick.cached,
+                        onActivate: { activatePrimary(in: .review) }
+                    ) { coordinator.select(choice) }
+                    .accessibilityIdentifier("Quickstart.YourPick.\(pick.alias)")
+                }
+            }
+            .padding(.trailing, 2)
         }
-        .padding(.vertical, 8)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(RapidTheme.hairline).frame(height: 1)
+    }
+
+    /// Review's fact rows, in Paper's order (05.2.D).
+    ///
+    /// Pure, and every value comes from a source the app already reads —
+    /// ``sizeText`` for the download, ``ModelEntry/cached`` for presence,
+    /// ``ModelSizing`` against ``MacHardware`` for memory, the pre-flight probe
+    /// for free space. A row whose source has nothing to say is omitted rather
+    /// than printed with a placeholder.
+    static func reviewFacts(
+        alias: String,
+        cached: ModelEntry?,
+        cachedModels: [ModelEntry],
+        hardware: MacHardware,
+        freeBytes: Int64?
+    ) -> [OnboardingFactRow] {
+        var rows: [OnboardingFactRow] = [
+            // The alias, first. Paper's fact list starts at the download size,
+            // but the identity row predates it and the golden-flow harness
+            // addresses it by identifier — and naming the exact alias about to
+            // be pulled is the least this screen can do.
+            OnboardingFactRow(
+                "Model",
+                alias,
+                identifier: "Quickstart.Review.Alias"
+            ),
+            OnboardingFactRow(
+                cached == nil ? "Download" : "Size on disk",
+                reviewDownloadText(alias: alias, cached: cached),
+                identifier: "Quickstart.Review.Size"
+            ),
+            OnboardingFactRow(
+                "On this Mac",
+                cached == nil ? "Not downloaded yet" : "Already downloaded",
+                isStrong: cached != nil,
+                identifier: "Quickstart.Review.CachedStatus"
+            ),
+        ]
+
+        let footprint = ModelSizing.estimate(alias: alias).totalGB
+        if footprint > 0, hardware.physicalRAMGB > 0 {
+            rows.append(OnboardingFactRow(
+                "Memory when loaded",
+                "≈ \(preciseGB(footprint)) of \(wholeGB(hardware.physicalRAMGB))",
+                identifier: "Quickstart.Review.Memory"
+            ))
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier(identifier)
-        .accessibilityLabel("\(label): \(value)")
+
+        if let freeBytes {
+            rows.append(OnboardingFactRow(
+                "Free space",
+                "\(wholeGB(Double(freeBytes) / Double(1 << 30))) available",
+                identifier: "Quickstart.Review.FreeSpace"
+            ))
+        }
+
+        if let repo = reviewRepo(alias: alias, cached: cached, cachedModels: cachedModels) {
+            rows.append(OnboardingFactRow(
+                "Hugging Face",
+                repo,
+                isStrong: false,
+                identifier: "Quickstart.Review.Repo"
+            ))
+        }
+        return rows
+    }
+
+    /// The download size Review quotes.
+    ///
+    /// Prefers the choice's PINNED byte count when the alias is one of the
+    /// onboarding ladder — the same number its card shows. Without this the
+    /// starter read "~633 MB" on the card and "~563 MB" two clicks later,
+    /// because the card uses the pinned figure and the generic path falls back
+    /// to the parameter-derived estimate. One model, one number.
+    static func reviewDownloadText(alias: String, cached: ModelEntry?) -> String {
+        if cached == nil,
+           let choice = QuickstartCoordinator.onboardingChoices.first(where: { $0.alias == alias }),
+           choice.downloadBytes != nil {
+            return sizeText(for: choice)
+        }
+        return reviewSizeText(alias: alias, cached: cached)
+    }
+
+    /// The line under the fact table. Only offered for a download that has not
+    /// happened yet — for a cached model there is no cost to frame.
+    static func reviewFootnote(alias: String, cached: ModelEntry?) -> String? {
+        guard cached == nil else { return nil }
+        let size = reviewDownloadText(alias: alias, cached: nil)
+        guard size != "Unknown" else {
+            return "One download, once. After that this model starts in seconds and needs no network."
+        }
+        return "One \(size) pull, once. After that this model starts in seconds and needs no network."
     }
 
     // MARK: - Step 2 derivation (pure seams)
@@ -2523,65 +3099,78 @@ struct QuickstartView: View {
 
     // MARK: - Subviews
 
+    /// Step 3's canvas (Paper 05.1 state 09).
+    ///
+    /// The rail owns the numbers — percentage, bytes, rate, ETA — so the canvas
+    /// deliberately repeats none of them. What it owns is meaning: what the
+    /// transfer IS, and what leaving, quitting or stopping will do. Everything
+    /// here is a plain statement of consequence; nothing is a progress read-out
+    /// wearing prose.
     @ViewBuilder
     private var downloadingCard: some View {
         let job = downloads.job(for: coordinator.selection.alias)
-        let fraction = job?.progress.progressFraction
-        let subtitle = QuickstartView.progressSubtitle(
-            job: job,
-            displayName: coordinator.selection.displayName
-        )
-        let eta = QuickstartView.etaCaption(job: job)
 
-        if let fraction {
-            ProgressView(value: fraction, total: 1.0)
-                .progressViewStyle(.linear)
-                .frame(maxWidth: 360)
-        } else {
-            ProgressView()
-                .controlSize(.large)
-        }
-        Text("Downloading \(coordinator.selection.displayName)")
-            .font(.title3.weight(.semibold))
-        Text(subtitle)
-            .font(.callout.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-        if let eta {
-            Text(eta)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.tertiary)
-        }
-        Text("You can keep this window open — we'll start chat as soon as the download finishes.")
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
-            .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 0) {
+            OnboardingDisplayTitle(text: "One download,\nthen it's yours.")
 
-        // The way out of Step 3.
-        //
-        // Onboarding is a full-window sheet, so ``DownloadStrip`` — the app's
-        // ordinary cancel affordance — is behind it and unreachable for the
-        // entire pull. Without this control the only exits from a download the
-        // user no longer wants are quitting the app or waiting it out, and a
-        // multi-gigabyte trade-up makes "wait it out" a very long time to be
-        // stuck. The cancellation RECOVERY path already existed and was
-        // reachable (an app quit reaches it); what did not exist was any way
-        // to ask for it from the screen that is actually on top.
-        if let cancelAlias = Self.downloadCancelTarget(
-            jobStatus: job?.status,
-            selectionAlias: coordinator.selection.alias,
-            alreadyRequested: cancelRequestedAlias == coordinator.selection.alias
-        ) {
-            Button {
-                cancelRequestedAlias = cancelAlias
-                downloads.cancelDownload(alias: cancelAlias)
-            } label: {
-                Text("Cancel download")
-                    .frame(maxWidth: .infinity)
+            Text("The model files are being written into your Hugging Face cache. "
+                 + "This is a plain file transfer from the model mirror — nothing "
+                 + "about you is sent with it.")
+                .scaledSystemFont(16, relativeTo: .title3)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: OnboardingD.proseWidth, alignment: .leading)
+                .padding(.top, 18)
+
+            VStack(spacing: 0) {
+                downloadFact(
+                    "LEAVING",
+                    "Keep this window open. Setup finishes on its own and opens chat "
+                        + "as soon as the files land.",
+                    isFirst: true
+                )
+                downloadFact(
+                    "QUITTING",
+                    "Quitting Rapid-MLX stops the transfer. Setup is not marked "
+                        + "finished, so it runs again on the next launch."
+                )
+                // Paper's third row said "NO CANCEL — cancelling a download
+                // lives in Settings → Models, which is behind this window until
+                // setup ends". That is superseded: the merged recovery PR added
+                // a Cancel to this screen precisely because that arrangement
+                // left a part-finished download with no exit but quitting. The
+                // row now describes the control that exists.
+                downloadFact(
+                    "STOPPING",
+                    "Cancel download stops the transfer. The model is not installed, "
+                        + "and you can retry it or choose a different one.",
+                    isLast: true
+                )
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
+            .frame(maxWidth: OnboardingD.proseWidth, alignment: .leading)
+            .padding(.top, 34)
+
+            // The way out of Step 3.
+            //
+            // Onboarding is a full-window sheet, so ``DownloadStrip`` — the
+            // app's ordinary cancel affordance — is behind it and unreachable
+            // for the entire pull. Without this control the only exits from a
+            // download the user no longer wants are quitting the app or waiting
+            // it out, and a multi-gigabyte trade-up makes "wait it out" a very
+            // long time to be stuck. The cancellation RECOVERY path already
+            // existed and was reachable (an app quit reaches it); what did not
+            // exist was any way to ask for it from the screen that is on top.
+            if let cancelAlias = Self.downloadCancelTarget(
+                jobStatus: job?.status,
+                selectionAlias: coordinator.selection.alias,
+                alreadyRequested: cancelRequestedAlias == coordinator.selection.alias
+            ) {
+                Button("Cancel download") {
+                    cancelRequestedAlias = cancelAlias
+                    downloads.cancelDownload(alias: cancelAlias)
+                }
+                .buttonStyle(.onboardingQuiet)
+                .padding(.top, 26)
             // Deliberately NO keyboard shortcut.
             //
             // `.defaultAction` would put a destructive action on Return, on a
@@ -2598,7 +3187,43 @@ struct QuickstartView: View {
             // Says what is lost, without claiming anything about bytes
             // already on disk — see ``FailureDiagnosis/Kind/downloadCancelled``.
             .accessibilityHint("Stops the download. The model will not be installed.")
+            }
         }
+        .frame(maxWidth: OnboardingD.proseWidth, alignment: .leading)
+    }
+
+    /// One `LABEL · consequence` row on the Step 3 canvas. Hairline-separated
+    /// facts rather than a card: the canvas states consequences, and boxing
+    /// each one would make three equal-weight cards out of three sentences.
+    @ViewBuilder
+    private func downloadFact(
+        _ label: String,
+        _ body: String,
+        isFirst: Bool = false,
+        isLast: Bool = false
+    ) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            Text(label)
+                .scaledSystemFont(10, relativeTo: .caption2, weight: .semibold, design: .monospaced)
+                .tracking(OnboardingD.Tracking.groupLabel)
+                .foregroundStyle(RapidTheme.textTertiary)
+                .frame(width: 92, alignment: .leading)
+                .padding(.top, 3)
+            Text(body)
+                .scaledSystemFont(14)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 16)
+        .overlay(alignment: .top) {
+            Rectangle().fill(RapidTheme.hairline).frame(height: 1)
+        }
+        .overlay(alignment: .bottom) {
+            if isLast { Rectangle().fill(RapidTheme.hairline).frame(height: 1) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label). \(body)")
     }
 
     /// Which alias, if any, the Step 3 card should offer to cancel.
@@ -2633,60 +3258,57 @@ struct QuickstartView: View {
         return selectionAlias
     }
 
+    /// Step 4's canvas while the serve comes up (Paper 05.1 state 15).
+    ///
+    /// The rail carries STARTING, the identity and the indeterminate track, so
+    /// the canvas states only what loading means and roughly how long it takes.
+    /// No spinner here: a second progress indicator beside the rail's would be
+    /// two things reporting one wait.
     @ViewBuilder
     private var startingCard: some View {
-        ProgressView()
-            .controlSize(.large)
-        Text("Starting \(coordinator.selection.displayName)…")
-            .font(.title3.weight(.semibold))
-        Text("Loading the model into Metal. Usually 5–15 seconds.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 0) {
+            OnboardingDisplayTitle(text: "Loading into memory.")
+
+            Text("The weights are on disk. They are being loaded into Metal and the "
+                 + "model is warming up — usually 5 to 15 seconds, longer the first "
+                 + "time a model runs.")
+                .scaledSystemFont(16, relativeTo: .title3)
+                .foregroundStyle(RapidTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 18)
+        }
+        .frame(maxWidth: OnboardingD.proseWidth, alignment: .leading)
     }
 
     /// The Ready confirmation screen — the end of Step 4 and the only
     /// thing that ends onboarding.
     ///
-    /// Deliberately minimal: this PR carries the BEHAVIOUR change (Ready is
-    /// persistent, completion is confirmed) and reuses the surrounding
-    /// wizard's existing components and styling so the contract can be
-    /// exercised and tested. The Direction D treatment of this screen —
-    /// the ready indicator, the amber primary sitting in the content
-    /// column, the type scale — belongs to the Onboarding visual PR, which
-    /// consumes this state rather than redefining it.
-    ///
     /// No spinner, no progress, no countdown: the model IS ready, and
     /// dressing the wait for a click as work would be a lie about what the
-    /// app is doing.
+    /// app is doing. The green tile is the one place setup uses the ready
+    /// colour, and the amber primary is this screen's single strong moment.
     @ViewBuilder
     private var readyCard: some View {
-        VStack(spacing: 16) {
-            Text("SETUP COMPLETE")
-                .scaledSystemFont(10, weight: .semibold)
-                .tracking(1.4)
-                .foregroundStyle(.tertiary)
-
-            Text("\(coordinator.selection.displayName) is ready.")
-                .font(.title3.weight(.semibold))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button {
-                completeOnboarding()
-            } label: {
-                Text("Start chatting")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 2)
+        OnboardingOutcomeBlock(
+            glyph: "checkmark",
+            tone: .ready,
+            kicker: "SETUP COMPLETE",
+            title: "\(coordinator.selection.displayName) is ready.",
+            message: "It is loaded on this Mac and answering locally. "
+                + "Nothing you type from here leaves the machine."
+        ) {
+            OnboardingActionLane {
+                Button("Start chatting") {
+                    completeOnboarding()
+                }
+                .buttonStyle(.onboardingPrimary)
+                // The native default action, not custom key handling: Return
+                // activates it and Space activates it while focused, both via
+                // AppKit's ordinary button semantics.
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("Quickstart.Ready.StartChatting")
+                .accessibilityLabel("Start chatting with \(coordinator.selection.displayName)")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            // The native default action, not custom key handling: Return
-            // activates it and Space activates it while focused, both via
-            // AppKit's ordinary button semantics.
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("Quickstart.Ready.StartChatting")
-            .accessibilityLabel("Start chatting with \(coordinator.selection.displayName)")
         }
     }
 
@@ -2714,74 +3336,71 @@ struct QuickstartView: View {
     @ViewBuilder
     private func memoryWarningCard(_ warning: ModelSizing.MemoryWarning) -> some View {
         let fallback = Self.lowMemoryRecoveryChoice(for: warning)
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(RapidTheme.amberTint)
-                .frame(width: 60, height: 60)
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 28, weight: .regular))
-                .foregroundStyle(RapidTheme.amberDeep)
-        }
-        .accessibilityHidden(true)
-
-        VStack(spacing: 8) {
-            Text(warning.title)
-                .font(.title3.weight(.semibold))
-                .multilineTextAlignment(.center)
-            Text(warning.message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(warning.title). \(warning.message)")
-
-        if let fallback {
-            Button {
-                server.cancelPendingMemoryLoad(warning)
-                coordinator.returnToChooser()
-                coordinator.select(fallback)
-                startQuickstart()
-            } label: {
-                Text("Switch to \(fallback.displayName)")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 2)
+        OnboardingOutcomeBlock(
+            glyph: "exclamationmark.triangle",
+            tone: .amber,
+            kicker: "STEP \(QuickstartCoordinator.Step.start.displayNumber) "
+                + "OF \(QuickstartCoordinator.Step.total) · BEFORE LOADING",
+            title: warning.title,
+            message: warning.message
+        ) {
+            // The two measured numbers behind the guard's decision, stated as
+            // figures rather than buried in the sentence above.
+            HStack(alignment: .top, spacing: 44) {
+                OnboardingStat(
+                    label: "NEEDS",
+                    value: Self.wholeGB(warning.footprintGB),
+                    tone: RapidTheme.statusError
+                )
+                OnboardingStat(
+                    label: "FREE NOW",
+                    value: Self.wholeGB(warning.freeGB)
+                )
+                if warning.totalGB > 0 {
+                    OnboardingStat(
+                        label: "THIS MAC",
+                        value: Self.wholeGB(warning.totalGB)
+                    )
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
-            .accessibilityIdentifier("Quickstart.Memory.SwitchToLowMemory")
-            .accessibilityLabel("Switch to \(fallback.displayName), the lowest-memory option")
-        }
+            .padding(.top, 30)
+        } actions: {
+            OnboardingActionLane {
+                if let fallback {
+                    Button("Switch to \(fallback.displayName)") {
+                        server.cancelPendingMemoryLoad(warning)
+                        coordinator.returnToChooser()
+                        coordinator.select(fallback)
+                        startQuickstart()
+                    }
+                    .buttonStyle(.onboardingPrimary)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("Quickstart.Memory.SwitchToLowMemory")
+                    .accessibilityLabel("Switch to \(fallback.displayName), the lowest-memory option")
+                }
 
-        Button {
-            // Re-enters ``start`` with the guard bypassed. We stay in
-            // ``.starting``; ``handleServerStateChange`` seeds the welcome
-            // and dismisses the sheet once the child reaches ``.ready``.
-            server.confirmPendingMemoryLoad(warning)
-        } label: {
-            Text(warning.confirmTitle)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 2)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
-        .accessibilityIdentifier("Quickstart.Memory.LoadAnyway")
+                Button(warning.confirmTitle) {
+                    // Re-enters ``start`` with the guard bypassed. We stay in
+                    // ``.starting``; ``handleServerStateChange`` seeds the
+                    // welcome and dismisses the sheet once the child reaches
+                    // ``.ready``.
+                    server.confirmPendingMemoryLoad(warning)
+                }
+                .buttonStyle(.onboardingOutline)
+                .accessibilityIdentifier("Quickstart.Memory.LoadAnyway")
 
-        Button {
-            // Drop the parked load and leave ``.starting`` for the chooser
-            // so the sheet stops waiting on a serve that will never come.
-            server.cancelPendingMemoryLoad(warning)
-            coordinator.returnToChooser()
-        } label: {
-            Text("Cancel")
-                .frame(maxWidth: .infinity)
+                Button("Cancel") {
+                    // Drop the parked load and leave ``.starting`` for the
+                    // chooser so the sheet stops waiting on a serve that will
+                    // never come.
+                    server.cancelPendingMemoryLoad(warning)
+                    coordinator.returnToChooser()
+                }
+                .buttonStyle(.onboardingQuiet)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("Quickstart.Memory.Cancel")
+            }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
-        .keyboardShortcut(.cancelAction)
-        .accessibilityIdentifier("Quickstart.Memory.Cancel")
     }
 
     /// Return the curated low-memory fallback only when the same snapshot
@@ -2832,60 +3451,58 @@ struct QuickstartView: View {
     /// not an error.
     @ViewBuilder
     private func lowDiskCard(freeBytes: Int64, requiredBytes: Int64) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(RapidTheme.amberTint)
-                .frame(width: 60, height: 60)
-            Image(systemName: "externaldrive.badge.exclamationmark")
-                .font(.system(size: 28, weight: .regular))
-                .foregroundStyle(RapidTheme.amberDeep)
-        }
-        .accessibilityHidden(true)
-
-        VStack(spacing: 8) {
-            Text("Low disk space")
-                .font(.title3.weight(.semibold))
-            Text(QuickstartView.lowDiskBannerBody(
+        OnboardingOutcomeBlock(
+            glyph: "externaldrive.badge.exclamationmark",
+            tone: .amber,
+            kicker: "STEP \(QuickstartCoordinator.Step.download.displayNumber) "
+                + "OF \(QuickstartCoordinator.Step.total) · BEFORE THE DOWNLOAD",
+            title: "Low disk space",
+            message: QuickstartView.lowDiskBannerBody(
                 freeBytes: freeBytes,
                 requiredBytes: requiredBytes,
                 displayName: coordinator.selection.displayName
-            ))
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
+            )
+        ) {
+            HStack(alignment: .top, spacing: 44) {
+                OnboardingStat(
+                    label: "FREE NOW",
+                    value: Self.formatBytesForBanner(freeBytes),
+                    tone: RapidTheme.statusError
+                )
+                OnboardingStat(
+                    label: "NEEDED",
+                    value: Self.formatBytesForBanner(requiredBytes)
+                )
+            }
+            .padding(.top, 30)
+            // The prose above already carries both numbers for VoiceOver, so
+            // the figures repeat them visually only.
+            .accessibilityHidden(true)
+        } actions: {
+            OnboardingActionLane {
+                Button("Continue anyway") {
+                    kickoffDownload()
+                }
+                .buttonStyle(.onboardingPrimary)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("Quickstart.LowDisk.Continue")
+                .accessibilityLabel("Continue download despite low disk space")
+
+                Button("Cancel") {
+                    coordinator.cancelLowDiskWarning()
+                }
+                .buttonStyle(.onboardingQuiet)
+                .keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("Quickstart.LowDisk.Cancel")
+                .accessibilityLabel("Cancel — go back to choosing a model without downloading")
+            }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(QuickstartView.lowDiskAccessibilityLabel(
             freeBytes: freeBytes,
             requiredBytes: requiredBytes,
             displayName: coordinator.selection.displayName
         ))
-
-        Button {
-            kickoffDownload()
-        } label: {
-            Text("Continue anyway")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 2)
-        }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .keyboardShortcut(.defaultAction)
-        .accessibilityIdentifier("Quickstart.LowDisk.Continue")
-        .accessibilityLabel("Continue download despite low disk space")
-
-        Button {
-            coordinator.cancelLowDiskWarning()
-        } label: {
-            Text("Cancel")
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.large)
-        .keyboardShortcut(.cancelAction)
-        .accessibilityIdentifier("Quickstart.LowDisk.Cancel")
-        .accessibilityLabel("Cancel — go back to choosing a model without downloading")
     }
 
     @ViewBuilder
@@ -2900,30 +3517,70 @@ struct QuickstartView: View {
         )
         let diagnosis = FailureDiagnoser.diagnosis(for: kind)
 
-        Text(Self.failureTitle(for: kind))
-            .font(.title3.weight(.semibold))
+        OnboardingOutcomeBlock(
+            glyph: Self.failureGlyph(for: kind),
+            tone: kind.severity == .notice ? .amber : .error,
+            kicker: Self.failureKicker(for: kind, origin: coordinator.step),
+            title: Self.failureTitle(for: kind),
+            message: diagnosis.message
+        ) {
+            OnboardingActionLane {
+                if let action = diagnosis.action {
+                    Button(action.title) {
+                        handleQuickstartFailureAction(action)
+                    }
+                    .buttonStyle(.onboardingPrimary)
+                    .disabled(server.isOperating)
+                    .accessibilityIdentifier(quickstartActionIdentifier(for: action) ?? "")
+                }
 
-        FailureDiagnosisView(
-            diagnosis: diagnosis,
-            onAction: handleQuickstartFailureAction,
-            isActionDisabled: server.isOperating,
-            actionAccessibilityIdentifier: quickstartActionIdentifier(for: diagnosis.action)
-        )
-
-        // The way back to choosing. Every failure and every cancellation is
-        // one model's problem, so the user must be able to go pick a
-        // different one — and land where they actually were, not on a
-        // catalogue they may never have opened. Stays inside onboarding: it
-        // does not dismiss setup and it does not open Settings.
-        Button {
-            returnToModelSelection()
-        } label: {
-            Text(Self.failureBackTitle(for: coordinator.step2Stage))
-                .font(.callout)
+                // The way back to choosing. Every failure and every
+                // cancellation is one model's problem, so the user must be
+                // able to go pick a different one — and land where they
+                // actually were, not on a catalogue they may never have
+                // opened. Stays inside onboarding: it does not dismiss setup
+                // and it does not open Settings.
+                Button(Self.failureBackTitle(for: coordinator.step2Stage)) {
+                    returnToModelSelection()
+                }
+                .buttonStyle(.onboardingLink)
+                .accessibilityIdentifier("Quickstart.Failure.BackToModelSelection")
+                .accessibilityLabel(Self.failureBackAccessibilityLabel(for: coordinator.step2Stage))
+            }
         }
-        .buttonStyle(.borderless)
-        .accessibilityIdentifier("Quickstart.Failure.BackToModelSelection")
-        .accessibilityLabel(Self.failureBackAccessibilityLabel(for: coordinator.step2Stage))
+    }
+
+    /// The glyph over a failure headline.
+    ///
+    /// A cancellation is the user's own stop, so it gets a stop mark on the
+    /// amber (caution) lane rather than a red fault symbol — the same
+    /// distinction ``FailureDiagnosis/Kind/downloadCancelled``'s `.notice`
+    /// severity makes in the diagnosis itself.
+    static func failureGlyph(for kind: FailureDiagnosis.Kind) -> String {
+        switch kind {
+        case .downloadCancelled: return "stop.circle"
+        case .downloadSourceUnavailable: return "wifi.exclamationmark"
+        case .modelOutOfMemory: return "memorychip"
+        default: return "exclamationmark.triangle"
+        }
+    }
+
+    /// `STEP 3 OF 4 · DOWNLOAD STOPPED`. The kicker names the macro step the
+    /// failure belongs to — which is the step the user was actually in, never
+    /// a step of the failure's own — and then what happened.
+    static func failureKicker(
+        for kind: FailureDiagnosis.Kind,
+        origin: QuickstartCoordinator.Step
+    ) -> String {
+        let what: String
+        switch kind {
+        case .downloadCancelled:         what = "DOWNLOAD STOPPED"
+        case .downloadSourceUnavailable: what = "SOURCE UNAVAILABLE"
+        case .modelOutOfMemory:          what = "NOT ENOUGH MEMORY"
+        case .modelLoadFailed:           what = "COULDN'T LOAD"
+        default:                         what = "DIDN'T FINISH"
+        }
+        return "STEP \(origin.displayNumber) OF \(QuickstartCoordinator.Step.total) · \(what)"
     }
 
     /// Classify a Quickstart failure. Pure so the one inference that matters —
