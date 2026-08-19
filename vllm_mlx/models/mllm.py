@@ -440,16 +440,6 @@ class TempFileManager:
 _temp_manager = TempFileManager()
 
 
-def cleanup_temp_file(path: str) -> bool:
-    """Clean up a specific temporary file."""
-    return _temp_manager.cleanup(path)
-
-
-def cleanup_all_temp_files() -> int:
-    """Clean up all tracked temporary files. Returns count of cleaned files."""
-    return _temp_manager.cleanup_all()
-
-
 # Video processing constants
 FRAME_FACTOR = 2  # Frames must be divisible by this
 DEFAULT_FPS = 2.0  # Default frames per second for video
@@ -897,16 +887,6 @@ def process_image_input(image: str | dict) -> str:
         return image
 
     raise ValueError(f"Cannot process image: {image[:50]}...")
-
-
-def round_by_factor(x: int, factor: int) -> int:
-    """Round to nearest multiple of factor."""
-    return round(x / factor) * factor
-
-
-def ceil_by_factor(x: float, factor: int) -> int:
-    """Ceiling to next multiple of factor."""
-    return math.ceil(x / factor) * factor
 
 
 def floor_by_factor(x: float, factor: int) -> int:

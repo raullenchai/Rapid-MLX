@@ -1,0 +1,14 @@
+# rapid-mac AX structural baseline v1
+AXApplication title="Rapid-MLX"
+  AXWindow subrole=AXStandardWindow id="main" title="Rapid-MLX"
+    AXGroup subrole=AXHostingView
+      AXUnknown id="Quickstart.Progress" desc="Setup progress, step 1 of 4" enabled=true
+      AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXButton id="Quickstart.GetStarted" desc="Get started — choose your first model" enabled=true
+      AXButton id="Quickstart.Skip" desc="Skip onboarding and go to the app" enabled=true
+    AXButton subrole=AXCloseButton enabled=true
+    AXButton subrole=AXFullScreenButton help="this button also has an action to zoom the window" enabled=true
+    AXButton subrole=AXMinimizeButton enabled=true
+    AXStaticText value=text enabled=true

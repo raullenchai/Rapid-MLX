@@ -1,33 +1,39 @@
 # Supported Models
 
-All quantized models from [mlx-community on HuggingFace](https://huggingface.co/mlx-community/models) are compatible.
-
-Browse thousands of pre-optimized models at: **https://huggingface.co/mlx-community/models**
+Most quantized models from [mlx-community on HuggingFace](https://huggingface.co/mlx-community/models) work out of the box — any architecture mlx-lm/mlx-vlm knows can be served by HF path (unknown `model_type`s fail at load). The curated alias registry (`rapid-mlx models`) is the supported surface: every alias there is profiled (parser, hybrid flags, KV codec, spec-decode gates — `rapid-mlx info <alias>`).
 
 ## Language Models (via mlx-lm)
 
-| Model Family | Sizes | Quantization |
+Families with registered aliases (run `rapid-mlx models` for the full, current list):
+
+| Model Family | Registered sizes | Quantization |
 |--------------|-------|--------------|
-| Llama 3.x, 4.x | 1B, 3B, 8B, 70B | 4-bit |
-| Mistral / Devstral | 7B, Mixtral 8x7B | 4-bit, 8-bit |
-| Qwen2/Qwen3 | 0.5B to 72B | Various |
-| DeepSeek V3, R1 | 7B, 33B, 67B | 4-bit |
-| Gemma 2, 3 | 2B, 9B, 27B | 4-bit |
-| GLM-4.7 | Flash, Base | 4-bit, 8-bit |
-| Kimi K2 | Various | 4-bit |
-| Phi-3 | 3.8B, 14B | 4-bit |
-| Granite 3.x, 4.x | Various | 4-bit |
-| Nemotron | 3 Nano 30B | 6-bit |
+| Qwen 3.5 / 3.6 / 3.8 / Coder | 4B to 122B | 4/6/8-bit, mxfp4, mixed |
+| Gemma 4 | E2B, E4B, 12B, 26B, 31B (+ QAT builds) | 4/6/8-bit |
+| DeepSeek V4 Flash, R1, Coder V2 Lite | 16B, 8B/32B (R1), V4 Flash MoE | 2/4/8-bit, mxfp4 |
+| Llama 3.x | 1B, 3B, 8B | 4/8-bit |
+| Mistral / Devstral | 24B, 119B (Small 4) | 4/8-bit |
+| GLM | 4.5 Air, 4.7 9B, 5.2 REAP-50 | 4-bit |
+| Kimi | K2.6 | 4-bit |
+| Phi 3.5 / 4 | mini, 14B | 4-bit |
+| Granite 4 | tiny, h-micro | 4-bit |
+| Nemotron 3 / 3.5 | Nano 30B, Lightning 30B | 4-bit |
+| LFM 2 / 2.5 | 1B, 2.6B, 8B-A1B, 24B-A2B | 4-bit |
+| GPT-OSS | 20B, 120B | 4/8-bit, mxfp4 |
+| Ternary Bonsai | 1.7B, 27B | 2-bit (ternary) |
 | Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 
 ### Recommended Models
 
-| Use Case | Model | Memory |
-|----------|-------|--------|
-| Fast/Light | `mlx-community/Qwen3-0.6B-8bit` | ~0.7 GB |
-| Balanced | `mlx-community/Llama-3.2-3B-Instruct-4bit` | ~1.8 GB |
-| Quality | `mlx-community/Llama-3.1-8B-Instruct-4bit` | ~4.5 GB |
-| Large | `mlx-community/Qwen3-30B-A3B-4bit` | ~16 GB |
+Recommendations live in one catalog (`vllm_mlx/model_recommendations.json`) shared by the installer, the desktop app, and `rapid-mlx recipe` — run `rapid-mlx recipe` to see the Smart and Fast picks for *this* Mac. The RAM-tier smart picks:
+
+| RAM | Alias | ~8K-prompt peak |
+|-----|-------|-----------------|
+| 8–15 GB | `lfm2.5-2.6b-4bit` | 3.0 GB |
+| 16–17 GB | `qwen3.5-4b-4bit` | 6.0 GB |
+| 18–23 GB | `qwen3.5-9b-4bit` | 8.7 GB |
+| 24–31 GB | `bonsai-27b-2bit` | 13.0 GB |
+| 32 GB+ | `qwen3.8-27b-4bit` | 20.0 GB |
 
 ### Ultra-only: Hunyuan 3 (Hy3)
 
@@ -105,8 +111,8 @@ the weekly Golden Path job on M3 Ultra hardware.
 |------|--------------|----------------|
 | **STT** | Whisper | `mlx-community/whisper-large-v3-turbo` |
 | **STT** | Parakeet | `mlx-community/parakeet-tdt-0.6b-v2` |
-| **TTS** | Kokoro | `prince-canuma/Kokoro-82M` |
-| **TTS** | Chatterbox | `chatterbox/chatterbox-tts-0.1` |
+| **TTS** | Kokoro | `mlx-community/Kokoro-82M-bf16` (alias `kokoro`) |
+| **TTS** | Chatterbox | `mlx-community/chatterbox-turbo-fp16` (alias `chatterbox`) |
 
 ## Model Detection
 

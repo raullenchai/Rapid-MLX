@@ -467,14 +467,27 @@ struct AccessibilityIdentifierInventoryTests {
             in: "Sources/Rapid/UI/QuickstartView.swift",
             surface: "Onboarding"
         )
+        // The rail and the footer lane moved into the Direction D design
+        // system when the wizard's centred-card chrome was replaced. The
+        // identifiers did NOT move: golden flows address all three, and
+        // `Quickstart.Progress` in particular is matched with its exact
+        // spoken label on three screens.
         try assertDeclared(
             [
                 #""Quickstart.Progress""#,
                 #""Quickstart.Footer.Back""#,
                 #""Quickstart.Footer.Primary""#,
             ],
+            in: "Sources/Rapid/UI/OnboardingDirectionD.swift",
+            surface: "Onboarding shell"
+        )
+        try assertDeclared(
+            [
+                #""Quickstart.Choice.\(choice.alias)""#,
+                #""Quickstart.CatalogRow.\(alias)""#,
+            ],
             in: "Sources/Rapid/UI/OnboardingComponents.swift",
-            surface: "Onboarding components"
+            surface: "Onboarding model rows"
         )
     }
 

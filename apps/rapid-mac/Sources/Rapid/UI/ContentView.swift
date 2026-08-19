@@ -77,61 +77,13 @@ struct ContentView: View {
         // picker lives inline in the compose box (see ChatView) and the
         // model comes up on first send (implicit lifecycle). Search belongs
         // to the sidebar column beside macOS's native collapse control.
-        VStack(spacing: 0) {
-            // #1588: this recovery path existed since the app was introduced
-            // but was never mounted, so a failed Finder replacement was
-            // detected and then silently discarded.
-            FailedReplaceBanner()
-            NavigationSplitView {
-                SidebarView(
-                selection: $section,
-                chat: chat,
-                onNewChat: {
-                    chat.newConversation()
-                    section = .chat
-                },
-                onSearchChats: {
-                    showConversationSearch = true
-                },
-                onSelectConversation: { id in
-                    chat.selectConversation(id)
-                    section = .chat
-                },
-                server: server
-            )
-            // v1.0: the rail paints an explicit warm surface rather than
-            // inheriting the system sidebar material. The material is a
-            // cool translucent grey that fought the warm canvas beside
-            // it — the two planes read as belonging to different apps.
-            .background(RapidTheme.surfaceSidebar)
-            .navigationSplitViewColumnWidth(
-                min: SidebarView.columnMinWidth,
-                ideal: SidebarView.columnIdealWidth,
-                max: SidebarView.columnMaxWidth
-            )
-            } detail: {
-                detailArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Detail floor dropped 520 → 440 alongside the narrower
-                // rail, back when the window floor was 640 and the old pair
-                // (190 sidebar + 520 detail) over-committed it by 70pt —
-                // which is what forced horizontal clipping instead of
-                // graceful compression. The floor is 720 now, so this has
-                // 80pt of slack; it stays at 440 because it is the detail's
-                // own minimum, not a number derived from the window.
-                .frame(minWidth: 440, minHeight: Self.minWindowHeight)
-                    .background(RapidTheme.surfaceCanvas)
+        Group {
+            if quickstartVisible {
+                // Setup owns the window (Paper 05.1.A). See ``onboardingShell``.
+                onboardingShell
+            } else {
+                productionShell
             }
-            // Background pulls are process-wide, not chat-only.  Keep their
-            // progress visible whichever sidebar destination is selected.
-            DownloadStrip(downloads: downloads)
-            if showLogs {
-                LogDrawer(server: server)
-                    .frame(minHeight: 100, idealHeight: 150, maxHeight: 220)
-                    .accessibilityIdentifier("ContentView.LogDrawer")
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-            statusFooter
         }
         // `.windowResizability(.contentMinSize)` derives the window's floor
         // from this, so the shell states it once here rather than leaving it
@@ -243,14 +195,6 @@ struct ContentView: View {
         .sheet(isPresented: firstRunSheetPresented) {
             firstRunSheet
         }
-        // Presented from the split view — NOT from `mainArea` — so onboarding
-        // covers the whole window. Rendered inside the detail pane it left the
-        // sidebar exposed and clickable, which reads as "the app is already
-        // running, this panel is just one more surface" rather than "finish
-        // setup first".
-        .sheet(isPresented: quickstartSheetPresented) {
-            quickstartSheet
-        }
         .onChange(of: settingsRouter.quickstartReturnGeneration) { _, _ in
             quickstartDismissedThisSession = false
         }
@@ -288,6 +232,115 @@ struct ContentView: View {
                 await server.refreshResidency()
                 try? await Task.sleep(for: .seconds(5))
             }
+        }
+    }
+
+    /// First-run setup, filling the window (Paper 05.1.A).
+    ///
+    /// ## Why this is not a sheet
+    ///
+    /// It was one, and that was the defect. `.sheet` on macOS is a
+    /// document-modal panel: AppKit sizes it to its content's ideal width,
+    /// insets it, rounds its corners and leaves the parent window visible
+    /// around and behind it. So onboarding rendered as a centred card floating
+    /// over a dimmed chat surface — the exact composition 05.1.A rules out
+    /// ("no dimmed application, no modal card floating over a live app, no
+    /// composer, no production sidebar and no status strip behind it"). Worse,
+    /// the sheet settled at its 620pt minimum, which is below the 820pt
+    /// breakpoint, so the rail collapsed to its compact strip on a 1440pt
+    /// display and the full-height rail was effectively unreachable.
+    ///
+    /// Replacing the shell instead of covering it makes the geometry correct
+    /// by construction: this view IS the window's content, so it fills
+    /// everything below the native title bar, has no corner radius of its own,
+    /// and there is nothing behind it to show through. The title bar and its
+    /// traffic lights are untouched — "full window" here means the app's
+    /// content area, never macOS fullscreen.
+    ///
+    /// Nothing about the state machine moves with it. ``quickstartVisible`` is
+    /// the same predicate that gated the sheet, and every alert, dialog and
+    /// task modifier stays attached to the root above this branch, so consent,
+    /// approvals and the launch auto-start all behave exactly as before.
+    @ViewBuilder
+    private var onboardingShell: some View {
+        quickstartSurface
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(RapidTheme.surfaceCanvas)
+            // The last resort for a dismissal request that did not come from a
+            // visible control. Every Step 2 micro-stage, the hero and both
+            // warning screens carry a `.cancelAction` control, and AppKit
+            // resolves Escape against those first — so this only ever fires on
+            // the screens that have none (downloading, Ready, a failure), where
+            // it reproduces exactly what the sheet's own dismissal used to do.
+            .onExitCommand {
+                if quickstart.retreatWithinStep2() { return }
+                quickstartDismissedThisSession = true
+                quickstart.skipForNow()
+            }
+    }
+
+    /// The ordinary application shell: sidebar, detail pane, download
+    /// strip, log drawer and status footer.
+    ///
+    /// Swapped out wholesale while setup is owed, rather than dimmed
+    /// behind it — see ``onboardingShell``.
+    @ViewBuilder
+    private var productionShell: some View {
+        VStack(spacing: 0) {
+            // #1588: this recovery path existed since the app was introduced
+            // but was never mounted, so a failed Finder replacement was
+            // detected and then silently discarded.
+            FailedReplaceBanner()
+            NavigationSplitView {
+                SidebarView(
+                selection: $section,
+                chat: chat,
+                onNewChat: {
+                    chat.newConversation()
+                    section = .chat
+                },
+                onSearchChats: {
+                    showConversationSearch = true
+                },
+                onSelectConversation: { id in
+                    chat.selectConversation(id)
+                    section = .chat
+                },
+                server: server
+            )
+            // v1.0: the rail paints an explicit warm surface rather than
+            // inheriting the system sidebar material. The material is a
+            // cool translucent grey that fought the warm canvas beside
+            // it — the two planes read as belonging to different apps.
+            .background(RapidTheme.surfaceSidebar)
+            .navigationSplitViewColumnWidth(
+                min: SidebarView.columnMinWidth,
+                ideal: SidebarView.columnIdealWidth,
+                max: SidebarView.columnMaxWidth
+            )
+            } detail: {
+                detailArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Detail floor dropped 520 → 440 alongside the narrower
+                // rail, back when the window floor was 640 and the old pair
+                // (190 sidebar + 520 detail) over-committed it by 70pt —
+                // which is what forced horizontal clipping instead of
+                // graceful compression. The floor is 720 now, so this has
+                // 80pt of slack; it stays at 440 because it is the detail's
+                // own minimum, not a number derived from the window.
+                .frame(minWidth: 440, minHeight: Self.minWindowHeight)
+                    .background(RapidTheme.surfaceCanvas)
+            }
+            // Background pulls are process-wide, not chat-only.  Keep their
+            // progress visible whichever sidebar destination is selected.
+            DownloadStrip(downloads: downloads)
+            if showLogs {
+                LogDrawer(server: server)
+                    .frame(minHeight: 100, idealHeight: 150, maxHeight: 220)
+                    .accessibilityIdentifier("ContentView.LogDrawer")
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            statusFooter
         }
     }
 
@@ -589,45 +642,10 @@ struct ContentView: View {
 
     // MARK: - Quickstart presentation
 
-    private var quickstartSheetPresented: Binding<Bool> {
-        Binding(
-            get: { quickstartVisible },
-            set: { presented in
-                // A swipe-down / Esc means "let me look around first" — the
-                // same intent as the card's own "Skip for now", so route it to
-                // the same session flag rather than dropping it.
-                //
-                // NOT the same intent as "Browse all models", which used to
-                // land here too: that one asks to see the catalogue, and
-                // answering it by closing the wizard discarded the user's
-                // selection and left them on the alphabetical fallback
-                // (#1653). It opens Settings → Models now and leaves the
-                // wizard standing.
-                //
-                // Routed through ``skipForNow`` for the same reason it is the
-                // same intent: a user who escapes the Ready screen has
-                // answered it, and returning them to it on the next launch
-                // would be re-asking. Safe on the completion path too — the
-                // record is already retired and this never touches ``done``.
-                //
-                // Browse all models and Review download are Step 2 sub-stages,
-                // and Paper 05.2.G's invariant is that Escape can only move the
-                // user one level closer to the shortlist from inside them —
-                // never out of setup. The footer's `.cancelAction` Back
-                // normally consumes the key first; asking the coordinator to
-                // retreat before treating this as a skip is what makes that
-                // true even when the sheet sees it anyway.
-                if !presented {
-                    if quickstart.retreatWithinStep2() { return }
-                    quickstartDismissedThisSession = true
-                    quickstart.skipForNow()
-                }
-            }
-        )
-    }
-
+    /// The setup surface itself. Sized by its container now that the
+    /// container is the window rather than a sheet.
     @ViewBuilder
-    private var quickstartSheet: some View {
+    private var quickstartSurface: some View {
         QuickstartView(
             coordinator: quickstart,
             downloads: downloads,
@@ -648,12 +666,6 @@ struct ContentView: View {
             onSeedWelcome: seedQuickstartWelcome,
             onCompleted: finishOnboardingHandoff
         )
-        // QuickstartView was written for the detail column and its comments
-        // cite a ~360pt worst case (the 640pt window floor minus the sidebar).
-        // A sheet has no such parent, so without an explicit size it would
-        // collapse to its content's ideal width. Pin it near the window floor
-        // so the model cards keep the room they were laid out for.
-        .frame(minWidth: 620, minHeight: Self.minWindowHeight)
     }
 
     /// Steps 1 + 2 of the Start chatting transaction: make sure the chat the
@@ -831,97 +843,95 @@ struct ContentView: View {
 
     // MARK: - Missing-sidecar overlay
 
+    /// The missing-engine recovery (Paper 05.1 state 20).
+    ///
+    /// Direction D's outcome composition — tinted glyph, kicker, display
+    /// headline, one amber primary and a bordered Quit — rather than the
+    /// previous centred card. The red tone is deliberate and is the one place
+    /// setup uses it: this is not a recoverable step of setup, it is setup
+    /// being unable to run at all.
+    ///
+    /// **Deliberate Paper deviation.** Paper draws this state inside the
+    /// full-window setup shell with the rail inert. Upstream renders it in the
+    /// detail pane with the live sidebar beside it, and moving it would change
+    /// which surface owns the window — a presentation-ownership change, not a
+    /// visual one, and out of scope for this PR. The composition matches; the
+    /// containing plane does not.
     @ViewBuilder
     private var missingOverlay: some View {
-        VStack {
-            Spacer()
-            VStack(spacing: RapidTheme.Space.lg) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                        .fill(RapidTheme.brandPrimaryTint)
-                        .frame(width: 48, height: 48)
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(RapidTheme.brandPrimaryDeep)
-                }
-                .accessibilityHidden(true)
-                VStack(spacing: RapidTheme.Space.sm) {
-                    Text("Setup didn't finish")
-                        .font(RapidFont.pageTitle)
-                    Text("Rapid-MLX isn't fully set up yet. Reopen Rapid-MLX to run the one-time setup again.")
-                        .font(RapidFont.secondary)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .lineSpacing(2)
-                }
-                // Same two branches, same actions, same ordering as
-                // before — only the button tiers change. The recovery
-                // action (download the update, or recheck) is the amber
-                // primary; Quit steps down to secondary, since making
-                // "give up" the most prominent control on a recoverable
-                // failure was the wrong emphasis.
-                if let release = updater.availableUpdate,
-                   let downloadURL = ContentView.missingOverlayDownloadURL(for: release) {
-                    VStack(spacing: RapidTheme.Space.sm) {
-                        Button("Download update \(release.version)") {
-                            NSWorkspace.shared.open(downloadURL)
-                        }
-                        .buttonStyle(.rapidPrimaryWide)
-                        .accessibilityIdentifier("MissingRuntime.DownloadUpdate")
-                        HStack(spacing: RapidTheme.Space.sm) {
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 24)
+
+            OnboardingOutcomeBlock(
+                glyph: "exclamationmark.octagon",
+                tone: .error,
+                kicker: "SETUP COULDN'T RUN",
+                title: "Setup didn't finish",
+                message: "Rapid-MLX isn't fully set up yet. "
+                    + "Reopen Rapid-MLX to run the one-time setup again."
+            ) {
+                VStack(alignment: .leading, spacing: RapidTheme.Space.lg) {
+                    // Same two branches, same actions, same ordering as
+                    // before — only the button tiers change. The recovery
+                    // action (download the update, or recheck) is the amber
+                    // primary; Quit steps down, since making "give up" the
+                    // most prominent control on a recoverable failure was the
+                    // wrong emphasis.
+                    if let release = updater.availableUpdate,
+                       let downloadURL = ContentView.missingOverlayDownloadURL(for: release) {
+                        OnboardingActionLane {
+                            Button("Download update \(release.version)") {
+                                NSWorkspace.shared.open(downloadURL)
+                            }
+                            .buttonStyle(.onboardingPrimary)
+                            .accessibilityIdentifier("MissingRuntime.DownloadUpdate")
                             Button("Recheck") { recheckEngine() }
-                                .buttonStyle(.rapidSecondary)
+                                .buttonStyle(.onboardingOutline)
                                 .accessibilityIdentifier("MissingRuntime.Recheck")
                             Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
-                                .buttonStyle(.rapidSecondary)
+                                .buttonStyle(.onboardingQuiet)
+                                .accessibilityIdentifier("MissingRuntime.Quit")
+                        }
+                    } else {
+                        OnboardingActionLane {
+                            Button("Recheck") { recheckEngine() }
+                                .buttonStyle(.onboardingPrimary)
+                                .accessibilityIdentifier("MissingRuntime.Recheck")
+                            Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
+                                .buttonStyle(.onboardingOutline)
                                 .accessibilityIdentifier("MissingRuntime.Quit")
                         }
                     }
-                } else {
-                    HStack(spacing: RapidTheme.Space.sm) {
-                        Button("Recheck") { recheckEngine() }
-                            .buttonStyle(.rapidPrimary)
-                            .accessibilityIdentifier("MissingRuntime.Recheck")
-                        Button("Quit Rapid-MLX") { NSApp.terminate(nil) }
-                            .buttonStyle(.rapidSecondary)
-                            .accessibilityIdentifier("MissingRuntime.Quit")
+
+                    // Recheck's result, once there is one. Without this the
+                    // control is genuinely working — a full ``ServerLocator``
+                    // re-resolution — and yet reads as dead, because a still-
+                    // missing engine leaves every visible thing unchanged.
+                    if let status = ServerManager.recheckStatusMessage(for: server.lastBinaryRecheck) {
+                        Text(status)
+                            .scaledSystemFont(13)
+                            .foregroundStyle(RapidTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("MissingRuntime.RecheckStatus")
                     }
-                }
-                // Recheck's result, once there is one. Without this the
-                // control is genuinely working — a full ``ServerLocator``
-                // re-resolution — and yet reads as dead, because a still-
-                // missing engine leaves every visible thing unchanged.
-                if let status = ServerManager.recheckStatusMessage(for: server.lastBinaryRecheck) {
-                    Text(status)
-                        .font(RapidFont.secondary)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+
+                    Text("Rapid-MLX runs AI models on your Mac. Your chats stay on "
+                         + "this computer — no messages are sent to the cloud.")
+                        .scaledSystemFont(13)
+                        .foregroundStyle(RapidTheme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("MissingRuntime.RecheckStatus")
+                        .frame(maxWidth: 600, alignment: .leading)
                 }
-                Text("Rapid-MLX runs AI models on your Mac. Your chats stay on this computer — no messages are sent to the cloud.")
-                    .font(RapidFont.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(RapidTheme.Space.xl)
-            .frame(maxWidth: 400)
-            .background(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .fill(RapidTheme.surfaceRaised)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: RapidTheme.Radius.card, style: .continuous)
-                    .strokeBorder(RapidTheme.hairline, lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 6)
-            Spacer()
+
+            Spacer(minLength: 24).layoutPriority(-1)
         }
-        .padding(.horizontal, RapidTheme.Space.xl)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(LeopardSpots(opacity: 0.06))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.top, OnboardingD.canvasTop)
+        .padding(.bottom, OnboardingD.canvasBottom)
+        .padding(.leading, OnboardingD.canvasLeading)
+        .padding(.trailing, OnboardingD.canvasTrailing)
+        .background(RapidTheme.surfaceCanvas)
     }
 
     /// The missing-engine screen's Recheck.
