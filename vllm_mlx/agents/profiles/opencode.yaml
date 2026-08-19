@@ -21,7 +21,7 @@ config:
           "name": "Rapid-MLX",
           "options": {
             "baseURL": "{base_url}",
-            "apiKey": "not-needed"
+            "apiKey": "{api_key}"
           },
           "models": {
             "{model_id}": {}
@@ -44,7 +44,11 @@ streaming:
 
 testing:
   binary: opencode
-  query_cmd: null  # opencode is interactive — no single-query mode
+  # `opencode run <message>` is a headless single-shot mode (verified on
+  # 1.18.18). The profile used to claim OpenCode was interactive-only,
+  # which made --test skip the one check that would have caught the
+  # hardcoded apiKey.
+  query_cmd: "opencode run '{query}'"
   query_timeout: 120
   install_cmd: "brew install sst/tap/opencode  # or: npm install -g opencode-ai"
 
@@ -53,6 +57,7 @@ capabilities:
   streaming: true
 
 known_issues:
+  - "The written config carries the bearer in cleartext at 0644, and the desktop app rotates that bearer every launch — re-run the setup after restarting Rapid or the saved key stops working."
+  - "A macOS system HTTP proxy breaks this: 127.0.0.1 gets proxied despite the OS exceptions list, surfacing as a connection error. Export NO_PROXY=127.0.0.1,localhost"
   - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
-  - "OpenCode is interactive-only (no headless query mode); --test in rapid-mlx agents will skip the query check."
   - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."
