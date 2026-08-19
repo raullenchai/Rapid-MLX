@@ -199,6 +199,11 @@ final class DictationHotkey {
 
         guard type == .flagsChanged else { return }
         guard event.getIntegerValueField(.keyboardEventKeycode) == state.trigger.keyCode else {
+            // Another modifier changing while the trigger is held is still a
+            // chord, even though it produces `flagsChanged` rather than the
+            // `keyDown` event handled above. Without this, a quick Right ⌘ +
+            // Shift gesture could arm the microphone when Right ⌘ was released.
+            if state.downAt != nil { state.sawOtherKey = true }
             return
         }
 

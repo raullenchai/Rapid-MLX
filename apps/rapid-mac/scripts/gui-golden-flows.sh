@@ -3900,11 +3900,10 @@ flow_audio_readiness() {
     press "$OUT/chat.json" Sidebar.Audio "$OUT/dictation.json" \
         || die "Sidebar.Audio is not pressable"
 
-    # Audio opens on Speech to Text: it is the mode people reach for many times
-    # a day, so it is the default and the one an unattended run lands on first.
-    # Assert it rendered before switching away, otherwise a broken default pane
-    # would be invisible to this flow — it would only ever see the mode we
-    # explicitly navigate to.
+    # Dictation is the Audio landing surface, but its global hotkey requires
+    # real Microphone + Accessibility grants that an unattended runner must not
+    # invent. Cover the reachable configuration UI and its privacy default,
+    # then switch to the existing Speech workbench for its end-to-end actions.
     local i dictation_ready=0
     for ((i=0; i<80; i++)); do
         see_main "$OUT/dictation.json"
@@ -3917,7 +3916,11 @@ flow_audio_readiness() {
         sleep 0.25
     done
     [[ "$dictation_ready" == 1 ]] \
-        || die "Audio did not open on a rendered Speech to Text pane"
+        || die "Audio did not open on a rendered Dictation pane"
+    wait_identifier Dictation.ArchiveAudio "$OUT/dictation.json"
+    [[ "$(element_field "$OUT/dictation.json" Dictation.ArchiveAudio value)" != "1" ]] \
+        || die "Dictation retained raw microphone recordings without opt-in"
+    baseline audio-readiness.dictation "$OUT/dictation.json"
     # Opening a tab is not a request to spend memory. #2053 removed automatic
     # loading everywhere else; the default Audio pane is the easiest place for
     # it to creep back in, because dictation *does* load a model — just later,
@@ -3927,8 +3930,8 @@ flow_audio_readiness() {
         die "Opening Audio started a model before any user action"
     fi
 
-    press "$OUT/dictation.json" Audio.Mode.TextToSpeech "$OUT/speech.json" \
-        || die "Audio Text to Speech segment is not pressable"
+    press "$OUT/dictation.json" Audio.Mode.Speech "$OUT/speech-tab-press.json" \
+        || die "Audio Speech segment is not pressable from Dictation"
 
     local speech_ready=0
     for ((i=0; i<80; i++)); do

@@ -116,7 +116,10 @@ final class DictationController {
             rawValue: defaults.string(forKey: Keys.trigger) ?? ""
         ) ?? .rightCommand
         self.modelAlias = defaults.string(forKey: Keys.model) ?? ""
-        self.archiveAudio = defaults.object(forKey: Keys.archiveAudio) as? Bool ?? true
+        // Raw microphone recordings are more sensitive than the transcript.
+        // Keep them only after the user explicitly opts in from the Recent
+        // section; existing explicit preferences continue to be respected.
+        self.archiveAudio = defaults.object(forKey: Keys.archiveAudio) as? Bool ?? false
 
         hotkey.trigger = trigger
         hotkey.onTap = { [weak self] in self?.handleHotkey() }
@@ -180,6 +183,18 @@ final class DictationController {
     func enable() async {
         guard isEnabled else { return }
         refreshReadiness()
+        guard readinessSnapshot.microphone else {
+            lastError = "Dictation needs Microphone access before it can be enabled."
+            phase = .off
+            isEnabled = false
+            return
+        }
+        guard readinessSnapshot.modelSelected else {
+            lastError = "Choose a transcription model before enabling dictation."
+            phase = .off
+            isEnabled = false
+            return
+        }
         guard readinessSnapshot.accessibility else {
             lastError = "Dictation needs Accessibility access before the hotkey can be used."
             // The switch records the user's intent and is left alone. Writing
@@ -222,6 +237,12 @@ final class DictationController {
     /// the app comes forward rather than leaving the user with a dead hotkey.
     func revalidate() {
         guard isEnabled else { return }
+        refreshReadiness()
+        guard readinessSnapshot.isReady else {
+            lastError = "Dictation is no longer ready. Check its model and permissions."
+            isEnabled = false
+            return
+        }
         // Returning to the app is also when a permission granted elsewhere
         // becomes usable, so a session that failed to arm gets another try
         // rather than staying dead until the switch is cycled by hand.

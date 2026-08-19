@@ -456,10 +456,10 @@ struct DictationView: View {
             HStack {
                 Text("Recent").font(.subheadline.weight(.semibold))
                 Spacer()
-                Toggle("Keep audio", isOn: $controller.archiveAudio)
+                Toggle("Keep recordings", isOn: $controller.archiveAudio)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                    .help("Keeping the recording is what lets a correction be verified against the original audio.")
+                    .help("Off by default. Keeping recordings lets a correction be verified against the original audio.")
                     .accessibilityIdentifier("Dictation.ArchiveAudio")
                 if !controller.history.entries.isEmpty {
                     Button("Clear") { controller.history.clear() }
