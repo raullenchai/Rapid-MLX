@@ -43,19 +43,7 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent command" help="Start a model to generate a valid key and launch command." enabled=false
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.kilo-code" desc="Copy Kilo Code command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Copy.openhands" desc="Copy OpenHands command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
@@ -63,15 +51,15 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Copy.hermes" desc="Copy Hermes Agent command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.openhands" desc="Copy OpenHands command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Copy.aider" desc="Copy Aider command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Launch.Integration.Copy.pydanticai" desc="Copy PydanticAI command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXButton id="Launch.Integration.Copy.cursor" desc="Copy Cursor command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
@@ -79,7 +67,23 @@ AXApplication title="Rapid-MLX"
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.kilo-code" desc="Copy Kilo Code command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.opencode" desc="Copy OpenCode command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.pydanticai" desc="Copy PydanticAI command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
             AXButton id="Launch.Integration.Copy.smolagents" desc="Copy smolagents command" help="Start a model to generate a valid key and launch command." enabled=false
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXStaticText value=text enabled=true
+            AXButton id="Launch.Integration.Copy.deepseek-harness" desc="Copy DeepSeek Harness command" help="Start a model to generate a valid key and launch command." enabled=false
             AXStaticText value=text enabled=true
             AXStaticText value=text enabled=true
             AXScrollBar value=number enabled=true

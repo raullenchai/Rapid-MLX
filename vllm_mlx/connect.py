@@ -142,7 +142,8 @@ class ServerEndpoints:
 # snippet, so it carries no ``--base-url``.
 #
 # Deliberately short: this is the "Ready:" banner, printed on every serve, not
-# the integration catalogue. ``rapid-mlx launch list`` is the complete one.
+# the integration catalogue. ``rapid-mlx agents`` lists every profile, while
+# ``rapid-mlx launch list`` lists the supported one-shot config writers.
 # The Continue row was dropped when that integration was removed upstream.
 _CONNECT_ROWS: list[tuple[str, str, bool]] = [
     ("Claude Code", "rapid-mlx agents claude-code --setup", True),

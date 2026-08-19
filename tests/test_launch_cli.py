@@ -80,6 +80,7 @@ def fake_home(tmp_path, monkeypatch) -> Path:
 
     # And the PID file the launch CLI writes when --start-server is on.
     monkeypatch.setattr(launch_cli, "PID_FILE", tmp_path / "launch.pid")
+    monkeypatch.setattr(launch_cli, "_start_port_available", lambda _port: True)
 
     return tmp_path
 
@@ -709,8 +710,8 @@ def _make_args(**overrides):
         client=None,
         all=False,
         model=None,
-        server_url="http://127.0.0.1:8000",
-        port=8000,
+        server_url=None,
+        port=None,
         start_server=False,
         dry_run=False,
         json=False,
@@ -751,6 +752,18 @@ class TestLaunchCommand:
         writer = next(t for t in targets if t["id"] == "claude-code")
         assert writer["config_path"].startswith("~/")
         assert next(t for t in targets if t["id"] == "codex")["config_path"] is None
+
+    def test_mac_fake_registry_matches_production_registry(self):
+        """GUI golden flows must exercise the same kinds and order as Rapid."""
+        from vllm_mlx.integrations import integration_targets_json
+
+        root = Path(__file__).resolve().parents[1]
+        fake = root / "apps" / "rapid-mac" / "scripts" / "fake-rapid-mlx.sh"
+        output = subprocess.check_output(
+            [str(fake), "launch", "list", "--json"], text=True
+        )
+
+        assert json.loads(output) == integration_targets_json()
 
     def test_unknown_client_exit_2(self, fake_home, capsys):
         with pytest.raises(SystemExit) as excinfo:
@@ -838,8 +851,62 @@ class TestLaunchCommand:
             "--port",
             "8102",
         ]
+        state = json.loads((data_dir / "globalState.json").read_text())
+        assert state["openAiBaseUrl"] == "http://127.0.0.1:8102/v1"
         # PID file written.
         assert launch_cli.PID_FILE.read_text().strip() == "99999"
+
+    def test_openhands_start_server_avoids_its_default_ingress(
+        self, fake_home, monkeypatch, capsys
+    ):
+        TestOpenHands._install(fake_home)
+        sent = TestOpenHands._capture(monkeypatch)
+        fake_proc = MagicMock(pid=99997)
+
+        with patch.object(subprocess, "Popen", return_value=fake_proc) as popen:
+            launch_cli.launch_command(
+                _make_args(
+                    client="openhands",
+                    model="qwen3.5-4b-4bit",
+                    start_server=True,
+                )
+            )
+
+        llm = json.loads(sent[0].data)["agent_settings_diff"]["llm"]
+        assert llm["base_url"] == "http://127.0.0.1:8001/v1"
+        assert popen.call_args[0][0][-2:] == ["--port", "8001"]
+
+    def test_start_server_rejects_an_occupied_port_before_writing(
+        self, fake_home, monkeypatch, capsys
+    ):
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(launch_cli, "_start_port_available", lambda _port: False)
+
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(client="cline", start_server=True, port=8123)
+            )
+
+        assert excinfo.value.code == 1
+        assert not (data_dir / "globalState.json").exists()
+        assert "already in use" in capsys.readouterr().err
+
+    def test_start_server_rejects_conflicting_url_and_port(self, fake_home, capsys):
+        (fake_home / "cline-data").mkdir(parents=True)
+
+        with pytest.raises(SystemExit) as excinfo:
+            launch_cli.launch_command(
+                _make_args(
+                    client="cline",
+                    start_server=True,
+                    port=8123,
+                    server_url="http://127.0.0.1:8124",
+                )
+            )
+
+        assert excinfo.value.code == 2
+        assert "different ports" in capsys.readouterr().err
 
     def test_api_key_is_passed_to_client_and_started_server(
         self, fake_home, capsys, monkeypatch

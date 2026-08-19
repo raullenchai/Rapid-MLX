@@ -8449,7 +8449,7 @@ def agents_command(args):
         else:
             print(f"  {agent_count} {agents_label} supported")
         print("  Usage: rapid-mlx agents <name>          Show setup guide")
-        print("         rapid-mlx agents <name> --setup   Auto-configure")
+        print("         rapid-mlx agents <name> --setup   Auto-configure when supported")
         print("         rapid-mlx agents <name> --test    Run integration tests")
         print()
         return

@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """``rapid-mlx launch <client>`` — one-shot bootstrap.
 
-Detects whether the named client (Cline or the Claude Code CLI) is
-installed on this machine, then writes/patches the client's local
-config so it routes traffic at the local rapid-mlx OpenAI-compatible
-server (default ``http://127.0.0.1:8000/v1``). Optionally spawns
-``rapid-mlx serve`` in the background so a user goes from a fresh
-install to "Cline talking to my Mac" in one command.
+Detects whether the named client (Cline, Claude Code, or OpenHands) is
+installed on this machine, then writes/patches its provider settings so it
+routes traffic at the local rapid-mlx API. Optionally spawns
+``rapid-mlx serve`` in the background; OpenHands uses port 8001 by default
+because its running ingress normally owns port 8000.
 
 Membership in :data:`ADAPTERS` is a factual claim: *this client reads a
 documented config file, and writing that file makes the client use our

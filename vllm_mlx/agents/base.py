@@ -10,6 +10,7 @@ breaking the old one.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -213,13 +214,22 @@ class AgentProfile:
         ctx_str = str(context_length if context_length is not None else 32768)
         api_key = _resolve_guide_api_key()
 
+        def _template_value(value: str) -> str:
+            # File templates place string placeholders inside quoted JSON,
+            # YAML, or TOML strings. Escape their contents before substitution
+            # so valid values containing quotes or backslashes cannot corrupt
+            # the rendered document. Manual prose and env values stay literal.
+            if cfg.type in {"json", "yaml", "toml"}:
+                return json.dumps(value, ensure_ascii=False)[1:-1]
+            return value
+
         def _sub(text: str) -> str:
             return (
-                text.replace("{base_url}", base_url)
-                .replace("{model_id}", model_id)
-                .replace("{base_url_no_v1}", base_url_no_v1)
+                text.replace("{base_url}", _template_value(base_url))
+                .replace("{model_id}", _template_value(model_id))
+                .replace("{base_url_no_v1}", _template_value(base_url_no_v1))
                 .replace("{context_length}", ctx_str)
-                .replace("{api_key}", api_key)
+                .replace("{api_key}", _template_value(api_key))
             )
 
         if cfg.type == "env":

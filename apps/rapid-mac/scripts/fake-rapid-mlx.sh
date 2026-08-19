@@ -51,17 +51,18 @@ if sys.argv[1:] == ["launch", "list", "--json"]:
     print(json.dumps([
         {"id": "cline", "name": "Cline", "kind": "config_writer", "config_path": "~/.cline/data/"},
         {"id": "claude-code", "name": "Claude Code", "kind": "config_writer", "config_path": "~/.claude/settings.json"},
-        {"id": "cursor", "name": "Cursor", "kind": "adapter_profile", "config_path": None},
-        {"id": "aider", "name": "Aider", "kind": "adapter_profile", "config_path": None},
+        {"id": "openhands", "name": "OpenHands", "kind": "config_writer", "config_path": "~/.openhands/settings.json"},
+        {"id": "langchain", "name": "LangChain", "kind": "adapter_profile", "config_path": None},
         {"id": "codex", "name": "Codex CLI", "kind": "adapter_profile", "config_path": None},
         {"id": "hermes", "name": "Hermes Agent", "kind": "adapter_profile", "config_path": None},
-        {"id": "kilo-code", "name": "Kilo Code", "kind": "adapter_profile", "config_path": None},
-        {"id": "langchain", "name": "LangChain", "kind": "adapter_profile", "config_path": None},
-        {"id": "opencode", "name": "OpenCode", "kind": "adapter_profile", "config_path": None},
-        {"id": "openhands", "name": "OpenHands", "kind": "adapter_profile", "config_path": None},
-        {"id": "pydanticai", "name": "PydanticAI", "kind": "adapter_profile", "config_path": None},
+        {"id": "aider", "name": "Aider", "kind": "adapter_profile", "config_path": None},
+        {"id": "cursor", "name": "Cursor", "kind": "adapter_profile", "config_path": None},
         {"id": "qwen-code", "name": "Qwen Code", "kind": "adapter_profile", "config_path": None},
+        {"id": "kilo-code", "name": "Kilo Code", "kind": "adapter_profile", "config_path": None},
+        {"id": "opencode", "name": "OpenCode", "kind": "adapter_profile", "config_path": None},
+        {"id": "pydanticai", "name": "PydanticAI", "kind": "adapter_profile", "config_path": None},
         {"id": "smolagents", "name": "smolagents", "kind": "adapter_profile", "config_path": None},
+        {"id": "deepseek-harness", "name": "DeepSeek Harness", "kind": "adapter_profile", "config_path": None},
     ]))
     sys.exit(0)
 

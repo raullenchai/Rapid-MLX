@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 from pathlib import Path
 
 from .base import AgentProfile
@@ -71,12 +72,15 @@ def _resolve_config_path(cfg) -> Path:
     return Path(os.path.expanduser(override)) / default.name
 
 
-def _atomic_write(target: Path, content: str) -> None:
+def _atomic_write(
+    target: Path, content: str, *, force_mode: int | None = None
+) -> None:
     """Write *content* to *target* atomically, preserving symlinks and mode.
 
     When *target* already exists, its mode bits are copied to the
-    replacement file.  When it does not exist, a simple ``write_text``
-    is used so no metadata is lost (there's nothing to preserve).
+    replacement file unless *force_mode* is set. New files default to 0600.
+    A forced mode is used for templates containing a live credential so an
+    existing 0644 config cannot keep exposing the bearer after an update.
     Symlinks are resolved before writing so dotfile-managed configs
     stay connected to their real target.
     """
@@ -85,14 +89,13 @@ def _atomic_write(target: Path, content: str) -> None:
 
     resolved = target.resolve()
 
-    # If the file doesn't exist yet, a plain write is safe and
-    # avoids the metadata-preservation question entirely.
-    if not resolved.exists():
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        resolved.write_text(content, encoding="utf-8")
-        return
-
-    mode = stat.S_IMODE(resolved.stat().st_mode)
+    if force_mode is not None:
+        mode = force_mode
+    elif resolved.exists():
+        mode = stat.S_IMODE(resolved.stat().st_mode)
+    else:
+        mode = 0o600
+    resolved.parent.mkdir(parents=True, exist_ok=True)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(resolved.parent), prefix=".rapid-mlx-", suffix=".tmp"
@@ -139,10 +142,17 @@ def setup_agent_config(
     )
     cfg = profile.get_config_for_version(agent_version)
 
+    if cfg.type == "manual":
+        return (
+            f"Cannot auto-configure {profile.display_name}: its provider settings "
+            f"are manual. Run `rapid-mlx agents {profile.name}` for the supported "
+            "setup steps."
+        )
+
     if cfg.type == "env":
         lines = []
         for key, val in rendered.items():
-            lines.append(f"  export {key}={val}")
+            lines.append(f"  export {key}={shlex.quote(str(val))}")
         summary = (
             "Run these commands in your shell:\n"
             + "\n".join(lines)
@@ -199,7 +209,12 @@ def setup_agent_config(
             )
 
         try:
-            _atomic_write(config_path, merged_text)
+            contains_bearer = bool(cfg.template and "{api_key}" in cfg.template)
+            _atomic_write(
+                config_path,
+                merged_text,
+                force_mode=0o600 if contains_bearer else None,
+            )
         except OSError as exc:
             return (
                 f"Cannot write config to {config_path} ({exc}). Check file permissions."
@@ -526,7 +541,7 @@ def get_setup_instructions(
     elif cfg.type == "env":
         lines.append("```bash")
         for key, val in rendered.items():
-            lines.append(f"export {key}={val}")
+            lines.append(f"export {key}={shlex.quote(str(val))}")
         lines.append("```")
     elif cfg.path:
         ext = Path(cfg.path).suffix.lstrip(".")

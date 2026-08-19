@@ -25,7 +25,8 @@ truthfully from the authoritative test suite in
   Tracked in issue #1041 (V4-Flash hardware plan). Marked
   `xfail(strict=True)` so it flips to a red XPASS if a future change unlocks
   tool calls.
-- **XFAIL (format)** — gpt-oss × OpenHands only. gpt-oss's native harmony
+- **XFAIL (format)** — gpt-oss × the legacy OpenHands Docker matrix harness
+  only. gpt-oss's native harmony
   output (analysis + final channels, plain-markdown code) does not emit the
   `<execute_bash>` / `<execute_ipython>` text-action tags that OpenHands'
   CodeActAgent parses. Upstream OpenHands parser gap
@@ -68,7 +69,7 @@ Source: `tests/integrations/README.md` "Current cell status" (pilot run
 | <a id="agent-claude-code"></a>[claude-code](claude-code.md) | `/v1/messages` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
 | <a id="agent-opencode"></a>[opencode](opencode.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-qwen-code"></a>[qwen-code](qwen-code.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
-| <a id="agent-openhands"></a>[openhands](openhands.md) | Docker → `/v1/chat/completions` | ✅ | ✅ | ✅ | XFAIL (format) | XFAIL (Ultra) |
+| <a id="agent-openhands"></a>[openhands](openhands.md) | legacy Docker matrix → `/v1/chat/completions` | ✅ | ✅ | ✅ | XFAIL (format) | XFAIL (Ultra) |
 | <a id="agent-hermes-agent"></a>[hermes-agent](hermes-agent.md) | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 | <a id="agent-aider"></a>aider | bash CLI → `/v1/chat/completions` | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
 | <a id="agent-kilo-code"></a>kilo-code | `/v1/chat/completions` | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
@@ -82,8 +83,8 @@ Notes on cell shape:
 - **codex-cli / claude-code** use text-only routes (`/v1/responses`,
   `/v1/messages`), so they PASS on DeepSeek R1-Distill where the tool-calling
   agents XFAIL — R1 answers inline instead of emitting `tool_calls`.
-- **aider / openhands** drive a real CLI / Docker harness and assert a file
-  was rewritten; aider's `SEARCH/REPLACE` edit format and OpenHands'
+- **aider / openhands** drive a real CLI / legacy Docker matrix harness and
+  assert a file was rewritten; aider's `SEARCH/REPLACE` edit format and OpenHands'
   text-action tags don't require OpenAI `tool_calls`, so aider PASSes on
   DeepSeek and OpenHands PASSes on DeepSeek (but XFAILs on gpt-oss — format
   mismatch, see legend).

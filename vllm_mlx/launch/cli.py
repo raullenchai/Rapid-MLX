@@ -30,9 +30,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import ADAPTERS
 
@@ -80,6 +82,33 @@ def _resolve_default_model() -> str:
     quickstart tells users to pull).
     """
     return os.environ.get("RAPID_MLX_DEFAULT_MODEL") or "qwen3.5-4b-4bit"
+
+
+def _loopback_url_port(server_url: str) -> int | None:
+    """Return a loopback URL's effective port, else ``None``."""
+    try:
+        parsed = urlparse(server_url)
+        if parsed.scheme != "http" or parsed.hostname not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
+            return None
+        return parsed.port or 80
+    except ValueError:
+        return None
+
+
+def _start_port_available(port: int) -> bool:
+    """Whether a new loopback server can bind *port* before configs change."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
 
 
 def _start_server_background(model: str, port: int, api_key: str | None = None) -> int:
@@ -148,7 +177,6 @@ def launch_command(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
 
-    server_url = args.server_url
     api_key = os.environ.get("RAPID_MLX_API_KEY")
 
     targets: list[str]
@@ -171,6 +199,35 @@ def launch_command(args: argparse.Namespace) -> None:
             sys.exit(2)
         targets = [args.client]
 
+    requested_url = getattr(args, "server_url", None)
+    requested_port = getattr(args, "port", None)
+    if args.start_server:
+        url_port = _loopback_url_port(requested_url) if requested_url else None
+        if requested_url and url_port is None:
+            print(
+                "launch: --start-server requires a loopback --server-url; "
+                "the spawned server cannot bind a remote address.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if requested_port is not None and url_port is not None and requested_port != url_port:
+            print(
+                "launch: --port and --server-url select different ports; "
+                "use one port for both the spawned server and client config.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        start_port = requested_port or url_port
+        if start_port is None:
+            # OpenHands' running ingress owns :8000 by default. Its adapter
+            # must reach that ingress to write settings, while Rapid needs a
+            # different port for inference.
+            start_port = 8001 if "openhands" in targets else 8000
+        server_url = requested_url or f"http://127.0.0.1:{start_port}"
+    else:
+        start_port = requested_port or 8000
+        server_url = requested_url or "http://127.0.0.1:8000"
+
     # Prefer the alias the user typed over the alias-resolved HF repo
     # id. The top-level ``main()`` in ``vllm_mlx/cli.py`` rewrites
     # ``args.model`` from e.g. ``qwen3.5-4b-4bit`` to
@@ -189,8 +246,16 @@ def launch_command(args: argparse.Namespace) -> None:
             installed = adapter.detect()
             print(f"[dry-run] {name}: detected={installed} would-patch={path}")
         if args.start_server:
-            print(f"[dry-run] would spawn: rapid-mlx serve {model} --port {args.port}")
+            print(f"[dry-run] would spawn: rapid-mlx serve {model} --port {start_port}")
         return
+
+    if args.start_server and not _start_port_available(start_port):
+        print(
+            f"launch: cannot start rapid-mlx on port {start_port}: the port is "
+            "already in use. Choose another --port; the client URL will follow it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Real patch path. Track per-client success so we can exit non-zero
     # if any single client failed even when others succeeded — the user
@@ -230,8 +295,8 @@ def launch_command(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
         else:
-            pid = _start_server_background(model, args.port, api_key=api_key)
-            print(f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})")
+            pid = _start_server_background(model, start_port, api_key=api_key)
+            print(f"  Started: rapid-mlx serve {model} --port {start_port} (pid {pid})")
             print(f"  PID file: {PID_FILE}")
 
     if succeeded:
@@ -264,7 +329,7 @@ def register(subparsers) -> None:
         "launch",
         help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
         description=(
-            "Detect an IDE client (Cline, Claude Code) and write/patch its "
+            "Detect a client (Cline, Claude Code, OpenHands) and write/patch its "
             "config to route at the rapid-mlx server. Use `rapid-mlx launch "
             "list` to see what's supported. Clients whose settings are not a "
             "writable config file — Cursor, for one — are covered by "
@@ -297,16 +362,19 @@ def register(subparsers) -> None:
     p.add_argument(
         "--server-url",
         type=str,
-        default="http://127.0.0.1:8000",
-        help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
+        default=None,
+        help=(
+            "rapid-mlx server URL the client will route at (default: the "
+            "--start-server port, otherwise http://127.0.0.1:8000)"
+        ),
     )
     p.add_argument(
         "--port",
         type=_port_arg,
-        default=8000,
+        default=None,
         help=(
-            "Port for --start-server (default: 8000). Must be in "
-            "[1, 65535]. Ignored when --start-server is not set."
+            "Port for --start-server (default: 8000, or 8001 when OpenHands "
+            "is selected). Must be in [1, 65535]."
         ),
     )
     p.add_argument(

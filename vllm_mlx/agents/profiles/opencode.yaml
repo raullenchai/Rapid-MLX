@@ -57,7 +57,7 @@ capabilities:
   streaming: true
 
 known_issues:
-  - "The written config carries the bearer in cleartext at 0644, and the desktop app rotates that bearer every launch — re-run the setup after restarting Rapid or the saved key stops working."
+  - "The written config carries the bearer in cleartext (Rapid-MLX forces the file to 0600), and the desktop app rotates that bearer every launch — re-run the setup after restarting Rapid or the saved key stops working."
   - "A macOS system HTTP proxy breaks this: 127.0.0.1 gets proxied despite the OS exceptions list, surfacing as a connection error. Export NO_PROXY=127.0.0.1,localhost"
   - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
   - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."

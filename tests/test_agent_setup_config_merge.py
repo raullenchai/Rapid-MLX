@@ -10,7 +10,9 @@ Covers:
 from __future__ import annotations
 
 import json
+import shlex
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -30,6 +32,7 @@ from vllm_mlx.agents.adapter import (
     _MergeParseError,
     _valid_context_window,
     fetch_context_window,
+    get_setup_instructions,
     setup_agent_config,
 )
 from vllm_mlx.agents.base import AgentConfigSpec, AgentProfile
@@ -445,6 +448,90 @@ class TestEnvProfileUnchanged:
         assert isinstance(rendered, dict)
         assert rendered["BASE_URL"] == "http://localhost:8000/v1"
         assert rendered["MODEL"] == "my-model"
+
+    def test_shell_guides_quote_a_bearer(self, monkeypatch):
+        from vllm_mlx.agents import get_profile
+
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "key with $(shell) and 'quotes'")
+        profile = get_profile("aider")
+        assert profile is not None
+
+        guide = get_setup_instructions(profile, model_id="model")
+
+        expected = shlex.quote("key with $(shell) and 'quotes'")
+        assert f"export OPENAI_API_KEY={expected}" in guide
+
+
+class TestManualAndBearerProfiles:
+    def test_manual_setup_is_rejected_instead_of_reporting_success(self):
+        from vllm_mlx.agents import get_profile
+
+        for name in ("cursor", "openhands"):
+            profile = get_profile(name)
+            assert profile is not None
+            summary = setup_agent_config(profile, "http://localhost:8000/v1", "model")
+            assert summary.startswith("Cannot auto-configure")
+            assert f"rapid-mlx agents {name}" in summary
+
+    def test_manual_setup_cli_exits_without_configured_claim(self, capsys):
+        from vllm_mlx.cli import agents_command
+
+        args = SimpleNamespace(
+            agent_name="cursor",
+            base_url="http://localhost:8000/v1",
+            test=False,
+            setup=True,
+            model="model",
+            agent_version=None,
+            dry_run=False,
+            yes=False,
+            no_check=False,
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            agents_command(args)
+
+        assert excinfo.value.code == 1
+        output = capsys.readouterr().out
+        assert "setup failed" in output
+        assert "configured!" not in output
+
+    def test_opencode_bearer_is_json_escaped(self, monkeypatch):
+        from vllm_mlx.agents import get_profile
+
+        bearer = 'a"b\\c'
+        monkeypatch.setenv("RAPID_MLX_API_KEY", bearer)
+        profile = get_profile("opencode")
+        assert profile is not None
+
+        rendered = profile.render_config("http://localhost:8000/v1", "model")
+        parsed = json.loads(rendered)
+
+        assert parsed["provider"]["rapid-mlx"]["options"]["apiKey"] == bearer
+
+    @pytest.mark.parametrize("preexisting", [False, True])
+    def test_opencode_setup_forces_config_to_0600(
+        self, tmp_path, monkeypatch, preexisting
+    ):
+        from vllm_mlx.agents import get_profile
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "live-bearer")
+        path = tmp_path / ".config" / "opencode" / "opencode.json"
+        if preexisting:
+            path.parent.mkdir(parents=True)
+            path.write_text("{}")
+            path.chmod(0o644)
+        profile = get_profile("opencode")
+        assert profile is not None
+
+        summary = setup_agent_config(profile, "http://localhost:8000/v1", "model")
+
+        assert not summary.startswith("Cannot")
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert json.loads(path.read_text())["provider"]["rapid-mlx"]["options"][
+            "apiKey"
+        ] == "live-bearer"
 
 
 # ---------------------------------------------------------------------------

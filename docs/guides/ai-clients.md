@@ -124,7 +124,7 @@ in the tables above:
 
 - **Codex CLI** (CLI) — `rapid-mlx agents codex --setup`
 - **Kilo Code** (IDE Extension) — `rapid-mlx agents kilo-code --setup`
-- **OpenHands** (Web/Docker) — `rapid-mlx agents openhands --setup`
+- **OpenHands** (agent-canvas) — start the app, then run `rapid-mlx launch openhands`
 
 ## Testing Methodology
 
@@ -200,12 +200,12 @@ string `not-needed`; use `sk-local` or `rapid-mlx` instead.
 
 ## Rapid-MLX agents CLI
 
-Rapid-MLX ships a built-in agent manager that can auto-configure
-several popular coding agents:
+Rapid-MLX ships a built-in agent manager that can configure writable profiles
+and print exact manual steps for the rest:
 
 ```bash
 rapid-mlx agents              # List all supported agents
-rapid-mlx agents <name> --setup  # Auto-configure an agent
+rapid-mlx agents <name> --setup  # Auto-configure when the profile supports it
 rapid-mlx agents hermes --test   # Run the Hermes agent test suite
 ```
 
@@ -216,13 +216,12 @@ Currently supported profiles (in `vllm_mlx/agents/profiles/`):
 | `aider` | Aider | Env vars | Yes (`test_aider.sh`) |
 | `claude-code` | Claude Code | Env vars | Yes (`test_agents_matrix.py`) |
 | `codex` | Codex CLI | TOML config | Yes (`test_agents_matrix.py`) |
-| `continue` | Continue.dev | JSON config | No |
 | `deepseek-harness` | DeepSeek Harness | YAML config | Yes (`test_deepseek_harness_tier1.py`) |
 | `hermes` | Hermes Agent | YAML config | Yes (`test_hermes.py`) |
 | `kilo-code` | Kilo Code | JSON config | Yes (`test_agents_matrix.py`) |
 | `langchain` | LangChain | Env vars | Yes (`test_langchain.py`) |
 | `opencode` | OpenCode | JSON config | Yes (`test_agents_matrix.py`) |
-| `openhands` | OpenHands | Env vars | Yes (`test_openhands.sh`) |
+| `openhands` | OpenHands | Running-app REST API (`rapid-mlx launch openhands`) | Yes (`test_openhands.sh`) |
 | `pydanticai` | PydanticAI | Env vars | Yes (`test_pydantic_ai_full.py`) |
 | `qwen-code` | Qwen Code | JSON config | Yes (`test_agents_matrix.py`) |
 | `smolagents` | smolagents | Env vars | Yes (`test_smolagents_full.py`) |
