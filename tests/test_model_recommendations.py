@@ -47,7 +47,7 @@ def test_recipe_json_is_stable_and_has_two_picks(monkeypatch, capsys) -> None:
     assert payload["free_disk_gb"] == 100.0
     assert payload["picks"][0]["disk_fit"] is True
     assert payload["picks"][0]["download_size_gb"] == 15.2
-    assert payload["picks"][0]["required_disk_gb"] == 16.8
+    assert payload["picks"][0]["required_disk_gb"] == 16.72
 
 
 def test_recipe_text_prints_ready_to_run_commands(monkeypatch, capsys) -> None:
@@ -70,8 +70,8 @@ def test_recipe_suppresses_command_for_pick_that_will_not_fit(
 
     output = capsys.readouterr().out
     assert "Smart — qwen3.8-27b-4bit" in output
-    assert "won't fit: needs ~16.8 GB" in output
-    assert "16.0 GB free" in output
+    assert "won't fit: needs ~16.72 GB" in output
+    assert "16.00 GB free" in output
     assert "rapid-mlx serve qwen3.8-27b-4bit" not in output
     assert "rapid-mlx serve qwen3.5-4b-4bit" in output
 
@@ -92,7 +92,7 @@ def test_recipe_uses_download_size_not_peak_ram_for_disk_fit(
     assert "rapid-mlx serve qwen3.8-27b-4bit" in output
 
 
-def test_recipe_rounding_boundary_is_conservative_and_self_consistent(
+def test_recipe_rounding_does_not_reject_a_download_that_really_fits(
     monkeypatch, capsys
 ) -> None:
     monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
@@ -101,7 +101,20 @@ def test_recipe_rounding_boundary_is_conservative_and_self_consistent(
     cli.recipe_command(Namespace(max_ram=32, json=False))
 
     output = capsys.readouterr().out
-    assert "needs ~16.8 GB including download headroom; 16.7 GB free" in output
+    assert "won't fit" not in output
+    assert "rapid-mlx serve qwen3.8-27b-4bit" in output
+
+
+def test_recipe_failing_rounding_boundary_displays_distinct_values(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
+    monkeypatch.setattr(cli, "_recipe_free_disk_gb", lambda: 16.719)
+
+    cli.recipe_command(Namespace(max_ram=32, json=False))
+
+    output = capsys.readouterr().out
+    assert "needs ~16.72 GB including download headroom; 16.71 GB free" in output
     assert "rapid-mlx serve qwen3.8-27b-4bit" not in output
 
 

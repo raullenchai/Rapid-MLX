@@ -5610,12 +5610,12 @@ def recipe_command(args) -> None:
     payload = recommendation_payload(ram_gb)
     cached_repos = {repo.casefold() for repo, _, _ in _scan_hf_cache_models()}
     free_disk_gb = _recipe_free_disk_gb()
-    # Free space rounds DOWN while required space below rounds UP. Besides
-    # preserving a small safety margin, using those same display values for
-    # the comparison prevents the absurd-looking "needs 16.7; 16.7 free" /
-    # "won't fit" combination at a rounding boundary.
+    # Free space rounds DOWN while required space below rounds UP for display.
+    # Fit itself still compares the unrounded measurements: presentation must
+    # not reject a download that really has enough room. Two directed decimal
+    # places ensure a failing boundary cannot render as equal values.
     payload["free_disk_gb"] = (
-        None if free_disk_gb is None else math.floor(free_disk_gb * 10) / 10
+        None if free_disk_gb is None else math.floor(free_disk_gb * 100) / 100
     )
     for pick in payload["picks"]:
         try:
@@ -5644,12 +5644,14 @@ def recipe_command(args) -> None:
             else round(download_bytes / float(1 << 30), 1)
         )
         pick["required_disk_gb"] = (
-            None if required_disk_gb is None else math.ceil(required_disk_gb * 10) / 10
+            None
+            if required_disk_gb is None
+            else math.ceil(required_disk_gb * 100) / 100
         )
         pick["disk_fit"] = (
             None
             if free_disk_gb is None or required_disk_gb is None
-            else payload["free_disk_gb"] >= pick["required_disk_gb"]
+            else free_disk_gb >= required_disk_gb
         )
 
     if getattr(args, "json", False):
@@ -5674,8 +5676,8 @@ def recipe_command(args) -> None:
         print(f"   {' · '.join(stats)}")
         if pick["disk_fit"] is False:
             print(
-                f"   ⚠ won't fit: needs ~{pick['required_disk_gb']:.1f} GB "
-                f"including download headroom; {payload['free_disk_gb']:.1f} GB free"
+                f"   ⚠ won't fit: needs ~{pick['required_disk_gb']:.2f} GB "
+                f"including download headroom; {payload['free_disk_gb']:.2f} GB free"
             )
             print("   Free disk space or set HF_HOME/HF_HUB_CACHE to another drive.")
             continue
