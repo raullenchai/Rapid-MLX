@@ -3,12 +3,12 @@
 ## Option 1: Interactive Chat (fastest first taste)
 
 The shortest path to talking to a model — `chat` spawns its own server,
-downloads the model on first run (~2.5 GB for the default `qwen3.5-4b-4bit`), and
+downloads the model on first run (~3 GB for the default `qwen3.5-4b-4bit`), and
 drops you into a REPL.
 
 ```bash
 rapid-mlx chat                  # defaults to qwen3.5-4b-4bit
-rapid-mlx chat qwen3.5-9b-4bit       # a larger model (5 GB)
+rapid-mlx chat qwen3.5-9b-4bit       # a larger model (~6 GB)
 rapid-mlx chat --think          # surface chain-of-thought reasoning
 ```
 
@@ -71,11 +71,21 @@ print(message.content[0].text)
 
 ## Option 3: Gradio Web UI
 
-A browser-based chat UI ships in the optional `[chat]` extra:
+A browser-based chat UI ships in the optional `[chat]` extra as its own
+console script, `rapid-mlx-chat` (not a `rapid-mlx` subcommand):
 
 ```bash
 pip install 'rapid-mlx[chat]'
-# Then launch — see `rapid-mlx help` for the UI entry point in your install.
+# Then run:
+rapid-mlx-chat
+```
+
+If you installed with the curl one-liner, the extra must go into the
+installer's venv — plain `pip` targets a different environment:
+
+```bash
+~/.rapid-mlx/bin/pip install 'rapid-mlx[chat]'
+rapid-mlx-chat
 ```
 
 ## Multimodal Models
