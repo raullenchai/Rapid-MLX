@@ -176,7 +176,7 @@ def test_audio_baseline_waits_for_residency_poll_to_settle():
     settled_guard = '[[ "$speech_resident" == 1 ]]'
     launch_check = 'press "$OUT/speech-resident.json" Sidebar.Launch'
     return_to_audio = 'press "$OUT/launch-from-audio.json" Sidebar.Audio'
-    switch = 'press "$OUT/audio-after-launch.json" Audio.Mode.SpeechToText'
+    switch = 'press "$OUT/audio-after-launch.json" Audio.Mode.Dictation'
     assert correlated_row in flow
     assert resident_alias in flow
     assert resident_lock in flow

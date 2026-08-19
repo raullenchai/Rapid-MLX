@@ -8,6 +8,13 @@ AXApplication title="Rapid-MLX"
           AXButton id="Sidebar.Images" desc="Images" enabled=true
           AXButton id="Sidebar.Audio" desc="Audio" enabled=true
           AXButton id="Sidebar.Launch" desc="Launch" enabled=true
+          AXImage id="Sidebar.Residency" desc="memorychip" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXProgressIndicator id="Sidebar.Residency" value=number enabled=true
+          AXImage id="Sidebar.Residency" desc="Lock" enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
+          AXStaticText id="Sidebar.Residency" value=text enabled=true
         AXSplitter value=number enabled=false
         AXGroup subrole=AXHostingView
           AXGroup id="Audio.Mode" desc="Audio mode" enabled=true
@@ -15,26 +22,23 @@ AXApplication title="Rapid-MLX"
             AXButton id="Audio.Mode.Speech" desc="Speech" enabled=true
             AXButton id="Audio.Mode.Transcription" desc="Transcription" enabled=true
           AXScrollArea
-            AXHeading desc="Speech, Create spoken audio with a model and one of its built-in voices." enabled=true
-            AXHeading desc="Text" enabled=true
-            AXScrollArea
-              AXTextArea id="Audio.Speech.Text" desc="Text to speak" value=empty
-              AXScrollBar value=number enabled=false
+            AXHeading desc="Transcription, Turn a local recording into text without uploading it." enabled=true
             AXStaticText value=text enabled=true
-            AXPopUpButton id="Audio.Speech.ModelPicker" desc="Model" value=text enabled=true
             AXStaticText value=text enabled=true
-            AXButton id="Audio.Speech.VoicePicker" desc="Voice" value=empty enabled=false
-            AXButton id="Audio.Speech.LoadVoices" desc="Load Voices" enabled=false
+            AXButton id="Audio.Transcription.FilePicker" desc="Choose File" enabled=true
             AXStaticText value=text enabled=true
-            AXGroup enabled=true
-              AXSlider id="Audio.Speech.Speed" value=number enabled=true
-                AXValueIndicator value=number
-              AXStaticText value=text enabled=true
-            AXGroup desc="fake-qwen3-tts isn't downloaded yet, It downloads once (<size>), then starts in seconds." enabled=true
+            AXPopUpButton id="Audio.Transcription.ModelPicker" desc="Model" value=text enabled=true
+            AXGroup desc="fake-whisper-small isn't downloaded yet, It downloads once (<size>), then starts in seconds." enabled=true
               AXStaticText value=text enabled=true
               AXStaticText value=text enabled=true
               AXButton id="Readiness.Action" desc="Download" enabled=true
-            AXButton id="Audio.Speech.Generate" desc="Generate Speech" enabled=false
+            AXGroup enabled=true
+              AXStaticText value=text enabled=true
+            AXButton id="Audio.Transcription.Run" desc="Transcribe" enabled=false
+      AXImage id="checkmark.circle.fill" desc="Selected" enabled=true
+      AXStaticText value=text enabled=true
+      AXStaticText value=text enabled=true
+      AXButton id="DownloadStrip.Dismiss.fake-qwen3-tts" desc="Dismiss fake-qwen3-tts status" help="Dismiss" enabled=true
       AXButton id="ContentView.Settings" desc="Settings" help="Settings — ⌘," enabled=true
       AXButton id="ContentView.ToggleLogs" desc="Show logs" help="Show logs" enabled=true
       AXUnknown desc="Server status" enabled=true

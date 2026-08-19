@@ -175,6 +175,35 @@ struct DictationTests {
         #expect(history.entries.first?.text == "让 herdr 跑在 spark1 上")
     }
 
+    @MainActor
+    @Test("archived audio is immediately available before its disk write finishes")
+    func historyPendingAudioIsReadable() {
+        let history = DictationHistory(directory: Self.tempDirectory())
+        let audio = Data(repeating: 0x5A, count: 4096)
+        let entry = history.record(
+            text: "rapid mlx", audio: audio,
+            duration: 1, latency: 0.1, appName: nil, archiveAudio: true
+        )
+        #expect(history.audioData(for: entry) == audio)
+    }
+
+    @MainActor
+    @Test("clearing immediately after recording cannot leave archived audio behind")
+    func historyImmediateClearRemovesAudio() async throws {
+        let directory = Self.tempDirectory()
+        let history = DictationHistory(directory: directory)
+        let entry = history.record(
+            text: "discard me", audio: Data(repeating: 0x2A, count: 4096),
+            duration: 1, latency: 0.1, appName: nil, archiveAudio: true
+        )
+        let audioURL = try #require(history.audioURL(for: entry))
+        history.clear()
+        #expect(history.entries.isEmpty)
+        #expect(history.audioData(for: entry) == nil)
+        await history.waitForPersistence()
+        #expect(!FileManager.default.fileExists(atPath: audioURL.path))
+    }
+
     // MARK: - Hotkey
 
     /// Only right-hand modifiers are offered. Left ⌘ rides along with ⌘C/⌘V/
@@ -191,16 +220,14 @@ struct DictationTests {
 
     // MARK: - Audio mode
 
-    /// Speech to Text is the default because it is the mode people reach for
-    /// many times a day, and the golden flow now asserts the Audio tab opens
-    /// on it. Pinning it here says so in the cheap test rather than only in a
-    /// GUI journey that takes a build and a runner to fail.
+    /// Dictation is additive: neither existing file transcription nor speech
+    /// synthesis disappears when the global hotkey workflow is introduced.
     @MainActor
-    @Test("Audio opens on Speech to Text, with Text to Speech second")
+    @Test("Audio opens on Dictation without removing either workbench")
     func audioModeDefault() {
-        #expect(AudioViewModel.Mode.allCases == [.speechToText, .textToSpeech])
+        #expect(AudioViewModel.Mode.allCases == [.dictation, .speech, .transcription])
         let viewModel = AudioViewModel(server: ServerManager(testingState: .idle))
-        #expect(viewModel.mode == .speechToText)
+        #expect(viewModel.mode == .dictation)
     }
 
     /// The AX identifier is derived from `axName`, not from `label`, precisely
@@ -214,11 +241,9 @@ struct DictationTests {
             #expect(!mode.axName.contains(" "))
             #expect(mode.axName.allSatisfy { $0.isLetter || $0.isNumber })
         }
-        #expect(AudioViewModel.Mode.speechToText.axName == "SpeechToText")
-        #expect(AudioViewModel.Mode.textToSpeech.axName == "TextToSpeech")
-        // The labels are the human-facing strings and do carry spaces — which
-        // is the whole reason the two are separate.
-        #expect(AudioViewModel.Mode.speechToText.label == "Speech to Text")
+        #expect(AudioViewModel.Mode.dictation.axName == "Dictation")
+        #expect(AudioViewModel.Mode.speech.axName == "Speech")
+        #expect(AudioViewModel.Mode.transcription.axName == "Transcription")
     }
 
     // MARK: - Helpers

@@ -3894,7 +3894,9 @@ flow_audio_readiness() {
         FAKE_PARTIAL_AUDIO_CACHE=1 \
         FAKE_AUDIO_PULL_STATE="$OUT_ROOT/audio-readiness/pulled-audio.txt" \
         RAPID_GUI_GOLDEN_MODE=1 \
-        RAPID_SIMULATED_SPEECH_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-speech.wav"
+        RAPID_SIMULATED_AUDIO_PATH="$ROOT/../../examples/assistant_bank_en.wav" \
+        RAPID_SIMULATED_SPEECH_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-speech.wav" \
+        RAPID_SIMULATED_TRANSCRIPTION_SAVE_PATH="$OUT_ROOT/audio-readiness/saved-transcription.txt"
     dismiss_first_run
     see_main "$OUT/chat.json"
     press "$OUT/chat.json" Sidebar.Audio "$OUT/dictation.json" \
@@ -3920,7 +3922,9 @@ flow_audio_readiness() {
     wait_identifier Dictation.ArchiveAudio "$OUT/dictation.json"
     [[ "$(element_field "$OUT/dictation.json" Dictation.ArchiveAudio value)" != "1" ]] \
         || die "Dictation retained raw microphone recordings without opt-in"
-    baseline audio-readiness.dictation "$OUT/dictation.json"
+    # Do not snapshot this pane: Accessibility/Microphone grants and app-name
+    # vocabulary suggestions legitimately differ per host. The semantic checks
+    # above are the stable Golden contract.
     # Opening a tab is not a request to spend memory. #2053 removed automatic
     # loading everywhere else; the default Audio pane is the easiest place for
     # it to creep back in, because dictation *does* load a model — just later,
@@ -4174,7 +4178,7 @@ flow_audio_readiness() {
     fi
     press "$OUT/launch-from-audio.json" Sidebar.Audio "$OUT/audio-after-launch.json" \
         || die "Sidebar.Audio is not pressable after checking Launch"
-    wait_identifier Audio.Mode.SpeechToText "$OUT/audio-after-launch.json" \
+    wait_identifier Audio.Mode.Dictation "$OUT/audio-after-launch.json" \
         || die "Audio did not settle after returning from Launch"
 
     # Back to the default mode. Speech to Text deliberately owns no readiness
@@ -4184,8 +4188,8 @@ flow_audio_readiness() {
     # addressable after a round trip through another mode and another tab —
     # model, hotkey and the enable switch all present — and that merely opening
     # it never loads anything.
-    press "$OUT/audio-after-launch.json" Audio.Mode.SpeechToText "$OUT/dictation-return.json" \
-        || die "Audio Speech to Text segment is not pressable"
+    press "$OUT/audio-after-launch.json" Audio.Mode.Dictation "$OUT/dictation-return-press.json" \
+        || die "Audio Dictation segment is not pressable"
     local dictation_controls=0
     for ((i=0; i<40; i++)); do
         see_main "$OUT/dictation-return.json"
@@ -4200,10 +4204,10 @@ flow_audio_readiness() {
         sleep 0.25
     done
     [[ "$dictation_controls" == 1 ]] \
-        || die "Speech to Text did not expose its model, hotkey and enable controls"
+        || die "Dictation did not expose its model, hotkey and enable controls"
     if jq -e '.data.ui_elements[]? | select(.identifier == "Readiness.Action")' \
             "$OUT/dictation-return.json" >/dev/null; then
-        die "Speech to Text exposed a Download/Start banner it does not own"
+        die "Dictation exposed a Download/Start banner it does not own"
     fi
     # No structural baseline for this pane: the Microphone and Accessibility
     # rows render a grant button only while the permission is missing, so its
@@ -4211,11 +4215,95 @@ flow_audio_readiness() {
     # A snapshot would encode the runner's TCC state as the contract.
     if jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-whisper-small")' \
         "$OUT/fake-events.jsonl" >/dev/null; then
-        die "Opening Speech to Text loaded its model before the user dictated"
+        die "Opening Dictation loaded its model before the user dictated"
     fi
 
+    # Dictation is additive: the existing file-transcription workbench must
+    # remain reachable and preserve the same explicit Download → Start lifecycle.
+    press "$OUT/dictation-return.json" Audio.Mode.Transcription "$OUT/transcription.json" \
+        || die "Audio Transcription segment is not pressable"
+    local transcription_ready=0
+    for ((i=0; i<80; i++)); do
+        see_main "$OUT/transcription.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Audio.Transcription.ModelPicker")' \
+                 "$OUT/transcription.json" >/dev/null \
+           && jq -e '.data.ui_elements[]?
+                     | select(.identifier == "Readiness.Action"
+                              and (.description // .value // .label // "") == "Download")' \
+                    "$OUT/transcription.json" >/dev/null; then
+            transcription_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$transcription_ready" == 1 ]] \
+        || die "Transcription did not expose download-only readiness"
+    baseline audio-readiness.transcription "$OUT/transcription.json"
+
+    press "$OUT/transcription.json" Readiness.Action "$OUT/transcription-download.json" \
+        || die "Transcription Download is not pressable"
+    wait_fake_event \
+        '.event == "command" and .subcommand == "pull" and .alias == "fake-whisper-small"' \
+        "Transcription Download did not invoke pull"
+    local transcription_start_ready=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/transcription-downloaded.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.identifier == "Readiness.Action"
+                           and (.description // .value // .label // "") == "Start")' \
+                 "$OUT/transcription-downloaded.json" >/dev/null; then
+            transcription_start_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$transcription_start_ready" == 1 ]] \
+        || die "Transcription did not become Start-ready after download"
+    if jq -e -s 'any(.[]; .event == "server_started" and .alias == "fake-whisper-small")' \
+        "$OUT/fake-events.jsonl" >/dev/null; then
+        die "Transcription loaded automatically after Download"
+    fi
+    press "$OUT/transcription-downloaded.json" Readiness.Action \
+        "$OUT/transcription-start.json" \
+        || die "Transcription Start is not pressable"
+    wait_fake_event \
+        '.event == "server_started" and .alias == "fake-whisper-small"' \
+        "Transcription did not start explicitly"
+
+    local file_selected=0
+    for ((i=0; i<20; i++)); do
+        see_main "$OUT/transcription-controls.json"
+        "$AX_DRIVER" press "$APP_PID" Audio.Transcription.FilePicker \
+            > "$OUT/transcription-file-press.json" 2>/dev/null || true
+        sleep 0.25
+        see_main "$OUT/transcription-file-selected.json"
+        if jq -e 'any(.data.ui_elements[]?;
+                      .identifier == "Audio.Transcription.Run" and .enabled == true)' \
+                "$OUT/transcription-file-selected.json" >/dev/null; then
+            file_selected=1; break
+        fi
+    done
+    [[ "$file_selected" == 1 ]] \
+        || die "Choose File never enabled Transcribe"
+    press "$OUT/transcription-file-selected.json" Audio.Transcription.Run \
+        "$OUT/transcription-run.json" \
+        || die "Transcribe is not pressable after selecting a file"
+    wait_fake_event '.event == "audio_transcription"' \
+        "Transcribe did not send the selected audio file"
+    wait_identifier Audio.Transcription.Result "$OUT/transcription-result.json"
+    assert_tree_text "$OUT/transcription-result.json" "Golden transcription result."
+    press "$OUT/transcription-result.json" Audio.Transcription.Copy \
+        "$OUT/transcription-copy.json" \
+        || die "Copy transcription is not pressable"
+    [[ "$(pbpaste)" == "Golden transcription result." ]] \
+        || die "Copy transcription did not update the pasteboard"
+    press "$OUT/transcription-result.json" Audio.Transcription.Save \
+        "$OUT/transcription-save.json" \
+        || die "Save transcription is not pressable"
+    [[ "$(cat "$OUT/saved-transcription.txt")" == "Golden transcription result." ]] \
+        || die "Save transcription did not write the visible result"
+
     jq -n '{success: true,
-            assertion: "Text to Speech controls produce their visible and persisted effects; Speech to Text is the addressable default and loads nothing on open"}' \
+            assertion: "Dictation is privacy-safe and inert on open; Speech and file Transcription remain functional with explicit Download and Start"}' \
         > "$OUT/audio-readiness-actions.json"
     log "  audio-readiness OK"
     cleanup_persona

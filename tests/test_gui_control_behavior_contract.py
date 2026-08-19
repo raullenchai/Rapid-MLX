@@ -16,18 +16,19 @@ def test_audio_readiness_actions_start_the_selected_model_and_clear_the_gate():
     flow = source.split("flow_audio_readiness() {", 1)[1].split("\n}", 1)[0]
 
     assert flow.count('press "$OUT/') >= 3
-    # Exactly one two-step download/start gate remains, and it belongs to Text
-    # to Speech. Speech to Text owns none by design: it loads its model when
-    # the user dictates, not when the pane opens. So the other half of this
-    # journey asserts the ABSENCE of a load — which is the same policy (#2053)
-    # stated the only way it can be stated for an on-demand surface.
-    assert flow.count('.subcommand == "pull"') == 1
+    # Speech synthesis and file transcription each preserve the explicit
+    # Download → Start lifecycle. Dictation owns no readiness banner: it loads
+    # only after the user invokes the global hotkey.
+    assert flow.count('.subcommand == "pull"') == 2
     assert '.alias == "fake-qwen3-tts"' in flow
     assert '.alias == "fake-whisper-small"' in flow
     assert "before its pull completed" in flow
     assert "Speech loaded automatically after a download-only action" in flow
     assert "Opening Audio started a model before any user action" in flow
-    assert "Opening Speech to Text loaded its model before the user dictated" in flow
+    assert "Opening Dictation loaded its model before the user dictated" in flow
+    assert "Transcription loaded automatically after Download" in flow
+    assert "Audio.Transcription.Run" in flow
+    assert "Audio.Transcription.Result" in flow
 
 
 def test_audio_control_journey_is_blocking_gui_ci_and_has_failure_evidence():

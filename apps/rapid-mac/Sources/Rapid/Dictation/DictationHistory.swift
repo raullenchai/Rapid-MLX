@@ -50,6 +50,11 @@ final class DictationHistory {
     private(set) var entries: [Entry] = []
 
     private let directory: URL
+    /// Serialize index/audio mutations so a later clear or edit can never be
+    /// overtaken by an older detached write. The UI keeps a pending copy of a
+    /// just-recorded clip so "Fix" works even before disk I/O completes.
+    private let persistenceQueue = DispatchQueue(label: "ai.rapidmlx.dictation-history")
+    private var pendingAudio: [UUID: Data] = [:]
     private var indexURL: URL { directory.appendingPathComponent("history.json") }
     private var audioDirectory: URL { directory.appendingPathComponent("audio", isDirectory: true) }
 
@@ -77,12 +82,16 @@ final class DictationHistory {
             let name = "\(id.uuidString).wav"
             let url = audioDirectory.appendingPathComponent(name)
             let directory = audioDirectory
-            Task.detached(priority: .utility) {
+            pendingAudio[id] = audio
+            persistenceQueue.async { [weak self] in
                 try? FileManager.default.createDirectory(
                     at: directory,
                     withIntermediateDirectories: true
                 )
                 try? audio.write(to: url, options: .atomic)
+                Task { @MainActor [weak self] in
+                    self?.pendingAudio[id] = nil
+                }
             }
             audioFile = name
         }
@@ -112,6 +121,7 @@ final class DictationHistory {
     }
 
     func audioData(for entry: Entry) -> Data? {
+        if let pending = pendingAudio[entry.id] { return pending }
         guard let url = audioURL(for: entry) else { return nil }
         return try? Data(contentsOf: url)
     }
@@ -130,6 +140,14 @@ final class DictationHistory {
         save()
     }
 
+    /// Wait until all mutations queued before this call have reached disk.
+    /// Used by deterministic tests and by any future shutdown flush path.
+    func waitForPersistence() async {
+        await withCheckedContinuation { continuation in
+            persistenceQueue.async { continuation.resume() }
+        }
+    }
+
     // MARK: - Persistence
 
     private func trimIfNeeded() {
@@ -140,8 +158,9 @@ final class DictationHistory {
     }
 
     private func deleteAudio(for entry: Entry) {
+        pendingAudio[entry.id] = nil
         guard let url = audioURL(for: entry) else { return }
-        Task.detached(priority: .utility) {
+        persistenceQueue.async {
             try? FileManager.default.removeItem(at: url)
         }
     }
@@ -159,7 +178,7 @@ final class DictationHistory {
     private func save() {
         let url = indexURL
         let snapshot = entries
-        Task.detached(priority: .utility) {
+        persistenceQueue.async {
             try? FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true

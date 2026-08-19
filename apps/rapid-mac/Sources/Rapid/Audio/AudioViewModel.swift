@@ -24,8 +24,9 @@ final class AudioViewModel {
         /// spaces ("Speech to Text").
         var axName: String {
             switch self {
-            case .speechToText: return "SpeechToText"
-            case .textToSpeech: return "TextToSpeech"
+            case .dictation: return "Dictation"
+            case .speech: return "Speech"
+            case .transcription: return "Transcription"
             }
         }
     }

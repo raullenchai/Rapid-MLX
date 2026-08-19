@@ -1223,6 +1223,68 @@ class TestSTTEngineSignatureAcceptsTask:
         )
         assert result.text == "bonjour"
 
+    @pytest.mark.parametrize(
+        ("model_name", "expected_key"),
+        [
+            ("mlx-community/whisper-large-v3-mlx", "initial_prompt"),
+            ("mlx-community/Qwen3-ASR-0.6B-4bit", "system_prompt"),
+            ("mlx-community/parakeet-tdt-0.6b-v2", None),
+        ],
+    )
+    def test_context_maps_only_to_supported_backend(
+        self, monkeypatch, model_name, expected_key
+    ):
+        """A backend-neutral context must reach the family-specific decoder
+        kwarg, while unsupported engines keep their old call shape."""
+        from vllm_mlx.audio import stt as stt_mod
+
+        observed: dict = {}
+
+        class _CapturingModel:
+            _processor = object()
+
+            def generate(self, audio_path, **kwargs):
+                observed.update(kwargs)
+                return types.SimpleNamespace(text="Herdr", segments=None, language="en")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "mlx_audio.stt.utils",
+            types.SimpleNamespace(load_model=lambda *args, **kwargs: _CapturingModel()),
+        )
+        engine = stt_mod.STTEngine(model_name)
+        engine._enable_vad_pretrim = False
+        engine.transcribe("ignored.wav", context="  Herdr, Hammerspoon  ")
+
+        hint_keys = {"initial_prompt", "system_prompt"} & observed.keys()
+        if expected_key is None:
+            assert hint_keys == set()
+        else:
+            assert observed[expected_key] == "Herdr, Hammerspoon"
+            assert hint_keys == {expected_key}
+
+    def test_blank_context_keeps_generate_call_shape(self, monkeypatch):
+        from vllm_mlx.audio import stt as stt_mod
+
+        observed: dict = {}
+
+        class _CapturingModel:
+            _processor = object()
+
+            def generate(self, audio_path, **kwargs):
+                observed.update(kwargs)
+                return types.SimpleNamespace(text="ok", segments=None, language="en")
+
+        monkeypatch.setitem(
+            sys.modules,
+            "mlx_audio.stt.utils",
+            types.SimpleNamespace(load_model=lambda *args, **kwargs: _CapturingModel()),
+        )
+        engine = stt_mod.STTEngine("mlx-community/whisper-large-v3-mlx")
+        engine._enable_vad_pretrim = False
+        engine.transcribe("ignored.wav", context=" \n ")
+        assert "initial_prompt" not in observed
+
 
 class TestAudioBodyLimitCoversTranslations:
     """The 25 MB upload cap middleware must guard the new translations
