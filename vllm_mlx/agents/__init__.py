@@ -110,7 +110,12 @@ def _load_profile_from_yaml(path: Path) -> AgentProfile:
     return AgentProfile(
         name=data["name"],
         display_name=data.get("display_name", data["name"]),
-        kind=data.get("kind", "agent"),
+        # Clamp to the two known kinds: an unknown value (typo in a user
+        # overlay YAML) counts as a plain agent instead of poisoning the
+        # footer arithmetic or hard-failing profile loading.
+        kind=(
+            data.get("kind") if data.get("kind") in ("agent", "framework") else "agent"
+        ),
         repo=data.get("repo"),
         stars=data.get("stars"),
         config=_parse_config(data),
