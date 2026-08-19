@@ -5586,10 +5586,18 @@ def _print_cached_models() -> None:
 
 
 def recipe_command(args) -> None:
-    """Recommend exactly two curated models for this Mac's RAM tier."""
+    """Recommend exactly two curated models for this Mac's RAM tier.
+
+    Recommendations stay anchored to the shared, curated RAM-tier SSOT. Disk
+    pressure is presentation state, not a reason to silently substitute a
+    lower-quality model: an unavailable pick remains visible, but we do not
+    print a copy-paste ``serve`` command that is known to fail mid-download.
+    """
     import json
+    import math
 
     from vllm_mlx.model_aliases import resolve_profile
+    from vllm_mlx.model_sizes import size_bytes
     from vllm_mlx.recommendations import physical_ram_gb, recommendation_payload
 
     ram_gb = (
@@ -5601,6 +5609,14 @@ def recipe_command(args) -> None:
         raise SystemExit("Could not detect physical RAM. Pass --max-ram GB explicitly.")
     payload = recommendation_payload(ram_gb)
     cached_repos = {repo.casefold() for repo, _, _ in _scan_hf_cache_models()}
+    free_disk_gb = _recipe_free_disk_gb()
+    # Free space rounds DOWN while required space below rounds UP for display.
+    # Fit itself still compares the unrounded measurements: presentation must
+    # not reject a download that really has enough room. Two directed decimal
+    # places ensure a failing boundary cannot render as equal values.
+    payload["free_disk_gb"] = (
+        None if free_disk_gb is None else math.floor(free_disk_gb * 100) / 100
+    )
     for pick in payload["picks"]:
         try:
             profile = resolve_profile(pick["alias"])
@@ -5608,7 +5624,35 @@ def recipe_command(args) -> None:
         except ValueError:
             hf_path = None
         pick["hf_path"] = hf_path
-        pick["cached"] = bool(hf_path and hf_path.casefold() in cached_repos)
+        pick["cached"] = bool(
+            hf_path
+            and hf_path.casefold() in cached_repos
+            and _cache_entry_is_runnable(hf_path)
+        )
+        # ``footprint_gb`` is measured 8K peak RAM, not bytes on disk. Use the
+        # checked-in download-size manifest that powers ``rapid-mlx models``;
+        # this keeps recipe offline and prevents a 20 GB RAM peak from being
+        # misreported as a 20 GB download. Match the live download gate's 10%
+        # headroom for xet temporary files and the final cache move.
+        download_bytes = 0 if pick["cached"] else size_bytes(hf_path or "")
+        required_disk_gb = (
+            None if download_bytes is None else (download_bytes * 1.1) / float(1 << 30)
+        )
+        pick["download_size_gb"] = (
+            None
+            if download_bytes is None
+            else round(download_bytes / float(1 << 30), 1)
+        )
+        pick["required_disk_gb"] = (
+            None
+            if required_disk_gb is None
+            else math.ceil(required_disk_gb * 100) / 100
+        )
+        pick["disk_fit"] = (
+            None
+            if free_disk_gb is None or required_disk_gb is None
+            else free_disk_gb >= required_disk_gb
+        )
 
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -5630,10 +5674,44 @@ def recipe_command(args) -> None:
         cache_badge = " · cached" if pick["cached"] else ""
         print(f"\n{index}. {labels[pick['role']]} — {pick['alias']}{cache_badge}")
         print(f"   {' · '.join(stats)}")
+        if pick["disk_fit"] is False:
+            print(
+                f"   ⚠ won't fit: needs ~{pick['required_disk_gb']:.2f} GB "
+                f"including download headroom; {payload['free_disk_gb']:.2f} GB free"
+            )
+            print("   Free disk space or set HF_HOME/HF_HUB_CACHE to another drive.")
+            continue
         command = f"rapid-mlx serve {pick['alias']}"
         if pick["launch_flags"]:
             command += " " + " ".join(pick["launch_flags"])
         print(f"   {command}")
+
+
+def _recipe_free_disk_gb() -> float | None:
+    """Return free GiB on the filesystem that receives HF downloads.
+
+    ``HF_HUB_CACHE`` can name a directory that does not exist yet, including
+    one on an external volume. Walk to its nearest existing ancestor before
+    probing, matching the real download gate rather than assuming ``$HOME``.
+    Unknown disk state is deliberately ``None``: recipe then preserves its
+    historical output instead of claiming that a model fits.
+    """
+    import shutil
+    from pathlib import Path
+
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except Exception:
+        HF_HUB_CACHE = str(Path.home() / ".cache" / "huggingface" / "hub")
+    try:
+        probe = Path(HF_HUB_CACHE).expanduser().absolute()
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
+        if not probe.exists():
+            return None
+        return shutil.disk_usage(probe).free / float(1 << 30)
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 def models_command(args):
