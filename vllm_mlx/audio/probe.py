@@ -387,12 +387,6 @@ def _dry_run_tts(model_name: str | None) -> tuple[bool, str | None]:
         return False, f"TTS dry-run failed: {type(e).__name__}: {e}"
 
 
-def _reset_lane_status() -> None:
-    """Test hook: clear recorded lane statuses."""
-    _LANE_STATUS.clear()
-    _LANE_REASON.clear()
-
-
 def _espeak_selftest_subprocess(
     lib: str | None = None, data: str | None = None, timeout: float = 30.0
 ) -> bool:
