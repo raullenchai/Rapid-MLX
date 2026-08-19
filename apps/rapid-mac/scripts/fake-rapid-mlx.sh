@@ -165,6 +165,8 @@ RESPONSE_SHAPES = {
         "The Gaussian integral is\n\n",
         "$$\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}$$",
         "\n\nand inline it reads $e^{i\\pi} + 1 = 0$.",
+        "\n\nA bridged congruence is $$a^{p-1} \\equiv 1 \\mod p$$.",
+        "\n\nA bridged alignment is $$\\begin{align}x &= 1 \\\\ y &= \\boxed{2}\\end{align}$$.",
     ],
     "shape:list": [
         "Three things, in order:\n\n",

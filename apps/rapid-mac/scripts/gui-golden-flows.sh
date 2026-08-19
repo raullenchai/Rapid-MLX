@@ -2080,7 +2080,8 @@ flow_message_actions() {
 }
 
 flow_math_rendering() {
-    # Artifact-level coverage for #1504/#1576. The fake emits display math;
+    # Artifact-level coverage for #1504/#1576/#2107. The fake emits display
+    # and inline math plus commands absent from vanilla SwiftMath;
     # MathView exposes `Math:` only after SwiftMath parsed and hosted it, while
     # the safe fallback exposes `Unrenderable math:`. This therefore catches
     # both a missing font bundle and a parser/resource regression in the real
@@ -2098,6 +2099,8 @@ flow_math_rendering() {
     # MathBlock latex payload and MathView still owns parse/resource fallback.
     assert_tree_text "$OUT/math-settled.json" "The Gaussian integral is"
     assert_tree_text "$OUT/math-settled.json" 'and inline it reads $e^{i\\pi} + 1 = 0$.'
+    assert_tree_text "$OUT/math-settled.json" "A bridged congruence is"
+    assert_tree_text "$OUT/math-settled.json" "A bridged alignment is"
     if jq -e '(.data.ui_elements | tostring) | contains("$$\\\\int_")' \
         "$OUT/math-settled.json" >/dev/null; then
         die "display math reached the transcript as literal source"

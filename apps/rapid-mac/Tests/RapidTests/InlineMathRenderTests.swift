@@ -138,5 +138,8 @@ struct InlineMathRenderTests {
             if let math = value as? InlineMathAttachment { found.append(math.latex) }
         }
         #expect(found == ["x_1"], "attachments found: \(found)")
+        renderer.setBlocks(blocks)
+        #expect(renderer.accessibleText == "The value $x_1$ matters.")
+        #expect(!renderer.accessibleText.contains("\u{FFFC}"))
     }
 }
