@@ -74,25 +74,13 @@ class AudioAliasEntry:
     notes: str = ""
 
 
-# Lazy cache. Populated on first call to :func:`_load_registry`; reset
-# via :func:`_reset_registry_cache` for tests that mutate the JSON.
+# Lazy cache. Populated on first call to :func:`_load_registry`. Reset
+# only by re-running in a fresh process (e.g. per-test subprocess).
 _REGISTRY: dict[str, AudioAliasEntry] | None = None
 # Reverse index: HF id (lowercase) -> alias key. Built alongside the
 # forward index so :func:`resolve_audio_alias` can answer for full HF
 # ids the same way it answers for short aliases.
 _HF_ID_INDEX: dict[str, str] = {}
-
-
-def _reset_registry_cache() -> None:
-    """Test hook: clear the registry cache.
-
-    Tests that swap the JSON file or patch the loader call this in
-    their fixture so the next ``_load_registry`` call re-reads from
-    disk. Production code never calls this.
-    """
-    global _REGISTRY
-    _REGISTRY = None
-    _HF_ID_INDEX.clear()
 
 
 def _registry_path() -> str:

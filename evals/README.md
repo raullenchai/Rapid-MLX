@@ -4,6 +4,11 @@ Standardized evaluation framework for comparing LLM performance on Apple Silicon
 
 **Results**: See [SCORECARD.md](SCORECARD.md) for the comparison table.
 
+> **Staleness note (2026-08-18)**: SCORECARD.md is a March-2026 snapshot
+> generated against the pre-BatchedEngine (SimpleEngine-era) server. Treat
+> its numbers as historical; re-run `run_eval.py` + `generate_scorecard.py`
+> for current figures.
+
 ## Quick Start
 
 ```bash

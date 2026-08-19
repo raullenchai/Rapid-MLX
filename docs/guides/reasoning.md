@@ -124,6 +124,12 @@ print(f"Final answer: {content_text}")
 
 ## Supported Parsers
 
+The full registry: `qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`,
+`gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`,
+`ui_tars`, `vibethinker`. Aliases carry their parser in the per-alias profile
+(`rapid-mlx info <alias>` shows it), so you rarely need the flag at all. The two
+most common parsers in detail:
+
 ### Qwen3 Parser (`qwen3`)
 
 For Qwen3 models that use explicit `<think>` and `</think>` tags.

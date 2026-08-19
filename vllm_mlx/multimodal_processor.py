@@ -434,24 +434,3 @@ class MultimodalProcessor:
         hash_input = f"{shape_str}_{sample_values}"
 
         return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
-
-
-def create_mllm_prompt_cache(model: Any, max_kv_size: int | None = None) -> Any:
-    """
-    Create a prompt cache for VLM generation.
-
-    This wraps mlx_vlm's cache creation for the language model part.
-
-    Args:
-        model: The VLM model
-        max_kv_size: Optional maximum KV cache size
-
-    Returns:
-        Prompt cache object
-    """
-    from mlx_vlm.models import cache
-
-    return cache.make_prompt_cache(
-        model.language_model,
-        max_kv_size=max_kv_size,
-    )

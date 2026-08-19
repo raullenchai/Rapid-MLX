@@ -38,6 +38,32 @@ struct TelemetryEvent: Codable, Sendable {
         var os: String
         var os_version: String
         var arch: String
+        /// Apple Silicon chip brand (e.g. ``"Apple M4 Max"``), read via
+        /// ``sysctlbyname("machdep.cpu.brand_string")``. Mirrors the
+        /// engine's ``redact._read_chip_brand()`` so a desktop machine
+        /// buckets into the SAME per-chip label the CLI reports, instead
+        /// of being invisible behind the generic ``arch`` ("arm64").
+        /// Legacy Intel Macs use the coarse fixed label ``"Intel"``.
+        ///
+        /// Optional on the wire (``encodeIfPresent`` omits it when nil)
+        /// so this is a backward-compatible schema addition: an older
+        /// telemetry-worker that doesn't read ``chip`` ignores the extra
+        /// key, and a build that can't read the brand simply omits it.
+        ///
+        /// Analytics uses ``app == "rapid-desktop"`` as the authoritative
+        /// surface discriminator; chip is hardware metadata, not identity.
+        ///
+        /// The ``= nil`` default keeps the synthesized memberwise
+        /// initializer callable with the original four labels, so every
+        /// existing ``Platform(app:os:os_version:arch:)`` call site (and
+        /// the decode path) stays source-compatible.
+        var chip: String? = nil
+        /// Total physical RAM rounded to the nearest GB. Mirrors the
+        /// engine's ``redact.bucket_memory_gb`` so desktop + CLI machines
+        /// aggregate uniformly and exact byte counts can't fingerprint a
+        /// machine. Never carries raw bytes. Optional/back-compat like
+        /// ``chip`` above.
+        var memory_gb: Int? = nil
     }
 
     /// Build a session_start (no error fields populated).
