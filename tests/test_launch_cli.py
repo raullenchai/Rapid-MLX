@@ -235,6 +235,50 @@ class TestCline:
         state = json.loads((data_dir / "globalState.json").read_text())
         assert state["openAiBaseUrl"] == "http://127.0.0.1:8000/v1"
 
+    def test_malformed_next_config_does_not_partially_write_legacy_files(
+        self, fake_home
+    ):
+        data_dir = fake_home / "cline-data"
+        settings_dir = data_dir / "settings"
+        settings_dir.mkdir(parents=True)
+        state_path = data_dir / "globalState.json"
+        secrets_path = data_dir / "secrets.json"
+        providers_path = settings_dir / "providers.json"
+        original_state = b'{"preferredLanguage":"English"}\n'
+        original_secrets = b'{"openRouterApiKey":"keep-me"}\n'
+        state_path.write_bytes(original_state)
+        secrets_path.write_bytes(original_secrets)
+        providers_path.write_text("{not valid json")
+
+        with pytest.raises(json.JSONDecodeError):
+            cline.write_or_patch_config(
+                "http://127.0.0.1:8000", "model", api_key="live-bearer"
+            )
+
+        assert state_path.read_bytes() == original_state
+        assert secrets_path.read_bytes() == original_secrets
+        assert not list(data_dir.glob("globalState.json.bak.*"))
+        assert not list(data_dir.glob("secrets.json.bak.*"))
+        assert not list(settings_dir.glob("providers.json.bak.*"))
+
+    def test_non_object_secrets_config_does_not_write_global_state(self, fake_home):
+        data_dir = fake_home / "cline-data"
+        data_dir.mkdir(parents=True)
+        state_path = data_dir / "globalState.json"
+        secrets_path = data_dir / "secrets.json"
+        original_state = b'{"preferredLanguage":"English"}\n'
+        state_path.write_bytes(original_state)
+        secrets_path.write_text("[]")
+
+        with pytest.raises(ValueError, match="must contain a JSON object"):
+            cline.write_or_patch_config(
+                "http://127.0.0.1:8000", "model", api_key="live-bearer"
+            )
+
+        assert state_path.read_bytes() == original_state
+        assert not list(data_dir.glob("globalState.json.bak.*"))
+        assert not list(data_dir.glob("secrets.json.bak.*"))
+
     def test_cline_dir_env_relocates_the_tree(self, fake_home, monkeypatch):
         """A user who moved Cline off a synced home dir must get their
         REAL config patched, not the default path."""

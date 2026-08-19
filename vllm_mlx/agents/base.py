@@ -51,6 +51,11 @@ class AgentConfigSpec:
     path: str | None = None  # config file path (for yaml/json/toml)
     template: str | None = None  # config file template with {base_url}, {model_id}
     env_vars: dict[str, str] | None = None  # env vars for "env" type
+    # Environment that must still be present when the configured agent runs.
+    # This differs from ``env_vars``: file-based profiles can use it when their
+    # config references a credential by environment-variable name rather than
+    # storing the credential itself (DeepSeek Harness is the current case).
+    runtime_env_vars: dict[str, str] | None = None
     # Name of the environment variable the agent's own CLI uses to relocate
     # its config directory (codex: CODEX_HOME, hermes: HERMES_HOME). When it
     # is set, ``--setup`` writes there instead of the operator's real config.
@@ -240,6 +245,34 @@ class AgentProfile:
         if cfg.template:
             return _sub(cfg.template)
         return ""
+
+    def render_runtime_env(
+        self,
+        base_url: str,
+        model_id: str,
+        agent_version: str | None = None,
+        *,
+        context_length: int | None = None,
+    ) -> dict[str, str]:
+        """Render environment that must be exported when the agent runs."""
+        cfg = self.get_config_for_version(agent_version)
+        if not cfg.runtime_env_vars:
+            return {}
+
+        base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
+        ctx_str = str(context_length if context_length is not None else 32768)
+        api_key = _resolve_guide_api_key()
+
+        def _sub(text: str) -> str:
+            return (
+                text.replace("{base_url}", base_url)
+                .replace("{model_id}", model_id)
+                .replace("{base_url_no_v1}", base_url_no_v1)
+                .replace("{context_length}", ctx_str)
+                .replace("{api_key}", api_key)
+            )
+
+        return {key: _sub(value) for key, value in cfg.runtime_env_vars.items()}
 
 
 def _version_matches(version: str, version_range: str) -> bool:

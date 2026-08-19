@@ -7,14 +7,14 @@ struct AgentLaunchCommandTests {
     func registryCommands() {
         #expect(IntegrationLaunchCommand.configWriter(
             id: "cline", serverURL: "http://127.0.0.1:8000", key: "secret", model: "model", cli: "rapid-mlx"
-        ) == "env RAPID_MLX_API_KEY=secret rapid-mlx launch cline --server-url http://127.0.0.1:8000 --model model")
+        ) == "RAPID_MLX_API_KEY='secret' rapid-mlx launch 'cline' --server-url 'http://127.0.0.1:8000' --model 'model'")
         // The guide command contacts nothing itself, but the guide it PRINTS
         // renders OPENAI_API_KEY from RAPID_MLX_API_KEY. Without the bearer the
         // printed instructions read "not-needed" and 401 against the very
         // server the page is describing.
         #expect(IntegrationLaunchCommand.adapterGuide(
             id: "aider", baseURL: "http://127.0.0.1:8000/v1", model: "model", key: "secret", cli: "rapid-mlx"
-        ) == "env RAPID_MLX_API_KEY=secret rapid-mlx agents aider --base-url http://127.0.0.1:8000/v1 --model model")
+        ) == "RAPID_MLX_API_KEY='secret' rapid-mlx agents 'aider' --base-url 'http://127.0.0.1:8000/v1' --model 'model'")
     }
 
     /// The Desktop app owns an off-PATH sidecar (see ``ServerLocator``), so
@@ -40,7 +40,7 @@ struct AgentLaunchCommandTests {
             cli: cli
         )
         #expect(writer.contains(cli))
-        #expect(writer.hasPrefix("env RAPID_MLX_API_KEY=\(key) \(cli) launch claude-code"))
+        #expect(writer.hasPrefix("RAPID_MLX_API_KEY='\(key)' \(cli) launch 'claude-code'"))
         #expect(!writer.contains(" rapid-mlx "))
 
         let guide = IntegrationLaunchCommand.adapterGuide(
@@ -50,7 +50,7 @@ struct AgentLaunchCommandTests {
             key: key,
             cli: cli
         )
-        #expect(guide.hasPrefix("env RAPID_MLX_API_KEY=\(key) \(cli) agents aider"))
+        #expect(guide.hasPrefix("RAPID_MLX_API_KEY='\(key)' \(cli) agents 'aider'"))
         #expect(!guide.contains(" rapid-mlx "))
     }
 
@@ -72,14 +72,14 @@ struct AgentLaunchCommandTests {
         let writer = IntegrationLaunchCommand.configWriter(
             id: "cline", serverURL: "http://127.0.0.1:8000", key: "secret", model: "model", cli: "rapid-mlx"
         )
-        #expect(writer.contains(" rapid-mlx launch cline "))
+        #expect(writer.contains(" rapid-mlx launch 'cline' "))
     }
 
     private let base = "http://127.0.0.1:8000/v1"
     private let key = "local-key"
     private let model = "qwen-test"
 
-    @Test("Every command is one process-scoped line, never an export")
+    @Test("Every command is one process-scoped line, never env or export")
     func commandsDoNotMutateTheShellEnvironment() {
         let commands = [
             AgentLaunchCommand.claude(baseURL: base, key: key, model: model),
@@ -89,6 +89,7 @@ struct AgentLaunchCommandTests {
 
         for command in commands {
             #expect(!command.contains("export "))
+            #expect(!command.contains("env "))
             #expect(!command.contains("\n"))
             #expect(command.contains(key))
             #expect(command.contains(model))
@@ -96,7 +97,8 @@ struct AgentLaunchCommandTests {
     }
 
     /// The rule these commands exist to honour: nothing they touch survives
-    /// the process. `env` prefixes and `mktemp` scratch dirs both satisfy it;
+    /// the process. Command-scoped assignments and `mktemp` scratch dirs both
+    /// satisfy it;
     /// a path under the user's home does not. This is the assertion that
     /// actually distinguishes the two, so it names the home directories rather
     /// than matching on a command prefix.
@@ -121,7 +123,7 @@ struct AgentLaunchCommandTests {
         #expect(command.contains("d=$(mktemp -d)"))
         #expect(command.contains(#"CODEX_HOME="$d""#))
         #expect(command.contains(#"trap 'rm -rf "$d"' EXIT"#))
-        #expect(command.contains(" codex -m qwen-test "))
+        #expect(command.contains(" codex -m 'qwen-test' "))
         #expect(!command.contains("codex --ignore-user-config"))
         #expect(command.contains(#"wire_api="responses""#))
     }
@@ -173,15 +175,15 @@ struct AgentLaunchCommandTests {
         let guide = IntegrationLaunchCommand.adapterGuide(
             id: "codex", baseURL: base, model: model, key: key, cli: "rapid-mlx"
         )
-        #expect(guide.contains(" agents codex "))
+        #expect(guide.contains(" agents 'codex' "))
         #expect(codex != guide)
     }
 
     @Test("Hermes retains its native provider variables")
     func providerSpecificVariablesRemainComplete() {
         let hermes = AgentLaunchCommand.hermes(baseURL: base, key: key, model: model)
-        #expect(hermes.contains("OPENAI_BASE_URL=\(base)"))
-        #expect(hermes.contains("HERMES_INFERENCE_MODEL=\(model)"))
+        #expect(hermes.contains("OPENAI_BASE_URL='\(base)'"))
+        #expect(hermes.contains("HERMES_INFERENCE_MODEL='\(model)'"))
         #expect(hermes.hasSuffix("hermes --provider openai-api --ignore-user-config"))
     }
 }

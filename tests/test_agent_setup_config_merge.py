@@ -509,6 +509,71 @@ class TestManualAndBearerProfiles:
 
         assert parsed["provider"]["rapid-mlx"]["options"]["apiKey"] == bearer
 
+    def test_launch_guide_bearer_reaches_all_supported_profiles(self, monkeypatch):
+        from vllm_mlx.agents import get_profile
+
+        bearer = "key with $(shell) and 'quotes'"
+        monkeypatch.setenv("RAPID_MLX_API_KEY", bearer)
+
+        qwen = get_profile("qwen-code")
+        kilo = get_profile("kilo-code")
+        pydanticai = get_profile("pydanticai")
+        smolagents = get_profile("smolagents")
+        deepseek = get_profile("deepseek-harness")
+        assert all((qwen, kilo, pydanticai, smolagents, deepseek))
+
+        qwen_config = json.loads(qwen.render_config("http://localhost:8000/v1", "m"))
+        kilo_config = json.loads(kilo.render_config("http://localhost:8000/v1", "m"))
+        assert qwen_config["env"]["RAPID_MLX_API_KEY"] == bearer
+        assert kilo_config["provider"]["rapid-mlx"]["options"]["apiKey"] == bearer
+
+        for profile in (pydanticai, smolagents):
+            rendered = profile.render_config("http://localhost:8000/v1", "m")
+            assert rendered["OPENAI_API_KEY"] == bearer
+
+        runtime_env = deepseek.render_runtime_env(
+            "http://localhost:8000/v1", "m"
+        )
+        assert runtime_env == {"RAPID_MLX_API_KEY": bearer}
+        guide = get_setup_instructions(
+            deepseek, "http://localhost:8000/v1", "m"
+        )
+        assert f"export RAPID_MLX_API_KEY={shlex.quote(bearer)}" in guide
+
+    @pytest.mark.parametrize(
+        ("profile_name", "relative_path", "credential_path"),
+        [
+            ("qwen-code", ".qwen/settings.json", ("env", "RAPID_MLX_API_KEY")),
+            (
+                "kilo-code",
+                ".config/kilo/kilo.json",
+                ("provider", "rapid-mlx", "options", "apiKey"),
+            ),
+        ],
+    )
+    def test_json_bearer_profiles_force_config_to_0600(
+        self, tmp_path, monkeypatch, profile_name, relative_path, credential_path
+    ):
+        from vllm_mlx.agents import get_profile
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("RAPID_MLX_API_KEY", "live-bearer")
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True)
+        path.write_text("{}")
+        path.chmod(0o644)
+        profile = get_profile(profile_name)
+        assert profile is not None
+
+        summary = setup_agent_config(profile, "http://localhost:8000/v1", "model")
+
+        assert not summary.startswith("Cannot")
+        assert path.stat().st_mode & 0o777 == 0o600
+        value = json.loads(path.read_text())
+        for component in credential_path:
+            value = value[component]
+        assert value == "live-bearer"
+
     @pytest.mark.parametrize("preexisting", [False, True])
     def test_opencode_setup_forces_config_to_0600(
         self, tmp_path, monkeypatch, preexisting

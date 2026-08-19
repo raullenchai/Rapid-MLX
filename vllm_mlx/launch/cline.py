@@ -176,12 +176,35 @@ def write_or_patch_config(
     if not base_url.endswith("/v1"):
         base_url = base_url + "/v1"
 
-    _write_legacy(data_dir, base_url, model, api_key)
-    _write_next(data_dir, base_url, model, api_key)
+    # Parse every document before changing any of them. Cline can switch
+    # between these two bundle shapes remotely, so a malformed providers.json
+    # must not leave the already-written legacy files pointing at Rapid while
+    # the command reports failure (and vice versa).
+    state = _load_mapping(data_dir / "globalState.json")
+    secrets = _load_mapping(data_dir / "secrets.json")
+    providers = _load_mapping(data_dir / "settings" / "providers.json")
+
+    _write_legacy(data_dir, base_url, model, api_key, state, secrets)
+    _write_next(data_dir, base_url, model, api_key, providers)
     return global_state_path
 
 
-def _write_legacy(data_dir: Path, base_url: str, model: str, api_key: str) -> None:
+def _load_mapping(path: Path) -> dict:
+    """Load one Cline document and reject non-object JSON before any write."""
+    value = _common.load_json_lenient(path)
+    if not isinstance(value, dict):
+        raise ValueError(f"Cline config at {path} must contain a JSON object")
+    return value
+
+
+def _write_legacy(
+    data_dir: Path,
+    base_url: str,
+    model: str,
+    api_key: str,
+    state: dict,
+    secrets: dict,
+) -> None:
     """Patch the legacy bundle's globalState.json + secrets.json.
 
     Cline keeps *separate* provider selections for Plan and Act mode, so
@@ -194,7 +217,6 @@ def _write_legacy(data_dir: Path, base_url: str, model: str, api_key: str) -> No
     provider (which would overwrite it).
     """
     path = data_dir / "globalState.json"
-    state = _common.load_json_lenient(path)
     _common.backup_existing(path)
 
     state["planModeApiProvider"] = "openai"
@@ -210,13 +232,14 @@ def _write_legacy(data_dir: Path, base_url: str, model: str, api_key: str) -> No
     # 0600 file. ``atomic_write_json`` creates via mkstemp, which is
     # already 0600, so the mode matches what Cline itself writes.
     secrets_path = data_dir / "secrets.json"
-    secrets = _common.load_json_lenient(secrets_path)
     _common.backup_existing(secrets_path)
     secrets["openAiApiKey"] = api_key
     _common.atomic_write_json(secrets_path, secrets)
 
 
-def _write_next(data_dir: Path, base_url: str, model: str, api_key: str) -> None:
+def _write_next(
+    data_dir: Path, base_url: str, model: str, api_key: str, doc: dict
+) -> None:
     """Patch the next bundle's settings/providers.json.
 
     The file is validated with a strict zod schema on read: ``version``
@@ -226,7 +249,6 @@ def _write_next(data_dir: Path, base_url: str, model: str, api_key: str) -> None
     only ever add/replace our own provider entry.
     """
     path = data_dir / "settings" / "providers.json"
-    doc = _common.load_json_lenient(path)
     _common.backup_existing(path)
 
     doc["version"] = 1

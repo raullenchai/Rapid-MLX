@@ -24,7 +24,7 @@ config:
           "npm": "@ai-sdk/openai-compatible",
           "name": "Rapid-MLX",
           "options": {
-            "apiKey": "not-needed",
+            "apiKey": "{api_key}",
             "baseURL": "{base_url}"
           },
           "models": {
@@ -72,5 +72,5 @@ capabilities:
 
 known_issues:
   - "Kilo Code is a Cline fork with independent maintenance — do not point Kilo at a Cline config; the schema drifted after the split."
-  - "First run may prompt for an Anthropic / OpenAI API key — choose the OpenAI Compatible provider and paste `not-needed` as the key."
+  - "First run may prompt for an Anthropic / OpenAI API key — choose the OpenAI Compatible provider and paste the value used in `RAPID_MLX_API_KEY`."
   - "Continue.dev users migrating in: Kilo's YAML config schema is stricter — quote all API base URLs."

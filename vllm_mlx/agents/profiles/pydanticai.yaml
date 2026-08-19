@@ -8,7 +8,7 @@ config:
   type: env
   env_vars:
     OPENAI_BASE_URL: "{base_url}"
-    OPENAI_API_KEY: "not-needed"
+    OPENAI_API_KEY: "{api_key}"
 
 models:
   recommended:

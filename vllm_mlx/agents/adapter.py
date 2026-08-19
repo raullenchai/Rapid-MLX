@@ -494,6 +494,9 @@ def get_setup_instructions(
     rendered = profile.render_config(
         base_url, model_id, agent_version, context_length=context_length
     )
+    runtime_env = profile.render_runtime_env(
+        base_url, model_id, agent_version, context_length=context_length
+    )
     testing = profile.get_testing_for_version(agent_version)
 
     lines = [
@@ -548,6 +551,15 @@ def get_setup_instructions(
         lines.append(f"Write to `{cfg.path}`:")
         lines.append(f"```{ext}")
         lines.append(rendered.rstrip())
+        lines.append("```")
+
+    if runtime_env:
+        lines.append("")
+        lines.append(f"Export before starting {profile.display_name}:")
+        lines.append("")
+        lines.append("```bash")
+        for key, val in runtime_env.items():
+            lines.append(f"export {key}={shlex.quote(str(val))}")
         lines.append("```")
 
     if testing and testing.install_cmd:

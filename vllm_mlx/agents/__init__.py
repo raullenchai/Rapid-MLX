@@ -53,6 +53,7 @@ def _parse_config(data: dict) -> AgentConfigSpec:
         path=cfg.get("path"),
         template=cfg.get("template"),
         env_vars=cfg.get("env_vars"),
+        runtime_env_vars=cfg.get("runtime_env_vars"),
         home_env=cfg.get("home_env"),
     )
 

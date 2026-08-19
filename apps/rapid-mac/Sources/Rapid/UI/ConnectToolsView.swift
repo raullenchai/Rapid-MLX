@@ -394,8 +394,11 @@ struct ConnectToolsView: View {
 
 /// Process-scoped launch commands shown by the Connect agents surface.
 ///
-/// These deliberately use inline `env` assignments rather than `export`, so
-/// copying a command cannot alter the user's shell after the agent exits.
+/// These deliberately use command-scoped shell assignments rather than
+/// `export`, so copying a command cannot alter the user's shell after the
+/// agent exits. The copied line still contains the rotating bearer and may be
+/// retained by shell history; process scope prevents persistence in the shell
+/// environment, not in command history.
 /// Codex additionally receives a throwaway home because its interactive CLI
 /// has no top-level `--ignore-user-config` flag (that flag belongs only to the
 /// non-interactive `exec` subcommand in Codex 0.146). The temporary home keeps
@@ -454,13 +457,16 @@ enum AgentLaunchCommand {
 
     static func codex(baseURL: String, key: String, model: String) -> String {
         "d=$(mktemp -d) && trap 'rm -rf \"$d\"' EXIT && "
-            + "env CODEX_HOME=\"$d\" OPENAI_API_KEY=\(key) codex -m \(model) "
+            + "CODEX_HOME=\"$d\" OPENAI_API_KEY=\(IntegrationLaunchCommand.shellQuote(key)) "
+            + "codex -m \(IntegrationLaunchCommand.shellQuote(model)) "
             + "-c 'model_provider=\"rapid-mlx\"' "
             + "-c 'model_providers.rapid-mlx={name=\"Rapid-MLX\",base_url=\"\(baseURL)\",env_key=\"OPENAI_API_KEY\",wire_api=\"responses\"}'"
     }
 
     static func hermes(baseURL: String, key: String, model: String) -> String {
-        "env OPENAI_BASE_URL=\(baseURL) OPENAI_API_KEY=\(key) HERMES_INFERENCE_MODEL=\(model) "
+        "OPENAI_BASE_URL=\(IntegrationLaunchCommand.shellQuote(baseURL)) "
+            + "OPENAI_API_KEY=\(IntegrationLaunchCommand.shellQuote(key)) "
+            + "HERMES_INFERENCE_MODEL=\(IntegrationLaunchCommand.shellQuote(model)) "
             + "hermes --provider openai-api --ignore-user-config"
     }
 }
@@ -479,18 +485,21 @@ enum IntegrationLaunchCommand {
     }
 
     static func configWriter(id: String, serverURL: String, key: String, model: String, cli: String) -> String {
-        "env RAPID_MLX_API_KEY=\(key) \(cli) launch \(id) --server-url \(serverURL) --model \(model)"
+        "RAPID_MLX_API_KEY=\(shellQuote(key)) \(cli) launch \(shellQuote(id)) "
+            + "--server-url \(shellQuote(serverURL)) --model \(shellQuote(model))"
     }
 
     /// The guide command itself contacts nothing, but the guide it PRINTS is
     /// meant to be followed — and under the desktop app the server always has
     /// a per-launch bearer. Rendering the guide without one produced setup
     /// instructions saying `OPENAI_API_KEY=not-needed`, which 401s on the very
-    /// server the page is describing. The key rides in as `env` (never argv)
-    /// so it stays out of `ps -axww` and the user's shell history, matching
-    /// ``configWriter`` above and the sidecar's own `RAPID_MLX_API_KEY` path.
+    /// server the page is describing. A command-scoped assignment keeps the
+    /// key out of the rapid-mlx argv and avoids an intermediate `/usr/bin/env`
+    /// argv containing it. The copied line itself can still remain in shell
+    /// history; the desktop bearer rotates at the next server launch.
     static func adapterGuide(id: String, baseURL: String, model: String, key: String, cli: String) -> String {
-        "env RAPID_MLX_API_KEY=\(key) \(cli) agents \(id) --base-url \(baseURL) --model \(model)"
+        "RAPID_MLX_API_KEY=\(shellQuote(key)) \(cli) agents \(shellQuote(id)) "
+            + "--base-url \(shellQuote(baseURL)) --model \(shellQuote(model))"
     }
 }
 

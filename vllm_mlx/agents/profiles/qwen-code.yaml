@@ -33,7 +33,7 @@ config:
           }
         ]
       },
-      "env": {"RAPID_MLX_API_KEY": "not-needed"},
+      "env": {"RAPID_MLX_API_KEY": "{api_key}"},
       "security": {"auth": {"selectedType": "openai"}},
       "model": {"name": "{model_id}"}
     }

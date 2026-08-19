@@ -21,6 +21,11 @@ config:
   type: yaml
   path: "~/.dsh/settings.yaml"
   home_env: DSH_HOME
+  # The settings file names this variable via apiKeyEnv; the value therefore
+  # has to survive into the later `dsh` process rather than existing only while
+  # `rapid-mlx agents ...` renders the guide.
+  runtime_env_vars:
+    RAPID_MLX_API_KEY: "{api_key}"
   template: |
     llm-pi-ai:
       providers:
