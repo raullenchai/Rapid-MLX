@@ -296,3 +296,206 @@ def _patch_resolve_profile(
     monkeypatch.setattr(
         "vllm_mlx.model_aliases.resolve_profile", lambda _name: mock_profile
     )
+
+
+# ---------------------------------------------------------------------------
+# #2061: sliding-window (RotatingKVCache) families need bounded trim-free reuse
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDeclaresSlidingWindow:
+    """Unit tests for the architecture-driven sliding-window probe (no I/O)."""
+
+    def test_layer_types_sliding_is_detected(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert _config_declares_sliding_window(
+            {"layer_types": ["sliding_attention", "full_attention"]}
+        )
+
+    def test_positive_sliding_window_int_is_detected(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert _config_declares_sliding_window({"sliding_window": 512})
+
+    def test_nested_text_config_is_inspected(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        # Gemma VLM checkpoints nest the language config under ``text_config``.
+        assert _config_declares_sliding_window(
+            {"text_config": {"sliding_window": 1024}}
+        )
+
+    def test_full_attention_only_is_not_detected(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert not _config_declares_sliding_window(
+            {"layer_types": ["full_attention", "full_attention"]}
+        )
+
+    def test_layer_types_wins_over_inert_sliding_window_scalar(self):
+        """An authoritative all-full-attention ``layer_types`` must NOT be
+        overridden by a leftover ``sliding_window`` scalar — that field is inert
+        without a sliding layer to apply it (codex #2064)."""
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert not _config_declares_sliding_window(
+            {"layer_types": ["full_attention"], "sliding_window": 4096}
+        )
+
+    def test_layer_types_sliding_still_detected_with_sliding_window(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert _config_declares_sliding_window(
+            {
+                "layer_types": ["sliding_attention", "full_attention"],
+                "sliding_window": 1024,
+            }
+        )
+
+    def test_nested_language_config_wins_over_top_level_scalar(self):
+        """The language backbone (``text_config``) is authoritative: an all-
+        full-attention LM must not be forced sliding by a top-level
+        ``sliding_window`` scalar (often a vision/default field) — codex #2064."""
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert not _config_declares_sliding_window(
+            {"sliding_window": 4096, "text_config": {"layer_types": ["full_attention"]}}
+        )
+
+    def test_top_level_used_when_nested_lm_config_has_no_signal(self):
+        """If ``text_config`` carries no attention signal at all, root-level
+        fields still count (checkpoints that place them at the root)."""
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert _config_declares_sliding_window(
+            {"sliding_window": 512, "text_config": {"hidden_size": 1}}
+        )
+
+    def test_use_sliding_window_false_disables_scalar(self):
+        """Qwen2 / Mistral carry a ``sliding_window`` scalar gated behind
+        ``use_sliding_window`` — a positive scalar with the flag off is inert and
+        must NOT trigger bounded snapshots (memory regression) — codex #2064."""
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert not _config_declares_sliding_window(
+            {"use_sliding_window": False, "sliding_window": 32768}
+        )
+
+    def test_use_sliding_window_true_keeps_scalar(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert _config_declares_sliding_window(
+            {"use_sliding_window": True, "sliding_window": 4096}
+        )
+
+    def test_empty_or_zero_or_none_is_not_detected(self):
+        from vllm_mlx.cli import _config_declares_sliding_window
+
+        assert not _config_declares_sliding_window({})
+        assert not _config_declares_sliding_window(None)
+        assert not _config_declares_sliding_window({"sliding_window": 0})
+
+
+class TestSlidingWindowNeedsBoundedReuse:
+    """#2061: Gemma-2/3/4 sliding layers run on RotatingKVCache, which is
+    non-trimmable once the ring rotates past its window. They must take the
+    bounded snapshot path or --enable-prefix-cache is a silent no-op and every
+    agentic turn re-prefills the whole context. Detection is config-driven so a
+    bare local path (with no alias) is covered too — exactly how #2061 was
+    served (an lm-studio gemma-4 checkpoint path)."""
+
+    _SLIDING = {"layer_types": ["sliding_attention", "full_attention"]}
+    _FULL = {"layer_types": ["full_attention", "full_attention"]}
+
+    def test_sliding_window_alias_needs_bounded_reuse(self, monkeypatch):
+        # Reference cli through the live module object (not a load-time import)
+        # and patch the probe on that SAME object, so a sibling test that
+        # reload/pops ``vllm_mlx.cli`` cannot desync the two (per the string-
+        # patch-target rule in testing-gotchas).
+        import vllm_mlx.cli as cli
+
+        _patch_resolve_profile(monkeypatch, is_hybrid=False)
+        monkeypatch.setattr(
+            cli, "_resolve_checkpoint_config", lambda _name, _profile: self._SLIDING
+        )
+        assert cli._needs_bounded_trim_free_reuse("gemma-4-26b-4bit") is True
+
+    def test_sliding_window_alias_auto_defaults_entries(self, monkeypatch):
+        import vllm_mlx.cli as cli
+
+        _patch_resolve_profile(monkeypatch, is_hybrid=False)
+        monkeypatch.setattr(
+            cli, "_resolve_checkpoint_config", lambda _name, _profile: self._SLIDING
+        )
+        result = cli._resolve_hybrid_cache_entries(
+            enable_prefix_cache=True,
+            explicit_value=0,
+            user_set_explicit=False,
+            model_name="gemma-4-26b-4bit",
+        )
+        assert result == cli._DEFAULT_HYBRID_CACHE_ENTRIES
+
+    def test_sliding_window_bare_path_no_alias(self, monkeypatch):
+        """#2061 exactly: served by a bare checkpoint path (resolve_profile
+        returns None), so only the config probe can classify it."""
+        import vllm_mlx.cli as cli
+
+        monkeypatch.setattr(
+            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_checkpoint_config", lambda _name, _profile: self._SLIDING
+        )
+        assert (
+            cli._needs_bounded_trim_free_reuse(
+                "/models/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
+            )
+            is True
+        )
+
+    def test_full_attention_config_stays_trimmable(self, monkeypatch):
+        """A pure full-attention checkpoint must NOT be pushed onto the bounded
+        snapshot path — its KVCache is ordinarily trimmable."""
+        import vllm_mlx.cli as cli
+
+        monkeypatch.setattr(
+            "vllm_mlx.model_aliases.resolve_profile", lambda _name: None
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_checkpoint_config", lambda _name, _profile: self._FULL
+        )
+        assert cli._needs_bounded_trim_free_reuse("/models/llama-3-8b") is False
+
+    @staticmethod
+    def _write_config(dir_path, config: dict) -> str:
+        import json
+
+        (dir_path / "config.json").write_text(json.dumps(config))
+        return str(dir_path)
+
+    def test_bare_path_real_config_discovery_sliding(self, tmp_path):
+        """End-to-end #2061: a bare on-disk checkpoint dir (no alias, nothing
+        mocked) whose config.json declares sliding attention is classified as
+        needing bounded reuse via the real offline config probe."""
+        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+
+        path = self._write_config(
+            tmp_path,
+            {
+                "model_type": "gemma4",
+                "sliding_window": 512,
+                "layer_types": ["sliding_attention", "full_attention"],
+            },
+        )
+        assert _needs_bounded_trim_free_reuse(path) is True
+
+    def test_bare_path_real_config_discovery_full_attention(self, tmp_path):
+        """The same real path, for a full-attention checkpoint, stays off the
+        bounded path — guards against the probe defaulting to True."""
+        from vllm_mlx.cli import _needs_bounded_trim_free_reuse
+
+        path = self._write_config(
+            tmp_path, {"model_type": "llama", "layer_types": ["full_attention"]}
+        )
+        assert _needs_bounded_trim_free_reuse(path) is False
