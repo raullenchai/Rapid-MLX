@@ -112,15 +112,6 @@ def canonical_server_url(server_url: str) -> str:
     return urlunsplit(("https", netloc, parsed.path, "", ""))
 
 
-def endpoint_error(server_url: str) -> str | None:
-    """Return the validation error for ``server_url``, if any."""
-    try:
-        canonical_server_url(server_url)
-    except ValueError as exc:
-        return str(exc)
-    return None
-
-
 def _candidate_dirs() -> list[Path]:
     """Return per-OS Cursor user-settings directories in priority order."""
     return [_CONFIG_DIR_MAC, _CONFIG_DIR_LINUX]
