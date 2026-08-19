@@ -10,20 +10,21 @@ model-recommendation mirrors honest.
 
 Deliberately surgical: it pins the flags issue #2071 fixed, not a
 general docs-vs-argparse framework.
+
+The defaults are read from ``vllm_mlx/cli.py`` SOURCE via ``ast`` —
+never by importing it. ``vllm_mlx.cli`` transitively imports mlx and
+probes the host at import time, which breaks collection on the Linux
+validation runner; source-level extraction runs identically everywhere
+(the same convention as ``test_no_mllm_flag.py``).
 """
 
-import argparse
+import ast
 from pathlib import Path
 
 import pytest
 
-# vllm_mlx.cli transitively imports mlx, which only installs on Apple
-# Silicon — on the Linux validation runner this whole module skips (the
-# pin still runs on every macOS CI leg and locally).
-_cli = pytest.importorskip("vllm_mlx.cli", reason="requires mlx (Apple Silicon only)")
-build_parser = _cli.build_parser
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+CLI_SOURCE = REPO_ROOT / "vllm_mlx" / "cli.py"
 
 TIMEOUT_DOCS = [
     REPO_ROOT / "docs" / "guides" / "server.md",
@@ -33,12 +34,61 @@ TIMEOUT_DOCS = [
 CLI_REFERENCE = REPO_ROOT / "docs" / "reference" / "cli.md"
 
 
-def _subparser(name: str) -> argparse.ArgumentParser:
-    """Return the ``name`` subcommand parser from the real CLI parser."""
-    for action in build_parser()._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return action.choices[name]
-    raise AssertionError("CLI parser has no subparsers")
+def _argparse_default(subcommand: str, flag: str):
+    """Literal ``default=`` of *flag* inside *subcommand*'s parser region.
+
+    Subcommand regions are delimited by the ``add_parser("<name>", ...)``
+    call sites in source order; an ``add_argument`` call belongs to the
+    most recent ``add_parser`` above it. Only constant defaults are
+    supported — that is all the pinned flags use.
+    """
+    tree = ast.parse(CLI_SOURCE.read_text(encoding="utf-8"))
+
+    regions: list[tuple[int, str]] = []  # (lineno, subcommand name)
+    defaults: list[tuple[int, str, object]] = []  # (lineno, flag, default)
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                if func.attr == "add_parser":
+                    names = [
+                        a.value
+                        for a in node.args
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)
+                    ]
+                    if names:
+                        regions.append((node.lineno, names[0]))
+                elif func.attr == "add_argument":
+                    names = [
+                        a.value
+                        for a in node.args
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)
+                    ]
+                    for kw in node.keywords:
+                        if kw.arg == "default" and isinstance(kw.value, ast.Constant):
+                            for name in names:
+                                defaults.append((node.lineno, name, kw.value.value))
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    regions.sort()
+
+    matches = []
+    for lineno, name, value in defaults:
+        if name != flag:
+            continue
+        owner = None
+        for region_line, region_name in regions:
+            if region_line <= lineno:
+                owner = region_name
+            else:
+                break
+        if owner == subcommand:
+            matches.append(value)
+    assert matches, f"no constant default for {flag} in the {subcommand} parser"
+    assert len(matches) == 1, f"ambiguous {flag} in {subcommand}: {matches}"
+    return matches[0]
 
 
 def _doc_default_cells(
@@ -66,7 +116,7 @@ def _doc_default_cells(
 @pytest.mark.parametrize("doc", TIMEOUT_DOCS, ids=lambda p: p.name)
 def test_timeout_default_matches_serve_parser(doc: Path) -> None:
     """`--timeout` Default cells in all three docs match the argparse default."""
-    code_default = _subparser("serve").get_default("timeout")
+    code_default = _argparse_default("serve", "--timeout")
     cells = _doc_default_cells(doc, "--timeout")
     assert cells, f"{doc}: no `--timeout` table row found"
     for cell in cells:
@@ -78,7 +128,7 @@ def test_timeout_default_matches_serve_parser(doc: Path) -> None:
 
 def test_bench_num_prompts_default_matches_parser() -> None:
     """cli.md bench `--num-prompts` Default cell matches the argparse default."""
-    code_default = _subparser("bench").get_default("num_prompts")
+    code_default = _argparse_default("bench", "--num-prompts")
     cells = _doc_default_cells(CLI_REFERENCE, "--num-prompts")
     assert cells, f"{CLI_REFERENCE}: no `--num-prompts` table row found"
     for cell in cells:
@@ -95,7 +145,7 @@ def test_bench_max_tokens_default_matches_parser() -> None:
     serve and chat `--max-tokens` rows — different flags with different,
     correct defaults — stay out of scope.
     """
-    code_default = _subparser("bench").get_default("max_tokens")
+    code_default = _argparse_default("bench", "--max-tokens")
     cells = _doc_default_cells(
         CLI_REFERENCE, "--max-tokens", description_fragment="Max tokens per prompt"
     )
