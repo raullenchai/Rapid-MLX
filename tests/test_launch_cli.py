@@ -13,10 +13,12 @@ See ``vllm_mlx/launch/`` for the modules under test.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
 import subprocess
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -27,6 +29,7 @@ from vllm_mlx.launch import (
     _common,
     claude_code,
     cline,
+    openhands,
 )
 from vllm_mlx.launch import cli as launch_cli
 
@@ -62,6 +65,13 @@ def fake_home(tmp_path, monkeypatch) -> Path:
     # claude_code: replace the two module constants.
     monkeypatch.setattr(claude_code, "_CLAUDE_STATE_DIR", tmp_path / ".claude")
     monkeypatch.setattr(claude_code, "_CONFIG_DIR", tmp_path / ".claude")
+
+    # openhands: pin the data root via the same env var the adapter
+    # honours, so a real ~/.openhands on the dev machine can't make
+    # detect() true. OPENHANDS_URL is cleared for the same reason a
+    # locally running agent-canvas must not receive test PATCHes.
+    monkeypatch.setenv("OPENHANDS_DIR", str(tmp_path / ".openhands"))
+    monkeypatch.delenv("OPENHANDS_URL", raising=False)
 
     # Also redirect which() and mac_app_installed() so detect() doesn't
     # find the dev machine's real client installs.
@@ -293,6 +303,232 @@ class TestClaudeCode:
         claude_code.write_or_patch_config("http://127.0.0.1:8000", "alias")
         backups = list(cfg.parent.glob(cfg.name + ".bak.*"))
         assert len(backups) == 1
+
+
+class TestOpenHands:
+    """OpenHands is the one adapter that cannot write its own config.
+
+    ``~/.openhands/settings.json`` stores ``api_key`` Fernet-encrypted
+    with a key we don't hold, so the only supported write is a PATCH to
+    the running agent-server, which encrypts on our behalf. These tests
+    capture the request instead of the file.
+    """
+
+    @staticmethod
+    def _install(fake_home, key: str = "session-key") -> None:
+        """Lay down the two on-disk markers a real install leaves."""
+        canvas = fake_home / ".openhands" / "agent-canvas"
+        canvas.mkdir(parents=True, exist_ok=True)
+        (canvas / "api-key.txt").write_text(key + "\n")
+
+    @staticmethod
+    def _capture(monkeypatch) -> list:
+        """Intercept urlopen and record the PATCH requests sent.
+
+        The port sweep issues GET probes through the same urlopen, so
+        only the writes are recorded — otherwise ``sent[0]`` would be a
+        probe rather than the settings update under test. Probes are
+        answered 200 so the first candidate port wins and the sweep
+        stops.
+        """
+        sent = []
+
+        def fake_urlopen(request, timeout=None):
+            if request.get_method() == "PATCH":
+                sent.append(request)
+            response = MagicMock(status=200)
+            response.__enter__ = lambda s: s
+            response.__exit__ = lambda *a: False
+            return response
+
+        monkeypatch.setattr(openhands.urllib.request, "urlopen", fake_urlopen)
+        return sent
+
+    def test_detect_false_when_nothing_installed(self, fake_home):
+        assert openhands.detect() is False
+
+    def test_detect_true_when_data_dir_exists(self, fake_home):
+        self._install(fake_home)
+        assert openhands.detect() is True
+
+    def test_detect_does_not_require_a_running_server(self, fake_home):
+        # A user with OpenHands installed but closed must be told to
+        # start it, not told it isn't installed.
+        self._install(fake_home)
+        assert openhands.detect() is True
+        assert openhands.current_config_path() is not None
+
+    def test_model_carries_the_litellm_provider_prefix(self, fake_home, monkeypatch):
+        # OpenHands routes completions through LiteLLM, which cannot
+        # resolve a bare non-catalog name and errors before any request
+        # reaches us.
+        self._install(fake_home)
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8001", "qwen3.5-4b-4bit")
+        llm = json.loads(sent[0].data)["agent_settings_diff"]["llm"]
+        assert llm["model"] == "openai/qwen3.5-4b-4bit"
+
+    def test_bearer_is_forwarded_verbatim(self, fake_home, monkeypatch):
+        # The desktop app's per-launch bearer must arrive unmodified or
+        # every completion 401s.
+        self._install(fake_home)
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config(
+            "http://127.0.0.1:8001", "model", api_key="deadbeef"
+        )
+        llm = json.loads(sent[0].data)["agent_settings_diff"]["llm"]
+        assert llm["api_key"] == "deadbeef"
+
+    def test_session_key_authenticates_the_patch(self, fake_home, monkeypatch):
+        self._install(fake_home, key="s3cret")
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+        assert sent[0].get_header("X-session-api-key") == "s3cret"
+        assert sent[0].get_method() == "PATCH"
+
+    def test_base_url_gains_v1_but_is_not_doubled(self, fake_home, monkeypatch):
+        self._install(fake_home)
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+        openhands.write_or_patch_config("http://127.0.0.1:8001/v1", "model")
+        urls = [
+            json.loads(r.data)["agent_settings_diff"]["llm"]["base_url"] for r in sent
+        ]
+        assert urls == ["http://127.0.0.1:8001/v1"] * 2
+
+    def test_diff_carries_only_the_three_keys_we_own(self, fake_home, monkeypatch):
+        # The user's retries, reasoning effort, condenser and tool config
+        # live in the same LLM block and must survive.
+        self._install(fake_home)
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+        body = json.loads(sent[0].data)
+        assert set(body) == {"agent_settings_diff"}
+        assert set(body["agent_settings_diff"]["llm"]) == {
+            "model",
+            "base_url",
+            "api_key",
+        }
+
+    def test_not_installed_raises_actionable_error(self, fake_home):
+        with pytest.raises(FileNotFoundError, match="does not appear to be installed"):
+            openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
+    def test_missing_session_key_names_the_fix(self, fake_home):
+        # Installed but never opened: the directory exists, the key file
+        # does not.
+        (fake_home / ".openhands" / "agent-canvas").mkdir(parents=True)
+        with pytest.raises(FileNotFoundError, match="session key not found"):
+            openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
+    def test_unreachable_server_explains_why_a_file_write_is_not_enough(
+        self, fake_home, monkeypatch
+    ):
+        self._install(fake_home)
+
+        def refuse(request, timeout=None):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(openhands.urllib.request, "urlopen", refuse)
+        with pytest.raises(RuntimeError, match="start OpenHands and re-run"):
+            openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
+    def test_openhands_url_env_redirects_the_patch(self, fake_home, monkeypatch):
+        self._install(fake_home)
+        monkeypatch.setenv("OPENHANDS_URL", "http://127.0.0.1:9999/")
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+        assert sent[0].full_url == "http://127.0.0.1:9999/api/settings"
+
+    def test_explicit_url_is_never_probed(self, fake_home, monkeypatch):
+        # An address the user typed must not be silently second-guessed.
+        self._install(fake_home)
+        monkeypatch.setenv("OPENHANDS_URL", "http://127.0.0.1:9999")
+        monkeypatch.setattr(
+            openhands,
+            "_is_openhands",
+            lambda *a: pytest.fail("explicit OPENHANDS_URL was probed"),
+        )
+        self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
+    def test_sweep_skips_a_port_that_is_not_openhands(self, fake_home, monkeypatch):
+        # The real case this exists for: rapid-mlx holds :8000 (its own
+        # default) and agent-canvas was moved to :8010 to get out of the
+        # way. The pasted command carries no port, so we must find it.
+        self._install(fake_home)
+        monkeypatch.setattr(
+            openhands,
+            "_is_openhands",
+            lambda url, key: url == "http://127.0.0.1:8010",
+        )
+        sent = self._capture(monkeypatch)
+        openhands.write_or_patch_config("http://127.0.0.1:8000", "model")
+        assert sent[0].full_url == "http://127.0.0.1:8010/api/settings"
+
+    def test_sweep_authenticates_rather_than_just_pinging(self, fake_home, monkeypatch):
+        # Probing "is anything listening" would latch onto rapid-mlx on
+        # :8000. The predicate must carry the session key.
+        self._install(fake_home, key="s3cret")
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append((request.full_url, request.get_header("X-session-api-key")))
+            raise OSError("refused")
+
+        monkeypatch.setattr(openhands.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(RuntimeError):
+            openhands.write_or_patch_config("http://127.0.0.1:8000", "model")
+        assert seen, "no probe was attempted"
+        assert all(key == "s3cret" for _, key in seen)
+
+    def test_sweep_failure_falls_back_to_the_default_port(
+        self, fake_home, monkeypatch
+    ):
+        # Nothing answered anywhere: the error should still name a
+        # plausible address rather than an empty string.
+        self._install(fake_home)
+        monkeypatch.setattr(openhands, "_is_openhands", lambda *a: False)
+
+        def refuse(request, timeout=None):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(openhands.urllib.request, "urlopen", refuse)
+        with pytest.raises(RuntimeError, match=r"127\.0\.0\.1:8000"):
+            openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
+    def test_404_blames_the_port_not_openhands(self, fake_home, monkeypatch):
+        # :8000 is both agent-canvas' ingress and rapid-mlx's own default
+        # serve port. When rapid-mlx answers instead, the user must be
+        # pointed at the port clash rather than sent hunting through
+        # OpenHands for a fault that isn't there.
+        self._install(fake_home)
+
+        def not_found(request, timeout=None):
+            raise urllib.error.HTTPError(
+                request.full_url, 404, "Not Found", {}, io.BytesIO(b'{"error":{}}')
+            )
+
+        monkeypatch.setattr(openhands.urllib.request, "urlopen", not_found)
+        with pytest.raises(RuntimeError, match="not as OpenHands"):
+            openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
+    def test_other_http_errors_surface_the_server_detail(self, fake_home, monkeypatch):
+        self._install(fake_home)
+
+        def unauthorized(request, timeout=None):
+            raise urllib.error.HTTPError(
+                request.full_url,
+                401,
+                "Unauthorized",
+                {},
+                io.BytesIO(b'{"detail":"Unauthorized"}'),
+            )
+
+        monkeypatch.setattr(openhands.urllib.request, "urlopen", unauthorized)
+        with pytest.raises(RuntimeError, match="HTTP 401"):
+            openhands.write_or_patch_config("http://127.0.0.1:8001", "model")
+
 
 
 # --------------------------------------------------------------------

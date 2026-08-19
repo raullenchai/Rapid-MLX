@@ -20,11 +20,13 @@ class IntegrationTarget:
 _LAUNCH_NAMES = {
     "cline": "Cline",
     "claude-code": "Claude Code",
+    "openhands": "OpenHands",
 }
 _PROFILE_TO_LAUNCH: dict[str, str] = {}
 _CONFIG_DESTINATIONS = {
     "cline": "~/.cline/data/",
     "claude-code": "~/.claude/settings.json",
+    "openhands": "~/.openhands/settings.json",
 }
 
 

@@ -26,6 +26,14 @@ config-shape knowledge stays narrow:
 
 * :mod:`vllm_mlx.launch.cline` — Cline VS Code extension
 * :mod:`vllm_mlx.launch.claude_code` — Claude Code CLI (Anthropic SDK)
+* :mod:`vllm_mlx.launch.openhands` — OpenHands agent-canvas desktop
+
+OpenHands stretches the membership rule above: it *does* have a
+documented local config, but the credential inside it is encrypted with
+a key we don't hold, so the write goes through the running app's REST
+API instead of the file. It qualifies because the outcome is the same —
+one command and the client is on our server — but see that module's
+docstring for the "OpenHands must be running" caveat.
 
 All adapters expose the same surface (:func:`detect`,
 :func:`current_config_path`, :func:`write_or_patch_config`) so the
@@ -38,7 +46,7 @@ cline`` shape we're copying — same OpenAI-compatible plumbing, same
 one-verb UX).
 """
 
-from . import claude_code, cline
+from . import claude_code, cline, openhands
 
 # Registry consumed by ``vllm_mlx.launch.cli`` — order is the
 # display order in ``rapid-mlx launch list``. Keys are the
@@ -47,6 +55,7 @@ from . import claude_code, cline
 ADAPTERS: dict[str, object] = {
     "cline": cline,
     "claude-code": claude_code,
+    "openhands": openhands,
 }
 
-__all__ = ["ADAPTERS", "claude_code", "cline"]
+__all__ = ["ADAPTERS", "claude_code", "cline", "openhands"]

@@ -1,14 +1,36 @@
+# The Launch page and `rapid-mlx launch openhands` use the config writer in
+# `vllm_mlx/launch/openhands.py`, which supersedes this profile (see
+# `integrations.py`'s dedupe). This file is what `rapid-mlx agents openhands`
+# prints, so it is kept accurate for anyone reading the guide directly.
+#
+# The `config` block below is deliberately `manual`. OpenHands has read no
+# LLM_* environment variable since the SDK rewrite — verified by grepping
+# openhands-sdk 1.42.1, which contains zero references to LLM_BASE_URL,
+# LLM_API_KEY or LLM_MODEL. The previous env block here was inert.
 name: openhands
 display_name: "OpenHands"
 repo: "All-Hands-AI/OpenHands"
 stars: 71000
 
 config:
-  type: env
-  env_vars:
-    LLM_BASE_URL: "{base_url}"
-    LLM_API_KEY: "not-needed"
-    LLM_MODEL: "{model_id}"
+  type: manual
+  template: |
+    OpenHands stores provider settings in ~/.openhands/settings.json, but the
+    api_key field is encrypted with a key held by the app, so the file cannot
+    be edited by hand. Configure it through the running app instead:
+
+      rapid-mlx launch openhands --server-url {base_url_no_v1} --model {model_id}
+
+    (Start OpenHands first — the settings are only writable while it runs.)
+
+    To set it in the UI instead, open Settings -> LLM and enter:
+
+      Model     openai/{model_id}     <- the openai/ prefix is required
+      Base URL  {base_url}
+      API Key   your RAPID_MLX_API_KEY
+
+    The model name needs the openai/ prefix because OpenHands routes every
+    completion through LiteLLM, which cannot resolve a bare non-catalog name.
 
 models:
   recommended:
@@ -18,21 +40,21 @@ models:
 
 streaming:
   extra_tool_tags: []
-  max_tools: 0  # uses text action format, not FC
+  max_tools: 10
 
 testing:
   binary: null
-  query_cmd: null  # requires Docker, not simple CLI
+  query_cmd: null  # driven through its REST API, not a CLI
   query_timeout: 300
-  install_cmd: "pip install openhands"
+  install_cmd: "npx @openhands/agent-canvas"
 
 capabilities:
-  function_calling: false  # text action format
+  function_calling: true  # native_tool_calling defaults to true in the SDK
   streaming: true
 
 known_issues:
-  - "Requires Docker for sandbox execution"
-  - "Uses text-based action format, not OpenAI function calling"
-  - "Uses LiteLLM under the hood — supports LLM_BASE_URL"
-  - "Small local models struggle with the complex action format"
+  - "Settings are only writable while the app is running (the stored API key is encrypted)"
+  - "Model names need LiteLLM's openai/ prefix or routing fails before the request is sent"
+  - "The agent-canvas ingress listens on :8000 — the same port rapid-mlx serves on by default"
+  - "Small models that do not call tools autonomously stall the agent loop"
   - "SWE-bench score 77.6% — research-grade agent"
