@@ -960,7 +960,8 @@ class TestModelSerialization:
         message = payload["choices"][0]["message"]
         assert "content" in message, (
             "D-MISSING-CONTENT-KEY: empty completion + stop MUST still "
-            "carry the ``content`` key (regression of 0.8TODO r12-7)."
+            "carry the ``content`` key (regression of 0.8TODO.md r12-7; "
+            "file removed, see git history)."
         )
         assert message["content"] == ""
         assert message["role"] == "assistant"

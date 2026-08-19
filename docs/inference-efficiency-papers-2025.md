@@ -35,7 +35,7 @@ Ranked by: (1) Apple Silicon relevance = High, (2) expected impact on rapid-mlx,
 
 | Rank | Paper | Conference | Technique | Expected Gain | Effort | Status |
 |------|-------|------------|-----------|---------------|--------|--------|
-| 1 | **DuoAttention** | ICLR | Retrieval vs streaming head classification; full KV for retrieval, sliding window for streaming | 2.55x memory, 2.18x decode | Medium | [On roadmap (#3)](README.md) -- not started |
+| 1 | **DuoAttention** | ICLR | Retrieval vs streaming head classification; full KV for retrieval, sliding window for streaming | 2.55x memory, 2.18x decode | Medium | [On roadmap (#3)](../ROADMAP.md) -- not started |
 | 2 | **R-KV** | NeurIPS | Importance + non-redundancy ranking for reasoning KV caches | 100% quality at 10% cache | Medium | New |
 | 3 | **SuffixDecoding** | NeurIPS (Spotlight) | Model-free speculative decoding via suffix trees from past outputs | Workload-gated; local Gemma 4 copy/code/tool-XML gains, GPT-OSS/Qwen regressions | Medium | Explicit flag only |
 | 4 | **SWIFT** | ICLR | Self-speculative decoding by skipping intermediate layers | 1.3-1.6x, no draft model | Low | New |

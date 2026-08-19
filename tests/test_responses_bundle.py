@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """HTTP-level tests for the 0.8.5 dogfood ``/v1/responses`` bundle fixes.
 
-Covers Yuki F4, F6, F8, F13 + Yuki R6, R7, R10 + Ana C-06. See
-``0.8TODO.md`` r4 section and ``/tmp/dogfood-085/yuki-r{1,2}.md`` for
-the original evidence. Each test class names its finding so a future
+Covers Yuki F4, F6, F8, F13 + Yuki R6, R7, R10 + Ana C-06. See the
+``0.8TODO.md`` r4 section (file removed, see git history) and
+``/tmp/dogfood-085/yuki-r{1,2}.md`` for the original evidence. Each test class names its finding so a future
 regression triages to the right report.
 
 Same lightweight-engine harness shape as ``test_responses_route.py`` —
