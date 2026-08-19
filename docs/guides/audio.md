@@ -1,5 +1,10 @@
 # Audio Support
 
+<!-- NOTE for doc sweeps: the Chinese/Japanese sample payloads in this guide
+     are intentional — they are functional TTS inputs for zh/ja voices
+     (qwen3-tts, f5-tts-zh, Kokoro zh/ja). English-only sweeps should skip
+     them rather than flag them. -->
+
 rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
 - **STT (Speech-to-Text)**: Whisper, Parakeet, SenseVoice
@@ -205,8 +210,9 @@ Install with: pip install 'rapid-mlx[audio]'
 ## Installation
 
 ```bash
-# Core audio support
-pip install mlx-audio>=0.2.9
+# Core audio support — stay inside the supported range
+# (mlx-audio 0.4.4 has a Kokoro istftnet regression; the pin excludes it)
+pip install 'mlx-audio>=0.2.9,<0.4.4'
 
 # Required dependencies for TTS
 pip install sounddevice soundfile scipy misaki spacy num2words phonemizer-fork numba tiktoken loguru
@@ -222,10 +228,11 @@ brew install espeak-ng
 # sudo apt-get install espeak-ng
 ```
 
-Or install all audio dependencies at once:
+Or (recommended) install all audio dependencies at once — the `[audio]`
+extra carries the supported `mlx-audio` version pin for you:
 
 ```bash
-pip install rapid-mlx[audio]
+pip install 'rapid-mlx[audio]'
 python -m spacy download en_core_web_sm
 brew install espeak-ng  # macOS, for non-English languages
 ```
@@ -378,12 +385,17 @@ stem removed. Add `--play` to audition the result without writing files.
 |-------|-------|------|----------|
 | `mlx-community/VibeVoice-Realtime-0.5B-4bit` | `vibevoice` | 200M | Low latency, English |
 
-#### VoxCPM (Chinese/English)
+#### VoxCPM (English, experimental)
 
 | Model | Alias | Size | Languages |
 |-------|-------|------|-----------|
-| `mlx-community/VoxCPM1.5` | `voxcpm` | 0.9B | ZH, EN |
-| `mlx-community/VoxCPM1.5-4bit` | `voxcpm-4bit` | 200M | ZH, EN |
+| `mlx-community/VoxCPM1.5` | `voxcpm` | 0.9B | EN (experimental) |
+
+> **Do not use VoxCPM for Chinese.** Chinese output is currently broken in
+> this MLX port — Chinese input produces Thai-script gibberish plus runaway
+> generation. For Chinese TTS use `f5-tts-zh` (EN+ZH, cloneable) or
+> `qwen3-tts` (named Chinese speakers) instead. English output works but is
+> best-effort; report upstream if synthesis fails.
 
 ### Audio Processing Models
 
@@ -406,7 +418,7 @@ Transcribe audio to text (OpenAI Whisper API compatible).
 - `file`: Audio file (mp3, wav, m4a, webm)
 - `model`: Model name or alias
 - `language`: Language code (optional, auto-detected)
-- `response_format`: `json` or `text`
+- `response_format`: `json` (default), `text`, `srt`, `vtt`, or `verbose_json`
 
 **Example:**
 ```bash
@@ -444,6 +456,23 @@ Operator controls:
 The guard applies only to Whisper backends. Parakeet, Canary, and
 other non-Whisper STT engines are never pre-filtered.
 
+### POST /v1/audio/translations
+
+Translate audio to English (OpenAI Whisper API compatible). Mirrors
+`/v1/audio/transcriptions` — same `file`, `model`, and `response_format`
+fields (all five formats above) — except the output is always English and
+any `language` hint is ignored. Whisper models only: non-Whisper STT
+aliases (e.g. `parakeet`, `sensevoice`) are rejected with
+`400 invalid_model_for_translation` because they cannot force English
+output.
+
+**Example:**
+```bash
+curl http://localhost:8000/v1/audio/translations \
+  -F file=@speech_fr.mp3 \
+  -F model=whisper-large-v3
+```
+
 ### POST /v1/audio/speech
 
 Generate speech from text (OpenAI TTS API compatible).
@@ -461,6 +490,10 @@ Generate speech from text (OpenAI TTS API compatible).
 - `voice_seed`: Optional unsigned 32-bit seed for
   `qwen3-tts-voicedesign`. Reuse the same `instructions` and seed to lock a
   designed voice across calls. The response echoes it in `X-Voice-Seed`.
+- `exaggeration`: Optional emotion/intensity control for the Chatterbox
+  family, `0.0` to `2.0` (`0.0` = flat/deadpan, ~`0.5` lively, up to ~`2.0`
+  very theatrical). Every other TTS family ignores it, so it is safe to
+  send unconditionally. Omit to keep the engine default.
 
 MP3 accepts standard MPEG rates from 8–48 kHz; Opus accepts 8, 12, 16, 24,
 or 48 kHz. WAV, PCM, FLAC, and Ogg/Vorbis accept any integer in the documented
@@ -781,9 +814,12 @@ Tested on Apple M2 Max (32GB).
 ## Troubleshooting
 
 ### mlx-audio not installed
+```bash
+pip install 'rapid-mlx[audio]'
 ```
-pip install mlx-audio>=0.2.9
-```
+This installs `mlx-audio` with the supported version pin
+(`mlx-audio>=0.2.9,<0.4.4` — 0.4.4 has a Kokoro istftnet regression that
+breaks every Kokoro request).
 
 ### Model download slow
 Models are downloaded from HuggingFace on first use. Use `huggingface-cli download` to pre-download:
@@ -798,33 +834,13 @@ Use smaller models or 4-bit quantized versions:
 - `Kokoro-82M-4bit` instead of `Kokoro-82M-bf16`
 - `sam-audio-small` instead of `sam-audio-large`
 
-### Kokoro multilingual bug (mlx-audio 0.2.9)
+### Kokoro multilingual bug (mlx-audio 0.2.9 only — historical)
 
-If you get `ValueError: too many values to unpack` when using non-English languages (Spanish, Chinese, Japanese, etc.) with Kokoro, apply this fix:
-
-```python
-# Fix for mlx_audio/tts/models/kokoro/pipeline.py line 443
-# Change:
-#     ps, _ = self.g2p(chunk)
-# To:
-g2p_result = self.g2p(chunk)
-ps = g2p_result[0] if isinstance(g2p_result, tuple) else g2p_result
-```
-
-**One-liner fix:**
-```bash
-python -c "
-import os
-path = os.path.join(os.path.dirname(__import__('mlx_audio').__file__), 'tts/models/kokoro/pipeline.py')
-with open(path, 'r') as f: content = f.read()
-old = '                    ps, _ = self.g2p(chunk)'
-new = '''                    # Fix: handle both tuple (en) and string (zh/ja/es) returns from g2p
-                    g2p_result = self.g2p(chunk)
-                    ps = g2p_result[0] if isinstance(g2p_result, tuple) else g2p_result'''
-if old in content:
-    with open(path, 'w') as f: f.write(content.replace(old, new))
-    print('Fix applied!')
-"
-```
-
-This bug occurs because English g2p returns a tuple `(phonemes, tokens)` while other languages return just a string.
+mlx-audio 0.2.9 exactly had a Kokoro g2p bug: non-English languages
+(Spanish, Chinese, Japanese, etc.) crashed with `ValueError: too many
+values to unpack` because English g2p returned a tuple `(phonemes, tokens)`
+while other languages returned just a string. Newer releases inside the
+supported range (`mlx-audio>=0.2.9,<0.4.4`, e.g. 0.4.3 — what a fresh
+`pip install 'rapid-mlx[audio]'` resolves to) no longer contain the buggy
+unpacking. If you hit this error, upgrade `mlx-audio` within the pinned
+range instead of hand-patching the package.

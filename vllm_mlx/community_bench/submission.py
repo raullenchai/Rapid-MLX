@@ -533,31 +533,6 @@ def _parse_git_remote(url: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _git_is_clean(repo: Path) -> bool:
-    """True iff there are no uncommitted changes / untracked files.
-
-    We refuse to commit-and-push if the working tree has unrelated
-    changes — accidentally including the user's other work in a
-    community-benchmark PR would be embarrassing and hard to undo.
-    """
-    r = _run_git(repo, "status", "--porcelain")
-    return r.returncode == 0 and r.stdout.strip() == ""
-
-
-def _write_payload_file(repo: Path, payload: dict) -> Path:
-    """Write the JSON payload to ``submissions/<filename>`` and return path.
-
-    Always writes with a trailing newline (Unix convention; the
-    aggregator's ``json.load`` doesn't care, but ``git`` is happier
-    with newline-terminated files and ``cat`` won't double-prompt).
-    """
-    sub_dir = repo / "community-benchmarks" / "submissions"
-    sub_dir.mkdir(parents=True, exist_ok=True)
-    path = sub_dir / _submission_filename(payload)
-    path.write_text(_pretty(payload) + "\n", encoding="utf-8")
-    return path
-
-
 def _make_pr_via_gh(
     repo: Path,
     submission_path: Path,

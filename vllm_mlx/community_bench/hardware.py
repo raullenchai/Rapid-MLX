@@ -25,7 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 # The COMPLETE list of external programs this module will invoke. Any
 # expansion goes through code review precisely because new programs
@@ -254,8 +254,3 @@ def collect() -> tuple[Hardware, Software]:
         python=_python_version(),
     )
     return hardware, software
-
-
-def as_dicts(hw: Hardware, sw: Software) -> tuple[dict, dict]:
-    """Serialize to plain dicts for JSON encoding."""
-    return asdict(hw), asdict(sw)

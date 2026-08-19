@@ -264,7 +264,7 @@ standard function-tool schemas, tool calls, and tool-result messages.
 
 ## Supported Tool Formats
 
-rapid-mlx supports 12 tool call parsers covering all major model families. See [Tool Calling](tool-calling.md) for the full list of parsers, aliases, and examples.
+rapid-mlx ships over 25 tool call parser modules covering all major model families. See [Tool Calling](tool-calling.md) for the full list of parsers, aliases, and examples.
 
 ## Security
 
