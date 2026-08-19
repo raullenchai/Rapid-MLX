@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.12.16"
+version = "0.12.17"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, up to 3x Ollama's measured throughput."
 readme = "README.md"
 license = {text = "Apache-2.0"}

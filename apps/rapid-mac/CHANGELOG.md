@@ -11,7 +11,26 @@ GitHub auto-generated notes: a non-technical user reading "Tier 1
 translates each commit subject into something a release-day reader
 can actually understand.
 
+> **Note:** pre-0.9 entries link their issue/PR and compare/release URLs to
+> the app's archived `machinefi/rapid-desktop` repository, where that work
+> shipped before the app moved into this `raullenchai/Rapid-MLX` monorepo.
+
 ## [Unreleased]
+
+## [0.12.17] — 2026-08-19
+
+Dictation actually works now — 0.12.16's release build shipped without the
+microphone permission, so the "Allow…" button did nothing. Update, and macOS
+will ask for the microphone like it should.
+
+### Fixed
+
+- **Speech to Text can be enabled again.** The signed app now carries the
+  microphone entitlement macOS requires. 0.12.16's release build shipped
+  without it, so the permission prompt never appeared and dictation
+  dead-ended at setup — development builds were unaffected, which is why
+  it slipped through. The build pipeline now refuses to sign a release
+  that is missing it.
 
 ## [0.12.16] — 2026-08-19
 
@@ -63,7 +82,7 @@ exported.
 - Voice notes in Apple formats (M4A, CAF, …) transcribe directly — the app
   transcodes them for the server on the fly.
 
-## [0.12.15] — 2026-08-17
+## [0.12.15] — 2026-08-18
 
 Fixes a bug that could silently truncate files your coding agent writes, adds a
 Developer section to Settings, and brings MTP acceleration to the Qwen 3.8
@@ -2995,7 +3014,7 @@ Older versions: see the
 [GitHub Releases page](https://github.com/machinefi/rapid-desktop/releases)
 for auto-generated notes against earlier tags.
 
-[Unreleased]: https://github.com/machinefi/rapid-desktop/compare/v0.5.16...HEAD
+[Unreleased]: https://github.com/raullenchai/Rapid-MLX/compare/rapid-mac-v0.12.16...HEAD
 [0.5.16]: https://github.com/machinefi/rapid-desktop/compare/v0.5.15...v0.5.16
 [0.5.15]: https://github.com/machinefi/rapid-desktop/compare/v0.5.14...v0.5.15
 [0.5.14]: https://github.com/machinefi/rapid-desktop/compare/v0.5.13...v0.5.14

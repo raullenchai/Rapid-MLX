@@ -501,6 +501,15 @@ class ResponsesOutputItem(BaseModel):
     call_id: str | None = None
     name: str | None = None
     arguments: str | None = None
+    # function_call — MCP namespace (issue #2114). Codex groups MCP tools
+    # under ``{"type":"namespace","name":"mcp__x","tools":[...]}``; the
+    # model calls the bare function name and Codex needs the originating
+    # namespace to route the call to the right MCP server. Populated from
+    # the flattened-namespace mapping built by
+    # ``normalize_responses_tool_types``. Left ``None`` (and omitted under
+    # ``model_dump_json(exclude_none=True)``) for direct/non-namespace
+    # tools and for bare names that map ambiguously to >1 namespace.
+    namespace: str | None = None
     # reasoning — OpenAI Responses spec, output[i].type=="reasoning":
     #   {"type":"reasoning","id":"rs_...","summary":[{"type":"summary_text","text":"..."}]}
     # ``encrypted_content`` is omitted unless include=["reasoning.encrypted_content"]

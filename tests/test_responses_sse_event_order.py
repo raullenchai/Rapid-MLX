@@ -363,3 +363,93 @@ class TestResponsesStreamEventOrder:
             f"Event ordering violated. Landmarks (in expected order): "
             f"{landmarks}. Names: {names}"
         )
+
+
+class TestResponsesStreamNamespaceReattachment:
+    """Issue #2114: the streaming ``function_call`` items must carry the
+    originating MCP ``namespace`` so Codex routes the call to the right
+    server. A single ``mcp__example`` namespace group with a lone
+    ``lookup`` function + ``tool_choice="required"`` drives the forced
+    synthesis path, so the fake engine (which emits no tool call) still
+    produces a ``function_call`` — exercising the inline stream emitter.
+    """
+
+    def _namespace_payload(self):
+        return _stream_payload(
+            tool_choice="required",
+            tools=[
+                {
+                    "type": "namespace",
+                    "name": "mcp__example",
+                    "description": "Example MCP namespace",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "lookup",
+                            "description": "Look up a value",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"q": {"type": "string"}},
+                            },
+                        }
+                    ],
+                }
+            ],
+        )
+
+    def test_stream_function_call_carries_namespace(self, responses_client):
+        client = responses_client.client
+        with client.stream(
+            "POST",
+            "/v1/responses",
+            json=self._namespace_payload(),
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        fc_items = [
+            data["item"]
+            for name, data in events
+            if name in ("response.output_item.added", "response.output_item.done")
+            and data.get("item", {}).get("type") == "function_call"
+        ]
+        # Both the added (in_progress) and done items must appear.
+        assert len(fc_items) == 2, f"expected 2 function_call items, got {fc_items}"
+        assert all(it["name"] == "lookup" for it in fc_items)
+        # Every emitted function_call carries the originating namespace.
+        assert all(it.get("namespace") == "mcp__example" for it in fc_items), fc_items
+
+    def test_stream_direct_tool_emits_no_namespace(self, responses_client):
+        """Regression shape (c): a direct (non-namespace) tool must NOT
+        gain a spurious ``namespace`` on the streaming surface.
+        """
+        payload = _stream_payload(
+            tool_choice="required",
+            tools=[
+                {
+                    "type": "function",
+                    "name": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                    },
+                }
+            ],
+        )
+        client = responses_client.client
+        with client.stream(
+            "POST",
+            "/v1/responses",
+            json=payload,
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        fc_items = [
+            data["item"]
+            for name, data in events
+            if name in ("response.output_item.added", "response.output_item.done")
+            and data.get("item", {}).get("type") == "function_call"
+        ]
+        assert len(fc_items) == 2, f"expected 2 function_call items, got {fc_items}"
+        assert all("namespace" not in it for it in fc_items), fc_items

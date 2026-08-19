@@ -912,7 +912,13 @@ async def create_response(request: Request):
     # name) but normalising up-front means downstream Computer-Use
     # detectors, the adapter's input-item builder, and any future tool
     # type-keyed dispatch can read ``tools[i].type`` directly.
-    normalize_responses_tool_types(responses_request.tools)
+    # issue #2114: flattening a Codex ``namespace`` group erases which MCP
+    # server each function came from. Capture the ``{function_name:
+    # namespace}`` mapping here (built from the ORIGINAL tools, before the
+    # in-place flatten discards the namespace identity) and thread it to
+    # the streaming / non-streaming output builders so each emitted
+    # ``function_call`` re-attaches its originating namespace for routing.
+    namespace_by_tool = normalize_responses_tool_types(responses_request.tools)
     cfg_for_priming = get_config()
     priming_tool_parser = cfg_for_priming.tool_call_parser
     if priming_tool_parser is None:
@@ -1388,6 +1394,7 @@ async def create_response(request: Request):
                         explicit_no_thinking=explicit_no_thinking,
                         request_id_holder=_resp_rid_holder,
                         heartbeat_state=_resp_heartbeat_state,
+                        namespace_by_tool=namespace_by_tool,
                     ),
                     request,
                     engine=engine,
@@ -1410,6 +1417,7 @@ async def create_response(request: Request):
             responses_request,
             request,
             explicit_no_thinking=explicit_no_thinking,
+            namespace_by_tool=namespace_by_tool,
         )
     finally:
         _release_admission_unless_committed(engine, _admission_committed)
@@ -1493,6 +1501,7 @@ async def _non_stream(
     request: Request,
     *,
     explicit_no_thinking: bool = False,
+    namespace_by_tool: dict[str, str] | None = None,
 ) -> Response:
     cfg = get_config()
     created_at = int(time.time())
@@ -2238,6 +2247,7 @@ async def _non_stream(
         model=cfg.model_name or responses_request.model,
         request=responses_request,
         created_at=created_at,
+        namespace_by_tool=namespace_by_tool,
     )
     return Response(
         content=responses_response.model_dump_json(exclude_none=True),
@@ -2386,6 +2396,7 @@ async def _stream_responses_with_nonprogress_retry(
     explicit_no_thinking: bool = False,
     request_id_holder: list | None = None,
     heartbeat_state: dict[str, object] | None = None,
+    namespace_by_tool: dict[str, str] | None = None,
 ) -> AsyncIterator[str]:
     """Hide one DeepSeek reasoning-only stop behind a bounded retry.
 
@@ -2407,6 +2418,7 @@ async def _stream_responses_with_nonprogress_retry(
             explicit_no_thinking=explicit_no_thinking,
             request_id_holder=request_id_holder,
             heartbeat_state=heartbeat_state,
+            namespace_by_tool=namespace_by_tool,
         ):
             yield event
         return
@@ -2464,6 +2476,7 @@ async def _stream_responses_with_nonprogress_retry(
         created_at_override=public_created_at,
         sequence_counter=attempt_sequence,
         emit_initial_lifecycle=False,
+        namespace_by_tool=namespace_by_tool,
     ):
         if committed:
             if heartbeat_state is not None:
@@ -2525,6 +2538,7 @@ async def _stream_responses_with_nonprogress_retry(
         created_at_override=public_created_at,
         sequence_counter=public_sequence,
         emit_initial_lifecycle=False,
+        namespace_by_tool=namespace_by_tool,
     ):
         yield event
 
@@ -2617,6 +2631,7 @@ async def _stream_responses(
     created_at_override: int | None = None,
     sequence_counter: list[int] | None = None,
     emit_initial_lifecycle: bool = True,
+    namespace_by_tool: dict[str, str] | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -4634,19 +4649,27 @@ async def _stream_responses(
                 completed_output.append(cu_done_item)
             else:
                 fc_id = f"fc_{uuid.uuid4().hex[:24]}"
+                # issue #2114: re-attach the originating MCP namespace so
+                # Codex routes the call to the right server. Absent for
+                # direct tools and ambiguous name collisions (the mapping
+                # only carries unambiguously-attributable names).
+                fc_namespace = (namespace_by_tool or {}).get(tc.function.name or "")
+                fc_added_item = {
+                    "type": "function_call",
+                    "id": fc_id,
+                    "call_id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": "",
+                    "status": "in_progress",
+                }
+                if fc_namespace:
+                    fc_added_item["namespace"] = fc_namespace
                 yield _emit(
                     "response.output_item.added",
                     {
                         "type": "response.output_item.added",
                         "output_index": tool_output_index,
-                        "item": {
-                            "type": "function_call",
-                            "id": fc_id,
-                            "call_id": tc.id,
-                            "name": tc.function.name,
-                            "arguments": "",
-                            "status": "in_progress",
-                        },
+                        "item": fc_added_item,
                     },
                 )
                 # Codex CLI accepts the args as a single delta — we don't
@@ -4671,6 +4694,8 @@ async def _stream_responses(
                     "arguments": tc.function.arguments or "",
                     "status": "completed",
                 }
+                if fc_namespace:
+                    fc_done_item["namespace"] = fc_namespace
                 yield _emit(
                     "response.output_item.done",
                     {

@@ -24,7 +24,7 @@
 # ─────────────────────────────────────────────────────────────────────────
 # KEY HANDLING: this script does NOT create, copy, print, or commit the
 # signing/notary private key. For a NOTARISED dogfood DMG the App Store
-# Connect .p8 — placed by YOU (see RELEASING-LOCAL.md) — is read by Apple's
+# Connect .p8 — placed by YOU (see RELEASING.md, Part C) — is read by Apple's
 # notarytool during notarisation; the script only passes its path. Public
 # releases use the repo's CI secrets, not this file. ~/.rapid-release.env is
 # SOURCED as shell, so keep it owner-only (chmod 600) and never commit it.
@@ -97,7 +97,7 @@ notary_ready() {
         return 1
     fi
     if [[ ! -f "$AC_API_KEY_PATH" ]]; then
-        warn "notary key not found at $AC_API_KEY_PATH — place the .p8 yourself (RELEASING-LOCAL.md). Building un-notarised."
+        warn "notary key not found at $AC_API_KEY_PATH — place the .p8 yourself (RELEASING.md, Part C). Building un-notarised."
         return 1
     fi
     export AC_API_KEY_ID AC_API_ISSUER_ID AC_API_KEY_PATH

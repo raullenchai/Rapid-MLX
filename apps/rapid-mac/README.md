@@ -29,16 +29,32 @@ open it, and drag **Rapid-MLX Desktop** to Applications.
 - **Document analysis in chat.** Attach text-based PDF, CSV, and TXT files to a
   normal conversation, then summarize, compare, or ask follow-up questions.
   Text extraction and parsing happen locally before the model sees the source.
-- **Zero-friction model lifecycle.** Pick a model in the composer and it
-  starts on your first message — no start/stop buttons. Download models from
-  the picker (cached vs. all, per-alias size + memory hints) and switch
-  freely.
+- **Two-step model lifecycle.** The composer's model button names one action
+  at a time: an uncached model shows **Download** (fetch the weights only),
+  the same button becomes **Start** once they are on disk, and a running model
+  shows **Stop model**. Browse cached vs. all models with per-alias size +
+  memory hints and switch freely.
 - **Connect your agents.** The bundled server speaks the OpenAI and Anthropic
   wire formats on `127.0.0.1`, so any editor or agent that accepts a custom
   base URL can use your local model for free. The Launch section gives you
   copy-paste config per tool.
 - **Conversation history.** A sidebar of past chats, persisted privately on
   device (owner-only permissions), with a fresh "New chat" a click away.
+- **Images tab.** A dedicated image-generation surface with the same compose
+  box as chat — pick an image model, prompt, and generate locally.
+- **Audio & voice tab.** Transcription, voice listing, and speech synthesis,
+  driven by the sidecar's local OpenAI-compatible audio routes.
+- **Built-in tools with approval.** Web search, page browsing, and weather are
+  available to the model as tools; browsing is gated behind an approval prompt
+  before any network fetch.
+- **MCP connectors.** Attach external Model Context Protocol servers to expose
+  their tools to your local model.
+- **Folders & export.** Organize conversations into folders in the sidebar and
+  export a conversation to a file via a save panel.
+- **Custom instructions.** A persistent system-prompt preface applied across
+  conversations.
+- **Per-model performance settings.** Per-alias runtime overrides (persisted
+  across launches) resolved into the sidecar's `serve` arguments at spawn.
 - **Bundled engine.** The `rapid-mlx` engine ships inside the app as a
   sidecar; the app spawns and supervises it, reaps it cleanly on quit, and
   surfaces Downloading / Preparing / Warming-up phases so a slow first load
@@ -99,15 +115,17 @@ RapidApp (SwiftUI Scene root)
 ├── ContentView              — NavigationSplitView: sidebar + detail
 │   ├── SidebarView          — New Chat · Launch · conversation history
 │   ├── ChatView             — single-column transcript + compose box
-│   │   └── ModelPickerBar   — inline model picker (implicit lifecycle)
+│   │   └── ModelPickerBar   — inline model picker (Download / Start / Stop)
 │   └── ConnectToolsView     — "Launch": copy-paste tool configs
-└── MenuBarExtra             — tray icon + update CTA + Quit
+└── MenuBarController        — AppKit NSStatusItem tray: icon + update CTA + Quit
+                               (no SwiftUI MenuBarExtra — its glyph fails to
+                               render on macOS 26, see #502)
 ```
 
 State holders are `@Observable` classes injected via SwiftUI `environment`
 (`ServerManager`, `ChatViewModel`, `DownloadManager`, `QuickstartCoordinator`,
-`SamplingConfig`, `AppearanceConfig`, `SettingsRouter`, `UpdateChecker`,
-`Installer`, …). The bundled sidecar is resolved by `ServerLocator`
+`SamplingConfig`, `AppearanceConfig`, `SettingsRouter`, `UpdateChecker`, …).
+The bundled sidecar is resolved by `ServerLocator`
 (`RAPID_BIN` override → app-managed runtime-override → the bundled engine).
 
 ## Releasing

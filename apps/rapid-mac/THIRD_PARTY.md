@@ -45,6 +45,14 @@ time of writing. Run that command for the exact revisions in your build.
   https://github.com/gonzalezreal/swift-markdown-ui
   Block-level markdown rendering for assistant messages.
 
+* **swift-markdown** — the Swift project (Apple) — Apache-2.0 with the
+  Runtime Library Exception
+  `from: "0.6.0"`
+  https://github.com/swiftlang/swift-markdown
+  Markdown parsing (GFM tables + strikethrough) on the chat streaming path,
+  which `MarkdownUI`'s string-only entry point cannot provide (#1843). Its
+  parser, `swift-cmark`, is listed under Transitive below.
+
 * **Sparkle** — Sparkle Project contributors — MIT License
   `exact: "2.9.5"`
   https://github.com/sparkle-project/Sparkle
@@ -63,14 +71,17 @@ time of writing. Run that command for the exact revisions in your build.
 
 ### Transitive, but linked into the shipped binary
 
-Pulled in by `swift-markdown-ui`, so they are compiled into the app even
-though the manifest does not name them.
+Pulled in by the markdown packages above, so they are compiled into the app
+even though the manifest names neither of these products directly.
 
 * **NetworkImage** — Guille Gonzalez — MIT License (resolved 6.0.1)
+  Pulled in by `swift-markdown-ui`.
   https://github.com/gonzalezreal/NetworkImage
 
 * **swift-cmark** — John MacFarlane and contributors — BSD-2-Clause
   (resolved 0.8.0)
+  The CommonMark parser underlying both `swift-markdown-ui` and the direct
+  `swift-markdown` dependency above.
   https://github.com/swiftlang/swift-cmark
   Its `COPYING` is BSD-2-Clause for cmark itself and additionally carries
   MIT notices for code cmark vendors in turn — for example `houdini*`

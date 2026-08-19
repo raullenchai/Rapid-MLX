@@ -50,10 +50,8 @@
 # NOTE: Sentry has been removed from the monorepo app; there is no
 # SENTRY_DSN secret here (the desktop workflow had one).
 #
-# NOTE: GitHub only reads workflows from ``.github/workflows`` at the
-# REPOSITORY ROOT. The copy under ``apps/rapid-mac/.github/`` is INERT —
-# it is never scheduled. This file (at the repo root) is the only one that
-# runs. Do not edit the app-local copy expecting it to take effect.
+# NOTE: GitHub reads this workflow from ``.github/workflows`` at the
+# repository root. This is the canonical Rapid Mac release workflow.
 #
 # The temp keychain password is generated at runtime, never stored.
 name: rapid-mac-release

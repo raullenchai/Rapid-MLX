@@ -120,7 +120,32 @@ def _raise_unsupported_tool_type(tool_type: str) -> None:
     )
 
 
-def normalize_responses_tool_types(tools: list[dict] | None) -> None:
+def _flatten_tool_name(entry: dict) -> str | None:
+    """Resolve a function tool's bare name for the #2114 re-attachment
+    mapping, tolerating malformed client input.
+
+    Prefers the Responses-shape top-level ``name``, falling back to the
+    Chat-Completions nested ``function.name``. Returns ``None`` unless the
+    resolved value is a non-empty ``str``. Malformed client input — a
+    non-dict ``function`` value (``"function": "lookup"``) or a non-string
+    ``name`` (``"name": []``) — must NOT raise here: an ``AttributeError``
+    or an unhashable-key ``TypeError`` during normalization would turn a
+    bad request into a 500 instead of leaving it for
+    ``validate_responses_tool_types`` to reject with the proper 400
+    envelope.
+    """
+    name = entry.get("name")
+    if isinstance(name, str) and name:
+        return name
+    fn = entry.get("function")
+    if isinstance(fn, dict):
+        fn_name = fn.get("name")
+        if isinstance(fn_name, str) and fn_name:
+            return fn_name
+    return None
+
+
+def normalize_responses_tool_types(tools: list[dict] | None) -> dict[str, str]:
     """Rewrite alias tool-type names to the canonical spec name in-place.
 
     The route calls this BEFORE :func:`validate_responses_tool_types`
@@ -168,9 +193,35 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
     removes it too, so the invalid request becomes an empty success.
     Codex's real ``multi_agent_v1`` group only ever contains function
     tools, so this stricter contract matches its actual wire format.
+
+    Namespace re-attachment mapping (issue #2114): flattening discards
+    the namespace identity, but Codex needs the originating namespace to
+    route the model's ``function_call`` back to the right MCP server
+    (``mcp__example.lookup`` vs a bare ``lookup``). This function returns
+    a ``{function_name: namespace}`` mapping built from the ORIGINAL
+    request (before flattening erases it) so the output builders
+    (:func:`_build_tool_call_output_item` on the non-stream path and the
+    inlined streaming emitter in ``routes/responses.py``) can re-attach a
+    ``namespace`` field to each emitted ``function_call`` item. Only the
+    namespaces that actually get flattened contribute entries — a
+    malformed / preserved ``namespace`` entry never reaches the model, so
+    its children are excluded.
+
+    Collision handling: MCP tool names are unique only WITHIN one server,
+    so two namespaces may both legally contain ``lookup``. A bare name is
+    included in the mapping ONLY when it resolves to exactly ONE
+    namespace. If the same bare name appears under >1 namespace, OR under
+    both a namespace AND a top-level (namespace-less) function tool, the
+    origin is genuinely ambiguous — we cannot know which server the model
+    meant, so the name is OMITTED from the mapping and NO ``namespace``
+    is attached to its ``function_call``. This never mis-routes: an
+    ambiguous name degrades to the pre-#2114 unqualified shape rather than
+    silently picking the wrong server. A namespace entry with a missing /
+    empty ``name`` likewise contributes an unattributable occurrence,
+    so its children are never attached.
     """
     if not tools:
-        return
+        return {}
     # Hosted tool types the local engine cannot run; Codex includes some
     # of these by default. Drop them rather than 400 the whole request —
     # BUT only when the original request carries a ``namespace`` entry
@@ -198,6 +249,13 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
     # with canonical ``type == "function"`` — otherwise a hosted-typed
     # child would silently flow through the drop-hosted step below and
     # collapse the tools list.
+    # Track, per bare function name, the set of origins it flattened from
+    # (issue #2114). A real namespace name contributes that name; a
+    # top-level (namespace-less) function tool contributes ``None``. A
+    # name with exactly one distinct, non-``None`` origin is unambiguously
+    # attributable; anything else is a collision and is dropped below.
+    ns_occurrences: dict[str, set[str | None]] = {}
+
     flattened: list = []
     for t in tools:
         if isinstance(t, dict) and t.get("type") == "namespace":
@@ -211,6 +269,12 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
                     for sub in sub_tools
                 )
             ):
+                ns_raw = t.get("name")
+                ns_key = ns_raw if isinstance(ns_raw, str) and ns_raw else None
+                for sub in sub_tools:
+                    sub_name = _flatten_tool_name(sub)
+                    if sub_name:
+                        ns_occurrences.setdefault(sub_name, set()).add(ns_key)
                 flattened.extend(sub_tools)
                 continue
             # Malformed / empty / non-function-child namespace → leave
@@ -218,6 +282,13 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
             flattened.append(t)
             continue
         flattened.append(t)
+        # A top-level (namespace-less) function tool sharing a bare name
+        # with a namespaced tool makes that name ambiguous — record a
+        # ``None`` origin so the resolver below refuses to attach.
+        if isinstance(t, dict) and _canonicalize_tool_type(t.get("type")) == "function":
+            top_name = _flatten_tool_name(t)
+            if top_name:
+                ns_occurrences.setdefault(top_name, set()).add(None)
 
     # Pass 2 — drop hosted noise ONLY when the request is Codex-shaped.
     # A direct-user request with ``[function, web_search]`` or
@@ -243,6 +314,15 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
         canonical = _canonicalize_tool_type(ttype)
         if canonical != ttype:
             t["type"] = canonical
+
+    # Resolve the re-attachment mapping: keep only names with exactly ONE
+    # distinct, non-``None`` origin (issue #2114). Collisions (>1
+    # namespace, or namespace + top-level) resolve to no attachment.
+    return {
+        name: next(iter(origins))
+        for name, origins in ns_occurrences.items()
+        if len(origins) == 1 and next(iter(origins)) is not None
+    }
 
 
 def validate_responses_tool_types(tools: list[dict] | None) -> None:
@@ -769,6 +849,7 @@ def openai_to_responses(
     model: str,
     request: ResponsesRequest,
     created_at: int,
+    namespace_by_tool: dict[str, str] | None = None,
 ) -> ResponsesResponse:
     """
     Convert an OpenAI Chat Completions response to a Responses-API
@@ -791,6 +872,12 @@ def openai_to_responses(
     a ``function.name == "computer"`` call, emit a ``computer_call``
     item instead of ``function_call`` so the OpenAI Computer-Use SDK
     contract is honoured.
+
+    ``namespace_by_tool`` (issue #2114) is the ``{function_name:
+    namespace}`` mapping returned by
+    :func:`normalize_responses_tool_types`; it is threaded to
+    :func:`_build_tool_call_output_item` so each emitted ``function_call``
+    re-attaches the MCP namespace Codex needs for routing.
     """
     output: list[ResponsesOutputItem] = []
     choice = response.choices[0] if response.choices else None
@@ -894,7 +981,9 @@ def openai_to_responses(
             )
 
         for tc in choice.message.tool_calls or []:
-            output.append(_build_tool_call_output_item(tc, uses_computer_use))
+            output.append(
+                _build_tool_call_output_item(tc, uses_computer_use, namespace_by_tool)
+            )
 
     status = _convert_status(choice.finish_reason if choice else None)
 
@@ -959,7 +1048,9 @@ def _build_reasoning_output_item(
 
 
 def _build_tool_call_output_item(
-    tool_call, uses_computer_use: bool
+    tool_call,
+    uses_computer_use: bool,
+    namespace_by_tool: dict[str, str] | None = None,
 ) -> ResponsesOutputItem:
     """Translate one OpenAI ``ToolCall`` to a Responses-API output item.
 
@@ -969,6 +1060,14 @@ def _build_tool_call_output_item(
     ``computer_call`` envelope per Ana C-06. The ``action`` field is
     parsed from the JSON arguments string and surfaced in the
     OpenAI-documented shape ``{"type": <verb>, ...kwargs}``.
+
+    ``namespace_by_tool`` (issue #2114) is the ``{function_name:
+    namespace}`` mapping returned by
+    :func:`normalize_responses_tool_types`. When the emitted tool call's
+    bare name is present, its originating MCP namespace is re-attached so
+    Codex can route the ``function_call`` to the right server. Names not
+    in the map (direct tools, or ambiguous collisions) leave ``namespace``
+    at ``None``, which ``model_dump_json(exclude_none=True)`` omits.
     """
     if uses_computer_use and (tool_call.function.name or "") == "computer":
         action = _parse_computer_action(tool_call.function.arguments or "")
@@ -987,6 +1086,7 @@ def _build_tool_call_output_item(
         name=tool_call.function.name,
         arguments=tool_call.function.arguments or "",
         status="completed",
+        namespace=(namespace_by_tool or {}).get(tool_call.function.name or ""),
     )
 
 

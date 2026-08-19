@@ -295,6 +295,19 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """
     import socket
 
+    # Validate the port range up front. ``socket.bind()`` raises
+    # ``OverflowError`` (NOT an ``OSError`` subclass) for a port outside
+    # 0-65535, so the ``except OSError`` collision handler below would let
+    # it escape as a raw traceback (dogfood #2125: ``--port 99999`` printed
+    # ``OverflowError: bind(): port must be 0-65535`` instead of a friendly
+    # message). Catch the typo here — before any probe — and emit the same
+    # actionable style as the port-in-use path. ``0`` stays valid: it asks
+    # the OS for an ephemeral port, which uvicorn binds normally.
+    if not 0 <= port <= 65535:
+        print(f"\n  Error: --port {port} is out of range. Ports must be 0-65535.")
+        print(f"  Try a valid port: rapid-mlx serve {model} --port 8000")
+        sys.exit(1)
+
     wildcards = _wildcard_host_aliases()
     if host in wildcards:
         # Probe the requested wildcard FIRST (so a LAN-side port
@@ -528,14 +541,20 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     supported). Now: always show *something* — fuzzy matches when we have
     them, curated popular aliases when we don't.
     """
-    from vllm_mlx.model_aliases import POPULAR_ALIASES, list_aliases, suggest_similar
+    from vllm_mlx.model_aliases import POPULAR_ALIASES, suggest_similar
 
     suggestions = suggest_similar(name)
     if suggestions:
         print(f"  Did you mean: {', '.join(suggestions)}?")
     else:
         print(f"  Try one of: {', '.join(POPULAR_ALIASES)}")
-    print(f"  Run `rapid-mlx models` to see all {len(list_aliases())} aliases,")
+    # No hardcoded alias total here. ``models`` splits the registry into
+    # tagged sections (chat / audio / video / image), each with its own
+    # accurate per-section count, so a single grand total printed here can
+    # only contradict the first header a user lands on (dogfood #2126:
+    # this line said "182 aliases" while ``models`` opened with "172").
+    # Let ``models`` be the single source of truth for the counts.
+    print("  Run `rapid-mlx models` to see all available aliases,")
     print(f"  or pass a full path like: {full_path_example}")
 
 
@@ -5664,7 +5683,11 @@ def recipe_command(args) -> None:
     )
     labels = {"smart": "Smart", "fast": "Fast"}
     for index, pick in enumerate(payload["picks"], start=1):
-        stats = [f"{pick['footprint_gb']:.1f} GB"]
+        # Label the footprint as RAM: it is measured 8K peak memory, a
+        # different axis from the on-disk ``required_disk_gb`` shown in the
+        # won't-fit line below. Without the label the two GB numbers read as
+        # contradictory (e.g. "20.0 GB" then "needs ~16.72 GB").
+        stats = [f"{pick['footprint_gb']:.1f} GB RAM"]
         if pick.get("caveat"):
             stats.append(pick["caveat"])
         else:
@@ -8380,13 +8403,21 @@ def agents_command(args):
     # No agent specified → list all profiles
     if not agent_name:
         profiles = list_profiles()
+        # Size the name column to the widest alias so a name that meets or
+        # exceeds the old hardcoded 15 (e.g. "deepseek-harness", 16 chars)
+        # can't eat its own separator space and shift every later column
+        # right on that one row. Floor at 15 so short rosters keep the
+        # familiar layout.
+        name_w = max(15, max((len(p.name) for p in profiles), default=15))
         print()
         print("  Supported AI Agents")
         print(
-            f"  {'name':<15} {'client':<20} {'GitHub':>6}  "
+            f"  {'name':<{name_w}} {'client':<20} {'GitHub':>6}  "
             f"{'tools':<5}  recommended models"
         )
-        print("  " + "─" * 78)
+        # Grow the divider in step with the name column so it doesn't fall
+        # short of the header once a long alias widens the table.
+        print("  " + "─" * (78 + name_w - 15))
         for p in profiles:
             tools = "FC" if p.needs_function_calling else "—"
             stars = f"{p.stars // 1000}K" if p.stars and p.stars >= 1000 else ""
@@ -8398,7 +8429,8 @@ def agents_command(args):
             else:
                 models = ""
             print(
-                f"  {p.name:<15} {p.display_name:<20} {stars:>6}  {tools:<5}  {models}"
+                f"  {p.name:<{name_w}} {p.display_name:<20} "
+                f"{stars:>6}  {tools:<5}  {models}"
             )
         print("  FC = function calling")
         print()

@@ -228,6 +228,34 @@ def test_preflight_passes_on_free_port():
     assert result is None
 
 
+@pytest.mark.parametrize("bad_port", [65536, 70000, 99999, -1, 2**31])
+def test_preflight_rejects_out_of_range_port_with_friendly_error(bad_port, capsys):
+    """Dogfood #2125: a port outside 0-65535 must produce the same
+    actionable message as the port-in-use path, NOT a raw
+    ``OverflowError: bind(): port must be 0-65535`` traceback.
+
+    Pre-fix the range typo reached ``socket.bind()``, which raises
+    ``OverflowError`` (not an ``OSError`` subclass), so the collision
+    handler's ``except OSError`` let it escape uncaught."""
+    with pytest.raises(SystemExit) as exc:
+        cli._port_preflight_or_die("127.0.0.1", bad_port, model="qwen3.5-4b-4bit")
+
+    assert exc.value.code == 1
+    err_out = capsys.readouterr().out
+    assert "out of range" in err_out
+    assert "0-65535" in err_out
+    assert str(bad_port) in err_out, (
+        f"error must echo the offending port {bad_port}, got: {err_out!r}"
+    )
+
+
+def test_preflight_accepts_port_zero_as_ephemeral():
+    """``--port 0`` is legitimate — it asks the OS for an ephemeral port,
+    which uvicorn binds normally. The range guard must NOT reject it."""
+    result = cli._port_preflight_or_die("127.0.0.1", 0, model="qwen3.5-4b-4bit")
+    assert result is None
+
+
 def test_preflight_wildcard_branch_passes_on_free_port():
     """Wildcard branch also must NOT raise on a fully free port — the
     probe loop runs twice (host + 127.0.0.1) but neither probe should

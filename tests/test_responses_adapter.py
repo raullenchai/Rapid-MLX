@@ -21,6 +21,7 @@ from vllm_mlx.api.models import (
     Usage,
 )
 from vllm_mlx.api.responses_adapter import (
+    _build_tool_call_output_item,
     _convert_status,
     _convert_text_format,
     _convert_tool_choice,
@@ -353,6 +354,298 @@ class TestNormalizeResponsesToolTypes:
         with pytest.raises(Exception) as exc_info:
             validate_responses_tool_types(tools)
         assert "unsupported_tool_type" in str(exc_info.value)
+
+
+class TestNamespaceReattachmentMapping:
+    """Issue #2114: ``normalize_responses_tool_types`` returns a
+    ``{function_name: namespace}`` mapping so the flattened function tools
+    can carry their originating MCP namespace back to Codex for routing.
+    Flattening otherwise discards the namespace identity, leaving the
+    model's ``function_call`` unqualified (``lookup`` instead of
+    ``mcp__example.lookup``).
+    """
+
+    def test_single_namespace_returns_mapping(self):
+        tools = [
+            {
+                "type": "namespace",
+                "name": "mcp__example",
+                "tools": [{"type": "function", "name": "lookup"}],
+            },
+        ]
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {"lookup": "mcp__example"}
+        # Flatten still happened.
+        assert [t["type"] for t in tools] == ["function"]
+        assert tools[0]["name"] == "lookup"
+
+    def test_multiple_children_all_mapped(self):
+        tools = [
+            {
+                "type": "namespace",
+                "name": "mcp__example",
+                "tools": [
+                    {"type": "function", "name": "lookup"},
+                    {"type": "function", "name": "search"},
+                ],
+            },
+        ]
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {"lookup": "mcp__example", "search": "mcp__example"}
+
+    def test_collision_two_namespaces_same_name_omitted(self):
+        """MCP tool names are unique only WITHIN one server — two
+        namespaces may both legally contain ``lookup``. A naive
+        name→namespace dict would silently pick one server. The mapping
+        OMITS the ambiguous name entirely so no misrouting occurs; the
+        emitted ``function_call`` degrades to the pre-#2114 unqualified
+        shape rather than routing to the wrong server.
+        """
+        tools = [
+            {
+                "type": "namespace",
+                "name": "mcp__alpha",
+                "tools": [{"type": "function", "name": "lookup"}],
+            },
+            {
+                "type": "namespace",
+                "name": "mcp__beta",
+                "tools": [{"type": "function", "name": "lookup"}],
+            },
+        ]
+        mapping = normalize_responses_tool_types(tools)
+        # ``lookup`` is ambiguous → omitted (documented decision).
+        assert "lookup" not in mapping
+        assert mapping == {}
+        # Both namespaces still flattened — the request is not rejected.
+        assert [t["type"] for t in tools] == ["function", "function"]
+
+    def test_collision_partial_only_ambiguous_name_omitted(self):
+        """A collision on one name must not poison the sibling names. Two
+        namespaces share ``lookup`` but each has a unique second tool —
+        those unique names remain unambiguously attributable.
+        """
+        tools = [
+            {
+                "type": "namespace",
+                "name": "mcp__alpha",
+                "tools": [
+                    {"type": "function", "name": "lookup"},
+                    {"type": "function", "name": "alpha_only"},
+                ],
+            },
+            {
+                "type": "namespace",
+                "name": "mcp__beta",
+                "tools": [
+                    {"type": "function", "name": "lookup"},
+                    {"type": "function", "name": "beta_only"},
+                ],
+            },
+        ]
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {
+            "alpha_only": "mcp__alpha",
+            "beta_only": "mcp__beta",
+        }
+        assert "lookup" not in mapping
+
+    def test_top_level_and_namespace_collision_omitted(self):
+        """A bare name shared by a top-level (namespace-less) function AND
+        a namespaced function is ambiguous — we cannot tell which the
+        model meant, so it is omitted.
+        """
+        tools = [
+            {"type": "function", "name": "lookup"},
+            {
+                "type": "namespace",
+                "name": "mcp__example",
+                "tools": [{"type": "function", "name": "lookup"}],
+            },
+        ]
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {}
+
+    def test_direct_tool_absent_from_mapping(self):
+        """A direct (non-namespace) function tool contributes NO namespace
+        — regression guard for shape (c): direct-user requests must never
+        gain a spurious ``namespace``.
+        """
+        tools = [{"type": "function", "name": "lookup"}]
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {}
+
+    def test_nameless_namespace_not_attributable(self):
+        """A namespace with a missing/empty ``name`` yields an
+        unattributable origin — its children are never attached.
+        """
+        tools = [
+            {
+                "type": "namespace",
+                "tools": [{"type": "function", "name": "lookup"}],
+            },
+        ]
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {}
+        # Still flattened (the shape is valid, only the name is absent).
+        assert [t["type"] for t in tools] == ["function"]
+
+    def test_empty_tools_returns_empty_mapping(self):
+        assert normalize_responses_tool_types(None) == {}
+        assert normalize_responses_tool_types([]) == {}
+
+    def test_non_dict_function_child_does_not_raise(self):
+        """A namespaced child whose ``function`` is a truthy non-dict
+        (``"function": "lookup"``) must NOT raise AttributeError during
+        mapping-build — it degrades to no attachment and is left for
+        validation, not a 500."""
+        tools = [
+            {
+                "type": "namespace",
+                "name": "mcp__example",
+                "tools": [{"type": "function", "function": "lookup"}],
+            },
+        ]
+        # No exception; the child has no resolvable name → omitted.
+        mapping = normalize_responses_tool_types(tools)
+        assert mapping == {}
+
+    def test_non_string_name_does_not_raise(self):
+        """A non-string ``name`` (``[]``) must not be used as a dict key
+        (unhashable → TypeError → 500). It is unresolvable → omitted,
+        leaving the bad shape for validation."""
+        # Namespaced child with a list name.
+        ns_tools = [
+            {
+                "type": "namespace",
+                "name": "mcp__example",
+                "tools": [{"type": "function", "name": []}],
+            },
+        ]
+        assert normalize_responses_tool_types(ns_tools) == {}
+        # Top-level function tool with a list name.
+        top_tools = [{"type": "function", "name": {"bad": "shape"}}]
+        assert normalize_responses_tool_types(top_tools) == {}
+
+
+class TestNamespaceOnFunctionCallItem:
+    """Issue #2114: the built ``function_call`` output item carries the
+    re-attached namespace, and serialization omits it when absent.
+    """
+
+    def _tool_call(self, name="lookup", args='{"q":"ping"}'):
+        return ToolCall(
+            id="call_abc",
+            type="function",
+            function=FunctionCall(name=name, arguments=args),
+        )
+
+    def test_build_item_attaches_namespace(self):
+        item = _build_tool_call_output_item(
+            self._tool_call(),
+            uses_computer_use=False,
+            namespace_by_tool={"lookup": "mcp__example"},
+        )
+        assert item.type == "function_call"
+        assert item.namespace == "mcp__example"
+        # exclude_none serialization surfaces it.
+        dumped = json.loads(item.model_dump_json(exclude_none=True))
+        assert dumped["namespace"] == "mcp__example"
+        assert dumped["name"] == "lookup"
+
+    def test_build_item_no_namespace_when_mapping_absent(self):
+        """Direct request (no mapping) — regression shape (c): NO
+        ``namespace`` field on the wire.
+        """
+        item = _build_tool_call_output_item(
+            self._tool_call(),
+            uses_computer_use=False,
+            namespace_by_tool=None,
+        )
+        assert item.namespace is None
+        dumped = json.loads(item.model_dump_json(exclude_none=True))
+        assert "namespace" not in dumped
+
+    def test_build_item_no_namespace_for_ambiguous_name(self):
+        """A collision-omitted name is simply absent from the mapping, so
+        ``.get`` returns None and no namespace is attached.
+        """
+        item = _build_tool_call_output_item(
+            self._tool_call(name="lookup"),
+            uses_computer_use=False,
+            namespace_by_tool={"search": "mcp__other"},  # lookup omitted
+        )
+        assert item.namespace is None
+
+    def test_nonstream_openai_to_responses_attaches_namespace(self):
+        """End-to-end non-streaming path: ``openai_to_responses`` threads
+        the mapping into the ``function_call`` output item, and the JSON
+        envelope carries ``namespace``.
+        """
+        response = ChatCompletionResponse(
+            id="cmpl_x",
+            model="test-model",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        content=None,
+                        tool_calls=[self._tool_call()],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=Usage(
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+            ),
+        )
+        request = ResponsesRequest(model="test-model", input="hi")
+        result = openai_to_responses(
+            response,
+            model="test-model",
+            request=request,
+            created_at=0,
+            namespace_by_tool={"lookup": "mcp__example"},
+        )
+        fc = [it for it in result.output if it.type == "function_call"]
+        assert len(fc) == 1
+        assert fc[0].namespace == "mcp__example"
+        envelope = json.loads(result.model_dump_json(exclude_none=True))
+        emitted = [o for o in envelope["output"] if o["type"] == "function_call"][0]
+        assert emitted["namespace"] == "mcp__example"
+
+    def test_nonstream_no_namespace_without_mapping(self):
+        """Regression shape (c): non-streaming direct request emits NO
+        ``namespace`` field.
+        """
+        response = ChatCompletionResponse(
+            id="cmpl_x",
+            model="test-model",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        content=None,
+                        tool_calls=[self._tool_call()],
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=Usage(
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+            ),
+        )
+        request = ResponsesRequest(model="test-model", input="hi")
+        result = openai_to_responses(
+            response, model="test-model", request=request, created_at=0
+        )
+        envelope = json.loads(result.model_dump_json(exclude_none=True))
+        emitted = [o for o in envelope["output"] if o["type"] == "function_call"][0]
+        assert "namespace" not in emitted
 
 
 # ---------------------------------------------------------------------------

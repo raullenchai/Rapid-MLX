@@ -48,5 +48,18 @@
     -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
+
+    <!--
+    com.apple.security.device.audio-input: required for Speech to Text
+    dictation (DictationRecorder's AVAudioEngine capture). A hardened-
+    runtime process WITHOUT this key is refused microphone access
+    silently: AVCaptureDevice.requestAccess(for: .audio) returns false
+    with no consent prompt and no TCC record, so the Audio tab's
+    "Allow…" button appears dead. Debug builds are not hardened and
+    prompt fine, which is why only the notarized release artifact was
+    affected (#2134, shipped broken in 0.12.16).
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>

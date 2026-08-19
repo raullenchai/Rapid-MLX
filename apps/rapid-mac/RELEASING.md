@@ -13,14 +13,34 @@ they are tied to your Apple Developer account.
 > `rapid-mlx` engine is the repository ROOT. The sidecar bundled into the app
 > is pip-installed from that engine at the repo root (no git submodule). App
 > release tags are prefixed **`rapid-mac-v`** so they never collide with the
-> engine's own `v*` tags. The CI workflow is at the repo root
-> `.github/workflows/rapid-mac-release.yml` — the copy under
-> `apps/rapid-mac/.github/` is inert (GitHub only runs workflows from the repo
-> root).
+> engine's own `v*` tags. The CI workflow lives at the repo root
+> `.github/workflows/rapid-mac-release.yml` (GitHub only runs workflows from
+> the repo root).
 
 ---
 
 ## Two lanes
+
+Two lanes, split by **who the build is for**. The frequent case (dogfood)
+runs on your Mac for $0; the rare, user-facing case (public) runs on GitHub CI,
+which owns signing secrets and the distribution layer (auto-update feeds).
+
+```
+Rapid-MLX Desktop release — who is this build for?
+│
+├─ "just me / a tester"  →  DOGFOOD · local  (most builds, $0 CI)
+│      scripts/release-local.sh
+│      → a signed, testable .app/DMG on your Mac; no tag, no GitHub Release
+│
+└─ "all users"           →  PUBLIC · GitHub CI  (a few / month)
+       push a rapid-mac-v* tag
+       → rapid-mac-release.yml: build → sign → notarise → GitHub Release,
+         plus the Sparkle appcast / latest.json auto-update feeds
+```
+
+A bare `v*` tag is the **engine's** release scheme, not the app's; the desktop
+lane is gated on the `rapid-mac-v*` prefix so the two never collide in this
+monorepo.
 
 | | Dogfood (local) | Public (CI) |
 |---|---|---|

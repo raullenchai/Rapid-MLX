@@ -92,6 +92,24 @@ def test_recipe_uses_download_size_not_peak_ram_for_disk_fit(
     assert "rapid-mlx serve qwen3.8-27b-4bit" in output
 
 
+def test_recipe_labels_footprint_as_ram_to_disambiguate_from_disk(
+    monkeypatch, capsys
+) -> None:
+    # The footprint is measured 8K peak RAM, a different axis from the on-disk
+    # download size in the won't-fit line. Labeling it "GB RAM" stops the two
+    # numbers ("20.0 GB" vs "needs ~16.72 GB") from reading as a contradiction.
+    monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
+    monkeypatch.setattr(cli, "_recipe_free_disk_gb", lambda: 16.0)
+
+    cli.recipe_command(Namespace(max_ram=32, json=False))
+
+    output = capsys.readouterr().out
+    assert "20.0 GB RAM" in output
+    # The unlabeled footprint ("20.0 GB ·") must not survive — the RAM label is
+    # exactly what tells it apart from the disk requirement printed below.
+    assert "20.0 GB ·" not in output
+
+
 def test_recipe_rounding_does_not_reject_a_download_that_really_fits(
     monkeypatch, capsys
 ) -> None:
