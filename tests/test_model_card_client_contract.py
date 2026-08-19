@@ -10,10 +10,12 @@ file. Two consumers depend on that today:
   advertise graded reasoning to DeepSeek Harness (#1984).
 * **Out-of-tree** — the native Rapid-MLX provider for DSH
   (``raullenchai/rapid-mlx-dsh-provider``) reads ``context_window``,
-  ``reasoning_parser`` and ``capabilities`` to answer Harness's
-  ``resolveModel()``. That value feeds ``dsh-compaction-basic``, which
-  multiplies the capacity we report by its threshold ratio to decide when
-  to compact a session.
+  ``max_model_len``, ``reasoning_parser`` and ``capabilities`` to answer
+  Harness's ``resolveModel()``. The capacity it reports feeds
+  ``dsh-compaction-basic``, which multiplies it by its threshold ratio to
+  decide when to compact a session; the provider prefers ``max_model_len``
+  (the memory-fitted ceiling) over ``context_window`` (the native window)
+  when present, so both are part of the contract.
 
 The out-of-tree consumer is the reason this file exists. Renaming or
 dropping one of these fields is a silent break for it: nothing in this
@@ -39,7 +41,8 @@ from vllm_mlx.api.models import ModelInfo
 #: deliberate act that should be visible in review, which is the point.
 CLIENT_FIELDS: dict[str, str] = {
     "id": "route identity; the model id sent back on a request",
-    "context_window": "real capacity — drives DSH compaction thresholds",
+    "context_window": "native window — the model's own max context",
+    "max_model_len": "memory-fitted capacity — the preferred DSH compaction basis",
     "reasoning_parser": "whether the model can emit reasoning at all",
     "tool_call_parser": "whether it can emit OpenAI-shape tool_calls",
     "capabilities": "text / tools / vision, for request shaping",
@@ -48,7 +51,12 @@ CLIENT_FIELDS: dict[str, str] = {
 
 #: Fields whose ``None`` must reach the wire as an explicit ``null``.
 #: See ``test_null_extensions_are_serialized_not_dropped`` for why.
-TRISTATE_FIELDS = ("reasoning_parser", "tool_call_parser", "context_window")
+TRISTATE_FIELDS = (
+    "reasoning_parser",
+    "tool_call_parser",
+    "context_window",
+    "max_model_len",
+)
 
 
 @pytest.mark.parametrize("field", sorted(CLIENT_FIELDS))

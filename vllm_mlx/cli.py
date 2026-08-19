@@ -5714,6 +5714,120 @@ def _recipe_free_disk_gb() -> float | None:
         return None
 
 
+def _cached_models_json_payload() -> dict:
+    """Structured form of the ``models --cached`` view — the same rows the
+    text table renders, with stable keys instead of fixed-width columns.
+
+    Sizes are raw bytes; ``state`` is one of ``ok`` / ``unmapped`` /
+    ``incomplete`` / ``external`` mirroring the alias column's parenthesized
+    tags; ``alias`` is ``None`` for any non-``ok`` row (those are not
+    launchable by alias). Sorted biggest-first, like the table.
+    """
+    import time as _time
+
+    from vllm_mlx.model_aliases import list_profiles
+
+    rows = _scan_hf_cache_models()
+    external_rows = _scan_external_model_dirs()
+    runnable_hub_repos = {repo for repo, _, _ in rows if _cache_entry_is_runnable(repo)}
+    external_rows = [r for r in external_rows if r[0] not in runnable_hub_repos]
+
+    profiles = list_profiles()
+    hf_to_alias: dict[str, str] = {}
+    for alias, p in profiles.items():
+        hf_to_alias.setdefault(p.hf_path, alias)
+
+    now = _time.time()
+    tagged = [(*row, False) for row in rows] + [(*row, True) for row in external_rows]
+    models = []
+    total_bytes = 0
+    for repo, size, mtime, is_external in tagged:
+        total_bytes += size
+        if is_external:
+            alias, state = None, "external"
+        elif not _cache_entry_is_runnable(repo):
+            alias, state = None, "incomplete"
+        else:
+            mapped = hf_to_alias.get(repo)
+            alias, state = (mapped, "ok") if mapped is not None else (None, "unmapped")
+        models.append(
+            {
+                "alias": alias,
+                "repo": repo,
+                "size_bytes": int(size),
+                "modified_epoch": int(mtime) if mtime and mtime > 0 else None,
+                "age_seconds": int(max(0, now - mtime))
+                if mtime and mtime > 0
+                else None,
+                "state": state,
+                "external": is_external,
+            }
+        )
+    models.sort(key=lambda m: -m["size_bytes"])
+    return {"cached": models, "count": len(models), "total_bytes": int(total_bytes)}
+
+
+def _available_models_json_payload() -> dict:
+    """Structured form of the default ``models`` view: every alias with the
+    profile facts the table shows, split by modality (text / audio / video /
+    image) exactly as the text sections are. Sizes are download bytes from the
+    checked-in manifest (``None`` when unknown); no per-invocation HF I/O.
+    """
+    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_sizes import size_bytes
+
+    all_profiles = list_profiles()
+
+    def _modality(p) -> str:
+        return getattr(p, "modality", "text") or "text"
+
+    def _profile_dict(alias, p) -> dict:
+        raw = None
+        try:
+            raw = size_bytes(p.hf_path)
+        except Exception:
+            raw = None
+        return {
+            "alias": alias,
+            "hf_path": p.hf_path,
+            "size_bytes": int(raw) if isinstance(raw, int) and raw > 0 else None,
+            "tool_call_parser": p.tool_call_parser,
+            "reasoning_parser": p.reasoning_parser,
+            "is_hybrid": bool(getattr(p, "is_hybrid", False)),
+            "is_moe": bool(getattr(p, "is_moe", False)),
+            "supports_spec_decode": bool(getattr(p, "supports_spec_decode", False)),
+            "modality": _modality(p),
+        }
+
+    text, video, image = {}, {}, {}
+    for alias, p in all_profiles.items():
+        bucket = {"video-gen": video, "image-gen": image}.get(_modality(p), text)
+        bucket[alias] = p
+
+    payload = {
+        "text": [_profile_dict(a, text[a]) for a in sorted(text)],
+        "video": [_profile_dict(a, video[a]) for a in sorted(video)],
+        "image": [_profile_dict(a, image[a]) for a in sorted(image)],
+        "audio": [],
+    }
+    try:
+        from vllm_mlx.audio.registry import list_audio_aliases
+
+        payload["audio"] = [
+            {
+                "alias": e.alias,
+                "hf_id": e.hf_id,
+                "kind": e.type,
+                "family": e.family,
+                "modality": "audio",
+            }
+            for e in list_audio_aliases()
+        ]
+    except Exception:
+        payload["audio"] = []
+    return payload
+
+
 def models_command(args):
     """List available model aliases with their per-model profile capabilities.
 
@@ -5730,6 +5844,17 @@ def models_command(args):
     from vllm_mlx._version_check import print_staleness_warning_if_any
     from vllm_mlx.model_aliases import list_profiles
     from vllm_mlx.model_sizes import format_size
+
+    # JSON mode emits ONLY the payload on stdout — no staleness banner, no
+    # table — so a caller can pipe it straight into a parser.
+    if getattr(args, "json", False):
+        import json as _json
+
+        if getattr(args, "cached", False):
+            print(_json.dumps(_cached_models_json_payload()))
+        else:
+            print(_json.dumps(_available_models_json_payload()))
+        return
 
     print_staleness_warning_if_any()
 
@@ -10255,6 +10380,14 @@ Examples:
         default=False,
         help="Only list models that are downloaded to the local HuggingFace "
         "cache (alias, HF repo, size on disk, last modified).",
+    )
+    models_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit the model list as machine-readable JSON instead of the "
+        "human table (stable keys; pairs with --cached). Prefer this over "
+        "scraping the text columns.",
     )
     recipe_parser = subparsers.add_parser(
         "recipe", help="Recommend the smart and fast models for this Mac"

@@ -27,6 +27,104 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _engine_for(model_id: str):
+    """Return the live engine actually loaded for ``model_id``, or ``None``.
+
+    Single-model serve exposes the one engine on ``cfg.engine`` and only for
+    the served ``model_name``/``model_alias``; multi-model serve looks the
+    entry up in the registry index and guards ``entry.matches(model_id)`` so a
+    ``get_entry`` default-fallback never advertises the wrong engine for an
+    unloaded alias. Shared by ``_resolve_context_window`` and
+    ``_resolve_max_model_len`` so both read the exact same engine.
+    """
+    cfg = get_config()
+    if cfg.model_registry is not None:
+        try:
+            entry = cfg.model_registry.get_entry(model_id)
+        except KeyError:
+            entry = None
+        if entry is not None and entry.matches(model_id):
+            return entry.engine
+        return None
+    candidate = getattr(cfg, "engine", None)
+    if candidate is not None:
+        served = {cfg.model_name, cfg.model_alias} - {None}
+        if model_id in served:
+            return candidate
+    return None
+
+
+def _scheduler_of(engine):
+    """Walk the engine backend graph to a ``Scheduler`` exposing
+    ``projected_memory_max_context``, or ``None``.
+
+    The production ``BatchedEngine`` keeps the text ``Scheduler`` two hops in,
+    at ``._engine.engine.scheduler`` (its ``_engine`` is an ``AsyncEngineCore``
+    wrapper whose inner ``EngineCore`` owns the scheduler — see
+    ``BatchedEngine`` abort-path comment); an MLLM-active serve exposes it as
+    ``._mllm_scheduler``; plainer/synthetic engines expose ``.scheduler`` (or
+    ``.engine.scheduler``) directly. Collect every candidate and return the
+    first that is actually a Scheduler (has the probe method), so a wrapper
+    that merely forwards attributes can't shadow the real one.
+    """
+    candidates = []
+    mllm = getattr(engine, "_mllm_scheduler", None)
+    if mllm is not None:
+        candidates.append(mllm)
+    inner = getattr(engine, "_engine", None)
+    for holder in (
+        engine,
+        inner,
+        getattr(inner, "engine", None),
+        getattr(engine, "engine", None),
+    ):
+        if holder is None:
+            continue
+        sched = getattr(holder, "scheduler", None)
+        if sched is not None:
+            candidates.append(sched)
+    for candidate in candidates:
+        if callable(getattr(candidate, "projected_memory_max_context", None)):
+            return candidate
+    return None
+
+
+def _resolve_max_model_len(model_id: str, native_context: int | None) -> int | None:
+    """Return the memory-aware served context ceiling for ``model_id`` (the
+    ``max_model_len`` card field), or ``None`` when no live engine is loaded or
+    the estimate can't be formed.
+
+    Delegates the arithmetic to ``Scheduler.projected_memory_max_context`` so
+    the advertised number is the scheduler's own admission projection; here we
+    only resolve the live engine (same one ``context_window`` came from) and
+    its scheduler, and stay best-effort: any failure falls through to ``None``
+    rather than 500-ing the listing.
+    """
+    engine = _engine_for(model_id)
+    if engine is None:
+        return None
+    scheduler = _scheduler_of(engine)
+    if scheduler is None:
+        return None
+    probe = getattr(scheduler, "projected_memory_max_context", None)
+    if not callable(probe):
+        return None
+    try:
+        value = probe(native_context)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "max_model_len probe failed for %s: %s", model_id, exc, exc_info=False
+        )
+        return None
+    if not isinstance(value, int) or value <= 0:
+        return None
+    # Defensive cap: the scheduler already bounds by ``native_context``, but
+    # never advertise a memory ceiling larger than the model's own window.
+    if isinstance(native_context, int) and native_context > 0:
+        value = min(value, native_context)
+    return value
+
+
 def _resolve_context_window(model_id: str) -> int | None:
     """Return the engine-advertised max prompt-token context window for
     ``model_id`` when an engine is loaded for it, else ``None``.
@@ -70,25 +168,7 @@ def _resolve_context_window(model_id: str) -> int | None:
     # so the comparison is explicit and the relationship to the
     # helper's fallback constant is obvious to future readers.
     _DOS_SENTINEL_FLOOR = 4_194_304
-    engine = None
-    cfg = get_config()
-    if cfg.model_registry is not None:
-        try:
-            entry = cfg.model_registry.get_entry(model_id)
-        except KeyError:
-            entry = None
-        # ``get_entry`` falls back to the default entry on miss — guard
-        # that the entry we got actually matches ``model_id`` so the
-        # listing doesn't advertise the default engine's cap for every
-        # unloaded alias.
-        if entry is not None and entry.matches(model_id):
-            engine = entry.engine
-    else:
-        candidate = getattr(cfg, "engine", None)
-        if candidate is not None:
-            served = {cfg.model_name, cfg.model_alias} - {None}
-            if model_id in served:
-                engine = candidate
+    engine = _engine_for(model_id)
     if engine is None:
         return None
     try:
@@ -796,6 +876,10 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # failures fall through to ``None`` and the client uses its own
     # per-family fallback. See ``_resolve_context_window`` docstring.
     context_window = _resolve_context_window(model_id)
+    # Memory-aware served ceiling (vLLM/SGLang-style ``max_model_len``),
+    # capped at ``context_window``. Best-effort like the window itself:
+    # ``None`` when no engine is loaded or the estimate can't be formed.
+    max_model_len = _resolve_max_model_len(model_id, context_window)
     # F-K-CAPABILITIES-OMIT-AUDIO: per-lane audio status snapshot, or
     # ``None`` when the deep probe never ran (e.g.
     # ``RAPID_MLX_AUDIO_DEEP_PROBE`` unset). Identical value is
@@ -845,6 +929,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                 modality=_reported_modality_for_embedding(),
                 capabilities=["embedding"],
                 context_window=context_window,
+                max_model_len=max_model_len,
                 audio_lanes=audio_lanes,
             )
         sampling = (
@@ -865,6 +950,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             modality=_reported_modality_for_embedding(),
             capabilities=["embedding"],
             context_window=context_window,
+            max_model_len=max_model_len,
             audio_lanes=audio_lanes,
         )
 
@@ -905,6 +991,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     tool_call_parser=eff_tool,
                     reasoning_parser=eff_reasoning,
                     context_window=context_window,
+                    max_model_len=max_model_len,
                     audio_lanes=audio_lanes,
                 )
         except Exception:  # noqa: BLE001
@@ -916,6 +1003,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             tool_call_parser=eff_tool,
             reasoning_parser=eff_reasoning,
             context_window=context_window,
+            max_model_len=max_model_len,
             audio_lanes=audio_lanes,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
@@ -956,6 +1044,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         modality=_reported_modality(model_id, profile.modality, profile.is_text_only),
         capabilities=capabilities,
         context_window=context_window,
+        max_model_len=max_model_len,
         audio_lanes=audio_lanes,
     )
 

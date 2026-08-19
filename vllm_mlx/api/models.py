@@ -2430,6 +2430,23 @@ class ModelInfo(BaseModel):
     # guard uses, so the value the client sees lines up with the
     # cap the server will actually enforce. Issue #363.
     context_window: int | None = None
+    # Memory-aware served context ceiling — the largest context that
+    # actually FITS on this machine given the loaded weights plus the
+    # unified-memory KV-cache budget, capped at ``context_window``.
+    # Named ``max_model_len`` to match the de-facto convention vLLM
+    # established and SGLang copied (both put it on the OpenAI model
+    # card as a vendor extension), so any client that already reads
+    # vLLM's ``max_model_len`` gets our value for free. Where vLLM and
+    # SGLang crash when their configured ``max_model_len`` won't fit KV
+    # memory, on unified memory we can compute the fitted ceiling and
+    # report it instead. Sourced from the scheduler's own admission
+    # projection (``Scheduler.projected_memory_max_context`` →
+    # ``_estimate_request_kv_bytes``), so it lines up with what the
+    # server would actually admit. Advisory and re-derived per call
+    # from current residency; ``None`` when no engine is loaded for
+    # the id or the estimate can't be formed, and it serializes as
+    # JSON ``null`` (no ``exclude_none``) like the other extensions.
+    max_model_len: int | None = None
     # Capability tags advertised on the wire. Currently used to mark
     # the configured embedding model with ``"embedding"`` so clients
     # can discover which entry is wired to ``/v1/embeddings`` without
