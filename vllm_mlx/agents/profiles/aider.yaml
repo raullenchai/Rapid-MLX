@@ -7,7 +7,10 @@ config:
   type: env
   env_vars:
     OPENAI_API_BASE: "{base_url}"
-    OPENAI_API_KEY: "not-needed"
+    # Rendered from RAPID_MLX_API_KEY when set, else "not-needed". The desktop
+    # app mints a per-launch bearer, so a hardcoded "not-needed" here failed
+    # with AuthenticationError for every desktop user.
+    OPENAI_API_KEY: "{api_key}"
 
 models:
   recommended:
@@ -34,6 +37,8 @@ capabilities:
   streaming: true
 
 known_issues:
+  - "Model names need LiteLLM's openai/ prefix (aider --model openai/<alias>) or routing fails before the request is sent"
+  - "A macOS system HTTP proxy breaks this: aider's httpx honours it but ignores the OS exceptions list, so 127.0.0.1 is proxied and returns an empty 502. Export NO_PROXY=127.0.0.1,localhost"
   - "Does NOT use function calling — uses text edit formats (unified diff, search/replace)"
   - "Best local model support of any agent — works with virtually any model"
   - "Architect mode: dual model (one plans, one edits) — use --architect flag"
