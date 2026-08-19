@@ -43,16 +43,30 @@ struct MarkdownCompiler: Sendable {
     /// the code card appears once, already knowing its language, and no stray
     /// backticks are ever shown inside it.
     ///
-    /// Only the LAST line is considered, and only while streaming. The settled
-    /// row re-compiles the whole message with ``isComplete`` true (see
-    /// ``StreamingMarkdownStore/finish()``), so nothing stays hidden.
+    /// Only the LAST line is considered, and only while streaming. Nothing
+    /// stays hidden because the settled row is rendered by a different view:
+    /// ``ChatView`` swaps `StreamingTextKitMarkdownView` for
+    /// `TextKitMarkdownView(content:)` the moment the message leaves
+    /// `.streaming`, and that one compiles the raw `message.content` with
+    /// ``isComplete`` defaulting to true. (``StreamingMarkdownStore/finish()``
+    /// is *not* the guarantor — it flushes and then throws the result away.)
+    /// Copy and selection read `message.content` directly and never see this
+    /// at all.
     ///
     /// Deliberately narrow. A line like ``\`foo`` — an inline code span being
     /// typed — is left alone: only a run of three or more backticks (a real
     /// fence, with or without its info string) or a line that is nothing but
     /// one or two backticks (a fence in the making) qualifies.
+    ///
+    /// Backtick fences only. A `~~~` fence, and a fence inside a blockquote,
+    /// still flicker — both are valid CommonMark and both are out of scope
+    /// here, because a tilde info string may itself contain backticks and
+    /// would need its own validation rather than a shared one.
     static func withoutFormingFence(_ source: String) -> String {
-        guard let lineStart = source.lastIndex(of: "\n").map(source.index(after:))
+        // `lastIndex(where: \.isNewline)` rather than `lastIndex(of: "\n")`:
+        // Swift reads CRLF as one `Character`, which the latter never matches,
+        // and a CRLF stream would silently opt out of the whole fix.
+        guard let lineStart = source.lastIndex(where: \.isNewline).map(source.index(after:))
                 ?? (source.isEmpty ? nil : source.startIndex) else { return source }
         let lastLine = source[lineStart...]
         let trimmed = lastLine.trimmingCharacters(in: .whitespaces)
@@ -61,9 +75,11 @@ struct MarkdownCompiler: Sendable {
         let ticks = trimmed.prefix { $0 == "`" }
         guard !ticks.isEmpty else { return source }
         let rest = trimmed.dropFirst(ticks.count)
-        // An info string carries no backticks and no whitespace; anything else
-        // means this is prose that merely opens with a backtick.
-        guard !rest.contains("`"), !rest.contains(where: \.isWhitespace) else { return source }
+        // A backtick fence's info string may not contain a backtick — that is
+        // what separates ```` ``` a ``` ```` (a paragraph) from a fence. It
+        // may contain spaces, though, so ```` ```swift {highlight} ```` and
+        // ```` ```py file=a.py ```` are fences and must be held back too.
+        guard !rest.contains("`") else { return source }
         guard ticks.count >= 3 || rest.isEmpty else { return source }
 
         return String(source[..<lineStart])
