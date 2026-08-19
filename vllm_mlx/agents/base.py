@@ -10,8 +10,28 @@ breaking the old one.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field, replace
+
+
+def _resolve_guide_api_key() -> str:
+    """Resolve the API key a rendered setup guide should tell the user to use.
+
+    Mirrors :func:`vllm_mlx.server._resolve_api_key`'s env-only contract, and
+    for the same reason: the desktop app mints a fresh bearer per launch and
+    hands it to the sidecar through ``RAPID_MLX_API_KEY`` rather than argv,
+    where ``ps -axww`` would expose it to every user on the machine. A
+    ``--api-key`` flag on ``agents`` would reintroduce exactly that leak, plus
+    park the bearer in shell history, so the guide reads the env instead.
+
+    Falls back to ``"not-needed"`` — the literal these profiles hardcoded
+    before this function existed — because a bare ``rapid-mlx serve`` with no
+    key configured accepts any credential, and a placeholder reads better in
+    the printed guide than an empty assignment. Under the desktop app the env
+    var is always set, so the fallback is the unauthenticated case only.
+    """
+    return os.environ.get("RAPID_MLX_API_KEY") or "not-needed"
 
 
 @dataclass
@@ -191,6 +211,7 @@ class AgentProfile:
         cfg = self.get_config_for_version(agent_version)
         base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
         ctx_str = str(context_length if context_length is not None else 32768)
+        api_key = _resolve_guide_api_key()
 
         def _sub(text: str) -> str:
             return (
@@ -198,6 +219,7 @@ class AgentProfile:
                 .replace("{model_id}", model_id)
                 .replace("{base_url_no_v1}", base_url_no_v1)
                 .replace("{context_length}", ctx_str)
+                .replace("{api_key}", api_key)
             )
 
         if cfg.type == "env":

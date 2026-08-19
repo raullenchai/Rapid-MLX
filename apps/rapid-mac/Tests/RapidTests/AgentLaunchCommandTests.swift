@@ -3,14 +3,18 @@ import Testing
 
 @Suite("Connect agents — process-scoped launch commands")
 struct AgentLaunchCommandTests {
-    @Test("registry commands carry authentication only for config writers")
+    @Test("registry commands carry authentication for config writers and guides alike")
     func registryCommands() {
         #expect(IntegrationLaunchCommand.configWriter(
             id: "cline", serverURL: "http://127.0.0.1:8000", key: "secret", model: "model", cli: "rapid-mlx"
         ) == "env RAPID_MLX_API_KEY=secret rapid-mlx launch cline --server-url http://127.0.0.1:8000 --model model")
+        // The guide command contacts nothing itself, but the guide it PRINTS
+        // renders OPENAI_API_KEY from RAPID_MLX_API_KEY. Without the bearer the
+        // printed instructions read "not-needed" and 401 against the very
+        // server the page is describing.
         #expect(IntegrationLaunchCommand.adapterGuide(
-            id: "aider", baseURL: "http://127.0.0.1:8000/v1", model: "model", cli: "rapid-mlx"
-        ) == "rapid-mlx agents aider --base-url http://127.0.0.1:8000/v1 --model model")
+            id: "aider", baseURL: "http://127.0.0.1:8000/v1", model: "model", key: "secret", cli: "rapid-mlx"
+        ) == "env RAPID_MLX_API_KEY=secret rapid-mlx agents aider --base-url http://127.0.0.1:8000/v1 --model model")
     }
 
     /// The Desktop app owns an off-PATH sidecar (see ``ServerLocator``), so
@@ -43,9 +47,10 @@ struct AgentLaunchCommandTests {
             id: "aider",
             baseURL: "http://127.0.0.1:8004/v1",
             model: "model",
+            key: key,
             cli: cli
         )
-        #expect(guide.hasPrefix("\(cli) agents aider"))
+        #expect(guide.hasPrefix("env RAPID_MLX_API_KEY=\(key) \(cli) agents aider"))
         #expect(!guide.contains(" rapid-mlx "))
     }
 
@@ -166,7 +171,7 @@ struct AgentLaunchCommandTests {
 
         // The guide generator is what these must NOT be.
         let guide = IntegrationLaunchCommand.adapterGuide(
-            id: "codex", baseURL: base, model: model, cli: "rapid-mlx"
+            id: "codex", baseURL: base, model: model, key: key, cli: "rapid-mlx"
         )
         #expect(guide.contains(" agents codex "))
         #expect(codex != guide)

@@ -330,18 +330,20 @@ struct ConnectToolsView: View {
                     action: .rewriteConfig
                 )
             }
-            // Everything else prints setup instructions. The command carries no
-            // key because it contacts nothing — see ``ConnectTool.Action.guide``.
-            let command = IntegrationLaunchCommand.adapterGuide(
-                id: target.id, baseURL: openAIBaseURL, model: snippetModel, cli: cliCommand
-            )
+            // Everything else prints setup instructions. The command carries the
+            // bearer because the guide it prints tells the user to export one —
+            // see ``IntegrationLaunchCommand.adapterGuide``.
             return ConnectTool(
                 id: target.id,
                 name: target.name,
                 symbol: "point.3.connected.trianglepath.dotted",
                 blurb: "Print this adapter's setup guide for the local endpoint — Rapid can't launch this client for you.",
-                snippet: command,
-                displaySnippet: command,
+                snippet: IntegrationLaunchCommand.adapterGuide(
+                    id: target.id, baseURL: openAIBaseURL, model: snippetModel, key: snippetKey, cli: cliCommand
+                ),
+                displaySnippet: IntegrationLaunchCommand.adapterGuide(
+                    id: target.id, baseURL: openAIBaseURL, model: snippetModel, key: snippetKeyMasked, cli: cliCommand
+                ),
                 action: .guide
             )
         }
@@ -480,8 +482,15 @@ enum IntegrationLaunchCommand {
         "env RAPID_MLX_API_KEY=\(key) \(cli) launch \(id) --server-url \(serverURL) --model \(model)"
     }
 
-    static func adapterGuide(id: String, baseURL: String, model: String, cli: String) -> String {
-        "\(cli) agents \(id) --base-url \(baseURL) --model \(model)"
+    /// The guide command itself contacts nothing, but the guide it PRINTS is
+    /// meant to be followed — and under the desktop app the server always has
+    /// a per-launch bearer. Rendering the guide without one produced setup
+    /// instructions saying `OPENAI_API_KEY=not-needed`, which 401s on the very
+    /// server the page is describing. The key rides in as `env` (never argv)
+    /// so it stays out of `ps -axww` and the user's shell history, matching
+    /// ``configWriter`` above and the sidecar's own `RAPID_MLX_API_KEY` path.
+    static func adapterGuide(id: String, baseURL: String, model: String, key: String, cli: String) -> String {
+        "env RAPID_MLX_API_KEY=\(key) \(cli) agents \(id) --base-url \(baseURL) --model \(model)"
     }
 }
 

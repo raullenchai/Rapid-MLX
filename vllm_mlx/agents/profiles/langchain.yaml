@@ -8,7 +8,10 @@ config:
   type: env
   env_vars:
     OPENAI_BASE_URL: "{base_url}"
-    OPENAI_API_KEY: "not-needed"
+    # Rendered from RAPID_MLX_API_KEY when set, else "not-needed". The desktop
+    # app mints a per-launch bearer, so a hardcoded "not-needed" here made the
+    # printed guide 401 for every desktop user.
+    OPENAI_API_KEY: "{api_key}"
 
 models:
   recommended:
