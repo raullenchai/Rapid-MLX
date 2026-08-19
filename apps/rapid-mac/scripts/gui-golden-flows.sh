@@ -1172,7 +1172,34 @@ flow_fresh_install() {
         "$OUT/fake-events.jsonl" >/dev/null; then
         die "#1560: first launch probed the model catalog before user interaction"
     fi
-    dismiss_first_run
+    press "$OUT/consent-visible.json" TelemetryConsent.DontShare "$OUT/consent-dismiss.json"
+    wait_identifier Quickstart.GetStarted "$OUT/welcome.json"
+
+    # Direction D owns the window rather than mounting production controls
+    # behind a sheet. Pin all three responsive tiers before continuing the
+    # pre-existing fresh-install journey into the production shell.
+    for hidden in Sidebar.NewChat Sidebar.Launch rapid.chat.compose; do
+        if jq -e --arg id "$hidden" '.data.ui_elements[]? | select(.identifier == $id)' \
+            "$OUT/welcome.json" >/dev/null; then
+            die "Direction D mounted production control $hidden behind onboarding"
+        fi
+    done
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX 1400x850 > "$OUT/wide-size.json"
+    see_main "$OUT/wide.json"
+    baseline onboarding-direction-d.wide "$OUT/wide.json"
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX 1000x760 > "$OUT/medium-size.json"
+    see_main "$OUT/medium.json"
+    baseline onboarding-direction-d.medium "$OUT/medium.json"
+    "$AX_DRIVER" set-window-size "$APP_PID" Rapid-MLX 720x700 > "$OUT/compact-size.json"
+    see_main "$OUT/compact.json"
+    baseline onboarding-direction-d.compact "$OUT/compact.json"
+    press "$OUT/compact.json" Quickstart.GetStarted "$OUT/get-started.json"
+    wait_tree_text "~633 MB" "$OUT/chooser-settled.json"
+    baseline onboarding-direction-d.compact-chooser "$OUT/chooser-settled.json"
+    press "$OUT/chooser-settled.json" Quickstart.Footer.Back "$OUT/chooser-back.json"
+    wait_identifier Quickstart.Skip "$OUT/welcome-returned.json"
+    press "$OUT/welcome-returned.json" Quickstart.Skip "$OUT/quickstart-skip.json"
+    wait_identifier rapid.chat.compose "$OUT/steady.json"
     selected_model="$(element_field "$OUT/steady.json" ModelPickerBar.ModelMenu value)"
     [[ "$selected_model" == *"lfm2.5-1b-4bit"* ]] \
         || die "#1564: skipping Quickstart selected '$selected_model' instead of the small starter"

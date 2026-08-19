@@ -33,7 +33,7 @@ edits. Small models underperform. On Apple Silicon, in rough order:
 
 | Model | Size | Notes |
 |---|---|---|
-| `qwen3.6-35b-4bit` | ~20 GB | Recommended workhorse for M3 Max / M4 Pro 24 GB+ |
+| `qwen3.6-35b-4bit` | ~20 GB | Recommended workhorse for 48 GB+ Macs (swaps and aborts on 32 GB) |
 | `qwen3-coder-30b-4bit` | ~17 GB | Code-specialized; great for narrower coding tasks |
 | `qwen3.5-9b-4bit` | ~5 GB | Practical floor — works on 16 GB Macs but expect more retries |
 

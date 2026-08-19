@@ -79,7 +79,7 @@ Codex leans hard on multi-tool calls + `apply_patch`; Qwen 3.6 is the
 recommended workhorse.
 
 ```bash
-rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB, M3 Max / M4 Pro 24 GB+
+rapid-mlx serve qwen3.6-35b-4bit --port 8000   # ~20 GB weights, needs a 48 GB+ Mac
 # smaller: qwen3.6-27b-4bit
 ```
 

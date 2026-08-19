@@ -1,7 +1,7 @@
 #!/bin/bash
 # Rapid-MLX installer — AI inference for Apple Silicon
 # Usage: curl -fsSL https://rapidmlx.com/install.sh | bash
-#        curl ... | bash -s 0.4.3          # specific version
+#        curl ... | bash -s -- 0.12.15     # specific version
 #        curl ... | bash -s latest         # latest from GitHub (pre-release)
 set -euo pipefail
 
@@ -171,7 +171,7 @@ fi
 echo ""
 echo "  ╭─────────────────────────────────────╮"
 echo "  │  Rapid-MLX — AI on Apple Silicon    │"
-echo "  │  2-4x faster than Ollama            │"
+echo "  │  Up to 3x Ollama throughput         │"
 echo "  ╰─────────────────────────────────────╯"
 echo ""
 
@@ -213,10 +213,9 @@ fi
 # The app also surfaces a "fast alternative" per tier; this banner shows a
 # single command, so it takes the app's PRIMARY (smart) pick only.
 #
-# RECOMMENDED_FLAGS carries the tier's launch flags. It is not cosmetic:
-# ``gemma-4-26b-4bit`` at 32–63 GB needs its vision tower dropped and its KV
-# budget capped, and printing the bare ``serve`` line would hand that Mac
-# Mac a command that does not fit in it.
+# RECOMMENDED_FLAGS carries the tier's launch flags. Every current pick
+# ships with empty flags, but the plumbing stays: a future pick that needs
+# launch flags to fit its tier must have them printed with its serve line.
 RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
 RECOMMENDED_FLAGS=""
 # 32 GB and up all get the same pick (AA-Index policy, 2026-08-18):
@@ -417,9 +416,9 @@ echo ""
 dim "Then open a second terminal:"
 echo ""
 echo "    rapid-mlx chat ${RECOMMENDED_MODEL} --port 8000    # built-in chat (terminal)"
-echo "    rapid-mlx-chat                                    # web chat UI (first: pip install 'rapid-mlx[chat]')"
-echo "    OPENAI_BASE_URL=http://localhost:8000/v1 claude    # Claude Code"
-echo "    OPENAI_BASE_URL=http://localhost:8000/v1 aider     # Aider"
+echo "    rapid-mlx-chat                                    # web chat UI (first: ${INSTALL_DIR}/bin/pip install 'rapid-mlx[chat]')"
+echo "    ANTHROPIC_BASE_URL=http://localhost:8000 claude    # Claude Code (or: rapid-mlx launch claude-code)"
+echo "    OPENAI_API_BASE=http://localhost:8000/v1 aider     # Aider"
 echo ""
 dim "Upgrade:    curl -fsSL https://rapidmlx.com/install.sh | bash"
 dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"

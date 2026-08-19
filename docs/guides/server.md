@@ -40,7 +40,7 @@ rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--default-top-p` | Default top_p when not specified | None |
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
-| `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
+| `--reasoning-parser` | Reasoning parser (`qwen3`, `deepseek_r1`, `deepseek_r1_distill`, `deepseek_v4`, `gemma4`, `glm4`, `gpt_oss`, `harmony`, `hy3`/`hy_v3`, `minimax`, `muse`, `ui_tars`, `vibethinker`). Auto-detected from the alias profile; explicit flag overrides. There is no literal `auto` value — omit the flag for auto-detection. | None (auto-detected) |
 | `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
@@ -436,8 +436,8 @@ Example response:
 
 ```json
 {
-  "status": "running",
-  "model": "mlx-community/Qwen3-8B-4bit",
+  "status": "generating",
+  "model": "mlx-community/Qwen3.5-9B-MLX-4bit",
   "uptime_s": 342.5,
   "steps_executed": 1247,
   "num_running": 1,
@@ -445,13 +445,25 @@ Example response:
   "total_requests_processed": 15,
   "total_prompt_tokens": 28450,
   "total_completion_tokens": 3200,
+  "generation_tps": 45.2,
+  "prompt_tps": 812.0,
+  "adaptive_prefill": {
+    "chunk_size": 2048,
+    "protected_chunks": 0,
+    "reduced_chunks": 0
+  },
+  "idle_cache_clear": {
+    "enabled": false,
+    "seconds": 0,
+    "clear_count": 0,
+    "last_clear_at": null
+  },
   "metal": {
     "active_memory_gb": 5.2,
     "peak_memory_gb": 8.1,
     "cache_memory_gb": 2.3
   },
   "cache": {
-    "type": "memory_aware_cache",
     "entries": 5,
     "hit_rate": 0.87,
     "memory_mb": 2350
@@ -459,14 +471,17 @@ Example response:
   "requests": [
     {
       "request_id": "req_abc123",
+      "status": "running",
       "phase": "generation",
+      "elapsed_s": 3.42,
+      "prompt_tokens": 1850,
+      "completion_tokens": 85,
+      "max_tokens": 256,
+      "progress": 0.332,
       "tokens_per_second": 45.2,
       "ttft_s": 0.8,
-      "progress": 0.35,
       "cache_hit_type": "prefix",
-      "cached_tokens": 1200,
-      "generated_tokens": 85,
-      "max_tokens": 256
+      "cached_tokens": 1200
     }
   ]
 }
@@ -476,7 +491,7 @@ Response fields:
 
 | Field | Description |
 |-------|-------------|
-| `status` | Server state: `running`, `stopped`, or `not_loaded` |
+| `status` | Server state: `generating` (at least one request in flight), `idle` (model loaded, nothing running), or `not_loaded` (no engine yet) |
 | `model` | Name of the loaded model |
 | `uptime_s` | Seconds since the server started |
 | `steps_executed` | Total inference steps executed |
@@ -485,10 +500,14 @@ Response fields:
 | `total_requests_processed` | Total requests completed since startup |
 | `total_prompt_tokens` | Total prompt tokens processed since startup |
 | `total_completion_tokens` | Total completion tokens generated since startup |
+| `generation_tps` | Current aggregate decode throughput (tokens/s; `0.0` when idle) |
+| `prompt_tps` | Current aggregate prefill throughput (tokens/s; `0.0` when idle) |
+| `adaptive_prefill` | Adaptive prefill state: `chunk_size`, `protected_chunks`, `reduced_chunks` |
+| `idle_cache_clear` | Idle cache-clear supervisor state: `enabled`, `seconds`, `clear_count`, `last_clear_at` |
 | `metal.active_memory_gb` | Current Metal GPU memory in use (GB) |
 | `metal.peak_memory_gb` | Peak Metal GPU memory usage (GB) |
 | `metal.cache_memory_gb` | Metal cache memory usage (GB) |
-| `cache` | Cache statistics (type, entries, hit rate, memory usage) |
+| `cache` | Cache statistics; the exact keys vary by cache backend, and it is `{"enabled": false}` when the prefix cache is disabled |
 | `requests` | List of active requests with per-request details |
 
 Per-request fields in `requests`:
@@ -496,14 +515,17 @@ Per-request fields in `requests`:
 | Field | Description |
 |-------|-------------|
 | `request_id` | Unique request identifier |
+| `status` | `waiting` (queued) or `running` |
 | `phase` | Current phase: `queued`, `prefill`, or `generation` |
-| `tokens_per_second` | Generation throughput for this request |
-| `ttft_s` | Time to first token (seconds) |
-| `progress` | Completion percentage (0.0 to 1.0) |
+| `elapsed_s` | Seconds since the request arrived |
+| `prompt_tokens` | Prompt tokens for this request |
+| `completion_tokens` | Tokens generated so far |
+| `max_tokens` | Maximum tokens requested |
+| `progress` | `completion_tokens / max_tokens` (0.0 to 1.0) |
+| `tokens_per_second` | Generation throughput for this request (`null` until the first token) |
+| `ttft_s` | Time to first token in seconds (`null` until the first token) |
 | `cache_hit_type` | Cache match type: `exact`, `prefix`, `supersequence`, `lcp`, or `miss` |
 | `cached_tokens` | Number of tokens served from cache |
-| `generated_tokens` | Tokens generated so far |
-| `max_tokens` | Maximum tokens requested |
 
 ## Tool Calling
 

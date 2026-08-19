@@ -494,50 +494,6 @@ class MLLMBatchStats:
         }
 
 
-def _make_batch_cache(model: nn.Module, left_padding: list[int]) -> list[Any]:
-    """
-    Create batch-aware KV cache for the language model.
-
-    Args:
-        model: The language model (model.language_model from VLM)
-        left_padding: Padding amounts for left-padded prompts
-
-    Returns:
-        List of BatchKVCache objects for each layer
-    """
-    from mlx_lm.models.cache import BatchKVCache, KVCache
-
-    def to_batch_cache(c):
-        if isinstance(c, KVCache):
-            return BatchKVCache(left_padding)
-        else:
-            raise ValueError(f"{type(c)} does not yet support batching")
-
-    if hasattr(model, "make_cache"):
-        cache = model.make_cache()
-        return [to_batch_cache(c) for c in cache]
-    else:
-        return [BatchKVCache(left_padding) for _ in model.layers]
-
-
-def _left_pad_prompts(
-    prompts: list[list[int]], max_length: int | None = None
-) -> mx.array:
-    """
-    Left-pad prompts to uniform length.
-
-    Args:
-        prompts: List of token lists
-        max_length: Target length (computed if not provided)
-
-    Returns:
-        Padded prompts as mx.array [batch_size, seq_len]
-    """
-    if max_length is None:
-        max_length = max(len(p) for p in prompts)
-    return mx.array([[0] * (max_length - len(p)) + list(p) for p in prompts])
-
-
 def _maybe_apply_penalty_processors(
     req: MLLMBatchRequest, row_logits: mx.array
 ) -> mx.array:

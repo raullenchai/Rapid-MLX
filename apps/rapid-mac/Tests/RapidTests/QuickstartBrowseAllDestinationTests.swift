@@ -43,6 +43,14 @@ struct QuickstartBrowseAllDestinationTests {
         }
     }
 
+    /// Comment- and whitespace-stripped source, shared with the other
+    /// source-guard suites. Comments must go, not just whitespace: otherwise a
+    /// doc comment that *describes* a call counts as the call, and a wiring
+    /// test passes on prose.
+    private static func stripped(_ source: String) -> String {
+        CapabilityChipRenderGateSourceGuardTests.stripCommentsAndWhitespace(source)
+    }
+
     private static func coordinator() -> QuickstartCoordinator {
         let coord = QuickstartCoordinator()
         coord._testingReset()
@@ -53,16 +61,12 @@ struct QuickstartBrowseAllDestinationTests {
 
     @Test("The link's action calls browseAllModels(), not a dismiss flag")
     func browseAllIsWiredToTheCatalogue() throws {
-        let source = try Self.quickstartSource
+        // Matched on comment- and whitespace-stripped source rather than raw
+        // text: the invariant is which function the control calls, and pinning
+        // the indentation as well made a pure re-layout fail a wiring test.
+        let source = Self.stripped(try Self.quickstartSource)
         #expect(
-            source.contains(
-                """
-                                    Button {
-                                        browseAllModels()
-                                    } label: {
-                                        Text("Browse all models →")
-                """
-            ),
+            source.contains(#"Button("Browseallmodels→"){browseAllModels()}"#),
             """
             The "Browse all models →" button no longer calls browseAllModels(). \
             If it is back to a dismiss closure, that is #1653 returning: the \
@@ -82,20 +86,17 @@ struct QuickstartBrowseAllDestinationTests {
     /// failure card with no way out, or one whose way out leaves setup.
     @Test("The failure card offers a wired route back to model selection")
     func failureCardLinkIsWiredToo() throws {
-        let source = try Self.quickstartSource
+        let source = Self.stripped(try Self.quickstartSource)
         #expect(
             source.contains(
-                """
-                        Button {
-                            returnToModelSelection()
-                        } label: {
-                            Text(Self.failureBackTitle(for: coordinator.step2Stage))
-                """
+                "Button(Self.failureBackTitle(for:coordinator.step2Stage))"
+                + "{returnToModelSelection()}"
             ),
             """
-            The failure card's Back control must call returnToModelSelection(). \
-            It is offered precisely when the user's chosen model failed, which \
-            is the moment they most need to pick a different one.
+            The failure card's Back control must call returnToModelSelection() \
+            and label itself from the origin micro-stage. It is offered \
+            precisely when the user's chosen model failed, which is the moment \
+            they most need to pick a different one.
             """
         )
     }
@@ -248,13 +249,7 @@ struct QuickstartBrowseAllDestinationTests {
             """
         )
         #expect(
-            source.contains(
-                """
-                            Button("Skip for now") {
-                                onSkip()
-                            }
-                """
-            ),
+            Self.stripped(source).contains(#"Button("Skipfornow"){onSkip()}"#),
             "The one onSkip() call must be Skip for now."
         )
     }
