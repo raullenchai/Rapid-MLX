@@ -60,6 +60,27 @@ struct ChatConversation: Identifiable, Codable, Equatable {
     /// this flag is what makes the derivation skip an owned title.
     var hasCustomTitle: Bool = false
 
+    /// Set once a background completion has written a machine title.
+    ///
+    /// Deliberately NOT ``hasCustomTitle``. That flag means the *user* owns
+    /// the name — only ``ChatViewModel/renameConversation(_:to:)`` sets it,
+    /// and nothing may overwrite a title it guards. Reusing it here would
+    /// make a generated name indistinguishable from a rename, and the
+    /// generator could no longer tell "leave this alone, the user named it"
+    /// from "leave this alone, I named it".
+    ///
+    /// What this buys is narrower: it stops ``ChatViewModel/persistActive``
+    /// re-deriving the title from the first user turn on the next save. A
+    /// rename still wins outright — it sets ``hasCustomTitle``, and the
+    /// generator refuses to write when that is true.
+    ///
+    /// One known benign interaction: a generated title landing while the
+    /// sidebar's inline rename editor is open is invisible, because the row
+    /// is showing the editor's `@State` draft. Committing that draft claims
+    /// the title as the user's, which is the right outcome; cancelling shows
+    /// the generated one. The window is one turn wide, once per conversation.
+    var hasGeneratedTitle: Bool = false
+
     /// Instructions scoped to this conversation. Optional on disk so history
     /// written before custom instructions shipped remains valid.
     var customInstructions: String? = nil
@@ -84,6 +105,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         isPinned: Bool = false,
         isArchived: Bool = false,
         hasCustomTitle: Bool = false,
+        hasGeneratedTitle: Bool = false,
         customInstructions: String? = nil,
         folderID: UUID? = nil
     ) {
@@ -110,6 +132,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         self.isPinned = isPinned
         self.isArchived = isArchived
         self.hasCustomTitle = hasCustomTitle
+        self.hasGeneratedTitle = hasGeneratedTitle
         self.customInstructions = customInstructions
         self.folderID = folderID
     }
@@ -211,6 +234,7 @@ struct ChatConversation: Identifiable, Codable, Equatable {
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         hasCustomTitle = try c.decodeIfPresent(Bool.self, forKey: .hasCustomTitle) ?? false
+        hasGeneratedTitle = try c.decodeIfPresent(Bool.self, forKey: .hasGeneratedTitle) ?? false
         customInstructions = try c.decodeIfPresent(String.self, forKey: .customInstructions)
         folderID = try c.decodeIfPresent(UUID.self, forKey: .folderID)
     }
@@ -367,13 +391,19 @@ enum ConversationStore {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         if collapsed.isEmpty, let filename = first.fileAttachments.first?.filename {
-            return filename.count > 42
-                ? String(filename.prefix(42)) + "…"
-                : filename
+            return capped(filename)
         }
         if collapsed.isEmpty { return "New chat" }
-        return collapsed.count > 42
-            ? String(collapsed.prefix(42)) + "…"
-            : collapsed
+        return capped(collapsed)
+    }
+
+    /// The sidebar row's one-line budget.
+    ///
+    /// Extracted so a generated title obeys the identical rule rather than a
+    /// second copy of the number: the row is `.lineLimit(1)` either way, and
+    /// two caps that drift produce titles that truncate differently depending
+    /// on where they came from.
+    static func capped(_ title: String) -> String {
+        title.count > 42 ? String(title.prefix(42)) + "…" : title
     }
 }
