@@ -4269,6 +4269,27 @@ flow_audio_readiness() {
         '.event == "server_started" and .alias == "fake-whisper-small"' \
         "Transcription did not start explicitly"
 
+    # The fake emits server_started as soon as the process accepts the alias,
+    # but the app deliberately keeps sending disabled until its health poll
+    # observes that alias as ready. On a hosted runner, pressing Choose File
+    # in that interval selects the fixture correctly while Transcribe remains
+    # disabled, making the later assertion blame the picker for a readiness
+    # race. Wait on the user-visible readiness SSOT before exercising it.
+    local transcription_serving_ready=0
+    for ((i=0; i<120; i++)); do
+        see_main "$OUT/transcription-serving.json"
+        if jq -e '.data.ui_elements[]?
+                  | select(.role == "AXGroup"
+                           and ((.description // "")
+                                == "Ready — fake-whisper-small"))' \
+                 "$OUT/transcription-serving.json" >/dev/null; then
+            transcription_serving_ready=1; break
+        fi
+        sleep 0.25
+    done
+    [[ "$transcription_serving_ready" == 1 ]] \
+        || die "Transcription server started but never became UI-ready"
+
     local file_selected=0
     for ((i=0; i<20; i++)); do
         see_main "$OUT/transcription-controls.json"
