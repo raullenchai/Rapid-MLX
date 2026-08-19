@@ -82,13 +82,14 @@ class AgentProfile:
     # Identity
     name: str  # "codex", "hermes", "qwen-code"
     display_name: str  # "Hermes Agent"
+    repo: str | None = None  # "NousResearch/hermes-agent"
+    stars: int | None = None  # for prioritization
     # "agent" (a runnable agent product) or "framework" (a library you
     # build agents with — langchain, pydanticai, smolagents). The CLI
     # footer counts the two separately; everything else treats them the
-    # same.
+    # same. Kept AFTER the long-standing fields so any positional
+    # ``AgentProfile(name, display_name, repo)`` call keeps its meaning.
     kind: str = "agent"
-    repo: str | None = None  # "NousResearch/hermes-agent"
-    stars: int | None = None  # for prioritization
 
     # Base configuration (used when no version match)
     config: AgentConfigSpec = field(default_factory=lambda: AgentConfigSpec("env"))

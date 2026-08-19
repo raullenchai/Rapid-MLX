@@ -8194,10 +8194,15 @@ def agents_command(args):
         # separately so "N agents" stays honest (#2082).
         framework_count = sum(1 for p in profiles if p.kind == "framework")
         agent_count = len(profiles) - framework_count
+        agents_label = "agent" if agent_count == 1 else "agents"
+        frameworks_label = "framework" if framework_count == 1 else "frameworks"
         if framework_count:
-            print(f"  {agent_count} agents + {framework_count} frameworks supported")
+            print(
+                f"  {agent_count} {agents_label} + "
+                f"{framework_count} {frameworks_label} supported"
+            )
         else:
-            print(f"  {agent_count} agents supported")
+            print(f"  {agent_count} {agents_label} supported")
         print("  Usage: rapid-mlx agents <name>          Show setup guide")
         print("         rapid-mlx agents <name> --setup   Auto-configure")
         print("         rapid-mlx agents <name> --test    Run integration tests")
