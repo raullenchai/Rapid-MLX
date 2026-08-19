@@ -1561,7 +1561,6 @@ def _try_inject_mtp_post_load(model, model_name):
             )
 
 
-
 def _load_with_tokenizer_fallback(model_name: str, *, enable_dspark: bool = False):
     """Load model with fallback tokenizer for non-standard models like Nemotron."""
     from mlx_lm.utils import load_model

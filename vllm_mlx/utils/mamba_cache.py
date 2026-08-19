@@ -104,6 +104,7 @@ class BatchMambaCache(MambaCache):
 
         return merged_cache
 
+
 # Auto-patch when module is imported
 _patched = False
 

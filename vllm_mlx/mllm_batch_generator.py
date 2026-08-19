@@ -494,7 +494,6 @@ class MLLMBatchStats:
         }
 
 
-
 def _maybe_apply_penalty_processors(
     req: MLLMBatchRequest, row_logits: mx.array
 ) -> mx.array:
