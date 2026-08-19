@@ -765,12 +765,6 @@ def reset_controllers() -> None:
         _controllers.clear()
 
 
-def get_controller_snapshot() -> dict[str, str]:
-    """Snapshot of ``model_id -> diagnostics`` for logging / metrics."""
-    with _lock:
-        return {k: v.diagnostics() for k, v in _controllers.items()}
-
-
 def sum_across_controllers() -> tuple[int, int, dict[int, int]]:
     """Aggregate (round_count, park_count, k_histogram) across all
     registered controllers. Called by the /metrics renderer so a
