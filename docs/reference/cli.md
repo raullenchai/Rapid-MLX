@@ -131,7 +131,7 @@ are the argparse defaults from `vllm_mlx/cli.py`.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--force-disk-check` | Skip the pre-flight disk-space check; use only when the HF cache lives on a different filesystem (e.g. external drive via `HF_HOME`) | off |
+| `--force-disk-check` | Proceed even when the pre-flight disk-space check fails — the check still runs and prints its numbers, but a shortfall becomes a warning instead of an abort (the download will likely fail mid-way) | off |
 | `--disk-stream` | Stream MoE routed-expert weights from disk instead of holding them resident (opt-in; only architectures registered in `vllm_mlx.registry`) | off |
 | `--disk-stream-cache-gb` | Byte budget (GB) for the disk-stream expert LRU cache; only used with `--disk-stream` | 1.0 |
 | `--resident-memory-limit-gb` | Process-wide resident model ceiling in GiB; loading another model evicts the least-recently-used idle unpinned model first. 0 disables. | 0 (disabled) |
