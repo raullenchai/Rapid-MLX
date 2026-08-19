@@ -84,6 +84,12 @@ class AgentProfile:
     display_name: str  # "Hermes Agent"
     repo: str | None = None  # "NousResearch/hermes-agent"
     stars: int | None = None  # for prioritization
+    # "agent" (a runnable agent product) or "framework" (a library you
+    # build agents with — langchain, pydanticai, smolagents). The CLI
+    # footer counts the two separately; everything else treats them the
+    # same. Keyword-only so no positional call — of any historical arity —
+    # can ever be reinterpreted by this field's position.
+    kind: str = field(default="agent", kw_only=True)
 
     # Base configuration (used when no version match)
     config: AgentConfigSpec = field(default_factory=lambda: AgentConfigSpec("env"))

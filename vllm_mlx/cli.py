@@ -8189,7 +8189,20 @@ def agents_command(args):
                 models = ""
             print(f"  {p.name:<15} {p.display_name:<20} {stars:>5}  [{fc}]  {models}")
         print()
-        print(f"  {len(profiles)} agents supported")
+        # Frameworks (langchain, pydanticai, smolagents) are libraries
+        # you build agents with, not agents themselves — count them
+        # separately so "N agents" stays honest (#2082).
+        framework_count = sum(1 for p in profiles if p.kind == "framework")
+        agent_count = len(profiles) - framework_count
+        agents_label = "agent" if agent_count == 1 else "agents"
+        frameworks_label = "framework" if framework_count == 1 else "frameworks"
+        if framework_count:
+            print(
+                f"  {agent_count} {agents_label} + "
+                f"{framework_count} {frameworks_label} supported"
+            )
+        else:
+            print(f"  {agent_count} {agents_label} supported")
         print("  Usage: rapid-mlx agents <name>          Show setup guide")
         print("         rapid-mlx agents <name> --setup   Auto-configure")
         print("         rapid-mlx agents <name> --test    Run integration tests")
@@ -10380,7 +10393,10 @@ Examples:
         "agent_name",
         nargs="?",
         default=None,
-        help="Agent name (e.g. codex, opencode, qwen-code, aider). Omit to list all.",
+        help=(
+            "Agent name (e.g. codex, opencode, qwen-code, aider; "
+            "continue-dev is accepted for continue). Omit to list all."
+        ),
     )
     agents_parser.add_argument(
         "--setup",

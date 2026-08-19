@@ -1,5 +1,6 @@
 name: smolagents
 display_name: "smolagents"
+kind: framework
 repo: "huggingface/smolagents"
 stars: 15000
 

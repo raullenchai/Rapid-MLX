@@ -34,7 +34,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import ADAPTERS, cursor
+from . import ADAPTERS, CLIENT_ALIASES, canonical_client, cursor
 
 # Where we drop the PID of a ``--start-server`` subprocess. Pulled out
 # so tests can monkeypatch it to a tmp_path and assert the file's
@@ -133,6 +133,10 @@ def launch_command(args: argparse.Namespace) -> None:
     passed ``--dry-run`` we describe what we *would* do and exit 0
     without touching disk.
     """
+    # Accept alias spellings (``continue`` for ``continue-dev``) before
+    # any registry lookup — see CLIENT_ALIASES and issue #2082.
+    args.client = canonical_client(args.client)
+
     if args.client == "list":
         sys.exit(_print_list(as_json=args.json))
 
@@ -315,7 +319,13 @@ def register(subparsers) -> None:
         default=None,
         help=(
             'Client to configure (or "list" to print the detection matrix). '
-            "Supported: " + ", ".join(ADAPTERS.keys()) + "."
+            "Supported: "
+            + ", ".join(ADAPTERS.keys())
+            + ". Aliases: "
+            + ", ".join(
+                f"{alias} (for {target})" for alias, target in CLIENT_ALIASES.items()
+            )
+            + "."
         ),
     )
     p.add_argument(
