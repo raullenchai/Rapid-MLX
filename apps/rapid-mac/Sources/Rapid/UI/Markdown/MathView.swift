@@ -41,17 +41,11 @@ struct MathView: View {
     @ScaledMetric(relativeTo: .body) private var baseFontSize: CGFloat = 15
 
     var body: some View {
-        // Probe-render once on the main thread to detect bodies
-        // SwiftMath can't parse. Cheap: parse goes ``String`` →
-        // ``MTMathList`` without doing any layout. If it fails,
-        // surface the raw source.
-        //
-        // ``mathFontsAvailable`` is checked FIRST and short-circuits every
-        // SwiftMath type — including the parser, because ``MTFont.swift``
-        // force-unwraps the same bundle lookup.
-        if Self.mathFontsAvailable, Self.parses(latex: latex) {
+        // Bridge, then probe-parse; ``renderable`` documents both, and why
+        // ``mathFontsAvailable`` has to be the first thing checked.
+        if Self.mathFontsAvailable, let source = Self.renderable(latex) {
             MathHost(
-                latex: latex,
+                latex: source,
                 displayMode: displayMode,
                 colorScheme: colorScheme,
                 baseFontSize: baseFontSize
@@ -66,12 +60,27 @@ struct MathView: View {
         }
     }
 
-    /// Static parse probe. ``MTMathListBuilder.build`` returns nil
-    /// on parse failure and we don't need the result here.
-    private static func parses(latex: String) -> Bool {
+    /// The body to hand ``MathHost``, or nil when SwiftMath cannot parse it.
+    ///
+    /// ``LaTeXCompatibility`` runs first: a model writing `\mod` or
+    /// `\begin{align}` is writing valid LaTeX that SwiftMath's table happens
+    /// not to cover, and without the bridge every such formula reaches the
+    /// raw-source fallback below. It runs *here*, inside the
+    /// ``mathFontsAvailable`` branch, for the reason that guard exists — no
+    /// SwiftMath type may be touched until the resources behind it are known
+    /// to be complete.
+    ///
+    /// The probe parse is cheap: ``MTMathListBuilder/build`` goes `String` →
+    /// `MTMathList` without laying anything out. The two fallbacks keep
+    /// `latex` rather than the bridged source, so what a reader sees when
+    /// rendering fails is what the model actually wrote.
+    @MainActor
+    private static func renderable(_ latex: String) -> String? {
+        let source = LaTeXCompatibility.normalized(latex)
         var error: NSError?
-        let list = MTMathListBuilder.build(fromString: latex, error: &error)
-        return list != nil && error == nil
+        let list = MTMathListBuilder.build(fromString: source, error: &error)
+        guard list != nil, error == nil else { return nil }
+        return source
     }
 
     /// Is the signed app's SwiftMath resource bundle usable? This deliberately

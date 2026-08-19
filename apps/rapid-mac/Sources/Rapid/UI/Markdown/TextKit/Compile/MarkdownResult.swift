@@ -115,6 +115,12 @@ struct InlineRun: Equatable, Sendable {
     public var isStrikethrough: Bool
     public var isInlineCode: Bool
     public var link: URL?
+    /// LaTeX body when this run IS a piece of inline math, `nil` for prose.
+    ///
+    /// ``text`` still carries the source spelling (`$x$`) so anything that
+    /// only wants characters — copy, VoiceOver, search, width estimation —
+    /// keeps working untouched and unaware.
+    public var math: String?
 
     public init(
         text: String,
@@ -122,7 +128,8 @@ struct InlineRun: Equatable, Sendable {
         isEmphasis: Bool = false,
         isStrikethrough: Bool = false,
         isInlineCode: Bool = false,
-        link: URL? = nil
+        link: URL? = nil,
+        math: String? = nil
     ) {
         self.text = text
         self.isStrong = isStrong
@@ -130,6 +137,7 @@ struct InlineRun: Equatable, Sendable {
         self.isStrikethrough = isStrikethrough
         self.isInlineCode = isInlineCode
         self.link = link
+        self.math = math
     }
 }
 
