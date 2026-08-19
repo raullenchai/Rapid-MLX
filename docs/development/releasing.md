@@ -2,6 +2,11 @@
 
 This page documents the **end-to-end release flow** and the **safety nets** that catch the common failure modes.
 
+> **Canonical sources.** The release flow itself is canonically documented in
+> [`RELEASE.md`](../../RELEASE.md) at the repo root, and the PR-validation
+> pipeline in [`scripts/pr_validate/README.md`](../../scripts/pr_validate/README.md).
+> This page adds operational detail; where it disagrees with those files, they win.
+
 For the final gate that validates the exact wheel through real models, agents,
 and SDK/framework clients, see [Release artifact acceptance](release-artifact-acceptance.md).
 
@@ -11,8 +16,8 @@ The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs
 
 | Trigger | What happens automatically |
 |---|---|
-| Push commit `chore: bump version to X.Y.Z` to `main` | `auto-release.yml` creates tag `vX.Y.Z` + GitHub Release, crediting every merged PR author other than the repository owner |
-| GitHub Release published | `publish.yml` builds → PyPI publish → dispatches Homebrew tap to bump formula |
+| Merge a bump PR (squash subject `chore: bump version to X.Y.Z`) to `main` | `auto-release.yml` runs `detect` → **`tier1-agent-gate`** (self-hosted Studio: the five Tier-1 agents re-verified end-to-end against a real model) → `release`, which creates tag `vX.Y.Z` + GitHub Release, crediting every merged PR author other than the repository owner. The gate blocks the tag: no green gate, no release. |
+| GitHub Release published | `publish.yml` builds sdist + wheel → PyPI publish (Homebrew follows via homebrew-core autobump — see step 5 below; `publish.yml` itself has no Homebrew step) |
 | PR changes the `pyproject.toml` `version` line outside a dedicated bump PR | `version-check.yml` **fails** — version may only change in a PR titled `chore: bump version to X.Y.Z` (the `version-bump` label authorizes the change but still requires that release-shaped title; the `skip-version-bump` label is the escape hatch for corrections) |
 
 ## Cutting a release
@@ -31,7 +36,8 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    `vllm_mlx.server`, `vllm_mlx.cli`). Catches the failure mode that
    shipped in v0.6.53 (#408): code that imports cleanly on the dev
    machine because the dev mlx has a symbol that hasn't appeared in any
-   released wheel yet. Every other gate (`make smoke/check/full`,
+   released wheel yet. Every other gate (`make smoke`, the
+   `rapid-mlx bench --tier smoke|speed|harness|all` tiers,
    `pr_validate`, codex review) runs against the dev mlx and is blind
    to this class of bug. **Do not push a version bump commit if this
    fails** — the failure indicates every `pip install` user will crash
@@ -40,25 +46,34 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    Post-tag verification: `python3 scripts/release_smoke.py --version X.Y.Z`
    re-runs the gate against the wheel actually published to PyPI.
 
-2. **Bump `pyproject.toml`** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). Keep the change in its own commit:
+2. **Bump `pyproject.toml` in a dedicated bump PR** — change `version = "X.Y.Z"` to `X.Y.(Z+1)` (or minor / major as appropriate). Never push the bump directly to `main`: `version-check.yml` only accepts a `version`-line change in a PR titled `chore: bump version to X.Y.Z` (see "Safety nets" below), and direct pushes to `main` are against repo convention anyway.
 
    ```bash
-   git checkout main
-   git pull
+   git checkout -b chore/bump-0.6.16 raullenchai/main
    sed -i '' 's/^version = "0.6.15"/version = "0.6.16"/' pyproject.toml
    git add pyproject.toml
    git commit -m "chore: bump version to 0.6.16"
-   git push raullenchai main
+   git push raullenchai chore/bump-0.6.16
+   gh pr create --repo raullenchai/Rapid-MLX --base main \
+     --title "chore: bump version to 0.6.16" --body "Release 0.6.16."
+   # after CI (incl. release-preflight.yml) is green, merge with the EXACT subject —
+   # GitHub's default squash appends "(#NN)", which breaks auto-release.yml's regex:
+   gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash \
+     --subject "chore: bump version to 0.6.16" --delete-branch
    ```
 
-   The commit subject **must** match `chore: bump version to X.Y.Z` exactly — `auto-release.yml` parses it.
+   The squash-commit subject on `main` **must** match `chore: bump version to X.Y.Z` exactly — `auto-release.yml` parses it (see the squash-suffix trap below).
 
    While you're in this PR, also roll the release notes:
    `git mv docs/release-notes/unreleased.md docs/release-notes/vX.Y.Z.md`,
    tidy the prose, and recreate an empty `unreleased.md`. Optional — skipping
    it just gives you a plain commit list. See `docs/release-notes/README.md`.
 
-3. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds the release notes via `scripts/build_release_notes.sh` (curated `docs/release-notes/vX.Y.Z.md` if present, plus the commit list for `<nearest ancestor tag>..<release commit>`), adds a linked **Community contributors** entry for every merged PR author other than the repository owner, and creates the GitHub Release **at that same commit**.
+3. **`auto-release.yml` fires** — three jobs, in sequence:
+
+   1. **`detect`** (GitHub-hosted, ~2s) — verifies the commit subject matches the bump regex, `pyproject.toml` agrees, and the tag doesn't already exist. Non-bump pushes stop here.
+   2. **`tier1-agent-gate`** (self-hosted Apple-Silicon "Studio", ~10min) — builds the exact release source into a fresh venv and runs `tests/integrations/agent_smoke.sh`: boots `rapid-mlx serve` and drives the five Tier-1 agents (Claude Code, Codex, Hermes, Aider, DeepSeek Harness) through a real end-to-end edit, plus the output-coherence golden and a decode-throughput check on the same warm serve. The `release` job `needs` this gate — **the release cannot tag or publish until it passes.** See [`RELEASE.md`](../../RELEASE.md) for gate failure triage and the Studio-down break-glass path.
+   3. **`release`** (GitHub-hosted) — builds the release notes via `scripts/build_release_notes.sh` (curated `docs/release-notes/vX.Y.Z.md` if present, plus the commit list for `<nearest ancestor tag>..<release commit>`), adds a linked **Community contributors** entry for every merged PR author other than the repository owner, and creates tag + GitHub Release **at that same commit**.
 
 4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment).
 
@@ -163,7 +178,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 | G1 | Build wheel + sdist, then clean-room install + import both | CI | `release-preflight.yml` (macOS-14) | dev mlx symbol drift (#408), incomplete source distribution |
 | G2 | Codex review × 2 rounds | local | maintainer machine | every PR-author bug class |
 | G3 | CLI ↔ Config fidelity audit | CI | `ci.yml` lint (ubuntu) | silent CLI flag drop (#400) |
-| G4 | unit suite (≈4500 tests) | CI | `ci.yml` test-matrix (linux) + test-apple-silicon (macOS-14) | parser/router regressions |
+| G4 | unit suite (≈16.6k tests) | CI | `ci.yml` test-matrix (linux) + test-apple-silicon (macOS-14) | parser/router regressions |
 | G5 | `make stress` — 8 scenarios | **M3** | `make release-check-m3` | concurrent-batching regressions |
 | G6 | Live-server fix-path repro | **M3** | `make release-check-m3` | fix doesn't ship to user-visible path |
 | G7 | SDK integration (anthropic / pydantic_ai / smolagents) | **M3** | `make release-check-m3` | router-level breakage unit tests miss |
@@ -178,7 +193,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 
 ### CI coverage — what runs without you lifting a finger
 
-**Every PR** → `pr-validate.yml` runs the `pr_validate` pipeline (7 of 9 steps; `stress_e2e_bench` and `full_unit` skipped because both need MLX/a live server which ubuntu-latest can't provide). The scorecard is posted as a PR comment so contributor + maintainer see the verdict without leaving the PR page. The skipped pair is covered on M3 by `make release-check-m3` at release time.
+**Every PR** → `pr-validate.yml` runs the `pr_validate` pipeline (8 of the 11 steps; `stress_e2e_bench` and `full_unit` skipped because both need MLX/a live server which ubuntu-latest can't provide, and `codex_review` self-skips on CI — no ChatGPT login). The scorecard is posted as a PR comment so contributor + maintainer see the verdict without leaving the PR page. The skipped pair is covered on M3 by `make release-check-m3` at release time.
 
 **Every bump PR** (title matches `chore: bump version to X.Y.Z`) → `release-preflight.yml` adds PF-1, PF-2, G1, G10 (advisory), G11. The `preflight-summary` job aggregates them so the bump PR has a single required check.
 
