@@ -5594,6 +5594,7 @@ def recipe_command(args) -> None:
     print a copy-paste ``serve`` command that is known to fail mid-download.
     """
     import json
+    import math
 
     from vllm_mlx.model_aliases import resolve_profile
     from vllm_mlx.model_sizes import size_bytes
@@ -5609,7 +5610,13 @@ def recipe_command(args) -> None:
     payload = recommendation_payload(ram_gb)
     cached_repos = {repo.casefold() for repo, _, _ in _scan_hf_cache_models()}
     free_disk_gb = _recipe_free_disk_gb()
-    payload["free_disk_gb"] = None if free_disk_gb is None else round(free_disk_gb, 1)
+    # Free space rounds DOWN while required space below rounds UP. Besides
+    # preserving a small safety margin, using those same display values for
+    # the comparison prevents the absurd-looking "needs 16.7; 16.7 free" /
+    # "won't fit" combination at a rounding boundary.
+    payload["free_disk_gb"] = (
+        None if free_disk_gb is None else math.floor(free_disk_gb * 10) / 10
+    )
     for pick in payload["picks"]:
         try:
             profile = resolve_profile(pick["alias"])
@@ -5637,12 +5644,12 @@ def recipe_command(args) -> None:
             else round(download_bytes / float(1 << 30), 1)
         )
         pick["required_disk_gb"] = (
-            None if required_disk_gb is None else round(required_disk_gb, 1)
+            None if required_disk_gb is None else math.ceil(required_disk_gb * 10) / 10
         )
         pick["disk_fit"] = (
             None
             if free_disk_gb is None or required_disk_gb is None
-            else free_disk_gb >= required_disk_gb
+            else payload["free_disk_gb"] >= pick["required_disk_gb"]
         )
 
     if getattr(args, "json", False):
@@ -5668,7 +5675,7 @@ def recipe_command(args) -> None:
         if pick["disk_fit"] is False:
             print(
                 f"   ⚠ won't fit: needs ~{pick['required_disk_gb']:.1f} GB "
-                f"including download headroom; {free_disk_gb:.1f} GB free"
+                f"including download headroom; {payload['free_disk_gb']:.1f} GB free"
             )
             print("   Free disk space or set HF_HOME/HF_HUB_CACHE to another drive.")
             continue
@@ -5692,18 +5699,16 @@ def _recipe_free_disk_gb() -> float | None:
 
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
-
-        probe = Path(HF_HUB_CACHE).expanduser().absolute()
     except Exception:
-        probe = Path.home() / ".cache" / "huggingface" / "hub"
-
-    while not probe.exists() and probe.parent != probe:
-        probe = probe.parent
-    if not probe.exists():
-        return None
+        HF_HUB_CACHE = str(Path.home() / ".cache" / "huggingface" / "hub")
     try:
+        probe = Path(HF_HUB_CACHE).expanduser().absolute()
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
+        if not probe.exists():
+            return None
         return shutil.disk_usage(probe).free / float(1 << 30)
-    except OSError:
+    except (OSError, TypeError, ValueError):
         return None
 
 
