@@ -30,7 +30,20 @@ DENSE_ARGS = SimpleNamespace(
 PER_TOKEN = 2 * 28 * 8 * 128 * 2  # 229_376 bytes/token
 
 
-def _make_scheduler(model, util=0.0):
+def _make_scheduler(
+    model,
+    util=0.0,
+    *,
+    sched_per_tok=0,
+    sched_fixed=0,
+    sched_slot=0,
+    sched_window=0,
+):
+    """A Scheduler stub. The scheduler's cached KV terms default to 0 so the
+    method takes the ``_read_kv_dims`` fallback (the mlx-lm ``.args`` case);
+    pass ``sched_per_tok`` etc. to exercise the primary "prefer the scheduler's
+    own resolved terms" path instead.
+    """
     sched = Scheduler.__new__(Scheduler)
     sched.model = model
     sched.config = SimpleNamespace(
@@ -38,6 +51,11 @@ def _make_scheduler(model, util=0.0):
         metal_cap_kv_bytes_per_token=0,
         kv_cache_dtype="bf16",
     )
+    sched._kv_bytes_per_token_resolved = True
+    sched._kv_bytes_per_token = sched_per_tok
+    sched._kv_fixed_baseline_bytes = sched_fixed
+    sched._kv_sliding_slot_bytes = sched_slot
+    sched._kv_sliding_window = sched_window
     return sched
 
 
@@ -63,6 +81,26 @@ def test_read_kv_dims_from_mlx_args() -> None:
 
 def test_read_kv_dims_none_for_stub_model() -> None:
     assert _read_kv_dims(SimpleNamespace()) is None
+
+
+def test_read_kv_dims_prefers_text_tower_over_decoy_outer() -> None:
+    """A multimodal shape carries decoy vision dims on the outer config and the
+    real text-tower dims under ``text_config`` — the text tower must win, or
+    max_model_len would be computed from the wrong architecture."""
+    outer = SimpleNamespace(
+        num_hidden_layers=40,  # decoy vision-tower depth
+        num_key_value_heads=16,
+        head_dim=80,
+        text_config=SimpleNamespace(
+            num_hidden_layers=28,
+            num_key_value_heads=8,
+            head_dim=128,
+            dtype="bfloat16",
+        ),
+    )
+    dims = _read_kv_dims(SimpleNamespace(args=outer))
+    assert dims is not None
+    assert dims[:3] == (28, 8, 128)
 
 
 def test_native_window_fits_returns_native(monkeypatch) -> None:
@@ -108,6 +146,17 @@ def test_configured_utilization_is_honored(monkeypatch) -> None:
     sched = _make_scheduler(SimpleNamespace(args=DENSE_ARGS), util=0.5)
     _stub_mx(monkeypatch, base_bytes=base, resident_bytes=0)
     assert sched.projected_memory_max_context(10**6) == int(base * 0.5) // PER_TOKEN
+
+
+def test_prefers_scheduler_resolved_terms(monkeypatch) -> None:
+    """When the scheduler already resolved its footprint terms (config-backed
+    models, and where the operator KV override applies), use THOSE — so the
+    advertised ceiling matches admission — not a re-derivation. Proven by a
+    model exposing no dims at all: a fallback to _read_kv_dims would be None."""
+    base = 2_550_000_000
+    sched = _make_scheduler(SimpleNamespace(), sched_per_tok=PER_TOKEN)
+    _stub_mx(monkeypatch, base_bytes=base, resident_bytes=0)
+    assert sched.projected_memory_max_context(40960) == int(base * 0.90) // PER_TOKEN
 
 
 def test_none_when_no_dims(monkeypatch) -> None:

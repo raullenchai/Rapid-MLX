@@ -62,11 +62,15 @@ def _read_kv_dims(model):
 
     mlx-lm models expose the HF dims on ``.args`` (a ModelArgs dataclass), not
     a ``.config``; multimodal checkpoints nest the text tower under
-    ``text_config``. Walk both holders and both nesting levels — the same
-    source chain ``service.helpers.get_model_max_context`` uses — and return
-    the first that yields a usable layer/kv-head/head-dim triple plus the
-    config object those dims came from (so ``estimate_kv_footprint`` reads its
-    hybrid structural fields, e.g. ``layer_types``, from the SAME place).
+    ``text_config`` and may carry DECOY vision dims on the outer config. This
+    only runs when the scheduler's own config-based terms could not resolve,
+    but it still mirrors the admission path's tower selection so it can't pick
+    the wrong one: a config whose OWN ``layer_types`` validates against its OWN
+    ``num_hidden_layers`` (``_pick_structural_config``'s rule) wins, then the
+    nested ``text_config``, then the outer holder (dense: neither validates and
+    only the outer carries dims). Returns the triple plus the config the dims
+    came from, so ``estimate_kv_footprint`` reads its hybrid structural fields
+    from the SAME place.
     """
 
     def _pos_int(value):
@@ -76,25 +80,43 @@ def _read_kv_dims(model):
             return None
         return ivalue if ivalue > 0 else None
 
-    holders = (getattr(model, "config", None), getattr(model, "args", None))
-    for holder in holders:
+    def _dims_of(cfg):
+        if cfg is None:
+            return None
+        layers = _pos_int(_cfg_get(cfg, "num_hidden_layers"))
+        kv_heads = _pos_int(_cfg_get(cfg, "num_key_value_heads")) or _pos_int(
+            _cfg_get(cfg, "num_attention_heads")
+        )
+        head_dim = _pos_int(_cfg_get(cfg, "head_dim"))
+        if head_dim is None:
+            hidden = _pos_int(_cfg_get(cfg, "hidden_size"))
+            heads = _pos_int(_cfg_get(cfg, "num_attention_heads"))
+            if hidden and heads:
+                head_dim = hidden // heads
+        if layers and kv_heads and head_dim:
+            return layers, kv_heads, head_dim, cfg
+        return None
+
+    for holder in (getattr(model, "config", None), getattr(model, "args", None)):
         if holder is None:
             continue
-        for cfg in (holder, _cfg_get(holder, "text_config")):
+        text_cfg = _cfg_get(holder, "text_config")
+        # 1) The structural tower: the config whose own layer_types validates
+        #    against its own num_hidden_layers (the text tower for a hybrid).
+        for cfg in (holder, text_cfg):
             if cfg is None:
                 continue
-            layers = _pos_int(_cfg_get(cfg, "num_hidden_layers"))
-            kv_heads = _pos_int(_cfg_get(cfg, "num_key_value_heads")) or _pos_int(
-                _cfg_get(cfg, "num_attention_heads")
-            )
-            head_dim = _pos_int(_cfg_get(cfg, "head_dim"))
-            if head_dim is None:
-                hidden = _pos_int(_cfg_get(cfg, "hidden_size"))
-                heads = _pos_int(_cfg_get(cfg, "num_attention_heads"))
-                if hidden and heads:
-                    head_dim = hidden // heads
-            if layers and kv_heads and head_dim:
-                return layers, kv_heads, head_dim, cfg
+            n = _pos_int(_cfg_get(cfg, "num_hidden_layers"))
+            if n and _valid_layer_types(_cfg_get(cfg, "layer_types"), n):
+                dims = _dims_of(cfg)
+                if dims is not None:
+                    return dims
+        # 2) No validating layer_types (dense / non-hybrid multimodal): prefer
+        #    the nested text tower over the outer (possibly-decoy) config.
+        for cfg in (text_cfg, holder):
+            dims = _dims_of(cfg)
+            if dims is not None:
+                return dims
     return None
 
 
@@ -4963,34 +4985,47 @@ class Scheduler:
         field absent rather than advertising a fabricated cap.
         """
         try:
-            # Architecture-aware KV footprint of one sequence. The scheduler's
-            # cached terms (``_resolve_kv_bytes_per_token``) read
-            # ``self.model.config``, which mlx-lm models do NOT expose — they
-            # carry the dims on ``.args`` — so resolve them permissively here
-            # (the same source chain ``get_model_max_context`` walks) and run
-            # the exact hybrid-aware estimator the admission projection uses.
-            dims = _read_kv_dims(self.model)
-            if dims is None:
-                return None
-            num_layers, kv_heads, head_dim, struct_cfg = dims
-            dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
-            uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
-            if uniform_per_token <= 0:
-                return None
-            estimate = estimate_kv_footprint(
-                struct_cfg,
-                dtype_bytes=dtype_bytes,
-                uniform_per_token_bytes=uniform_per_token,
-                base_num_layers=num_layers,
-                base_kv_heads=kv_heads,
-                base_head_dim=head_dim,
-            )
-            per_tok = estimate.per_token_growth_bytes
-            fixed_baseline = estimate.fixed_baseline_bytes
-            sliding_slot_bytes = estimate.sliding_slot_bytes
-            sliding_window = estimate.sliding_window
+            # Prefer the scheduler's OWN resolved footprint terms so the
+            # advertised ceiling can never diverge from what admission would
+            # actually charge: these honor the operator
+            # ``metal_cap_kv_bytes_per_token`` override and use
+            # ``_pick_structural_config`` to select the right tower on
+            # multimodal/hybrid configs. They are populated whenever the model
+            # exposes a ``.config`` (the admission path's own source).
+            per_tok = self._resolve_kv_bytes_per_token()
+            fixed_baseline = self._resolve_kv_fixed_baseline_bytes()
+            sliding_slot_bytes = self._kv_sliding_slot_bytes
+            sliding_window = self._kv_sliding_window
             if per_tok <= 0 and fixed_baseline <= 0 and sliding_slot_bytes <= 0:
-                return None
+                # The scheduler could not resolve terms — mlx-lm models expose
+                # dims on ``.args``, not ``.config``, so its config-only read
+                # yields 0 (and the admission cap is likewise a no-op there, so
+                # there is nothing to diverge from). Fall back to reading the
+                # dims off the model and running the SAME hybrid-aware
+                # estimator, preferring the text tower over any decoy outer
+                # config (``_read_kv_dims``).
+                dims = _read_kv_dims(self.model)
+                if dims is None:
+                    return None
+                num_layers, kv_heads, head_dim, struct_cfg = dims
+                dtype_bytes = self._infer_kv_dtype_bytes(struct_cfg)
+                uniform_per_token = 2 * num_layers * kv_heads * head_dim * dtype_bytes
+                if uniform_per_token <= 0:
+                    return None
+                estimate = estimate_kv_footprint(
+                    struct_cfg,
+                    dtype_bytes=dtype_bytes,
+                    uniform_per_token_bytes=uniform_per_token,
+                    base_num_layers=num_layers,
+                    base_kv_heads=kv_heads,
+                    base_head_dim=head_dim,
+                )
+                per_tok = estimate.per_token_growth_bytes
+                fixed_baseline = estimate.fixed_baseline_bytes
+                sliding_slot_bytes = estimate.sliding_slot_bytes
+                sliding_window = estimate.sliding_window
+                if per_tok <= 0 and fixed_baseline <= 0 and sliding_slot_bytes <= 0:
+                    return None
 
             if not mx.metal.is_available():
                 return None
