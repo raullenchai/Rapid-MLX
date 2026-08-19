@@ -46,7 +46,7 @@ If `rapid-mlx agents codex --setup` didn't fit your layout (e.g. you
 already have a `~/.codex/config.toml`), the relevant block is:
 
 ```toml
-model = "default"            # or any rapid-mlx alias
+model = "qwen3.6-35b-4bit"   # or any rapid-mlx alias
 model_provider = "rapid-mlx"
 
 [model_providers.rapid-mlx]
@@ -102,10 +102,21 @@ nothing more.
 - `tools` (Responses-flat shape) → Chat-nested tools
 - `text.format` JSON-schema → `response_format`
 - `max_output_tokens` → `max_tokens`
-- SSE: 7 events Codex actually parses (`response.created`,
-  `response.output_item.added`, `response.output_text.delta`,
-  `response.function_call_arguments.delta`,
-  `response.output_item.done`, `response.completed`,
+- `reasoning.effort` (or the top-level `reasoning_effort` shorthand) →
+  rapid-mlx's thinking controls: `"none"` disables thinking
+  (`chat_template_kwargs.enable_thinking=false`); `minimal` / `low` /
+  `medium` / `high` set the matching `reasoning_max_tokens` tier cap.
+  Explicit client knobs on the same dimension always win. Values are
+  validated against the OpenAI closed set (garbage → 400).
+- `input_image` content blocks → Chat `image_url` parts (needs a
+  multimodal model to do anything useful)
+- SSE: the streaming lifecycle events Codex parses
+  (`response.created`, `response.in_progress`,
+  `response.output_item.added` / `.done`,
+  `response.content_part.added` / `.done`,
+  `response.output_text.delta` / `.done`,
+  `response.function_call_arguments.delta`, the
+  `response.reasoning_summary_*` family, `response.completed`,
   `response.failed`)
 
 **Not translated (v1):**
@@ -113,12 +124,12 @@ nothing more.
 - `previous_response_id` → returns 400. Codex doesn't use this field
   (openai/codex#3841 confirms it's not implemented client-side), so the
   400 is a safety net for any other client that tries.
-- `reasoning.effort` → ignored. Set thinking on the server with
-  `rapid-mlx serve --enable-thinking` instead.
-- `input_image` → dropped. Codex doesn't send images.
-- Non-function tool types (`web_search`, `code_interpreter`,
-  `image_generation`, `file_search`, `computer_use`) → dropped. Codex
-  doesn't send these to third-party backends.
+- Hosted tool types (`web_search`, `file_search`, `code_interpreter`,
+  `image_generation`) → rejected with 400 listing the supported types
+  (`function`, `computer_20251022`). Exception: Codex-shaped requests
+  (fingerprinted by their `namespace` tool groups) get the ambient
+  hosted-tool noise silently dropped so the rest of the request still
+  runs.
 
 ## Probing the endpoint
 
@@ -168,10 +179,12 @@ Upgrade with `rapid-mlx upgrade` (or `pip install -U rapid-mlx`).
 Codex 0.136, tool-call XML was filtered before the parser ran and the
 agent loop saw zero items. Fixed in 0.7.12.
 
-**Tool calls don't apply** — make sure `--enable-auto-tool-choice` is
-passed when starting the server, and that the model's tool parser is
-auto-detected correctly (`rapid-mlx serve ... --log-level DEBUG` shows
-it during boot).
+**Tool calls don't apply** — tool calling is auto-enabled when the
+model's tool parser is auto-detected (boot logs show
+`Auto-configured --tool-call-parser ...`). For a model the
+auto-detector doesn't recognise, pass
+`--tool-call-parser <name> --enable-auto-tool-choice` explicitly
+(`rapid-mlx serve ... --log-level DEBUG` shows the parser during boot).
 
 **Codex hangs** — first run prompts for sandbox permissions
 (Landlock on Linux, Seatbelt on macOS). Accept them in the Codex
