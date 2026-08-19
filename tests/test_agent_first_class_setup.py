@@ -150,6 +150,61 @@ def test_dsh_plan_and_profile_template_agree_on_the_provider_contract(monkeypatc
         )
 
 
+@pytest.fixture
+def builtin_profiles(tmp_path, monkeypatch):
+    """Reload the agent registry from the repo's built-in profiles only.
+
+    ``load_profiles`` also overlays ``~/.rapid-mlx/agents``; a machine
+    with user profiles there would change the counts the footer test
+    pins. Point HOME at an empty tmp dir for the reload, then restore
+    the real registry afterwards.
+    """
+    from vllm_mlx import agents as agents_registry
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agents_registry.load_profiles()
+    yield agents_registry
+    monkeypatch.undo()
+    agents_registry.load_profiles()
+
+
+def test_agents_continue_dev_resolves_to_the_continue_profile(builtin_profiles):
+    """``agents continue-dev`` is the launch registry's slug for the same
+    product; it must resolve to the exact profile ``agents continue``
+    uses (#2082)."""
+    from vllm_mlx.agents import get_profile
+
+    canonical = get_profile("continue")
+    aliased = get_profile("continue-dev")
+    assert canonical is not None
+    assert aliased is canonical
+
+
+def test_framework_kind_comes_from_profile_metadata(builtin_profiles):
+    """Exactly the three framework profiles declare ``kind: framework``;
+    every other profile defaults to ``agent`` (#2082)."""
+    from vllm_mlx.agents import list_profiles
+
+    profiles = list_profiles()
+    frameworks = {p.name for p in profiles if p.kind == "framework"}
+    assert frameworks == {"langchain", "pydanticai", "smolagents"}
+    assert all(p.kind in {"agent", "framework"} for p in profiles)
+
+
+def test_agents_footer_counts_agents_and_frameworks_separately(
+    builtin_profiles, monkeypatch, capsys
+):
+    """The ``rapid-mlx agents`` footer must not count frameworks as
+    agents: 13 rows are 10 agents + 3 frameworks (#2082)."""
+    import vllm_mlx.cli as cli
+
+    monkeypatch.setattr("sys.argv", ["rapid-mlx", "agents"])
+    cli.main()
+    out = capsys.readouterr().out
+    assert "10 agents + 3 frameworks supported" in out
+    assert "13 agents supported" not in out
+
+
 def test_cli_parser_exposes_setup_safety_flags(monkeypatch):
     import vllm_mlx.cli as cli
 
@@ -196,3 +251,30 @@ def test_cli_reports_saved_config_when_connection_check_fails(
     output = capsys.readouterr().out
     assert "Configuration was saved, but the connection check failed" in output
     assert "Setup incomplete" not in output
+
+
+def test_user_continue_dev_overlay_wins_over_the_builtin_alias(tmp_path, monkeypatch):
+    """The ``continue-dev`` -> ``continue`` alias must be a FALLBACK only: a
+    user who installs their own ``~/.rapid-mlx/agents/continue-dev.yaml``
+    gets that profile, not the aliased built-in (#2082 codex review)."""
+    from vllm_mlx import agents as agents_registry
+    from vllm_mlx.agents import get_profile
+
+    user_dir = tmp_path / ".rapid-mlx" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "continue-dev.yaml").write_text(
+        "name: continue-dev\ndisplay_name: My Custom Continue\nconfig:\n  type: env\n"
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    agents_registry.load_profiles()
+    try:
+        profile = get_profile("continue-dev")
+        assert profile is not None
+        assert profile.display_name == "My Custom Continue", (
+            "user overlay must beat the built-in continue-dev alias"
+        )
+        # The alias still works when no overlay exists for the other slug.
+        assert get_profile("continue") is not None
+    finally:
+        monkeypatch.undo()
+        agents_registry.load_profiles()

@@ -11,7 +11,7 @@ truthfully from the authoritative test suite in
 > cell PASSes only when the server boots the real model and a real client
 > flow succeeds (real tool-call routing, or — for aider / OpenHands — a
 > real file rewrite). A cell is never marked PASS if the test skips or
-> xfails. See `workflow.md` W3 taxonomy §B.3.
+> xfails. The strict-xfail rules live in `tests/integrations/conftest.py`.
 
 ## Legend
 

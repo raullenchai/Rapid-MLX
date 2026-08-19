@@ -1,5 +1,12 @@
 # DeepSeek V4 Codex stability plan
 
+Status: **substantially delivered** · Statused: 2026-08-18
+
+> Since this plan was written, dsh became a Tier-1 agent in the
+> integration smoke loop (`tests/integrations/agent_smoke.sh`), and
+> DSpark shipped as a speculative-draft method. The document is kept as
+> the original stability plan.
+
 This document tracks the work required to make DeepSeek-V4-Flash-0731 a
 reliable Codex engineering backend before speculative decoding is enabled for
 coding workloads.

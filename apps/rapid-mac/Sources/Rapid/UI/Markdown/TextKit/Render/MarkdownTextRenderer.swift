@@ -66,9 +66,24 @@ final class MarkdownTextRenderer {
     /// streaming typing dot. Custom-drawn text views publish this through AX.
     var accessibleText: String {
         guard let storage = textContentStorage.textStorage else { return "" }
-        return (storage.string as NSString).substring(
-            with: NSRange(location: 0, length: min(proseLength, storage.length))
-        )
+        let range = NSRange(location: 0, length: min(proseLength, storage.length))
+        let source = NSMutableString(string: (storage.string as NSString).substring(with: range))
+
+        // NSTextAttachment occupies one U+FFFC character in the backing
+        // string. That is correct for layout, but this custom-drawn view uses
+        // this value as its entire accessibility surface: leaving the object
+        // replacement character here makes VoiceOver announce a hole where
+        // the formula is. Replace math attachments from the tail so earlier
+        // ranges stay valid while the string grows.
+        var replacements: [(NSRange, String)] = []
+        storage.enumerateAttribute(.attachment, in: range) { value, attachmentRange, _ in
+            guard let math = value as? InlineMathAttachment else { return }
+            replacements.append((attachmentRange, "$\(math.latex)$"))
+        }
+        for (attachmentRange, latex) in replacements.reversed() {
+            source.replaceCharacters(in: attachmentRange, with: latex)
+        }
+        return source as String
     }
 
     private func typingDotString(trailing prose: NSAttributedString) -> NSAttributedString {
@@ -297,6 +312,33 @@ final class MarkdownTextRenderer {
             .paragraphStyle: paragraphStyle,
             .foregroundColor: options.textColor,
         ]
+
+        // Inline math becomes one attachment character. Falling through to the
+        // prose path when rasterising fails is deliberate: an unparseable body
+        // renders as the `$…$` the author typed, which is worse than a formula
+        // and much better than a blank.
+        if let latex = run.math,
+           let image = InlineMathImage.image(
+               latex: latex,
+               pointSize: options.textPointSize,
+               color: options.textColor
+           ) {
+            let attachment = InlineMathAttachment(
+                latex: latex, image: image, pointSize: options.textPointSize
+            )
+            let string = NSMutableAttributedString(attachment: attachment)
+            string.addAttributes(
+                [.paragraphStyle: paragraphStyle],
+                range: NSRange(location: 0, length: string.length)
+            )
+            if let link = run.link {
+                string.addAttribute(
+                    .link, value: link,
+                    range: NSRange(location: 0, length: string.length)
+                )
+            }
+            return string
+        }
 
         if run.isInlineCode {
             attributes[.font] = NSFont.monospacedSystemFont(

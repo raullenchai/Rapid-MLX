@@ -32,7 +32,7 @@ rapid-mlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parse
 
 ### API Response Format
 
-When reasoning parsing is enabled, the API response includes a `reasoning` field:
+When reasoning parsing is enabled, the API response includes a `reasoning_content` field:
 
 **Non-streaming response:**
 
@@ -42,18 +42,21 @@ When reasoning parsing is enabled, the API response includes a `reasoning` field
     "message": {
       "role": "assistant",
       "content": "The prime numbers less than 10 are: 2, 3, 5, 7.",
-      "reasoning": "Let me analyze this step by step.\nFirst, I need to consider the constraints.\nThe answer should be a prime number less than 10.\nChecking: 2, 3, 5, 7 are all prime and less than 10."
+      "reasoning_content": "Let me analyze this step by step.\nFirst, I need to consider the constraints.\nThe answer should be a prime number less than 10.\nChecking: 2, 3, 5, 7 are all prime and less than 10."
     }
   }]
 }
 ```
 
+The field is named `reasoning_content` in both streaming and non-streaming
+responses — there is no `reasoning` key on chat-completion messages or
+deltas.
+
 **Streaming response:**
 
 Chunks are sent separately for reasoning and content. During the reasoning
-phase, chunks have `reasoning_content` (with a `reasoning` alias for
-backward compatibility) populated. When the model transitions to the final
-answer, chunks have `content` populated:
+phase, chunks have `reasoning_content` populated. When the model transitions
+to the final answer, chunks have `content` populated:
 
 ```json
 {"delta": {"reasoning_content": "Let me analyze"}}
@@ -93,8 +96,11 @@ response = client.chat.completions.create(
 )
 
 message = response.choices[0].message
-print("Reasoning:", message.reasoning)  # The thinking process
-print("Answer:", message.content)        # The final answer
+# reasoning_content is a non-standard extra field: openai-python exposes it
+# via attribute access (or message.model_extra) when present, but omits the
+# attribute entirely when the model produced no reasoning — use getattr.
+print("Reasoning:", getattr(message, "reasoning_content", None))
+print("Answer:", message.content)
 ```
 
 ### Streaming with Reasoning
@@ -111,9 +117,10 @@ stream = client.chat.completions.create(
 
 for chunk in stream:
     delta = chunk.choices[0].delta
-    if hasattr(delta, 'reasoning') and delta.reasoning:
-        reasoning_text += delta.reasoning
-        print(f"[Thinking] {delta.reasoning}", end="")
+    reasoning_delta = getattr(delta, "reasoning_content", None)
+    if reasoning_delta:
+        reasoning_text += reasoning_delta
+        print(f"[Thinking] {reasoning_delta}", end="")
     if delta.content:
         content_text += delta.content
         print(delta.content, end="")
@@ -156,12 +163,12 @@ rapid-mlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parse
 
 ## How It Works
 
-The reasoning parser uses text-based detection to identify thinking tags in the model output. During streaming, it tracks the current position in the output to correctly route each token to either `reasoning` or `content`.
+The reasoning parser uses text-based detection to identify thinking tags in the model output. During streaming, it tracks the current position in the output to correctly route each token to either `reasoning_content` or `content`.
 
 ```
 Model Output:        <think>Step 1: analyze...</think>The answer is 42.
                      ├─────────────────────┤├─────────────────────┤
-Parsed:              │     reasoning       ││       content       │
+Parsed:              │  reasoning_content  ││       content       │
                      └─────────────────────┘└─────────────────────┘
 ```
 
@@ -182,12 +189,15 @@ messages = [
 
 ### Handling Missing Reasoning
 
-Some prompts may not trigger reasoning. In these cases, `reasoning` will be `None` and all output goes to `content`:
+Some prompts may not trigger reasoning. In these cases the `reasoning_content`
+key is omitted from the response entirely (the server prunes `null` fields), so
+plain attribute access would raise `AttributeError` — always use `getattr`:
 
 ```python
 message = response.choices[0].message
-if message.reasoning:
-    print(f"Model's thought process: {message.reasoning}")
+reasoning = getattr(message, "reasoning_content", None)
+if reasoning:
+    print(f"Model's thought process: {reasoning}")
 print(f"Answer: {message.content}")
 ```
 
@@ -227,7 +237,7 @@ If `reasoning_max_tokens` is unset, the model decides how long to think.
 
 When `--reasoning-parser` is not specified, the server behaves as before:
 - Thinking tags are included in the `content` field
-- No `reasoning` field is added to responses
+- No `reasoning_content` field is added to responses
 
 This ensures existing applications continue to work without changes.
 
@@ -252,7 +262,7 @@ def solve_math(problem: str) -> dict:
     message = response.choices[0].message
     return {
         "problem": problem,
-        "work": message.reasoning,
+        "work": getattr(message, "reasoning_content", None),
         "answer": message.content
     }
 
@@ -289,7 +299,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Troubleshooting
 
-### No reasoning field in response
+### No `reasoning_content` field in response
 
 - Make sure you started the server with `--reasoning-parser`
 - Check that the model actually uses thinking tags (not all prompts trigger reasoning)

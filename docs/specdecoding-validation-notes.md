@@ -31,3 +31,12 @@ Next validation targets:
   - greedy correctness: exact token/text equality vs baseline
   - performance: TTFT, decode tok/s, acceptance ratio
   - stability: repeated runs, multiple prompt classes, no mid-stream fallback corruption
+
+## Status (2026-08-18)
+
+Qwen3.5 / Qwen3.6 native MTP has since shipped: `qwen3_5` and
+`qwen3_5_moe` are in the MTP support allowlist
+(`_SUPPORTED_MODEL_TYPES` in `vllm_mlx/spec_decode/mtp/detect.py`),
+enabled via `--speculative-config '{"method":"mtp"}'`. The Gemma 4
+assistant-sidecar decision above still stands — it remains unsupported
+and fails closed.

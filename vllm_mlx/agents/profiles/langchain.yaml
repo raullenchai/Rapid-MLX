@@ -1,5 +1,6 @@
 name: langchain
 display_name: "LangChain"
+kind: framework
 repo: "langchain-ai/langchain"
 stars: 100000
 

@@ -72,9 +72,21 @@ import httpx
 
 BASE_URL = "http://localhost:8000"
 
-# 1. Get available tools
-tools_response = httpx.get(f"{BASE_URL}/v1/mcp/tools")
-tools = tools_response.json()["tools"]
+# 1. Get available tools. Each item is {name, description, server, parameters};
+#    /v1/chat/completions expects the OpenAI function-tool shape, so map them.
+#    Tool names come back namespaced ("filesystem__list_directory").
+mcp_tools = httpx.get(f"{BASE_URL}/v1/mcp/tools").json()["tools"]
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["parameters"],
+        },
+    }
+    for t in mcp_tools
+]
 
 # 2. Send request with tools
 response = httpx.post(
@@ -94,31 +106,39 @@ message = result["choices"][0]["message"]
 if message.get("tool_calls"):
     tool_call = message["tool_calls"][0]
 
-    # 4. Execute tool via MCP
+    # 4. Execute tool via MCP. The namespaced tool_name is enough —
+    #    the server resolves which MCP server owns the tool.
     exec_response = httpx.post(
         f"{BASE_URL}/v1/mcp/execute",
         json={
-            "server": "filesystem",
-            "tool": tool_call["function"]["name"],
+            "tool_name": tool_call["function"]["name"],
             "arguments": json.loads(tool_call["function"]["arguments"])
         }
     )
     tool_result = exec_response.json()
+    # Response shape: {tool_name, content, is_error, error_message}
 
-    # 5. Send result back to LLM
+    # 5. Send result back to LLM — the content on success, the error
+    #    message on failure, so the model reacts to what actually happened.
+    if tool_result["is_error"]:
+        tool_content = f"Tool error: {tool_result['error_message']}"
+    else:
+        content = tool_result["content"]
+        tool_content = content if isinstance(content, str) else json.dumps(content)
+
     messages = [
         {"role": "user", "content": "List files in /tmp"},
         message,
         {
             "role": "tool",
             "tool_call_id": tool_call["id"],
-            "content": json.dumps(tool_result["result"])
+            "content": tool_content
         }
     ]
 
     final_response = httpx.post(
         f"{BASE_URL}/v1/chat/completions",
-        json={"model": "default", "messages": messages}
+        json={"model": "default", "messages": messages, "tools": tools}
     )
     print(final_response.json()["choices"][0]["message"]["content"])
 ```
@@ -247,7 +267,7 @@ and the per-server rows are still worth rendering.
 ## Interactive MCP Chat
 
 The built-in chat command can act as the MCP host. The config may contain one
-or more entries under `servers`:
+or more entries under `mcpServers` (the legacy `servers` key is also accepted):
 
 ```bash
 rapid-mlx chat qwen3.5-4b-4bit --mcp-config mcp.json

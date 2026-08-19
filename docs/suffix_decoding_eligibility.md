@@ -107,13 +107,16 @@ speedup ratios, and the resulting tier:
 ```
 
 Pass `--update-profile` to also print the patch for the corresponding
-`ModelConfig` entry in `vllm_mlx/model_auto_config.py`. Paste it
+alias entry — tiers are stored as `suffix_decoding_tier` in
+`vllm_mlx/aliases.json`, not in `model_auto_config.py`. Paste it
 manually — the script never auto-edits source.
 
 ## Currently classified models
 
-> **Status**: framework just landed; classifications are still being
-> filled in. All models default to `unknown` until benched.
+> **Status** (2026-08-18): classification has been rolled out — 41
+> aliases in `vllm_mlx/aliases.json` carry an explicit
+> `suffix_decoding_tier`. Aliases without one default to `unknown`
+> until benched.
 
 The first sweep (issue #269 acceptance criteria) covers:
 

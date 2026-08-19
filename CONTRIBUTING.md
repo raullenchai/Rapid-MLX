@@ -66,7 +66,7 @@ The PR template asks two questions up front: *why is this needed?* and *was AI u
 
 - **Necessity** — Rapid-MLX auto-publishes to PyPI + Homebrew on every version-bump merge. Drive-by refactors and "increases coverage" PRs cost real review time and add real blast-radius risk for zero user value. PRs whose only justification is "looks cleaner" / "future-proofs" / "good practice" may be closed. **What unlocks merge:** a concrete user-visible reason ("fixes #123", "restores N% TPS", "patches CVE"), OR concrete repository maintenance value (typo / broken link / docs clarification, alias / metadata bookkeeping, deleting genuinely-dead code, CI/tooling fixes that reduce maintainer toil). The carveout is intentional — typo PRs are welcome, "polish for polish's sake" isn't.
 
-- **AI assistance disclosure** — AI-authored code is welcome (we ship a lot of it ourselves). What we ask is **honesty about the role and the verification**: which files were AI-touched, what the AI did (wrote / reviewed / suggested), and how you confirmed the output is correct. We **don't ask for prompt transcripts**. "Fully human" and "Claude wrote tests, I wrote the impl and ran make check" are both fine; silence is treated more cautiously than disclosure. The standard: **you should be able to explain the intent, risk, and behavior of every non-generated change in your PR on demand**. For generated / boilerplate sections (scaffold, lockfile, framework hooks), identify them and describe how you verified them.
+- **AI assistance disclosure** — AI-authored code is welcome (we ship a lot of it ourselves). What we ask is **honesty about the role and the verification**: which files were AI-touched, what the AI did (wrote / reviewed / suggested), and how you confirmed the output is correct. We **don't ask for prompt transcripts**. "Fully human" and "Claude wrote tests, I wrote the impl and ran the unit suite" are both fine; silence is treated more cautiously than disclosure. The standard: **you should be able to explain the intent, risk, and behavior of every non-generated change in your PR on demand**. For generated / boilerplate sections (scaffold, lockfile, framework hooks), identify them and describe how you verified them.
 
 The full maintainer-side gauntlet — what happens to your PR after you open it — is documented in [docs/development/pr_merge_sop.md](docs/development/pr_merge_sop.md).
 
@@ -78,13 +78,17 @@ Before opening (or after pushing fixes to) your PR, run our validation pipeline 
 python3 -m scripts.pr_validate.pr_validate <PR#>
 ```
 
-The script grades your PR through 7 steps and prints a strict markdown scorecard. Exit code 0 = `MERGE-SAFE`, exit code 1 = at least one step failed.
+The script grades your PR through 11 steps and prints a strict markdown scorecard. Exit code 0 = `MERGE-SAFE`, exit code 1 = at least one step failed.
 
 | step | what it does | when |
 |---|---|---|
 | `fetch` | pulls your PR + diff, classifies blast radius | always |
-| `deepseek_review` | adversarial code review (skipped if no API key) | when `DEEPSEEK_API_KEY` is set and `PR_VALIDATE_NO_DEEPSEEK` is unset |
+| `test_plan_check` | fails on unchecked `- [ ]` items in your PR body's `## Test plan` | always |
+| `cl_description_quality` | title + body hygiene (empty body, bad title, no rationale) | always |
 | `supply_chain` | flags new deps, install hooks, `eval`/`exec`/`shell=True`, hardcoded URLs | always |
+| `test_env_check` | verifies the test interpreter can import required pytest plugins (trusted-pins auto-install) | always |
+| `review_vocabulary` | rejects reviewer-severity directives embedded in added diff lines | when a diff is available |
+| `codex_review` | adversarial code review via `codex exec` (skips if the codex CLI is missing / not logged in) | unless `PR_VALIDATE_NO_CODEX=1` |
 | `lint` | `ruff check` + `ruff format --check` | when diff has `.py` |
 | `targeted_tests` | runs tests touching the files you changed; **negative-control** filters pre-existing flakes | when diff has `.py` |
 | `full_unit` | full pytest suite minus integrations | medium/high blast |
@@ -95,15 +99,15 @@ The script grades your PR through 7 steps and prints a strict markdown scorecard
 - **`lint` and `targeted_tests` are non-negotiable** — run these locally even without the full pipeline.
 - **`supply_chain` warnings** mean a maintainer will read your changes carefully (especially if you touched `setup.py`, `.github/workflows/`, `Makefile`, or added a new dep). That's not a problem — just be ready to explain the why.
 - **`stress_e2e_bench` requires Apple Silicon + enough RAM** to load a small model (≥6GB free). If you don't have the hardware, opt out with `PR_VALIDATE_NO_STRESS=1` — maintainers will run it for you on merge.
-- **`deepseek_review` needs an API key** — opt out with `PR_VALIDATE_NO_DEEPSEEK=1` if you don't have one. Maintainers will run it for you.
+- **`codex_review` needs the `codex` CLI logged in via ChatGPT** (`~/.codex/auth.json`) — no API key involved. It skips automatically if codex isn't installed; opt out explicitly with `PR_VALIDATE_NO_CODEX=1`. (The legacy `PR_VALIDATE_NO_DEEPSEEK=1` from the retired DeepSeek review step still works as a deprecated alias.) Maintainers will run it for you.
 
 ```bash
-# Quick local check (no DeepSeek, no stress) — covers the "did I break anything obvious" case in <1 minute for most PRs:
-PR_VALIDATE_NO_DEEPSEEK=1 PR_VALIDATE_NO_STRESS=1 \
+# Quick local check (no codex review, no stress) — covers the "did I break anything obvious" case in <1 minute for most PRs:
+PR_VALIDATE_NO_CODEX=1 PR_VALIDATE_NO_STRESS=1 \
     python3 -m scripts.pr_validate.pr_validate <PR#>
 ```
 
-Full step list, gating logic, and how to add steps: [`scripts/pr_validate/README.md`](scripts/pr_validate/README.md).
+Full step list, gating logic, and how to add steps: [`scripts/pr_validate/README.md`](scripts/pr_validate/README.md) — the **canonical** pipeline reference; if this table and that README disagree, the README wins.
 
 ### What if my PR fails on a pre-existing main bug?
 
